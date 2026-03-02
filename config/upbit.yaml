@@ -1,18 +1,50 @@
-﻿rest_base_url: https://api.upbit.com
-ws_public_url: wss://api.upbit.com/websocket/v1
-rate_limit_enabled: true
-cache_ttl_sec: 60
+﻿upbit:
+  base_url: "https://api.upbit.com"
 
-auth:
-  access_key_env: UPBIT_ACCESS_KEY
-  secret_key_env: UPBIT_SECRET_KEY
+  timeout:
+    connect_sec: 3
+    read_sec: 10
+    write_sec: 10
 
-quotation_limits:
-  ticker_per_sec: 10
-  candle_per_sec: 10
-  orderbook_per_sec: 10
+  auth:
+    access_key_env: "UPBIT_ACCESS_KEY"
+    secret_key_env: "UPBIT_SECRET_KEY"
 
-exchange_limits:
-  default_per_sec: 30
-  order_per_sec: 8
-  order_cancel_all_per_2sec: 1
+  ratelimit:
+    enabled: true
+    ban_cooldown_sec: 60
+    group_defaults:
+      market_rps: 10
+      candle_rps: 10
+      trade_rps: 10
+      ticker_rps: 10
+      orderbook_rps: 10
+      exchange_default_rps: 30
+      order_rps: 8
+      order_test_rps: 8
+      order_cancel_all_rps_2s: 1
+
+  retry:
+    max_attempts: 3
+    base_backoff_ms: 200
+    max_backoff_ms: 2000
+
+  websocket:
+    public_url: "wss://api.upbit.com/websocket/v1"
+    private_url: "wss://api.upbit.com/websocket/v1/private"
+    format: "SIMPLE_LIST"
+    codes_per_connection: 120
+    max_connections: 5
+    keepalive:
+      ping_interval_sec: 30
+      ping_timeout_sec: 10
+      allow_text_ping: true
+    ratelimit:
+      connect_rps: 5
+      message_rps: 5
+      message_rpm: 100
+    reconnect:
+      enabled: true
+      base_delay_ms: 500
+      max_delay_ms: 15000
+      jitter_ms: 250

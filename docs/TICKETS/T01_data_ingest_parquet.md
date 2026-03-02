@@ -39,13 +39,18 @@ Timestamp source priority:
 
 ## QA Policy
 - FAIL:
-  - null in `ts_ms`
-  - null in `open/high/low/close`
-  - `high < low`
+  - missing required columns (`ts_ms/open/high/low/close/volume_base`)
+  - null/parse-failed `ts_ms`
+  - null in required OHLCV columns
+  - OHLC consistency violation (`high < max(open, close, low)` or `low > min(open, close, high)`)
 - WARN:
-  - non-monotonic `ts_ms`
-  - duplicate `ts_ms`
-  - timeframe gaps
+  - non-monotonic `ts_ms` (`NON_MONOTONIC_FOUND`, `NON_MONOTONIC_SORTED`)
+  - duplicate `ts_ms` detected/dropped
+  - invalid rows dropped
+  - type cast failures
+- INFO (default status remains OK):
+  - timeframe gaps (`GAPS_FOUND`, configurable via `data.qa.gap_severity`)
+  - quote volume estimated (`VOLUME_QUOTE_ESTIMATED`, configurable via `data.qa.quote_est_severity`)
 
 Auto-correction options:
 - sort on non-monotonic (configurable)
@@ -66,7 +71,10 @@ Auto-correction options:
 - `duplicates_dropped`
 - `non_monotonic_found`
 - `gaps_found`
+- `invalid_rows_dropped`
+- `ohlc_violations`
 - `status`
+- `reasons_json`
 - `error_message`
 - `timestamp_source`
 - `timestamp_policy`

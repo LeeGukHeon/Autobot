@@ -24,6 +24,9 @@ data:
   allow_sort_on_non_monotonic: true
   allow_dedupe_on_duplicate_ts: true
   quote_volume_policy: estimate_if_missing
+  qa:
+    gap_severity: info
+    quote_est_severity: info
 
   ingest:
     engine: duckdb

@@ -125,20 +125,21 @@ D:\MyApps\Autobot
 │  ├─ registry\
 │  └─ artifacts\
 ├─ logs\
+├─ autobot\
+│  ├─ __init__.py
+│  ├─ cli.py
+│  ├─ common\
+│  ├─ data\
+│  ├─ features\
+│  ├─ models\
+│  ├─ strategy\
+│  ├─ risk\
+│  ├─ execution\
+│  ├─ upbit\
+│  └─ backtest\
 ├─ python\
 │  ├─ requirements.txt
-│  └─ autobot\
-│     ├─ __init__.py
-│     ├─ cli.py
-│     ├─ common\
-│     ├─ data\
-│     ├─ features\
-│     ├─ models\
-│     ├─ strategy\
-│     ├─ risk\
-│     ├─ execution\
-│     ├─ upbit\
-│     └─ backtest\
+│  └─ autobot\   # deprecated mirror (optional sync target)
 └─ cpp\
    ├─ CMakeLists.txt
    ├─ third_party\
@@ -146,6 +147,10 @@ D:\MyApps\Autobot
       ├─ backtest_core\
       └─ bindings\
 ```
+
+패키지 SSOT 정책:
+- 메인 개발/실행 패키지는 루트 `autobot/`를 사용한다.
+- `python/autobot/`는 기본 실행 경로가 아니며, 필요 시 동기화 스크립트로만 갱신한다.
 
 ## 6) 기술 스택/설치
 - Python 3.11, VS Build Tools, CMake/Ninja
@@ -226,7 +231,7 @@ D:\MyApps\Autobot
 - `docs/ROADMAP.md` 저장
 - `docs/ADR/0001-initial-architecture.md` 작성
 - `config/*.yaml`, `secrets.example.env` 생성
-- `python/autobot/cli.py` 스켈레톤 + `--help`
+- `autobot/cli.py` 스켈레톤 + `--help`
 - `python/requirements.txt` 초안 작성
 - `data/models/logs` gitignore 적용
 - 하드코딩 금지, 인터페이스 기반 설계

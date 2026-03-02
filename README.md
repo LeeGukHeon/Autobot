@@ -21,7 +21,8 @@ python -m autobot.cli --help
 ## Structure
 - `docs/`: architecture records, roadmap, ticket-level notes
 - `config/`: environment and module-level configuration
-- `python/autobot/`: core package for data, strategy, risk, execution, upbit client, backtest
+- `autobot/`: core package (SSOT) for data, strategy, risk, execution, upbit client, backtest
+- `python/`: requirements/tooling directory, optional mirror target (`python/autobot`)
 - `cpp/`: optional high-performance components via pybind11
 
 ## Notes

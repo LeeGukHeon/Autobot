@@ -1,4 +1,8 @@
-﻿"""Upbit AutoBot package."""
+﻿"""Deprecated mirror package.
 
-__all__ = ["__version__"]
-__version__ = "0.1.0"
+SSOT package location:
+    D:\\MyApps\\Autobot\\autobot
+
+`python/autobot` is intentionally kept minimal.
+Use the root package for all runtime and development tasks.
+"""
