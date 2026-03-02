@@ -1,0 +1,41 @@
+﻿mode: backtest
+timezone: Asia/Seoul
+log_level: INFO
+
+universe:
+  quote_currency: KRW
+  top_n_by_acc_trade_price_24h: 20
+
+storage:
+  raw_dir: data/raw
+  parquet_dir: data/parquet
+  features_dir: data/features
+  backtest_dir: data/backtest
+  paper_dir: data/paper
+
+data:
+  raw_dir: data/raw
+  parquet_root: data/parquet
+  dataset_name: candles_v1
+  file_pattern: upbit_*_full.csv
+  default_compression: zstd
+  ingest_workers: 1
+  mode: skip_unchanged
+  allow_sort_on_non_monotonic: true
+  allow_dedupe_on_duplicate_ts: true
+  quote_volume_policy: estimate_if_missing
+
+  ingest:
+    engine: duckdb
+    mode: skip_unchanged
+    workers: 1
+    compression: zstd
+    allow_sort_on_non_monotonic: true
+    allow_dedupe_on_duplicate_ts: true
+    quote_volume_policy: estimate_if_missing
+
+    duckdb:
+      temp_directory: D:/MyApps/Autobot/data/cache/duckdb_tmp
+      memory_limit: 6GB
+      threads: 2
+      fail_if_temp_not_set: true

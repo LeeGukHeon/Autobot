@@ -1,0 +1,18 @@
+﻿rest_base_url: https://api.upbit.com
+ws_public_url: wss://api.upbit.com/websocket/v1
+rate_limit_enabled: true
+cache_ttl_sec: 60
+
+auth:
+  access_key_env: UPBIT_ACCESS_KEY
+  secret_key_env: UPBIT_SECRET_KEY
+
+quotation_limits:
+  ticker_per_sec: 10
+  candle_per_sec: 10
+  orderbook_per_sec: 10
+
+exchange_limits:
+  default_per_sec: 30
+  order_per_sec: 8
+  order_cancel_all_per_2sec: 1

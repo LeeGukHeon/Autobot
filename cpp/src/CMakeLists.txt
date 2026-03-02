@@ -1,0 +1,2 @@
+﻿add_subdirectory(backtest_core)
+add_subdirectory(bindings)

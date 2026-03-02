@@ -1,0 +1,14 @@
+﻿training:
+  enabled: false
+  model_name: lightgbm_baseline
+  target: future_return_label
+  lookahead_bars: 12
+
+registry:
+  root_dir: models/registry
+  require_approved: true
+
+inference:
+  score_threshold: 0.6
+  risk_multiplier_min: 0.0
+  risk_multiplier_max: 1.0

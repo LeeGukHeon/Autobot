@@ -1,0 +1,18 @@
+﻿name: baseline_v1
+
+scanner:
+  enabled: true
+  min_acc_trade_price_24h_krw: 1000000000
+
+signal:
+  timeframe: 15m
+  entry_threshold: 0.6
+  exit_threshold: 0.4
+
+execution_policy:
+  use_market_order: false
+  entry_order_type: limit
+  exit_emergency_order_type: best+ioc
+  order_timeout_sec: 15
+  reprice_max_attempts: 3
+  post_only_policy: prefer_post_only

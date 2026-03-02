@@ -1,0 +1,28 @@
+﻿# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build artifacts
+build/
+out/
+*.egg-info/
+
+# Local environment
+.env
+.env.*
+*.env
+
+# Project runtime artifacts
+data/
+models/
+logs/
+
+# IDE / OS
+.vscode/
+.vs/
+.idea/
+.DS_Store
+Thumbs.db

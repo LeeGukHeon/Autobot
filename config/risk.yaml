@@ -1,0 +1,15 @@
+﻿position:
+  initial_capital_krw: 50000
+  max_positions: 2
+  max_krw_per_position: 20000
+  min_order_krw: 5000
+
+limits:
+  daily_loss_limit_pct: 3.0
+  kill_switch_drawdown_pct: 10.0
+  consecutive_order_failures: 5
+
+exit:
+  tp_pct: 1.5
+  sl_pct: 1.0
+  trailing_pct: 0.8
