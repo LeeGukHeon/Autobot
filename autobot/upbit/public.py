@@ -60,3 +60,16 @@ class UpbitPublicClient:
             auth=False,
             rate_limit_group="candle",
         )
+
+    def orderbook_instruments(self, markets: Sequence[str]) -> JSONValue:
+        normalized = [market.strip().upper() for market in markets if market.strip()]
+        if not normalized:
+            raise ValidationError("markets is required")
+
+        return self._http.request_json(
+            "GET",
+            "/v1/orderbook/instruments",
+            params=[("markets", ",".join(normalized))],
+            auth=False,
+            rate_limit_group="orderbook",
+        )

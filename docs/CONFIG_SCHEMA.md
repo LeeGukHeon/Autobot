@@ -9,6 +9,25 @@
 - `universe.quote_currency`: string
 - `universe.top_n_by_acc_trade_price_24h`: integer
 
+## Strategy
+- `strategy.universe.quote`: string (default: `KRW`)
+- `strategy.universe.top_n`: integer (default: `20`)
+- `strategy.universe.refresh_sec`: number (default: `60`)
+- `strategy.universe.hold_sec`: number (default: `120`)
+- `strategy.candidates_v1.enabled`: bool
+- `strategy.candidates_v1.momentum_window_sec`: integer (default: `60`)
+- `strategy.candidates_v1.min_momentum_pct`: number (default: `0.2`)
+
+## Risk (Paper Runtime)
+- `risk.starting_krw`: number (default: `50000`)
+- `risk.per_trade_krw`: number (default: `10000`)
+- `risk.max_positions`: integer (default: `2`)
+- `risk.min_order_krw`: number (default: `5000`)
+- `risk.order_timeout_sec`: number (default: `20`)
+- `risk.reprice_max_attempts`: integer (default: `2`)
+- `risk.cooldown_sec_after_fail`: integer (default: `60`)
+- `risk.max_consecutive_failures`: integer (default: `5`)
+
 ## Storage
 - `storage.raw_dir`: path
 - `storage.parquet_dir`: path
@@ -29,6 +48,7 @@
 - `data.quote_volume_policy`: `estimate_if_missing | null_if_missing`
 - `data.qa.gap_severity`: `info | warn | fail` (default: `info`)
 - `data.qa.quote_est_severity`: `info | warn | fail` (default: `info`)
+- `data.qa.ohlc_violation_policy`: `drop_row_and_warn | fail` (default: `drop_row_and_warn`)
 
 ### Data Ingest
 - `data.ingest.engine`: `duckdb | polars`
@@ -92,6 +112,17 @@
 - `upbit.websocket.reconnect.max_delay_ms`: integer
 - `upbit.websocket.reconnect.jitter_ms`: integer
 
+## CLI: Paper Run
+- `python -m autobot.cli paper run --duration-sec 600 --quote KRW --top-n 20`
+- Options:
+  - `--duration-sec`: integer runtime seconds
+  - `--quote`: quote currency
+  - `--top-n`: top-N universe size
+  - `--print-every-sec`: snapshot print/log interval
+  - `--starting-krw`: initial paper cash
+  - `--per-trade-krw`: per-order notional target
+  - `--max-positions`: max simultaneous positions
+
 ## Candle Data Contract v1
 
 ### Partitioning
@@ -124,9 +155,12 @@
   - duplicate `ts_ms` found or dropped
   - invalid rows dropped
   - type cast failure rows found
+  - `OHLC_VIOLATIONS` when `data.qa.ohlc_violation_policy=drop_row_and_warn`
 - INFO (status remains OK by default):
   - timeframe gap(s) found (`GAPS_FOUND`) controlled by `data.qa.gap_severity`
   - `volume_quote_est=true` (`VOLUME_QUOTE_ESTIMATED`) controlled by `data.qa.quote_est_severity`
+- FAIL:
+  - `OHLC_VIOLATIONS` when `data.qa.ohlc_violation_policy=fail`
 
 ### Manifest fields
 - `quote`, `symbol`, `market`, `tf`

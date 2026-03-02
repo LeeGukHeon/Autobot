@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import time
@@ -12,6 +13,7 @@ from typing import Any, Callable
 import yaml
 
 from .data import DuckDBSettings, IngestOptions, ingest_dataset, sniff_csv_files, validate_dataset
+from .paper import PaperRunSettings, run_live_paper_sync
 from .strategy import TopTradeValueScanner
 from .upbit import (
     ConfigError,
@@ -128,6 +130,18 @@ def build_parser() -> argparse.ArgumentParser:
     upbit_ws_top20_parser.add_argument("--exclude-caution", action="store_true")
     upbit_ws_top20_parser.add_argument("--exclude-inactive", action="store_true")
 
+    paper_parser = subparsers.add_parser("paper", help="Paper-trading operations.")
+    paper_subparsers = paper_parser.add_subparsers(dest="paper_command", required=True)
+
+    paper_run_parser = paper_subparsers.add_parser("run", help="Run live websocket paper trading.")
+    paper_run_parser.add_argument("--duration-sec", type=int, default=600)
+    paper_run_parser.add_argument("--quote", help="Quote currency, ex: KRW")
+    paper_run_parser.add_argument("--top-n", type=int)
+    paper_run_parser.add_argument("--print-every-sec", type=float)
+    paper_run_parser.add_argument("--starting-krw", type=float)
+    paper_run_parser.add_argument("--per-trade-krw", type=float)
+    paper_run_parser.add_argument("--max-positions", type=int)
+
     return parser
 
 
@@ -138,6 +152,8 @@ def main() -> int:
 
     if args.command == "data":
         return _handle_data_command(args, config)
+    if args.command == "paper":
+        return _handle_paper_command(args, Path(args.config_dir), config)
     if args.command == "upbit":
         return _handle_upbit_command(args, Path(args.config_dir))
 
@@ -223,6 +239,7 @@ def _handle_data_ingest(args: argparse.Namespace, config: dict[str, Any]) -> int
         quote_volume_policy=ingest_defaults["quote_volume_policy"],
         gap_severity=defaults["qa"]["gap_severity"],
         quote_est_severity=defaults["qa"]["quote_est_severity"],
+        ohlc_violation_policy=defaults["qa"]["ohlc_violation_policy"],
         engine=args.engine or ingest_defaults["engine"],
         duckdb=duckdb_settings,
     )
@@ -274,6 +291,7 @@ def _handle_data_validate(args: argparse.Namespace, config: dict[str, Any]) -> i
         market_filter=market_filter,
         gap_severity=defaults["qa"]["gap_severity"],
         quote_est_severity=defaults["qa"]["quote_est_severity"],
+        ohlc_violation_policy=defaults["qa"]["ohlc_violation_policy"],
     )
 
     print(
@@ -298,6 +316,54 @@ def _handle_upbit_command(args: argparse.Namespace, config_dir: Path) -> int:
         raise ValueError(f"Unsupported upbit scope: {args.upbit_scope}")
     except (ConfigError, UpbitError) as exc:
         print(f"[upbit][error] {exc}")
+        return 2
+
+
+def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    try:
+        if args.paper_command != "run":
+            raise ValueError(f"Unsupported paper command: {args.paper_command}")
+
+        settings = load_upbit_settings(config_dir)
+        _ensure_upbit_runtime_available()
+        risk_doc = _load_yaml_doc(config_dir / "risk.yaml")
+        strategy_doc = _load_yaml_doc(config_dir / "strategy.yaml")
+        defaults = _paper_defaults(base_config=base_config, risk_doc=risk_doc, strategy_doc=strategy_doc)
+
+        run_settings = PaperRunSettings(
+            duration_sec=max(int(args.duration_sec), 1),
+            quote=str(args.quote or defaults["quote"]).strip().upper(),
+            top_n=max(int(args.top_n if args.top_n is not None else defaults["top_n"]), 1),
+            print_every_sec=max(
+                float(args.print_every_sec if args.print_every_sec is not None else defaults["print_every_sec"]),
+                1.0,
+            ),
+            universe_refresh_sec=max(float(defaults["universe_refresh_sec"]), 1.0),
+            universe_hold_sec=max(float(defaults["universe_hold_sec"]), 0.0),
+            momentum_window_sec=max(int(defaults["momentum_window_sec"]), 1),
+            min_momentum_pct=float(defaults["min_momentum_pct"]),
+            starting_krw=max(
+                float(args.starting_krw if args.starting_krw is not None else defaults["starting_krw"]),
+                0.0,
+            ),
+            per_trade_krw=max(
+                float(args.per_trade_krw if args.per_trade_krw is not None else defaults["per_trade_krw"]),
+                1.0,
+            ),
+            max_positions=max(int(args.max_positions if args.max_positions is not None else defaults["max_positions"]), 1),
+            min_order_krw=max(float(defaults["min_order_krw"]), 0.0),
+            order_timeout_sec=max(float(defaults["order_timeout_sec"]), 1.0),
+            reprice_max_attempts=max(int(defaults["reprice_max_attempts"]), 0),
+            cooldown_sec_after_fail=max(int(defaults["cooldown_sec_after_fail"]), 0),
+            max_consecutive_failures=max(int(defaults["max_consecutive_failures"]), 1),
+            out_root_dir=str(defaults["paper_out_dir"]),
+        )
+
+        summary = run_live_paper_sync(upbit_settings=settings, run_settings=run_settings)
+        _print_json(asdict(summary))
+        return 0
+    except (ConfigError, UpbitError, ValueError) as exc:
+        print(f"[paper][error] {exc}")
         return 2
 
 
@@ -498,14 +564,71 @@ def _ensure_upbit_runtime_available() -> None:
 
 
 def _load_base_config(config_dir: Path) -> dict[str, Any]:
-    config_path = config_dir / "base.yaml"
-    if not config_path.exists():
-        return {}
+    return _load_yaml_doc(config_dir / "base.yaml")
 
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+def _load_yaml_doc(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         return {}
     return raw
+
+
+def _paper_defaults(
+    *,
+    base_config: dict[str, Any],
+    risk_doc: dict[str, Any],
+    strategy_doc: dict[str, Any],
+) -> dict[str, Any]:
+    universe_base = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
+    storage_base = base_config.get("storage", {}) if isinstance(base_config.get("storage"), dict) else {}
+
+    strategy_root = strategy_doc.get("strategy") if isinstance(strategy_doc.get("strategy"), dict) else strategy_doc
+    strategy_root = strategy_root if isinstance(strategy_root, dict) else {}
+    strategy_universe = strategy_root.get("universe", {}) if isinstance(strategy_root.get("universe"), dict) else {}
+    candidates_cfg = (
+        strategy_root.get("candidates_v1", {}) if isinstance(strategy_root.get("candidates_v1"), dict) else {}
+    )
+    execution_policy = (
+        strategy_doc.get("execution_policy", {}) if isinstance(strategy_doc.get("execution_policy"), dict) else {}
+    )
+
+    risk_root = risk_doc.get("risk") if isinstance(risk_doc.get("risk"), dict) else risk_doc
+    risk_root = risk_root if isinstance(risk_root, dict) else {}
+    position_cfg = risk_doc.get("position", {}) if isinstance(risk_doc.get("position"), dict) else {}
+    limits_cfg = risk_doc.get("limits", {}) if isinstance(risk_doc.get("limits"), dict) else {}
+
+    return {
+        "quote": str(strategy_universe.get("quote", universe_base.get("quote_currency", "KRW"))).strip().upper(),
+        "top_n": int(
+            strategy_universe.get(
+                "top_n",
+                universe_base.get("top_n_by_acc_trade_price_24h", 20),
+            )
+        ),
+        "print_every_sec": float(5.0),
+        "paper_out_dir": str(storage_base.get("paper_dir", "data/paper")),
+        "universe_refresh_sec": float(strategy_universe.get("refresh_sec", 60)),
+        "universe_hold_sec": float(strategy_universe.get("hold_sec", 120)),
+        "momentum_window_sec": int(candidates_cfg.get("momentum_window_sec", 60)),
+        "min_momentum_pct": float(candidates_cfg.get("min_momentum_pct", 0.2)),
+        "starting_krw": float(risk_root.get("starting_krw", position_cfg.get("initial_capital_krw", 50000))),
+        "per_trade_krw": float(risk_root.get("per_trade_krw", position_cfg.get("max_krw_per_position", 10000))),
+        "max_positions": int(risk_root.get("max_positions", position_cfg.get("max_positions", 2))),
+        "min_order_krw": float(risk_root.get("min_order_krw", position_cfg.get("min_order_krw", 5000))),
+        "order_timeout_sec": float(
+            risk_root.get("order_timeout_sec", execution_policy.get("order_timeout_sec", 20))
+        ),
+        "reprice_max_attempts": int(
+            risk_root.get("reprice_max_attempts", execution_policy.get("reprice_max_attempts", 2))
+        ),
+        "cooldown_sec_after_fail": int(risk_root.get("cooldown_sec_after_fail", 60)),
+        "max_consecutive_failures": int(
+            risk_root.get("max_consecutive_failures", limits_cfg.get("consecutive_order_failures", 3))
+        ),
+    }
 
 
 def _data_defaults(config: dict[str, Any]) -> dict[str, Any]:
@@ -544,6 +667,7 @@ def _data_defaults(config: dict[str, Any]) -> dict[str, Any]:
         "qa": {
             "gap_severity": str(qa_cfg.get("gap_severity", "info")).strip().lower(),
             "quote_est_severity": str(qa_cfg.get("quote_est_severity", "info")).strip().lower(),
+            "ohlc_violation_policy": str(qa_cfg.get("ohlc_violation_policy", "drop_row_and_warn")).strip().lower(),
         },
     }
 

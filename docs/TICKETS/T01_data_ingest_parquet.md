@@ -51,6 +51,9 @@ Timestamp source priority:
 - INFO (default status remains OK):
   - timeframe gaps (`GAPS_FOUND`, configurable via `data.qa.gap_severity`)
   - quote volume estimated (`VOLUME_QUOTE_ESTIMATED`, configurable via `data.qa.quote_est_severity`)
+- OHLC violation policy:
+  - `data.qa.ohlc_violation_policy=drop_row_and_warn`: invalid rows are dropped and counted in `invalid_rows_dropped` (`WARN`)
+  - `data.qa.ohlc_violation_policy=fail`: keep strict `FAIL`
 
 Auto-correction options:
 - sort on non-monotonic (configurable)

@@ -27,6 +27,7 @@ data:
   qa:
     gap_severity: info
     quote_est_severity: info
+    ohlc_violation_policy: drop_row_and_warn
 
   ingest:
     engine: duckdb
