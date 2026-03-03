@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package autobot.execution.v1;
+
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  BID = 1;
+  ASK = 2;
+}
+
+enum OrdType {
+  ORD_TYPE_UNSPECIFIED = 0;
+  LIMIT = 1;
+}
+
+enum TimeInForce {
+  TIF_UNSPECIFIED = 0;
+  GTC = 1;
+  IOC = 2;
+  FOK = 3;
+}
+
+enum EventType {
+  EVENT_UNSPECIFIED = 0;
+  ORDER_UPDATE = 1;
+  FILL = 2;
+  ASSET = 3;
+  HEALTH = 4;
+  ERROR = 5;
+}
+
+message OrderIntent {
+  string intent_id = 1;
+  string identifier = 2;
+  string market = 3;
+  Side side = 4;
+  OrdType ord_type = 5;
+  double price = 6;
+  double volume = 7;
+  TimeInForce tif = 8;
+  int64 ts_ms = 9;
+  string meta_json = 10;
+}
+
+message SubmitResult {
+  bool accepted = 1;
+  string reason = 2;
+  string upbit_uuid = 3;
+  string identifier = 4;
+  string intent_id = 5;
+}
+
+message CancelRequest {
+  string upbit_uuid = 1;
+  string identifier = 2;
+}
+
+message Event {
+  EventType event_type = 1;
+  int64 ts_ms = 2;
+  string payload_json = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string message = 2;
+  int64 ts_ms = 3;
+}
+
+service ExecutionService {
+  rpc SubmitIntent(OrderIntent) returns (SubmitResult);
+  rpc Cancel(CancelRequest) returns (SubmitResult);
+  rpc StreamEvents(HealthRequest) returns (stream Event);
+  rpc GetSnapshot(HealthRequest) returns (Event);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

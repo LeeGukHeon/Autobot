@@ -56,6 +56,32 @@
 - `risk.cooldown_sec_after_fail`: integer (default: `60`)
 - `risk.max_consecutive_failures`: integer (default: `5`)
 
+## Backtest
+- `backtest.dataset_name`: string (default: `candles_v1`)
+- `backtest.parquet_root`: path (default: `data/parquet`)
+- `backtest.tf`: timeframe string (default: `1m`)
+- `backtest.from_ts_ms`: int64 nullable
+- `backtest.to_ts_ms`: int64 nullable
+- `backtest.duration_days`: integer nullable
+- `backtest.seed`: integer (default: `0`)
+
+### Backtest Universe
+- `backtest.universe.mode`: `static_start | fixed_list` (default: `static_start`)
+- `backtest.universe.quote`: string (default: `KRW`)
+- `backtest.universe.top_n`: integer (default: `20`)
+
+### Backtest Data
+- `backtest.data.dense_grid`: bool (default: `false`)
+
+### Backtest Execution
+- `backtest.execution.order_timeout_bars`: integer (default: `5`)
+- `backtest.execution.reprice_max_attempts`: integer (default: `1`)
+- `backtest.execution.reprice_tick_steps`: integer (default: `1`)
+- `backtest.execution.rules_ttl_sec`: integer (default: `86400`)
+
+### Backtest Output
+- `backtest.output.root`: path (default: `data/backtest`)
+
 ## Storage
 - `storage.raw_dir`: path
 - `storage.parquet_dir`: path
@@ -150,6 +176,17 @@
   - `--starting-krw`: initial paper cash
   - `--per-trade-krw`: per-order notional target
   - `--max-positions`: max simultaneous positions
+
+## CLI: Backtest Run
+- `python -m autobot.cli backtest run --market KRW-BTC --tf 5m --duration-days 7`
+- Main options:
+  - `--market` / `--markets`
+  - `--tf`
+  - `--from-ts-ms`, `--to-ts-ms`, `--duration-days`
+  - `--quote`, `--top-n`, `--universe-mode`
+  - `--dense-grid`
+  - `--starting-krw`, `--per-trade-krw`, `--max-positions`, `--min-order-krw`
+  - `--order-timeout-bars`, `--reprice-max-attempts`
 
 ## CLI: Live State
 - `python -m autobot.cli live status`

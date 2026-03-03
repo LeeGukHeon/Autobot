@@ -9,6 +9,24 @@ __pycache__/
 build/
 out/
 *.egg-info/
+compile_commands.json
+
+# C++ / CMake / MSVC local build artifacts
+cpp/build*/
+cpp/**/CMakeFiles/
+cpp/**/CMakeCache.txt
+cpp/**/cmake_install.cmake
+cpp/**/Testing/
+*.vcxproj.user
+*.VC.db
+*.opendb
+*.idb
+*.pdb
+*.ilk
+*.obj
+*.tlog
+*.recipe
+*.lastbuildstate
 
 # Local environment
 .env

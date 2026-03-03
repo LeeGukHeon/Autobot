@@ -1,6 +1,11 @@
 """Live runtime state and reconciliation utilities."""
 
-from .daemon import LiveDaemonSettings, run_live_sync_daemon, run_live_sync_daemon_with_private_ws
+from .daemon import (
+    LiveDaemonSettings,
+    run_live_sync_daemon,
+    run_live_sync_daemon_with_executor_events,
+    run_live_sync_daemon_with_private_ws,
+)
 from .identifier import is_bot_identifier, new_order_identifier
 from .reconcile import (
     UnknownOpenOrdersPolicy,
@@ -24,6 +29,7 @@ __all__ = [
     "is_bot_identifier",
     "new_order_identifier",
     "run_live_sync_daemon",
+    "run_live_sync_daemon_with_executor_events",
     "run_live_sync_daemon_with_private_ws",
     "reconcile_exchange_snapshot",
 ]

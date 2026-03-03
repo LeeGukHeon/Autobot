@@ -13,6 +13,7 @@ from typing import Any, Callable
 import yaml
 
 from . import __version__
+from .backtest import BacktestRunSettings, run_backtest_sync
 from .data import DuckDBSettings, IngestOptions, ingest_dataset, sniff_csv_files, validate_dataset
 from .live import (
     LiveDaemonSettings,
@@ -20,6 +21,7 @@ from .live import (
     apply_cancel_actions,
     reconcile_exchange_snapshot,
     run_live_sync_daemon,
+    run_live_sync_daemon_with_executor_events,
     run_live_sync_daemon_with_private_ws,
 )
 from .paper import PaperRunSettings, run_live_paper_sync
@@ -152,6 +154,27 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--per-trade-krw", type=float)
     paper_run_parser.add_argument("--max-positions", type=int)
 
+    backtest_parser = subparsers.add_parser("backtest", help="Backtest operations.")
+    backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command", required=True)
+
+    backtest_run_parser = backtest_subparsers.add_parser("run", help="Run parquet candle backtest.")
+    backtest_run_parser.add_argument("--tf", help="Timeframe, ex: 1m,5m")
+    backtest_run_parser.add_argument("--market", help="Single market, ex: KRW-BTC")
+    backtest_run_parser.add_argument("--markets", help="Comma separated markets, ex: KRW-BTC,KRW-ETH")
+    backtest_run_parser.add_argument("--quote", help="Quote filter for universe mode, ex: KRW")
+    backtest_run_parser.add_argument("--top-n", type=int, help="Universe size for static_start/fixed_list")
+    backtest_run_parser.add_argument("--universe-mode", choices=("static_start", "fixed_list"))
+    backtest_run_parser.add_argument("--from-ts-ms", type=int)
+    backtest_run_parser.add_argument("--to-ts-ms", type=int)
+    backtest_run_parser.add_argument("--duration-days", type=int)
+    backtest_run_parser.add_argument("--dense-grid", action="store_true")
+    backtest_run_parser.add_argument("--starting-krw", type=float)
+    backtest_run_parser.add_argument("--per-trade-krw", type=float)
+    backtest_run_parser.add_argument("--max-positions", type=int)
+    backtest_run_parser.add_argument("--min-order-krw", type=float)
+    backtest_run_parser.add_argument("--order-timeout-bars", type=int)
+    backtest_run_parser.add_argument("--reprice-max-attempts", type=int)
+
     live_parser = subparsers.add_parser("live", help="Live runtime state/reconciliation operations.")
     live_subparsers = live_parser.add_subparsers(dest="live_command", required=True)
 
@@ -183,6 +206,21 @@ def build_parser() -> argparse.ArgumentParser:
     live_export_state_parser = live_subparsers.add_parser("export-state", help="Export local state DB as JSON.")
     live_export_state_parser.add_argument("--bot-id", help="Override live.bot_id")
 
+    exec_parser = subparsers.add_parser("exec", help="Execution-engine (gRPC) operations.")
+    exec_subparsers = exec_parser.add_subparsers(dest="exec_command", required=True)
+
+    exec_subparsers.add_parser("ping", help="Ping executor health endpoint.")
+
+    exec_submit_test_parser = exec_subparsers.add_parser(
+        "submit-test",
+        help="Submit a LIMIT/GTC intent to executor (recommended with executor order-test mode).",
+    )
+    exec_submit_test_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
+    exec_submit_test_parser.add_argument("--side", required=True, choices=("bid", "ask"))
+    exec_submit_test_parser.add_argument("--price", required=True, type=float)
+    exec_submit_test_parser.add_argument("--volume", required=True, type=float)
+    exec_submit_test_parser.add_argument("--identifier", help="Optional idempotency identifier")
+
     return parser
 
 
@@ -195,8 +233,12 @@ def main() -> int:
         return _handle_data_command(args, config)
     if args.command == "paper":
         return _handle_paper_command(args, Path(args.config_dir), config)
+    if args.command == "backtest":
+        return _handle_backtest_command(args, Path(args.config_dir), config)
     if args.command == "live":
         return _handle_live_command(args, Path(args.config_dir), config)
+    if args.command == "exec":
+        return _handle_exec_command(args, config)
     if args.command == "upbit":
         return _handle_upbit_command(args, Path(args.config_dir))
 
@@ -410,6 +452,87 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         return 2
 
 
+def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    try:
+        if args.backtest_command != "run":
+            raise ValueError(f"Unsupported backtest command: {args.backtest_command}")
+
+        risk_doc = _load_yaml_doc(config_dir / "risk.yaml")
+        strategy_doc = _load_yaml_doc(config_dir / "strategy.yaml")
+        backtest_doc = _load_yaml_doc(config_dir / "backtest.yaml")
+        defaults = _backtest_defaults(
+            base_config=base_config,
+            risk_doc=risk_doc,
+            strategy_doc=strategy_doc,
+            backtest_doc=backtest_doc,
+        )
+
+        markets_cli = _parse_csv_list(getattr(args, "markets", None), normalize=str.upper) or ()
+        run_settings = BacktestRunSettings(
+            dataset_name=str(defaults["dataset_name"]),
+            parquet_root=str(defaults["parquet_root"]),
+            tf=str(args.tf or defaults["tf"]).strip().lower(),
+            from_ts_ms=getattr(args, "from_ts_ms", None) if getattr(args, "from_ts_ms", None) is not None else defaults["from_ts_ms"],
+            to_ts_ms=getattr(args, "to_ts_ms", None) if getattr(args, "to_ts_ms", None) is not None else defaults["to_ts_ms"],
+            duration_days=(
+                int(getattr(args, "duration_days", defaults["duration_days"]))
+                if getattr(args, "duration_days", defaults["duration_days"]) is not None
+                else None
+            ),
+            market=str(args.market).strip().upper() if getattr(args, "market", None) else None,
+            markets=tuple(markets_cli),
+            universe_mode=str(args.universe_mode or defaults["universe_mode"]).strip().lower(),
+            quote=str(args.quote or defaults["quote"]).strip().upper(),
+            top_n=max(int(args.top_n if args.top_n is not None else defaults["top_n"]), 1),
+            dense_grid=bool(args.dense_grid) if bool(args.dense_grid) else bool(defaults["dense_grid"]),
+            starting_krw=max(
+                float(args.starting_krw if args.starting_krw is not None else defaults["starting_krw"]),
+                0.0,
+            ),
+            per_trade_krw=max(
+                float(args.per_trade_krw if args.per_trade_krw is not None else defaults["per_trade_krw"]),
+                1.0,
+            ),
+            max_positions=max(int(args.max_positions if args.max_positions is not None else defaults["max_positions"]), 1),
+            min_order_krw=max(
+                float(args.min_order_krw if args.min_order_krw is not None else defaults["min_order_krw"]),
+                0.0,
+            ),
+            order_timeout_bars=max(
+                int(args.order_timeout_bars if args.order_timeout_bars is not None else defaults["order_timeout_bars"]),
+                1,
+            ),
+            reprice_max_attempts=max(
+                int(
+                    args.reprice_max_attempts
+                    if args.reprice_max_attempts is not None
+                    else defaults["reprice_max_attempts"]
+                ),
+                0,
+            ),
+            reprice_tick_steps=max(int(defaults["reprice_tick_steps"]), 1),
+            rules_ttl_sec=max(int(defaults["rules_ttl_sec"]), 1),
+            momentum_window_sec=max(int(defaults["momentum_window_sec"]), 1),
+            min_momentum_pct=float(defaults["min_momentum_pct"]),
+            output_root_dir=str(defaults["backtest_out_dir"]),
+            seed=int(defaults["seed"]),
+        )
+
+        upbit_settings: Any = None
+        try:
+            upbit_settings = load_upbit_settings(config_dir)
+            _ensure_upbit_runtime_available()
+        except ConfigError:
+            upbit_settings = None
+
+        summary = run_backtest_sync(run_settings=run_settings, upbit_settings=upbit_settings)
+        _print_json(asdict(summary))
+        return 0
+    except (ConfigError, UpbitError, ValueError, RuntimeError) as exc:
+        print(f"[backtest][error] {exc}")
+        return 2
+
+
 def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
         defaults = _live_defaults(base_config)
@@ -517,6 +640,9 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         return 2 if bool(report.get("halted")) else 0
 
                     if command == "run":
+                        if bool(defaults["sync_use_private_ws"]) and bool(defaults["sync_use_executor_ws"]):
+                            raise ValueError("live.sync.use_private_ws and live.sync.use_executor_ws cannot both be true")
+
                         daemon_settings = LiveDaemonSettings(
                             bot_id=bot_id,
                             identifier_prefix=str(defaults["identifier_prefix"]),
@@ -531,6 +657,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
                             allow_cancel_external_cli=allow_cancel_external_cli,
                             use_private_ws=bool(defaults["sync_use_private_ws"]),
+                            use_executor_ws=bool(defaults["sync_use_executor_ws"]),
                             duration_sec=(
                                 int(getattr(args, "duration_sec", 0))
                                 if int(getattr(args, "duration_sec", 0)) > 0
@@ -547,6 +674,21 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                     settings=daemon_settings,
                                 )
                             )
+                        elif daemon_settings.use_executor_ws:
+                            from .execution import GrpcExecutionGateway
+
+                            with GrpcExecutionGateway(
+                                host=str(defaults["executor_host"]),
+                                port=int(defaults["executor_port"]),
+                                timeout_sec=float(defaults["executor_timeout_sec"]),
+                                insecure=bool(defaults["executor_insecure"]),
+                            ) as executor_gateway:
+                                daemon_summary = run_live_sync_daemon_with_executor_events(
+                                    store=store,
+                                    client=client,
+                                    executor_gateway=executor_gateway,
+                                    settings=daemon_settings,
+                                )
                         else:
                             daemon_summary = run_live_sync_daemon(
                                 store=store,
@@ -563,6 +705,39 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                     store.release_run_lock(bot_id=bot_id)
     except (ConfigError, UpbitError, ValueError) as exc:
         print(f"[live][error] {exc}")
+        return 2
+
+
+def _handle_exec_command(args: argparse.Namespace, base_config: dict[str, Any]) -> int:
+    defaults = _live_defaults(base_config)
+    command = str(args.exec_command)
+    try:
+        from .execution import GrpcExecutionGateway
+
+        with GrpcExecutionGateway(
+            host=str(defaults["executor_host"]),
+            port=int(defaults["executor_port"]),
+            timeout_sec=float(defaults["executor_timeout_sec"]),
+            insecure=bool(defaults["executor_insecure"]),
+        ) as gateway:
+            if command == "ping":
+                _print_json(gateway.ping())
+                return 0
+
+            if command == "submit-test":
+                result = gateway.submit_test(
+                    market=str(args.market),
+                    side=str(args.side),
+                    price=float(args.price),
+                    volume=float(args.volume),
+                    identifier=getattr(args, "identifier", None),
+                )
+                _print_json(asdict(result))
+                return 0 if result.accepted else 2
+
+            raise ValueError(f"Unsupported exec command: {command}")
+    except (RuntimeError, ValueError) as exc:
+        print(f"[exec][error] {exc}")
         return 2
 
 
@@ -830,11 +1005,66 @@ def _paper_defaults(
     }
 
 
+def _backtest_defaults(
+    *,
+    base_config: dict[str, Any],
+    risk_doc: dict[str, Any],
+    strategy_doc: dict[str, Any],
+    backtest_doc: dict[str, Any],
+) -> dict[str, Any]:
+    storage_base = base_config.get("storage", {}) if isinstance(base_config.get("storage"), dict) else {}
+    data_defaults = _data_defaults(base_config)
+
+    risk_root = risk_doc.get("risk") if isinstance(risk_doc.get("risk"), dict) else risk_doc
+    risk_root = risk_root if isinstance(risk_root, dict) else {}
+    position_cfg = risk_doc.get("position", {}) if isinstance(risk_doc.get("position"), dict) else {}
+
+    strategy_root = strategy_doc.get("strategy") if isinstance(strategy_doc.get("strategy"), dict) else strategy_doc
+    strategy_root = strategy_root if isinstance(strategy_root, dict) else {}
+    strategy_universe = strategy_root.get("universe", {}) if isinstance(strategy_root.get("universe"), dict) else {}
+    candidates_cfg = (
+        strategy_root.get("candidates_v1", {}) if isinstance(strategy_root.get("candidates_v1"), dict) else {}
+    )
+
+    root = backtest_doc.get("backtest", backtest_doc) if isinstance(backtest_doc, dict) else {}
+    root = root if isinstance(root, dict) else {}
+    universe_cfg = root.get("universe", {}) if isinstance(root.get("universe"), dict) else {}
+    data_cfg = root.get("data", {}) if isinstance(root.get("data"), dict) else {}
+    execution_cfg = root.get("execution", {}) if isinstance(root.get("execution"), dict) else {}
+    output_cfg = root.get("output", {}) if isinstance(root.get("output"), dict) else {}
+
+    return {
+        "dataset_name": str(root.get("dataset_name", data_defaults["dataset_name"])),
+        "parquet_root": str(root.get("parquet_root", data_defaults["parquet_root"])),
+        "tf": str(root.get("tf", "1m")).strip().lower(),
+        "from_ts_ms": root.get("from_ts_ms"),
+        "to_ts_ms": root.get("to_ts_ms"),
+        "duration_days": root.get("duration_days"),
+        "universe_mode": str(universe_cfg.get("mode", "static_start")).strip().lower(),
+        "quote": str(universe_cfg.get("quote", strategy_universe.get("quote", "KRW"))).strip().upper(),
+        "top_n": int(universe_cfg.get("top_n", strategy_universe.get("top_n", 20))),
+        "dense_grid": bool(data_cfg.get("dense_grid", False)),
+        "starting_krw": float(risk_root.get("starting_krw", position_cfg.get("initial_capital_krw", 50000))),
+        "per_trade_krw": float(risk_root.get("per_trade_krw", position_cfg.get("max_krw_per_position", 10000))),
+        "max_positions": int(risk_root.get("max_positions", position_cfg.get("max_positions", 2))),
+        "min_order_krw": float(risk_root.get("min_order_krw", position_cfg.get("min_order_krw", 5000))),
+        "order_timeout_bars": int(execution_cfg.get("order_timeout_bars", 5)),
+        "reprice_max_attempts": int(execution_cfg.get("reprice_max_attempts", 1)),
+        "reprice_tick_steps": int(execution_cfg.get("reprice_tick_steps", 1)),
+        "rules_ttl_sec": int(execution_cfg.get("rules_ttl_sec", 86400)),
+        "momentum_window_sec": int(candidates_cfg.get("momentum_window_sec", 60)),
+        "min_momentum_pct": float(candidates_cfg.get("min_momentum_pct", 0.2)),
+        "backtest_out_dir": str(output_cfg.get("root", storage_base.get("backtest_dir", "data/backtest"))),
+        "seed": int(root.get("seed", 0)),
+    }
+
+
 def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     live_cfg = base_config.get("live", {}) if isinstance(base_config.get("live"), dict) else {}
     state_cfg = live_cfg.get("state", {}) if isinstance(live_cfg.get("state"), dict) else {}
     startup_cfg = live_cfg.get("startup", {}) if isinstance(live_cfg.get("startup"), dict) else {}
     sync_cfg = live_cfg.get("sync", {}) if isinstance(live_cfg.get("sync"), dict) else {}
+    executor_cfg = live_cfg.get("executor", {}) if isinstance(live_cfg.get("executor"), dict) else {}
     orders_cfg = live_cfg.get("orders", {}) if isinstance(live_cfg.get("orders"), dict) else {}
     default_risk_cfg = live_cfg.get("default_risk", {}) if isinstance(live_cfg.get("default_risk"), dict) else {}
     universe_cfg = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
@@ -858,6 +1088,11 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "allow_cancel_external_orders": bool(startup_cfg.get("allow_cancel_external_orders", False)),
         "sync_poll_interval_sec": max(int(sync_cfg.get("poll_interval_sec", 15)), 1),
         "sync_use_private_ws": bool(sync_cfg.get("use_private_ws", False)),
+        "sync_use_executor_ws": bool(sync_cfg.get("use_executor_ws", False)),
+        "executor_host": str(executor_cfg.get("host", "127.0.0.1")).strip(),
+        "executor_port": max(int(executor_cfg.get("port", 50051)), 1),
+        "executor_timeout_sec": max(float(executor_cfg.get("timeout_sec", 5.0)), 0.1),
+        "executor_insecure": bool(executor_cfg.get("insecure", True)),
         "identifier_prefix": str(orders_cfg.get("identifier_prefix", "AUTOBOT")).strip().upper(),
         "default_risk_sl_pct": max(float(default_risk_cfg.get("sl_pct", 2.0)), 0.0),
         "default_risk_tp_pct": max(float(default_risk_cfg.get("tp_pct", 3.0)), 0.0),

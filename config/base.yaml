@@ -16,6 +16,12 @@ live:
   sync:
     poll_interval_sec: 15
     use_private_ws: false
+    use_executor_ws: false
+  executor:
+    host: "127.0.0.1"
+    port: 50051
+    timeout_sec: 5.0
+    insecure: true
   orders:
     identifier_prefix: "AUTOBOT"
   default_risk:

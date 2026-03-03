@@ -1,0 +1,25 @@
+backtest:
+  dataset_name: "candles_v1"
+  parquet_root: "data/parquet"
+  tf: "1m"
+  from_ts_ms: null
+  to_ts_ms: null
+  duration_days: null
+  seed: 0
+
+  universe:
+    mode: "static_start"   # static_start | fixed_list
+    quote: "KRW"
+    top_n: 20
+
+  data:
+    dense_grid: false
+
+  execution:
+    order_timeout_bars: 5
+    reprice_max_attempts: 1
+    reprice_tick_steps: 1
+    rules_ttl_sec: 86400
+
+  output:
+    root: "data/backtest"

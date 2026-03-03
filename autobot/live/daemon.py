@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import json
+import queue
+import threading
 import time
 from typing import Any
 
-from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
+from autobot.upbit.ws import MyAssetEvent, MyOrderEvent, parse_private_event
 
 from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot
 from .state_store import LiveStateStore
@@ -29,6 +32,7 @@ class LiveDaemonSettings:
     default_risk_trailing_enabled: bool = False
     allow_cancel_external_cli: bool = False
     use_private_ws: bool = False
+    use_executor_ws: bool = False
     duration_sec: int | None = None
     max_cycles: int | None = None
 
@@ -84,6 +88,133 @@ def run_live_sync_daemon(
 
     summary["cycles"] = cycles
     summary["ended_ts_ms"] = int(time.time() * 1000)
+    return summary
+
+
+def run_live_sync_daemon_with_executor_events(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    executor_gateway: Any,
+    settings: LiveDaemonSettings,
+) -> dict[str, Any]:
+    started_ts_ms = int(time.time() * 1000)
+    started_monotonic = time.monotonic()
+    cycles = 0
+    executor_events = 0
+    executor_last_event_ts_ms: int | None = None
+    executor_last_event_latency_ms: int | None = None
+    next_poll_monotonic = time.monotonic()
+    poll_interval_sec = max(int(settings.poll_interval_sec), 60)
+    stream_errors: list[str] = []
+
+    summary: dict[str, Any] = {
+        "started_ts_ms": started_ts_ms,
+        "ended_ts_ms": started_ts_ms,
+        "cycles": 0,
+        "executor_events": 0,
+        "executor_last_event_ts_ms": None,
+        "executor_last_event_latency_ms": None,
+        "halted": False,
+        "halted_reasons": [],
+        "last_report": None,
+        "last_cancel_summary": None,
+        "stream_errors": [],
+    }
+
+    if settings.startup_reconcile:
+        cycle_result = _run_sync_cycle(store=store, client=client, settings=settings, ts_ms=int(time.time() * 1000))
+        cycles += 1
+        summary["last_report"] = cycle_result["report"]
+        summary["last_cancel_summary"] = cycle_result["cancel_summary"]
+        if bool(cycle_result["report"].get("halted")):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(cycle_result["report"].get("halted_reasons", []))
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
+        next_poll_monotonic = time.monotonic() + poll_interval_sec
+
+    event_queue: queue.Queue[Any] = queue.Queue()
+    stop_event = threading.Event()
+
+    def _executor_pump() -> None:
+        try:
+            for executor_event in executor_gateway.stream_events():
+                if stop_event.is_set():
+                    break
+                event_queue.put(executor_event)
+        except Exception as exc:  # pragma: no cover - protective runtime path
+            stream_errors.append(str(exc))
+            event_queue.put(
+                {
+                    "event_type": "ERROR",
+                    "ts_ms": int(time.time() * 1000),
+                    "payload": {"message": str(exc)},
+                }
+            )
+
+    executor_thread = threading.Thread(target=_executor_pump, name="executor-event-pump", daemon=True)
+    executor_thread.start()
+    try:
+        while True:
+            if settings.max_cycles is not None and cycles >= settings.max_cycles:
+                break
+            if settings.duration_sec is not None and settings.duration_sec > 0:
+                elapsed = time.monotonic() - started_monotonic
+                if elapsed >= settings.duration_sec:
+                    break
+
+            now_monotonic = time.monotonic()
+            timeout_sec = max(min(next_poll_monotonic - now_monotonic, 1.0), 0.0)
+            try:
+                executor_event = event_queue.get(timeout=timeout_sec)
+            except queue.Empty:
+                executor_event = None
+
+            if executor_event is not None:
+                action = _apply_executor_event(
+                    store=store,
+                    event=executor_event,
+                    bot_id=settings.bot_id,
+                    identifier_prefix=settings.identifier_prefix,
+                    quote_currency=settings.quote_currency,
+                )
+                executor_events += 1
+                event_ts_ms = _event_ts_ms(executor_event)
+                executor_last_event_ts_ms = event_ts_ms
+                executor_last_event_latency_ms = max(int(time.time() * 1000) - int(event_ts_ms), 0)
+                store.set_checkpoint(
+                    name="last_executor_event",
+                    payload={
+                        "action": action,
+                        "event_type": _event_type(executor_event),
+                        "event_ts_ms": executor_last_event_ts_ms,
+                        "latency_ms": executor_last_event_latency_ms,
+                    },
+                    ts_ms=int(time.time() * 1000),
+                )
+
+            if time.monotonic() >= next_poll_monotonic:
+                cycle_result = _run_sync_cycle(store=store, client=client, settings=settings, ts_ms=int(time.time() * 1000))
+                cycles += 1
+                summary["last_report"] = cycle_result["report"]
+                summary["last_cancel_summary"] = cycle_result["cancel_summary"]
+                if bool(cycle_result["report"].get("halted")):
+                    summary["halted"] = True
+                    summary["halted_reasons"] = list(cycle_result["report"].get("halted_reasons", []))
+                    break
+                next_poll_monotonic = time.monotonic() + poll_interval_sec
+    finally:
+        stop_event.set()
+        executor_thread.join(timeout=2.0)
+
+    summary["cycles"] = cycles
+    summary["executor_events"] = executor_events
+    summary["executor_last_event_ts_ms"] = executor_last_event_ts_ms
+    summary["executor_last_event_latency_ms"] = executor_last_event_latency_ms
+    summary["ended_ts_ms"] = int(time.time() * 1000)
+    summary["stream_errors"] = list(stream_errors)
     return summary
 
 
@@ -201,6 +332,147 @@ async def run_live_sync_daemon_with_private_ws(
     summary["ended_ts_ms"] = int(time.time() * 1000)
     summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
     return summary
+
+
+def _apply_executor_event(
+    *,
+    store: LiveStateStore,
+    event: Any,
+    bot_id: str,
+    identifier_prefix: str,
+    quote_currency: str,
+) -> dict[str, Any]:
+    event_type = _event_type(event)
+    payload = _event_payload(event)
+    ts_ms = _event_ts_ms(event)
+    normalized_type = event_type.strip().upper()
+
+    if normalized_type in {"ORDER_UPDATE", "FILL"}:
+        ws_event = _to_private_ws_event(payload=payload, stream_type="myOrder", ts_ms=ts_ms)
+        if isinstance(ws_event, MyOrderEvent):
+            return apply_private_ws_event(
+                store=store,
+                event=ws_event,
+                bot_id=bot_id,
+                identifier_prefix=identifier_prefix,
+                quote_currency=quote_currency,
+            )
+        return {"type": "executor_order_skip", "reason": "invalid_payload", "event_type": normalized_type}
+
+    if normalized_type == "ASSET":
+        ws_event = _to_private_ws_event(payload=payload, stream_type="myAsset", ts_ms=ts_ms)
+        if isinstance(ws_event, MyAssetEvent):
+            return apply_private_ws_event(
+                store=store,
+                event=ws_event,
+                bot_id=bot_id,
+                identifier_prefix=identifier_prefix,
+                quote_currency=quote_currency,
+            )
+        return {"type": "executor_asset_skip", "reason": "invalid_payload"}
+
+    if normalized_type == "HEALTH":
+        return {"type": "executor_health", "payload": payload}
+
+    if normalized_type == "ERROR":
+        return {"type": "executor_error", "payload": payload}
+
+    return {"type": "executor_event_ignored", "event_type": normalized_type}
+
+
+def _event_type(event: Any) -> str:
+    if isinstance(event, dict):
+        return str(event.get("event_type", "EVENT_UNSPECIFIED"))
+    return str(getattr(event, "event_type", "EVENT_UNSPECIFIED"))
+
+
+def _event_ts_ms(event: Any) -> int:
+    if isinstance(event, dict):
+        value = event.get("ts_ms")
+    else:
+        value = getattr(event, "ts_ms", None)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(time.time() * 1000)
+
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    if isinstance(event, dict):
+        payload = event.get("payload")
+        payload_json = event.get("payload_json")
+    else:
+        payload = getattr(event, "payload", None)
+        payload_json = getattr(event, "payload_json", None)
+
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload_json, str) and payload_json.strip():
+        try:
+            parsed = json.loads(payload_json)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _to_private_ws_event(*, payload: dict[str, Any], stream_type: str, ts_ms: int) -> MyOrderEvent | MyAssetEvent | None:
+    message = dict(payload)
+    if "type" not in message and "ty" not in message:
+        message["type"] = stream_type
+    if "timestamp" not in message and "tms" not in message:
+        message["timestamp"] = int(ts_ms)
+
+    parsed = parse_private_event(message)
+    if isinstance(parsed, (MyOrderEvent, MyAssetEvent)):
+        return parsed
+
+    if stream_type == "myOrder":
+        market = _as_optional_str(message.get("market") or message.get("code") or message.get("cd"))
+        return MyOrderEvent(
+            ts_ms=int(ts_ms),
+            uuid=_as_optional_str(message.get("uuid") or message.get("upbit_uuid") or message.get("uid")),
+            identifier=_as_optional_str(message.get("identifier") or message.get("i")),
+            market=market.upper() if market else None,
+            side=_as_optional_str(message.get("side") or message.get("sd")),
+            ord_type=_as_optional_str(message.get("ord_type") or message.get("ot")),
+            state=_as_optional_str(message.get("state") or message.get("status") or message.get("st")),
+            price=_as_optional_float(message.get("price") or message.get("p")),
+            volume=_as_optional_float(message.get("volume") or message.get("v")),
+            executed_volume=_as_optional_float(
+                message.get("executed_volume") or message.get("volume_filled") or message.get("ev")
+            ),
+            stream_type="myOrder",
+            raw=message,
+        )
+
+    currency = _as_optional_str(message.get("currency") or message.get("cy"))
+    return MyAssetEvent(
+        ts_ms=int(ts_ms),
+        currency=currency.upper() if currency else None,
+        balance=_as_optional_float(message.get("balance") or message.get("bl")),
+        locked=_as_optional_float(message.get("locked") or message.get("lk")),
+        avg_buy_price=_as_optional_float(message.get("avg_buy_price") or message.get("abp")),
+        stream_type="myAsset",
+        raw=message,
+    )
+
+
+def _as_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _as_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _run_sync_cycle(

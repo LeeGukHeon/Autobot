@@ -4,7 +4,12 @@ import asyncio
 from pathlib import Path
 
 import autobot.live.daemon as daemon_module
-from autobot.live.daemon import LiveDaemonSettings, run_live_sync_daemon, run_live_sync_daemon_with_private_ws
+from autobot.live.daemon import (
+    LiveDaemonSettings,
+    run_live_sync_daemon,
+    run_live_sync_daemon_with_executor_events,
+    run_live_sync_daemon_with_private_ws,
+)
 from autobot.live.state_store import LiveStateStore
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
@@ -98,6 +103,35 @@ class _FakePrivateWsClient:
             yield event
 
 
+class _FakeExecutorGateway:
+    def stream_events(self):  # noqa: ANN201
+        yield {
+            "event_type": "ORDER_UPDATE",
+            "ts_ms": 1700000000100,
+            "payload": {
+                "uuid": "bot-exec-1",
+                "identifier": "AUTOBOT-autobot-001-intent-exec-1-123-abc",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "state": "wait",
+                "price": "100000000",
+                "volume": "0.01",
+                "executed_volume": "0",
+            },
+        }
+        yield {
+            "event_type": "ASSET",
+            "ts_ms": 1700000000200,
+            "payload": {
+                "currency": "BTC",
+                "balance": "0.01",
+                "locked": "0",
+                "avg_buy_price": "100000000",
+            },
+        }
+
+
 def test_live_daemon_polling_updates_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     db_path = tmp_path / "live_state.db"
@@ -187,3 +221,36 @@ def test_live_daemon_private_ws_updates_state(tmp_path: Path, monkeypatch) -> No
     assert order is not None
     assert position is not None
     assert any(item["name"] == "last_ws_event" for item in checkpoints)
+
+
+def test_live_daemon_executor_events_updates_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        client = _FakePrivateClient()
+        executor_gateway = _FakeExecutorGateway()
+        summary = run_live_sync_daemon_with_executor_events(
+            store=store,
+            client=client,
+            executor_gateway=executor_gateway,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                startup_reconcile=True,
+                duration_sec=1,
+                use_executor_ws=True,
+            ),
+        )
+        order = store.order_by_uuid(uuid="bot-exec-1")
+        position = store.position_by_market(market="KRW-BTC")
+        checkpoints = store.export_state()["checkpoints"]
+
+    assert summary["halted"] is False
+    assert summary["executor_events"] >= 1
+    assert order is not None
+    assert position is not None
+    assert any(item["name"] == "last_executor_event" for item in checkpoints)
