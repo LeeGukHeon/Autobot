@@ -25,6 +25,11 @@ class ExecutionServiceImpl final : public autobot::execution::v1::ExecutionServi
       const autobot::execution::v1::CancelRequest* request,
       autobot::execution::v1::SubmitResult* response) override;
 
+  grpc::Status ReplaceOrder(
+      grpc::ServerContext* context,
+      const autobot::execution::v1::ReplaceRequest* request,
+      autobot::execution::v1::ReplaceResult* response) override;
+
   grpc::Status StreamEvents(
       grpc::ServerContext* context,
       const autobot::execution::v1::HealthRequest* request,

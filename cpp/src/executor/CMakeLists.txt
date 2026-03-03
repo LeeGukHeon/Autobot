@@ -47,11 +47,18 @@ add_executable(autobot_executor
   grpc_server.cpp
   upbit_rest.cpp
   order_manager.cpp
+  state/executor_state_store.cpp
   upbit/auth_jwt.cpp
+  upbit/number_string.cpp
   upbit/querystring.cpp
+  upbit/recovery_policy.cpp
+  upbit/request_builder.cpp
   upbit/remaining_req.cpp
   upbit/rate_limiter.cpp
   upbit/http_client.cpp
+  upbit/ws_keepalive_scheduler.cpp
+  upbit/ws_private_client.cpp
+  upbit/ws_private_parsers.cpp
   upbit/upbit_private.cpp
 )
 
@@ -66,3 +73,62 @@ target_link_libraries(autobot_executor
 if(WIN32)
   target_link_libraries(autobot_executor PRIVATE winhttp)
 endif()
+
+add_executable(autobot_executor_unit_tests
+  tests/executor_unit_tests.cpp
+  upbit_rest.cpp
+  state/executor_state_store.cpp
+  upbit/auth_jwt.cpp
+  upbit/number_string.cpp
+  upbit/recovery_policy.cpp
+  upbit/request_builder.cpp
+  upbit/remaining_req.cpp
+  upbit/rate_limiter.cpp
+  upbit/http_client.cpp
+  upbit/ws_private_parsers.cpp
+  upbit/upbit_private.cpp
+)
+target_include_directories(autobot_executor_unit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(autobot_executor_unit_tests
+  PRIVATE
+    OpenSSL::Crypto
+    nlohmann_json::nlohmann_json
+)
+if(WIN32)
+  target_link_libraries(autobot_executor_unit_tests PRIVATE winhttp)
+endif()
+
+add_executable(autobot_executor_ws_private_parsers_tests
+  tests/ws_private_parsers_tests.cpp
+  upbit/number_string.cpp
+  upbit/ws_private_parsers.cpp
+)
+target_include_directories(autobot_executor_ws_private_parsers_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(autobot_executor_ws_private_parsers_tests
+  PRIVATE
+    nlohmann_json::nlohmann_json
+)
+
+add_executable(autobot_executor_ws_keepalive_scheduler_tests
+  tests/ws_keepalive_scheduler_tests.cpp
+  upbit/ws_keepalive_scheduler.cpp
+)
+target_include_directories(autobot_executor_ws_keepalive_scheduler_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(autobot_executor_ws_keepalive_scheduler_tests
+  PRIVATE
+    nlohmann_json::nlohmann_json
+)
+
+enable_testing()
+add_test(
+  NAME autobot_executor_unit_tests
+  COMMAND $<TARGET_FILE:autobot_executor_unit_tests>
+)
+add_test(
+  NAME autobot_executor_ws_private_parsers_tests
+  COMMAND $<TARGET_FILE:autobot_executor_ws_private_parsers_tests>
+)
+add_test(
+  NAME autobot_executor_ws_keepalive_scheduler_tests
+  COMMAND $<TARGET_FILE:autobot_executor_ws_keepalive_scheduler_tests>
+)

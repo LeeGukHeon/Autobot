@@ -58,6 +58,29 @@ grpc::Status ExecutionServiceImpl::Cancel(
   return grpc::Status::OK;
 }
 
+grpc::Status ExecutionServiceImpl::ReplaceOrder(
+    grpc::ServerContext* context,
+    const autobot::execution::v1::ReplaceRequest* request,
+    autobot::execution::v1::ReplaceResult* response) {
+  (void)context;
+  ManagedReplaceRequest replace_request;
+  replace_request.intent_id = request->intent_id();
+  replace_request.prev_order_uuid = request->prev_order_uuid();
+  replace_request.prev_order_identifier = request->prev_order_identifier();
+  replace_request.new_identifier = request->new_identifier();
+  replace_request.new_price_str = request->new_price_str();
+  replace_request.new_volume_str = request->new_volume_str();
+  replace_request.new_time_in_force = request->new_time_in_force();
+
+  const ManagedReplaceResult result = order_manager_->ReplaceOrder(replace_request);
+  response->set_accepted(result.accepted);
+  response->set_reason(result.reason);
+  response->set_cancelled_order_uuid(result.cancelled_order_uuid);
+  response->set_new_order_uuid(result.new_order_uuid);
+  response->set_new_identifier(result.new_identifier);
+  return grpc::Status::OK;
+}
+
 grpc::Status ExecutionServiceImpl::StreamEvents(
     grpc::ServerContext* context,
     const autobot::execution::v1::HealthRequest* request,

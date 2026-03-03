@@ -55,6 +55,24 @@ message CancelRequest {
   string identifier = 2;
 }
 
+message ReplaceRequest {
+  string intent_id = 1;
+  string prev_order_uuid = 2;
+  string prev_order_identifier = 3;
+  string new_identifier = 4;
+  string new_price_str = 5;
+  string new_volume_str = 6;
+  string new_time_in_force = 7;
+}
+
+message ReplaceResult {
+  bool accepted = 1;
+  string reason = 2;
+  string cancelled_order_uuid = 3;
+  string new_order_uuid = 4;
+  string new_identifier = 5;
+}
+
 message Event {
   EventType event_type = 1;
   int64 ts_ms = 2;
@@ -72,6 +90,7 @@ message HealthResponse {
 service ExecutionService {
   rpc SubmitIntent(OrderIntent) returns (SubmitResult);
   rpc Cancel(CancelRequest) returns (SubmitResult);
+  rpc ReplaceOrder(ReplaceRequest) returns (ReplaceResult);
   rpc StreamEvents(HealthRequest) returns (stream Event);
   rpc GetSnapshot(HealthRequest) returns (Event);
   rpc Health(HealthRequest) returns (HealthResponse);

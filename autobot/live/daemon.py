@@ -36,6 +36,10 @@ class LiveDaemonSettings:
     duration_sec: int | None = None
     max_cycles: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.use_private_ws and self.use_executor_ws:
+            raise ValueError("use_private_ws and use_executor_ws cannot both be true")
+
 
 def run_live_sync_daemon(
     *,
@@ -346,8 +350,33 @@ def _apply_executor_event(
     payload = _event_payload(event)
     ts_ms = _event_ts_ms(event)
     normalized_type = event_type.strip().upper()
+    event_name = str(payload.get("event_name", "")).strip().upper()
 
-    if normalized_type in {"ORDER_UPDATE", "FILL"}:
+    if event_name == "ORDER_TIMEOUT":
+        return {"type": "executor_order_timeout", "payload": payload}
+    if event_name == "ORDER_REPLACED":
+        if hasattr(store, "set_checkpoint"):
+            try:
+                store.set_checkpoint(
+                    name="last_replace_chain",
+                    payload={
+                        "prev_uuid": payload.get("prev_uuid"),
+                        "prev_identifier": payload.get("prev_identifier"),
+                        "new_uuid": payload.get("new_uuid"),
+                        "new_identifier": payload.get("new_identifier"),
+                    },
+                    ts_ms=ts_ms,
+                )
+            except Exception:
+                pass
+        return {"type": "executor_order_replaced", "payload": payload}
+
+    if normalized_type in {"ORDER_UPDATE", "FILL"} or event_name in {
+        "ORDER_ACCEPTED",
+        "ORDER_STATE",
+        "CANCEL_RESULT",
+        "FILL",
+    }:
         ws_event = _to_private_ws_event(payload=payload, stream_type="myOrder", ts_ms=ts_ms)
         if isinstance(ws_event, MyOrderEvent):
             return apply_private_ws_event(

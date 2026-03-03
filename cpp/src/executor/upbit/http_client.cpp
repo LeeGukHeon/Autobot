@@ -129,15 +129,13 @@ UpbitHttpClient::UpbitHttpClient(HttpClientOptions options)
 HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
   HttpResponse response;
   const std::string method_upper = ToUpper(request.method);
-  const std::string auth_query = BuildQueryForAuth(request);
-  const int attempts = std::max(options_.max_attempts, 1);
+  const int attempts = request.allow_retry ? std::max(options_.max_attempts, 1) : 1;
 
   for (int attempt = 1; attempt <= attempts; ++attempt) {
     limiter_.Acquire(request.rate_limit_group);
 
-    std::unordered_map<std::string, std::string> headers = {
-        {"Accept", "application/json"},
-    };
+    std::unordered_map<std::string, std::string> headers = request.headers;
+    headers["Accept"] = "application/json";
     if (request.auth) {
       if (!signer_.has_value()) {
         response.ok = false;
@@ -147,16 +145,16 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
         response.error_message = "Upbit private API requires access/secret key";
         return response;
       }
-      headers["Authorization"] = signer_->BuildAuthorizationHeader(auth_query);
+      headers["Authorization"] = signer_->BuildAuthorizationHeader(request.auth_query);
     }
-    std::string body_json;
-    if (request.has_json_body) {
-      body_json = request.json_body.dump();
-      headers["Content-Type"] = "application/json; charset=utf-8";
+    if (!request.body_json.empty()) {
+      if (headers.find("Content-Type") == headers.end()) {
+        headers["Content-Type"] = "application/json; charset=utf-8";
+      }
     }
 
     const RawResponse raw =
-        PerformRequest(method_upper, request.endpoint, request.params, headers, body_json);
+        PerformRequest(method_upper, request.endpoint, request.url_query, headers, request.body_json);
     if (!raw.network_ok) {
       if (attempt < attempts) {
         SleepBackoff(attempt, options_.base_backoff_ms, options_.max_backoff_ms);
@@ -179,6 +177,9 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
     }
     response.remaining_req = ParseRemainingReqHeader(CanonicalHeaderLookup(raw.headers, "remaining-req"));
     limiter_.ObserveRemainingReq(response.remaining_req);
+    if (!response.remaining_req.valid) {
+      limiter_.ObserveMissingRemainingReq(request.rate_limit_group);
+    }
 
     if (!raw.body.empty()) {
       try {
@@ -208,6 +209,7 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
       response.category = "rate_limit";
       response.retriable = true;
       response.cooldown_sec = cooldown;
+      response.breaker_state = "group";
       if (attempt < attempts) {
         continue;
       }
@@ -220,6 +222,7 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
       response.retriable = true;
       response.banned = true;
       response.cooldown_sec = applied;
+      response.breaker_state = "global";
       return response;
     }
 
@@ -239,17 +242,6 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
   response.error_name = "request_failed";
   response.error_message = "Upbit request failed after retries";
   return response;
-}
-
-std::string UpbitHttpClient::BuildQueryForAuth(const HttpRequest& request) {
-  const std::string method_upper = ToUpper(request.method);
-  if (!request.auth_query_params.empty()) {
-    return BuildQueryString(request.auth_query_params);
-  }
-  if (method_upper == "GET" || method_upper == "DELETE") {
-    return BuildQueryString(request.params);
-  }
-  return "";
 }
 
 std::string UpbitHttpClient::ToUpper(std::string value) {
@@ -422,7 +414,7 @@ void UpbitHttpClient::SleepBackoff(int attempt, int base_ms, int max_ms) {
 UpbitHttpClient::RawResponse UpbitHttpClient::PerformRequest(
     const std::string& method_upper,
     const std::string& endpoint,
-    const std::vector<QueryParam>& params,
+    const std::string& encoded_query,
     const std::unordered_map<std::string, std::string>& headers,
     const std::string& body_json) const {
   RawResponse raw;
@@ -437,9 +429,8 @@ UpbitHttpClient::RawResponse UpbitHttpClient::PerformRequest(
     normalized_endpoint = "/" + normalized_endpoint;
   }
   std::string path = base_url_.base_path + normalized_endpoint;
-  const std::string query = BuildQueryString(params);
-  if (!query.empty()) {
-    path += "?" + query;
+  if (!encoded_query.empty()) {
+    path += "?" + encoded_query;
   }
 
   HINTERNET h_session = WinHttpOpen(
@@ -581,7 +572,7 @@ UpbitHttpClient::RawResponse UpbitHttpClient::PerformRequest(
 #else
   (void)method_upper;
   (void)endpoint;
-  (void)params;
+  (void)encoded_query;
   (void)headers;
   (void)body_json;
   raw.network_ok = false;

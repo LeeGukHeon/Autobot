@@ -21,6 +21,15 @@ class ExecutorSubmitResult:
 
 
 @dataclass(frozen=True)
+class ExecutorReplaceResult:
+    accepted: bool
+    reason: str
+    cancelled_order_uuid: str | None
+    new_order_uuid: str | None
+    new_identifier: str | None
+
+
+@dataclass(frozen=True)
 class ExecutorEvent:
     event_type: str
     ts_ms: int
@@ -158,6 +167,53 @@ class GrpcExecutionGateway:
             upbit_uuid=_as_optional_str(getattr(response, "upbit_uuid", "")),
             identifier=_as_optional_str(getattr(response, "identifier", "")),
             intent_id=_as_optional_str(getattr(response, "intent_id", "")),
+        )
+
+    def replace_order(
+        self,
+        *,
+        intent_id: str,
+        prev_order_uuid: str | None = None,
+        prev_order_identifier: str | None = None,
+        new_identifier: str,
+        new_price_str: str,
+        new_volume_str: str,
+        new_time_in_force: str | None = None,
+    ) -> ExecutorReplaceResult:
+        prev_uuid_value = _as_optional_str(prev_order_uuid)
+        prev_identifier_value = _as_optional_str(prev_order_identifier)
+        if prev_uuid_value is None and prev_identifier_value is None:
+            raise ValueError("prev_order_uuid or prev_order_identifier is required")
+
+        new_identifier_value = str(new_identifier).strip()
+        new_price_value = str(new_price_str).strip()
+        new_volume_value = str(new_volume_str).strip()
+        if not new_identifier_value:
+            raise ValueError("new_identifier is required")
+        if not new_price_value:
+            raise ValueError("new_price_str is required")
+        if not new_volume_value:
+            raise ValueError("new_volume_str is required")
+
+        request = self._pb2.ReplaceRequest(
+            intent_id=str(intent_id).strip(),
+            prev_order_uuid=prev_uuid_value or "",
+            prev_order_identifier=prev_identifier_value or "",
+            new_identifier=new_identifier_value,
+            new_price_str=new_price_value,
+            new_volume_str=new_volume_value,
+            new_time_in_force=str(new_time_in_force or "").strip().lower(),
+        )
+        try:
+            response = self._stub.ReplaceOrder(request, timeout=self._timeout_sec)
+        except self._grpc.RpcError as exc:
+            raise RuntimeError(_rpc_error_message("ReplaceOrder", exc)) from exc
+        return ExecutorReplaceResult(
+            accepted=bool(getattr(response, "accepted", False)),
+            reason=str(getattr(response, "reason", "")),
+            cancelled_order_uuid=_as_optional_str(getattr(response, "cancelled_order_uuid", "")),
+            new_order_uuid=_as_optional_str(getattr(response, "new_order_uuid", "")),
+            new_identifier=_as_optional_str(getattr(response, "new_identifier", "")),
         )
 
     def get_snapshot(self) -> ExecutorEvent:

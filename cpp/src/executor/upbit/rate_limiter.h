@@ -17,6 +17,7 @@ class UpbitRateLimiter {
 
   void Acquire(const std::string& group);
   void ObserveRemainingReq(const RemainingReqInfo& info);
+  void ObserveMissingRemainingReq(const std::string& group);
   double Register429(const std::string& group, int attempt);
   double Register418(const std::string& group, int cooldown_sec);
 
@@ -27,7 +28,10 @@ class UpbitRateLimiter {
     double tokens = 10.0;
     double last_refill_at = 0.0;
     double cooldown_until = 0.0;
+    double conservative_until = 0.0;
     int last_remaining_sec = -1;
+    int consecutive_429 = 0;
+    int missing_remaining_headers = 0;
   };
 
   static double MonotonicSeconds();

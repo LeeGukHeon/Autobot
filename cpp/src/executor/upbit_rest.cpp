@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
+#include <cmath>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
-#include <nlohmann/json.hpp>
+#include "upbit/number_string.h"
+#include "upbit/recovery_policy.h"
 
 namespace autobot::executor {
 
@@ -25,6 +28,13 @@ std::string Trim(std::string value) {
 std::string ToUpper(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::toupper(ch));
+  });
+  return value;
+}
+
+std::string ToLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
   });
   return value;
 }
@@ -49,6 +59,78 @@ std::string EnvRequired(const char* key) {
   return Trim(raw);
 }
 
+std::int64_t NowMs() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+double ParsePositiveDoubleEnv(const char* key, double fallback) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr) {
+    return fallback;
+  }
+  try {
+    return std::max(std::stod(Trim(raw)), 0.0);
+  } catch (...) {
+    return fallback;
+  }
+}
+
+std::unordered_set<std::string> ParseCsvUpperSet(const std::string& raw) {
+  std::unordered_set<std::string> out;
+  std::stringstream stream(raw);
+  std::string token;
+  while (std::getline(stream, token, ',')) {
+    token = ToUpper(Trim(token));
+    if (!token.empty()) {
+      out.insert(token);
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> ParseCsvUpperVector(const std::string& raw) {
+  std::vector<std::string> out;
+  std::unordered_set<std::string> seen;
+  std::stringstream stream(raw);
+  std::string token;
+  while (std::getline(stream, token, ',')) {
+    token = ToUpper(Trim(token));
+    if (token.empty()) {
+      continue;
+    }
+    if (seen.insert(token).second) {
+      out.push_back(std::move(token));
+    }
+  }
+  return out;
+}
+
+bool ParseBoolEnv(const char* key, bool fallback) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr) {
+    return fallback;
+  }
+  const std::string value = ToLower(Trim(raw));
+  if (value.empty()) {
+    return fallback;
+  }
+  if (value == "1" || value == "true" || value == "yes" || value == "y" || value == "on") {
+    return true;
+  }
+  if (value == "0" || value == "false" || value == "no" || value == "n" || value == "off") {
+    return false;
+  }
+  return fallback;
+}
+
+bool StartsWith(std::string_view text, std::string_view prefix) {
+  if (text.size() < prefix.size()) {
+    return false;
+  }
+  return text.compare(0, prefix.size(), prefix) == 0;
+}
+
 std::string BuildErrorReason(const upbit::HttpResponse& response, const std::string& fallback) {
   if (!response.error_message.empty()) {
     return response.error_message;
@@ -62,9 +144,84 @@ std::string BuildErrorReason(const upbit::HttpResponse& response, const std::str
   return fallback;
 }
 
+void ApplyRemainingReqToSubmitResult(UpbitSubmitResult* result, const upbit::HttpResponse& response) {
+  if (result == nullptr) {
+    return;
+  }
+  if (response.remaining_req.valid) {
+    result->remaining_req_group = response.remaining_req.group;
+    result->remaining_req_sec = response.remaining_req.sec;
+  } else {
+    result->remaining_req_group = "default";
+    result->remaining_req_sec = -1;
+  }
+}
+
+void ApplyRemainingReqToCancelResult(UpbitCancelResult* result, const upbit::HttpResponse& response) {
+  if (result == nullptr) {
+    return;
+  }
+  if (response.remaining_req.valid) {
+    result->remaining_req_group = response.remaining_req.group;
+    result->remaining_req_sec = response.remaining_req.sec;
+  } else {
+    result->remaining_req_group = "default";
+    result->remaining_req_sec = -1;
+  }
+}
+
+void ApplyHttpMetaToRecord(state::IdentifierStateRecord* record, const upbit::HttpResponse& response) {
+  if (record == nullptr) {
+    return;
+  }
+  record->last_http_status = response.status_code;
+  record->last_error_name = response.error_name;
+  if (response.remaining_req.valid) {
+    record->last_remaining_req_group = response.remaining_req.group;
+    record->last_remaining_req_sec = response.remaining_req.sec;
+  } else {
+    record->last_remaining_req_group.clear();
+    record->last_remaining_req_sec = -1;
+  }
+  record->updated_at_ms = NowMs();
+}
+
+state::IdentifierStateRecord BuildStateRecord(
+    const std::string& identifier,
+    const std::string& intent_id,
+    const std::string& mode,
+    const std::string& status) {
+  state::IdentifierStateRecord record;
+  record.identifier = identifier;
+  record.intent_id = intent_id;
+  record.mode = mode;
+  record.status = status;
+  const std::int64_t now = NowMs();
+  record.created_at_ms = now;
+  record.updated_at_ms = now;
+  record.last_remaining_req_sec = -1;
+  return record;
+}
+
+bool IsPositiveNumberString(const std::string& raw) {
+  const std::string value = Trim(raw);
+  if (value.empty()) {
+    return false;
+  }
+  try {
+    const double parsed = std::stod(value);
+    return std::isfinite(parsed) && parsed > 0.0;
+  } catch (...) {
+    return false;
+  }
+}
+
 }  // namespace
 
-UpbitRestClient::UpbitRestClient(bool order_test_mode) : order_test_mode_(order_test_mode) {
+UpbitRestClient::UpbitRestClient(bool order_test_mode)
+    : order_test_mode_(order_test_mode),
+      mode_name_(order_test_mode ? "order_test" : "live"),
+      state_store_(ResolveStateFilePath()) {
   if (!order_test_mode_) {
     const std::string live_gate = EnvOrDefault("AUTOBOT_LIVE_ENABLE", "");
     if (live_gate != "YES") {
@@ -95,181 +252,282 @@ UpbitRestClient::UpbitRestClient(bool order_test_mode) : order_test_mode_(order_
     throw std::runtime_error("live mode requires UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY");
   }
 
+  live_allowed_markets_ = ParseCsvUpperSet(EnvOrDefault("AUTOBOT_LIVE_ALLOWED_MARKETS", ""));
+  live_min_notional_krw_ = ParsePositiveDoubleEnv("AUTOBOT_LIVE_MIN_NOTIONAL_KRW", 0.0);
+  private_ws_enabled_ =
+      !order_test_mode_ && ParseBoolEnv("AUTOBOT_EXECUTOR_PRIVATE_WS_ENABLED", true);
+  private_ws_url_ =
+      EnvOrDefault("AUTOBOT_UPBIT_PRIVATE_WS_URL", "wss://api.upbit.com/websocket/v1/private");
+  private_ws_order_codes_ =
+      ParseCsvUpperVector(EnvOrDefault("AUTOBOT_EXECUTOR_PRIVATE_WS_ORDER_CODES", ""));
+  if (private_ws_order_codes_.empty() && !live_allowed_markets_.empty()) {
+    private_ws_order_codes_.reserve(live_allowed_markets_.size());
+    for (const auto& market : live_allowed_markets_) {
+      private_ws_order_codes_.push_back(market);
+    }
+    std::sort(private_ws_order_codes_.begin(), private_ws_order_codes_.end());
+  }
+  if (!options.access_key.empty() && !options.secret_key.empty()) {
+    private_ws_signer_.emplace(options.access_key, options.secret_key);
+  }
+
   http_client_ = std::make_unique<upbit::UpbitHttpClient>(options);
   private_client_ = std::make_unique<upbit::UpbitPrivateClient>(http_client_.get());
-  state_file_path_ = ResolveStateFilePath();
-  LoadState();
+  state_store_.Load();
 }
 
 bool UpbitRestClient::IsOrderTestMode() const {
   return order_test_mode_;
 }
 
+const std::string& UpbitRestClient::ModeName() const {
+  return mode_name_;
+}
+
+bool UpbitRestClient::PrivateWsEnabled() const {
+  return private_ws_enabled_ && !order_test_mode_ && private_ws_signer_.has_value();
+}
+
+const std::string& UpbitRestClient::PrivateWsUrl() const {
+  return private_ws_url_;
+}
+
+std::vector<std::string> UpbitRestClient::PrivateWsOrderCodes() const {
+  return private_ws_order_codes_;
+}
+
+std::string UpbitRestClient::PrivateWsAuthorizationHeader() const {
+  if (!private_ws_signer_.has_value()) {
+    return "";
+  }
+  return private_ws_signer_->BuildAuthorizationHeader("");
+}
+
 UpbitSubmitResult UpbitRestClient::SubmitLimitOrder(const UpbitSubmitRequest& request) {
+  UpbitSubmitResult result;
+  result.identifier = request.identifier;
+
   if (request.identifier.empty()) {
-    UpbitSubmitResult rejected;
-    rejected.accepted = false;
-    rejected.reason = "identifier is required";
-    return rejected;
+    result.reason = "identifier is required";
+    return result;
   }
   if (request.market.empty()) {
-    UpbitSubmitResult rejected;
-    rejected.accepted = false;
-    rejected.reason = "market is required";
-    return rejected;
+    result.reason = "market is required";
+    return result;
   }
   if (request.side != "bid" && request.side != "ask") {
-    UpbitSubmitResult rejected;
-    rejected.accepted = false;
-    rejected.reason = "side must be bid or ask";
-    return rejected;
+    result.reason = "side must be bid or ask";
+    return result;
   }
   if (request.price <= 0.0 || request.volume <= 0.0) {
-    UpbitSubmitResult rejected;
-    rejected.accepted = false;
-    rejected.reason = "price and volume must be positive";
-    return rejected;
+    result.reason = "price and volume must be positive";
+    return result;
   }
+
+  const std::string market = ToUpper(request.market);
+  if (!order_test_mode_) {
+    if (!IsLiveMarketAllowed(market)) {
+      result.reason = "market is not allowed in live mode";
+      return result;
+    }
+    if (live_min_notional_krw_ > 0.0 && StartsWith(market, "KRW-")) {
+      const double notional = request.price * request.volume;
+      if (notional < live_min_notional_krw_) {
+        result.reason = "live order notional below AUTOBOT_LIVE_MIN_NOTIONAL_KRW";
+        return result;
+      }
+    }
+  }
+
+  const std::string identifier = request.identifier;
+  if (!order_test_mode_) {
+    const auto existing = state_store_.Find(identifier);
+    if (existing.has_value()) {
+      const UpbitOrderResult recovered = GetOrder("", identifier);
+      if (recovered.ok && recovered.found && !recovered.upbit_uuid.empty()) {
+        state::IdentifierStateRecord confirmed = *existing;
+        confirmed.status = "CONFIRMED";
+        confirmed.upbit_uuid = recovered.upbit_uuid;
+        confirmed.updated_at_ms = NowMs();
+        state_store_.Upsert(confirmed);
+
+        result.accepted = true;
+        result.reason = "accepted_existing_identifier";
+        result.upbit_uuid = recovered.upbit_uuid;
+        result.identifier = identifier;
+        result.state = recovered.state.empty() ? "wait" : recovered.state;
+        result.remaining_req_group = recovered.remaining_req_group;
+        result.remaining_req_sec = recovered.remaining_req_sec;
+        return result;
+      }
+      result.accepted = false;
+      result.reason = "identifier_reuse_forbidden_new_identifier_required";
+      result.retriable = false;
+      return result;
+    }
+  }
+
+  const std::string price_str = upbit::FormatPriceString(request.price, 0.0, 16);
+  const std::string volume_str = upbit::FormatVolumeString(request.volume, 16);
 
   upbit::OrderCreateRequest create;
-  create.market = ToUpper(request.market);
-  create.side = request.side;
+  create.market = market;
+  create.side = ToLower(request.side);
   create.ord_type = "limit";
-  create.price = FormatNumber(request.price);
-  create.volume = FormatNumber(request.volume);
-  create.time_in_force = request.tif;
-  create.identifier = request.identifier;
+  create.price = price_str;
+  create.volume = volume_str;
+  create.time_in_force = ToLower(request.tif);
+  create.identifier = identifier;
+
+  state::IdentifierStateRecord record = BuildStateRecord(identifier, request.intent_id, mode_name_, "NEW");
+  state_store_.Upsert(record);
+  record.status = "POST_SENT";
+  record.updated_at_ms = NowMs();
+  state_store_.Upsert(record);
+
+  const upbit::HttpResponse response = private_client_->CreateOrder(create, order_test_mode_);
+  result.http_status = response.status_code;
+  result.error_name = response.error_name;
+  result.breaker_state = response.breaker_state;
+  ApplyRemainingReqToSubmitResult(&result, response);
+  ApplyHttpMetaToRecord(&record, response);
 
   if (order_test_mode_) {
-    const upbit::HttpResponse response = private_client_->CreateOrder(create, true);
     if (!response.ok) {
-      UpbitSubmitResult rejected;
-      rejected.accepted = false;
-      rejected.reason = "order_test_failed: " + BuildErrorReason(response, "order_test_failed");
-      rejected.retriable = response.retriable;
-      rejected.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-      rejected.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
-      return rejected;
+      record.status = "FAILED";
+      state_store_.Upsert(record);
+      result.accepted = false;
+      result.reason = "order_test_failed: " + BuildErrorReason(response, "order_test_failed");
+      result.retriable = false;
+      return result;
     }
-
-    UpbitSubmitResult result;
     result.accepted = true;
     result.reason = "accepted_in_order_test_mode";
+    result.identifier = identifier;
+    result.upbit_uuid.clear();
+    result.state = "wait";
+    record.status = "CONFIRMED";
+    record.upbit_uuid.clear();
+    state_store_.Upsert(record);
+    return result;
+  }
+
+  const upbit::RecoveryDecision decision = upbit::DecideCreateOrderRecovery(response);
+  if (decision.action == upbit::RecoveryAction::kSuccess) {
+    result.accepted = true;
+    result.reason = "accepted";
     result.upbit_uuid = ParseJsonString(response.json_body, "uuid");
-    if (result.upbit_uuid.empty()) {
-      result.upbit_uuid = BuildMockUuid(request.identifier);
+    result.identifier = ParseJsonString(response.json_body, "identifier");
+    if (result.identifier.empty()) {
+      result.identifier = identifier;
     }
-    result.identifier = request.identifier;
-    result.state = "wait";
-    result.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-    result.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
+    result.state = ParseJsonString(response.json_body, "state");
+    if (result.state.empty()) {
+      result.state = "wait";
+    }
+
+    record.status = "CONFIRMED";
+    record.upbit_uuid = result.upbit_uuid;
+    state_store_.Upsert(record);
     return result;
   }
 
-  const std::string cached_uuid = ResolveMappedUuid(request.identifier);
-  if (!cached_uuid.empty()) {
-    UpbitSubmitResult result;
-    result.accepted = true;
-    result.reason = "accepted_existing_identifier";
-    result.upbit_uuid = cached_uuid;
-    result.identifier = request.identifier;
-    result.state = "wait";
+  if (decision.action == upbit::RecoveryAction::kRecoverByGetIdentifier) {
+    const UpbitOrderResult recovered = GetOrder("", identifier);
+    if (recovered.ok && recovered.found && !recovered.upbit_uuid.empty()) {
+      result.accepted = true;
+      result.recovered_by_get = true;
+      result.reason = "accepted_recovered_by_identifier_lookup";
+      result.identifier = identifier;
+      result.upbit_uuid = recovered.upbit_uuid;
+      result.state = recovered.state.empty() ? "wait" : recovered.state;
+      result.remaining_req_group = recovered.remaining_req_group;
+      result.remaining_req_sec = recovered.remaining_req_sec;
+
+      record.status = "CONFIRMED";
+      record.upbit_uuid = recovered.upbit_uuid;
+      state_store_.Upsert(record);
+      return result;
+    }
+    if (recovered.ok && !recovered.found) {
+      result.accepted = false;
+      result.retriable = false;
+      result.reason = "submit_unknown_lookup_not_found_new_identifier_required";
+      record.status = "FAILED";
+      state_store_.Upsert(record);
+      return result;
+    }
+
+    result.accepted = false;
+    result.retriable = false;
+    result.reason = "submit_unknown_lookup_failed_operator_intervention_required";
+    result.operator_intervention_required = true;
+    record.status = "UNKNOWN";
+    record.last_error_name = recovered.reason;
+    state_store_.Upsert(record);
     return result;
   }
 
-  const UpbitOrderResult existing = GetOrder("", request.identifier);
-  if (existing.ok && existing.found && !existing.upbit_uuid.empty()) {
-    UpsertIdentifierMapping(request.identifier, existing.upbit_uuid);
-    UpbitSubmitResult result;
-    result.accepted = true;
-    result.reason = "accepted_existing_identifier";
-    result.upbit_uuid = existing.upbit_uuid;
-    result.identifier = request.identifier;
-    result.state = existing.state.empty() ? "wait" : existing.state;
-    result.remaining_req_group = existing.remaining_req_group;
-    result.remaining_req_sec = existing.remaining_req_sec;
-    return result;
-  }
-  if (!existing.ok && existing.reason != "not_found") {
-    UpbitSubmitResult rejected;
-    rejected.accepted = false;
-    rejected.reason = "identifier_lookup_failed: " + existing.reason;
-    rejected.retriable = existing.retriable;
-    rejected.remaining_req_group = existing.remaining_req_group;
-    rejected.remaining_req_sec = existing.remaining_req_sec;
-    return rejected;
-  }
-
-  const upbit::HttpResponse response = private_client_->CreateOrder(create, false);
-  if (!response.ok) {
-    UpbitSubmitResult rejected;
-    rejected.accepted = false;
-    rejected.reason = BuildErrorReason(response, "submit_failed");
-    rejected.retriable = response.retriable;
-    rejected.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-    rejected.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
-    return rejected;
-  }
-
-  UpbitSubmitResult result;
-  result.accepted = true;
-  result.reason = "accepted";
-  result.upbit_uuid = ParseJsonString(response.json_body, "uuid");
-  result.identifier = ParseJsonString(response.json_body, "identifier");
-  if (result.identifier.empty()) {
-    result.identifier = request.identifier;
-  }
-  result.state = ParseJsonString(response.json_body, "state");
-  if (result.state.empty()) {
-    result.state = "wait";
-  }
-  result.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-  result.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
-  if (!result.identifier.empty() && !result.upbit_uuid.empty()) {
-    UpsertIdentifierMapping(result.identifier, result.upbit_uuid);
-  }
+  result.accepted = false;
+  result.reason = BuildErrorReason(response, decision.reason);
+  result.retriable = false;
+  result.operator_intervention_required = decision.operator_intervention_required;
+  record.status = "FAILED";
+  state_store_.Upsert(record);
   return result;
 }
 
 UpbitCancelResult UpbitRestClient::CancelOrder(const UpbitCancelRequest& request) {
-  if (request.upbit_uuid.empty() && request.identifier.empty()) {
-    UpbitCancelResult rejected;
-    rejected.accepted = false;
-    rejected.reason = "upbit_uuid or identifier is required";
-    return rejected;
-  }
+  UpbitCancelResult result;
 
-  const std::string resolved_identifier = request.identifier;
   std::string resolved_uuid = request.upbit_uuid;
-  if (resolved_uuid.empty() && !request.identifier.empty()) {
-    resolved_uuid = ResolveMappedUuid(request.identifier);
+  std::string resolved_identifier = request.identifier;
+  if (resolved_uuid.empty() && !resolved_identifier.empty()) {
+    const auto existing = state_store_.Find(resolved_identifier);
+    if (existing.has_value() && !existing->upbit_uuid.empty()) {
+      resolved_uuid = existing->upbit_uuid;
+    }
   }
 
-  if (order_test_mode_) {
-    UpbitCancelResult result;
-    result.accepted = true;
-    result.reason = "cancelled_in_order_test_mode";
-    result.upbit_uuid = resolved_uuid.empty() ? BuildMockUuid(request.identifier) : resolved_uuid;
-    result.identifier = resolved_identifier;
-    result.state = "cancel";
+  if (resolved_uuid.empty() && resolved_identifier.empty()) {
+    result.accepted = false;
+    result.reason = "upbit_uuid or identifier is required";
     return result;
   }
 
-  const upbit::HttpResponse response = private_client_->CancelOrder(resolved_uuid, request.identifier);
-  if (!response.ok) {
-    UpbitCancelResult rejected;
-    rejected.accepted = false;
-    rejected.reason = BuildErrorReason(response, "cancel_failed");
-    rejected.upbit_uuid = resolved_uuid;
-    rejected.identifier = resolved_identifier;
-    rejected.retriable = response.retriable;
-    rejected.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-    rejected.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
-    rejected.state = "cancel_reject";
-    return rejected;
+  if (order_test_mode_) {
+    result.accepted = true;
+    result.reason = "cancelled_local_ack_order_test_mode";
+    result.upbit_uuid = resolved_uuid;
+    result.identifier = resolved_identifier;
+    result.state = "cancel";
+
+    if (!resolved_identifier.empty()) {
+      auto record = state_store_.Find(resolved_identifier).value_or(
+          BuildStateRecord(resolved_identifier, "", mode_name_, "CANCELED"));
+      record.status = "CANCELED";
+      record.updated_at_ms = NowMs();
+      state_store_.Upsert(record);
+    }
+    return result;
   }
 
-  UpbitCancelResult result;
+  const upbit::HttpResponse response = private_client_->CancelOrder(resolved_uuid, resolved_identifier);
+  result.http_status = response.status_code;
+  result.error_name = response.error_name;
+  result.breaker_state = response.breaker_state;
+  ApplyRemainingReqToCancelResult(&result, response);
+
+  if (!response.ok) {
+    result.accepted = false;
+    result.reason = BuildErrorReason(response, "cancel_failed");
+    result.upbit_uuid = resolved_uuid;
+    result.identifier = resolved_identifier;
+    result.retriable = response.retriable;
+    result.state = "cancel_reject";
+    return result;
+  }
+
   result.accepted = true;
   result.reason = "cancelled";
   result.upbit_uuid = ParseJsonString(response.json_body, "uuid");
@@ -284,30 +542,172 @@ UpbitCancelResult UpbitRestClient::CancelOrder(const UpbitCancelRequest& request
   if (result.state.empty()) {
     result.state = "cancel";
   }
-  result.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-  result.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
-  if (!result.identifier.empty() && !result.upbit_uuid.empty()) {
-    UpsertIdentifierMapping(result.identifier, result.upbit_uuid);
+
+  if (!result.identifier.empty()) {
+    auto record = state_store_.Find(result.identifier).value_or(
+        BuildStateRecord(result.identifier, "", mode_name_, "CANCELED"));
+    ApplyHttpMetaToRecord(&record, response);
+    record.status = "CANCELED";
+    if (!result.upbit_uuid.empty()) {
+      record.upbit_uuid = result.upbit_uuid;
+    }
+    state_store_.Upsert(record);
   }
+
+  return result;
+}
+
+UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& request) {
+  UpbitReplaceResult result;
+
+  const std::string prev_uuid = Trim(request.prev_order_uuid);
+  const std::string prev_identifier = Trim(request.prev_order_identifier);
+  const std::string new_identifier = Trim(request.new_identifier);
+  const std::string new_price = Trim(request.new_price_str);
+  const std::string new_volume = Trim(request.new_volume_str);
+  const std::string new_tif = ToLower(Trim(request.new_time_in_force));
+  result.new_identifier = new_identifier;
+
+  if (prev_uuid.empty() && prev_identifier.empty()) {
+    result.reason = "prev_order_uuid or prev_order_identifier is required";
+    return result;
+  }
+  if (new_identifier.empty()) {
+    result.reason = "new_identifier is required";
+    return result;
+  }
+  if (new_price.empty() || !IsPositiveNumberString(new_price)) {
+    result.reason = "new_price_str must be a positive number string";
+    return result;
+  }
+  if (new_volume.empty()) {
+    result.reason = "new_volume_str is required";
+    return result;
+  }
+  if (ToLower(new_volume) != "remain_only" && !IsPositiveNumberString(new_volume)) {
+    result.reason = "new_volume_str must be a positive number string or remain_only";
+    return result;
+  }
+
+  if (order_test_mode_) {
+    result.reason = "replace_not_supported_in_order_test_mode";
+    return result;
+  }
+
+  if (const auto existing = state_store_.Find(new_identifier); existing.has_value()) {
+    result.reason = "identifier_reuse_forbidden_new_identifier_required";
+    return result;
+  }
+
+  upbit::CancelAndNewRequest replace_request;
+  replace_request.prev_order_uuid = prev_uuid;
+  replace_request.prev_order_identifier = prev_uuid.empty() ? prev_identifier : "";
+  replace_request.new_identifier = new_identifier;
+  replace_request.new_price = new_price;
+  replace_request.new_volume = new_volume;
+  replace_request.new_time_in_force = new_tif;
+
+  state::IdentifierStateRecord new_record =
+      BuildStateRecord(new_identifier, request.intent_id, mode_name_, "REPLACE_POST_SENT");
+  state_store_.Upsert(new_record);
+
+  const upbit::HttpResponse response = private_client_->CancelAndNewOrder(replace_request);
+  result.http_status = response.status_code;
+  result.error_name = response.error_name;
+  result.breaker_state = response.breaker_state;
+  if (response.remaining_req.valid) {
+    result.remaining_req_group = response.remaining_req.group;
+    result.remaining_req_sec = response.remaining_req.sec;
+  }
+  ApplyHttpMetaToRecord(&new_record, response);
+
+  if (!response.ok) {
+    result.accepted = false;
+    result.reason = BuildErrorReason(response, "replace_failed");
+    result.retriable = response.retriable;
+    new_record.status = "FAILED";
+    state_store_.Upsert(new_record);
+    return result;
+  }
+
+  auto pick_string = [&](std::initializer_list<const char*> keys) -> std::string {
+    for (const char* key : keys) {
+      if (key == nullptr) {
+        continue;
+      }
+      const std::string value = ParseJsonString(response.json_body, key);
+      if (!value.empty()) {
+        return value;
+      }
+    }
+    return "";
+  };
+
+  result.accepted = true;
+  result.reason = "replaced";
+  result.cancelled_order_uuid = pick_string(
+      {"cancelled_order_uuid", "canceled_order_uuid", "prev_order_uuid", "cancel_uuid"});
+  if (result.cancelled_order_uuid.empty()) {
+    result.cancelled_order_uuid = prev_uuid;
+  }
+
+  result.new_order_uuid = pick_string({"new_order_uuid", "new_uuid", "order_uuid"});
+  if (result.new_order_uuid.empty()) {
+    const std::string direct_uuid = ParseJsonString(response.json_body, "uuid");
+    if (!direct_uuid.empty() && direct_uuid != result.cancelled_order_uuid) {
+      result.new_order_uuid = direct_uuid;
+    }
+  }
+
+  if (result.new_order_uuid.empty()) {
+    const UpbitOrderResult recovered = GetOrder("", new_identifier);
+    if (recovered.ok && recovered.found && !recovered.upbit_uuid.empty()) {
+      result.new_order_uuid = recovered.upbit_uuid;
+      result.reason = "replaced_lookup_confirmed";
+    } else if (recovered.ok && !recovered.found) {
+      result.reason = "prev_order_filled_before_cancel_new_order_not_created";
+    } else {
+      result.reason = "replace_accepted_new_order_unconfirmed";
+    }
+  }
+
+  new_record.status = result.new_order_uuid.empty() ? "CONFIRMED_NO_NEW_ORDER" : "CONFIRMED";
+  new_record.upbit_uuid = result.new_order_uuid;
+  state_store_.Upsert(new_record);
+
+  if (!prev_identifier.empty()) {
+    auto prev_record = state_store_.Find(prev_identifier).value_or(
+        BuildStateRecord(prev_identifier, "", mode_name_, "REPLACED"));
+    prev_record.status = "REPLACED";
+    if (!result.cancelled_order_uuid.empty()) {
+      prev_record.upbit_uuid = result.cancelled_order_uuid;
+    }
+    prev_record.updated_at_ms = NowMs();
+    state_store_.Upsert(prev_record);
+  }
+
   return result;
 }
 
 UpbitOrderResult UpbitRestClient::GetOrder(const std::string& upbit_uuid, const std::string& identifier) {
   UpbitOrderResult result;
   if (upbit_uuid.empty() && identifier.empty()) {
-    result.ok = false;
     result.reason = "upbit_uuid or identifier is required";
     return result;
   }
   if (order_test_mode_) {
-    result.ok = false;
     result.reason = "order_test_mode_no_remote_state";
     return result;
   }
 
   const upbit::HttpResponse response = private_client_->GetOrder(upbit_uuid, identifier);
-  result.remaining_req_group = response.remaining_req.valid ? response.remaining_req.group : "default";
-  result.remaining_req_sec = response.remaining_req.valid ? response.remaining_req.sec : -1;
+  result.http_status = response.status_code;
+  result.error_name = response.error_name;
+  result.breaker_state = response.breaker_state;
+  if (response.remaining_req.valid) {
+    result.remaining_req_group = response.remaining_req.group;
+    result.remaining_req_sec = response.remaining_req.sec;
+  }
 
   if (!response.ok) {
     if (response.status_code == 404) {
@@ -332,34 +732,73 @@ UpbitOrderResult UpbitRestClient::GetOrder(const std::string& upbit_uuid, const 
   result.side = ParseJsonString(response.json_body, "side");
   result.ord_type = ParseJsonString(response.json_body, "ord_type");
   result.state = ParseJsonString(response.json_body, "state");
-  result.price = ParseJsonNumber(response.json_body, "price");
-  result.volume = ParseJsonNumber(response.json_body, "volume");
-  result.executed_volume = ParseJsonNumber(response.json_body, "executed_volume");
-  if (!result.identifier.empty() && !result.upbit_uuid.empty()) {
-    UpsertIdentifierMapping(result.identifier, result.upbit_uuid);
+  result.price_str = ParseJsonString(response.json_body, "price");
+  result.volume_str = ParseJsonString(response.json_body, "volume");
+  result.executed_volume_str = ParseJsonString(response.json_body, "executed_volume");
+  result.remaining_volume_str = ParseJsonString(response.json_body, "remaining_volume");
+  result.avg_price_str = ParseJsonString(response.json_body, "avg_price");
+
+  if (!result.identifier.empty()) {
+    auto record = state_store_.Find(result.identifier).value_or(
+        BuildStateRecord(result.identifier, "", mode_name_, "CONFIRMED"));
+    ApplyHttpMetaToRecord(&record, response);
+    record.status = "CONFIRMED";
+    if (!result.upbit_uuid.empty()) {
+      record.upbit_uuid = result.upbit_uuid;
+    }
+    state_store_.Upsert(record);
   }
   return result;
 }
 
-double UpbitRestClient::ParseJsonNumber(const nlohmann::json& payload, const char* key) {
-  if (!payload.is_object() || key == nullptr) {
-    return 0.0;
+UpbitAccountsSnapshotResult UpbitRestClient::GetAccountsSnapshot() {
+  UpbitAccountsSnapshotResult result;
+  if (order_test_mode_) {
+    result.reason = "order_test_mode_no_remote_accounts";
+    return result;
   }
-  const auto found = payload.find(key);
-  if (found == payload.end() || found->is_null()) {
-    return 0.0;
+
+  const upbit::HttpResponse response = private_client_->Accounts();
+  result.http_status = response.status_code;
+  result.error_name = response.error_name;
+  result.breaker_state = response.breaker_state;
+  if (response.remaining_req.valid) {
+    result.remaining_req_group = response.remaining_req.group;
+    result.remaining_req_sec = response.remaining_req.sec;
   }
-  if (found->is_number_float() || found->is_number_integer() || found->is_number_unsigned()) {
-    return found->get<double>();
+
+  if (!response.ok) {
+    result.ok = false;
+    result.reason = BuildErrorReason(response, "accounts_snapshot_failed");
+    return result;
   }
-  if (found->is_string()) {
-    try {
-      return std::stod(found->get<std::string>());
-    } catch (...) {
-      return 0.0;
+
+  result.ok = true;
+  result.reason = "ok";
+  if (!response.json_body.is_array()) {
+    return result;
+  }
+  for (const auto& item : response.json_body) {
+    if (!item.is_object()) {
+      continue;
     }
+    UpbitAccountBalance account;
+    account.currency = ToUpper(ParseJsonString(item, "currency"));
+    if (account.currency.empty()) {
+      continue;
+    }
+    account.balance_str = ParseJsonString(item, "balance");
+    account.locked_str = ParseJsonString(item, "locked");
+    account.avg_buy_price_str = ParseJsonString(item, "avg_buy_price");
+    if (account.balance_str.empty()) {
+      account.balance_str = "0";
+    }
+    if (account.locked_str.empty()) {
+      account.locked_str = "0";
+    }
+    result.accounts.push_back(std::move(account));
   }
-  return 0.0;
+  return result;
 }
 
 std::string UpbitRestClient::ParseJsonString(const nlohmann::json& payload, const char* key) {
@@ -380,145 +819,20 @@ std::string UpbitRestClient::ParseJsonString(const nlohmann::json& payload, cons
     return std::to_string(found->get<unsigned long long>());
   }
   if (found->is_number_float()) {
-    std::ostringstream oss;
-    oss << found->get<double>();
-    return oss.str();
+    return upbit::FormatNumberString(found->get<double>(), 16);
   }
   return "";
 }
 
-std::string UpbitRestClient::BuildMockUuid(const std::string& identifier) {
-  if (identifier.empty()) {
-    return "mock-order-unknown";
-  }
-
-  std::string normalized;
-  normalized.reserve(identifier.size());
-  for (const char ch : identifier) {
-    if (std::isalnum(static_cast<unsigned char>(ch))) {
-      normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    } else {
-      normalized.push_back('-');
-    }
-  }
-  if (normalized.size() > 48) {
-    normalized = normalized.substr(0, 48);
-  }
-  return "mock-order-" + normalized;
-}
-
-std::string UpbitRestClient::FormatNumber(double value) {
-  std::ostringstream out;
-  out << std::fixed << std::setprecision(16) << value;
-  std::string text = out.str();
-  while (!text.empty() && text.back() == '0') {
-    text.pop_back();
-  }
-  if (!text.empty() && text.back() == '.') {
-    text.pop_back();
-  }
-  if (text.empty()) {
-    return "0";
-  }
-  return text;
-}
-
-void UpbitRestClient::LoadState() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  identifier_to_uuid_.clear();
-  if (state_file_path_.empty()) {
-    return;
-  }
-
-  try {
-    const std::filesystem::path path(state_file_path_);
-    if (!std::filesystem::exists(path)) {
-      return;
-    }
-    std::ifstream in(path, std::ios::binary);
-    if (!in.good()) {
-      return;
-    }
-    nlohmann::json payload = nlohmann::json::parse(in, nullptr, false);
-    if (!payload.is_object()) {
-      return;
-    }
-    const auto found = payload.find("identifier_to_uuid");
-    if (found == payload.end() || !found->is_object()) {
-      return;
-    }
-    for (auto it = found->begin(); it != found->end(); ++it) {
-      if (!it.value().is_string()) {
-        continue;
-      }
-      const std::string identifier = Trim(it.key());
-      const std::string uuid = Trim(it.value().get<std::string>());
-      if (!identifier.empty() && !uuid.empty()) {
-        identifier_to_uuid_[identifier] = uuid;
-      }
-    }
-  } catch (...) {
-    // Keep empty in-memory state if state file is unavailable/corrupt.
-  }
-}
-
-void UpbitRestClient::SaveStateLocked() const {
-  if (state_file_path_.empty()) {
-    return;
-  }
-  try {
-    const std::filesystem::path path(state_file_path_);
-    const std::filesystem::path parent = path.parent_path();
-    if (!parent.empty()) {
-      std::filesystem::create_directories(parent);
-    }
-
-    nlohmann::json payload;
-    payload["identifier_to_uuid"] = nlohmann::json::object();
-    for (const auto& [identifier, uuid] : identifier_to_uuid_) {
-      payload["identifier_to_uuid"][identifier] = uuid;
-    }
-
-    const std::filesystem::path tmp = path.string() + ".tmp";
-    {
-      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-      out << payload.dump(2);
-    }
-    std::error_code ignored;
-    std::filesystem::remove(path, ignored);
-    std::filesystem::rename(tmp, path, ignored);
-    if (ignored) {
-      std::filesystem::copy_file(tmp, path, std::filesystem::copy_options::overwrite_existing, ignored);
-      std::filesystem::remove(tmp, ignored);
-    }
-  } catch (...) {
-    // Ignore persistence errors to keep order flow alive.
-  }
-}
-
-void UpbitRestClient::UpsertIdentifierMapping(const std::string& identifier, const std::string& upbit_uuid) {
-  if (identifier.empty() || upbit_uuid.empty()) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-  identifier_to_uuid_[identifier] = upbit_uuid;
-  SaveStateLocked();
-}
-
-std::string UpbitRestClient::ResolveMappedUuid(const std::string& identifier) const {
-  if (identifier.empty()) {
-    return "";
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-  const auto found = identifier_to_uuid_.find(identifier);
-  if (found == identifier_to_uuid_.end()) {
-    return "";
-  }
-  return found->second;
-}
-
 std::string UpbitRestClient::ResolveStateFilePath() {
   return EnvOrDefault("AUTOBOT_EXECUTOR_STATE_PATH", "data/state/executor_state.json");
+}
+
+bool UpbitRestClient::IsLiveMarketAllowed(const std::string& market) const {
+  if (order_test_mode_ || live_allowed_markets_.empty()) {
+    return true;
+  }
+  return live_allowed_markets_.count(ToUpper(market)) > 0;
 }
 
 }  // namespace autobot::executor

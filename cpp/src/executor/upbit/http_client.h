@@ -3,12 +3,10 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "upbit/auth_jwt.h"
-#include "upbit/querystring.h"
 #include "upbit/rate_limiter.h"
 #include "upbit/remaining_req.h"
 
@@ -32,11 +30,12 @@ struct HttpClientOptions {
 struct HttpRequest {
   std::string method;
   std::string endpoint;
-  std::vector<QueryParam> params;
-  bool has_json_body = false;
-  nlohmann::json json_body;
-  std::vector<QueryParam> auth_query_params;
+  std::string url_query;
+  std::string auth_query;
+  std::string body_json;
+  std::unordered_map<std::string, std::string> headers;
   bool auth = false;
+  bool allow_retry = true;
   std::string rate_limit_group = "default";
 };
 
@@ -51,6 +50,7 @@ struct HttpResponse {
   bool retriable = false;
   bool banned = false;
   double cooldown_sec = 0.0;
+  std::string breaker_state = "none";
   RemainingReqInfo remaining_req;
   std::string request_id;
 };
@@ -77,7 +77,6 @@ class UpbitHttpClient {
     std::string network_error;
   };
 
-  static std::string BuildQueryForAuth(const HttpRequest& request);
   static std::string ToUpper(std::string value);
   static std::string Trim(std::string value);
   static std::pair<std::string, bool> ClassifyStatus(int status_code);
@@ -95,7 +94,7 @@ class UpbitHttpClient {
   RawResponse PerformRequest(
       const std::string& method_upper,
       const std::string& endpoint,
-      const std::vector<QueryParam>& params,
+      const std::string& encoded_query,
       const std::unordered_map<std::string, std::string>& headers,
       const std::string& body_json) const;
 

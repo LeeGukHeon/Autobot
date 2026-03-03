@@ -24,33 +24,37 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rautobot.proto\x12\x14\x61utobot.execution.v1\"\x90\x02\n\x0bOrderIntent\x12\x11\n\tintent_id\x18\x01 \x01(\t\x12\x12\n\nidentifier\x18\x02 \x01(\t\x12\x0e\n\x06market\x18\x03 \x01(\t\x12(\n\x04side\x18\x04 \x01(\x0e\x32\x1a.autobot.execution.v1.Side\x12/\n\x08ord_type\x18\x05 \x01(\x0e\x32\x1d.autobot.execution.v1.OrdType\x12\r\n\x05price\x18\x06 \x01(\x01\x12\x0e\n\x06volume\x18\x07 \x01(\x01\x12.\n\x03tif\x18\x08 \x01(\x0e\x32!.autobot.execution.v1.TimeInForce\x12\r\n\x05ts_ms\x18\t \x01(\x03\x12\x11\n\tmeta_json\x18\n \x01(\t\"k\n\x0cSubmitResult\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12\x12\n\nupbit_uuid\x18\x03 \x01(\t\x12\x12\n\nidentifier\x18\x04 \x01(\t\x12\x11\n\tintent_id\x18\x05 \x01(\t\"7\n\rCancelRequest\x12\x12\n\nupbit_uuid\x18\x01 \x01(\t\x12\x12\n\nidentifier\x18\x02 \x01(\t\"a\n\x05\x45vent\x12\x33\n\nevent_type\x18\x01 \x01(\x0e\x32\x1f.autobot.execution.v1.EventType\x12\r\n\x05ts_ms\x18\x02 \x01(\x03\x12\x14\n\x0cpayload_json\x18\x03 \x01(\t\"\x0f\n\rHealthRequest\"<\n\x0eHealthResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\r\n\x05ts_ms\x18\x03 \x01(\x03*.\n\x04Side\x12\x14\n\x10SIDE_UNSPECIFIED\x10\x00\x12\x07\n\x03\x42ID\x10\x01\x12\x07\n\x03\x41SK\x10\x02*.\n\x07OrdType\x12\x18\n\x14ORD_TYPE_UNSPECIFIED\x10\x00\x12\t\n\x05LIMIT\x10\x01*=\n\x0bTimeInForce\x12\x13\n\x0fTIF_UNSPECIFIED\x10\x00\x12\x07\n\x03GTC\x10\x01\x12\x07\n\x03IOC\x10\x02\x12\x07\n\x03\x46OK\x10\x03*`\n\tEventType\x12\x15\n\x11\x45VENT_UNSPECIFIED\x10\x00\x12\x10\n\x0cORDER_UPDATE\x10\x01\x12\x08\n\x04\x46ILL\x10\x02\x12\t\n\x05\x41SSET\x10\x03\x12\n\n\x06HEALTH\x10\x04\x12\t\n\x05\x45RROR\x10\x05\x32\xb6\x03\n\x10\x45xecutionService\x12U\n\x0cSubmitIntent\x12!.autobot.execution.v1.OrderIntent\x1a\".autobot.execution.v1.SubmitResult\x12Q\n\x06\x43\x61ncel\x12#.autobot.execution.v1.CancelRequest\x1a\".autobot.execution.v1.SubmitResult\x12R\n\x0cStreamEvents\x12#.autobot.execution.v1.HealthRequest\x1a\x1b.autobot.execution.v1.Event0\x01\x12O\n\x0bGetSnapshot\x12#.autobot.execution.v1.HealthRequest\x1a\x1b.autobot.execution.v1.Event\x12S\n\x06Health\x12#.autobot.execution.v1.HealthRequest\x1a$.autobot.execution.v1.HealthResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rautobot.proto\x12\x14\x61utobot.execution.v1\"\x90\x02\n\x0bOrderIntent\x12\x11\n\tintent_id\x18\x01 \x01(\t\x12\x12\n\nidentifier\x18\x02 \x01(\t\x12\x0e\n\x06market\x18\x03 \x01(\t\x12(\n\x04side\x18\x04 \x01(\x0e\x32\x1a.autobot.execution.v1.Side\x12/\n\x08ord_type\x18\x05 \x01(\x0e\x32\x1d.autobot.execution.v1.OrdType\x12\r\n\x05price\x18\x06 \x01(\x01\x12\x0e\n\x06volume\x18\x07 \x01(\x01\x12.\n\x03tif\x18\x08 \x01(\x0e\x32!.autobot.execution.v1.TimeInForce\x12\r\n\x05ts_ms\x18\t \x01(\x03\x12\x11\n\tmeta_json\x18\n \x01(\t\"k\n\x0cSubmitResult\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12\x12\n\nupbit_uuid\x18\x03 \x01(\t\x12\x12\n\nidentifier\x18\x04 \x01(\t\x12\x11\n\tintent_id\x18\x05 \x01(\t\"7\n\rCancelRequest\x12\x12\n\nupbit_uuid\x18\x01 \x01(\t\x12\x12\n\nidentifier\x18\x02 \x01(\t\"\xbd\x01\n\x0eReplaceRequest\x12\x11\n\tintent_id\x18\x01 \x01(\t\x12\x17\n\x0fprev_order_uuid\x18\x02 \x01(\t\x12\x1d\n\x15prev_order_identifier\x18\x03 \x01(\t\x12\x16\n\x0enew_identifier\x18\x04 \x01(\t\x12\x15\n\rnew_price_str\x18\x05 \x01(\t\x12\x16\n\x0enew_volume_str\x18\x06 \x01(\t\x12\x19\n\x11new_time_in_force\x18\x07 \x01(\t\"\x7f\n\rReplaceResult\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12\x1c\n\x14\x63\x61ncelled_order_uuid\x18\x03 \x01(\t\x12\x16\n\x0enew_order_uuid\x18\x04 \x01(\t\x12\x16\n\x0enew_identifier\x18\x05 \x01(\t\"a\n\x05\x45vent\x12\x33\n\nevent_type\x18\x01 \x01(\x0e\x32\x1f.autobot.execution.v1.EventType\x12\r\n\x05ts_ms\x18\x02 \x01(\x03\x12\x14\n\x0cpayload_json\x18\x03 \x01(\t\"\x0f\n\rHealthRequest\"<\n\x0eHealthResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\r\n\x05ts_ms\x18\x03 \x01(\x03*.\n\x04Side\x12\x14\n\x10SIDE_UNSPECIFIED\x10\x00\x12\x07\n\x03\x42ID\x10\x01\x12\x07\n\x03\x41SK\x10\x02*.\n\x07OrdType\x12\x18\n\x14ORD_TYPE_UNSPECIFIED\x10\x00\x12\t\n\x05LIMIT\x10\x01*=\n\x0bTimeInForce\x12\x13\n\x0fTIF_UNSPECIFIED\x10\x00\x12\x07\n\x03GTC\x10\x01\x12\x07\n\x03IOC\x10\x02\x12\x07\n\x03\x46OK\x10\x03*`\n\tEventType\x12\x15\n\x11\x45VENT_UNSPECIFIED\x10\x00\x12\x10\n\x0cORDER_UPDATE\x10\x01\x12\x08\n\x04\x46ILL\x10\x02\x12\t\n\x05\x41SSET\x10\x03\x12\n\n\x06HEALTH\x10\x04\x12\t\n\x05\x45RROR\x10\x05\x32\x91\x04\n\x10\x45xecutionService\x12U\n\x0cSubmitIntent\x12!.autobot.execution.v1.OrderIntent\x1a\".autobot.execution.v1.SubmitResult\x12Q\n\x06\x43\x61ncel\x12#.autobot.execution.v1.CancelRequest\x1a\".autobot.execution.v1.SubmitResult\x12Y\n\x0cReplaceOrder\x12$.autobot.execution.v1.ReplaceRequest\x1a#.autobot.execution.v1.ReplaceResult\x12R\n\x0cStreamEvents\x12#.autobot.execution.v1.HealthRequest\x1a\x1b.autobot.execution.v1.Event0\x01\x12O\n\x0bGetSnapshot\x12#.autobot.execution.v1.HealthRequest\x1a\x1b.autobot.execution.v1.Event\x12S\n\x06Health\x12#.autobot.execution.v1.HealthRequest\x1a$.autobot.execution.v1.HealthResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'autobot_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_SIDE']._serialized_start=658
-  _globals['_SIDE']._serialized_end=704
-  _globals['_ORDTYPE']._serialized_start=706
-  _globals['_ORDTYPE']._serialized_end=752
-  _globals['_TIMEINFORCE']._serialized_start=754
-  _globals['_TIMEINFORCE']._serialized_end=815
-  _globals['_EVENTTYPE']._serialized_start=817
-  _globals['_EVENTTYPE']._serialized_end=913
+  _globals['_SIDE']._serialized_start=979
+  _globals['_SIDE']._serialized_end=1025
+  _globals['_ORDTYPE']._serialized_start=1027
+  _globals['_ORDTYPE']._serialized_end=1073
+  _globals['_TIMEINFORCE']._serialized_start=1075
+  _globals['_TIMEINFORCE']._serialized_end=1136
+  _globals['_EVENTTYPE']._serialized_start=1138
+  _globals['_EVENTTYPE']._serialized_end=1234
   _globals['_ORDERINTENT']._serialized_start=40
   _globals['_ORDERINTENT']._serialized_end=312
   _globals['_SUBMITRESULT']._serialized_start=314
   _globals['_SUBMITRESULT']._serialized_end=421
   _globals['_CANCELREQUEST']._serialized_start=423
   _globals['_CANCELREQUEST']._serialized_end=478
-  _globals['_EVENT']._serialized_start=480
-  _globals['_EVENT']._serialized_end=577
-  _globals['_HEALTHREQUEST']._serialized_start=579
-  _globals['_HEALTHREQUEST']._serialized_end=594
-  _globals['_HEALTHRESPONSE']._serialized_start=596
-  _globals['_HEALTHRESPONSE']._serialized_end=656
-  _globals['_EXECUTIONSERVICE']._serialized_start=916
-  _globals['_EXECUTIONSERVICE']._serialized_end=1354
+  _globals['_REPLACEREQUEST']._serialized_start=481
+  _globals['_REPLACEREQUEST']._serialized_end=670
+  _globals['_REPLACERESULT']._serialized_start=672
+  _globals['_REPLACERESULT']._serialized_end=799
+  _globals['_EVENT']._serialized_start=801
+  _globals['_EVENT']._serialized_end=898
+  _globals['_HEALTHREQUEST']._serialized_start=900
+  _globals['_HEALTHREQUEST']._serialized_end=915
+  _globals['_HEALTHRESPONSE']._serialized_start=917
+  _globals['_HEALTHRESPONSE']._serialized_end=977
+  _globals['_EXECUTIONSERVICE']._serialized_start=1237
+  _globals['_EXECUTIONSERVICE']._serialized_end=1766
 # @@protoc_insertion_point(module_scope)

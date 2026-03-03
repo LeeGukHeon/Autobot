@@ -28,8 +28,9 @@ void UpbitRateLimiter::Acquire(const std::string& group) {
       GroupState& state = GetOrCreateState(group_name, now);
       Refill(&state, now);
 
-      const double cooldown_wait =
-          std::max(std::max(global_cooldown_until_ - now, state.cooldown_until - now), 0.0);
+      const double cooldown_wait = std::max(
+          std::max(global_cooldown_until_ - now, state.cooldown_until - now),
+          std::max(state.conservative_until - now, 0.0));
       if (cooldown_wait <= 0.0 && state.tokens >= 1.0) {
         state.tokens -= 1.0;
         return;
@@ -55,6 +56,8 @@ void UpbitRateLimiter::ObserveRemainingReq(const RemainingReqInfo& info) {
   GroupState& state = GetOrCreateState(info.group, now);
   Refill(&state, now);
   state.last_remaining_sec = info.sec;
+  state.missing_remaining_headers = 0;
+  state.consecutive_429 = 0;
 
   if (info.sec <= 0) {
     state.tokens = 0.0;
@@ -64,15 +67,34 @@ void UpbitRateLimiter::ObserveRemainingReq(const RemainingReqInfo& info) {
   state.tokens = std::min(state.tokens, static_cast<double>(info.sec));
 }
 
-double UpbitRateLimiter::Register429(const std::string& group, int attempt) {
-  const double delay_sec = std::max(1.0, std::min(8.0, static_cast<double>(1 << std::max(attempt - 1, 0))));
+void UpbitRateLimiter::ObserveMissingRemainingReq(const std::string& group) {
   if (!enabled_) {
-    return delay_sec;
+    return;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
   const double now = MonotonicSeconds();
   GroupState& state = GetOrCreateState(group.empty() ? "default" : group, now);
+  state.missing_remaining_headers = std::min(state.missing_remaining_headers + 1, 10);
+  const double penalty =
+      std::min(0.5, 0.2 + static_cast<double>(state.missing_remaining_headers - 1) * 0.05);
+  state.conservative_until = std::max(state.conservative_until, now + penalty);
+}
+
+double UpbitRateLimiter::Register429(const std::string& group, int attempt) {
+  const int attempt_exp = std::min(std::max(attempt - 1, 0), 5);
+  if (!enabled_) {
+    return std::max(1.0, std::min(32.0, static_cast<double>(1 << attempt_exp)));
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  const double now = MonotonicSeconds();
+  GroupState& state = GetOrCreateState(group.empty() ? "default" : group, now);
+  state.consecutive_429 = std::min(state.consecutive_429 + 1, 8);
+  const int burst_exp = std::min(std::max(state.consecutive_429 - 1, 0), 5);
+  const double delay_sec = std::max(
+      std::max(1.0, std::min(32.0, static_cast<double>(1 << attempt_exp))),
+      std::min(32.0, static_cast<double>(1 << burst_exp)));
   state.tokens = 0.0;
   state.cooldown_until = std::max(state.cooldown_until, now + delay_sec);
   return delay_sec;
@@ -89,6 +111,7 @@ double UpbitRateLimiter::Register418(const std::string& group, int cooldown_sec)
   const double until = now + delay_sec;
   GroupState& state = GetOrCreateState(group.empty() ? "default" : group, now);
   state.tokens = 0.0;
+  state.consecutive_429 = 0;
   state.cooldown_until = std::max(state.cooldown_until, until);
   global_cooldown_until_ = std::max(global_cooldown_until_, until);
   return delay_sec;

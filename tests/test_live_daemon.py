@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import pytest
 
 import autobot.live.daemon as daemon_module
 from autobot.live.daemon import (
@@ -254,3 +255,92 @@ def test_live_daemon_executor_events_updates_state(tmp_path: Path, monkeypatch) 
     assert order is not None
     assert position is not None
     assert any(item["name"] == "last_executor_event" for item in checkpoints)
+
+
+def test_apply_executor_event_supports_payload_event_name_contract(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        action = daemon_module._apply_executor_event(
+            store=store,
+            event={
+                "event_type": "HEALTH",
+                "ts_ms": 1700000000300,
+                "payload": {
+                    "event_name": "ORDER_STATE",
+                    "uuid": "bot-contract-1",
+                    "identifier": "AUTOBOT-autobot-001-intent-contract-1-123-abc",
+                    "market": "KRW-BTC",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "state": "wait",
+                    "price": "100000000",
+                    "volume": "0.01",
+                    "executed_volume": "0",
+                },
+            },
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+
+        order = store.order_by_uuid(uuid="bot-contract-1")
+
+    assert action["type"] == "ws_order_upsert"
+    assert order is not None
+    assert order["market"] == "KRW-BTC"
+
+
+def test_apply_executor_event_supports_timeout_and_replaced_contract(tmp_path: Path) -> None:
+    timeout_action = daemon_module._apply_executor_event(
+        store=None,  # type: ignore[arg-type]
+        event={
+            "event_type": "ORDER_UPDATE",
+            "ts_ms": 1700000000400,
+            "payload": {
+                "event_name": "ORDER_TIMEOUT",
+                "identifier": "AUTOBOT-timeout-1",
+                "uuid": "timeout-uuid-1",
+            },
+        },
+        bot_id="autobot-001",
+        identifier_prefix="AUTOBOT",
+        quote_currency="KRW",
+    )
+
+    with LiveStateStore(tmp_path / "replace_state.db") as store:
+        replaced_action = daemon_module._apply_executor_event(
+            store=store,
+            event={
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 1700000000500,
+                "payload": {
+                    "event_name": "ORDER_REPLACED",
+                    "prev_uuid": "prev-1",
+                    "prev_identifier": "AUTOBOT-prev",
+                    "new_uuid": "new-1",
+                    "new_identifier": "AUTOBOT-new",
+                },
+            },
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        checkpoints = store.export_state()["checkpoints"]
+
+    assert timeout_action["type"] == "executor_order_timeout"
+    assert replaced_action["type"] == "executor_order_replaced"
+    assert any(item["name"] == "last_replace_chain" for item in checkpoints)
+
+
+def test_live_daemon_settings_reject_dual_ws_sources() -> None:
+    with pytest.raises(ValueError, match="cannot both be true"):
+        LiveDaemonSettings(
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="import_as_unmanaged",
+            allow_cancel_external_orders=False,
+            poll_interval_sec=60,
+            use_private_ws=True,
+            use_executor_ws=True,
+        )

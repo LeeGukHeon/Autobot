@@ -44,6 +44,11 @@ class ExecutionServiceStub(object):
                 request_serializer=autobot__pb2.CancelRequest.SerializeToString,
                 response_deserializer=autobot__pb2.SubmitResult.FromString,
                 _registered_method=True)
+        self.ReplaceOrder = channel.unary_unary(
+                '/autobot.execution.v1.ExecutionService/ReplaceOrder',
+                request_serializer=autobot__pb2.ReplaceRequest.SerializeToString,
+                response_deserializer=autobot__pb2.ReplaceResult.FromString,
+                _registered_method=True)
         self.StreamEvents = channel.unary_stream(
                 '/autobot.execution.v1.ExecutionService/StreamEvents',
                 request_serializer=autobot__pb2.HealthRequest.SerializeToString,
@@ -71,6 +76,12 @@ class ExecutionServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Cancel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReplaceOrder(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -106,6 +117,11 @@ def add_ExecutionServiceServicer_to_server(servicer, server):
                     servicer.Cancel,
                     request_deserializer=autobot__pb2.CancelRequest.FromString,
                     response_serializer=autobot__pb2.SubmitResult.SerializeToString,
+            ),
+            'ReplaceOrder': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReplaceOrder,
+                    request_deserializer=autobot__pb2.ReplaceRequest.FromString,
+                    response_serializer=autobot__pb2.ReplaceResult.SerializeToString,
             ),
             'StreamEvents': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamEvents,
@@ -177,6 +193,33 @@ class ExecutionService(object):
             '/autobot.execution.v1.ExecutionService/Cancel',
             autobot__pb2.CancelRequest.SerializeToString,
             autobot__pb2.SubmitResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReplaceOrder(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/autobot.execution.v1.ExecutionService/ReplaceOrder',
+            autobot__pb2.ReplaceRequest.SerializeToString,
+            autobot__pb2.ReplaceResult.FromString,
             options,
             channel_credentials,
             insecure,
