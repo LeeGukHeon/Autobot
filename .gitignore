@@ -37,6 +37,8 @@ cpp/**/Testing/
 # Project runtime artifacts
 data/
 models/
+!autobot/models/
+!autobot/models/**
 logs/
 
 # IDE / OS

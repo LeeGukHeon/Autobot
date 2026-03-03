@@ -1,0 +1,36 @@
+train:
+  registry_root: models/registry
+  logs_root: logs
+  model_family: train_v1
+
+  tf: 5m
+  quote: KRW
+  top_n: 20
+  start: "2024-01-01"
+  end: "2026-03-01"
+  task: cls
+
+  run_baseline: true
+  run_booster: true
+  booster_sweep_trials: 15
+
+  seed: 42
+  nthread: 6
+  batch_rows: 200000
+
+  train_ratio: 0.70
+  valid_ratio: 0.15
+  test_ratio: 0.15
+  embargo_bars: 12
+
+  baseline_alpha: 0.0001
+  baseline_epochs: 3
+
+  fee_bps_est: 10.0
+  safety_bps: 5.0
+  ev_scan_steps: 200
+  ev_min_selected: 100
+
+  gate_min_pr_auc: 0.50
+  gate_min_precision_top5: 0.50
+  gate_max_two_market_bias: 0.60

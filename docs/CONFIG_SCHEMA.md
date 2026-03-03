@@ -172,6 +172,47 @@
 - `label_v1.fee_bps_est`: number (default: `10`)
 - `label_v1.safety_bps`: number (default: `5`)
 
+## Model Training (T14)
+- config file: `config/train.yaml`
+- `train.registry_root`: path (default: `models/registry`)
+- `train.logs_root`: path (default: `logs`)
+- `train.model_family`: string (default: `train_v1`)
+- `train.tf`: timeframe (default: `5m`)
+- `train.quote`: quote filter (default: `KRW`)
+- `train.top_n`: integer (default: `20`)
+- `train.start`: `YYYY-MM-DD`
+- `train.end`: `YYYY-MM-DD`
+- `train.task`: `cls` (v1)
+- `train.run_baseline`: bool
+- `train.run_booster`: bool
+- `train.booster_sweep_trials`: integer (default: `15`)
+- `train.seed`: integer (default: `42`)
+- `train.nthread`: integer (default: `6`)
+- `train.batch_rows`: integer (default: `200000`)
+- `train.train_ratio`: float (default: `0.70`)
+- `train.valid_ratio`: float (default: `0.15`)
+- `train.test_ratio`: float (default: `0.15`)
+- `train.embargo_bars`: integer (default: `12`)
+- `train.baseline_alpha`: float (default: `0.0001`)
+- `train.baseline_epochs`: integer (default: `3`)
+- `train.fee_bps_est`: float (default: `10.0`)
+- `train.safety_bps`: float (default: `5.0`)
+- `train.ev_scan_steps`: integer (default: `200`)
+- `train.ev_min_selected`: integer (default: `100`)
+- `train.gate_min_pr_auc`: float (default: `0.50`)
+- `train.gate_min_precision_top5`: float (default: `0.50`)
+- `train.gate_max_two_market_bias`: float (default: `0.60`)
+
+## CLI: Model
+- Train:
+  - `python -m autobot.cli model train --tf 5m --quote KRW --top-n 20 --start 2024-01-01 --end 2026-03-01 --feature-set v1 --label-set v1 --task cls --run-baseline true --run-booster true --booster-sweep-trials 15 --seed 42 --nthread 6`
+- Eval:
+  - `python -m autobot.cli model eval --model-ref latest --split test --report-csv out.csv`
+- List:
+  - `python -m autobot.cli model list`
+- Show:
+  - `python -m autobot.cli model show --model-ref latest`
+
 ## Upbit
 - `upbit.base_url`: string (default: `https://api.upbit.com`)
 

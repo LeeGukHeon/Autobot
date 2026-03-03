@@ -34,6 +34,14 @@ from .live import (
     run_live_sync_daemon_with_private_ws,
 )
 from .paper import PaperRunSettings, run_live_paper_sync
+from .models import (
+    TrainRunOptions,
+    evaluate_registered_model,
+    list_registered_models,
+    load_train_defaults,
+    show_registered_model,
+    train_and_register,
+)
 from .strategy import TopTradeValueScanner
 from .upbit import (
     ConfigError,
@@ -130,6 +138,39 @@ def build_parser() -> argparse.ArgumentParser:
     features_stats_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
     features_stats_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_stats_parser.add_argument("--top-n", type=int, help="Universe size")
+
+    model_parser = subparsers.add_parser("model", help="Model training and registry operations.")
+    model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
+
+    model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
+    model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
+    model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    model_train_parser.add_argument("--top-n", type=int, help="Universe size")
+    model_train_parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    model_train_parser.add_argument("--end", help="End date YYYY-MM-DD")
+    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1",))
+    model_train_parser.add_argument("--label-set", default="v1", choices=("v1",))
+    model_train_parser.add_argument("--task", default="cls", choices=("cls",))
+    model_train_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
+    model_train_parser.add_argument("--run-baseline", default="true", help="Enable baseline track (true|false).")
+    model_train_parser.add_argument("--run-booster", default="true", help="Enable booster track (true|false).")
+    model_train_parser.add_argument("--booster-sweep-trials", type=int)
+    model_train_parser.add_argument("--seed", type=int)
+    model_train_parser.add_argument("--nthread", type=int)
+
+    model_eval_parser = model_subparsers.add_parser("eval", help="Evaluate registered model on split.")
+    model_eval_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
+    model_eval_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
+    model_eval_parser.add_argument("--split", default="test", choices=("train", "valid", "test"))
+    model_eval_parser.add_argument("--report-csv", help="Optional CSV output path")
+
+    model_list_parser = model_subparsers.add_parser("list", help="List registered model runs.")
+    model_list_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
+    model_list_parser.add_argument("--limit", type=int, default=20)
+
+    model_show_parser = model_subparsers.add_parser("show", help="Show model run details.")
+    model_show_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
+    model_show_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
 
     upbit_parser = subparsers.add_parser("upbit", help="Upbit REST smoke tests.")
     upbit_subparsers = upbit_parser.add_subparsers(dest="upbit_scope", required=True)
@@ -275,6 +316,8 @@ def main() -> int:
         return _handle_data_command(args, config)
     if args.command == "features":
         return _handle_features_command(args, Path(args.config_dir), config)
+    if args.command == "model":
+        return _handle_model_command(args, Path(args.config_dir), config)
     if args.command == "paper":
         return _handle_paper_command(args, Path(args.config_dir), config)
     if args.command == "backtest":
@@ -502,6 +545,101 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
         return 0
 
     raise ValueError(f"Unsupported features command: {args.features_command}")
+
+
+def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    try:
+        defaults = load_train_defaults(config_dir, base_config=base_config)
+        features_config = load_features_config(config_dir, base_config=base_config)
+        registry_root = Path(str(defaults["registry_root"]))
+        logs_root = Path(str(defaults["logs_root"]))
+        model_family = str(getattr(args, "model_family", None) or defaults["model_family"]).strip()
+        if not model_family:
+            model_family = "train_v1"
+
+        if args.model_command == "train":
+            top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            options = TrainRunOptions(
+                dataset_root=features_config.output_dataset_root,
+                registry_root=registry_root,
+                logs_root=logs_root,
+                model_family=model_family,
+                tf=str(args.tf or defaults["tf"]).strip().lower(),
+                quote=str(args.quote or defaults["quote"]).strip().upper(),
+                top_n=max(top_n, 1),
+                start=str(args.start or defaults["start"]).strip(),
+                end=str(args.end or defaults["end"]).strip(),
+                feature_set=str(args.feature_set).strip().lower(),
+                label_set=str(args.label_set).strip().lower(),
+                task=str(args.task or defaults["task"]).strip().lower(),
+                run_baseline=_parse_bool_arg(args.run_baseline, default=bool(defaults["run_baseline"])),
+                run_booster=_parse_bool_arg(args.run_booster, default=bool(defaults["run_booster"])),
+                booster_sweep_trials=int(
+                    args.booster_sweep_trials
+                    if args.booster_sweep_trials is not None
+                    else defaults["booster_sweep_trials"]
+                ),
+                seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                nthread=int(args.nthread if args.nthread is not None else defaults["nthread"]),
+                batch_rows=max(int(defaults["batch_rows"]), 1),
+                train_ratio=float(defaults["train_ratio"]),
+                valid_ratio=float(defaults["valid_ratio"]),
+                test_ratio=float(defaults["test_ratio"]),
+                embargo_bars=max(int(defaults["embargo_bars"]), 0),
+                baseline_alpha=float(defaults["baseline_alpha"]),
+                baseline_epochs=max(int(defaults["baseline_epochs"]), 1),
+                fee_bps_est=float(defaults["fee_bps_est"]),
+                safety_bps=float(defaults["safety_bps"]),
+                ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
+                ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
+                gate_min_pr_auc=float(defaults["gate_min_pr_auc"]),
+                gate_min_precision_top5=float(defaults["gate_min_precision_top5"]),
+                gate_max_two_market_bias=float(defaults["gate_max_two_market_bias"]),
+            )
+            summary = train_and_register(options)
+            print(
+                "[model][train] "
+                f"run_id={summary.run_id} champion={summary.champion} "
+                f"test_precision_top5={summary.leaderboard_row.get('test_precision_top5', 0.0):.6f} "
+                f"test_pr_auc={summary.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+            )
+            print(f"[model][train] run_dir={summary.run_dir}")
+            print(f"[model][train] train_report={summary.train_report_path}")
+            return 0
+
+        if args.model_command == "eval":
+            result = evaluate_registered_model(
+                registry_root=registry_root,
+                model_ref=str(args.model_ref).strip(),
+                model_family=(str(args.model_family).strip() if args.model_family else None),
+                split=str(args.split).strip().lower(),
+                report_csv=(Path(args.report_csv) if args.report_csv else None),
+            )
+            _print_json(result)
+            return 0
+
+        if args.model_command == "list":
+            rows = list_registered_models(
+                registry_root=registry_root,
+                model_family=(str(args.model_family).strip() if args.model_family else None),
+            )
+            limit = max(int(args.limit), 1)
+            _print_json(rows[:limit])
+            return 0
+
+        if args.model_command == "show":
+            detail = show_registered_model(
+                registry_root=registry_root,
+                model_ref=str(args.model_ref).strip(),
+                model_family=(str(args.model_family).strip() if args.model_family else None),
+            )
+            _print_json(detail)
+            return 0
+
+        raise ValueError(f"Unsupported model command: {args.model_command}")
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        print(f"[model][error] {exc}")
+        return 2
 
 
 def _handle_upbit_command(args: argparse.Namespace, config_dir: Path) -> int:
