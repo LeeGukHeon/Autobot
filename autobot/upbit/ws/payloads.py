@@ -8,6 +8,7 @@ from .models import Subscription
 
 
 VALID_WS_FORMATS = {"DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"}
+VALID_PRIVATE_WS_TYPES = {"myOrder", "myAsset"}
 
 
 def build_subscribe_payload(
@@ -41,6 +42,39 @@ def build_subscribe_payload(
             raise ValueError(f"format must be one of: {allowed}")
         payload.append({"format": normalized_fmt})
 
+    return payload
+
+
+def build_private_subscribe_payload(
+    ticket: str,
+    types: Iterable[str],
+    fmt: str | None = "SIMPLE_LIST",
+) -> list[dict[str, Any]]:
+    ticket_value = ticket.strip()
+    if not ticket_value:
+        raise ValueError("ticket is required")
+
+    normalized_types: list[str] = []
+    seen: set[str] = set()
+    for raw_type in types:
+        type_value = _normalize_private_type(raw_type)
+        if type_value in seen:
+            continue
+        seen.add(type_value)
+        normalized_types.append(type_value)
+    if not normalized_types:
+        raise ValueError("at least one private subscription type is required")
+
+    payload: list[dict[str, Any]] = [{"ticket": ticket_value}]
+    for type_value in normalized_types:
+        payload.append({"type": type_value})
+
+    if fmt:
+        normalized_fmt = fmt.strip().upper()
+        if normalized_fmt not in VALID_WS_FORMATS:
+            allowed = ", ".join(sorted(VALID_WS_FORMATS))
+            raise ValueError(f"format must be one of: {allowed}")
+        payload.append({"format": normalized_fmt})
     return payload
 
 
@@ -83,3 +117,12 @@ def _normalize_codes(codes: Iterable[Any]) -> tuple[str, ...]:
         normalized.append(code)
     return tuple(normalized)
 
+
+def _normalize_private_type(raw: str) -> str:
+    lowered = str(raw).strip().lower()
+    if lowered == "myorder":
+        return "myOrder"
+    if lowered == "myasset":
+        return "myAsset"
+    allowed = ", ".join(sorted(VALID_PRIVATE_WS_TYPES))
+    raise ValueError(f"private subscription type must be one of: {allowed}")

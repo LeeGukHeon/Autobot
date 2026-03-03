@@ -12,7 +12,16 @@ from typing import Any, Callable
 
 import yaml
 
+from . import __version__
 from .data import DuckDBSettings, IngestOptions, ingest_dataset, sniff_csv_files, validate_dataset
+from .live import (
+    LiveDaemonSettings,
+    LiveStateStore,
+    apply_cancel_actions,
+    reconcile_exchange_snapshot,
+    run_live_sync_daemon,
+    run_live_sync_daemon_with_private_ws,
+)
 from .paper import PaperRunSettings, run_live_paper_sync
 from .strategy import TopTradeValueScanner
 from .upbit import (
@@ -25,6 +34,7 @@ from .upbit import (
     require_upbit_credentials,
 )
 from .upbit.ws import UpbitWebSocketPublicClient
+from .upbit.ws import UpbitWebSocketPrivateClient
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -142,6 +152,37 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--per-trade-krw", type=float)
     paper_run_parser.add_argument("--max-positions", type=int)
 
+    live_parser = subparsers.add_parser("live", help="Live runtime state/reconciliation operations.")
+    live_subparsers = live_parser.add_subparsers(dest="live_command", required=True)
+
+    live_status_parser = live_subparsers.add_parser("status", help="Show exchange/local state summary.")
+    live_status_parser.add_argument("--bot-id", help="Override live.bot_id")
+
+    live_reconcile_parser = live_subparsers.add_parser(
+        "reconcile",
+        help="Reconcile local state with exchange snapshot.",
+    )
+    live_reconcile_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_reconcile_parser.add_argument("--apply", action="store_true", help="Apply planned actions.")
+    live_reconcile_parser.add_argument("--dry-run", action="store_true", help="Force dry-run (default behavior).")
+    live_reconcile_parser.add_argument(
+        "--allow-cancel-external",
+        action="store_true",
+        help="Allow external order cancel only when config also allows it.",
+    )
+
+    live_run_parser = live_subparsers.add_parser("run", help="Run polling-based live sync daemon.")
+    live_run_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_run_parser.add_argument("--duration-sec", type=int, default=0, help="Run duration; 0 means until interrupted.")
+    live_run_parser.add_argument(
+        "--allow-cancel-external",
+        action="store_true",
+        help="Allow external order cancel only when config also allows it.",
+    )
+
+    live_export_state_parser = live_subparsers.add_parser("export-state", help="Export local state DB as JSON.")
+    live_export_state_parser.add_argument("--bot-id", help="Override live.bot_id")
+
     return parser
 
 
@@ -154,6 +195,8 @@ def main() -> int:
         return _handle_data_command(args, config)
     if args.command == "paper":
         return _handle_paper_command(args, Path(args.config_dir), config)
+    if args.command == "live":
+        return _handle_live_command(args, Path(args.config_dir), config)
     if args.command == "upbit":
         return _handle_upbit_command(args, Path(args.config_dir))
 
@@ -364,6 +407,162 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         return 0
     except (ConfigError, UpbitError, ValueError) as exc:
         print(f"[paper][error] {exc}")
+        return 2
+
+
+def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    try:
+        defaults = _live_defaults(base_config)
+        bot_id = str(args.bot_id or defaults["bot_id"]).strip()
+        if not bot_id:
+            raise ValueError("live.bot_id must not be blank")
+        db_path = Path(str(defaults["state_db_path"]))
+        command = str(args.live_command)
+        apply_mode = bool(getattr(args, "apply", False)) and not bool(getattr(args, "dry_run", False))
+        if bool(getattr(args, "apply", False)) and bool(getattr(args, "dry_run", False)):
+            raise ValueError("cannot use --apply and --dry-run together")
+        allow_cancel_external_cli = bool(getattr(args, "allow_cancel_external", False))
+
+        with LiveStateStore(db_path) as store:
+            if command == "export-state":
+                _print_json(store.export_state())
+                return 0
+
+            store.bootstrap_bot_meta(bot_id=bot_id, version=__version__)
+            needs_write_lock = bool(defaults["state_run_lock"]) and (
+                command == "run" or (command == "reconcile" and apply_mode)
+            )
+            lock_acquired = False
+            if needs_write_lock:
+                lock_acquired = store.acquire_run_lock(bot_id=bot_id)
+                if not lock_acquired:
+                    raise ValueError(f"run lock is already held for bot_id={bot_id}")
+            try:
+                settings = load_upbit_settings(config_dir)
+                _ensure_upbit_runtime_available()
+                credentials = require_upbit_credentials(settings)
+                with UpbitHttpClient(settings, credentials=credentials) as http_client:
+                    client = UpbitPrivateClient(http_client)
+                    accounts: Any = None
+                    open_orders: Any = None
+
+                    if command in {"status", "reconcile"}:
+                        accounts = client.accounts()
+                        open_orders = client.open_orders(states=("wait", "watch"))
+
+                    if command == "status":
+                        reconcile_report = reconcile_exchange_snapshot(
+                            store=store,
+                            bot_id=bot_id,
+                            identifier_prefix=str(defaults["identifier_prefix"]),
+                            accounts_payload=accounts,
+                            open_orders_payload=open_orders,
+                            unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
+                            unknown_positions_policy=str(defaults["unknown_positions_policy"]),
+                            allow_cancel_external_orders=bool(defaults["allow_cancel_external_orders"]),
+                            default_risk_sl_pct=float(defaults["default_risk_sl_pct"]),
+                            default_risk_tp_pct=float(defaults["default_risk_tp_pct"]),
+                            default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
+                            quote_currency=str(defaults["quote_currency"]),
+                            dry_run=True,
+                        )
+                        payload = {
+                            "bot_id": bot_id,
+                            "db_path": str(db_path),
+                            "exchange": {
+                                "accounts_count": len(accounts) if isinstance(accounts, list) else 0,
+                                "open_orders_count": len(open_orders) if isinstance(open_orders, list) else 0,
+                            },
+                            "local": {
+                                "positions_count": len(store.list_positions()),
+                                "open_orders_count": len(store.list_orders(open_only=True)),
+                            },
+                            "reconcile_preview": reconcile_report,
+                        }
+                        _print_json(payload)
+                        return 0
+
+                    if command == "reconcile":
+                        report = reconcile_exchange_snapshot(
+                            store=store,
+                            bot_id=bot_id,
+                            identifier_prefix=str(defaults["identifier_prefix"]),
+                            accounts_payload=accounts,
+                            open_orders_payload=open_orders,
+                            fetch_order_detail=lambda uuid, identifier: client.order(uuid=uuid, identifier=identifier),
+                            unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
+                            unknown_positions_policy=str(defaults["unknown_positions_policy"]),
+                            allow_cancel_external_orders=bool(defaults["allow_cancel_external_orders"]),
+                            default_risk_sl_pct=float(defaults["default_risk_sl_pct"]),
+                            default_risk_tp_pct=float(defaults["default_risk_tp_pct"]),
+                            default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
+                            quote_currency=str(defaults["quote_currency"]),
+                            dry_run=not apply_mode,
+                        )
+                        cancel_summary = apply_cancel_actions(
+                            report=report,
+                            cancel_order=lambda uuid, identifier: client.cancel_order(uuid=uuid, identifier=identifier),
+                            apply=apply_mode,
+                            allow_cancel_external_cli=allow_cancel_external_cli,
+                            allow_cancel_external_config=bool(defaults["allow_cancel_external_orders"]),
+                        )
+                        output = {
+                            "apply": apply_mode,
+                            "report": report,
+                            "cancel_summary": cancel_summary,
+                        }
+                        if apply_mode:
+                            store.set_checkpoint(name="last_reconcile", payload=output)
+                        _print_json(output)
+                        return 2 if bool(report.get("halted")) else 0
+
+                    if command == "run":
+                        daemon_settings = LiveDaemonSettings(
+                            bot_id=bot_id,
+                            identifier_prefix=str(defaults["identifier_prefix"]),
+                            unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
+                            unknown_positions_policy=str(defaults["unknown_positions_policy"]),
+                            allow_cancel_external_orders=bool(defaults["allow_cancel_external_orders"]),
+                            poll_interval_sec=int(defaults["sync_poll_interval_sec"]),
+                            quote_currency=str(defaults["quote_currency"]),
+                            startup_reconcile=bool(defaults["startup_reconcile"]),
+                            default_risk_sl_pct=float(defaults["default_risk_sl_pct"]),
+                            default_risk_tp_pct=float(defaults["default_risk_tp_pct"]),
+                            default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
+                            allow_cancel_external_cli=allow_cancel_external_cli,
+                            use_private_ws=bool(defaults["sync_use_private_ws"]),
+                            duration_sec=(
+                                int(getattr(args, "duration_sec", 0))
+                                if int(getattr(args, "duration_sec", 0)) > 0
+                                else None
+                            ),
+                        )
+                        if daemon_settings.use_private_ws:
+                            ws_client = UpbitWebSocketPrivateClient(settings.websocket, credentials)
+                            daemon_summary = asyncio.run(
+                                run_live_sync_daemon_with_private_ws(
+                                    store=store,
+                                    client=client,
+                                    ws_client=ws_client,
+                                    settings=daemon_settings,
+                                )
+                            )
+                        else:
+                            daemon_summary = run_live_sync_daemon(
+                                store=store,
+                                client=client,
+                                settings=daemon_settings,
+                            )
+                        store.set_checkpoint(name="daemon_last_run", payload=daemon_summary)
+                        _print_json(daemon_summary)
+                        return 2 if bool(daemon_summary.get("halted")) else 0
+
+                raise ValueError(f"Unsupported live command: {command}")
+            finally:
+                if lock_acquired:
+                    store.release_run_lock(bot_id=bot_id)
+    except (ConfigError, UpbitError, ValueError) as exc:
+        print(f"[live][error] {exc}")
         return 2
 
 
@@ -628,6 +827,42 @@ def _paper_defaults(
         "max_consecutive_failures": int(
             risk_root.get("max_consecutive_failures", limits_cfg.get("consecutive_order_failures", 3))
         ),
+    }
+
+
+def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
+    live_cfg = base_config.get("live", {}) if isinstance(base_config.get("live"), dict) else {}
+    state_cfg = live_cfg.get("state", {}) if isinstance(live_cfg.get("state"), dict) else {}
+    startup_cfg = live_cfg.get("startup", {}) if isinstance(live_cfg.get("startup"), dict) else {}
+    sync_cfg = live_cfg.get("sync", {}) if isinstance(live_cfg.get("sync"), dict) else {}
+    orders_cfg = live_cfg.get("orders", {}) if isinstance(live_cfg.get("orders"), dict) else {}
+    default_risk_cfg = live_cfg.get("default_risk", {}) if isinstance(live_cfg.get("default_risk"), dict) else {}
+    universe_cfg = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
+
+    unknown_open_orders_policy = str(startup_cfg.get("unknown_open_orders_policy", "halt")).strip().lower()
+    if unknown_open_orders_policy not in {"halt", "ignore", "cancel"}:
+        unknown_open_orders_policy = "halt"
+
+    unknown_positions_policy = str(startup_cfg.get("unknown_positions_policy", "halt")).strip().lower()
+    if unknown_positions_policy not in {"halt", "import_as_unmanaged", "attach_default_risk"}:
+        unknown_positions_policy = "halt"
+
+    return {
+        "enabled": bool(live_cfg.get("enabled", False)),
+        "bot_id": str(live_cfg.get("bot_id", "autobot-001")).strip().lower(),
+        "state_db_path": str(state_cfg.get("db_path", "data/state/live_state.db")),
+        "state_run_lock": bool(state_cfg.get("run_lock", True)),
+        "startup_reconcile": bool(startup_cfg.get("reconcile", True)),
+        "unknown_open_orders_policy": unknown_open_orders_policy,
+        "unknown_positions_policy": unknown_positions_policy,
+        "allow_cancel_external_orders": bool(startup_cfg.get("allow_cancel_external_orders", False)),
+        "sync_poll_interval_sec": max(int(sync_cfg.get("poll_interval_sec", 15)), 1),
+        "sync_use_private_ws": bool(sync_cfg.get("use_private_ws", False)),
+        "identifier_prefix": str(orders_cfg.get("identifier_prefix", "AUTOBOT")).strip().upper(),
+        "default_risk_sl_pct": max(float(default_risk_cfg.get("sl_pct", 2.0)), 0.0),
+        "default_risk_tp_pct": max(float(default_risk_cfg.get("tp_pct", 3.0)), 0.0),
+        "default_risk_trailing_enabled": bool(default_risk_cfg.get("trailing_enabled", False)),
+        "quote_currency": str(universe_cfg.get("quote_currency", "KRW")).strip().upper(),
     }
 
 

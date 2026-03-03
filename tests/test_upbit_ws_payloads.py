@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from autobot.upbit.ws.models import Subscription
-from autobot.upbit.ws.payloads import build_subscribe_payload
+from autobot.upbit.ws.payloads import build_private_subscribe_payload, build_subscribe_payload
 
 
 def test_build_subscribe_payload_normalizes_codes_and_format() -> None:
@@ -34,3 +34,17 @@ def test_build_subscribe_payload_rejects_invalid_format() -> None:
             fmt="UNKNOWN",
         )
 
+
+def test_build_private_subscribe_payload() -> None:
+    payload = build_private_subscribe_payload(
+        ticket="ticket-2",
+        types=("myorder", "myasset", "myOrder"),
+        fmt="simple_list",
+    )
+
+    assert payload == [
+        {"ticket": "ticket-2"},
+        {"type": "myOrder"},
+        {"type": "myAsset"},
+        {"format": "SIMPLE_LIST"},
+    ]

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
-from .models import TickerEvent
+from .models import MyAssetEvent, MyOrderEvent, TickerEvent
 
 
 def decode_ws_message(raw_message: bytes | str) -> Any:
@@ -40,6 +41,52 @@ def parse_ticker_event(payload: Any) -> TickerEvent | None:
         market_state=market_state,
         market_warning=market_warning,
     )
+
+
+def parse_private_event(payload: Any) -> MyOrderEvent | MyAssetEvent | None:
+    message = _extract_mapping(payload)
+    if message is None:
+        return None
+
+    raw_stream_type = _to_str(_coalesce(message, "type", "ty"))
+    if raw_stream_type is None:
+        return None
+    stream_type = raw_stream_type.strip()
+    normalized = stream_type.lower()
+    ts_ms = _to_int(_coalesce(message, "timestamp", "tms", "trade_timestamp"))
+    if ts_ms is None:
+        ts_ms = int(time.time() * 1000)
+
+    if normalized == "myorder":
+        market = _to_str(_coalesce(message, "code", "cd", "market"))
+        return MyOrderEvent(
+            ts_ms=ts_ms,
+            uuid=_to_str(_coalesce(message, "uuid", "uid")),
+            identifier=_to_str(_coalesce(message, "identifier", "i")),
+            market=market.upper() if market else None,
+            side=_to_str(_coalesce(message, "side", "sd")),
+            ord_type=_to_str(_coalesce(message, "ord_type", "ot")),
+            state=_to_str(_coalesce(message, "state", "st")),
+            price=_to_float(_coalesce(message, "price", "p")),
+            volume=_to_float(_coalesce(message, "volume", "v")),
+            executed_volume=_to_float(_coalesce(message, "executed_volume", "ev")),
+            stream_type="myOrder",
+            raw=dict(message),
+        )
+
+    if normalized == "myasset":
+        currency = _to_str(_coalesce(message, "currency", "cy"))
+        return MyAssetEvent(
+            ts_ms=ts_ms,
+            currency=currency.upper() if currency else None,
+            balance=_to_float(_coalesce(message, "balance", "bl")),
+            locked=_to_float(_coalesce(message, "locked", "lk")),
+            avg_buy_price=_to_float(_coalesce(message, "avg_buy_price", "abp")),
+            stream_type="myAsset",
+            raw=dict(message),
+        )
+
+    return None
 
 
 def _extract_mapping(payload: Any) -> dict[str, Any] | None:
@@ -82,4 +129,3 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-

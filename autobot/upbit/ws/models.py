@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -23,3 +24,29 @@ class TickerEvent:
     market_state: str | None = None
     market_warning: str | None = None
 
+
+@dataclass(frozen=True)
+class MyOrderEvent:
+    ts_ms: int
+    uuid: str | None
+    identifier: str | None
+    market: str | None
+    side: str | None
+    ord_type: str | None
+    state: str | None
+    price: float | None
+    volume: float | None
+    executed_volume: float | None
+    stream_type: str = "myOrder"
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class MyAssetEvent:
+    ts_ms: int
+    currency: str | None
+    balance: float | None
+    locked: float | None
+    avg_buy_price: float | None
+    stream_type: str = "myAsset"
+    raw: dict[str, Any] | None = None

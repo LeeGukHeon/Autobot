@@ -2,6 +2,27 @@
 timezone: Asia/Seoul
 log_level: INFO
 
+live:
+  enabled: false
+  bot_id: "autobot-001"
+  state:
+    db_path: "data/state/live_state.db"
+    run_lock: true
+  startup:
+    reconcile: true
+    unknown_open_orders_policy: "halt"
+    unknown_positions_policy: "halt"
+    allow_cancel_external_orders: false
+  sync:
+    poll_interval_sec: 15
+    use_private_ws: false
+  orders:
+    identifier_prefix: "AUTOBOT"
+  default_risk:
+    sl_pct: 2.0
+    tp_pct: 3.0
+    trailing_enabled: false
+
 universe:
   quote_currency: KRW
   top_n_by_acc_trade_price_24h: 20

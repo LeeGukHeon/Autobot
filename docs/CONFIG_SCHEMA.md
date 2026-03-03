@@ -5,6 +5,34 @@
 - `timezone`: timezone string (default: `Asia/Seoul`)
 - `log_level`: `DEBUG | INFO | WARNING | ERROR`
 
+## Live
+- `live.enabled`: bool
+- `live.bot_id`: string
+
+### Live State
+- `live.state.db_path`: path (default: `data/state/live_state.db`)
+- `live.state.run_lock`: bool (default: `true`)
+
+### Live Startup
+- `live.startup.reconcile`: bool (default: `true`)
+- `live.startup.unknown_open_orders_policy`: `halt | ignore | cancel` (default: `halt`)
+- `live.startup.unknown_positions_policy`: `halt | import_as_unmanaged | attach_default_risk` (default: `halt`)
+- `live.startup.allow_cancel_external_orders`: bool (default: `false`)
+
+### Live Sync
+- `live.sync.poll_interval_sec`: integer (default: `15`)
+- `live.sync.use_private_ws`: bool (default: `false`)
+  - `true`면 `live run`에서 private WS(`myOrder`,`myAsset`) 이벤트 기반 동기화를 사용
+  - REST polling은 안전망으로 유지(저빈도)
+
+### Live Orders
+- `live.orders.identifier_prefix`: string (default: `AUTOBOT`)
+
+### Live Default Risk
+- `live.default_risk.sl_pct`: number (default: `2.0`)
+- `live.default_risk.tp_pct`: number (default: `3.0`)
+- `live.default_risk.trailing_enabled`: bool (default: `false`)
+
 ## Universe
 - `universe.quote_currency`: string
 - `universe.top_n_by_acc_trade_price_24h`: integer
@@ -122,6 +150,15 @@
   - `--starting-krw`: initial paper cash
   - `--per-trade-krw`: per-order notional target
   - `--max-positions`: max simultaneous positions
+
+## CLI: Live State
+- `python -m autobot.cli live status`
+- `python -m autobot.cli live reconcile --dry-run`
+- `python -m autobot.cli live reconcile --apply`
+- `python -m autobot.cli live reconcile --apply --allow-cancel-external`
+- `python -m autobot.cli live run --duration-sec 120`
+- `python -m autobot.cli live run --allow-cancel-external`
+- `python -m autobot.cli live export-state`
 
 ## Candle Data Contract v1
 

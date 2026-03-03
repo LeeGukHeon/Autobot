@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .exceptions import ValidationError
 from .http_client import UpbitHttpClient
 from .types import JSONValue
@@ -30,6 +32,84 @@ class UpbitPrivateClient:
             params=[("market", market_value)],
             auth=True,
             rate_limit_group="default",
+        )
+
+    def open_orders(
+        self,
+        *,
+        market: str | None = None,
+        states: Sequence[str] | None = None,
+    ) -> JSONValue:
+        params: list[tuple[str, str]] = []
+        if market is not None:
+            market_value = market.strip().upper()
+            if not market_value:
+                raise ValidationError("market must not be blank")
+            params.append(("market", market_value))
+
+        raw_states = ("wait", "watch") if states is None else states
+        states_value = tuple(str(state).strip().lower() for state in raw_states if str(state).strip())
+        if not states_value:
+            raise ValidationError("states must include at least one value")
+        for state in states_value:
+            params.append(("states[]", state))
+
+        return self._http.request_json(
+            "GET",
+            "/v1/orders/open",
+            params=params,
+            auth=True,
+            rate_limit_group="default",
+        )
+
+    def order(
+        self,
+        *,
+        uuid: str | None = None,
+        identifier: str | None = None,
+    ) -> JSONValue:
+        uuid_value = str(uuid or "").strip()
+        identifier_value = str(identifier or "").strip()
+        if not uuid_value and not identifier_value:
+            raise ValidationError("uuid or identifier is required")
+
+        params: list[tuple[str, str]] = []
+        if uuid_value:
+            params.append(("uuid", uuid_value))
+        if identifier_value:
+            params.append(("identifier", identifier_value))
+
+        return self._http.request_json(
+            "GET",
+            "/v1/order",
+            params=params,
+            auth=True,
+            rate_limit_group="default",
+        )
+
+    def cancel_order(
+        self,
+        *,
+        uuid: str | None = None,
+        identifier: str | None = None,
+    ) -> JSONValue:
+        uuid_value = str(uuid or "").strip()
+        identifier_value = str(identifier or "").strip()
+        if not uuid_value and not identifier_value:
+            raise ValidationError("uuid or identifier is required")
+
+        params: list[tuple[str, str]] = []
+        if uuid_value:
+            params.append(("uuid", uuid_value))
+        if identifier_value:
+            params.append(("identifier", identifier_value))
+
+        return self._http.request_json(
+            "DELETE",
+            "/v1/order",
+            params=params,
+            auth=True,
+            rate_limit_group="order",
         )
 
     def order_test(

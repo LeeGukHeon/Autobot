@@ -220,9 +220,10 @@ D:\MyApps\Autobot
 - T03: orders/chance + instruments cache
 - T04: Top20 scanner + candidate generator
 - T05: Backtest v1
-- T06: Risk v1
-- T07: Paper v1
-- T08: Live execution v1
+- T06: Live StateStore + Reconcile v1
+- T06.1: Live Ops completion (apply cancel + polling daemon + intents wiring)
+- T07: Private WS sync v1 (`myOrder`/`myAsset`)
+- T08: Live execution v1 (order manager + state machine)
 - T09: ML pipeline v1
 - T10: Meta risk-on/off
 
