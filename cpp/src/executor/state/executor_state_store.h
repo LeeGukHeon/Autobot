@@ -14,6 +14,13 @@ struct IdentifierStateRecord {
   std::string mode;
   std::string status;
   std::string upbit_uuid;
+  std::string prev_identifier;
+  std::string prev_upbit_uuid;
+  std::string root_identifier;
+  std::string root_upbit_uuid;
+  std::string chain_status;
+  int replace_attempt = 0;
+  std::int64_t last_replace_ts_ms = 0;
   std::int64_t created_at_ms = 0;
   std::int64_t updated_at_ms = 0;
   int last_http_status = 0;
@@ -30,6 +37,7 @@ class ExecutorStateStore {
   bool Save() const;
 
   std::optional<IdentifierStateRecord> Find(const std::string& identifier) const;
+  std::optional<IdentifierStateRecord> FindByUpbitUuid(const std::string& upbit_uuid) const;
   void Upsert(const IdentifierStateRecord& record);
   std::unordered_map<std::string, IdentifierStateRecord> Snapshot() const;
 
@@ -42,4 +50,3 @@ class ExecutorStateStore {
 };
 
 }  // namespace autobot::executor::state
-

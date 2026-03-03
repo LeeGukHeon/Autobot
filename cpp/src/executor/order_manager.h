@@ -65,7 +65,10 @@ struct ManagedEvent {
 
 class OrderManager {
  public:
-  explicit OrderManager(UpbitRestClient* rest_client);
+  explicit OrderManager(
+      UpbitRestClient* rest_client,
+      std::function<std::unique_ptr<upbit::UpbitPrivateWsClient>(
+          const upbit::WsPrivateClientOptions&)> private_ws_factory = {});
   ~OrderManager();
 
   ManagedResult SubmitIntent(const ManagedIntent& intent);
@@ -130,6 +133,9 @@ class OrderManager {
   std::atomic<bool> stop_private_ws_{false};
   std::thread private_ws_thread_;
   std::unique_ptr<upbit::UpbitPrivateWsClient> private_ws_client_;
+  std::function<std::unique_ptr<upbit::UpbitPrivateWsClient>(
+      const upbit::WsPrivateClientOptions&)>
+      private_ws_factory_;
   bool private_ws_up_status_log_ = false;
   int poll_interval_rest_only_ms_ = 1500;
   int poll_interval_ws_connected_ms_ = 180000;

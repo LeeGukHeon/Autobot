@@ -97,7 +97,13 @@ std::string ParseStringEnv(const char* key, const std::string& fallback) {
 
 }  // namespace
 
-OrderManager::OrderManager(UpbitRestClient* rest_client) : rest_client_(rest_client) {
+OrderManager::OrderManager(
+    UpbitRestClient* rest_client,
+    std::function<std::unique_ptr<upbit::UpbitPrivateWsClient>(
+        const upbit::WsPrivateClientOptions&)>
+        private_ws_factory)
+    : rest_client_(rest_client),
+      private_ws_factory_(std::move(private_ws_factory)) {
   order_timeout_sec_ = ParseIntEnv("AUTOBOT_EXECUTOR_ORDER_TIMEOUT_SEC", 0, 0);
   timeout_replace_enabled_ =
       ParseBoolEnv("AUTOBOT_EXECUTOR_ORDER_TIMEOUT_REPLACE_ENABLED", false);
@@ -554,6 +560,7 @@ nlohmann::json OrderManager::Snapshot() const {
       {"poll_interval_rest_only_ms", poll_interval_rest_only_ms_},
       {"poll_interval_ws_connected_ms", poll_interval_ws_connected_ms_},
       {"poll_interval_ws_degraded_ms", poll_interval_ws_degraded_ms_},
+      {"current_poll_interval_ms", CurrentPollingIntervalLocked().count()},
       {"order_timeout_sec", order_timeout_sec_},
       {"order_timeout_replace_enabled", timeout_replace_enabled_},
   };
@@ -683,7 +690,17 @@ void OrderManager::StartPrivateWsIfNeeded() {
     private_ws_up_status_log_ = options.up_status_log;
   }
 
-  private_ws_client_ = std::make_unique<upbit::UpbitPrivateWsClient>(options);
+  if (private_ws_factory_) {
+    private_ws_client_ = private_ws_factory_(options);
+  } else {
+    private_ws_client_ = std::make_unique<upbit::UpbitPrivateWsClient>(options);
+  }
+  if (private_ws_client_ == nullptr) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    private_ws_enabled_ = false;
+    private_ws_connected_ = false;
+    return;
+  }
   stop_private_ws_.store(false);
   BootstrapAssetSnapshot();
   private_ws_thread_ = std::thread(&OrderManager::PrivateWsLoop, this);

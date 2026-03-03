@@ -57,26 +57,61 @@ std::string EncodeKey(std::string_view key, KeyEncodingPolicy policy) {
   return encoded;
 }
 
+int HexToInt(char ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return 10 + (ch - 'a');
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return 10 + (ch - 'A');
+  }
+  return -1;
+}
+
+std::string PercentDecodePreservingPlus(std::string_view encoded) {
+  std::string decoded;
+  decoded.reserve(encoded.size());
+  for (std::size_t i = 0; i < encoded.size(); ++i) {
+    const char ch = encoded[i];
+    if (ch != '%' || i + 2 >= encoded.size()) {
+      decoded.push_back(ch);
+      continue;
+    }
+    const int hi = HexToInt(encoded[i + 1]);
+    const int lo = HexToInt(encoded[i + 2]);
+    if (hi < 0 || lo < 0) {
+      decoded.push_back(ch);
+      continue;
+    }
+    decoded.push_back(static_cast<char>((hi << 4) | lo));
+    i += 2;
+  }
+  return decoded;
+}
+
+OrderedParams FilterBodyParams(const OrderedParams& params) {
+  OrderedParams filtered;
+  filtered.reserve(params.size());
+  for (const auto& [key, value] : params) {
+    if (key.empty() || value.empty()) {
+      continue;
+    }
+    filtered.emplace_back(key, value);
+  }
+  return filtered;
+}
+
 }  // namespace
 
 std::string BuildUnencodedQueryString(const OrderedParams& params) {
   if (params.empty()) {
     return "";
   }
-
-  std::ostringstream query;
-  bool first = true;
-  for (const auto& [key, value] : params) {
-    if (key.empty()) {
-      continue;
-    }
-    if (!first) {
-      query << '&';
-    }
-    first = false;
-    query << key << '=' << value;
-  }
-  return query.str();
+  // Python parity: unquote(urlencode(params, doseq=True)).
+  const std::string encoded = BuildUrlEncodedQueryString(params, KeyEncodingPolicy::kEncodeAll);
+  return PercentDecodePreservingPlus(encoded);
 }
 
 std::string BuildUrlEncodedQueryString(const OrderedParams& params, KeyEncodingPolicy key_policy) {
@@ -99,10 +134,10 @@ std::string BuildUrlEncodedQueryString(const OrderedParams& params, KeyEncodingP
   return query.str();
 }
 
-nlohmann::json BuildJsonBodyFromParams(const OrderedParams& params) {
-  nlohmann::json body = nlohmann::json::object();
+nlohmann::ordered_json BuildJsonBodyFromParams(const OrderedParams& params) {
+  nlohmann::ordered_json body = nlohmann::ordered_json::object();
   for (const auto& [key, value] : params) {
-    if (key.empty()) {
+    if (key.empty() || value.empty()) {
       continue;
     }
     auto found = body.find(key);
@@ -114,7 +149,7 @@ nlohmann::json BuildJsonBodyFromParams(const OrderedParams& params) {
       found->push_back(value);
       continue;
     }
-    nlohmann::json list = nlohmann::json::array();
+    nlohmann::ordered_json list = nlohmann::ordered_json::array();
     list.push_back(*found);
     list.push_back(value);
     body[key] = std::move(list);
@@ -131,23 +166,27 @@ PreparedRequest BuildPreparedRequest(const RequestSpec& spec) {
   }
 
   prepared.headers = spec.headers;
-  prepared.url_query = BuildUrlEncodedQueryString(spec.query_params);
 
   if (prepared.method == "GET" || prepared.method == "DELETE") {
+    prepared.url_query = BuildUrlEncodedQueryString(spec.query_params);
     prepared.query_string_for_hash = BuildUnencodedQueryString(spec.query_params);
     return prepared;
   }
 
   if (prepared.method == "POST" || prepared.method == "PUT" || prepared.method == "PATCH") {
-    if (!spec.body_params.empty()) {
+    const OrderedParams body_params = FilterBodyParams(spec.body_params);
+    if (!body_params.empty()) {
       prepared.has_body = true;
-      prepared.body_json = BuildJsonBodyFromParams(spec.body_params).dump();
-      prepared.query_string_for_hash = BuildUnencodedQueryString(spec.body_params);
+      prepared.body_json = BuildJsonBodyFromParams(body_params).dump();
+      prepared.query_string_for_hash = BuildUnencodedQueryString(body_params);
       prepared.headers["Content-Type"] = "application/json; charset=utf-8";
     }
+    prepared.url_query.clear();
+    return prepared;
   }
+
+  prepared.url_query = BuildUrlEncodedQueryString(spec.query_params);
   return prepared;
 }
 
 }  // namespace autobot::executor::upbit
-

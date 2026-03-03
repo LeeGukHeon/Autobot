@@ -25,7 +25,7 @@ namespace autobot::executor::state {
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 constexpr auto kStaleLockThreshold = std::chrono::minutes(10);
 constexpr char kLockOwnerMetaFileName[] = "owner.json";
 const nlohmann::json kNullJson = nullptr;
@@ -260,6 +260,13 @@ bool LoadPayloadFile(
     record.mode = ParseString(field_or_null("mode"));
     record.status = ParseString(field_or_null("status"));
     record.upbit_uuid = ParseString(field_or_null("upbit_uuid"));
+    record.prev_identifier = ParseString(field_or_null("prev_identifier"));
+    record.prev_upbit_uuid = ParseString(field_or_null("prev_upbit_uuid"));
+    record.root_identifier = ParseString(field_or_null("root_identifier"));
+    record.root_upbit_uuid = ParseString(field_or_null("root_upbit_uuid"));
+    record.chain_status = ParseString(field_or_null("chain_status"));
+    record.replace_attempt = ParseInt(field_or_null("replace_attempt"), 0);
+    record.last_replace_ts_ms = ParseInt64(field_or_null("last_replace_ts_ms"));
     record.created_at_ms = ParseInt64(field_or_null("created_at_ms"));
     record.updated_at_ms = ParseInt64(field_or_null("updated_at_ms"));
     record.last_http_status = ParseInt(field_or_null("last_http_status"), 0);
@@ -284,6 +291,13 @@ nlohmann::json SerializePayload(const std::unordered_map<std::string, Identifier
         {"mode", record.mode},
         {"status", record.status},
         {"upbit_uuid", record.upbit_uuid},
+        {"prev_identifier", record.prev_identifier},
+        {"prev_upbit_uuid", record.prev_upbit_uuid},
+        {"root_identifier", record.root_identifier},
+        {"root_upbit_uuid", record.root_upbit_uuid},
+        {"chain_status", record.chain_status},
+        {"replace_attempt", record.replace_attempt},
+        {"last_replace_ts_ms", record.last_replace_ts_ms},
         {"created_at_ms", record.created_at_ms},
         {"updated_at_ms", record.updated_at_ms},
         {"last_http_status", record.last_http_status},
@@ -365,6 +379,19 @@ std::optional<IdentifierStateRecord> ExecutorStateStore::Find(const std::string&
     return std::nullopt;
   }
   return found->second;
+}
+
+std::optional<IdentifierStateRecord> ExecutorStateStore::FindByUpbitUuid(const std::string& upbit_uuid) const {
+  if (upbit_uuid.empty()) {
+    return std::nullopt;
+  }
+  std::lock_guard<std::mutex> guard(mutex_);
+  for (const auto& [_, record] : records_) {
+    if (record.upbit_uuid == upbit_uuid) {
+      return record;
+    }
+  }
+  return std::nullopt;
 }
 
 void ExecutorStateStore::Upsert(const IdentifierStateRecord& record) {

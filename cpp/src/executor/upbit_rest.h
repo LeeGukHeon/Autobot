@@ -127,7 +127,9 @@ struct UpbitAccountsSnapshotResult {
 
 class UpbitRestClient {
  public:
-  explicit UpbitRestClient(bool order_test_mode);
+  explicit UpbitRestClient(
+      bool order_test_mode,
+      std::unique_ptr<upbit::UpbitHttpClient> http_client_override = nullptr);
 
   bool IsOrderTestMode() const;
   const std::string& ModeName() const;

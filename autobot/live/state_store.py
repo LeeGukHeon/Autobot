@@ -57,6 +57,33 @@ class IntentRecord:
     status: str = "NEW"
 
 
+@dataclass(frozen=True)
+class RiskPlanRecord:
+    plan_id: str
+    market: str
+    side: str
+    entry_price_str: str
+    qty_str: str
+    tp_enabled: bool = False
+    tp_price_str: str | None = None
+    tp_pct: float | None = None
+    sl_enabled: bool = False
+    sl_price_str: str | None = None
+    sl_pct: float | None = None
+    trailing_enabled: bool = False
+    trail_pct: float | None = None
+    high_watermark_price_str: str | None = None
+    armed_ts_ms: int | None = None
+    state: str = "ACTIVE"
+    last_eval_ts_ms: int = 0
+    last_action_ts_ms: int = 0
+    current_exit_order_uuid: str | None = None
+    current_exit_order_identifier: str | None = None
+    replace_attempt: int = 0
+    created_ts: int = 0
+    updated_ts: int = 0
+
+
 class LiveStateStore:
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
@@ -255,6 +282,100 @@ class LiveStateStore:
         rows = self._conn.execute("SELECT * FROM intents ORDER BY ts_ms DESC, intent_id").fetchall()
         return [_row_to_intent(row) for row in rows]
 
+    def upsert_risk_plan(self, record: RiskPlanRecord) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO risk_plans (
+                    plan_id, market, side, entry_price_str, qty_str,
+                    tp_enabled, tp_price_str, tp_pct,
+                    sl_enabled, sl_price_str, sl_pct,
+                    trailing_enabled, trail_pct, high_watermark_price_str, armed_ts_ms,
+                    state, last_eval_ts_ms, last_action_ts_ms,
+                    current_exit_order_uuid, current_exit_order_identifier, replace_attempt,
+                    created_ts, updated_ts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_id) DO UPDATE SET
+                    market=excluded.market,
+                    side=excluded.side,
+                    entry_price_str=excluded.entry_price_str,
+                    qty_str=excluded.qty_str,
+                    tp_enabled=excluded.tp_enabled,
+                    tp_price_str=excluded.tp_price_str,
+                    tp_pct=excluded.tp_pct,
+                    sl_enabled=excluded.sl_enabled,
+                    sl_price_str=excluded.sl_price_str,
+                    sl_pct=excluded.sl_pct,
+                    trailing_enabled=excluded.trailing_enabled,
+                    trail_pct=excluded.trail_pct,
+                    high_watermark_price_str=excluded.high_watermark_price_str,
+                    armed_ts_ms=excluded.armed_ts_ms,
+                    state=excluded.state,
+                    last_eval_ts_ms=excluded.last_eval_ts_ms,
+                    last_action_ts_ms=excluded.last_action_ts_ms,
+                    current_exit_order_uuid=excluded.current_exit_order_uuid,
+                    current_exit_order_identifier=excluded.current_exit_order_identifier,
+                    replace_attempt=excluded.replace_attempt,
+                    created_ts=excluded.created_ts,
+                    updated_ts=excluded.updated_ts
+                """,
+                (
+                    record.plan_id,
+                    record.market,
+                    record.side,
+                    record.entry_price_str,
+                    record.qty_str,
+                    1 if record.tp_enabled else 0,
+                    record.tp_price_str,
+                    record.tp_pct,
+                    1 if record.sl_enabled else 0,
+                    record.sl_price_str,
+                    record.sl_pct,
+                    1 if record.trailing_enabled else 0,
+                    record.trail_pct,
+                    record.high_watermark_price_str,
+                    record.armed_ts_ms,
+                    record.state,
+                    int(record.last_eval_ts_ms),
+                    int(record.last_action_ts_ms),
+                    record.current_exit_order_uuid,
+                    record.current_exit_order_identifier,
+                    int(record.replace_attempt),
+                    int(record.created_ts),
+                    int(record.updated_ts),
+                ),
+            )
+
+    def risk_plan_by_id(self, *, plan_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM risk_plans WHERE plan_id = ?", (plan_id,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_risk_plan(row)
+
+    def list_risk_plans(
+        self,
+        *,
+        states: tuple[str, ...] | None = None,
+        market: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            clauses.append(f"state IN ({placeholders})")
+            params.extend(states)
+        if market:
+            clauses.append("market = ?")
+            params.append(market)
+
+        query = "SELECT * FROM risk_plans"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY market, plan_id"
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_row_to_risk_plan(row) for row in rows]
+
     def set_checkpoint(self, *, name: str, payload: dict[str, Any], ts_ms: int | None = None) -> None:
         now_ts = int(ts_ms if ts_ms is not None else time.time() * 1000)
         with self._conn:
@@ -276,6 +397,7 @@ class LiveStateStore:
             "positions": self.list_positions(),
             "orders": self.list_orders(open_only=False),
             "intents": self.list_intents(),
+            "risk_plans": self.list_risk_plans(),
             "checkpoints": [
                 _row_to_checkpoint(row) for row in self._conn.execute("SELECT * FROM checkpoints ORDER BY name").fetchall()
             ],
@@ -332,6 +454,34 @@ class LiveStateStore:
                     meta_json TEXT NOT NULL DEFAULT '{}',
                     status TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS risk_plans (
+                    plan_id TEXT PRIMARY KEY,
+                    market TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_price_str TEXT NOT NULL,
+                    qty_str TEXT NOT NULL,
+                    tp_enabled INTEGER NOT NULL DEFAULT 0,
+                    tp_price_str TEXT,
+                    tp_pct REAL,
+                    sl_enabled INTEGER NOT NULL DEFAULT 0,
+                    sl_price_str TEXT,
+                    sl_pct REAL,
+                    trailing_enabled INTEGER NOT NULL DEFAULT 0,
+                    trail_pct REAL,
+                    high_watermark_price_str TEXT,
+                    armed_ts_ms INTEGER,
+                    state TEXT NOT NULL DEFAULT 'ACTIVE',
+                    last_eval_ts_ms INTEGER NOT NULL DEFAULT 0,
+                    last_action_ts_ms INTEGER NOT NULL DEFAULT 0,
+                    current_exit_order_uuid TEXT,
+                    current_exit_order_identifier TEXT,
+                    replace_attempt INTEGER NOT NULL DEFAULT 0,
+                    created_ts INTEGER NOT NULL,
+                    updated_ts INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_risk_plans_market_state ON risk_plans (market, state);
 
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     name TEXT PRIMARY KEY,
@@ -395,6 +545,40 @@ def _row_to_intent(row: sqlite3.Row) -> dict[str, Any]:
         "reason_code": row["reason_code"],
         "meta": _parse_json(row["meta_json"]),
         "status": row["status"],
+    }
+
+
+def _row_to_risk_plan(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "plan_id": row["plan_id"],
+        "market": row["market"],
+        "side": row["side"],
+        "entry_price_str": row["entry_price_str"],
+        "qty_str": row["qty_str"],
+        "tp": {
+            "enabled": bool(row["tp_enabled"]),
+            "tp_price_str": row["tp_price_str"],
+            "tp_pct": float(row["tp_pct"]) if row["tp_pct"] is not None else None,
+        },
+        "sl": {
+            "enabled": bool(row["sl_enabled"]),
+            "sl_price_str": row["sl_price_str"],
+            "sl_pct": float(row["sl_pct"]) if row["sl_pct"] is not None else None,
+        },
+        "trailing": {
+            "enabled": bool(row["trailing_enabled"]),
+            "trail_pct": float(row["trail_pct"]) if row["trail_pct"] is not None else None,
+            "high_watermark_price_str": row["high_watermark_price_str"],
+            "armed_ts_ms": int(row["armed_ts_ms"]) if row["armed_ts_ms"] is not None else None,
+        },
+        "state": row["state"],
+        "last_eval_ts_ms": int(row["last_eval_ts_ms"]),
+        "last_action_ts_ms": int(row["last_action_ts_ms"]),
+        "current_exit_order_uuid": row["current_exit_order_uuid"],
+        "current_exit_order_identifier": row["current_exit_order_identifier"],
+        "replace_attempt": int(row["replace_attempt"]),
+        "created_ts": int(row["created_ts"]),
+        "updated_ts": int(row["updated_ts"]),
     }
 
 

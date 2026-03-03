@@ -1,6 +1,9 @@
 #include "grpc_server.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 #include <utility>
@@ -10,6 +13,42 @@
 namespace autobot::executor {
 
 namespace {
+std::string Trim(std::string value) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+  value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+  return value;
+}
+
+std::string ToLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+bool ParseBoolEnv(const char* key, bool fallback) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr) {
+    return fallback;
+  }
+  const std::string value = ToLower(Trim(raw));
+  if (value.empty()) {
+    return fallback;
+  }
+  if (value == "1" || value == "true" || value == "yes" || value == "y" || value == "on") {
+    return true;
+  }
+  if (value == "0" || value == "false" || value == "no" || value == "n" || value == "off") {
+    return false;
+  }
+  return fallback;
+}
+
+bool DebugTifCompatEnabled() {
+  return ParseBoolEnv("AUTOBOT_EXECUTOR_DEBUG_TIF_COMPAT", false);
+}
+
 std::int64_t NowMs() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
@@ -23,6 +62,11 @@ grpc::Status ExecutionServiceImpl::SubmitIntent(
     const autobot::execution::v1::OrderIntent* request,
     autobot::execution::v1::SubmitResult* response) {
   (void)context;
+  if (DebugTifCompatEnabled() && request->tif() == autobot::execution::v1::GTC) {
+    std::cerr << "[executor][tif_compat] intent_id=" << request->intent_id()
+              << " identifier=" << request->identifier()
+              << " tif=gtc mapped_to=omit_upbit_time_in_force" << std::endl;
+  }
   ManagedIntent intent;
   intent.intent_id = request->intent_id();
   intent.identifier = request->identifier();
@@ -63,6 +107,12 @@ grpc::Status ExecutionServiceImpl::ReplaceOrder(
     const autobot::execution::v1::ReplaceRequest* request,
     autobot::execution::v1::ReplaceResult* response) {
   (void)context;
+  const std::string new_tif = request->new_time_in_force();
+  if (DebugTifCompatEnabled() && ToLower(Trim(new_tif)) == "gtc") {
+    std::cerr << "[executor][tif_compat] intent_id=" << request->intent_id()
+              << " new_identifier=" << request->new_identifier()
+              << " new_time_in_force=gtc mapped_to=omit_upbit_new_time_in_force" << std::endl;
+  }
   ManagedReplaceRequest replace_request;
   replace_request.intent_id = request->intent_id();
   replace_request.prev_order_uuid = request->prev_order_uuid();
@@ -70,7 +120,7 @@ grpc::Status ExecutionServiceImpl::ReplaceOrder(
   replace_request.new_identifier = request->new_identifier();
   replace_request.new_price_str = request->new_price_str();
   replace_request.new_volume_str = request->new_volume_str();
-  replace_request.new_time_in_force = request->new_time_in_force();
+  replace_request.new_time_in_force = std::move(new_tif);
 
   const ManagedReplaceResult result = order_manager_->ReplaceOrder(replace_request);
   response->set_accepted(result.accepted);
@@ -163,7 +213,7 @@ std::string ExecutionServiceImpl::TifToString(autobot::execution::v1::TimeInForc
   if (tif == autobot::execution::v1::FOK) {
     return "fok";
   }
-  return "gtc";
+  return "";
 }
 
 ExecutorGrpcServer::ExecutorGrpcServer(Options options)

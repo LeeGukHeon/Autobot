@@ -55,6 +55,7 @@ add_executable(autobot_executor
   upbit/request_builder.cpp
   upbit/remaining_req.cpp
   upbit/rate_limiter.cpp
+  upbit/tif_policy.cpp
   upbit/http_client.cpp
   upbit/ws_keepalive_scheduler.cpp
   upbit/ws_private_client.cpp
@@ -84,6 +85,7 @@ add_executable(autobot_executor_unit_tests
   upbit/request_builder.cpp
   upbit/remaining_req.cpp
   upbit/rate_limiter.cpp
+  upbit/tif_policy.cpp
   upbit/http_client.cpp
   upbit/ws_private_parsers.cpp
   upbit/upbit_private.cpp
@@ -119,6 +121,35 @@ target_link_libraries(autobot_executor_ws_keepalive_scheduler_tests
     nlohmann_json::nlohmann_json
 )
 
+add_executable(autobot_executor_fault_drills_tests
+  tests/fault_drills_tests.cpp
+  tests/fault_injection_transport.cpp
+  order_manager.cpp
+  upbit_rest.cpp
+  state/executor_state_store.cpp
+  upbit/auth_jwt.cpp
+  upbit/number_string.cpp
+  upbit/recovery_policy.cpp
+  upbit/request_builder.cpp
+  upbit/remaining_req.cpp
+  upbit/rate_limiter.cpp
+  upbit/tif_policy.cpp
+  upbit/http_client.cpp
+  upbit/ws_keepalive_scheduler.cpp
+  upbit/ws_private_client.cpp
+  upbit/ws_private_parsers.cpp
+  upbit/upbit_private.cpp
+)
+target_include_directories(autobot_executor_fault_drills_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(autobot_executor_fault_drills_tests
+  PRIVATE
+    OpenSSL::Crypto
+    nlohmann_json::nlohmann_json
+)
+if(WIN32)
+  target_link_libraries(autobot_executor_fault_drills_tests PRIVATE winhttp)
+endif()
+
 enable_testing()
 add_test(
   NAME autobot_executor_unit_tests
@@ -131,4 +162,8 @@ add_test(
 add_test(
   NAME autobot_executor_ws_keepalive_scheduler_tests
   COMMAND $<TARGET_FILE:autobot_executor_ws_keepalive_scheduler_tests>
+)
+add_test(
+  NAME autobot_executor_fault_drills_tests
+  COMMAND $<TARGET_FILE:autobot_executor_fault_drills_tests>
 )

@@ -10,7 +10,7 @@ from typing import Any, Literal
 import time
 
 from .identifier import is_bot_identifier
-from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord
+from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
 UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk"]
@@ -181,6 +181,35 @@ def reconcile_exchange_snapshot(
                 )
                 if not dry_run:
                     store.upsert_position(record)
+                    if unknown_positions_policy == "attach_default_risk":
+                        plan_id = f"default-risk-{market}"
+                        store.upsert_risk_plan(
+                            RiskPlanRecord(
+                                plan_id=plan_id,
+                                market=market,
+                                side="long",
+                                entry_price_str=str(float(position["avg_entry_price"])),
+                                qty_str=str(float(position["base_amount"])),
+                                tp_enabled=float(default_risk_tp_pct) > 0,
+                                tp_price_str=None,
+                                tp_pct=float(default_risk_tp_pct) if float(default_risk_tp_pct) > 0 else None,
+                                sl_enabled=float(default_risk_sl_pct) > 0,
+                                sl_price_str=None,
+                                sl_pct=float(default_risk_sl_pct) if float(default_risk_sl_pct) > 0 else None,
+                                trailing_enabled=bool(default_risk_trailing_enabled),
+                                trail_pct=0.01 if bool(default_risk_trailing_enabled) else None,
+                                high_watermark_price_str=None,
+                                armed_ts_ms=None,
+                                state="ACTIVE",
+                                last_eval_ts_ms=now_ts,
+                                last_action_ts_ms=0,
+                                current_exit_order_uuid=None,
+                                current_exit_order_identifier=None,
+                                replace_attempt=0,
+                                created_ts=now_ts,
+                                updated_ts=now_ts,
+                            )
+                        )
                 actions.append(
                     {
                         "type": "upsert_unknown_position",
@@ -188,6 +217,14 @@ def reconcile_exchange_snapshot(
                         "managed": managed,
                     }
                 )
+                if unknown_positions_policy == "attach_default_risk":
+                    actions.append(
+                        {
+                            "type": "upsert_default_risk_plan",
+                            "market": market,
+                            "plan_id": f"default-risk-{market}",
+                        }
+                    )
 
     report = {
         "halted": bool(halted_reasons),

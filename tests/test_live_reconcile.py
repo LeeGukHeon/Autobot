@@ -172,12 +172,18 @@ def test_reconcile_attach_default_risk_sets_policy_json(tmp_path: Path) -> None:
             dry_run=False,
         )
         positions = store.list_positions()
+        risk_plans = store.list_risk_plans()
 
     assert len(positions) == 1
     assert positions[0]["managed"] is True
     assert positions[0]["sl"]["sl_pct"] == 2.5
     assert positions[0]["tp"]["tp_pct"] == 4.0
     assert positions[0]["trailing"]["enabled"] is True
+    assert len(risk_plans) == 1
+    assert risk_plans[0]["market"] == "KRW-ETH"
+    assert risk_plans[0]["state"] == "ACTIVE"
+    assert risk_plans[0]["tp"]["tp_pct"] == 4.0
+    assert risk_plans[0]["sl"]["sl_pct"] == 2.5
 
 
 def test_reconcile_infers_intent_from_exchange_bot_order(tmp_path: Path) -> None:

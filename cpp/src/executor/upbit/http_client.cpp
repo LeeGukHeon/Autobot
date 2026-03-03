@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <regex>
 #include <stdexcept>
 #include <thread>
@@ -18,12 +20,81 @@
 
 namespace autobot::executor::upbit {
 
+class DefaultHttpTransport final : public UpbitHttpClient::ITransport {
+ public:
+  explicit DefaultHttpTransport(UpbitHttpClient* owner) : owner_(owner) {}
+
+  UpbitHttpClient::RawResponse PerformRequest(
+      const std::string& method_upper,
+      const std::string& endpoint,
+      const std::string& encoded_query,
+      const std::unordered_map<std::string, std::string>& headers,
+      const std::string& body_json) override;
+
+ private:
+  UpbitHttpClient* owner_ = nullptr;
+};
+
 namespace {
 
 std::string ToLower(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
   });
+  return value;
+}
+
+std::string TrimCopy(std::string value) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+  value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+  return value;
+}
+
+bool ParseBoolFlag(const std::string& value, bool fallback) {
+  const std::string lowered = ToLower(TrimCopy(value));
+  if (lowered.empty()) {
+    return fallback;
+  }
+  if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "y" || lowered == "on") {
+    return true;
+  }
+  if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "n" || lowered == "off") {
+    return false;
+  }
+  return fallback;
+}
+
+bool DebugAuthEnabled() {
+  const char* raw = std::getenv("AUTOBOT_EXECUTOR_DEBUG_AUTH");
+  if (raw == nullptr) {
+    return false;
+  }
+  return ParseBoolFlag(raw, false);
+}
+
+std::string HeaderValue(
+    const std::unordered_map<std::string, std::string>& headers,
+    std::string key) {
+  const auto direct = headers.find(key);
+  if (direct != headers.end()) {
+    return direct->second;
+  }
+  key = ToLower(std::move(key));
+  for (const auto& [header_key, header_value] : headers) {
+    if (ToLower(header_key) == key) {
+      return header_value;
+    }
+  }
+  return "";
+}
+
+std::string TruncateForLog(std::string value, std::size_t max_len) {
+  if (value.size() <= max_len) {
+    return value;
+  }
+  value.resize(max_len);
+  value += "...(truncated)";
   return value;
 }
 
@@ -115,14 +186,23 @@ std::string QueryHeader(HINTERNET request, const wchar_t* header_name) {
 }  // namespace
 
 UpbitHttpClient::UpbitHttpClient(HttpClientOptions options)
+    : UpbitHttpClient(std::move(options), nullptr) {}
+
+UpbitHttpClient::UpbitHttpClient(
+    HttpClientOptions options,
+    std::unique_ptr<ITransport> transport)
     : base_url_(ParseBaseUrl(options.base_url)),
       options_(std::move(options)),
       limiter_(
           options_.rate_limit_enabled,
           options_.ban_cooldown_sec,
-          options_.group_rates) {
+          options_.group_rates),
+      transport_(std::move(transport)) {
   if (!options_.access_key.empty() && !options_.secret_key.empty()) {
     signer_.emplace(options_.access_key, options_.secret_key);
+  }
+  if (!transport_) {
+    transport_ = std::make_unique<DefaultHttpTransport>(this);
   }
 }
 
@@ -130,6 +210,7 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
   HttpResponse response;
   const std::string method_upper = ToUpper(request.method);
   const int attempts = request.allow_retry ? std::max(options_.max_attempts, 1) : 1;
+  const bool debug_auth = DebugAuthEnabled();
 
   for (int attempt = 1; attempt <= attempts; ++attempt) {
     limiter_.Acquire(request.rate_limit_group);
@@ -153,8 +234,43 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
       }
     }
 
-    const RawResponse raw =
-        PerformRequest(method_upper, request.endpoint, request.url_query, headers, request.body_json);
+    if (debug_auth && request.auth) {
+      const bool url_has_query = !request.url_query.empty();
+      const std::string content_type = HeaderValue(headers, "Content-Type");
+      const std::string lowered_content_type = ToLower(content_type);
+      const bool content_type_json =
+          lowered_content_type.find("application/json") != std::string::npos;
+      const std::string query_hash =
+          request.auth_query.empty() ? "" : UpbitJwtSigner::HashQueryString(request.auth_query);
+
+      std::cerr << "[executor][auth_debug] attempt=" << attempt << "/" << attempts
+                << " method=" << method_upper
+                << " path=" << request.endpoint
+                << " url_has_query=" << (url_has_query ? "true" : "false")
+                << " body_len=" << request.body_json.size()
+                << " content_type=" << (content_type.empty() ? "<none>" : content_type)
+                << " content_type_json=" << (content_type_json ? "true" : "false")
+                << std::endl;
+      if (!request.body_json.empty()) {
+        std::cerr << "[executor][auth_debug] body_json="
+                  << TruncateForLog(request.body_json, 1024)
+                  << std::endl;
+      }
+      std::cerr << "[executor][auth_debug] query_string_for_hash="
+                << TruncateForLog(request.auth_query, 1024)
+                << std::endl;
+      std::cerr << "[executor][auth_debug] query_hash=" << query_hash
+                << " len=" << query_hash.size()
+                << " query_hash_alg=SHA512"
+                << std::endl;
+    }
+
+    const RawResponse raw = transport_->PerformRequest(
+        method_upper,
+        request.endpoint,
+        request.url_query,
+        headers,
+        request.body_json);
     if (!raw.network_ok) {
       if (attempt < attempts) {
         SleepBackoff(attempt, options_.base_backoff_ms, options_.max_backoff_ms);
@@ -242,6 +358,21 @@ HttpResponse UpbitHttpClient::RequestJson(const HttpRequest& request) {
   response.error_name = "request_failed";
   response.error_message = "Upbit request failed after retries";
   return response;
+}
+
+UpbitHttpClient::RawResponse DefaultHttpTransport::PerformRequest(
+    const std::string& method_upper,
+    const std::string& endpoint,
+    const std::string& encoded_query,
+    const std::unordered_map<std::string, std::string>& headers,
+    const std::string& body_json) {
+  if (owner_ == nullptr) {
+    UpbitHttpClient::RawResponse raw;
+    raw.network_ok = false;
+    raw.network_error = "default_transport_owner_missing";
+    return raw;
+  }
+  return owner_->PerformRequest(method_upper, endpoint, encoded_query, headers, body_json);
 }
 
 std::string UpbitHttpClient::ToUpper(std::string value) {

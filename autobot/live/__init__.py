@@ -13,7 +13,7 @@ from .reconcile import (
     apply_cancel_actions,
     reconcile_exchange_snapshot,
 )
-from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord
+from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from .ws_handlers import apply_private_ws_event
 
 __all__ = [
@@ -22,6 +22,7 @@ __all__ = [
     "LiveStateStore",
     "OrderRecord",
     "PositionRecord",
+    "RiskPlanRecord",
     "UnknownOpenOrdersPolicy",
     "UnknownPositionsPolicy",
     "apply_cancel_actions",

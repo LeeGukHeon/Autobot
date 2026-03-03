@@ -28,6 +28,12 @@ live:
     sl_pct: 2.0
     tp_pct: 3.0
     trailing_enabled: false
+  risk:
+    enabled: false
+    exit_aggress_bps: 8.0
+    timeout_sec: 20
+    replace_max: 2
+    default_trail_pct: 1.0
 
 universe:
   quote_currency: KRW

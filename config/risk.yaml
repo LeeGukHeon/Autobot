@@ -1,4 +1,4 @@
-﻿risk:
+risk:
   starting_krw: 50000
   per_trade_krw: 10000
   max_positions: 2
@@ -7,3 +7,9 @@
   reprice_max_attempts: 2
   cooldown_sec_after_fail: 60
   max_consecutive_failures: 5
+
+live:
+  exit_aggress_bps: 8.0
+  timeout_sec: 20
+  replace_max: 2
+  default_trail_pct: 1.0

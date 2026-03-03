@@ -27,11 +27,25 @@
 
 ### Live Orders
 - `live.orders.identifier_prefix`: string (default: `AUTOBOT`)
+- `live.orders` executor request semantics:
+  - Upbit submit/replace default limit behavior is `time_in_force` key omission.
+  - `GTC` is treated as legacy compatibility input and mapped to omission; it is not forwarded to Upbit.
+
+### Executor Runtime (Env, C++)
+- `AUTOBOT_EXECUTOR_DEBUG_TIF_COMPAT`: bool (default: `false`)
+  - when `true`, logs one debug line per request for `GTC -> omit` mapping.
 
 ### Live Default Risk
 - `live.default_risk.sl_pct`: number (default: `2.0`)
 - `live.default_risk.tp_pct`: number (default: `3.0`)
 - `live.default_risk.trailing_enabled`: bool (default: `false`)
+
+### Live Risk Manager
+- `live.risk.enabled`: bool (default: `false`)
+- `live.risk.exit_aggress_bps`: number (default: `8.0`)
+- `live.risk.timeout_sec`: integer (default: `20`)
+- `live.risk.replace_max`: integer (default: `2`)
+- `live.risk.default_trail_pct`: number (default: `1.0`)
 
 ## Universe
 - `universe.quote_currency`: string

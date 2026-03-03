@@ -213,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     exec_submit_test_parser = exec_subparsers.add_parser(
         "submit-test",
-        help="Submit a LIMIT/GTC intent to executor (recommended with executor order-test mode).",
+        help="Submit a limit intent to executor (recommended with executor order-test mode).",
     )
     exec_submit_test_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
     exec_submit_test_parser.add_argument("--side", required=True, choices=("bid", "ask"))
@@ -1067,6 +1067,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     executor_cfg = live_cfg.get("executor", {}) if isinstance(live_cfg.get("executor"), dict) else {}
     orders_cfg = live_cfg.get("orders", {}) if isinstance(live_cfg.get("orders"), dict) else {}
     default_risk_cfg = live_cfg.get("default_risk", {}) if isinstance(live_cfg.get("default_risk"), dict) else {}
+    live_risk_cfg = live_cfg.get("risk", {}) if isinstance(live_cfg.get("risk"), dict) else {}
     universe_cfg = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
 
     unknown_open_orders_policy = str(startup_cfg.get("unknown_open_orders_policy", "halt")).strip().lower()
@@ -1097,6 +1098,11 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "default_risk_sl_pct": max(float(default_risk_cfg.get("sl_pct", 2.0)), 0.0),
         "default_risk_tp_pct": max(float(default_risk_cfg.get("tp_pct", 3.0)), 0.0),
         "default_risk_trailing_enabled": bool(default_risk_cfg.get("trailing_enabled", False)),
+        "risk_enabled": bool(live_risk_cfg.get("enabled", False)),
+        "risk_exit_aggress_bps": max(float(live_risk_cfg.get("exit_aggress_bps", 8.0)), 0.0),
+        "risk_timeout_sec": max(int(live_risk_cfg.get("timeout_sec", 20)), 1),
+        "risk_replace_max": max(int(live_risk_cfg.get("replace_max", 2)), 0),
+        "risk_default_trail_pct": max(float(live_risk_cfg.get("default_trail_pct", 1.0)), 0.0),
         "quote_currency": str(universe_cfg.get("quote_currency", "KRW")).strip().upper(),
     }
 

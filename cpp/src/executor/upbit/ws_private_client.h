@@ -77,12 +77,13 @@ class UpbitPrivateWsClient {
   };
 
   explicit UpbitPrivateWsClient(WsPrivateClientOptions options);
+  virtual ~UpbitPrivateWsClient() = default;
 
-  void Run(
+  virtual void Run(
       const std::function<std::string()>& authorization_header_provider,
       const std::atomic<bool>* stop_flag,
       const Callbacks& callbacks);
-  WsPrivateClientStats Stats() const;
+  virtual WsPrivateClientStats Stats() const;
 
  private:
   void EmitError(const Callbacks& callbacks, const std::string& reason) const;

@@ -13,6 +13,7 @@
 
 #include "upbit/number_string.h"
 #include "upbit/recovery_policy.h"
+#include "upbit/tif_policy.h"
 
 namespace autobot::executor {
 
@@ -200,6 +201,7 @@ state::IdentifierStateRecord BuildStateRecord(
   record.created_at_ms = now;
   record.updated_at_ms = now;
   record.last_remaining_req_sec = -1;
+  record.chain_status = "NONE";
   return record;
 }
 
@@ -218,7 +220,9 @@ bool IsPositiveNumberString(const std::string& raw) {
 
 }  // namespace
 
-UpbitRestClient::UpbitRestClient(bool order_test_mode)
+UpbitRestClient::UpbitRestClient(
+    bool order_test_mode,
+    std::unique_ptr<upbit::UpbitHttpClient> http_client_override)
     : order_test_mode_(order_test_mode),
       mode_name_(order_test_mode ? "order_test" : "live"),
       state_store_(ResolveStateFilePath()) {
@@ -271,7 +275,11 @@ UpbitRestClient::UpbitRestClient(bool order_test_mode)
     private_ws_signer_.emplace(options.access_key, options.secret_key);
   }
 
-  http_client_ = std::make_unique<upbit::UpbitHttpClient>(options);
+  if (http_client_override != nullptr) {
+    http_client_ = std::move(http_client_override);
+  } else {
+    http_client_ = std::make_unique<upbit::UpbitHttpClient>(options);
+  }
   private_client_ = std::make_unique<upbit::UpbitPrivateClient>(http_client_.get());
   state_store_.Load();
 }
@@ -339,6 +347,14 @@ UpbitSubmitResult UpbitRestClient::SubmitLimitOrder(const UpbitSubmitRequest& re
     }
   }
 
+  std::string tif_validation_error;
+  const std::optional<std::string> tif =
+      upbit::NormalizeTimeInForce("limit", request.tif, &tif_validation_error);
+  if (!tif_validation_error.empty()) {
+    result.reason = tif_validation_error;
+    return result;
+  }
+
   const std::string identifier = request.identifier;
   if (!order_test_mode_) {
     const auto existing = state_store_.Find(identifier);
@@ -376,7 +392,7 @@ UpbitSubmitResult UpbitRestClient::SubmitLimitOrder(const UpbitSubmitRequest& re
   create.ord_type = "limit";
   create.price = price_str;
   create.volume = volume_str;
-  create.time_in_force = ToLower(request.tif);
+  create.time_in_force = tif;
   create.identifier = identifier;
 
   state::IdentifierStateRecord record = BuildStateRecord(identifier, request.intent_id, mode_name_, "NEW");
@@ -565,7 +581,6 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
   const std::string new_identifier = Trim(request.new_identifier);
   const std::string new_price = Trim(request.new_price_str);
   const std::string new_volume = Trim(request.new_volume_str);
-  const std::string new_tif = ToLower(Trim(request.new_time_in_force));
   result.new_identifier = new_identifier;
 
   if (prev_uuid.empty() && prev_identifier.empty()) {
@@ -589,9 +604,52 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
     return result;
   }
 
+  std::string new_tif_validation_error;
+  const std::optional<std::string> new_tif =
+      upbit::NormalizeTimeInForce("limit", request.new_time_in_force, &new_tif_validation_error);
+  if (!new_tif_validation_error.empty()) {
+    result.reason = new_tif_validation_error;
+    return result;
+  }
+
   if (order_test_mode_) {
     result.reason = "replace_not_supported_in_order_test_mode";
     return result;
+  }
+
+  std::optional<state::IdentifierStateRecord> prev_record;
+  if (!prev_identifier.empty()) {
+    prev_record = state_store_.Find(prev_identifier);
+  }
+  if (!prev_record.has_value() && !prev_uuid.empty()) {
+    prev_record = state_store_.FindByUpbitUuid(prev_uuid);
+  }
+
+  std::string resolved_prev_identifier = prev_identifier;
+  if (resolved_prev_identifier.empty() && prev_record.has_value()) {
+    resolved_prev_identifier = prev_record->identifier;
+  }
+
+  std::string resolved_prev_uuid = prev_uuid;
+  if (resolved_prev_uuid.empty() && prev_record.has_value()) {
+    resolved_prev_uuid = prev_record->upbit_uuid;
+  }
+
+  std::string root_identifier = resolved_prev_identifier;
+  std::string root_upbit_uuid = resolved_prev_uuid;
+  int replace_attempt = 1;
+  if (prev_record.has_value()) {
+    if (!prev_record->root_identifier.empty()) {
+      root_identifier = prev_record->root_identifier;
+    } else if (root_identifier.empty()) {
+      root_identifier = prev_record->identifier;
+    }
+    if (!prev_record->root_upbit_uuid.empty()) {
+      root_upbit_uuid = prev_record->root_upbit_uuid;
+    } else if (root_upbit_uuid.empty()) {
+      root_upbit_uuid = prev_record->upbit_uuid;
+    }
+    replace_attempt = std::max(prev_record->replace_attempt + 1, 1);
   }
 
   if (const auto existing = state_store_.Find(new_identifier); existing.has_value()) {
@@ -607,8 +665,16 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
   replace_request.new_volume = new_volume;
   replace_request.new_time_in_force = new_tif;
 
+  const std::int64_t replace_started_ts_ms = NowMs();
   state::IdentifierStateRecord new_record =
       BuildStateRecord(new_identifier, request.intent_id, mode_name_, "REPLACE_POST_SENT");
+  new_record.prev_identifier = resolved_prev_identifier;
+  new_record.prev_upbit_uuid = resolved_prev_uuid;
+  new_record.root_identifier = root_identifier;
+  new_record.root_upbit_uuid = root_upbit_uuid;
+  new_record.chain_status = "REPLACE_PENDING";
+  new_record.replace_attempt = replace_attempt;
+  new_record.last_replace_ts_ms = replace_started_ts_ms;
   state_store_.Upsert(new_record);
 
   const upbit::HttpResponse response = private_client_->CancelAndNewOrder(replace_request);
@@ -626,6 +692,8 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
     result.reason = BuildErrorReason(response, "replace_failed");
     result.retriable = response.retriable;
     new_record.status = "FAILED";
+    new_record.chain_status = "REPLACE_FAILED";
+    new_record.last_replace_ts_ms = NowMs();
     state_store_.Upsert(new_record);
     return result;
   }
@@ -648,7 +716,7 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
   result.cancelled_order_uuid = pick_string(
       {"cancelled_order_uuid", "canceled_order_uuid", "prev_order_uuid", "cancel_uuid"});
   if (result.cancelled_order_uuid.empty()) {
-    result.cancelled_order_uuid = prev_uuid;
+    result.cancelled_order_uuid = resolved_prev_uuid;
   }
 
   result.new_order_uuid = pick_string({"new_order_uuid", "new_uuid", "order_uuid"});
@@ -673,17 +741,36 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
 
   new_record.status = result.new_order_uuid.empty() ? "CONFIRMED_NO_NEW_ORDER" : "CONFIRMED";
   new_record.upbit_uuid = result.new_order_uuid;
+  if (new_record.root_identifier.empty()) {
+    new_record.root_identifier = resolved_prev_identifier.empty() ? new_identifier : resolved_prev_identifier;
+  }
+  if (new_record.root_upbit_uuid.empty()) {
+    new_record.root_upbit_uuid = resolved_prev_uuid;
+  }
+  new_record.chain_status =
+      result.new_order_uuid.empty() ? "REPLACE_CONFIRMED_NO_NEW_ORDER" : "REPLACE_CONFIRMED";
+  new_record.last_replace_ts_ms = NowMs();
   state_store_.Upsert(new_record);
 
-  if (!prev_identifier.empty()) {
-    auto prev_record = state_store_.Find(prev_identifier).value_or(
-        BuildStateRecord(prev_identifier, "", mode_name_, "REPLACED"));
-    prev_record.status = "REPLACED";
-    if (!result.cancelled_order_uuid.empty()) {
-      prev_record.upbit_uuid = result.cancelled_order_uuid;
+  if (!resolved_prev_identifier.empty()) {
+    auto prev_state = state_store_.Find(resolved_prev_identifier).value_or(
+        BuildStateRecord(resolved_prev_identifier, "", mode_name_, "REPLACED"));
+    prev_state.status = "REPLACED";
+    prev_state.chain_status = "REPLACED_BY_SUCCESSOR";
+    if (prev_state.root_identifier.empty()) {
+      prev_state.root_identifier =
+          root_identifier.empty() ? resolved_prev_identifier : root_identifier;
     }
-    prev_record.updated_at_ms = NowMs();
-    state_store_.Upsert(prev_record);
+    if (prev_state.root_upbit_uuid.empty() && !root_upbit_uuid.empty()) {
+      prev_state.root_upbit_uuid = root_upbit_uuid;
+    }
+    prev_state.replace_attempt = std::max(prev_state.replace_attempt, replace_attempt - 1);
+    prev_state.last_replace_ts_ms = NowMs();
+    if (!result.cancelled_order_uuid.empty()) {
+      prev_state.upbit_uuid = result.cancelled_order_uuid;
+    }
+    prev_state.updated_at_ms = NowMs();
+    state_store_.Upsert(prev_state);
   }
 
   return result;

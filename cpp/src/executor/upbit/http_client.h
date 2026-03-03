@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -11,6 +12,8 @@
 #include "upbit/remaining_req.h"
 
 namespace autobot::executor::upbit {
+
+class DefaultHttpTransport;
 
 struct HttpClientOptions {
   std::string base_url = "https://api.upbit.com";
@@ -57,24 +60,38 @@ struct HttpResponse {
 
 class UpbitHttpClient {
  public:
-  explicit UpbitHttpClient(HttpClientOptions options);
-
-  HttpResponse RequestJson(const HttpRequest& request);
-
- private:
-  struct ParsedBaseUrl {
-    std::string scheme = "https";
-    std::string host;
-    int port = 443;
-    std::string base_path;
-  };
-
   struct RawResponse {
     bool network_ok = false;
     int status_code = 0;
     std::string body;
     std::unordered_map<std::string, std::string> headers;
     std::string network_error;
+  };
+
+  class ITransport {
+   public:
+    virtual ~ITransport() = default;
+    virtual RawResponse PerformRequest(
+        const std::string& method_upper,
+        const std::string& endpoint,
+        const std::string& encoded_query,
+        const std::unordered_map<std::string, std::string>& headers,
+        const std::string& body_json) = 0;
+  };
+
+  explicit UpbitHttpClient(HttpClientOptions options);
+  UpbitHttpClient(HttpClientOptions options, std::unique_ptr<ITransport> transport);
+
+  HttpResponse RequestJson(const HttpRequest& request);
+
+ private:
+  friend class DefaultHttpTransport;
+
+  struct ParsedBaseUrl {
+    std::string scheme = "https";
+    std::string host;
+    int port = 443;
+    std::string base_path;
   };
 
   static std::string ToUpper(std::string value);
@@ -102,6 +119,7 @@ class UpbitHttpClient {
   HttpClientOptions options_;
   UpbitRateLimiter limiter_;
   std::optional<UpbitJwtSigner> signer_;
+  std::unique_ptr<ITransport> transport_;
 };
 
 }  // namespace autobot::executor::upbit

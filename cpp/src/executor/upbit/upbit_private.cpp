@@ -80,7 +80,9 @@ HttpResponse UpbitPrivateClient::CreateOrder(const OrderCreateRequest& request, 
   const std::string ord_type = Lower(Trim(request.ord_type));
   const std::string price = Trim(request.price);
   const std::string volume = Trim(request.volume);
-  const std::string tif = Lower(Trim(request.time_in_force));
+  const std::string tif = request.time_in_force.has_value()
+                              ? Lower(Trim(request.time_in_force.value()))
+                              : "";
   const std::string identifier = Trim(request.identifier);
 
   if (!market.empty()) {
@@ -141,7 +143,9 @@ HttpResponse UpbitPrivateClient::CancelAndNewOrder(const CancelAndNewRequest& re
   const std::string new_identifier = Trim(request.new_identifier);
   const std::string new_price = Trim(request.new_price);
   const std::string new_volume = Trim(request.new_volume);
-  const std::string new_tif = Lower(Trim(request.new_time_in_force));
+  const std::string new_tif = request.new_time_in_force.has_value()
+                                  ? Lower(Trim(request.new_time_in_force.value()))
+                                  : "";
 
   if (prev_uuid.empty() && prev_identifier.empty()) {
     return BuildValidationError("prev_order_uuid or prev_order_identifier is required");

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,7 +14,7 @@ struct OrderCreateRequest {
   std::string ord_type = "limit";
   std::string price;
   std::string volume;
-  std::string time_in_force;
+  std::optional<std::string> time_in_force;
   std::string identifier;
 };
 
@@ -23,7 +24,7 @@ struct CancelAndNewRequest {
   std::string new_identifier;
   std::string new_price;
   std::string new_volume;
-  std::string new_time_in_force;
+  std::optional<std::string> new_time_in_force;
 };
 
 class UpbitPrivateClient {

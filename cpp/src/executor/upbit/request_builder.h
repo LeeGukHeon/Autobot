@@ -38,8 +38,7 @@ std::string BuildUnencodedQueryString(const OrderedParams& params);
 std::string BuildUrlEncodedQueryString(
     const OrderedParams& params,
     KeyEncodingPolicy key_policy = KeyEncodingPolicy::kPreserveArrayBrackets);
-nlohmann::json BuildJsonBodyFromParams(const OrderedParams& params);
+nlohmann::ordered_json BuildJsonBodyFromParams(const OrderedParams& params);
 PreparedRequest BuildPreparedRequest(const RequestSpec& spec);
 
 }  // namespace autobot::executor::upbit
-

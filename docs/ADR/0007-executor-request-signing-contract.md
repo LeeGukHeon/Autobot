@@ -11,7 +11,7 @@ Accepted (2026-03-03)
 ## Decision
 - Introduce `upbit/request_builder.*` as the single source for:
   - URL query string (encoded transport form)
-  - `query_hash` source string (unencoded form)
+  - `query_hash` source string (`unquote(urlencode(...))` canonical form)
   - JSON body (`application/json; charset=utf-8`)
 - Builder uses `OrderedParams` (`vector<pair<string,string>>`) and preserves insertion order.
 - Array keys keep bracket notation in URL query (`states[]`, `uuids[]`).
@@ -28,4 +28,3 @@ Accepted (2026-03-03)
 ### Trade-offs
 - Builder enforces string-based body values; callers must format numbers explicitly.
 - Additional pre-validation returns local 400-style errors for invalid combinations.
-
