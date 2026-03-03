@@ -36,6 +36,12 @@ cpp/**/Testing/
 
 # Project runtime artifacts
 data/
+!autobot/data/
+autobot/data/*
+!autobot/data/micro/
+!autobot/data/micro/**
+autobot/data/micro/__pycache__/
+autobot/data/micro/**/*.pyc
 models/
 !autobot/models/
 !autobot/models/**

@@ -1,0 +1,20 @@
+micro:
+  dataset: micro_v1
+  out_root: data/parquet/micro_v1
+  raw_ticks_root: data/raw_ticks/upbit/trades
+  raw_ws_root: data/raw_ws/upbit/quotation
+  base_candles_dataset: candles_v1
+  tf:
+    - 1m
+    - 5m
+  quote: KRW
+  top_n: 20
+  topk: 5
+  chunk_rows: 200000
+  alignment_mode: auto
+  validation:
+    join_match_warn: 0.98
+    join_match_fail: 0.90
+    micro_available_warn: 0.10
+    volume_fail_ratio: 0.001
+    price_fail_ratio: 0.001

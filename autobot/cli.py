@@ -43,6 +43,12 @@ from .data.collect import (
     validate_ticks_raw_dataset,
     validate_ws_public_raw_dataset,
 )
+from .data.micro import (
+    MicroAggregateOptions,
+    aggregate_micro_v1,
+    micro_stats_v1,
+    validate_micro_dataset_v1,
+)
 from .features import (
     FeatureBuildOptions,
     FeatureValidateOptions,
@@ -302,6 +308,57 @@ def build_parser() -> argparse.ArgumentParser:
     collect_ws_public_stats_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
     collect_ws_public_stats_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
 
+    micro_parser = subparsers.add_parser("micro", help="Micro aggregation operations.")
+    micro_subparsers = micro_parser.add_subparsers(dest="micro_command", required=True)
+
+    micro_aggregate_parser = micro_subparsers.add_parser(
+        "aggregate",
+        help="Aggregate raw ticks/ws into micro_v1 parquet (1m/5m).",
+    )
+    micro_aggregate_parser.add_argument("--tf", default="1m,5m", help="Comma separated timeframe set: 1m,5m")
+    micro_aggregate_parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
+    micro_aggregate_parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    micro_aggregate_parser.add_argument("--quote", default="KRW")
+    micro_aggregate_parser.add_argument("--top-n", type=int, default=20)
+    micro_aggregate_parser.add_argument("--markets", help="Comma separated fixed markets, ex: KRW-BTC,KRW-ETH")
+    micro_aggregate_parser.add_argument("--raw-ticks-root", default="data/raw_ticks/upbit/trades")
+    micro_aggregate_parser.add_argument("--raw-ws-root", default="data/raw_ws/upbit/quotation")
+    micro_aggregate_parser.add_argument("--out-root", default="data/parquet/micro_v1")
+    micro_aggregate_parser.add_argument(
+        "--base-candles",
+        default="candles_v1",
+        help="Base candle dataset name under data/parquet or absolute path.",
+    )
+    micro_aggregate_parser.add_argument("--mode", default="append", choices=("append", "overwrite"))
+    micro_aggregate_parser.add_argument("--chunk-rows", type=int, default=200000)
+    micro_aggregate_parser.add_argument("--topk", type=int, default=5)
+    micro_aggregate_parser.add_argument("--alignment-mode", default="auto", choices=("auto", "start", "end"))
+    micro_aggregate_parser.add_argument("--sample-market", default="KRW-BTC")
+
+    micro_validate_parser = micro_subparsers.add_parser(
+        "validate",
+        help="Validate micro_v1 parquet dataset.",
+    )
+    micro_validate_parser.add_argument("--tf", default="1m,5m", help="Comma separated timeframe set: 1m,5m")
+    micro_validate_parser.add_argument("--out-root", default="data/parquet/micro_v1")
+    micro_validate_parser.add_argument(
+        "--base-candles",
+        default="candles_v1",
+        help="Base candle dataset name under data/parquet or absolute path.",
+    )
+    micro_validate_parser.add_argument("--join-match-warn", type=float, default=0.98)
+    micro_validate_parser.add_argument("--join-match-fail", type=float, default=0.90)
+    micro_validate_parser.add_argument("--micro-available-warn", type=float, default=0.10)
+    micro_validate_parser.add_argument("--volume-fail-ratio", type=float, default=0.001)
+    micro_validate_parser.add_argument("--price-fail-ratio", type=float, default=0.001)
+
+    micro_stats_parser = micro_subparsers.add_parser(
+        "stats",
+        help="Show micro_v1 dataset summary.",
+    )
+    micro_stats_parser.add_argument("--tf", default="1m,5m", help="Comma separated timeframe set: 1m,5m")
+    micro_stats_parser.add_argument("--out-root", default="data/parquet/micro_v1")
+
     features_parser = subparsers.add_parser("features", help="Feature store operations.")
     features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
 
@@ -512,6 +569,8 @@ def main() -> int:
         return _handle_data_command(args, config)
     if args.command == "collect":
         return _handle_collect_command(args, Path(args.config_dir), config)
+    if args.command == "micro":
+        return _handle_micro_command(args, Path(args.config_dir), config)
     if args.command == "features":
         return _handle_features_command(args, Path(args.config_dir), config)
     if args.command == "model":
@@ -1035,6 +1094,83 @@ def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path) -> int
     if collect_summary.failures or validate_summary.fail_files > 0:
         return 2
     return 0
+
+
+def _handle_micro_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    tf_set = _parse_csv_list(args.tf, normalize=str.lower) or ("1m", "5m")
+    out_root = Path(args.out_root)
+
+    if args.micro_command == "aggregate":
+        defaults = _load_micro_defaults(config_dir=config_dir, base_config=base_config)
+        base_candles_root = _resolve_base_candles_path(
+            base_candles=args.base_candles,
+            default_dataset=defaults["base_candles_dataset"],
+            parquet_root=Path(defaults["parquet_root"]),
+        )
+        options = MicroAggregateOptions(
+            tf_set=tuple(tf_set),
+            start=str(args.start).strip(),
+            end=str(args.end).strip(),
+            quote=str(args.quote or defaults["quote"]).strip().upper(),
+            top_n=max(int(args.top_n if args.top_n is not None else defaults["top_n"]), 1),
+            fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+            raw_ticks_root=Path(args.raw_ticks_root or defaults["raw_ticks_root"]),
+            raw_ws_root=Path(args.raw_ws_root or defaults["raw_ws_root"]),
+            out_root=out_root,
+            base_candles_root=base_candles_root,
+            mode=str(args.mode).strip().lower(),
+            chunk_rows=max(int(args.chunk_rows), 1),
+            topk=max(int(args.topk), 1),
+            alignment_mode=str(args.alignment_mode).strip().lower(),
+            sample_market=str(args.sample_market).strip().upper(),
+        )
+        summary = aggregate_micro_v1(options)
+        print(
+            "[micro][aggregate] "
+            f"run_id={summary.run_id} dates={len(summary.dates)} markets={len(summary.markets)} "
+            f"rows_written={summary.rows_written_total} parse_ok_ratio={summary.parse_ok_ratio:.6f} "
+            f"alignment_mode={summary.alignment_mode}"
+        )
+        print(f"[micro][aggregate] manifest={summary.manifest_file}")
+        print(f"[micro][aggregate] report={summary.aggregate_report_file}")
+        return 0
+
+    if args.micro_command == "validate":
+        defaults = _load_micro_defaults(config_dir=config_dir, base_config=base_config)
+        base_candles_root = _resolve_base_candles_path(
+            base_candles=args.base_candles,
+            default_dataset=defaults["base_candles_dataset"],
+            parquet_root=Path(defaults["parquet_root"]),
+        )
+        summary = validate_micro_dataset_v1(
+            out_root=out_root,
+            tf_set=tuple(tf_set),
+            base_candles_root=base_candles_root,
+            join_match_warn_threshold=float(args.join_match_warn),
+            join_match_fail_threshold=float(args.join_match_fail),
+            micro_available_warn_threshold=float(args.micro_available_warn),
+            volume_fail_ratio_threshold=float(args.volume_fail_ratio),
+            price_fail_ratio_threshold=float(args.price_fail_ratio),
+        )
+        print(
+            "[micro][validate] "
+            f"checked={summary.checked_files} ok={summary.ok_files} "
+            f"warn={summary.warn_files} fail={summary.fail_files} "
+            f"parse_ok_ratio={summary.parse_ok_ratio:.6f} "
+            f"join_match_ratio={summary.join_match_ratio if summary.join_match_ratio is not None else 'NA'}"
+        )
+        print(f"[micro][validate] report={summary.validate_report_file}")
+        return 2 if summary.fail_files > 0 else 0
+
+    if args.micro_command == "stats":
+        stats = micro_stats_v1(
+            out_root=out_root,
+            tf_set=tuple(tf_set),
+        )
+        _print_json(stats)
+        return 0
+
+    raise ValueError(f"Unsupported micro command: {args.micro_command}")
 
 
 def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
@@ -1923,6 +2059,41 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "risk_default_trail_pct": max(float(live_risk_cfg.get("default_trail_pct", 1.0)), 0.0),
         "quote_currency": str(universe_cfg.get("quote_currency", "KRW")).strip().upper(),
     }
+
+
+def _load_micro_defaults(*, config_dir: Path, base_config: dict[str, Any]) -> dict[str, Any]:
+    storage_cfg = base_config.get("storage", {}) if isinstance(base_config.get("storage"), dict) else {}
+    data_cfg = base_config.get("data", {}) if isinstance(base_config.get("data"), dict) else {}
+    parquet_root = str(data_cfg.get("parquet_root", storage_cfg.get("parquet_dir", "data/parquet")))
+
+    micro_doc = _load_yaml_doc(config_dir / "micro.yaml")
+    root = micro_doc.get("micro", {}) if isinstance(micro_doc.get("micro"), dict) else {}
+    validation_cfg = root.get("validation", {}) if isinstance(root.get("validation"), dict) else {}
+
+    return {
+        "parquet_root": parquet_root,
+        "quote": str(root.get("quote", "KRW")).strip().upper(),
+        "top_n": int(root.get("top_n", 20)),
+        "raw_ticks_root": str(root.get("raw_ticks_root", "data/raw_ticks/upbit/trades")),
+        "raw_ws_root": str(root.get("raw_ws_root", "data/raw_ws/upbit/quotation")),
+        "out_root": str(root.get("out_root", "data/parquet/micro_v1")),
+        "base_candles_dataset": str(root.get("base_candles_dataset", "candles_v1")).strip(),
+        "join_match_warn": float(validation_cfg.get("join_match_warn", 0.98)),
+        "join_match_fail": float(validation_cfg.get("join_match_fail", 0.90)),
+        "micro_available_warn": float(validation_cfg.get("micro_available_warn", 0.10)),
+        "volume_fail_ratio": float(validation_cfg.get("volume_fail_ratio", 0.001)),
+        "price_fail_ratio": float(validation_cfg.get("price_fail_ratio", 0.001)),
+    }
+
+
+def _resolve_base_candles_path(*, base_candles: str | None, default_dataset: str, parquet_root: Path) -> Path:
+    value = str(base_candles or default_dataset).strip()
+    candidate = Path(value)
+    if candidate.exists():
+        return candidate
+    if candidate.is_absolute():
+        return candidate
+    return parquet_root / value
 
 
 def _data_defaults(config: dict[str, Any]) -> dict[str, Any]:
