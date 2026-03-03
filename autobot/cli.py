@@ -29,13 +29,19 @@ from .data.collect import (
     CandlePlanOptions,
     TicksCollectOptions,
     TicksPlanOptions,
+    WsPublicCollectOptions,
+    WsPublicPlanOptions,
     collect_candles_from_plan,
     collect_ticks_from_plan,
     collect_ticks_stats,
+    collect_ws_public_from_plan,
+    collect_ws_public_stats,
     generate_candle_topup_plan,
     generate_ticks_collection_plan,
+    generate_ws_public_collection_plan,
     validate_candles_api_dataset,
     validate_ticks_raw_dataset,
+    validate_ws_public_raw_dataset,
 )
 from .features import (
     FeatureBuildOptions,
@@ -194,6 +200,35 @@ def build_parser() -> argparse.ArgumentParser:
     collect_plan_ticks_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
     collect_plan_ticks_parser.add_argument("--days-ago", default="1,2,3,4,5,6,7", help="Comma separated 1..7")
 
+    collect_plan_ws_parser = collect_subparsers.add_parser(
+        "plan-ws-public",
+        help="Generate public websocket collection plan (trade/orderbook).",
+    )
+    collect_plan_ws_parser.add_argument("--base-dataset", help="Base dataset name, ex: candles_v1")
+    collect_plan_ws_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_plan_ws_parser.add_argument(
+        "--out",
+        default="data/raw_ws/upbit/_meta/ws_public_plan.json",
+        help="Plan output path",
+    )
+    collect_plan_ws_parser.add_argument("--quote", default="KRW")
+    collect_plan_ws_parser.add_argument(
+        "--market-mode",
+        default="top_n_by_recent_value_est",
+        choices=("fixed_list", "top_n_by_recent_value_est", "one_m_existing_only"),
+    )
+    collect_plan_ws_parser.add_argument("--top-n", type=int, default=20)
+    collect_plan_ws_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_plan_ws_parser.add_argument("--channels", default="trade,orderbook", help="Comma separated channels")
+    collect_plan_ws_parser.add_argument(
+        "--format",
+        default="DEFAULT",
+        choices=("DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"),
+    )
+    collect_plan_ws_parser.add_argument("--orderbook-topk", type=int, default=5)
+    collect_plan_ws_parser.add_argument("--orderbook-level", default="0")
+    collect_plan_ws_parser.add_argument("--orderbook-min-write-interval-ms", type=int, default=200)
+
     collect_ticks_parser = collect_subparsers.add_parser("ticks", help="Collect raw REST ticks.")
     collect_ticks_parser.add_argument("--plan", default="data/raw_ticks/upbit/_meta/ticks_plan.json")
     collect_ticks_parser.add_argument("--base-dataset", help="Base dataset name, ex: candles_v1")
@@ -228,6 +263,44 @@ def build_parser() -> argparse.ArgumentParser:
     collect_ticks_stats_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
     collect_ticks_stats_parser.add_argument("--raw-root", default="data/raw_ticks/upbit/trades")
     collect_ticks_stats_parser.add_argument("--meta-dir", default="data/raw_ticks/upbit/_meta")
+
+    collect_ws_public_parser = collect_subparsers.add_parser(
+        "ws-public",
+        help="Collect raw Upbit public websocket trade/orderbook.",
+    )
+    collect_ws_public_subparsers = collect_ws_public_parser.add_subparsers(
+        dest="collect_ws_public_command",
+        required=True,
+    )
+
+    collect_ws_public_run_parser = collect_ws_public_subparsers.add_parser("run", help="Run public websocket collector.")
+    collect_ws_public_run_parser.add_argument("--plan", default="data/raw_ws/upbit/_meta/ws_public_plan.json")
+    collect_ws_public_run_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
+    collect_ws_public_run_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+    collect_ws_public_run_parser.add_argument("--duration-sec", type=int, default=120)
+    collect_ws_public_run_parser.add_argument("--rotate-sec", type=int, default=300)
+    collect_ws_public_run_parser.add_argument("--max-bytes", type=int, default=67_108_864)
+    collect_ws_public_run_parser.add_argument("--retention-days", type=int, default=7)
+    collect_ws_public_run_parser.add_argument("--rate-limit-strict", default="true", help="true|false")
+    collect_ws_public_run_parser.add_argument("--reconnect-max-per-min", type=int, default=3)
+    collect_ws_public_run_parser.add_argument("--orderbook-spread-bps-threshold", type=float, default=0.5)
+    collect_ws_public_run_parser.add_argument("--orderbook-top1-size-change-threshold", type=float, default=0.2)
+
+    collect_ws_public_validate_parser = collect_ws_public_subparsers.add_parser(
+        "validate",
+        help="Validate collected public websocket dataset.",
+    )
+    collect_ws_public_validate_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
+    collect_ws_public_validate_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
+    collect_ws_public_validate_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+
+    collect_ws_public_stats_parser = collect_ws_public_subparsers.add_parser(
+        "stats",
+        help="Show collected public websocket stats.",
+    )
+    collect_ws_public_stats_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
+    collect_ws_public_stats_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
+    collect_ws_public_stats_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
 
     features_parser = subparsers.add_parser("features", help="Feature store operations.")
     features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
@@ -651,8 +724,12 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
         return _handle_collect_candles(args, config_dir, base_config)
     if args.collect_command == "plan-ticks":
         return _handle_collect_plan_ticks(args, base_config)
+    if args.collect_command == "plan-ws-public":
+        return _handle_collect_plan_ws_public(args, base_config)
     if args.collect_command == "ticks":
         return _handle_collect_ticks(args, config_dir, base_config)
+    if args.collect_command == "ws-public":
+        return _handle_collect_ws_public(args, config_dir)
     raise ValueError(f"Unsupported collect command: {args.collect_command}")
 
 
@@ -762,6 +839,36 @@ def _handle_collect_plan_ticks(args: argparse.Namespace, config: dict[str, Any])
     return 0
 
 
+def _handle_collect_plan_ws_public(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    defaults = _data_defaults(config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+    base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
+
+    plan_options = WsPublicPlanOptions(
+        parquet_root=parquet_root,
+        base_dataset=base_dataset,
+        output_path=Path(args.out),
+        quote=str(args.quote).strip().upper() or "KRW",
+        market_mode=str(args.market_mode).strip().lower(),
+        top_n=max(int(args.top_n), 1),
+        fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+        channels=_parse_csv_list(args.channels, normalize=str.lower) or ("trade", "orderbook"),
+        format=str(args.format).strip().upper() or "DEFAULT",
+        orderbook_topk=max(int(args.orderbook_topk), 1),
+        orderbook_level=_parse_orderbook_level_arg(args.orderbook_level),
+        orderbook_min_write_interval_ms=max(int(args.orderbook_min_write_interval_ms), 1),
+    )
+    plan = generate_ws_public_collection_plan(plan_options)
+    print(
+        "[collect][plan-ws-public] "
+        f"selected_markets={plan['summary']['selected_markets']} "
+        f"codes_count={plan['summary']['codes_count']} "
+        f"channels_count={plan['summary']['channels_count']}"
+    )
+    print(f"[collect][plan-ws-public] out={plan_options.output_path}")
+    return 0
+
+
 def _handle_collect_ticks(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     ticks_command = getattr(args, "collect_ticks_command", None)
     if ticks_command == "validate":
@@ -850,6 +957,82 @@ def _handle_collect_ticks(args: argparse.Namespace, config_dir: Path, base_confi
     )
     print(f"[collect][ticks][validate] report={validate_summary.validate_report_file}")
     if collect_summary.fail_targets > 0 or validate_summary.fail_files > 0:
+        return 2
+    return 0
+
+
+def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path) -> int:
+    ws_command = getattr(args, "collect_ws_public_command", None)
+    if ws_command == "validate":
+        summary = validate_ws_public_raw_dataset(
+            raw_root=Path(args.raw_root),
+            meta_dir=Path(args.meta_dir),
+            report_path=Path(args.meta_dir) / "ws_validate_report.json",
+            date_filter=args.date,
+        )
+        print(
+            "[collect][ws-public][validate] "
+            f"checked={summary.checked_files} ok={summary.ok_files} "
+            f"warn={summary.warn_files} fail={summary.fail_files} "
+            f"parse_ok_ratio={summary.parse_ok_ratio:.6f}"
+        )
+        print(f"[collect][ws-public][validate] report={summary.validate_report_file}")
+        return 2 if summary.fail_files > 0 else 0
+
+    if ws_command == "stats":
+        stats = collect_ws_public_stats(
+            raw_root=Path(args.raw_root),
+            meta_dir=Path(args.meta_dir),
+            date_filter=args.date,
+        )
+        _print_json(stats)
+        return 0
+
+    collect_options = WsPublicCollectOptions(
+        plan_path=Path(args.plan),
+        raw_root=Path(args.raw_root),
+        meta_dir=Path(args.meta_dir),
+        duration_sec=max(int(args.duration_sec), 1),
+        rotate_sec=max(int(args.rotate_sec), 1),
+        max_bytes=max(int(args.max_bytes), 1024),
+        retention_days=max(int(args.retention_days), 1),
+        rate_limit_strict=_parse_bool_arg(args.rate_limit_strict, default=True),
+        reconnect_max_per_min=max(int(args.reconnect_max_per_min), 1),
+        orderbook_spread_bps_threshold=float(args.orderbook_spread_bps_threshold),
+        orderbook_top1_size_change_threshold=float(args.orderbook_top1_size_change_threshold),
+        config_dir=config_dir,
+    )
+
+    collect_summary = collect_ws_public_from_plan(collect_options)
+    print(
+        "[collect][ws-public] "
+        f"run_id={collect_summary.run_id} duration={collect_summary.duration_sec}s "
+        f"codes={collect_summary.codes_count} "
+        f"recv_trade={collect_summary.received_trade} recv_orderbook={collect_summary.received_orderbook} "
+        f"written_trade={collect_summary.written_trade} written_orderbook={collect_summary.written_orderbook} "
+        f"dropped_orderbook_interval={collect_summary.dropped_orderbook_by_interval} "
+        f"parse_drop={collect_summary.dropped_by_parse_error} "
+        f"reconnect={collect_summary.reconnect_count}"
+    )
+    print(f"[collect][ws-public] collect_report={collect_summary.collect_report_file}")
+    print(f"[collect][ws-public] manifest={collect_summary.manifest_file}")
+    print(f"[collect][ws-public] checkpoint={collect_summary.checkpoint_file}")
+    print(f"[collect][ws-public] runs_summary={collect_summary.runs_summary_file}")
+
+    validate_summary = validate_ws_public_raw_dataset(
+        raw_root=collect_options.raw_root,
+        meta_dir=collect_options.meta_dir,
+        report_path=collect_options.validate_report_path,
+        date_filter=None,
+    )
+    print(
+        "[collect][ws-public][validate] "
+        f"checked={validate_summary.checked_files} ok={validate_summary.ok_files} "
+        f"warn={validate_summary.warn_files} fail={validate_summary.fail_files} "
+        f"parse_ok_ratio={validate_summary.parse_ok_ratio:.6f}"
+    )
+    print(f"[collect][ws-public][validate] report={validate_summary.validate_report_file}")
+    if collect_summary.failures or validate_summary.fail_files > 0:
         return 2
     return 0
 
@@ -1809,6 +1992,18 @@ def _parse_days_ago_csv(value: str | None, *, default: tuple[int, ...]) -> tuple
     if not values:
         return tuple(default)
     return tuple(sorted(values))
+
+
+def _parse_orderbook_level_arg(value: Any) -> int | str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return text
 
 
 def _parse_bool_arg(value: Any, *, default: bool = False) -> bool:
