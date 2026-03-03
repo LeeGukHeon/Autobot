@@ -15,6 +15,15 @@ import yaml
 from . import __version__
 from .backtest import BacktestRunSettings, run_backtest_sync
 from .data import DuckDBSettings, IngestOptions, ingest_dataset, sniff_csv_files, validate_dataset
+from .features import (
+    FeatureBuildOptions,
+    FeatureValidateOptions,
+    build_features_dataset,
+    features_stats,
+    load_features_config,
+    sample_features,
+    validate_features_dataset,
+)
 from .live import (
     LiveDaemonSettings,
     LiveStateStore,
@@ -88,6 +97,39 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--parquet-dir")
     validate_parser.add_argument("--tf", help="Comma separated timeframe filter")
     validate_parser.add_argument("--market", help="Comma separated market filter")
+
+    features_parser = subparsers.add_parser("features", help="Feature store operations.")
+    features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
+
+    features_build_parser = features_subparsers.add_parser("build", help="Build features_v1 dataset.")
+    features_build_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_build_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    features_build_parser.add_argument("--top-n", type=int, help="Universe size")
+    features_build_parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    features_build_parser.add_argument("--end", help="End date YYYY-MM-DD")
+    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1",))
+    features_build_parser.add_argument("--label-set", default="v1", choices=("v1",))
+    features_build_parser.add_argument("--workers", type=int, default=1)
+    features_build_parser.add_argument(
+        "--fail-on-warn",
+        default="false",
+        help="Return non-zero when warnings exist (true|false).",
+    )
+
+    features_validate_parser = features_subparsers.add_parser("validate", help="Validate built feature dataset.")
+    features_validate_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_validate_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    features_validate_parser.add_argument("--top-n", type=int, help="Universe size")
+
+    features_sample_parser = features_subparsers.add_parser("sample", help="Print feature rows for one market.")
+    features_sample_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_sample_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
+    features_sample_parser.add_argument("--rows", type=int, default=10)
+
+    features_stats_parser = features_subparsers.add_parser("stats", help="Show feature dataset summary.")
+    features_stats_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_stats_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    features_stats_parser.add_argument("--top-n", type=int, help="Universe size")
 
     upbit_parser = subparsers.add_parser("upbit", help="Upbit REST smoke tests.")
     upbit_subparsers = upbit_parser.add_subparsers(dest="upbit_scope", required=True)
@@ -231,6 +273,8 @@ def main() -> int:
 
     if args.command == "data":
         return _handle_data_command(args, config)
+    if args.command == "features":
+        return _handle_features_command(args, Path(args.config_dir), config)
     if args.command == "paper":
         return _handle_paper_command(args, Path(args.config_dir), config)
     if args.command == "backtest":
@@ -385,6 +429,79 @@ def _handle_data_validate(args: argparse.Namespace, config: dict[str, Any]) -> i
     )
     print(f"[validate] report={summary.report_file}")
     return 2 if summary.fail_files > 0 else 0
+
+
+def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    features_config = load_features_config(config_dir, base_config=base_config)
+
+    if args.features_command == "build":
+        options = FeatureBuildOptions(
+            tf=str(args.tf).strip().lower(),
+            quote=(str(args.quote).strip().upper() if args.quote else None),
+            top_n=args.top_n,
+            start=args.start,
+            end=args.end,
+            feature_set=str(args.feature_set).strip().lower(),
+            label_set=str(args.label_set).strip().lower(),
+            workers=max(int(args.workers), 1),
+            fail_on_warn=_parse_bool_arg(args.fail_on_warn, default=False),
+        )
+        summary = build_features_dataset(features_config, options)
+        print(
+            "[features][build] "
+            f"discovered={summary.discovered_markets} selected={len(summary.selected_markets)} "
+            f"processed={summary.processed_markets} ok={summary.ok_markets} "
+            f"warn={summary.warn_markets} fail={summary.fail_markets}"
+        )
+        print(f"[features][build] rows_total={summary.rows_total} min_ts_ms={summary.min_ts_ms} max_ts_ms={summary.max_ts_ms}")
+        print(f"[features][build] output={summary.output_path}")
+        print(f"[features][build] manifest={summary.manifest_file}")
+        print(f"[features][build] report={summary.build_report_file}")
+        code = 2 if summary.fail_markets > 0 else 0
+        if options.fail_on_warn and summary.warn_markets > 0:
+            code = 2
+        return code
+
+    if args.features_command == "validate":
+        options = FeatureValidateOptions(
+            tf=str(args.tf).strip().lower(),
+            quote=(str(args.quote).strip().upper() if args.quote else None),
+            top_n=args.top_n,
+        )
+        summary = validate_features_dataset(features_config, options)
+        print(
+            "[features][validate] "
+            f"checked={summary.checked_files} ok={summary.ok_files} "
+            f"warn={summary.warn_files} fail={summary.fail_files}"
+        )
+        print(f"[features][validate] schema_ok={summary.schema_ok} null_ratio_overall={summary.null_ratio_overall:.6f}")
+        print(f"[features][validate] leakage_smoke={summary.leakage_smoke}")
+        print(f"[features][validate] report={summary.validate_report_file}")
+        if summary.fail_files > 0 or summary.leakage_smoke != "PASS":
+            return 2
+        return 0
+
+    if args.features_command == "sample":
+        rows = sample_features(
+            features_config,
+            tf=str(args.tf).strip().lower(),
+            market=str(args.market).strip().upper(),
+            rows=max(int(args.rows), 0),
+        )
+        _print_json(rows)
+        return 0
+
+    if args.features_command == "stats":
+        stats = features_stats(
+            features_config,
+            tf=str(args.tf).strip().lower(),
+            quote=(str(args.quote).strip().upper() if args.quote else None),
+            top_n=args.top_n,
+        )
+        _print_json(stats)
+        return 0
+
+    raise ValueError(f"Unsupported features command: {args.features_command}")
 
 
 def _handle_upbit_command(args: argparse.Namespace, config_dir: Path) -> int:
@@ -1153,6 +1270,19 @@ def _parse_csv_list(value: str | None, normalize: Callable[[str], str]) -> tuple
         return None
     items = tuple(normalize(item.strip()) for item in value.split(",") if item.strip())
     return items or None
+
+
+def _parse_bool_arg(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
 
 
 if __name__ == "__main__":

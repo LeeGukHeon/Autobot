@@ -1,0 +1,34 @@
+features:
+  dataset_name: features_v1
+  input_dataset: candles_v1
+  float_dtype: float32
+
+universe:
+  quote: KRW
+  mode: static_start
+  top_n: 20
+  lookback_days: 7
+  fixed_list: []
+
+time_range:
+  start: "2024-01-01"
+  end: "2026-03-01"
+
+feature_set_v1:
+  windows:
+    ret: [1, 3, 6, 12]
+    rv: [12, 36]
+    ema: [12, 36]
+    rsi: 14
+    atr: 14
+    vol_z: 36
+  enable_factor_features: true
+  factor_markets: ["KRW-BTC", "KRW-ETH"]
+  enable_liquidity_rank: false
+
+label_v1:
+  horizon_bars: 12
+  thr_bps: 15
+  neutral_policy: drop
+  fee_bps_est: 10
+  safety_bps: 5

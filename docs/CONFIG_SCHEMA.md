@@ -133,6 +133,45 @@
 - `data.ingest.duckdb.threads`: integer (default: 2)
 - `data.ingest.duckdb.fail_if_temp_not_set`: bool (default: `true`)
 
+## Features
+- config file: `config/features.yaml`
+
+### Features Build
+- `features.dataset_name`: string (default: `features_v1`)
+- `features.input_dataset`: string (default: `candles_v1`)
+- `features.float_dtype`: `float32 | float64` (default: `float32`)
+- `features.parquet_root`: path override (default: `data.parquet_root` or `storage.parquet_dir`)
+- `features.features_root`: path override (default: `storage.features_dir`)
+
+### Features Universe
+- `universe.quote`: string (default: `KRW`)
+- `universe.mode`: `static_start | fixed_list` (default: `static_start`)
+- `universe.top_n`: integer (default: `20`)
+- `universe.lookback_days`: integer (default: `7`)
+- `universe.fixed_list`: string array (used only when `mode=fixed_list`)
+
+### Features Time Range
+- `time_range.start`: `YYYY-MM-DD` (UTC day start)
+- `time_range.end`: `YYYY-MM-DD` (UTC day end, inclusive)
+
+### Feature Set v1
+- `feature_set_v1.windows.ret`: integer array (default: `[1,3,6,12]`)
+- `feature_set_v1.windows.rv`: integer array (default: `[12,36]`)
+- `feature_set_v1.windows.ema`: integer array (default: `[12,36]`)
+- `feature_set_v1.windows.rsi`: integer (default: `14`)
+- `feature_set_v1.windows.atr`: integer (default: `14`)
+- `feature_set_v1.windows.vol_z`: integer (default: `36`)
+- `feature_set_v1.enable_factor_features`: bool (default: `true`)
+- `feature_set_v1.factor_markets`: string array (default: `["KRW-BTC","KRW-ETH"]`)
+- `feature_set_v1.enable_liquidity_rank`: bool (default: `false`)
+
+### Label v1
+- `label_v1.horizon_bars`: integer (default: `12`)
+- `label_v1.thr_bps`: number (default: `15`)
+- `label_v1.neutral_policy`: `drop | keep_as_class` (default: `drop`)
+- `label_v1.fee_bps_est`: number (default: `10`)
+- `label_v1.safety_bps`: number (default: `5`)
+
 ## Upbit
 - `upbit.base_url`: string (default: `https://api.upbit.com`)
 
@@ -201,6 +240,16 @@
   - `--dense-grid`
   - `--starting-krw`, `--per-trade-krw`, `--max-positions`, `--min-order-krw`
   - `--order-timeout-bars`, `--reprice-max-attempts`
+
+## CLI: Features
+- Build:
+  - `python -m autobot.cli features build --tf 5m --quote KRW --top-n 20 --start 2024-01-01 --end 2026-03-01 --feature-set v1 --label-set v1 --workers 1 --fail-on-warn false`
+- Validate:
+  - `python -m autobot.cli features validate --tf 5m --quote KRW --top-n 20`
+- Sample:
+  - `python -m autobot.cli features sample --tf 5m --market KRW-BTC --rows 10`
+- Stats:
+  - `python -m autobot.cli features stats --tf 5m --quote KRW --top-n 20`
 
 ## CLI: Live State
 - `python -m autobot.cli live status`
