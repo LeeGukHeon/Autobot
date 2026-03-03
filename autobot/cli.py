@@ -14,7 +14,29 @@ import yaml
 
 from . import __version__
 from .backtest import BacktestRunSettings, run_backtest_sync
-from .data import DuckDBSettings, IngestOptions, ingest_dataset, sniff_csv_files, validate_dataset
+from .data import (
+    DuckDBSettings,
+    IngestOptions,
+    build_candle_inventory,
+    default_inventory_window,
+    ingest_dataset,
+    parse_utc_ts_ms,
+    sniff_csv_files,
+    validate_dataset,
+)
+from .data.collect import (
+    CandleCollectOptions,
+    CandlePlanOptions,
+    TicksCollectOptions,
+    TicksPlanOptions,
+    collect_candles_from_plan,
+    collect_ticks_from_plan,
+    collect_ticks_stats,
+    generate_candle_topup_plan,
+    generate_ticks_collection_plan,
+    validate_candles_api_dataset,
+    validate_ticks_raw_dataset,
+)
 from .features import (
     FeatureBuildOptions,
     FeatureValidateOptions,
@@ -105,6 +127,107 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--parquet-dir")
     validate_parser.add_argument("--tf", help="Comma separated timeframe filter")
     validate_parser.add_argument("--market", help="Comma separated market filter")
+
+    inventory_parser = data_subparsers.add_parser("inventory", help="Show dataset coverage inventory.")
+    inventory_parser.add_argument("--dataset", help="Dataset name, ex: candles_v1")
+    inventory_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    inventory_parser.add_argument("--tf", help="Comma separated timeframe filter, ex: 1m,5m")
+    inventory_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    inventory_parser.add_argument("--start", help="Window start date/time (YYYY-MM-DD or ISO UTC)")
+    inventory_parser.add_argument("--end", help="Window end date/time (YYYY-MM-DD or ISO UTC)")
+    inventory_parser.add_argument("--lookback-months", type=int, default=24)
+    inventory_parser.add_argument("--out", help="Optional output JSON path")
+
+    collect_parser = subparsers.add_parser("collect", help="Data collection operations.")
+    collect_subparsers = collect_parser.add_subparsers(dest="collect_command", required=True)
+
+    collect_plan_parser = collect_subparsers.add_parser("plan-candles", help="Generate candle top-up plan.")
+    collect_plan_parser.add_argument("--base-dataset", help="Base dataset name, ex: candles_v1")
+    collect_plan_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_plan_parser.add_argument(
+        "--out",
+        default="data/collect/_meta/candle_topup_plan.json",
+        help="Plan output path",
+    )
+    collect_plan_parser.add_argument("--lookback-months", type=int, default=24)
+    collect_plan_parser.add_argument("--tf", help="Comma separated timeframe filter, ex: 1m,5m,15m,60m,240m")
+    collect_plan_parser.add_argument("--quote", default="KRW")
+    collect_plan_parser.add_argument(
+        "--market-mode",
+        default="top_n_by_recent_value_est",
+        choices=("fixed_list", "top_n_by_recent_value_est", "one_m_existing_only"),
+    )
+    collect_plan_parser.add_argument("--top-n", type=int, default=50)
+    collect_plan_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_plan_parser.add_argument("--max-backfill-days-1m", type=int, default=90)
+    collect_plan_parser.add_argument("--end", help="Window end date (YYYY-MM-DD)")
+
+    collect_candles_parser = collect_subparsers.add_parser("candles", help="Execute candle collection plan.")
+    collect_candles_parser.add_argument(
+        "--plan",
+        default="data/collect/_meta/candle_topup_plan.json",
+        help="Path to candle top-up plan JSON",
+    )
+    collect_candles_parser.add_argument("--out-dataset", default="candles_api_v1")
+    collect_candles_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_candles_parser.add_argument("--workers", type=int, default=1)
+    collect_candles_parser.add_argument("--dry-run", default="true", help="true|false")
+    collect_candles_parser.add_argument("--max-requests", type=int)
+    collect_candles_parser.add_argument("--stop-on-first-fail", default="false", help="true|false")
+    collect_candles_parser.add_argument("--rate-limit-strict", default="true", help="true|false")
+
+    collect_plan_ticks_parser = collect_subparsers.add_parser("plan-ticks", help="Generate REST ticks collection plan.")
+    collect_plan_ticks_parser.add_argument("--base-dataset", help="Base dataset name, ex: candles_v1")
+    collect_plan_ticks_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_plan_ticks_parser.add_argument(
+        "--out",
+        default="data/raw_ticks/upbit/_meta/ticks_plan.json",
+        help="Plan output path",
+    )
+    collect_plan_ticks_parser.add_argument("--quote", default="KRW")
+    collect_plan_ticks_parser.add_argument(
+        "--market-mode",
+        default="top_n_by_recent_value_est",
+        choices=("fixed_list", "top_n_by_recent_value_est", "one_m_existing_only"),
+    )
+    collect_plan_ticks_parser.add_argument("--top-n", type=int, default=20)
+    collect_plan_ticks_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_plan_ticks_parser.add_argument("--days-ago", default="1,2,3,4,5,6,7", help="Comma separated 1..7")
+
+    collect_ticks_parser = collect_subparsers.add_parser("ticks", help="Collect raw REST ticks.")
+    collect_ticks_parser.add_argument("--plan", default="data/raw_ticks/upbit/_meta/ticks_plan.json")
+    collect_ticks_parser.add_argument("--base-dataset", help="Base dataset name, ex: candles_v1")
+    collect_ticks_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_ticks_parser.add_argument("--quote", default="KRW")
+    collect_ticks_parser.add_argument(
+        "--market-mode",
+        default="top_n_by_recent_value_est",
+        choices=("fixed_list", "top_n_by_recent_value_est", "one_m_existing_only"),
+    )
+    collect_ticks_parser.add_argument("--top-n", type=int, default=20)
+    collect_ticks_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_ticks_parser.add_argument("--days-ago", help="Comma separated 1..7")
+    collect_ticks_parser.add_argument("--mode", default="backfill", choices=("backfill", "daily"))
+    collect_ticks_parser.add_argument("--raw-root", default="data/raw_ticks/upbit/trades")
+    collect_ticks_parser.add_argument("--meta-dir", default="data/raw_ticks/upbit/_meta")
+    collect_ticks_parser.add_argument("--retention-days", type=int, default=30)
+    collect_ticks_parser.add_argument("--workers", type=int, default=1)
+    collect_ticks_parser.add_argument("--rate-limit-strict", default="true", help="true|false")
+    collect_ticks_parser.add_argument("--max-pages-per-target", type=int, default=500)
+    collect_ticks_parser.add_argument("--max-requests", type=int)
+    collect_ticks_parser.add_argument("--dry-run", default="false", help="true|false")
+    collect_ticks_subparsers = collect_ticks_parser.add_subparsers(dest="collect_ticks_command")
+
+    collect_ticks_validate_parser = collect_ticks_subparsers.add_parser("validate", help="Validate collected ticks.")
+    collect_ticks_validate_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
+    collect_ticks_validate_parser.add_argument("--raw-root", default="data/raw_ticks/upbit/trades")
+    collect_ticks_validate_parser.add_argument("--meta-dir", default="data/raw_ticks/upbit/_meta")
+    collect_ticks_validate_parser.add_argument("--dup-ratio-threshold", type=float, default=0.05)
+
+    collect_ticks_stats_parser = collect_ticks_subparsers.add_parser("stats", help="Show collected ticks stats.")
+    collect_ticks_stats_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
+    collect_ticks_stats_parser.add_argument("--raw-root", default="data/raw_ticks/upbit/trades")
+    collect_ticks_stats_parser.add_argument("--meta-dir", default="data/raw_ticks/upbit/_meta")
 
     features_parser = subparsers.add_parser("features", help="Feature store operations.")
     features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
@@ -314,6 +437,8 @@ def main() -> int:
 
     if args.command == "data":
         return _handle_data_command(args, config)
+    if args.command == "collect":
+        return _handle_collect_command(args, Path(args.config_dir), config)
     if args.command == "features":
         return _handle_features_command(args, Path(args.config_dir), config)
     if args.command == "model":
@@ -340,6 +465,8 @@ def _handle_data_command(args: argparse.Namespace, config: dict[str, Any]) -> in
         return _handle_data_ingest(args, config)
     if args.data_command == "validate":
         return _handle_data_validate(args, config)
+    if args.data_command == "inventory":
+        return _handle_data_inventory(args, config)
     raise ValueError(f"Unsupported data command: {args.data_command}")
 
 
@@ -472,6 +599,259 @@ def _handle_data_validate(args: argparse.Namespace, config: dict[str, Any]) -> i
     )
     print(f"[validate] report={summary.report_file}")
     return 2 if summary.fail_files > 0 else 0
+
+
+def _handle_data_inventory(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    defaults = _data_defaults(config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+    dataset_name = str(args.dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
+    dataset_root = parquet_root / dataset_name
+
+    tf_filter = _parse_csv_list(args.tf, normalize=str.lower)
+    quote = str(args.quote or "KRW").strip().upper() if args.quote is not None else "KRW"
+    lookback_months = max(int(args.lookback_months), 1)
+
+    start_ts_ms = parse_utc_ts_ms(args.start)
+    end_ts_ms = parse_utc_ts_ms(args.end, end_of_day=True)
+    if start_ts_ms is None or end_ts_ms is None:
+        default_start, default_end = default_inventory_window(lookback_months=lookback_months, end_ts_ms=end_ts_ms)
+        start_ts_ms = start_ts_ms if start_ts_ms is not None else default_start
+        end_ts_ms = end_ts_ms if end_ts_ms is not None else default_end
+
+    summary = build_candle_inventory(
+        dataset_root,
+        tf_filter=tf_filter,
+        quote=quote,
+        window_start_ts_ms=start_ts_ms,
+        window_end_ts_ms=end_ts_ms,
+    )
+    print(
+        "[inventory] "
+        f"dataset={dataset_name} pairs={summary['total_pairs']} with_data={summary['with_data_pairs']} "
+        f"avg_coverage_pct={summary['average_coverage_pct']:.4f}"
+    )
+    for tf, tf_item in sorted(summary.get("by_tf", {}).items()):
+        print(
+            f"  - tf={tf} pairs={tf_item['pairs']} with_data={tf_item['with_data_pairs']} "
+            f"avg_coverage_pct={tf_item['average_coverage_pct']:.4f}"
+        )
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"[inventory] out={out_path}")
+    return 0
+
+
+def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    if args.collect_command == "plan-candles":
+        return _handle_collect_plan_candles(args, base_config)
+    if args.collect_command == "candles":
+        return _handle_collect_candles(args, config_dir, base_config)
+    if args.collect_command == "plan-ticks":
+        return _handle_collect_plan_ticks(args, base_config)
+    if args.collect_command == "ticks":
+        return _handle_collect_ticks(args, config_dir, base_config)
+    raise ValueError(f"Unsupported collect command: {args.collect_command}")
+
+
+def _handle_collect_plan_candles(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    defaults = _data_defaults(config)
+    parquet_root = str(args.parquet_root or defaults["parquet_root"])
+    base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
+    plan_options = CandlePlanOptions(
+        parquet_root=Path(parquet_root),
+        base_dataset=base_dataset,
+        output_path=Path(args.out),
+        lookback_months=max(int(args.lookback_months), 1),
+        tf_set=_parse_csv_list(args.tf, normalize=str.lower) or ("1m", "5m", "15m", "60m", "240m"),
+        quote=str(args.quote).strip().upper() or "KRW",
+        market_mode=str(args.market_mode).strip().lower(),
+        top_n=max(int(args.top_n), 1),
+        fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+        max_backfill_days_1m=max(int(args.max_backfill_days_1m), 1),
+        end_ts_ms=parse_utc_ts_ms(args.end, end_of_day=True),
+    )
+
+    plan = generate_candle_topup_plan(plan_options)
+    print(
+        "[collect][plan-candles] "
+        f"selected_markets={plan['summary']['selected_markets']} "
+        f"targets={plan['summary']['targets']} skipped_ranges={plan['summary']['skipped_ranges']}"
+    )
+    print(f"[collect][plan-candles] out={plan_options.output_path}")
+    return 0
+
+
+def _handle_collect_candles(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    defaults = _data_defaults(base_config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+
+    collect_options = CandleCollectOptions(
+        plan_path=Path(args.plan),
+        parquet_root=parquet_root,
+        out_dataset=str(args.out_dataset).strip() or "candles_api_v1",
+        dry_run=_parse_bool_arg(args.dry_run, default=True),
+        workers=max(int(args.workers), 1),
+        max_requests=args.max_requests,
+        stop_on_first_fail=_parse_bool_arg(args.stop_on_first_fail, default=False),
+        rate_limit_strict=_parse_bool_arg(args.rate_limit_strict, default=True),
+        config_dir=config_dir,
+    )
+
+    collect_summary = collect_candles_from_plan(collect_options)
+    print(
+        "[collect][candles] "
+        f"discovered={collect_summary.discovered_targets} selected={collect_summary.selected_targets} "
+        f"processed={collect_summary.processed_targets} ok={collect_summary.ok_targets} "
+        f"warn={collect_summary.warn_targets} fail={collect_summary.fail_targets} "
+        f"calls={collect_summary.calls_made} throttled={collect_summary.throttled_count} "
+        f"backoff={collect_summary.backoff_count}"
+    )
+    print(f"[collect][candles] collect_report={collect_summary.collect_report_file}")
+    print(f"[collect][candles] build_report={collect_summary.build_report_file}")
+    if collect_options.dry_run:
+        return 0
+
+    validate_summary = validate_candles_api_dataset(
+        parquet_root=parquet_root,
+        dataset_name=collect_options.out_dataset,
+        plan_path=collect_options.plan_path,
+        report_path=Path("data/collect/_meta/candle_validate_report.json"),
+        gap_severity=defaults["qa"]["gap_severity"],
+        quote_est_severity=defaults["qa"]["quote_est_severity"],
+        ohlc_violation_policy=defaults["qa"]["ohlc_violation_policy"],
+    )
+    print(
+        "[collect][validate] "
+        f"checked={validate_summary.checked_files} ok={validate_summary.ok_files} "
+        f"warn={validate_summary.warn_files} fail={validate_summary.fail_files} "
+        f"schema_ok={validate_summary.schema_ok} ohlc_ok={validate_summary.ohlc_ok}"
+    )
+    print(f"[collect][validate] report={validate_summary.validate_report_file}")
+
+    if collect_summary.fail_targets > 0 or validate_summary.fail_files > 0:
+        return 2
+    return 0
+
+
+def _handle_collect_plan_ticks(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    defaults = _data_defaults(config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+    base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
+
+    plan_options = TicksPlanOptions(
+        parquet_root=parquet_root,
+        base_dataset=base_dataset,
+        output_path=Path(args.out),
+        quote=str(args.quote).strip().upper() or "KRW",
+        market_mode=str(args.market_mode).strip().lower(),
+        top_n=max(int(args.top_n), 1),
+        fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+        days_ago=_parse_days_ago_csv(args.days_ago, default=(1, 2, 3, 4, 5, 6, 7)),
+    )
+    plan = generate_ticks_collection_plan(plan_options)
+    print(
+        "[collect][plan-ticks] "
+        f"selected_markets={plan['summary']['selected_markets']} "
+        f"targets={plan['summary']['targets']} "
+        f"days_ago_count={plan['summary']['days_ago_count']}"
+    )
+    print(f"[collect][plan-ticks] out={plan_options.output_path}")
+    return 0
+
+
+def _handle_collect_ticks(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    ticks_command = getattr(args, "collect_ticks_command", None)
+    if ticks_command == "validate":
+        summary = validate_ticks_raw_dataset(
+            raw_root=Path(args.raw_root),
+            report_path=Path(args.meta_dir) / "ticks_validate_report.json",
+            date_filter=args.date,
+            dup_ratio_warn_threshold=float(args.dup_ratio_threshold),
+        )
+        print(
+            "[collect][ticks][validate] "
+            f"checked={summary.checked_files} ok={summary.ok_files} "
+            f"warn={summary.warn_files} fail={summary.fail_files} "
+            f"schema_ok_ratio={summary.schema_ok_ratio:.6f} "
+            f"dup_ratio_overall={summary.dup_ratio_overall:.6f}"
+        )
+        print(f"[collect][ticks][validate] report={summary.validate_report_file}")
+        return 2 if summary.fail_files > 0 else 0
+
+    if ticks_command == "stats":
+        stats = collect_ticks_stats(
+            raw_root=Path(args.raw_root),
+            meta_dir=Path(args.meta_dir),
+            date_filter=args.date,
+        )
+        _print_json(stats)
+        return 0
+
+    defaults = _data_defaults(base_config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+    base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
+    mode = str(args.mode).strip().lower()
+    default_days_ago = (1,) if mode == "daily" else (1, 2, 3, 4, 5, 6, 7)
+    days_ago = _parse_days_ago_csv(args.days_ago, default=default_days_ago)
+
+    collect_options = TicksCollectOptions(
+        plan_path=Path(args.plan),
+        raw_root=Path(args.raw_root),
+        meta_dir=Path(args.meta_dir),
+        parquet_root=parquet_root,
+        base_dataset=base_dataset,
+        quote=str(args.quote).strip().upper() or "KRW",
+        market_mode=str(args.market_mode).strip().lower(),
+        top_n=max(int(args.top_n), 1),
+        fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+        days_ago=days_ago,
+        mode=mode,
+        dry_run=_parse_bool_arg(args.dry_run, default=False),
+        workers=max(int(args.workers), 1),
+        rate_limit_strict=_parse_bool_arg(args.rate_limit_strict, default=True),
+        max_pages_per_target=(max(int(args.max_pages_per_target), 1) if args.max_pages_per_target is not None else None),
+        max_requests=args.max_requests,
+        retention_days=max(int(args.retention_days), 1),
+        config_dir=config_dir,
+    )
+
+    collect_summary = collect_ticks_from_plan(collect_options)
+    print(
+        "[collect][ticks] "
+        f"discovered={collect_summary.discovered_targets} selected={collect_summary.selected_targets} "
+        f"processed={collect_summary.processed_targets} ok={collect_summary.ok_targets} "
+        f"warn={collect_summary.warn_targets} fail={collect_summary.fail_targets} "
+        f"calls={collect_summary.calls_made} throttled={collect_summary.throttled_count} "
+        f"backoff={collect_summary.backoff_count} rows={collect_summary.rows_collected_total}"
+    )
+    print(f"[collect][ticks] plan={collect_summary.plan_file}")
+    print(f"[collect][ticks] manifest={collect_summary.manifest_file}")
+    print(f"[collect][ticks] checkpoint={collect_summary.checkpoint_file}")
+    print(f"[collect][ticks] collect_report={collect_summary.collect_report_file}")
+
+    if collect_options.dry_run:
+        return 0
+
+    validate_summary = validate_ticks_raw_dataset(
+        raw_root=collect_options.raw_root,
+        report_path=collect_options.validate_report_path,
+        date_filter=None,
+        dup_ratio_warn_threshold=0.05,
+    )
+    print(
+        "[collect][ticks][validate] "
+        f"checked={validate_summary.checked_files} ok={validate_summary.ok_files} "
+        f"warn={validate_summary.warn_files} fail={validate_summary.fail_files} "
+        f"schema_ok_ratio={validate_summary.schema_ok_ratio:.6f} "
+        f"dup_ratio_overall={validate_summary.dup_ratio_overall:.6f}"
+    )
+    print(f"[collect][ticks][validate] report={validate_summary.validate_report_file}")
+    if collect_summary.fail_targets > 0 or validate_summary.fail_files > 0:
+        return 2
+    return 0
 
 
 def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
@@ -1408,6 +1788,27 @@ def _parse_csv_list(value: str | None, normalize: Callable[[str], str]) -> tuple
         return None
     items = tuple(normalize(item.strip()) for item in value.split(",") if item.strip())
     return items or None
+
+
+def _parse_days_ago_csv(value: str | None, *, default: tuple[int, ...]) -> tuple[int, ...]:
+    if value is None:
+        return tuple(default)
+    values: list[int] = []
+    seen: set[int] = set()
+    for token in str(value).split(","):
+        text = token.strip()
+        if not text:
+            continue
+        day = int(text)
+        if day < 1 or day > 7:
+            raise ValueError("days_ago must be between 1 and 7")
+        if day in seen:
+            continue
+        seen.add(day)
+        values.append(day)
+    if not values:
+        return tuple(default)
+    return tuple(sorted(values))
 
 
 def _parse_bool_arg(value: Any, *, default: bool = False) -> bool:
