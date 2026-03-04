@@ -25,7 +25,11 @@ def collect_ws_public_stats(
     for pattern in patterns:
         part_files.extend(path for path in raw_root.glob(pattern) if path.is_file())
 
-    manifest_summary = _manifest_summary(manifest_file=manifest_file, date_filter=date_filter)
+    manifest_summary = _manifest_summary(
+        manifest_file=manifest_file,
+        date_filter=date_filter,
+        raw_root=raw_root,
+    )
     collect_report = _load_json(meta_dir / "ws_collect_report.json")
     validate_report = _load_json(meta_dir / "ws_validate_report.json")
     runs_summary = _load_json(meta_dir / "ws_runs_summary.json")
@@ -44,13 +48,16 @@ def collect_ws_public_stats(
     }
 
 
-def _manifest_summary(*, manifest_file: Path, date_filter: str | None) -> dict[str, Any]:
+def _manifest_summary(*, manifest_file: Path, date_filter: str | None, raw_root: Path) -> dict[str, Any]:
     if not manifest_file.exists():
         return {
             "available": False,
             "manifest_file": str(manifest_file),
         }
     frame = pl.read_parquet(manifest_file)
+    rows_before_root_filter = int(frame.height)
+    frame = _filter_manifest_by_raw_root(frame=frame, raw_root=raw_root)
+    rows_after_root_filter = int(frame.height)
     if date_filter:
         frame = frame.filter(pl.col("date") == date_filter)
 
@@ -60,6 +67,12 @@ def _manifest_summary(*, manifest_file: Path, date_filter: str | None) -> dict[s
             "manifest_file": str(manifest_file),
             "rows": 0,
             "parts": 0,
+            "raw_root_filter": {
+                "raw_root": str(raw_root),
+                "rows_before": rows_before_root_filter,
+                "rows_after": rows_after_root_filter,
+                "ignored_outside_raw_root": max(rows_before_root_filter - rows_after_root_filter, 0),
+            },
         }
 
     status_counts = frame.group_by("status").len().sort("status")
@@ -98,7 +111,42 @@ def _manifest_summary(*, manifest_file: Path, date_filter: str | None) -> dict[s
         "by_status": by_status,
         "by_channel": by_channel,
         "by_date_hour": by_date_hour,
+        "raw_root_filter": {
+            "raw_root": str(raw_root),
+            "rows_before": rows_before_root_filter,
+            "rows_after": rows_after_root_filter,
+            "ignored_outside_raw_root": max(rows_before_root_filter - rows_after_root_filter, 0),
+        },
     }
+
+
+def _filter_manifest_by_raw_root(*, frame: pl.DataFrame, raw_root: Path) -> pl.DataFrame:
+    if frame.height <= 0 or "part_file" not in frame.columns:
+        return frame
+    part_files = frame.get_column("part_file").to_list()
+    mask = [_part_file_matches_root(part_file=value, raw_root=raw_root) for value in part_files]
+    return frame.filter(pl.Series(name="_mask", values=mask, dtype=pl.Boolean))
+
+
+def _part_file_matches_root(*, part_file: Any, raw_root: Path) -> bool:
+    if part_file is None:
+        return False
+    text = str(part_file).strip()
+    if not text:
+        return False
+
+    root_abs = str(raw_root.resolve()).replace("\\", "/").rstrip("/").lower()
+    path_obj = Path(text)
+    if path_obj.is_absolute():
+        candidate_abs = str(path_obj.resolve()).replace("\\", "/").rstrip("/").lower()
+        return candidate_abs.startswith(root_abs + "/") or candidate_abs == root_abs
+
+    # Relative `part_file` compatibility (manifest may contain old roots such as .../quotation/...).
+    normalized = text.replace("\\", "/").lstrip("./").lower()
+    root_rel = str(raw_root).replace("\\", "/").lstrip("./").rstrip("/").lower()
+    if not root_rel:
+        return True
+    return normalized.startswith(root_rel + "/") or normalized == root_rel
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:

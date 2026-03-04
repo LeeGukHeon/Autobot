@@ -90,6 +90,11 @@ class PaperRunSettings:
     out_root_dir: str = "data/paper"
     micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
     micro_order_policy: MicroOrderPolicySettings = field(default_factory=MicroOrderPolicySettings)
+    paper_micro_provider: str = "offline_parquet"
+    paper_micro_warmup_sec: int = 60
+    paper_micro_warmup_min_trade_events_per_market: int = 1
+    paper_micro_auto_health_path: str = "data/raw_ws/upbit/_meta/ws_public_health.json"
+    paper_micro_auto_health_stale_sec: int = 180
 
 
 @dataclass(frozen=True)
@@ -722,6 +727,10 @@ class PaperRunEngine:
             "filled_intents": set(),
             "time_to_fill_ms": [],
             "slippage_bps": [],
+            "live_ws_trade_events_by_market": {},
+            "live_ws_acc_notional_by_market": {},
+            "live_ws_last_event_ts_ms_by_market": {},
+            "live_ws_warmup": {},
         }
 
         markets = self._market_loader(quote)
@@ -748,6 +757,45 @@ class PaperRunEngine:
             else None
         )
         micro_snapshot_provider = self._resolve_micro_snapshot_provider(markets=markets)
+        micro_provider_info = dict(
+            _describe_micro_snapshot_provider(
+                provider=micro_snapshot_provider,
+                micro_gate=self._run_settings.micro_gate,
+            )
+        )
+        provider_decision = self._runtime_state.get("micro_provider_decision")
+        if isinstance(provider_decision, dict):
+            micro_provider_info.update(provider_decision)
+        live_ws_provider = micro_snapshot_provider if isinstance(micro_snapshot_provider, LiveWsMicroSnapshotProvider) else None
+        warmup_enabled = live_ws_provider is not None
+        warmup_sec = max(int(self._run_settings.paper_micro_warmup_sec), 0) if warmup_enabled else 0
+        warmup_min_trade_events = (
+            max(int(self._run_settings.paper_micro_warmup_min_trade_events_per_market), 1) if warmup_enabled else 0
+        )
+        warmup_started_monotonic = time.monotonic()
+        warmup_deadline_monotonic = warmup_started_monotonic + float(warmup_sec)
+        warmup_elapsed_sec = 0.0
+        warmup_satisfied = not warmup_enabled
+        warmup_completed = not warmup_enabled
+        warmup_trade_events_total = 0
+        warmup_markets_with_samples = 0
+        warmup_last_wait_emit = 0.0
+        self._runtime_state["live_ws_warmup"] = {
+            "enabled": bool(warmup_enabled),
+            "sec": int(warmup_sec),
+            "min_trade_events_per_market": int(warmup_min_trade_events),
+            "started_monotonic": float(warmup_started_monotonic),
+        }
+        micro_provider_info.update(
+            {
+                "warmup_enabled": bool(warmup_enabled),
+                "warmup_sec": int(warmup_sec),
+                "warmup_min_trade_events_per_market": int(warmup_min_trade_events),
+            }
+        )
+        if warmup_completed:
+            self._runtime_state["live_ws_warmup"]["satisfied"] = True
+            self._runtime_state["live_ws_warmup"]["elapsed_sec"] = 0.0
         trade_gate = TradeGateV1(
             GateSettings(
                 per_trade_krw=self._run_settings.per_trade_krw,
@@ -789,9 +837,10 @@ class PaperRunEngine:
         realized_trade_pnls: list[float] = []
         received_events = 0
 
-        next_decision_at = time.monotonic()
-        next_report_at = time.monotonic() + max(self._run_settings.print_every_sec, 1.0)
-        deadline_monotonic = time.monotonic() + float(self._run_settings.duration_sec)
+        run_started_monotonic = time.monotonic()
+        next_decision_at = run_started_monotonic
+        next_report_at = run_started_monotonic + max(self._run_settings.print_every_sec, 1.0)
+        deadline_monotonic = run_started_monotonic + float(self._run_settings.duration_sec)
 
         with JsonlEventStore(run_root) as store:
 
@@ -812,6 +861,10 @@ class PaperRunEngine:
                     "micro_order_policy_enabled": bool(self._run_settings.micro_order_policy.enabled),
                     "micro_order_policy_mode": str(self._run_settings.micro_order_policy.mode),
                     "micro_order_policy_on_missing": str(self._run_settings.micro_order_policy.on_missing),
+                    "micro_provider": str(micro_provider_info.get("provider") or "NONE"),
+                    "micro_provider_info": dict(micro_provider_info),
+                    "warmup_sec": int(warmup_sec),
+                    "warmup_min_trade_events_per_market": int(warmup_min_trade_events),
                 },
             )
 
@@ -821,6 +874,74 @@ class PaperRunEngine:
                 received_events += 1
                 market_data.update(ticker)
                 universe.update_ticker(ticker)
+                if live_ws_provider is not None:
+                    self._ingest_live_micro_from_ticker(provider=live_ws_provider, ticker=ticker)
+                    trade_counts = self._runtime_state.get("live_ws_trade_events_by_market", {})
+                    if isinstance(trade_counts, dict):
+                        warmup_trade_events_total = int(
+                            sum(max(int(value), 0) for value in trade_counts.values() if value is not None)
+                        )
+                        warmup_markets_with_samples = int(
+                            sum(1 for value in trade_counts.values() if value is not None and int(value) > 0)
+                        )
+                        has_ready_market = any(
+                            value is not None and int(value) >= int(warmup_min_trade_events)
+                            for value in trade_counts.values()
+                        )
+                    else:
+                        warmup_trade_events_total = 0
+                        warmup_markets_with_samples = 0
+                        has_ready_market = False
+
+                    if warmup_enabled and not warmup_completed:
+                        now_for_warmup = time.monotonic()
+                        elapsed_for_warmup = max(now_for_warmup - warmup_started_monotonic, 0.0)
+                        if has_ready_market:
+                            warmup_completed = True
+                            warmup_satisfied = True
+                            warmup_elapsed_sec = elapsed_for_warmup
+                            self._runtime_state["live_ws_warmup"]["satisfied"] = True
+                            self._runtime_state["live_ws_warmup"]["elapsed_sec"] = float(warmup_elapsed_sec)
+                            append_event(
+                                "MICRO_WARMUP_COMPLETED",
+                                ts_ms=ticker.ts_ms,
+                                payload={
+                                    "warmup_satisfied": True,
+                                    "warmup_elapsed_sec": float(round(warmup_elapsed_sec, 3)),
+                                    "warmup_trade_events_total": int(warmup_trade_events_total),
+                                    "markets_with_samples": int(warmup_markets_with_samples),
+                                    "reason": "MIN_TRADE_EVENTS_REACHED",
+                                },
+                            )
+                        elif now_for_warmup >= warmup_deadline_monotonic:
+                            warmup_completed = True
+                            warmup_satisfied = False
+                            warmup_elapsed_sec = float(warmup_sec)
+                            self._runtime_state["live_ws_warmup"]["satisfied"] = False
+                            self._runtime_state["live_ws_warmup"]["elapsed_sec"] = float(warmup_elapsed_sec)
+                            append_event(
+                                "MICRO_WARMUP_COMPLETED",
+                                ts_ms=ticker.ts_ms,
+                                payload={
+                                    "warmup_satisfied": False,
+                                    "warmup_elapsed_sec": float(round(warmup_elapsed_sec, 3)),
+                                    "warmup_trade_events_total": int(warmup_trade_events_total),
+                                    "markets_with_samples": int(warmup_markets_with_samples),
+                                    "reason": "WARMUP_TIMEOUT",
+                                },
+                            )
+                        elif (elapsed_for_warmup - warmup_last_wait_emit) >= 5.0:
+                            warmup_last_wait_emit = elapsed_for_warmup
+                            append_event(
+                                "MICRO_WARMUP_WAIT",
+                                ts_ms=ticker.ts_ms,
+                                payload={
+                                    "warmup_elapsed_sec": float(round(elapsed_for_warmup, 3)),
+                                    "warmup_target_sec": int(warmup_sec),
+                                    "warmup_trade_events_total": int(warmup_trade_events_total),
+                                    "markets_with_samples": int(warmup_markets_with_samples),
+                                },
+                            )
 
                 realized_before = exchange.total_realized_pnl()
                 market_has_ask_fill = self._apply_execution_update(
@@ -857,27 +978,28 @@ class PaperRunEngine:
                     )
 
                 if now_monotonic >= next_decision_at:
-                    self._run_candidate_cycle(
-                        ts_ms=ticker.ts_ms,
-                        latest_trade_price=ticker.trade_price,
-                        universe=universe,
-                        market_data=market_data,
-                        candidate_generator=candidate_generator,
-                        trade_gate=trade_gate,
-                        micro_order_policy=micro_order_policy,
-                        micro_snapshot_provider=micro_snapshot_provider,
-                        exchange=exchange,
-                        execution=execution,
-                        event_store=store,
-                        append_event=append_event,
-                    )
-                    orders_submitted = int(self._runtime_counters["orders_submitted"])
-                    orders_filled = int(self._runtime_counters["orders_filled"])
-                    orders_canceled = int(self._runtime_counters["orders_canceled"])
-                    intents_failed = int(self._runtime_counters["intents_failed"])
-                    candidates_total = int(self._runtime_counters["candidates_total"])
-                    candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
-                    candidates_aborted_by_policy = int(self._runtime_counters["candidates_aborted_by_policy"])
+                    if warmup_completed:
+                        self._run_candidate_cycle(
+                            ts_ms=ticker.ts_ms,
+                            latest_trade_price=ticker.trade_price,
+                            universe=universe,
+                            market_data=market_data,
+                            candidate_generator=candidate_generator,
+                            trade_gate=trade_gate,
+                            micro_order_policy=micro_order_policy,
+                            micro_snapshot_provider=micro_snapshot_provider,
+                            exchange=exchange,
+                            execution=execution,
+                            event_store=store,
+                            append_event=append_event,
+                        )
+                        orders_submitted = int(self._runtime_counters["orders_submitted"])
+                        orders_filled = int(self._runtime_counters["orders_filled"])
+                        orders_canceled = int(self._runtime_counters["orders_canceled"])
+                        intents_failed = int(self._runtime_counters["intents_failed"])
+                        candidates_total = int(self._runtime_counters["candidates_total"])
+                        candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
+                        candidates_aborted_by_policy = int(self._runtime_counters["candidates_aborted_by_policy"])
                     next_decision_at = now_monotonic + max(self._run_settings.decision_interval_sec, 0.2)
 
                 if now_monotonic >= next_report_at:
@@ -894,6 +1016,32 @@ class PaperRunEngine:
                     next_report_at = now_monotonic + max(self._run_settings.print_every_sec, 1.0)
 
             final_ts_ms = int(time.time() * 1000)
+            if warmup_enabled and not warmup_completed:
+                warmup_elapsed_sec = min(
+                    max(time.monotonic() - warmup_started_monotonic, 0.0),
+                    float(warmup_sec),
+                )
+                warmup_satisfied = False
+                warmup_completed = True
+                self._runtime_state["live_ws_warmup"]["satisfied"] = False
+                self._runtime_state["live_ws_warmup"]["elapsed_sec"] = float(warmup_elapsed_sec)
+
+            micro_provider_info["warmup_elapsed_sec"] = float(round(warmup_elapsed_sec, 3))
+            micro_provider_info["warmup_satisfied"] = bool(warmup_satisfied)
+            micro_provider_info["warmup_trade_events_total"] = int(warmup_trade_events_total)
+            micro_provider_info["micro_cache_markets_with_samples"] = int(warmup_markets_with_samples)
+            last_event_by_market = self._runtime_state.get("live_ws_last_event_ts_ms_by_market", {})
+            if isinstance(last_event_by_market, dict):
+                last_values = [int(value) for value in last_event_by_market.values() if value is not None]
+                last_event_ts_ms = max(last_values) if last_values else None
+            else:
+                last_event_ts_ms = None
+            micro_provider_info["last_event_ts_ms"] = int(last_event_ts_ms) if last_event_ts_ms is not None else None
+            if last_event_ts_ms is not None and int(last_event_ts_ms) > 0:
+                micro_provider_info["micro_snapshot_age_ms"] = max(final_ts_ms - int(last_event_ts_ms), 0)
+            else:
+                micro_provider_info["micro_snapshot_age_ms"] = None
+
             final_snapshot = exchange.portfolio_snapshot(ts_ms=final_ts_ms, latest_prices=market_data.latest_prices())
             store.append_equity(final_snapshot)
             append_event("PORTFOLIO_SNAPSHOT", ts_ms=final_ts_ms, payload=asdict(final_snapshot))
@@ -915,6 +1063,12 @@ class PaperRunEngine:
                         self._runtime_counters.get("micro_policy_fallback_counts", {})
                     ),
                     "order_supervisor_reasons": dict(self._runtime_counters.get("order_supervisor_reasons", {})),
+                    "micro_provider": str(micro_provider_info.get("provider") or "NONE"),
+                    "micro_provider_info": dict(micro_provider_info),
+                    "warmup_elapsed_sec": float(round(warmup_elapsed_sec, 3)),
+                    "warmup_satisfied": bool(warmup_satisfied),
+                    "warmup_trade_events_total": int(warmup_trade_events_total),
+                    "micro_cache_markets_with_samples": int(warmup_markets_with_samples),
                 },
             )
 
@@ -963,7 +1117,14 @@ class PaperRunEngine:
             max_drawdown_pct=max_drawdown_pct,
             win_rate=win_rate,
         )
-        _write_json(path=run_root / "summary.json", payload=asdict(summary))
+        summary_payload = asdict(summary)
+        summary_payload["micro_provider"] = str(micro_provider_info.get("provider") or "NONE")
+        summary_payload["micro_provider_info"] = dict(micro_provider_info)
+        summary_payload["warmup_elapsed_sec"] = float(round(warmup_elapsed_sec, 3))
+        summary_payload["warmup_satisfied"] = bool(warmup_satisfied)
+        summary_payload["warmup_trade_events_total"] = int(warmup_trade_events_total)
+        summary_payload["micro_cache_markets_with_samples"] = int(warmup_markets_with_samples)
+        _write_json(path=run_root / "summary.json", payload=summary_payload)
         _write_json(
             path=run_root / "micro_gate_blocked.json",
             payload={
@@ -1375,6 +1536,50 @@ class PaperRunEngine:
 
         return has_ask_fill
 
+    def _ingest_live_micro_from_ticker(
+        self,
+        *,
+        provider: LiveWsMicroSnapshotProvider,
+        ticker: TickerEvent,
+    ) -> None:
+        market = str(ticker.market).strip().upper()
+        if not market:
+            return
+        if ticker.trade_price <= 0:
+            return
+
+        acc_by_market = self._runtime_state.setdefault("live_ws_acc_notional_by_market", {})
+        trade_counts = self._runtime_state.setdefault("live_ws_trade_events_by_market", {})
+        last_event_by_market = self._runtime_state.setdefault("live_ws_last_event_ts_ms_by_market", {})
+        if not isinstance(acc_by_market, dict) or not isinstance(trade_counts, dict) or not isinstance(last_event_by_market, dict):
+            return
+
+        current_acc = max(float(ticker.acc_trade_price_24h), 0.0)
+        prev_acc = _safe_optional_float(acc_by_market.get(market))
+        if prev_acc is None:
+            notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+        elif current_acc >= prev_acc:
+            notional_delta = max(current_acc - prev_acc, 0.0)
+            if notional_delta <= 0:
+                notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+        else:
+            notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+
+        acc_by_market[market] = float(current_acc)
+        volume = max(notional_delta / max(float(ticker.trade_price), 1e-8), 1e-12)
+        provider.ingest_trade(
+            {
+                "market": market,
+                "ts_ms": int(ticker.ts_ms),
+                "trade_ts_ms": int(ticker.ts_ms),
+                "price": float(ticker.trade_price),
+                "volume": float(volume),
+                "ask_bid": "BID",
+            }
+        )
+        trade_counts[market] = int(trade_counts.get(market, 0)) + 1
+        last_event_by_market[market] = int(ticker.ts_ms)
+
     def _load_quote_markets(self, quote: str) -> list[str]:
         quote_prefix = f"{quote.strip().upper()}-"
         with UpbitHttpClient(self._upbit_settings) as http_client:
@@ -1399,19 +1604,70 @@ class PaperRunEngine:
 
     def _resolve_micro_snapshot_provider(self, *, markets: list[str]) -> MicroSnapshotProvider | None:
         cfg = self._run_settings.micro_gate
-        if not (cfg.enabled or self._run_settings.micro_order_policy.enabled):
+        policy_enabled = bool(self._run_settings.micro_order_policy.enabled)
+        gate_enabled = bool(cfg.enabled)
+        requested_provider = _normalize_paper_micro_provider(self._run_settings.paper_micro_provider)
+        decision: dict[str, Any] = {
+            "requested_provider": requested_provider,
+            "effective_provider": "NONE",
+            "policy_enabled": bool(policy_enabled),
+            "micro_gate_enabled": bool(gate_enabled),
+            "live_ws_config_enabled": bool(cfg.live_ws.enabled),
+            "provider_decision": "UNSET",
+        }
+        if not (gate_enabled or policy_enabled):
+            decision["provider_decision"] = "MICRO_DISABLED"
+            self._runtime_state["micro_provider_decision"] = decision
             return None
+
         if self._micro_snapshot_provider is not None:
+            decision["provider_decision"] = "INJECTED_PROVIDER"
+            decision["effective_provider"] = "INJECTED"
+            self._runtime_state["micro_provider_decision"] = decision
             return self._micro_snapshot_provider
 
-        if cfg.live_ws.enabled:
+        auto_live_ws = False
+        if requested_provider == "AUTO":
+            auto_live_ws = _is_ws_public_daemon_running(
+                health_path=Path(self._run_settings.paper_micro_auto_health_path),
+                stale_sec=max(int(self._run_settings.paper_micro_auto_health_stale_sec), 1),
+            )
+            decision["auto_ws_public_running"] = bool(auto_live_ws)
+
+        use_live_ws = False
+        if requested_provider == "LIVE_WS":
+            if policy_enabled:
+                use_live_ws = True
+                decision["provider_decision"] = "LIVE_WS_FORCED"
+            else:
+                decision["provider_decision"] = "LIVE_WS_REJECTED_POLICY_OFF"
+        elif requested_provider == "AUTO":
+            if policy_enabled and auto_live_ws:
+                use_live_ws = True
+                decision["provider_decision"] = "LIVE_WS_AUTO"
+            else:
+                decision["provider_decision"] = "AUTO_FALLBACK_OFFLINE"
+        else:
+            decision["provider_decision"] = "OFFLINE_DEFAULT"
+
+        if use_live_ws:
             live_provider = LiveWsMicroSnapshotProvider(settings=cfg.live_ws)
             live_provider.track_markets(markets)
             self._micro_snapshot_provider = live_provider
+            decision["effective_provider"] = "LIVE_WS"
+            tracked_markets = getattr(live_provider, "_tracked_markets", ())
+            decision["subscribed_markets_count"] = (
+                len(tuple(tracked_markets)) if isinstance(tracked_markets, tuple) else 0
+            )
+            self._runtime_state["micro_provider_decision"] = decision
             return self._micro_snapshot_provider
 
         micro_root = _resolve_micro_root(dataset_name=cfg.dataset_name)
+        decision["offline_micro_root"] = str(micro_root)
         if not micro_root.exists():
+            decision["provider_decision"] = f"{decision['provider_decision']}_MISSING_MICRO_ROOT"
+            decision["effective_provider"] = "NONE"
+            self._runtime_state["micro_provider_decision"] = decision
             return None
         provider = OfflineMicroSnapshotProvider(
             micro_root=micro_root,
@@ -1419,7 +1675,51 @@ class PaperRunEngine:
             cache_entries=cfg.cache_entries,
         )
         self._micro_snapshot_provider = provider
+        decision["effective_provider"] = "OFFLINE_PARQUET"
+        self._runtime_state["micro_provider_decision"] = decision
         return self._micro_snapshot_provider
+
+
+def _describe_micro_snapshot_provider(
+    *,
+    provider: MicroSnapshotProvider | None,
+    micro_gate: MicroGateSettings,
+) -> dict[str, Any]:
+    if provider is None:
+        return {
+            "provider": "NONE",
+            "class_name": None,
+            "live_ws_enabled": bool(micro_gate.live_ws.enabled),
+        }
+
+    if isinstance(provider, LiveWsMicroSnapshotProvider):
+        tracked_markets = getattr(provider, "_tracked_markets", ())
+        subscribed_markets_count = len(tuple(tracked_markets)) if isinstance(tracked_markets, tuple) else 0
+        return {
+            "provider": "LIVE_WS",
+            "class_name": provider.__class__.__name__,
+            "live_ws_enabled": True,
+            "subscribed_markets_count": int(subscribed_markets_count),
+            "window_sec": int(getattr(provider.settings, "window_sec", 0)),
+            "orderbook_topk": int(getattr(provider.settings, "orderbook_topk", 0)),
+        }
+
+    if isinstance(provider, OfflineMicroSnapshotProvider):
+        micro_root = getattr(provider, "_micro_root", None)
+        tf = getattr(provider, "_tf", None)
+        return {
+            "provider": "OFFLINE_PARQUET",
+            "class_name": provider.__class__.__name__,
+            "live_ws_enabled": bool(micro_gate.live_ws.enabled),
+            "micro_root": str(micro_root) if micro_root is not None else None,
+            "tf": str(tf) if tf is not None else None,
+        }
+
+    return {
+        "provider": "CUSTOM",
+        "class_name": provider.__class__.__name__,
+        "live_ws_enabled": bool(micro_gate.live_ws.enabled),
+    }
 
 
 def _is_micro_reason(reason: str) -> bool:
@@ -1497,6 +1797,44 @@ def _resolve_micro_root(*, dataset_name: str) -> Path:
     return Path("data/parquet") / raw
 
 
+def _normalize_paper_micro_provider(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"LIVE_WS", "LIVE", "WS"}:
+        return "LIVE_WS"
+    if text in {"AUTO"}:
+        return "AUTO"
+    if text in {"OFFLINE", "OFFLINE_PARQUET", "PARQUET"}:
+        return "OFFLINE_PARQUET"
+    return "OFFLINE_PARQUET"
+
+
+def _is_ws_public_daemon_running(*, health_path: Path, stale_sec: int) -> bool:
+    if not health_path.exists():
+        return False
+    try:
+        payload = json.loads(health_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    connected_raw = payload.get("connected")
+    if isinstance(connected_raw, bool):
+        connected = connected_raw
+    elif isinstance(connected_raw, (int, float)):
+        connected = int(connected_raw) != 0
+    elif isinstance(connected_raw, str):
+        connected = connected_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        connected = False
+    if not connected:
+        return False
+    updated_at_ms = _safe_int(payload.get("updated_at_ms"))
+    if updated_at_ms is None or updated_at_ms <= 0:
+        return True
+    age_ms = int(time.time() * 1000) - int(updated_at_ms)
+    return age_ms <= max(int(stale_sec), 1) * 1000
+
+
 def _write_json(*, path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1553,6 +1891,20 @@ def _safe_optional_float(value: Any) -> float | None:
     if number < 0:
         return None
     return number
+
+
+def _safe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            return int(float(text))
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _infer_tick_size(*, price: float, quote: str) -> float:

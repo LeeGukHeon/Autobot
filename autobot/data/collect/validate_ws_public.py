@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 from .ws_public_writer import read_ws_part_file
@@ -24,6 +25,8 @@ class WsPublicValidateSummary:
     parse_ok_ratio: float
     validate_report_file: Path
     details: tuple[dict[str, Any], ...]
+    quarantined_files: int = 0
+    quarantine_report_file: Path | None = None
 
 
 def validate_ws_public_raw_dataset(
@@ -32,11 +35,17 @@ def validate_ws_public_raw_dataset(
     meta_dir: Path = Path("data/raw_ws/upbit/_meta"),
     report_path: Path | None = None,
     date_filter: str | None = None,
+    quarantine_corrupt: bool = False,
+    quarantine_dir: Path | None = None,
+    min_age_sec: int = 300,
 ) -> WsPublicValidateSummary:
     output_path = report_path or (meta_dir / "ws_validate_report.json")
+    quarantine_root = quarantine_dir if quarantine_dir is not None else (raw_root.parent / "_quarantine")
+    quarantine_report_path = meta_dir / "ws_quarantine_report.json"
     part_files = _discover_part_files(raw_root=raw_root, date_filter=date_filter)
 
     details: list[dict[str, Any]] = []
+    quarantine_events: list[dict[str, Any]] = []
     ok_files = 0
     warn_files = 0
     fail_files = 0
@@ -52,6 +61,60 @@ def validate_ws_public_raw_dataset(
         try:
             raw_rows = read_ws_part_file(part_file)
         except Exception as exc:
+            error_message = str(exc)
+            quarantined_detail: dict[str, Any] | None = None
+            if quarantine_corrupt and _is_zstd_corrupt_error(exc):
+                file_age_sec = _file_age_sec(path=part_file)
+                if file_age_sec is not None and file_age_sec >= max(int(min_age_sec), 0):
+                    quarantined_entry = _quarantine_corrupt_part(
+                        part_file=part_file,
+                        raw_root=raw_root,
+                        quarantine_root=quarantine_root,
+                        reason="ZSTD_CORRUPT",
+                        error_message=error_message,
+                    )
+                    quarantine_events.append(quarantined_entry)
+                    quarantined_detail = {
+                        "file": str(part_file),
+                        "channel": channel_tag,
+                        "date": date_tag,
+                        "hour": hour_tag,
+                        "rows_raw": 0,
+                        "rows_valid": 0,
+                        "schema_errors": 0,
+                        "status": "WARN",
+                        "reasons": ["QUARANTINED_ZSTD_CORRUPT"],
+                        "error_message": error_message,
+                        "min_ts_ms": None,
+                        "max_ts_ms": None,
+                        "quarantine": quarantined_entry,
+                    }
+                else:
+                    quarantined_detail = {
+                        "file": str(part_file),
+                        "channel": channel_tag,
+                        "date": date_tag,
+                        "hour": hour_tag,
+                        "rows_raw": 0,
+                        "rows_valid": 0,
+                        "schema_errors": 1,
+                        "status": "FAIL",
+                        "reasons": ["READ_OR_PARSE_EXCEPTION", "ZSTD_CORRUPT_TOO_FRESH_FOR_QUARANTINE"],
+                        "error_message": error_message,
+                        "min_ts_ms": None,
+                        "max_ts_ms": None,
+                        "quarantine_attempted": True,
+                        "min_age_sec": int(max(int(min_age_sec), 0)),
+                        "file_age_sec": file_age_sec,
+                    }
+            if quarantined_detail is not None:
+                if quarantined_detail.get("status") == "WARN":
+                    warn_files += 1
+                else:
+                    fail_files += 1
+                details.append(quarantined_detail)
+                continue
+
             detail = {
                 "file": str(part_file),
                 "channel": channel_tag,
@@ -62,7 +125,7 @@ def validate_ws_public_raw_dataset(
                 "schema_errors": 1,
                 "status": "FAIL",
                 "reasons": ["READ_OR_PARSE_EXCEPTION"],
-                "error_message": str(exc),
+                "error_message": error_message,
                 "min_ts_ms": None,
                 "max_ts_ms": None,
             }
@@ -165,6 +228,10 @@ def validate_ws_public_raw_dataset(
         "raw_root": str(raw_root),
         "meta_dir": str(meta_dir),
         "date_filter": date_filter,
+        "quarantine_corrupt": bool(quarantine_corrupt),
+        "quarantine_dir": str(quarantine_root),
+        "quarantine_min_age_sec": int(max(int(min_age_sec), 0)),
+        "quarantined_files": int(len(quarantine_events)),
         "checked_files": len(details),
         "ok_files": ok_files,
         "warn_files": warn_files,
@@ -186,8 +253,16 @@ def validate_ws_public_raw_dataset(
         "zero_rows_markets_warn": zero_markets,
         "details": details,
     }
+    if quarantine_events:
+        report["quarantine_events"] = quarantine_events
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    if quarantine_events:
+        _append_quarantine_report(
+            report_path=quarantine_report_path,
+            quarantine_dir=quarantine_root,
+            entries=quarantine_events,
+        )
 
     return WsPublicValidateSummary(
         checked_files=len(details),
@@ -198,7 +273,94 @@ def validate_ws_public_raw_dataset(
         parse_ok_ratio=float(parse_ok_ratio),
         validate_report_file=output_path,
         details=tuple(details),
+        quarantined_files=len(quarantine_events),
+        quarantine_report_file=(quarantine_report_path if quarantine_events else None),
     )
+
+
+def _is_zstd_corrupt_error(exc: Exception) -> bool:
+    text = str(exc).strip().lower()
+    type_text = str(type(exc)).strip().lower()
+    return any(
+        marker in text or marker in type_text
+        for marker in (
+            "zstd",
+            "zstandard",
+            "frame descriptor",
+            "decompress",
+            "dictionary",
+        )
+    )
+
+
+def _file_age_sec(*, path: Path) -> int | None:
+    try:
+        mtime = path.stat().st_mtime
+    except Exception:
+        return None
+    age = time.time() - float(mtime)
+    if age < 0:
+        return 0
+    return int(age)
+
+
+def _quarantine_corrupt_part(
+    *,
+    part_file: Path,
+    raw_root: Path,
+    quarantine_root: Path,
+    reason: str,
+    error_message: str,
+) -> dict[str, Any]:
+    relative = _quarantine_relative_path(part_file=part_file, raw_root=raw_root)
+    destination = quarantine_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        destination = destination.with_name(f"{destination.stem}-{stamp}{destination.suffix}")
+    part_file.replace(destination)
+    return {
+        "original_path": str(part_file),
+        "new_path": str(destination),
+        "reason": str(reason).strip().upper() or "ZSTD_CORRUPT",
+        "error": error_message,
+        "moved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def _quarantine_relative_path(*, part_file: Path, raw_root: Path) -> Path:
+    try:
+        return part_file.relative_to(raw_root)
+    except ValueError:
+        return Path(part_file.name)
+
+
+def _append_quarantine_report(
+    *,
+    report_path: Path,
+    quarantine_dir: Path,
+    entries: list[dict[str, Any]],
+) -> None:
+    existing: dict[str, Any] = {}
+    if report_path.exists():
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            existing = payload
+    old_entries = existing.get("entries")
+    merged: list[dict[str, Any]] = list(old_entries) if isinstance(old_entries, list) else []
+    merged.extend(entries)
+    report = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "quarantine_dir": str(quarantine_dir),
+        "total_entries": len(merged),
+        "new_entries": len(entries),
+        "entries": merged,
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _discover_part_files(*, raw_root: Path, date_filter: str | None) -> list[Path]:

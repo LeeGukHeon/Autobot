@@ -380,6 +380,9 @@ def build_parser() -> argparse.ArgumentParser:
     collect_ws_public_validate_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
     collect_ws_public_validate_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
     collect_ws_public_validate_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+    collect_ws_public_validate_parser.add_argument("--quarantine-corrupt", default="false", help="true|false")
+    collect_ws_public_validate_parser.add_argument("--quarantine-dir", default="data/raw_ws/upbit/_quarantine")
+    collect_ws_public_validate_parser.add_argument("--min-age-sec", type=int, default=300)
 
     collect_ws_public_stats_parser = collect_ws_public_subparsers.add_parser(
         "stats",
@@ -641,6 +644,21 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument(
         "--micro-order-policy-on-missing",
         choices=("static_fallback", "conservative", "abort"),
+    )
+    paper_run_parser.add_argument(
+        "--paper-micro-provider",
+        choices=("offline_parquet", "live_ws", "auto"),
+        help="Paper micro snapshot provider selection.",
+    )
+    paper_run_parser.add_argument(
+        "--paper-micro-warmup-sec",
+        type=int,
+        help="Warmup seconds before order submit when LIVE_WS provider is active.",
+    )
+    paper_run_parser.add_argument(
+        "--paper-micro-warmup-min-trade-events-per-market",
+        type=int,
+        help="Minimum trade events per market to satisfy LIVE_WS warmup.",
     )
 
     backtest_parser = subparsers.add_parser("backtest", help="Backtest operations.")
@@ -1207,6 +1225,9 @@ def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path, base_c
             meta_dir=Path(args.meta_dir),
             report_path=Path(args.meta_dir) / "ws_validate_report.json",
             date_filter=args.date,
+            quarantine_corrupt=_parse_bool_arg(getattr(args, "quarantine_corrupt", "false"), default=False),
+            quarantine_dir=Path(getattr(args, "quarantine_dir", "data/raw_ws/upbit/_quarantine")),
+            min_age_sec=max(int(getattr(args, "min_age_sec", 300)), 0),
         )
         print(
             "[collect][ws-public][validate] "
@@ -1215,6 +1236,11 @@ def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path, base_c
             f"parse_ok_ratio={summary.parse_ok_ratio:.6f}"
         )
         print(f"[collect][ws-public][validate] report={summary.validate_report_file}")
+        if getattr(summary, "quarantined_files", 0) > 0 and getattr(summary, "quarantine_report_file", None) is not None:
+            print(
+                "[collect][ws-public][validate] "
+                f"quarantined={summary.quarantined_files} report={summary.quarantine_report_file}"
+            )
         return 2 if summary.fail_files > 0 else 0
 
     if ws_command == "stats":
@@ -1869,6 +1895,29 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 cli_mode=getattr(args, "micro_order_policy_mode", None),
                 cli_on_missing=getattr(args, "micro_order_policy_on_missing", None),
             ),
+            paper_micro_provider=str(
+                getattr(args, "paper_micro_provider", None) or defaults.get("paper_micro_provider", "offline_parquet")
+            ).strip().lower(),
+            paper_micro_warmup_sec=max(
+                int(
+                    getattr(args, "paper_micro_warmup_sec", None)
+                    if getattr(args, "paper_micro_warmup_sec", None) is not None
+                    else defaults.get("paper_micro_warmup_sec", 60)
+                ),
+                0,
+            ),
+            paper_micro_warmup_min_trade_events_per_market=max(
+                int(
+                    getattr(args, "paper_micro_warmup_min_trade_events_per_market", None)
+                    if getattr(args, "paper_micro_warmup_min_trade_events_per_market", None) is not None
+                    else defaults.get("paper_micro_warmup_min_trade_events_per_market", 1)
+                ),
+                1,
+            ),
+            paper_micro_auto_health_path=str(
+                defaults.get("paper_micro_auto_health_path", "data/raw_ws/upbit/_meta/ws_public_health.json")
+            ),
+            paper_micro_auto_health_stale_sec=max(int(defaults.get("paper_micro_auto_health_stale_sec", 180)), 1),
         )
 
         summary = run_live_paper_sync(upbit_settings=settings, run_settings=run_settings)
@@ -2454,6 +2503,11 @@ def _paper_defaults(
             default_tf="5m",
         ),
         "micro_order_policy": _strategy_micro_order_policy_defaults(micro_order_policy_cfg=micro_order_policy_cfg),
+        "paper_micro_provider": "offline_parquet",
+        "paper_micro_warmup_sec": 60,
+        "paper_micro_warmup_min_trade_events_per_market": 1,
+        "paper_micro_auto_health_path": "data/raw_ws/upbit/_meta/ws_public_health.json",
+        "paper_micro_auto_health_stale_sec": 180,
     }
 
 

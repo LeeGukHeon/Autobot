@@ -3,15 +3,47 @@ param(
     [string]$ProjectRoot = "D:\MyApps\Autobot",
     [string]$Quote = "KRW",
     [int]$TopN = 50,
+    [string]$ParquetRoot = "data/parquet",
     [int]$DaysAgo = 1,
     [int]$MaxPagesPerTarget = 50,
     [int]$Workers = 1,
+    [string]$CandlesBaseDataset = "candles_api_v1",
+    [string]$CandlesOutDataset = "candles_api_v1",
+    [string]$CandlesPlanPath = "data/collect/_meta/candle_topup_plan_daily.json",
+    [int]$CandlesLookbackMonths = 3,
+    [string]$CandlesTf = "1m,5m,15m,60m,240m",
+    [int]$CandlesMaxBackfillDays1m = 3,
+    [string]$CandlesMarketMode = "top_n_by_recent_value_est",
+    [string]$CandlesMarkets = "",
+    [int]$CandlesWorkers = 1,
+    [string]$CandlesRateLimitStrict = "true",
     [string]$RawTicksRoot = "data/raw_ticks/upbit/trades",
     [string]$RawWsRoot = "data/raw_ws/upbit/public",
+    [string]$RawWsMetaDir = "data/raw_ws/upbit/_meta",
     [string]$OutRoot = "data/parquet/micro_v1",
+    [string]$SmokeReportJson = "logs/paper_micro_smoke/latest.json",
+    [int]$SmokeDurationSec = 600,
+    [int]$SmokeTopN = 20,
+    [string]$SmokePaperMicroProvider = "live_ws",
+    [int]$SmokeWarmupSec = 60,
+    [int]$SmokeWarmupMinTradeEventsPerMarket = 1,
+    [string]$TieringReportJson = "logs/micro_tiering/latest.json",
+    [int]$TieringRecentHours = 24,
+    [int]$TieringMinSamples = 30,
+    [double]$GateBookAvailableMin = 0.20,
+    [double]$GateTradeSourceWsMin = 0.20,
+    [double]$GateFallbackRatioMax = 0.10,
+    [int]$GateTierMinCount = 2,
+    [int]$GatePolicyEventMin = 1,
+    [int]$HealthLagWarnSec = 180,
+    [string]$WsValidateQuarantineCorrupt = "true",
+    [int]$WsValidateMinAgeSec = 300,
+    [switch]$SkipCandles,
     [switch]$SkipTicks,
     [switch]$SkipAggregate,
     [switch]$SkipValidate,
+    [switch]$SkipSmoke,
+    [switch]$SkipTieringRecommend,
     [string]$Date = ""
 )
 
@@ -51,6 +83,18 @@ function Invoke-CheckedCommandWithOutput {
     return ($output -join "`n")
 }
 
+function Invoke-CommandCapture {
+    param(
+        [string]$Exe,
+        [string[]]$ArgList
+    )
+    $output = & $Exe @ArgList 2>&1
+    return [PSCustomObject]@{
+        ExitCode = [int]$LASTEXITCODE
+        Output = ($output -join "`n")
+    }
+}
+
 function Load-JsonOrEmpty {
     param([string]$PathValue)
     if (-not (Test-Path $PathValue)) {
@@ -63,9 +107,165 @@ function Load-JsonOrEmpty {
     return $raw | ConvertFrom-Json
 }
 
+function Get-PropValue {
+    param(
+        [Parameter(Mandatory = $false)]$ObjectValue,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $false)]$DefaultValue = $null
+    )
+    if ($null -eq $ObjectValue) {
+        return $DefaultValue
+    }
+    if ($ObjectValue -is [System.Collections.IDictionary]) {
+        if ($ObjectValue.Contains($Name)) {
+            return $ObjectValue[$Name]
+        }
+        return $DefaultValue
+    }
+    if ($ObjectValue.PSObject -and $ObjectValue.PSObject.Properties.Name -contains $Name) {
+        return $ObjectValue.$Name
+    }
+    return $DefaultValue
+}
+
+function To-Double {
+    param(
+        [Parameter(Mandatory = $false)]$Value,
+        [double]$DefaultValue = 0.0
+    )
+    try {
+        if ($null -eq $Value) {
+            return $DefaultValue
+        }
+        return [double]$Value
+    } catch {
+        return $DefaultValue
+    }
+}
+
+function To-Int64 {
+    param(
+        [Parameter(Mandatory = $false)]$Value,
+        [long]$DefaultValue = 0
+    )
+    try {
+        if ($null -eq $Value) {
+            return $DefaultValue
+        }
+        return [long]$Value
+    } catch {
+        return $DefaultValue
+    }
+}
+
+function To-Bool {
+    param(
+        [Parameter(Mandatory = $false)]$Value,
+        [bool]$DefaultValue = $false
+    )
+    if ($null -eq $Value) {
+        return $DefaultValue
+    }
+    try {
+        return [bool]$Value
+    } catch {
+        return $DefaultValue
+    }
+}
+
+function Get-PassFail {
+    param([bool]$Condition)
+    if ($Condition) {
+        return "PASS"
+    }
+    return "FAIL"
+}
+
 $targetDate = $Date
 if ([string]::IsNullOrWhiteSpace($targetDate)) {
     $targetDate = (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+}
+
+$candlesPlanPathResolved = if ([System.IO.Path]::IsPathRooted($CandlesPlanPath)) { $CandlesPlanPath } else { Join-Path $ProjectRoot $CandlesPlanPath }
+$candlesCollectReportPath = Join-Path $ProjectRoot "data/collect/_meta/candle_collect_report.json"
+$candlesValidateReportPath = Join-Path $ProjectRoot "data/collect/_meta/candle_validate_report.json"
+
+$candlesPlan = @{}
+$candlesCollectReport = @{}
+$candlesValidateReport = @{}
+$candlesTopupPass = $true
+$candlesTopupStatus = "SKIPPED"
+$candlesSelectedMarkets = 0
+$candlesTargets = 0
+$candlesSkippedRanges = 0
+$candlesProcessedTargets = 0
+$candlesOkTargets = 0
+$candlesWarnTargets = 0
+$candlesFailTargets = 0
+$candlesCallsMade = 0
+$candlesValidateCheckedFiles = 0
+$candlesValidateFailFiles = 0
+$candlesValidateWarnFiles = 0
+$candlesCoverageDeltaPct = $null
+
+if (-not $SkipCandles) {
+    if (Test-Path $candlesPlanPathResolved) {
+        Remove-Item -Path $candlesPlanPathResolved -Force
+    }
+
+    $candlesPlanArgs = @(
+        "-m", "autobot.cli",
+        "collect", "plan-candles",
+        "--base-dataset", $CandlesBaseDataset,
+        "--parquet-root", $ParquetRoot,
+        "--out", $candlesPlanPathResolved,
+        "--lookback-months", $CandlesLookbackMonths,
+        "--tf", $CandlesTf,
+        "--quote", $Quote,
+        "--market-mode", $CandlesMarketMode,
+        "--top-n", $TopN,
+        "--max-backfill-days-1m", $CandlesMaxBackfillDays1m,
+        "--end", $targetDate
+    )
+    if (-not [string]::IsNullOrWhiteSpace($CandlesMarkets)) {
+        $candlesPlanArgs += @("--markets", $CandlesMarkets)
+    }
+    Invoke-CheckedCommand -Exe $PythonExe -ArgList $candlesPlanArgs
+    $candlesPlan = Load-JsonOrEmpty -PathValue $candlesPlanPathResolved
+
+    $candlesCollectArgs = @(
+        "-m", "autobot.cli",
+        "collect", "candles",
+        "--plan", $candlesPlanPathResolved,
+        "--out-dataset", $CandlesOutDataset,
+        "--parquet-root", $ParquetRoot,
+        "--workers", $CandlesWorkers,
+        "--dry-run", "false",
+        "--rate-limit-strict", $CandlesRateLimitStrict
+    )
+    Invoke-CheckedCommand -Exe $PythonExe -ArgList $candlesCollectArgs
+    $candlesCollectReport = Load-JsonOrEmpty -PathValue $candlesCollectReportPath
+    $candlesValidateReport = Load-JsonOrEmpty -PathValue $candlesValidateReportPath
+
+    $candlesPlanSummary = Get-PropValue -ObjectValue $candlesPlan -Name "summary" -DefaultValue @{}
+    $candlesSelectedMarkets = To-Int64 (Get-PropValue -ObjectValue $candlesPlanSummary -Name "selected_markets" -DefaultValue 0) 0
+    $candlesTargets = To-Int64 (Get-PropValue -ObjectValue $candlesPlanSummary -Name "targets" -DefaultValue 0) 0
+    $candlesSkippedRanges = To-Int64 (Get-PropValue -ObjectValue $candlesPlanSummary -Name "skipped_ranges" -DefaultValue 0) 0
+
+    $candlesProcessedTargets = To-Int64 (Get-PropValue -ObjectValue $candlesCollectReport -Name "processed_targets" -DefaultValue 0) 0
+    $candlesOkTargets = To-Int64 (Get-PropValue -ObjectValue $candlesCollectReport -Name "ok_targets" -DefaultValue 0) 0
+    $candlesWarnTargets = To-Int64 (Get-PropValue -ObjectValue $candlesCollectReport -Name "warn_targets" -DefaultValue 0) 0
+    $candlesFailTargets = To-Int64 (Get-PropValue -ObjectValue $candlesCollectReport -Name "fail_targets" -DefaultValue 0) 0
+    $candlesCallsMade = To-Int64 (Get-PropValue -ObjectValue $candlesCollectReport -Name "calls_made" -DefaultValue 0) 0
+
+    $candlesValidateCheckedFiles = To-Int64 (Get-PropValue -ObjectValue $candlesValidateReport -Name "checked_files" -DefaultValue 0) 0
+    $candlesValidateFailFiles = To-Int64 (Get-PropValue -ObjectValue $candlesValidateReport -Name "fail_files" -DefaultValue 0) 0
+    $candlesValidateWarnFiles = To-Int64 (Get-PropValue -ObjectValue $candlesValidateReport -Name "warn_files" -DefaultValue 0) 0
+    $candlesCoverageDelta = Get-PropValue -ObjectValue $candlesValidateReport -Name "coverage_delta" -DefaultValue @{}
+    $candlesCoverageDeltaPct = Get-PropValue -ObjectValue $candlesCoverageDelta -Name "average_delta_pct" -DefaultValue $null
+
+    $candlesTopupPass = ($candlesFailTargets -eq 0) -and ($candlesValidateFailFiles -eq 0)
+    $candlesTopupStatus = Get-PassFail -Condition $candlesTopupPass
 }
 
 $ticksPlanPath = "data/raw_ticks/upbit/_meta/ticks_plan_daily_auto.json"
@@ -134,29 +334,270 @@ $reportDir = Join-Path $ProjectRoot "docs\reports"
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
 $reportPath = Join-Path $reportDir ("DAILY_MICRO_REPORT_" + $targetDate + ".md")
 
-$bookAvailableRatio = 0.0
-$tradeSourceWsRatio = 0.0
-$microAvailableRatio = 0.0
+$bookAvailableRatio = To-Double (Get-PropValue -ObjectValue $stats -Name "book_available_ratio" -DefaultValue 0.0) 0.0
+$tradeSourceWsRatio = To-Double (Get-PropValue -ObjectValue $stats -Name "trade_source_ws_ratio" -DefaultValue $null) -1.0
+if ($tradeSourceWsRatio -lt 0.0) {
+    $tradeSourceRatioObj = Get-PropValue -ObjectValue $stats -Name "trade_source_ratio" -DefaultValue @{}
+    $tradeSourceWsRatio = To-Double (Get-PropValue -ObjectValue $tradeSourceRatioObj -Name "ws" -DefaultValue 0.0) 0.0
+}
+$microAvailableRatio = To-Double (Get-PropValue -ObjectValue $stats -Name "micro_available_ratio" -DefaultValue 0.0) 0.0
 $joinMatchRatio = "NA"
+$joinObj = Get-PropValue -ObjectValue $validateReport -Name "join" -DefaultValue $null
+$joinMatchValue = Get-PropValue -ObjectValue $joinObj -Name "join_match_ratio" -DefaultValue $null
+if ($null -ne $joinMatchValue) {
+    $joinMatchRatio = [string]$joinMatchValue
+}
 
-if ($stats.PSObject.Properties.Name -contains "book_available_ratio") {
-    $bookAvailableRatio = [double]$stats.book_available_ratio
+# 1) orderbook verification: folder / validate / stats / health
+$orderbookDatePath = Join-Path $RawWsRoot ("orderbook/date=" + $targetDate)
+$tradeDatePath = Join-Path $RawWsRoot ("trade/date=" + $targetDate)
+$orderbookParts = @()
+$tradeParts = @()
+if (Test-Path $orderbookDatePath) {
+    $orderbookParts = @(Get-ChildItem -Path $orderbookDatePath -Recurse -File -Filter "*.jsonl.zst")
 }
-if ($stats.PSObject.Properties.Name -contains "trade_source_ws_ratio") {
-    $tradeSourceWsRatio = [double]$stats.trade_source_ws_ratio
-} elseif ($stats.PSObject.Properties.Name -contains "trade_source_ratio") {
-    $tradeSourceWsRatio = [double]$stats.trade_source_ratio.ws
+if (Test-Path $tradeDatePath) {
+    $tradeParts = @(Get-ChildItem -Path $tradeDatePath -Recurse -File -Filter "*.jsonl.zst")
 }
-if ($stats.PSObject.Properties.Name -contains "micro_available_ratio") {
-    $microAvailableRatio = [double]$stats.micro_available_ratio
-}
-if ($validateReport.PSObject.Properties.Name -contains "join") {
-    if ($validateReport.join.PSObject.Properties.Name -contains "join_match_ratio") {
-        if ($null -ne $validateReport.join.join_match_ratio) {
-            $joinMatchRatio = [string]$validateReport.join.join_match_ratio
-        }
+$orderbookPartCount = $orderbookParts.Count
+$tradePartCount = $tradeParts.Count
+$orderbookBytes = To-Int64 (($orderbookParts | Measure-Object -Property Length -Sum).Sum) 0
+$tradeBytes = To-Int64 (($tradeParts | Measure-Object -Property Length -Sum).Sum) 0
+
+$wsValidateArgs = @(
+    "-m", "autobot.cli",
+    "collect", "ws-public", "validate",
+    "--date", $targetDate,
+    "--raw-root", $RawWsRoot,
+    "--meta-dir", $RawWsMetaDir,
+    "--quarantine-corrupt", $WsValidateQuarantineCorrupt,
+    "--min-age-sec", $WsValidateMinAgeSec
+)
+$wsValidateExec = Invoke-CommandCapture -Exe $PythonExe -ArgList $wsValidateArgs
+$wsValidateReportPath = Join-Path $RawWsMetaDir "ws_validate_report.json"
+$wsValidateReport = Load-JsonOrEmpty -PathValue $wsValidateReportPath
+$wsValidateCheckedFiles = To-Int64 (Get-PropValue -ObjectValue $wsValidateReport -Name "checked_files" -DefaultValue 0) 0
+$wsValidateFailFiles = To-Int64 (Get-PropValue -ObjectValue $wsValidateReport -Name "fail_files" -DefaultValue 0) 0
+$wsValidateParseOkRatio = To-Double (Get-PropValue -ObjectValue $wsValidateReport -Name "parse_ok_ratio" -DefaultValue 0.0) 0.0
+
+$wsStatsArgs = @(
+    "-m", "autobot.cli",
+    "collect", "ws-public", "stats",
+    "--date", $targetDate,
+    "--raw-root", $RawWsRoot,
+    "--meta-dir", $RawWsMetaDir
+)
+$wsStatsExec = Invoke-CommandCapture -Exe $PythonExe -ArgList $wsStatsArgs
+$wsStats = @{}
+if ($wsStatsExec.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($wsStatsExec.Output)) {
+    try {
+        $wsStats = $wsStatsExec.Output | ConvertFrom-Json
+    } catch {
+        $wsStats = @{}
     }
 }
+$wsManifest = Get-PropValue -ObjectValue $wsStats -Name "manifest" -DefaultValue @{}
+$wsManifestByChannel = Get-PropValue -ObjectValue $wsManifest -Name "by_channel" -DefaultValue @{}
+$wsManifestRootFilter = Get-PropValue -ObjectValue $wsManifest -Name "raw_root_filter" -DefaultValue @{}
+$wsManifestRowsBefore = To-Int64 (Get-PropValue -ObjectValue $wsManifestRootFilter -Name "rows_before" -DefaultValue 0) 0
+$wsManifestRowsAfter = To-Int64 (Get-PropValue -ObjectValue $wsManifestRootFilter -Name "rows_after" -DefaultValue 0) 0
+$wsManifestIgnoredRows = To-Int64 (Get-PropValue -ObjectValue $wsManifestRootFilter -Name "ignored_outside_raw_root" -DefaultValue 0) 0
+$wsStatsOrderbookRows = To-Int64 (Get-PropValue -ObjectValue $wsManifestByChannel -Name "orderbook" -DefaultValue 0) 0
+$wsStatsTradeRows = To-Int64 (Get-PropValue -ObjectValue $wsManifestByChannel -Name "trade" -DefaultValue 0) 0
+
+$wsHealth = Get-PropValue -ObjectValue $wsStats -Name "health_snapshot" -DefaultValue $null
+if ($null -eq $wsHealth -or ($wsHealth -is [System.Collections.IDictionary] -and $wsHealth.Count -eq 0)) {
+    $wsHealth = Load-JsonOrEmpty -PathValue (Join-Path $RawWsMetaDir "ws_public_health.json")
+}
+$wsHealthConnected = To-Bool (Get-PropValue -ObjectValue $wsHealth -Name "connected" -DefaultValue $false) $false
+$wsHealthUpdatedAtMs = To-Int64 (Get-PropValue -ObjectValue $wsHealth -Name "updated_at_ms" -DefaultValue 0) 0
+$wsLastRx = Get-PropValue -ObjectValue $wsHealth -Name "last_rx_ts_ms" -DefaultValue @{}
+$wsOrderbookRxMs = To-Int64 (Get-PropValue -ObjectValue $wsLastRx -Name "orderbook" -DefaultValue 0) 0
+$wsTradeRxMs = To-Int64 (Get-PropValue -ObjectValue $wsLastRx -Name "trade" -DefaultValue 0) 0
+$wsSubscribedMarkets = To-Int64 (Get-PropValue -ObjectValue $wsHealth -Name "subscribed_markets_count" -DefaultValue 0) 0
+$nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$wsHealthLagSec = if ($wsHealthUpdatedAtMs -gt 0) { [math]::Round(($nowMs - $wsHealthUpdatedAtMs) / 1000.0, 2) } else { -1.0 }
+$wsOrderbookRxLagSec = if ($wsOrderbookRxMs -gt 0) { [math]::Round(($nowMs - $wsOrderbookRxMs) / 1000.0, 2) } else { -1.0 }
+$wsTradeRxLagSec = if ($wsTradeRxMs -gt 0) { [math]::Round(($nowMs - $wsTradeRxMs) / 1000.0, 2) } else { -1.0 }
+
+$orderbookFolderPass = $orderbookPartCount -gt 0
+$orderbookValidatePass = ($wsValidateExec.ExitCode -eq 0) -and ($wsValidateCheckedFiles -gt 0) -and ($wsValidateFailFiles -eq 0) -and ($wsValidateParseOkRatio -ge 0.99)
+$orderbookStatsPass = ($wsStatsExec.ExitCode -eq 0) -and ($wsStatsOrderbookRows -gt 0)
+$orderbookHealthPass = $wsHealthConnected -and ($wsOrderbookRxLagSec -ge 0) -and ($wsOrderbookRxLagSec -le [double]$HealthLagWarnSec)
+$orderbookVerificationPass = $orderbookFolderPass -and $orderbookValidatePass -and $orderbookStatsPass -and $orderbookHealthPass
+
+# 2) T15.1 revalidation gate: auto PASS/FAIL
+$smokeReportPath = if ([System.IO.Path]::IsPathRooted($SmokeReportJson)) { $SmokeReportJson } else { Join-Path $ProjectRoot $SmokeReportJson }
+$smokeScriptPath = Join-Path $ProjectRoot "scripts/paper_micro_smoke.ps1"
+$smokeRunAttempted = $false
+$smokeRunExitCode = -1
+$smokeRunOutput = ""
+if (-not $SkipSmoke -and (Test-Path $smokeScriptPath)) {
+    $smokeRunAttempted = $true
+    $smokeRunArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $smokeScriptPath,
+        "-PythonExe", $PythonExe,
+        "-ProjectRoot", $ProjectRoot,
+        "-DurationSec", $SmokeDurationSec,
+        "-Quote", $Quote,
+        "-TopN", $SmokeTopN,
+        "-PaperMicroProvider", $SmokePaperMicroProvider,
+        "-WarmupSec", $SmokeWarmupSec,
+        "-WarmupMinTradeEventsPerMarket", $SmokeWarmupMinTradeEventsPerMarket,
+        "-MaxFallbackRatio", $GateFallbackRatioMax,
+        "-MinTierCount", $GateTierMinCount,
+        "-MinPolicyEvents", $GatePolicyEventMin
+    )
+    $smokeRunExec = Invoke-CommandCapture -Exe "powershell.exe" -ArgList $smokeRunArgs
+    $smokeRunExitCode = $smokeRunExec.ExitCode
+    $smokeRunOutput = [string](Get-PropValue -ObjectValue $smokeRunExec -Name "Output" -DefaultValue "")
+}
+$smokeRunOutputPreview = if ([string]::IsNullOrWhiteSpace($smokeRunOutput)) { "" } else { ($smokeRunOutput.Trim() -replace "\r?\n", " | ") }
+if ($smokeRunOutputPreview.Length -gt 400) {
+    $smokeRunOutputPreview = $smokeRunOutputPreview.Substring(0, 400)
+}
+$smokeReport = Load-JsonOrEmpty -PathValue $smokeReportPath
+$smokeAvailable = (Test-Path $smokeReportPath) -and (-not ($smokeReport -is [System.Collections.IDictionary] -and $smokeReport.Count -eq 0))
+if ($smokeRunAttempted -and $smokeRunExitCode -ne 0) {
+    $smokeAvailable = $false
+}
+$smokeGeneratedAt = [string](Get-PropValue -ObjectValue $smokeReport -Name "generated_at" -DefaultValue "NA")
+$smokeRunId = [string](Get-PropValue -ObjectValue $smokeReport -Name "run_id" -DefaultValue "NA")
+$smokeOrdersSubmitted = To-Int64 (Get-PropValue -ObjectValue $smokeReport -Name "orders_submitted" -DefaultValue 0) 0
+$smokeFallbackCount = To-Int64 (Get-PropValue -ObjectValue $smokeReport -Name "micro_missing_fallback_count" -DefaultValue 0) 0
+$smokeFallbackRatio = To-Double (Get-PropValue -ObjectValue $smokeReport -Name "micro_missing_fallback_ratio" -DefaultValue 1.0) 1.0
+$smokeTierUniqueCount = To-Int64 (Get-PropValue -ObjectValue $smokeReport -Name "tier_unique_count" -DefaultValue 0) 0
+$smokePolicyEvents = To-Int64 (Get-PropValue -ObjectValue $smokeReport -Name "replace_cancel_timeout_total" -DefaultValue 0) 0
+$smokeMicroProvider = [string](Get-PropValue -ObjectValue $smokeReport -Name "micro_provider" -DefaultValue "NA")
+$smokeProviderInfo = Get-PropValue -ObjectValue $smokeReport -Name "micro_provider_info" -DefaultValue @{}
+$smokeProviderSubscribedMarkets = To-Int64 (Get-PropValue -ObjectValue $smokeProviderInfo -Name "subscribed_markets_count" -DefaultValue 0) 0
+$smokeLiveWs = Get-PropValue -ObjectValue $smokeReport -Name "live_ws" -DefaultValue @{}
+$smokeLiveWsConnected = To-Bool (Get-PropValue -ObjectValue $smokeLiveWs -Name "ws_connected" -DefaultValue $false) $false
+$smokeLiveWsSubscribedMarkets = To-Int64 (Get-PropValue -ObjectValue $smokeLiveWs -Name "subscribed_markets_count" -DefaultValue 0) 0
+$smokeLiveWsSnapshotAgeMs = To-Int64 (Get-PropValue -ObjectValue $smokeLiveWs -Name "micro_snapshot_age_ms" -DefaultValue -1) -1
+$smokeLiveWsHealthAvailable = To-Bool (Get-PropValue -ObjectValue $smokeLiveWs -Name "health_snapshot_available" -DefaultValue $false) $false
+$smokeLiveWsHealthPath = [string](Get-PropValue -ObjectValue $smokeLiveWs -Name "health_snapshot_path" -DefaultValue "NA")
+
+# 3) Tiering recommendation (liq_score quantiles from recent paper runs)
+$tieringReportPath = if ([System.IO.Path]::IsPathRooted($TieringReportJson)) { $TieringReportJson } else { Join-Path $ProjectRoot $TieringReportJson }
+$tieringScriptPath = Join-Path $ProjectRoot "scripts/recommend_micro_tiering.ps1"
+$tieringRunAttempted = $false
+$tieringRunExitCode = -1
+if (-not $SkipTieringRecommend -and (Test-Path $tieringScriptPath)) {
+    $tieringRunAttempted = $true
+    $tieringRunArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $tieringScriptPath,
+        "-ProjectRoot", $ProjectRoot,
+        "-RecentHours", $TieringRecentHours,
+        "-MinSamples", $TieringMinSamples
+    )
+    $tieringRunExec = Invoke-CommandCapture -Exe "powershell.exe" -ArgList $tieringRunArgs
+    $tieringRunExitCode = $tieringRunExec.ExitCode
+}
+$tieringReport = Load-JsonOrEmpty -PathValue $tieringReportPath
+$tieringStatus = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $tieringReport -Name "recommendation" -DefaultValue @{}) -Name "status" -DefaultValue "NA")
+$tieringT1 = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $tieringReport -Name "recommendation" -DefaultValue @{}) -Name "t1" -DefaultValue $null
+$tieringT2 = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $tieringReport -Name "recommendation" -DefaultValue @{}) -Name "t2" -DefaultValue $null
+$tieringSampleCount = To-Int64 (Get-PropValue -ObjectValue $tieringReport -Name "sample_count" -DefaultValue 0) 0
+$tieringFallbackCount = To-Int64 (Get-PropValue -ObjectValue $tieringReport -Name "micro_missing_fallback_count" -DefaultValue 0) 0
+
+$gateBookAvailablePass = $bookAvailableRatio -ge $GateBookAvailableMin
+$gateTradeSourceWsPass = $tradeSourceWsRatio -ge $GateTradeSourceWsMin
+$gateFallbackRatioPass = $smokeAvailable -and ($smokeOrdersSubmitted -gt 0) -and ($smokeFallbackRatio -lt $GateFallbackRatioMax)
+$gateTierDiversityPass = $smokeAvailable -and ($smokeTierUniqueCount -ge $GateTierMinCount)
+$gatePolicyEventsPass = $smokeAvailable -and ($smokePolicyEvents -ge $GatePolicyEventMin)
+$t151GatePass = $gateBookAvailablePass -and $gateTradeSourceWsPass -and $gateFallbackRatioPass -and $gateTierDiversityPass -and $gatePolicyEventsPass
+
+$gateReportPath = Join-Path $OutRoot "_meta/daily_t15_gate_report.json"
+$gatePayload = [ordered]@{
+    generated_at = (Get-Date).ToString("o")
+    target_date = $targetDate
+    thresholds = [ordered]@{
+        book_available_ratio_min = $GateBookAvailableMin
+        trade_source_ws_ratio_min = $GateTradeSourceWsMin
+        micro_missing_fallback_ratio_max = $GateFallbackRatioMax
+        tier_unique_count_min = $GateTierMinCount
+        policy_events_min = $GatePolicyEventMin
+    }
+    values = [ordered]@{
+        book_available_ratio = $bookAvailableRatio
+        trade_source_ws_ratio = $tradeSourceWsRatio
+        micro_missing_fallback_ratio = $smokeFallbackRatio
+        micro_missing_fallback_count = $smokeFallbackCount
+        orders_submitted = $smokeOrdersSubmitted
+        tier_unique_count = $smokeTierUniqueCount
+        replace_cancel_timeout_total = $smokePolicyEvents
+    }
+    gate = [ordered]@{
+        book_available_pass = $gateBookAvailablePass
+        trade_source_ws_pass = $gateTradeSourceWsPass
+        fallback_ratio_pass = $gateFallbackRatioPass
+        tier_diversity_pass = $gateTierDiversityPass
+        policy_events_pass = $gatePolicyEventsPass
+        overall_pass = $t151GatePass
+    }
+    orderbook_verification = [ordered]@{
+        folder_pass = $orderbookFolderPass
+        validate_pass = $orderbookValidatePass
+        stats_pass = $orderbookStatsPass
+        health_pass = $orderbookHealthPass
+        overall_pass = $orderbookVerificationPass
+        stats_raw_root_filter = [ordered]@{
+            rows_before = $wsManifestRowsBefore
+            rows_after = $wsManifestRowsAfter
+            ignored_outside_raw_root = $wsManifestIgnoredRows
+        }
+    }
+    candles_topup = [ordered]@{
+        skipped = [bool]$SkipCandles
+        pass = $candlesTopupPass
+        status = $candlesTopupStatus
+        selected_markets = $candlesSelectedMarkets
+        targets = $candlesTargets
+        skipped_ranges = $candlesSkippedRanges
+        processed_targets = $candlesProcessedTargets
+        ok_targets = $candlesOkTargets
+        warn_targets = $candlesWarnTargets
+        fail_targets = $candlesFailTargets
+        calls_made = $candlesCallsMade
+        validate_checked_files = $candlesValidateCheckedFiles
+        validate_warn_files = $candlesValidateWarnFiles
+        validate_fail_files = $candlesValidateFailFiles
+        coverage_delta_pct = $candlesCoverageDeltaPct
+    }
+    smoke = [ordered]@{
+        available = $smokeAvailable
+        report_path = $smokeReportPath
+        generated_at = $smokeGeneratedAt
+        run_id = $smokeRunId
+        micro_provider = $smokeMicroProvider
+        provider_subscribed_markets_count = $smokeProviderSubscribedMarkets
+        live_ws_connected = $smokeLiveWsConnected
+        live_ws_subscribed_markets_count = $smokeLiveWsSubscribedMarkets
+        live_ws_micro_snapshot_age_ms = $smokeLiveWsSnapshotAgeMs
+        live_ws_health_snapshot_available = $smokeLiveWsHealthAvailable
+        live_ws_health_snapshot_path = $smokeLiveWsHealthPath
+        run_attempted = $smokeRunAttempted
+        run_exit_code = $smokeRunExitCode
+        skipped = [bool]$SkipSmoke
+    }
+    tiering_recommendation = [ordered]@{
+        report_path = $tieringReportPath
+        status = $tieringStatus
+        t1 = $tieringT1
+        t2 = $tieringT2
+        sample_count = $tieringSampleCount
+        micro_missing_fallback_count = $tieringFallbackCount
+        run_attempted = $tieringRunAttempted
+        run_exit_code = $tieringRunExitCode
+        skipped = [bool]$SkipTieringRecommend
+    }
+}
+$gatePayload | ConvertTo-Json -Depth 8 | Set-Content -Path $gateReportPath -Encoding UTF8
 
 $reportLines = @(
     "# DAILY_MICRO_REPORT_$targetDate",
@@ -164,30 +605,103 @@ $reportLines = @(
     "## Summary",
     "- target_date: $targetDate",
     "- quote/top_n: $Quote / $TopN",
+    ("- candles_topup: {0}" -f $candlesTopupStatus),
     ("- book_available_ratio: {0:N6}" -f $bookAvailableRatio),
     ("- trade_source_ws_ratio: {0:N6}" -f $tradeSourceWsRatio),
     ("- micro_available_ratio: {0:N6}" -f $microAvailableRatio),
     "- join_match_ratio: $joinMatchRatio",
+    ("- tiering_recommendation_status: {0}" -f $tieringStatus),
+    ("- orderbook_verification_gate: {0}" -f (Get-PassFail -Condition $orderbookVerificationPass)),
+    ("- t15_1_revalidation_gate: {0}" -f (Get-PassFail -Condition $t151GatePass)),
+    "",
+    "## Candles Daily Top-up",
+    ("- skipped: {0}" -f [bool]$SkipCandles),
+    ("- status: {0}" -f $candlesTopupStatus),
+    ("- plan(selected_markets={0}, targets={1}, skipped_ranges={2})" -f $candlesSelectedMarkets, $candlesTargets, $candlesSkippedRanges),
+    ("- collect(processed={0}, ok={1}, warn={2}, fail={3}, calls={4})" -f $candlesProcessedTargets, $candlesOkTargets, $candlesWarnTargets, $candlesFailTargets, $candlesCallsMade),
+    ("- validate(checked={0}, warn={1}, fail={2})" -f $candlesValidateCheckedFiles, $candlesValidateWarnFiles, $candlesValidateFailFiles),
+    ("- coverage_delta.average_delta_pct: {0}" -f ($(if ($null -eq $candlesCoverageDeltaPct) { "NA" } else { [string]$candlesCoverageDeltaPct }))),
+    "",
+    "## Orderbook Verification (Folder / Validate / Stats / Health)",
+    ("- folder(orderbook parts > 0): {0} (parts={1}, bytes={2})" -f (Get-PassFail -Condition $orderbookFolderPass), $orderbookPartCount, $orderbookBytes),
+    ("- validate(fail_files=0, parse_ok>=0.99): {0} (exit={1}, checked={2}, fail_files={3}, parse_ok_ratio={4:N6})" -f (Get-PassFail -Condition $orderbookValidatePass), $wsValidateExec.ExitCode, $wsValidateCheckedFiles, $wsValidateFailFiles, $wsValidateParseOkRatio),
+    ("- stats(orderbook_rows > 0): {0} (exit={1}, orderbook_rows={2}, trade_rows={3})" -f (Get-PassFail -Condition $orderbookStatsPass), $wsStatsExec.ExitCode, $wsStatsOrderbookRows, $wsStatsTradeRows),
+    ("- stats_raw_root_filter(rows_before={0}, rows_after={1}, ignored_outside_raw_root={2})" -f $wsManifestRowsBefore, $wsManifestRowsAfter, $wsManifestIgnoredRows),
+    ("- health(connected=true, orderbook_rx_lag_sec<={0}): {1} (connected={2}, orderbook_rx_lag_sec={3:N2}, trade_rx_lag_sec={4:N2}, health_lag_sec={5:N2}, subscribed_markets={6})" -f $HealthLagWarnSec, (Get-PassFail -Condition $orderbookHealthPass), $wsHealthConnected, $wsOrderbookRxLagSec, $wsTradeRxLagSec, $wsHealthLagSec, $wsSubscribedMarkets),
+    ("- overall: {0}" -f (Get-PassFail -Condition $orderbookVerificationPass)),
+    "",
+    "## T15.1 Revalidation Gate (Auto PASS/FAIL)",
+    ("- book_available_ratio >= {0:N3}: {1} (actual={2:N6})" -f $GateBookAvailableMin, (Get-PassFail -Condition $gateBookAvailablePass), $bookAvailableRatio),
+    ("- trade_source_ws_ratio >= {0:N3}: {1} (actual={2:N6})" -f $GateTradeSourceWsMin, (Get-PassFail -Condition $gateTradeSourceWsPass), $tradeSourceWsRatio),
+    ("- MICRO_MISSING_FALLBACK ratio < {0:P0}: {1} (actual={2:N6}, fallback_count={3}, orders_submitted={4})" -f $GateFallbackRatioMax, (Get-PassFail -Condition $gateFallbackRatioPass), $smokeFallbackRatio, $smokeFallbackCount, $smokeOrdersSubmitted),
+    ("- tier_unique_count >= {0}: {1} (actual={2})" -f $GateTierMinCount, (Get-PassFail -Condition $gateTierDiversityPass), $smokeTierUniqueCount),
+    ("- replace+cancel+timeout >= {0}: {1} (actual={2})" -f $GatePolicyEventMin, (Get-PassFail -Condition $gatePolicyEventsPass), $smokePolicyEvents),
+    ("- overall: {0}" -f (Get-PassFail -Condition $t151GatePass)),
+    "",
+    "## Latest Paper Smoke (10m)",
+    ("- smoke_run_attempted: {0}" -f $smokeRunAttempted),
+    ("- smoke_run_exit_code: {0}" -f $smokeRunExitCode),
+    ("- smoke_skipped: {0}" -f [bool]$SkipSmoke),
+    ("- smoke_run_output_preview: {0}" -f ($(if ([string]::IsNullOrWhiteSpace($smokeRunOutputPreview)) { "NA" } else { $smokeRunOutputPreview }))),
+    ("- smoke_report_path: {0}" -f $smokeReportPath),
+    ("- smoke_available: {0}" -f $smokeAvailable),
+    ("- smoke_generated_at: {0}" -f $smokeGeneratedAt),
+    ("- smoke_run_id: {0}" -f $smokeRunId),
+    ("- smoke_micro_provider: {0}" -f $smokeMicroProvider),
+    ("- smoke_provider_subscribed_markets: {0}" -f $smokeProviderSubscribedMarkets),
+    ("- smoke_live_ws_connected: {0}" -f $smokeLiveWsConnected),
+    ("- smoke_live_ws_subscribed_markets: {0}" -f $smokeLiveWsSubscribedMarkets),
+    ("- smoke_live_ws_micro_snapshot_age_ms: {0}" -f $smokeLiveWsSnapshotAgeMs),
+    ("- smoke_live_ws_health_snapshot_available: {0}" -f $smokeLiveWsHealthAvailable),
+    ("- smoke_live_ws_health_snapshot_path: {0}" -f $smokeLiveWsHealthPath),
+    "",
+    "## Tiering Recommendation (Recent Paper LQ Score)",
+    ("- tiering_run_attempted: {0}" -f $tieringRunAttempted),
+    ("- tiering_run_exit_code: {0}" -f $tieringRunExitCode),
+    ("- tiering_skipped: {0}" -f [bool]$SkipTieringRecommend),
+    ("- tiering_report_path: {0}" -f $tieringReportPath),
+    ("- status: {0}" -f $tieringStatus),
+    ("- sample_count: {0}" -f $tieringSampleCount),
+    ("- fallback_count: {0}" -f $tieringFallbackCount),
+    ("- recommended_t1: {0}" -f ($(if ($null -eq $tieringT1) { "NA" } else { [string]$tieringT1 }))),
+    ("- recommended_t2: {0}" -f ($(if ($null -eq $tieringT2) { "NA" } else { [string]$tieringT2 }))),
     "",
     "## Commands",
+    "- python -m autobot.cli collect plan-candles --base-dataset $CandlesBaseDataset --parquet-root $ParquetRoot --out $candlesPlanPathResolved --lookback-months $CandlesLookbackMonths --tf $CandlesTf --quote $Quote --market-mode $CandlesMarketMode --top-n $TopN --max-backfill-days-1m $CandlesMaxBackfillDays1m --end $targetDate",
+    "- python -m autobot.cli collect candles --plan $candlesPlanPathResolved --out-dataset $CandlesOutDataset --parquet-root $ParquetRoot --workers $CandlesWorkers --dry-run false --rate-limit-strict $CandlesRateLimitStrict",
     "- python -m autobot.cli collect ticks --mode daily --quote $Quote --top-n $TopN --days-ago $DaysAgo --raw-root $RawTicksRoot --rate-limit-strict true --workers $Workers --max-pages-per-target $MaxPagesPerTarget --dry-run false",
     "- python -m autobot.cli micro aggregate --start $targetDate --end $targetDate --quote $Quote --top-n $TopN --raw-ticks-root $RawTicksRoot --raw-ws-root $RawWsRoot --out-root $OutRoot",
     "- python -m autobot.cli micro validate --out-root $OutRoot",
     "- python -m autobot.cli micro stats --out-root $OutRoot",
+    "- python -m autobot.cli collect ws-public validate --date $targetDate --raw-root $RawWsRoot --meta-dir $RawWsMetaDir --quarantine-corrupt $WsValidateQuarantineCorrupt --min-age-sec $WsValidateMinAgeSec",
+    "- python -m autobot.cli collect ws-public stats --date $targetDate --raw-root $RawWsRoot --meta-dir $RawWsMetaDir",
+    "- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/paper_micro_smoke.ps1 -DurationSec $SmokeDurationSec -PaperMicroProvider $SmokePaperMicroProvider -WarmupSec $SmokeWarmupSec",
+    "- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/recommend_micro_tiering.ps1 -RecentHours $TieringRecentHours -MinSamples $TieringMinSamples",
     "",
     "## Artifacts",
+    "- candles_plan: $candlesPlanPathResolved",
+    "- candles_collect_report: $candlesCollectReportPath",
+    "- candles_validate_report: $candlesValidateReportPath",
     "- ticks_collect_report: data/raw_ticks/upbit/_meta/ticks_collect_report.json",
     "- micro_aggregate_report: $aggregateReportPath",
     "- micro_validate_report: $validateReportPath",
     "- micro_manifest: $manifestPath",
+    "- ws_validate_report: $wsValidateReportPath",
+    "- t15_gate_report: $gateReportPath",
+    "- smoke_report: $smokeReportPath",
+    "- tiering_report: $tieringReportPath",
     "",
     "## Excerpts",
-    ("- ticks run_id: {0}" -f $ticksReport.run_id),
-    ("- micro aggregate run_id: {0}" -f $aggregateReport.run_id),
-    ("- micro rows_written_total: {0}" -f $aggregateReport.rows_written_total),
-    ("- micro parts: {0}" -f $stats.parts)
+    ("- candles collect processed_targets: {0}" -f $candlesProcessedTargets),
+    ("- candles collect fail_targets: {0}" -f $candlesFailTargets),
+    ("- ticks run_id: {0}" -f (Get-PropValue -ObjectValue $ticksReport -Name "run_id" -DefaultValue "NA")),
+    ("- micro aggregate run_id: {0}" -f (Get-PropValue -ObjectValue $aggregateReport -Name "run_id" -DefaultValue "NA")),
+    ("- micro rows_written_total: {0}" -f (Get-PropValue -ObjectValue $aggregateReport -Name "rows_written_total" -DefaultValue "NA")),
+    ("- micro parts: {0}" -f (Get-PropValue -ObjectValue $stats -Name "parts" -DefaultValue "NA"))
 )
 $report = $reportLines -join "`n"
 
 Set-Content -Path $reportPath -Value $report -Encoding UTF8
+Write-Host ("[daily-micro] orderbook_verification={0}" -f (Get-PassFail -Condition $orderbookVerificationPass))
+Write-Host ("[daily-micro] t15_1_revalidation_gate={0}" -f (Get-PassFail -Condition $t151GatePass))
 Write-Host "[daily-micro] report=$reportPath"

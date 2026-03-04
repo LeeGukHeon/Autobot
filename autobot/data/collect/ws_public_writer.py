@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -118,6 +119,11 @@ class WsRawRotatingWriter:
             part.writer.flush(zstd.FLUSH_FRAME)
         finally:
             part.writer.close()
+            try:
+                part.fp.flush()
+                os.fsync(part.fp.fileno())
+            except Exception:
+                pass
             part.fp.close()
 
         if part.rows <= 0:
