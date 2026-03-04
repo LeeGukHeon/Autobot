@@ -232,6 +232,9 @@ def micro_stats_v1(
     micro_available_rows = (
         int(manifest.get_column("micro_available_rows").fill_null(0).sum()) if manifest.height > 0 else 0
     )
+    micro_book_available_rows = (
+        int(manifest.get_column("micro_book_available_rows").fill_null(0).sum()) if manifest.height > 0 else 0
+    )
     source_ws_rows = int(manifest.get_column("trade_source_ws_rows").fill_null(0).sum()) if manifest.height > 0 else 0
     source_rest_rows = int(manifest.get_column("trade_source_rest_rows").fill_null(0).sum()) if manifest.height > 0 else 0
     source_none_rows = int(manifest.get_column("trade_source_none_rows").fill_null(0).sum()) if manifest.height > 0 else 0
@@ -243,6 +246,7 @@ def micro_stats_v1(
             .agg(
                 pl.col("rows").sum().alias("rows"),
                 pl.col("micro_available_rows").sum().alias("micro_available_rows"),
+                pl.col("micro_book_available_rows").sum().alias("micro_book_available_rows"),
                 pl.col("trade_source_ws_rows").sum().alias("ws_rows"),
                 pl.col("trade_source_rest_rows").sum().alias("rest_rows"),
                 pl.col("trade_source_none_rows").sum().alias("none_rows"),
@@ -250,7 +254,15 @@ def micro_stats_v1(
             )
             .sort("tf")
         )
-        by_tf = [dict(row) for row in grouped.iter_rows(named=True)]
+        by_tf = []
+        for row in grouped.iter_rows(named=True):
+            item = dict(row)
+            rows_tf = int(item.get("rows") or 0)
+            micro_book_rows_tf = int(item.get("micro_book_available_rows") or 0)
+            ws_rows_tf = int(item.get("ws_rows") or 0)
+            item["book_available_ratio"] = (float(micro_book_rows_tf) / float(rows_tf)) if rows_tf > 0 else 0.0
+            item["trade_source_ws_ratio"] = (float(ws_rows_tf) / float(rows_tf)) if rows_tf > 0 else 0.0
+            by_tf.append(item)
 
     aggregate_report = _load_json(aggregate_report_path(out_root))
     validate_report = _load_json(validate_report_path(out_root))
@@ -264,11 +276,15 @@ def micro_stats_v1(
         "micro_available_ratio": (
             float(micro_available_rows) / float(rows_total) if rows_total > 0 else 0.0
         ),
+        "book_available_ratio": (
+            float(micro_book_available_rows) / float(rows_total) if rows_total > 0 else 0.0
+        ),
         "trade_source_ratio": {
             "ws": (float(source_ws_rows) / float(rows_total) if rows_total > 0 else 0.0),
             "rest": (float(source_rest_rows) / float(rows_total) if rows_total > 0 else 0.0),
             "none": (float(source_none_rows) / float(rows_total) if rows_total > 0 else 0.0),
         },
+        "trade_source_ws_ratio": (float(source_ws_rows) / float(rows_total) if rows_total > 0 else 0.0),
         "by_tf": by_tf,
         "aggregate_report": _report_excerpt(aggregate_report),
         "validate_report": _report_excerpt(validate_report),

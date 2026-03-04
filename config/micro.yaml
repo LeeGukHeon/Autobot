@@ -2,7 +2,7 @@ micro:
   dataset: micro_v1
   out_root: data/parquet/micro_v1
   raw_ticks_root: data/raw_ticks/upbit/trades
-  raw_ws_root: data/raw_ws/upbit/quotation
+  raw_ws_root: data/raw_ws/upbit/public
   base_candles_dataset: candles_v1
   tf:
     - 1m
@@ -18,3 +18,37 @@ micro:
     micro_available_warn: 0.10
     volume_fail_ratio: 0.001
     price_fail_ratio: 0.001
+
+collect:
+  ws_public:
+    enabled: true
+    quote: KRW
+    top_n: 50
+    refresh_sec: 900
+    max_markets: 60
+    channels:
+      - trade
+      - orderbook
+    format: DEFAULT
+    orderbook:
+      level: 0
+      topk: 5
+      downsample_hz: 1
+    keepalive:
+      mode: message
+      interval_sec: 55
+      stale_sec: 120
+    retention_days: 30
+    write:
+      rotate_sec: 3600
+      max_bytes: 67108864
+    safety:
+      max_subscribe_messages_per_min: 100
+      min_subscribe_interval_sec: 60
+
+ticks:
+  daily:
+    top_n: 50
+    days_ago: 1
+    max_pages_per_target: 50
+    rate_limit_strict: true

@@ -30,8 +30,10 @@ from .data.collect import (
     TicksCollectOptions,
     TicksPlanOptions,
     WsPublicCollectOptions,
+    WsPublicDaemonOptions,
     WsPublicPlanOptions,
     collect_candles_from_plan,
+    collect_ws_public_daemon,
     collect_ticks_from_plan,
     collect_ticks_stats,
     collect_ws_public_from_plan,
@@ -39,6 +41,8 @@ from .data.collect import (
     generate_candle_topup_plan,
     generate_ticks_collection_plan,
     generate_ws_public_collection_plan,
+    load_ws_public_status,
+    purge_ws_public_retention,
     validate_candles_api_dataset,
     validate_ticks_raw_dataset,
     validate_ws_public_raw_dataset,
@@ -307,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     collect_ws_public_run_parser = collect_ws_public_subparsers.add_parser("run", help="Run public websocket collector.")
     collect_ws_public_run_parser.add_argument("--plan", default="data/raw_ws/upbit/_meta/ws_public_plan.json")
-    collect_ws_public_run_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
+    collect_ws_public_run_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
     collect_ws_public_run_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
     collect_ws_public_run_parser.add_argument("--duration-sec", type=int, default=120)
     collect_ws_public_run_parser.add_argument("--rotate-sec", type=int, default=300)
@@ -317,13 +321,64 @@ def build_parser() -> argparse.ArgumentParser:
     collect_ws_public_run_parser.add_argument("--reconnect-max-per-min", type=int, default=3)
     collect_ws_public_run_parser.add_argument("--orderbook-spread-bps-threshold", type=float, default=0.5)
     collect_ws_public_run_parser.add_argument("--orderbook-top1-size-change-threshold", type=float, default=0.2)
+    collect_ws_public_run_parser.add_argument(
+        "--keepalive-mode",
+        default="auto",
+        choices=("message", "frame", "auto", "off"),
+        help="keepalive mode",
+    )
+    collect_ws_public_run_parser.add_argument("--keepalive-interval-sec", type=int, default=60)
+    collect_ws_public_run_parser.add_argument("--keepalive-stale-sec", type=int, default=120)
+
+    collect_ws_public_daemon_parser = collect_ws_public_subparsers.add_parser(
+        "daemon",
+        help="Run ws-public daemon with periodic top-N refresh and health snapshots.",
+    )
+    collect_ws_public_daemon_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
+    collect_ws_public_daemon_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+    collect_ws_public_daemon_parser.add_argument("--quote", default="KRW")
+    collect_ws_public_daemon_parser.add_argument("--top-n", type=int, default=50)
+    collect_ws_public_daemon_parser.add_argument("--refresh-sec", type=int, default=900)
+    collect_ws_public_daemon_parser.add_argument(
+        "--duration-sec",
+        type=int,
+        default=0,
+        help="0 means long-running (effectively unbounded).",
+    )
+    collect_ws_public_daemon_parser.add_argument("--retention-days", type=int, default=30)
+    collect_ws_public_daemon_parser.add_argument("--downsample-hz", type=float, default=1.0)
+    collect_ws_public_daemon_parser.add_argument("--max-markets", type=int, default=60)
+    collect_ws_public_daemon_parser.add_argument(
+        "--format",
+        default="DEFAULT",
+        choices=("DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"),
+    )
+    collect_ws_public_daemon_parser.add_argument("--channels", default="trade,orderbook")
+    collect_ws_public_daemon_parser.add_argument("--orderbook-topk", type=int, default=5)
+    collect_ws_public_daemon_parser.add_argument("--orderbook-level", default="0")
+    collect_ws_public_daemon_parser.add_argument("--rotate-sec", type=int, default=3600)
+    collect_ws_public_daemon_parser.add_argument("--max-bytes", type=int, default=67_108_864)
+    collect_ws_public_daemon_parser.add_argument("--rate-limit-strict", default="true", help="true|false")
+    collect_ws_public_daemon_parser.add_argument("--reconnect-max-per-min", type=int, default=3)
+    collect_ws_public_daemon_parser.add_argument("--max-subscribe-messages-per-min", type=int, default=100)
+    collect_ws_public_daemon_parser.add_argument("--min-subscribe-interval-sec", type=int, default=60)
+    collect_ws_public_daemon_parser.add_argument("--orderbook-spread-bps-threshold", type=float, default=0.5)
+    collect_ws_public_daemon_parser.add_argument("--orderbook-top1-size-change-threshold", type=float, default=0.2)
+    collect_ws_public_daemon_parser.add_argument(
+        "--keepalive-mode",
+        default="message",
+        choices=("message", "frame", "auto", "off"),
+    )
+    collect_ws_public_daemon_parser.add_argument("--keepalive-interval-sec", type=int, default=55)
+    collect_ws_public_daemon_parser.add_argument("--keepalive-stale-sec", type=int, default=120)
+    collect_ws_public_daemon_parser.add_argument("--health-update-sec", type=int, default=5)
 
     collect_ws_public_validate_parser = collect_ws_public_subparsers.add_parser(
         "validate",
         help="Validate collected public websocket dataset.",
     )
     collect_ws_public_validate_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
-    collect_ws_public_validate_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
+    collect_ws_public_validate_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
     collect_ws_public_validate_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
 
     collect_ws_public_stats_parser = collect_ws_public_subparsers.add_parser(
@@ -331,8 +386,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show collected public websocket stats.",
     )
     collect_ws_public_stats_parser.add_argument("--date", help="Filter date partition YYYY-MM-DD")
-    collect_ws_public_stats_parser.add_argument("--raw-root", default="data/raw_ws/upbit/quotation")
+    collect_ws_public_stats_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
     collect_ws_public_stats_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+
+    collect_ws_public_status_parser = collect_ws_public_subparsers.add_parser(
+        "status",
+        help="Show ws-public daemon health snapshot and latest run summary.",
+    )
+    collect_ws_public_status_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
+    collect_ws_public_status_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+
+    collect_ws_public_purge_parser = collect_ws_public_subparsers.add_parser(
+        "purge",
+        help="Purge old ws-public raw partitions by retention policy.",
+    )
+    collect_ws_public_purge_parser.add_argument("--raw-root", default="data/raw_ws/upbit/public")
+    collect_ws_public_purge_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+    collect_ws_public_purge_parser.add_argument("--retention-days", type=int, required=True)
 
     micro_parser = subparsers.add_parser("micro", help="Micro aggregation operations.")
     micro_subparsers = micro_parser.add_subparsers(dest="micro_command", required=True)
@@ -348,7 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
     micro_aggregate_parser.add_argument("--top-n", type=int, default=20)
     micro_aggregate_parser.add_argument("--markets", help="Comma separated fixed markets, ex: KRW-BTC,KRW-ETH")
     micro_aggregate_parser.add_argument("--raw-ticks-root", default="data/raw_ticks/upbit/trades")
-    micro_aggregate_parser.add_argument("--raw-ws-root", default="data/raw_ws/upbit/quotation")
+    micro_aggregate_parser.add_argument("--raw-ws-root", default="data/raw_ws/upbit/public")
     micro_aggregate_parser.add_argument("--out-root", default="data/parquet/micro_v1")
     micro_aggregate_parser.add_argument(
         "--base-candles",
@@ -880,7 +950,7 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
     if args.collect_command == "ticks":
         return _handle_collect_ticks(args, config_dir, base_config)
     if args.collect_command == "ws-public":
-        return _handle_collect_ws_public(args, config_dir)
+        return _handle_collect_ws_public(args, config_dir, base_config)
     raise ValueError(f"Unsupported collect command: {args.collect_command}")
 
 
@@ -1112,8 +1182,25 @@ def _handle_collect_ticks(args: argparse.Namespace, config_dir: Path, base_confi
     return 0
 
 
-def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path) -> int:
+def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     ws_command = getattr(args, "collect_ws_public_command", None)
+    if ws_command == "status":
+        status = load_ws_public_status(
+            meta_dir=Path(args.meta_dir),
+            raw_root=Path(args.raw_root),
+        )
+        _print_json(status)
+        return 0
+
+    if ws_command == "purge":
+        payload = purge_ws_public_retention(
+            raw_root=Path(args.raw_root),
+            meta_dir=Path(args.meta_dir),
+            retention_days=max(int(args.retention_days), 1),
+        )
+        _print_json(payload)
+        return 0
+
     if ws_command == "validate":
         summary = validate_ws_public_raw_dataset(
             raw_root=Path(args.raw_root),
@@ -1139,6 +1226,51 @@ def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path) -> int
         _print_json(stats)
         return 0
 
+    if ws_command == "daemon":
+        daemon_options = WsPublicDaemonOptions(
+            raw_root=Path(args.raw_root),
+            meta_dir=Path(args.meta_dir),
+            quote=str(args.quote).strip().upper() or "KRW",
+            top_n=max(int(args.top_n), 1),
+            refresh_sec=max(int(args.refresh_sec), 30),
+            duration_sec=(int(args.duration_sec) if int(args.duration_sec) > 0 else None),
+            retention_days=max(int(args.retention_days), 1),
+            downsample_hz=max(float(args.downsample_hz), 0.1),
+            max_markets=max(int(args.max_markets), 1),
+            format=str(args.format).strip().upper() or "DEFAULT",
+            channels=_parse_csv_list(args.channels, normalize=str.lower) or ("trade", "orderbook"),
+            orderbook_topk=max(int(args.orderbook_topk), 1),
+            orderbook_level=_parse_orderbook_level_arg(args.orderbook_level),
+            keepalive_mode=str(args.keepalive_mode).strip().lower(),
+            keepalive_interval_sec=max(int(args.keepalive_interval_sec), 1),
+            keepalive_stale_sec=max(int(args.keepalive_stale_sec), 30),
+            rotate_sec=max(int(args.rotate_sec), 1),
+            max_bytes=max(int(args.max_bytes), 1024),
+            rate_limit_strict=_parse_bool_arg(args.rate_limit_strict, default=True),
+            reconnect_max_per_min=max(int(args.reconnect_max_per_min), 1),
+            max_subscribe_messages_per_min=max(int(args.max_subscribe_messages_per_min), 1),
+            min_subscribe_interval_sec=max(int(args.min_subscribe_interval_sec), 1),
+            orderbook_spread_bps_threshold=float(args.orderbook_spread_bps_threshold),
+            orderbook_top1_size_change_threshold=float(args.orderbook_top1_size_change_threshold),
+            health_update_sec=max(int(args.health_update_sec), 1),
+            config_dir=config_dir,
+        )
+        summary = collect_ws_public_daemon(daemon_options)
+        print(
+            "[collect][ws-public][daemon] "
+            f"run_id={summary.run_id} duration={summary.duration_sec}s quote={summary.quote} "
+            f"top_n={summary.top_n} refresh={summary.refresh_sec}s subscribed={summary.subscribed_markets_count} "
+            f"written_trade={summary.written_trade} written_orderbook={summary.written_orderbook} "
+            f"reconnect={summary.reconnect_count} refresh_apply={summary.refresh_applied_count}"
+        )
+        print(f"[collect][ws-public][daemon] plan={summary.plan_file}")
+        print(f"[collect][ws-public][daemon] collect_report={summary.collect_report_file}")
+        print(f"[collect][ws-public][daemon] health={summary.health_snapshot_file}")
+        print(f"[collect][ws-public][daemon] manifest={summary.manifest_file}")
+        print(f"[collect][ws-public][daemon] checkpoint={summary.checkpoint_file}")
+        print(f"[collect][ws-public][daemon] runs_summary={summary.runs_summary_file}")
+        return 2 if summary.failures else 0
+
     collect_options = WsPublicCollectOptions(
         plan_path=Path(args.plan),
         raw_root=Path(args.raw_root),
@@ -1151,6 +1283,9 @@ def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path) -> int
         reconnect_max_per_min=max(int(args.reconnect_max_per_min), 1),
         orderbook_spread_bps_threshold=float(args.orderbook_spread_bps_threshold),
         orderbook_top1_size_change_threshold=float(args.orderbook_top1_size_change_threshold),
+        keepalive_mode=str(args.keepalive_mode).strip().lower(),
+        keepalive_interval_sec=max(int(args.keepalive_interval_sec), 1),
+        keepalive_stale_sec=max(int(args.keepalive_stale_sec), 30),
         config_dir=config_dir,
     )
 
@@ -2698,7 +2833,7 @@ def _load_micro_defaults(*, config_dir: Path, base_config: dict[str, Any]) -> di
         "quote": str(root.get("quote", "KRW")).strip().upper(),
         "top_n": int(root.get("top_n", 20)),
         "raw_ticks_root": str(root.get("raw_ticks_root", "data/raw_ticks/upbit/trades")),
-        "raw_ws_root": str(root.get("raw_ws_root", "data/raw_ws/upbit/quotation")),
+        "raw_ws_root": str(root.get("raw_ws_root", "data/raw_ws/upbit/public")),
         "out_root": str(root.get("out_root", "data/parquet/micro_v1")),
         "base_candles_dataset": str(root.get("base_candles_dataset", "candles_v1")).strip(),
         "join_match_warn": float(validation_cfg.get("join_match_warn", 0.98)),

@@ -10,6 +10,7 @@ build/
 out/
 *.egg-info/
 compile_commands.json
+python/site-packages/
 
 # C++ / CMake / MSVC local build artifacts
 cpp/build*/
@@ -56,3 +57,12 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# --- allow source code under autobot/ even if broader ignore exists ---
+!autobot/data/collect/
+!autobot/data/collect/**
+
+# Always ignore Python bytecode/cache everywhere.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
