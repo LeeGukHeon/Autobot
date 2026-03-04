@@ -8,3 +8,28 @@
     enabled: true
     momentum_window_sec: 60
     min_momentum_pct: 0.2
+  micro_gate:
+    enabled: false
+    mode: trade_only
+    on_missing: warn_allow
+    stale_ms: 120000
+    trade:
+      min_trade_events: 1
+      min_trade_coverage_ms: 0
+      min_trade_notional_krw: 0
+    book:
+      max_spread_bps: 0
+      min_depth_top5_krw: 0
+      min_book_events: 0
+      min_book_coverage_ms: 0
+    live_ws:
+      enabled: false
+      window_sec: 60
+      orderbook_topk: 5
+      orderbook_level: 0
+      subscribe_format: DEFAULT
+      max_markets: 30
+      reconnect:
+        max_per_min: 3
+        backoff_base_sec: 1
+        backoff_max_sec: 32

@@ -59,6 +59,26 @@
 - `strategy.candidates_v1.enabled`: bool
 - `strategy.candidates_v1.momentum_window_sec`: integer (default: `60`)
 - `strategy.candidates_v1.min_momentum_pct`: number (default: `0.2`)
+- `strategy.micro_gate.enabled`: bool (default: `false`)
+- `strategy.micro_gate.mode`: `trade_only | trade_and_book` (default: `trade_only`)
+- `strategy.micro_gate.on_missing`: `warn_allow | block | allow` (default: `warn_allow`)
+- `strategy.micro_gate.stale_ms`: integer (default: `120000`)
+- `strategy.micro_gate.trade.min_trade_events`: integer (default: `1`)
+- `strategy.micro_gate.trade.min_trade_coverage_ms`: integer (default: `0`)
+- `strategy.micro_gate.trade.min_trade_notional_krw`: number (default: `0`)
+- `strategy.micro_gate.book.max_spread_bps`: number (default: `0`, disabled when `0`)
+- `strategy.micro_gate.book.min_depth_top5_krw`: number (default: `0`, disabled when `0`)
+- `strategy.micro_gate.book.min_book_events`: integer (default: `0`)
+- `strategy.micro_gate.book.min_book_coverage_ms`: integer (default: `0`)
+- `strategy.micro_gate.live_ws.enabled`: bool (default: `false`)
+- `strategy.micro_gate.live_ws.window_sec`: integer (default: `60`)
+- `strategy.micro_gate.live_ws.orderbook_topk`: integer (default: `5`)
+- `strategy.micro_gate.live_ws.orderbook_level`: integer|string (default: `0`)
+- `strategy.micro_gate.live_ws.subscribe_format`: string (default: `DEFAULT`)
+- `strategy.micro_gate.live_ws.max_markets`: integer (default: `30`)
+- `strategy.micro_gate.live_ws.reconnect.max_per_min`: integer (default: `3`)
+- `strategy.micro_gate.live_ws.reconnect.backoff_base_sec`: number (default: `1`)
+- `strategy.micro_gate.live_ws.reconnect.backoff_max_sec`: number (default: `32`)
 
 ## Risk (Paper Runtime)
 - `risk.starting_krw`: number (default: `50000`)
@@ -292,6 +312,9 @@
   - `--starting-krw`: initial paper cash
   - `--per-trade-krw`: per-order notional target
   - `--max-positions`: max simultaneous positions
+  - `--micro-gate`: `on | off`
+  - `--micro-gate-mode`: `trade_only | trade_and_book`
+  - `--micro-gate-on-missing`: `warn_allow | block | allow`
 
 ## CLI: Backtest Run
 - `python -m autobot.cli backtest run --market KRW-BTC --tf 5m --duration-days 7`
@@ -303,6 +326,7 @@
   - `--dense-grid`
   - `--starting-krw`, `--per-trade-krw`, `--max-positions`, `--min-order-krw`
   - `--order-timeout-bars`, `--reprice-max-attempts`
+  - `--micro-gate`, `--micro-gate-mode`, `--micro-gate-on-missing`
 
 ## CLI: Features
 - Build:

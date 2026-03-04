@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import asdict, dataclass, field
+import json
 from pathlib import Path
 import time
 from typing import Any, Callable, Sequence
@@ -12,6 +13,12 @@ from typing import Any, Callable, Sequence
 from autobot.common.event_store import JsonlEventStore
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
+from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
+from autobot.strategy.micro_snapshot import (
+    LiveWsMicroSnapshotProvider,
+    MicroSnapshotProvider,
+    OfflineMicroSnapshotProvider,
+)
 from autobot.strategy.top20_scanner import TopTradeValueScanner
 from autobot.strategy.trade_gate_v1 import GateSettings, TradeGateV1
 from autobot.upbit import (
@@ -58,6 +65,7 @@ class PaperRunSettings:
     max_consecutive_failures: int = 3
     rules_ttl_sec: int = 86400
     out_root_dir: str = "data/paper"
+    micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
 
 
 @dataclass(frozen=True)
@@ -70,6 +78,10 @@ class PaperRunSummary:
     orders_filled: int
     orders_canceled: int
     intents_failed: int
+    candidates_total: int
+    candidates_blocked_by_micro: int
+    micro_blocked_ratio: float
+    micro_blocked_reasons: dict[str, int]
     fill_rate: float
     realized_pnl_quote: float
     unrealized_pnl_quote: float
@@ -491,11 +503,13 @@ class PaperRunEngine:
         ws_client: UpbitWebSocketPublicClient | None = None,
         market_loader: Callable[[str], list[str]] | None = None,
         rules_provider: RulesProvider | None = None,
+        micro_snapshot_provider: MicroSnapshotProvider | None = None,
     ) -> None:
         self._upbit_settings = upbit_settings
         self._run_settings = run_settings
         self._ws_client = ws_client or UpbitWebSocketPublicClient(upbit_settings.websocket)
         self._market_loader = market_loader or self._load_quote_markets
+        self._micro_snapshot_provider = micro_snapshot_provider
 
         credentials = load_upbit_credentials(upbit_settings)
         self._rules_provider = rules_provider or RulesProvider(
@@ -508,6 +522,9 @@ class PaperRunEngine:
             "orders_filled": 0,
             "orders_canceled": 0,
             "intents_failed": 0,
+            "candidates_total": 0,
+            "candidates_blocked_by_micro": 0,
+            "micro_blocked_reasons": {},
         }
 
     async def run(self) -> PaperRunSummary:
@@ -519,6 +536,9 @@ class PaperRunEngine:
             "orders_filled": 0,
             "orders_canceled": 0,
             "intents_failed": 0,
+            "candidates_total": 0,
+            "candidates_blocked_by_micro": 0,
+            "micro_blocked_reasons": {},
         }
 
         markets = self._market_loader(quote)
@@ -538,6 +558,8 @@ class PaperRunEngine:
                 min_momentum_pct=self._run_settings.min_momentum_pct,
             )
         )
+        micro_gate = MicroGateV1(self._run_settings.micro_gate) if self._run_settings.micro_gate.enabled else None
+        micro_snapshot_provider = self._resolve_micro_snapshot_provider(markets=markets)
         trade_gate = TradeGateV1(
             GateSettings(
                 per_trade_krw=self._run_settings.per_trade_krw,
@@ -545,7 +567,9 @@ class PaperRunEngine:
                 min_order_krw=self._run_settings.min_order_krw,
                 max_consecutive_failures=self._run_settings.max_consecutive_failures,
                 cooldown_sec_after_fail=self._run_settings.cooldown_sec_after_fail,
-            )
+            ),
+            micro_gate=micro_gate,
+            micro_snapshot_provider=micro_snapshot_provider,
         )
         exchange = PaperSimExchange(
             quote_currency=quote,
@@ -564,6 +588,8 @@ class PaperRunEngine:
         orders_filled = 0
         orders_canceled = 0
         intents_failed = 0
+        candidates_total = 0
+        candidates_blocked_by_micro = 0
         equity_curve: list[float] = []
         realized_trade_pnls: list[float] = []
         received_events = 0
@@ -611,6 +637,8 @@ class PaperRunEngine:
                 orders_filled = int(self._runtime_counters["orders_filled"])
                 orders_canceled = int(self._runtime_counters["orders_canceled"])
                 intents_failed = int(self._runtime_counters["intents_failed"])
+                candidates_total = int(self._runtime_counters["candidates_total"])
+                candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
 
                 if market_has_ask_fill:
                     realized_after = exchange.total_realized_pnl()
@@ -646,6 +674,8 @@ class PaperRunEngine:
                     orders_filled = int(self._runtime_counters["orders_filled"])
                     orders_canceled = int(self._runtime_counters["orders_canceled"])
                     intents_failed = int(self._runtime_counters["intents_failed"])
+                    candidates_total = int(self._runtime_counters["candidates_total"])
+                    candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
                     next_decision_at = now_monotonic + max(self._run_settings.decision_interval_sec, 0.2)
 
                 if now_monotonic >= next_report_at:
@@ -674,15 +704,20 @@ class PaperRunEngine:
                     "orders_filled": orders_filled,
                     "orders_canceled": orders_canceled,
                     "intents_failed": intents_failed,
+                    "candidates_total": candidates_total,
+                    "candidates_blocked_by_micro": candidates_blocked_by_micro,
+                    "micro_blocked_reasons": dict(self._runtime_counters.get("micro_blocked_reasons", {})),
                 },
             )
 
         fill_rate = (orders_filled / orders_submitted) if orders_submitted > 0 else 0.0
+        micro_blocked_reasons = _normalize_reason_counts(self._runtime_counters.get("micro_blocked_reasons", {}))
+        micro_blocked_ratio = (candidates_blocked_by_micro / candidates_total) if candidates_total > 0 else 0.0
         max_drawdown_pct = _max_drawdown_pct(equity_curve)
         wins = sum(1 for pnl in realized_trade_pnls if pnl > 0)
         win_rate = (wins / len(realized_trade_pnls)) if realized_trade_pnls else 0.0
 
-        return PaperRunSummary(
+        summary = PaperRunSummary(
             run_id=run_id,
             run_dir=str(run_root),
             duration_sec=float(self._run_settings.duration_sec),
@@ -691,12 +726,27 @@ class PaperRunEngine:
             orders_filled=orders_filled,
             orders_canceled=orders_canceled,
             intents_failed=intents_failed,
+            candidates_total=candidates_total,
+            candidates_blocked_by_micro=candidates_blocked_by_micro,
+            micro_blocked_ratio=micro_blocked_ratio,
+            micro_blocked_reasons=micro_blocked_reasons,
             fill_rate=fill_rate,
             realized_pnl_quote=final_snapshot.realized_pnl_quote,
             unrealized_pnl_quote=final_snapshot.unrealized_pnl_quote,
             max_drawdown_pct=max_drawdown_pct,
             win_rate=win_rate,
         )
+        _write_json(path=run_root / "summary.json", payload=asdict(summary))
+        _write_json(
+            path=run_root / "micro_gate_blocked.json",
+            payload={
+                "candidates_total": candidates_total,
+                "candidates_blocked_by_micro": candidates_blocked_by_micro,
+                "blocked_ratio": micro_blocked_ratio,
+                "reasons": micro_blocked_reasons,
+            },
+        )
+        return summary
 
     def _run_candidate_cycle(
         self,
@@ -782,6 +832,7 @@ class PaperRunEngine:
         event_store: JsonlEventStore,
         append_event: Callable[[str, int, dict[str, Any] | None], None],
     ) -> bool:
+        self._runtime_counters["candidates_total"] = int(self._runtime_counters.get("candidates_total", 0)) + 1
         ticker = market_data.get_latest_ticker(candidate.market)
         if ticker is None:
             return False
@@ -812,6 +863,14 @@ class PaperRunEngine:
             min_total_krw=rules.min_total,
         )
         if not decision.allowed:
+            if _is_micro_decision_block(decision):
+                self._runtime_counters["candidates_blocked_by_micro"] = int(
+                    self._runtime_counters.get("candidates_blocked_by_micro", 0)
+                ) + 1
+                _note_micro_block(
+                    reasons=decision.gate_reasons,
+                    reason_counts=self._runtime_counters.setdefault("micro_blocked_reasons", {}),
+                )
             append_event(
                 "TRADE_GATE_BLOCKED",
                 ts_ms=ts_ms,
@@ -820,9 +879,27 @@ class PaperRunEngine:
                     "side": candidate.proposed_side,
                     "reason_code": decision.reason_code,
                     "detail": decision.detail,
+                    "severity": decision.severity,
+                    "gate_reasons": list(decision.gate_reasons),
+                    "diagnostics": decision.diagnostics or {},
                 },
             )
             return False
+
+        if decision.severity == "WARN":
+            append_event(
+                "TRADE_GATE_WARN_ALLOW",
+                ts_ms=ts_ms,
+                payload={
+                    "market": candidate.market,
+                    "side": candidate.proposed_side,
+                    "reason_code": decision.reason_code,
+                    "detail": decision.detail,
+                    "severity": decision.severity,
+                    "gate_reasons": list(decision.gate_reasons),
+                    "diagnostics": decision.diagnostics or {},
+                },
+            )
 
         intent = new_order_intent(
             market=candidate.market,
@@ -837,6 +914,8 @@ class PaperRunEngine:
                 "candidate_score": candidate.score,
                 "tick_size": rules.tick_size,
                 "min_total": rules.min_total,
+                "gate_severity": decision.severity,
+                "gate_reasons": list(decision.gate_reasons),
             },
             ts_ms=ts_ms,
         )
@@ -861,7 +940,7 @@ class PaperRunEngine:
         event_store: JsonlEventStore,
         append_event: Callable[[str, int, dict[str, Any] | None], None],
         ts_ms: int,
-        counters: dict[str, int],
+        counters: dict[str, Any],
     ) -> bool:
         has_ask_fill = False
 
@@ -923,6 +1002,86 @@ class PaperRunEngine:
             seen.add(market)
             markets.append(market)
         return markets
+
+    def _resolve_micro_snapshot_provider(self, *, markets: list[str]) -> MicroSnapshotProvider | None:
+        cfg = self._run_settings.micro_gate
+        if not cfg.enabled:
+            return None
+        if self._micro_snapshot_provider is not None:
+            return self._micro_snapshot_provider
+
+        if cfg.live_ws.enabled:
+            live_provider = LiveWsMicroSnapshotProvider(settings=cfg.live_ws)
+            live_provider.track_markets(markets)
+            self._micro_snapshot_provider = live_provider
+            return self._micro_snapshot_provider
+
+        micro_root = _resolve_micro_root(dataset_name=cfg.dataset_name)
+        if not micro_root.exists():
+            return None
+        provider = OfflineMicroSnapshotProvider(
+            micro_root=micro_root,
+            tf=(cfg.tf or "5m"),
+            cache_entries=cfg.cache_entries,
+        )
+        self._micro_snapshot_provider = provider
+        return self._micro_snapshot_provider
+
+
+def _is_micro_reason(reason: str) -> bool:
+    value = str(reason).strip().upper()
+    if value.startswith("MICRO_"):
+        return True
+    return value in {
+        "LOW_LIQUIDITY_TRADE",
+        "STALE_MICRO",
+        "WIDE_SPREAD",
+        "THIN_BOOK",
+        "BOOK_MISSING",
+    }
+
+
+def _is_micro_decision_block(decision: Any) -> bool:
+    if str(getattr(decision, "severity", "")).strip().upper() != "BLOCK":
+        return False
+    reasons = getattr(decision, "gate_reasons", ()) or ()
+    return any(_is_micro_reason(reason) for reason in reasons)
+
+
+def _note_micro_block(*, reasons: tuple[str, ...], reason_counts: dict[str, Any]) -> None:
+    for raw_reason in reasons:
+        reason = str(raw_reason).strip().upper()
+        if not _is_micro_reason(reason):
+            continue
+        reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+
+
+def _normalize_reason_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, count in value.items():
+        reason = str(key).strip().upper()
+        if not reason:
+            continue
+        normalized[reason] = int(count or 0)
+    return normalized
+
+
+def _resolve_micro_root(*, dataset_name: str) -> Path:
+    raw = str(dataset_name).strip() or "micro_v1"
+    candidate = Path(raw)
+    if candidate.exists() or candidate.is_absolute():
+        return candidate
+    return Path("data/parquet") / raw
+
+
+def _write_json(*, path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _find_baseline(points: deque[TickerSnapshot], *, target_ts_ms: int) -> TickerSnapshot | None:

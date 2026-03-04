@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass, field
 import heapq
+import json
 from pathlib import Path
 import time
 from typing import Any, Callable, Sequence
@@ -19,6 +20,12 @@ from autobot.paper.sim_exchange import (
     round_price_to_tick,
 )
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
+from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
+from autobot.strategy.micro_snapshot import (
+    LiveWsMicroSnapshotProvider,
+    MicroSnapshotProvider,
+    OfflineMicroSnapshotProvider,
+)
 from autobot.strategy.trade_gate_v1 import GateSettings, TradeGateV1
 from autobot.upbit import (
     UpbitCredentials,
@@ -65,6 +72,7 @@ class BacktestRunSettings:
     min_momentum_pct: float = 0.2
     output_root_dir: str = "data/backtest"
     seed: int = 0
+    micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,10 @@ class BacktestRunSummary:
     orders_filled: int
     orders_canceled: int
     intents_failed: int
+    candidates_total: int
+    candidates_blocked_by_micro: int
+    micro_blocked_ratio: float
+    micro_blocked_reasons: dict[str, int]
     fill_rate: float
     realized_pnl_quote: float
     unrealized_pnl_quote: float
@@ -430,6 +442,7 @@ class BacktestRunEngine:
         upbit_settings: UpbitSettings | None = None,
         loader: CandleDataLoader | None = None,
         rules_provider: BacktestRulesProvider | None = None,
+        micro_snapshot_provider: MicroSnapshotProvider | None = None,
     ) -> None:
         self._run_settings = run_settings
         self._loader = loader or CandleDataLoader(
@@ -438,6 +451,7 @@ class BacktestRunEngine:
             tf=run_settings.tf,
             dense_grid=run_settings.dense_grid,
         )
+        self._micro_snapshot_provider = micro_snapshot_provider
         credentials = load_upbit_credentials(upbit_settings) if upbit_settings is not None else None
         self._rules_provider = rules_provider or BacktestRulesProvider(
             settings=upbit_settings,
@@ -449,6 +463,9 @@ class BacktestRunEngine:
             "orders_filled": 0,
             "orders_canceled": 0,
             "intents_failed": 0,
+            "candidates_total": 0,
+            "candidates_blocked_by_micro": 0,
+            "micro_blocked_reasons": {},
         }
 
     def run(self) -> BacktestRunSummary:
@@ -479,6 +496,12 @@ class BacktestRunEngine:
                 min_momentum_pct=float(settings.min_momentum_pct),
             )
         )
+        micro_snapshot_provider = self._resolve_micro_snapshot_provider()
+        micro_gate = (
+            MicroGateV1(settings.micro_gate)
+            if settings.micro_gate.enabled and micro_snapshot_provider is not None
+            else None
+        )
         trade_gate = TradeGateV1(
             GateSettings(
                 per_trade_krw=float(settings.per_trade_krw),
@@ -486,7 +509,9 @@ class BacktestRunEngine:
                 min_order_krw=max(float(settings.min_order_krw), 0.0),
                 max_consecutive_failures=3,
                 cooldown_sec_after_fail=60,
-            )
+            ),
+            micro_gate=micro_gate,
+            micro_snapshot_provider=micro_snapshot_provider,
         )
         exchange = BacktestSimExchange(
             quote_currency=settings.quote.strip().upper(),
@@ -504,6 +529,9 @@ class BacktestRunEngine:
             "orders_filled": 0,
             "orders_canceled": 0,
             "intents_failed": 0,
+            "candidates_total": 0,
+            "candidates_blocked_by_micro": 0,
+            "micro_blocked_reasons": {},
         }
         bars_processed = 0
         equity_curve: list[float] = []
@@ -607,6 +635,9 @@ class BacktestRunEngine:
                     "orders_filled": int(self._runtime_counters["orders_filled"]),
                     "orders_canceled": int(self._runtime_counters["orders_canceled"]),
                     "intents_failed": int(self._runtime_counters["intents_failed"]),
+                    "candidates_total": int(self._runtime_counters["candidates_total"]),
+                    "candidates_blocked_by_micro": int(self._runtime_counters["candidates_blocked_by_micro"]),
+                    "micro_blocked_reasons": dict(self._runtime_counters.get("micro_blocked_reasons", {})),
                 },
             )
 
@@ -614,6 +645,10 @@ class BacktestRunEngine:
         orders_filled = int(self._runtime_counters["orders_filled"])
         orders_canceled = int(self._runtime_counters["orders_canceled"])
         intents_failed = int(self._runtime_counters["intents_failed"])
+        candidates_total = int(self._runtime_counters["candidates_total"])
+        candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
+        micro_blocked_reasons = _normalize_reason_counts(self._runtime_counters.get("micro_blocked_reasons", {}))
+        micro_blocked_ratio = (candidates_blocked_by_micro / candidates_total) if candidates_total > 0 else 0.0
         summary = BacktestRunSummary(
             run_id=run_id,
             run_dir=str(run_root),
@@ -626,6 +661,10 @@ class BacktestRunEngine:
             orders_filled=orders_filled,
             orders_canceled=orders_canceled,
             intents_failed=intents_failed,
+            candidates_total=candidates_total,
+            candidates_blocked_by_micro=candidates_blocked_by_micro,
+            micro_blocked_ratio=micro_blocked_ratio,
+            micro_blocked_reasons=micro_blocked_reasons,
             fill_rate=(orders_filled / orders_submitted) if orders_submitted > 0 else 0.0,
             realized_pnl_quote=final_snapshot.realized_pnl_quote,
             unrealized_pnl_quote=final_snapshot.unrealized_pnl_quote,
@@ -633,6 +672,15 @@ class BacktestRunEngine:
             win_rate=win_rate(realized_trade_pnls),
         )
         write_summary_json(run_root, asdict(summary))
+        _write_json(
+            path=run_root / "micro_gate_blocked.json",
+            payload={
+                "candidates_total": candidates_total,
+                "candidates_blocked_by_micro": candidates_blocked_by_micro,
+                "blocked_ratio": micro_blocked_ratio,
+                "reasons": micro_blocked_reasons,
+            },
+        )
         return summary
 
     def _run_candidate_cycle(
@@ -712,6 +760,7 @@ class BacktestRunEngine:
         event_store: JsonlEventStore,
         append_event: Callable[[str, int, dict[str, Any] | None], None],
     ) -> bool:
+        self._runtime_counters["candidates_total"] = int(self._runtime_counters.get("candidates_total", 0)) + 1
         bar_index = latest_bar_index_by_market.get(candidate.market.strip().upper())
         if bar_index is None:
             return False
@@ -746,6 +795,14 @@ class BacktestRunEngine:
             min_total_krw=max(float(rules.min_total), float(self._run_settings.min_order_krw)),
         )
         if not decision.allowed:
+            if _is_micro_decision_block(decision):
+                self._runtime_counters["candidates_blocked_by_micro"] = int(
+                    self._runtime_counters.get("candidates_blocked_by_micro", 0)
+                ) + 1
+                _note_micro_block(
+                    reasons=decision.gate_reasons,
+                    reason_counts=self._runtime_counters.setdefault("micro_blocked_reasons", {}),
+                )
             append_event(
                 "TRADE_GATE_BLOCKED",
                 ts_ms=ts_ms,
@@ -754,9 +811,27 @@ class BacktestRunEngine:
                     "side": candidate.proposed_side,
                     "reason_code": decision.reason_code,
                     "detail": decision.detail,
+                    "severity": decision.severity,
+                    "gate_reasons": list(decision.gate_reasons),
+                    "diagnostics": decision.diagnostics or {},
                 },
             )
             return False
+
+        if decision.severity == "WARN":
+            append_event(
+                "TRADE_GATE_WARN_ALLOW",
+                ts_ms=ts_ms,
+                payload={
+                    "market": candidate.market,
+                    "side": candidate.proposed_side,
+                    "reason_code": decision.reason_code,
+                    "detail": decision.detail,
+                    "severity": decision.severity,
+                    "gate_reasons": list(decision.gate_reasons),
+                    "diagnostics": decision.diagnostics or {},
+                },
+            )
 
         intent = new_order_intent(
             market=candidate.market,
@@ -771,6 +846,8 @@ class BacktestRunEngine:
                 "candidate_score": candidate.score,
                 "tick_size": rules.tick_size,
                 "min_total": rules.min_total,
+                "gate_severity": decision.severity,
+                "gate_reasons": list(decision.gate_reasons),
             },
             ts_ms=ts_ms,
         )
@@ -800,7 +877,7 @@ class BacktestRunEngine:
         event_store: JsonlEventStore,
         append_event: Callable[[str, int, dict[str, Any] | None], None],
         ts_ms: int,
-        counters: dict[str, int],
+        counters: dict[str, Any],
     ) -> bool:
         has_ask_fill = False
         for order in update.orders_submitted:
@@ -831,6 +908,31 @@ class BacktestRunEngine:
             counters["intents_failed"] += 1
 
         return has_ask_fill
+
+    def _resolve_micro_snapshot_provider(self) -> MicroSnapshotProvider | None:
+        cfg = self._run_settings.micro_gate
+        if not cfg.enabled:
+            return None
+        if self._micro_snapshot_provider is not None:
+            return self._micro_snapshot_provider
+
+        if cfg.live_ws.enabled:
+            # Backtest is offline; live WS provider can still be injected for parity tests.
+            self._micro_snapshot_provider = LiveWsMicroSnapshotProvider(settings=cfg.live_ws)
+            return self._micro_snapshot_provider
+
+        micro_root = _resolve_micro_root(
+            dataset_name=cfg.dataset_name,
+            parquet_root=Path(self._run_settings.parquet_root),
+        )
+        if not micro_root.exists():
+            return None
+        self._micro_snapshot_provider = OfflineMicroSnapshotProvider(
+            micro_root=micro_root,
+            tf=(cfg.tf or self._run_settings.tf),
+            cache_entries=cfg.cache_entries,
+        )
+        return self._micro_snapshot_provider
 
     def _resolve_markets(self) -> list[str]:
         explicit = _normalize_markets(market=self._run_settings.market, markets=self._run_settings.markets)
@@ -921,6 +1023,62 @@ class BacktestRunEngine:
                 continue
             loaded[market] = bars
         return loaded
+
+
+def _is_micro_reason(reason: str) -> bool:
+    value = str(reason).strip().upper()
+    if value.startswith("MICRO_"):
+        return True
+    return value in {
+        "LOW_LIQUIDITY_TRADE",
+        "STALE_MICRO",
+        "WIDE_SPREAD",
+        "THIN_BOOK",
+        "BOOK_MISSING",
+    }
+
+
+def _is_micro_decision_block(decision: Any) -> bool:
+    if str(getattr(decision, "severity", "")).strip().upper() != "BLOCK":
+        return False
+    reasons = getattr(decision, "gate_reasons", ()) or ()
+    return any(_is_micro_reason(reason) for reason in reasons)
+
+
+def _note_micro_block(*, reasons: tuple[str, ...], reason_counts: dict[str, Any]) -> None:
+    for raw_reason in reasons:
+        reason = str(raw_reason).strip().upper()
+        if not _is_micro_reason(reason):
+            continue
+        reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+
+
+def _normalize_reason_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, count in value.items():
+        reason = str(key).strip().upper()
+        if not reason:
+            continue
+        normalized[reason] = int(count or 0)
+    return normalized
+
+
+def _resolve_micro_root(*, dataset_name: str, parquet_root: Path) -> Path:
+    raw = str(dataset_name).strip() or "micro_v1"
+    candidate = Path(raw)
+    if candidate.exists() or candidate.is_absolute():
+        return candidate
+    return parquet_root / raw
+
+
+def _write_json(*, path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def run_backtest_sync(

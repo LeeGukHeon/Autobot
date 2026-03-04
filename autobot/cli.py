@@ -90,6 +90,12 @@ from .models import (
     train_and_register_v2_micro,
 )
 from .strategy import TopTradeValueScanner
+from .strategy.micro_gate_v1 import (
+    MicroGateBookSettings,
+    MicroGateSettings,
+    MicroGateTradeSettings,
+)
+from .strategy.micro_snapshot import LiveWsProviderSettings
 from .upbit import (
     ConfigError,
     UpbitError,
@@ -550,6 +556,9 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--starting-krw", type=float)
     paper_run_parser.add_argument("--per-trade-krw", type=float)
     paper_run_parser.add_argument("--max-positions", type=int)
+    paper_run_parser.add_argument("--micro-gate", choices=("on", "off"))
+    paper_run_parser.add_argument("--micro-gate-mode", choices=("trade_only", "trade_and_book"))
+    paper_run_parser.add_argument("--micro-gate-on-missing", choices=("warn_allow", "block", "allow"))
 
     backtest_parser = subparsers.add_parser("backtest", help="Backtest operations.")
     backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command", required=True)
@@ -571,6 +580,9 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_run_parser.add_argument("--min-order-krw", type=float)
     backtest_run_parser.add_argument("--order-timeout-bars", type=int)
     backtest_run_parser.add_argument("--reprice-max-attempts", type=int)
+    backtest_run_parser.add_argument("--micro-gate", choices=("on", "off"))
+    backtest_run_parser.add_argument("--micro-gate-mode", choices=("trade_only", "trade_and_book"))
+    backtest_run_parser.add_argument("--micro-gate-on-missing", choices=("warn_allow", "block", "allow"))
 
     live_parser = subparsers.add_parser("live", help="Live runtime state/reconciliation operations.")
     live_subparsers = live_parser.add_subparsers(dest="live_command", required=True)
@@ -1691,6 +1703,12 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             cooldown_sec_after_fail=max(int(defaults["cooldown_sec_after_fail"]), 0),
             max_consecutive_failures=max(int(defaults["max_consecutive_failures"]), 1),
             out_root_dir=str(defaults["paper_out_dir"]),
+            micro_gate=_build_micro_gate_settings(
+                defaults=defaults["micro_gate"],
+                cli_enabled=getattr(args, "micro_gate", None),
+                cli_mode=getattr(args, "micro_gate_mode", None),
+                cli_on_missing=getattr(args, "micro_gate_on_missing", None),
+            ),
         )
 
         summary = run_live_paper_sync(upbit_settings=settings, run_settings=run_settings)
@@ -1765,6 +1783,12 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             min_momentum_pct=float(defaults["min_momentum_pct"]),
             output_root_dir=str(defaults["backtest_out_dir"]),
             seed=int(defaults["seed"]),
+            micro_gate=_build_micro_gate_settings(
+                defaults=defaults["micro_gate"],
+                cli_enabled=getattr(args, "micro_gate", None),
+                cli_mode=getattr(args, "micro_gate_mode", None),
+                cli_on_missing=getattr(args, "micro_gate_on_missing", None),
+            ),
         )
 
         upbit_settings: Any = None
@@ -2207,6 +2231,7 @@ def _paper_defaults(
 ) -> dict[str, Any]:
     universe_base = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
     storage_base = base_config.get("storage", {}) if isinstance(base_config.get("storage"), dict) else {}
+    data_defaults = _data_defaults(base_config)
 
     strategy_root = strategy_doc.get("strategy") if isinstance(strategy_doc.get("strategy"), dict) else strategy_doc
     strategy_root = strategy_root if isinstance(strategy_root, dict) else {}
@@ -2214,6 +2239,7 @@ def _paper_defaults(
     candidates_cfg = (
         strategy_root.get("candidates_v1", {}) if isinstance(strategy_root.get("candidates_v1"), dict) else {}
     )
+    micro_gate_cfg = strategy_root.get("micro_gate", {}) if isinstance(strategy_root.get("micro_gate"), dict) else {}
     execution_policy = (
         strategy_doc.get("execution_policy", {}) if isinstance(strategy_doc.get("execution_policy"), dict) else {}
     )
@@ -2251,6 +2277,11 @@ def _paper_defaults(
         "max_consecutive_failures": int(
             risk_root.get("max_consecutive_failures", limits_cfg.get("consecutive_order_failures", 3))
         ),
+        "micro_gate": _strategy_micro_gate_defaults(
+            micro_gate_cfg=micro_gate_cfg,
+            parquet_root=Path(data_defaults["parquet_root"]),
+            default_tf="5m",
+        ),
     }
 
 
@@ -2274,6 +2305,7 @@ def _backtest_defaults(
     candidates_cfg = (
         strategy_root.get("candidates_v1", {}) if isinstance(strategy_root.get("candidates_v1"), dict) else {}
     )
+    micro_gate_cfg = strategy_root.get("micro_gate", {}) if isinstance(strategy_root.get("micro_gate"), dict) else {}
 
     root = backtest_doc.get("backtest", backtest_doc) if isinstance(backtest_doc, dict) else {}
     root = root if isinstance(root, dict) else {}
@@ -2305,7 +2337,126 @@ def _backtest_defaults(
         "min_momentum_pct": float(candidates_cfg.get("min_momentum_pct", 0.2)),
         "backtest_out_dir": str(output_cfg.get("root", storage_base.get("backtest_dir", "data/backtest"))),
         "seed": int(root.get("seed", 0)),
+        "micro_gate": _strategy_micro_gate_defaults(
+            micro_gate_cfg=micro_gate_cfg,
+            parquet_root=Path(data_defaults["parquet_root"]),
+            default_tf=str(root.get("tf", "1m")).strip().lower() or "1m",
+        ),
     }
+
+
+def _strategy_micro_gate_defaults(
+    *,
+    micro_gate_cfg: dict[str, Any],
+    parquet_root: Path,
+    default_tf: str,
+) -> dict[str, Any]:
+    trade_cfg = micro_gate_cfg.get("trade", {}) if isinstance(micro_gate_cfg.get("trade"), dict) else {}
+    book_cfg = micro_gate_cfg.get("book", {}) if isinstance(micro_gate_cfg.get("book"), dict) else {}
+    live_ws_cfg = micro_gate_cfg.get("live_ws", {}) if isinstance(micro_gate_cfg.get("live_ws"), dict) else {}
+    reconnect_cfg = live_ws_cfg.get("reconnect", {}) if isinstance(live_ws_cfg.get("reconnect"), dict) else {}
+
+    dataset_value = str(
+        micro_gate_cfg.get(
+            "dataset_name",
+            micro_gate_cfg.get("dataset", "micro_v1"),
+        )
+    ).strip() or "micro_v1"
+    dataset_path = Path(dataset_value)
+    if not dataset_path.is_absolute():
+        dataset_path = parquet_root / dataset_path
+
+    return {
+        "enabled": bool(micro_gate_cfg.get("enabled", False)),
+        "mode": str(micro_gate_cfg.get("mode", "trade_only")).strip().lower() or "trade_only",
+        "on_missing": str(micro_gate_cfg.get("on_missing", "warn_allow")).strip().lower() or "warn_allow",
+        "stale_ms": max(int(micro_gate_cfg.get("stale_ms", 120000)), 0),
+        "dataset_name": str(dataset_path),
+        "tf": str(micro_gate_cfg.get("tf", default_tf)).strip().lower() or str(default_tf).strip().lower(),
+        "cache_entries": max(int(micro_gate_cfg.get("cache_entries", 64)), 1),
+        "trade": {
+            "min_trade_events": max(int(trade_cfg.get("min_trade_events", 1)), 0),
+            "min_trade_coverage_ms": max(int(trade_cfg.get("min_trade_coverage_ms", 0)), 0),
+            "min_trade_notional_krw": max(float(trade_cfg.get("min_trade_notional_krw", 0.0)), 0.0),
+        },
+        "book": {
+            "max_spread_bps": max(float(book_cfg.get("max_spread_bps", 0.0)), 0.0),
+            "min_depth_top5_krw": max(float(book_cfg.get("min_depth_top5_krw", 0.0)), 0.0),
+            "min_book_events": max(int(book_cfg.get("min_book_events", 0)), 0),
+            "min_book_coverage_ms": max(int(book_cfg.get("min_book_coverage_ms", 0)), 0),
+        },
+        "live_ws": {
+            "enabled": bool(live_ws_cfg.get("enabled", False)),
+            "window_sec": max(int(live_ws_cfg.get("window_sec", 60)), 1),
+            "orderbook_topk": max(int(live_ws_cfg.get("orderbook_topk", 5)), 1),
+            "orderbook_level": live_ws_cfg.get("orderbook_level", 0),
+            "subscribe_format": str(live_ws_cfg.get("subscribe_format", "DEFAULT")).strip().upper() or "DEFAULT",
+            "max_markets": max(int(live_ws_cfg.get("max_markets", 30)), 1),
+            "reconnect_max_per_min": max(int(reconnect_cfg.get("max_per_min", 3)), 1),
+            "backoff_base_sec": max(float(reconnect_cfg.get("backoff_base_sec", 1.0)), 0.0),
+            "backoff_max_sec": max(float(reconnect_cfg.get("backoff_max_sec", 32.0)), 0.0),
+            "connect_rps": 5,
+            "message_rps": 5,
+            "message_rpm": 100,
+            "max_subscribe_messages_per_min": 100,
+        },
+    }
+
+
+def _build_micro_gate_settings(
+    *,
+    defaults: dict[str, Any],
+    cli_enabled: str | None,
+    cli_mode: str | None,
+    cli_on_missing: str | None,
+) -> MicroGateSettings:
+    trade_cfg = defaults.get("trade", {}) if isinstance(defaults.get("trade"), dict) else {}
+    book_cfg = defaults.get("book", {}) if isinstance(defaults.get("book"), dict) else {}
+    live_ws_cfg = defaults.get("live_ws", {}) if isinstance(defaults.get("live_ws"), dict) else {}
+
+    enabled = bool(defaults.get("enabled", False))
+    if cli_enabled is not None:
+        enabled = str(cli_enabled).strip().lower() == "on"
+
+    mode = str(cli_mode or defaults.get("mode", "trade_only")).strip().lower()
+    on_missing = str(cli_on_missing or defaults.get("on_missing", "warn_allow")).strip().lower()
+    tf_value = str(defaults.get("tf", "")).strip().lower() or None
+
+    return MicroGateSettings(
+        enabled=enabled,
+        mode=mode,
+        on_missing=on_missing,
+        stale_ms=max(int(defaults.get("stale_ms", 120000)), 0),
+        dataset_name=str(defaults.get("dataset_name", "micro_v1")),
+        tf=tf_value,
+        cache_entries=max(int(defaults.get("cache_entries", 64)), 1),
+        trade=MicroGateTradeSettings(
+            min_trade_events=max(int(trade_cfg.get("min_trade_events", 1)), 0),
+            min_trade_coverage_ms=max(int(trade_cfg.get("min_trade_coverage_ms", 0)), 0),
+            min_trade_notional_krw=max(float(trade_cfg.get("min_trade_notional_krw", 0.0)), 0.0),
+        ),
+        book=MicroGateBookSettings(
+            max_spread_bps=max(float(book_cfg.get("max_spread_bps", 0.0)), 0.0),
+            min_depth_top5_krw=max(float(book_cfg.get("min_depth_top5_krw", 0.0)), 0.0),
+            min_book_events=max(int(book_cfg.get("min_book_events", 0)), 0),
+            min_book_coverage_ms=max(int(book_cfg.get("min_book_coverage_ms", 0)), 0),
+        ),
+        live_ws=LiveWsProviderSettings(
+            enabled=bool(live_ws_cfg.get("enabled", False)),
+            window_sec=max(int(live_ws_cfg.get("window_sec", 60)), 1),
+            orderbook_topk=max(int(live_ws_cfg.get("orderbook_topk", 5)), 1),
+            orderbook_level=live_ws_cfg.get("orderbook_level", 0),
+            subscribe_format=str(live_ws_cfg.get("subscribe_format", "DEFAULT")).strip().upper() or "DEFAULT",
+            max_markets=max(int(live_ws_cfg.get("max_markets", 30)), 1),
+            reconnect_max_per_min=max(int(live_ws_cfg.get("reconnect_max_per_min", 3)), 1),
+            backoff_base_sec=max(float(live_ws_cfg.get("backoff_base_sec", 1.0)), 0.0),
+            backoff_max_sec=max(float(live_ws_cfg.get("backoff_max_sec", 32.0)), 0.0),
+            connect_rps=max(int(live_ws_cfg.get("connect_rps", 5)), 1),
+            message_rps=max(int(live_ws_cfg.get("message_rps", 5)), 1),
+            message_rpm=max(int(live_ws_cfg.get("message_rpm", 100)), 1),
+            max_subscribe_messages_per_min=max(int(live_ws_cfg.get("max_subscribe_messages_per_min", 100)), 1),
+        ),
+    )
 
 
 def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
