@@ -56,17 +56,23 @@ from .data.micro import (
 from .features import (
     FeatureBuildOptions,
     FeatureBuildV2Options,
+    FeatureBuildV3Options,
     FeatureValidateOptions,
     FeatureValidateV2Options,
+    FeatureValidateV3Options,
     build_features_dataset,
     build_features_dataset_v2,
+    build_features_dataset_v3,
     features_stats,
     features_stats_v2,
+    features_stats_v3,
     load_features_config,
     load_features_v2_config,
+    load_features_v3_config,
     sample_features,
     validate_features_dataset,
     validate_features_dataset_v2,
+    validate_features_dataset_v3,
 )
 from .live import (
     LiveDaemonSettings,
@@ -81,17 +87,21 @@ from .paper import PaperRunSettings, run_live_paper_sync
 from .models import (
     AblationOptions,
     MetricAuditOptions,
+    ModelBtProxyOptions,
     TrainRunOptions,
     TrainV2MicroOptions,
+    TrainV3MtfMicroOptions,
     audit_registered_model,
     compare_registered_models,
     evaluate_registered_model_window,
     list_registered_models,
     load_train_defaults,
     run_ablation,
+    run_modelbt_proxy,
     show_registered_model,
     train_and_register,
     train_and_register_v2_micro,
+    train_and_register_v3_mtf_micro,
 )
 from .strategy import TopTradeValueScanner
 from .strategy.micro_gate_v1 import (
@@ -461,17 +471,17 @@ def build_parser() -> argparse.ArgumentParser:
     features_parser = subparsers.add_parser("features", help="Feature store operations.")
     features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
 
-    features_build_parser = features_subparsers.add_parser("build", help="Build features dataset (v1/v2).")
+    features_build_parser = features_subparsers.add_parser("build", help="Build features dataset (v1/v2/v3).")
     features_build_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
     features_build_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_build_parser.add_argument("--top-n", type=int, help="Universe size")
     features_build_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     features_build_parser.add_argument("--end", help="End date YYYY-MM-DD")
-    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
+    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
     features_build_parser.add_argument("--label-set", default="v1", choices=("v1",))
     features_build_parser.add_argument("--workers", type=int, default=1)
-    features_build_parser.add_argument("--base-candles", help="Base candles dataset/path for v2, ex: auto|candles_api_v1")
-    features_build_parser.add_argument("--micro-dataset", help="Micro dataset/path for v2, ex: micro_v1")
+    features_build_parser.add_argument("--base-candles", help="Base candles dataset/path for v2/v3, ex: auto|candles_api_v1")
+    features_build_parser.add_argument("--micro-dataset", help="Micro dataset/path for v2/v3, ex: micro_v1")
     features_build_parser.add_argument("--require-micro", help="Require m_micro_available for v2 (true|false)")
     features_build_parser.add_argument("--min-trade-events", type=int, help="v2 micro filter threshold")
     features_build_parser.add_argument("--min-trade-coverage-ms", type=int, help="v2 micro filter threshold")
@@ -481,7 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--use-precomputed-features-v1",
         help="Use existing features_v1 for mode B in v2 (true|false)",
     )
-    features_build_parser.add_argument("--dry-run", default="false", help="v2 preflight-only run (true|false)")
+    features_build_parser.add_argument("--dry-run", default="false", help="v2/v3 preflight-only run (true|false)")
     features_build_parser.add_argument(
         "--fail-on-warn",
         default="false",
@@ -492,7 +502,9 @@ def build_parser() -> argparse.ArgumentParser:
     features_validate_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
     features_validate_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_validate_parser.add_argument("--top-n", type=int, help="Universe size")
-    features_validate_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
+    features_validate_parser.add_argument("--start", help="Optional start date YYYY-MM-DD (v3)")
+    features_validate_parser.add_argument("--end", help="Optional end date YYYY-MM-DD (v3)")
+    features_validate_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
     features_validate_parser.add_argument("--join-match-warn", type=float, help="v2 join match warn threshold")
     features_validate_parser.add_argument("--join-match-fail", type=float, help="v2 join match fail threshold")
 
@@ -502,22 +514,22 @@ def build_parser() -> argparse.ArgumentParser:
     features_sample_parser.add_argument("--rows", type=int, default=10)
 
     features_stats_parser = features_subparsers.add_parser("stats", help="Show feature dataset summary.")
-    features_stats_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_stats_parser.add_argument("--tf", default="5m", help="Timeframe, ex: 5m")
     features_stats_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_stats_parser.add_argument("--top-n", type=int, help="Universe size")
-    features_stats_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
+    features_stats_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
 
     model_parser = subparsers.add_parser("model", help="Model training and registry operations.")
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
-    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro"))
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
     model_train_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     model_train_parser.add_argument("--end", help="End date YYYY-MM-DD")
-    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
+    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
     model_train_parser.add_argument("--label-set", default="v1", choices=("v1",))
     model_train_parser.add_argument("--task", default="cls", choices=("cls",))
     model_train_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
@@ -571,6 +583,23 @@ def build_parser() -> argparse.ArgumentParser:
     model_ablate_parser.add_argument("--booster-sweep-trials", type=int, default=30)
     model_ablate_parser.add_argument("--seed", type=int)
     model_ablate_parser.add_argument("--nthread", type=int)
+
+    modelbt_parser = subparsers.add_parser("modelbt", help="Fast model-signal backtest proxy.")
+    modelbt_subparsers = modelbt_parser.add_subparsers(dest="modelbt_command", required=True)
+
+    modelbt_run_parser = modelbt_subparsers.add_parser("run", help="Run model-signal backtest proxy.")
+    modelbt_run_parser.add_argument("--model-ref", required=True, help="latest|champion|run_id|run_dir")
+    modelbt_run_parser.add_argument("--model-family", help="Registry family, ex: train_v3_mtf_micro")
+    modelbt_run_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    modelbt_run_parser.add_argument("--quote", default="KRW", help="Quote filter, ex: KRW")
+    modelbt_run_parser.add_argument("--top-n", type=int, default=50, help="Universe size")
+    modelbt_run_parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
+    modelbt_run_parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    modelbt_run_parser.add_argument("--select", default="top_pct", choices=("top_pct",))
+    modelbt_run_parser.add_argument("--top-pct", type=float, default=0.05)
+    modelbt_run_parser.add_argument("--hold-bars", type=int, default=6)
+    modelbt_run_parser.add_argument("--fee-bps", type=float, default=5.0)
+    modelbt_run_parser.add_argument("--out-root", default="data/backtest")
 
     upbit_parser = subparsers.add_parser("upbit", help="Upbit REST smoke tests.")
     upbit_subparsers = upbit_parser.add_subparsers(dest="upbit_scope", required=True)
@@ -755,6 +784,8 @@ def main() -> int:
         return _handle_features_command(args, Path(args.config_dir), config)
     if args.command == "model":
         return _handle_model_command(args, Path(args.config_dir), config)
+    if args.command == "modelbt":
+        return _handle_modelbt_command(args, Path(args.config_dir), config)
     if args.command == "paper":
         return _handle_paper_command(args, Path(args.config_dir), config)
     if args.command == "backtest":
@@ -1431,6 +1462,48 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
         feature_set = str(getattr(args, "feature_set", "v1")).strip().lower()
 
         if args.features_command == "build":
+            if feature_set == "v3":
+                features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
+                options_v3 = FeatureBuildV3Options(
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                    start=args.start,
+                    end=args.end,
+                    feature_set=feature_set,
+                    label_set=str(args.label_set).strip().lower(),
+                    workers=max(int(args.workers), 1),
+                    fail_on_warn=_parse_bool_arg(args.fail_on_warn, default=False),
+                    dry_run=_parse_bool_arg(args.dry_run, default=False),
+                    base_candles=(str(args.base_candles).strip() if args.base_candles else None),
+                    micro_dataset=(str(args.micro_dataset).strip() if args.micro_dataset else None),
+                )
+                summary_v3 = build_features_dataset_v3(features_v3_config, options_v3)
+                print(
+                    "[features][build][v3] "
+                    f"discovered={summary_v3.discovered_markets} selected={len(summary_v3.selected_markets)} "
+                    f"processed={summary_v3.processed_markets} ok={summary_v3.ok_markets} "
+                    f"warn={summary_v3.warn_markets} fail={summary_v3.fail_markets}"
+                )
+                print(
+                    "[features][build][v3] "
+                    f"rows_base_total={summary_v3.rows_base_total} "
+                    f"rows_dropped_no_micro={summary_v3.rows_dropped_no_micro} "
+                    f"rows_final={summary_v3.rows_final}"
+                )
+                print(
+                    "[features][build][v3] "
+                    f"effective_start={summary_v3.effective_start} "
+                    f"effective_end={summary_v3.effective_end}"
+                )
+                print(f"[features][build][v3] output={summary_v3.output_path}")
+                print(f"[features][build][v3] manifest={summary_v3.manifest_file}")
+                print(f"[features][build][v3] report={summary_v3.build_report_file}")
+                code = 2 if summary_v3.fail_markets > 0 else 0
+                if options_v3.fail_on_warn and summary_v3.warn_markets > 0:
+                    code = 2
+                return code
+
             if feature_set == "v2":
                 features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
                 options_v2 = FeatureBuildV2Options(
@@ -1507,6 +1580,34 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
             return code
 
         if args.features_command == "validate":
+            if feature_set == "v3":
+                features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
+                options_v3 = FeatureValidateV3Options(
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                    start=args.start,
+                    end=args.end,
+                )
+                summary_v3 = validate_features_dataset_v3(features_v3_config, options_v3)
+                print(
+                    "[features][validate][v3] "
+                    f"checked={summary_v3.checked_files} ok={summary_v3.ok_files} "
+                    f"warn={summary_v3.warn_files} fail={summary_v3.fail_files}"
+                )
+                print(
+                    "[features][validate][v3] "
+                    f"schema_ok={summary_v3.schema_ok} "
+                    f"null_ratio_overall={summary_v3.null_ratio_overall:.6f} "
+                    f"leakage_smoke={summary_v3.leakage_smoke} "
+                    f"staleness_fail_rows={summary_v3.staleness_fail_rows}"
+                )
+                print(f"[features][validate][v3] dropped_rows_no_micro={summary_v3.dropped_rows_no_micro}")
+                print(f"[features][validate][v3] report={summary_v3.validate_report_file}")
+                if summary_v3.fail_files > 0 or summary_v3.leakage_smoke != "PASS":
+                    return 2
+                return 0
+
             if feature_set == "v2":
                 features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
                 options_v2 = FeatureValidateV2Options(
@@ -1565,6 +1666,17 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
             return 0
 
         if args.features_command == "stats":
+            if feature_set == "v3":
+                features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
+                stats_v3 = features_stats_v3(
+                    features_v3_config,
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                )
+                _print_json(stats_v3)
+                return 0
+
             if feature_set == "v2":
                 features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
                 stats_v2 = features_stats_v2(
@@ -1597,12 +1709,59 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         defaults = load_train_defaults(config_dir, base_config=base_config)
         features_config = load_features_config(config_dir, base_config=base_config)
         features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
+        features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
         registry_root = Path(str(defaults["registry_root"]))
         logs_root = Path(str(defaults["logs_root"]))
 
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer == "v3_mtf_micro":
+                model_family = (
+                    str(getattr(args, "model_family", None) or "train_v3_mtf_micro").strip() or "train_v3_mtf_micro"
+                )
+                options_v3 = TrainV3MtfMicroOptions(
+                    dataset_root=features_v3_config.output_dataset_root,
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=model_family,
+                    tf=str(args.tf or defaults["tf"]).strip().lower(),
+                    quote=str(args.quote or defaults["quote"]).strip().upper(),
+                    top_n=max(top_n, 1),
+                    start=str(args.start or defaults["start"]).strip(),
+                    end=str(args.end or defaults["end"]).strip(),
+                    feature_set=str(args.feature_set).strip().lower(),
+                    label_set=str(args.label_set).strip().lower(),
+                    task=str(args.task or defaults["task"]).strip().lower(),
+                    booster_sweep_trials=int(
+                        args.booster_sweep_trials
+                        if args.booster_sweep_trials is not None
+                        else defaults["booster_sweep_trials"]
+                    ),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    nthread=int(args.nthread if args.nthread is not None else defaults["nthread"]),
+                    batch_rows=max(int(defaults["batch_rows"]), 1),
+                    train_ratio=float(defaults["train_ratio"]),
+                    valid_ratio=float(defaults["valid_ratio"]),
+                    test_ratio=float(defaults["test_ratio"]),
+                    embargo_bars=max(int(defaults["embargo_bars"]), 0),
+                    fee_bps_est=float(defaults["fee_bps_est"]),
+                    safety_bps=float(defaults["safety_bps"]),
+                    ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
+                    ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
+                    min_rows_for_train=max(int(features_v3_config.build.min_rows_for_train), 1),
+                )
+                summary_v3 = train_and_register_v3_mtf_micro(options_v3)
+                print(
+                    "[model][train][v3_mtf_micro] "
+                    f"run_id={summary_v3.run_id} status={summary_v3.status} "
+                    f"test_precision_top5={summary_v3.leaderboard_row.get('test_precision_top5', 0.0):.6f} "
+                    f"test_pr_auc={summary_v3.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+                )
+                print(f"[model][train][v3_mtf_micro] run_dir={summary_v3.run_dir}")
+                print(f"[model][train][v3_mtf_micro] train_report={summary_v3.train_report_path}")
+                return 0
+
             if trainer == "v2_micro":
                 model_family = str(getattr(args, "model_family", None) or "train_v2_micro").strip() or "train_v2_micro"
                 options_v2 = TrainV2MicroOptions(
@@ -1825,6 +1984,55 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         raise ValueError(f"Unsupported model command: {args.model_command}")
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         print(f"[model][error] {exc}")
+        return 2
+
+
+def _handle_modelbt_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    try:
+        if args.modelbt_command != "run":
+            raise ValueError(f"Unsupported modelbt command: {args.modelbt_command}")
+
+        defaults = load_train_defaults(config_dir, base_config=base_config)
+        features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
+        registry_root = Path(str(defaults["registry_root"]))
+        model_ref, model_family = _resolve_model_ref_alias(
+            str(args.model_ref).strip(),
+            str(args.model_family).strip() if args.model_family else None,
+        )
+        result = run_modelbt_proxy(
+            ModelBtProxyOptions(
+                registry_root=registry_root,
+                parquet_root=features_v3_config.parquet_root,
+                base_candles_dataset=str(features_v3_config.build.base_candles_dataset),
+                out_root=Path(str(args.out_root)),
+                model_ref=model_ref,
+                model_family=model_family,
+                tf=str(args.tf).strip().lower(),
+                quote=str(args.quote).strip().upper(),
+                top_n=max(int(args.top_n), 1),
+                start=str(args.start).strip(),
+                end=str(args.end).strip(),
+                select_mode=str(args.select).strip().lower(),
+                top_pct=float(args.top_pct),
+                hold_bars=max(int(args.hold_bars), 1),
+                fee_bps=float(args.fee_bps),
+            )
+        )
+        print(
+            "[modelbt][run] "
+            f"trades={result.summary.get('trades_count', 0)} "
+            f"win_rate={result.summary.get('win_rate', 0.0):.6f} "
+            f"avg_return_net={result.summary.get('avg_return_net', 0.0):.6f} "
+            f"equity_end={result.summary.get('equity_end', 1.0):.6f}"
+        )
+        print(f"[modelbt][run] run_dir={result.run_dir}")
+        print(f"[modelbt][run] equity={result.equity_csv}")
+        print(f"[modelbt][run] summary={result.summary_json}")
+        print(f"[modelbt][run] trades={result.trades_csv}")
+        print(f"[modelbt][run] diagnostics={result.diagnostics_json}")
+        return 0
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        print(f"[modelbt][error] {exc}")
         return 2
 
 
@@ -3018,6 +3226,8 @@ def _resolve_model_ref_alias(model_ref: str, model_family: str | None = None) ->
         "champion_v1": ("champion", "train_v1"),
         "latest_v2": ("latest", "train_v2_micro"),
         "champion_v2": ("champion", "train_v2_micro"),
+        "latest_v3": ("latest", "train_v3_mtf_micro"),
+        "champion_v3": ("champion", "train_v3_mtf_micro"),
     }
     if ref in aliases:
         resolved_ref, resolved_family = aliases[ref]

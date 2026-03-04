@@ -239,6 +239,21 @@
 - `features_v2.validation.join_match_warn`: float (default: `0.98`)
 - `features_v2.validation.join_match_fail`: float (default: `0.90`)
 
+### Feature Set v3
+- config file: `config/features_v3.yaml`
+- `features_v3.output_dataset`: string (default: `features_v3`)
+- `features_v3.tf`: timeframe string (`5m` only)
+- `features_v3.base_candles_dataset`: `auto | candles_api_v1 | candles_v1 | <path>`
+- `features_v3.micro_dataset`: dataset name or path (default: `micro_v1`)
+- `features_v3.high_tfs`: timeframe array subset of `[15m,60m,240m]`
+- `features_v3.high_tf_staleness_multiplier`: float (default: `2.0`)
+- `features_v3.one_m_required_bars`: integer (default: `5`)
+- `features_v3.one_m_max_missing_ratio`: float (default: `0.2`)
+- `features_v3.sample_weight_half_life_days`: float (default: `60`)
+- `features_v3.min_rows_for_train`: integer (default: `5000`)
+- `features_v3.require_micro_validate_pass`: bool (default: `true`)
+- `features_v3.validation.leakage_fail_on_future_ts`: bool (default: `true`)
+
 ## Model Training (T14)
 - config file: `config/train.yaml`
 - `train.registry_root`: path (default: `models/registry`)
@@ -273,6 +288,8 @@
 ## CLI: Model
 - Train:
   - `python -m autobot.cli model train --tf 5m --quote KRW --top-n 20 --start 2024-01-01 --end 2026-03-01 --feature-set v1 --label-set v1 --task cls --run-baseline true --run-booster true --booster-sweep-trials 15 --seed 42 --nthread 6`
+- Train (v3):
+  - `python -m autobot.cli model train --trainer v3_mtf_micro --feature-set v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --seed 42 --booster-sweep-trials 30`
 - Eval:
   - `python -m autobot.cli model eval --model-ref latest --split test --report-csv out.csv`
 - List:
@@ -372,6 +389,15 @@
   - `python -m autobot.cli features stats --tf 5m --quote KRW --top-n 20`
 - Stats (v2):
   - `python -m autobot.cli features stats --feature-set v2 --tf 5m --quote KRW --top-n 20`
+- Build (v3):
+  - `python -m autobot.cli features build --feature-set v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05`
+- Validate (v3):
+  - `python -m autobot.cli features validate --feature-set v3 --tf 5m --quote KRW --top-n 50`
+- Stats (v3):
+  - `python -m autobot.cli features stats --feature-set v3 --tf 5m --quote KRW --top-n 50`
+
+## CLI: ModelBt Proxy
+- `python -m autobot.cli modelbt run --model-ref latest_v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --select top_pct --top-pct 0.05 --hold-bars 6 --fee-bps 5`
 
 ## CLI: Live State
 - `python -m autobot.cli live status`

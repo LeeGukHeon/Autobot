@@ -32,6 +32,7 @@ class FeatureBatch:
     X: np.ndarray
     y_cls: np.ndarray
     y_reg: np.ndarray
+    sample_weight: np.ndarray
 
     @property
     def rows(self) -> int:
@@ -43,6 +44,7 @@ class FeatureDataset:
     X: np.ndarray
     y_cls: np.ndarray
     y_reg: np.ndarray
+    sample_weight: np.ndarray
     ts_ms: np.ndarray
     markets: np.ndarray
     feature_names: tuple[str, ...]
@@ -159,6 +161,7 @@ def iter_feature_batches(
             x = chunk.select(list(feature_cols)).to_numpy().astype(np.float32, copy=False)
             y_cls = chunk.get_column("y_cls").to_numpy().astype(np.int8, copy=False)
             y_reg = chunk.get_column("y_reg").to_numpy().astype(np.float32, copy=False)
+            sample_weight = chunk.get_column("sample_weight").to_numpy().astype(np.float32, copy=False)
             ts_ms = chunk.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
             yield FeatureBatch(
                 market=market,
@@ -166,6 +169,7 @@ def iter_feature_batches(
                 X=x,
                 y_cls=y_cls,
                 y_reg=y_reg,
+                sample_weight=sample_weight,
             )
 
 
@@ -178,6 +182,7 @@ def load_feature_dataset(
     x_parts: list[np.ndarray] = []
     y_cls_parts: list[np.ndarray] = []
     y_reg_parts: list[np.ndarray] = []
+    weight_parts: list[np.ndarray] = []
     ts_parts: list[np.ndarray] = []
     market_parts: list[np.ndarray] = []
     rows_by_market: dict[str, int] = {}
@@ -187,6 +192,7 @@ def load_feature_dataset(
         x_parts.append(batch.X)
         y_cls_parts.append(batch.y_cls)
         y_reg_parts.append(batch.y_reg)
+        weight_parts.append(batch.sample_weight)
         ts_parts.append(batch.ts_ms)
         market_values = np.full(batch.rows, batch.market, dtype=object)
         market_parts.append(market_values)
@@ -199,6 +205,7 @@ def load_feature_dataset(
     x = np.concatenate(x_parts, axis=0)
     y_cls = np.concatenate(y_cls_parts, axis=0)
     y_reg = np.concatenate(y_reg_parts, axis=0)
+    sample_weight = np.concatenate(weight_parts, axis=0)
     ts_ms = np.concatenate(ts_parts, axis=0)
     markets = np.concatenate(market_parts, axis=0)
 
@@ -207,6 +214,7 @@ def load_feature_dataset(
         X=x[order],
         y_cls=y_cls[order],
         y_reg=y_reg[order],
+        sample_weight=sample_weight[order],
         ts_ms=ts_ms[order],
         markets=markets[order],
         feature_names=feature_cols,
@@ -279,6 +287,10 @@ def _scan_market_frame(
         expressions.append(pl.col("y_reg").cast(pl.Float32).alias("y_reg"))
     else:
         expressions.append(pl.lit(np.nan, dtype=pl.Float32).alias("y_reg"))
+    if "sample_weight" in names:
+        expressions.append(pl.col("sample_weight").cast(pl.Float32).fill_null(1.0).alias("sample_weight"))
+    else:
+        expressions.append(pl.lit(1.0, dtype=pl.Float32).alias("sample_weight"))
 
     selected = lazy.select(expressions)
     if request.start_ts_ms is not None:

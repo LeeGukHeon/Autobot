@@ -181,9 +181,127 @@ function Get-PassFail {
     return "FAIL"
 }
 
-$targetDate = $Date
-if ([string]::IsNullOrWhiteSpace($targetDate)) {
-    $targetDate = (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+function Resolve-DateToken {
+    param(
+        [string]$DateText,
+        [string]$LabelForError
+    )
+    if ([string]::IsNullOrWhiteSpace($DateText)) {
+        throw "$LabelForError is empty"
+    }
+    try {
+        $parsed = [DateTime]::ParseExact(
+            $DateText,
+            "yyyy-MM-dd",
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None
+        )
+        return $parsed.ToString("yyyy-MM-dd")
+    } catch {
+        throw "$LabelForError must be yyyy-MM-dd (actual='$DateText')"
+    }
+}
+
+function Get-WsPartsForDate {
+    param(
+        [string]$RawRoot,
+        [string]$DateValue
+    )
+    $orderbookDatePath = Join-Path $RawRoot ("orderbook/date=" + $DateValue)
+    $tradeDatePath = Join-Path $RawRoot ("trade/date=" + $DateValue)
+    $orderbookParts = @()
+    $tradeParts = @()
+    if (Test-Path $orderbookDatePath) {
+        $orderbookParts = @(Get-ChildItem -Path $orderbookDatePath -Recurse -File -Filter "*.jsonl.zst")
+    }
+    if (Test-Path $tradeDatePath) {
+        $tradeParts = @(Get-ChildItem -Path $tradeDatePath -Recurse -File -Filter "*.jsonl.zst")
+    }
+    $orderbookPartCount = [long]$orderbookParts.Count
+    $tradePartCount = [long]$tradeParts.Count
+    $orderbookBytes = To-Int64 (($orderbookParts | Measure-Object -Property Length -Sum).Sum) 0
+    $tradeBytes = To-Int64 (($tradeParts | Measure-Object -Property Length -Sum).Sum) 0
+    return [PSCustomObject]@{
+        date = $DateValue
+        orderbook_date_path = $orderbookDatePath
+        trade_date_path = $tradeDatePath
+        orderbook_parts = $orderbookParts
+        trade_parts = $tradeParts
+        orderbook_part_count = $orderbookPartCount
+        trade_part_count = $tradePartCount
+        orderbook_bytes = $orderbookBytes
+        trade_bytes = $tradeBytes
+        has_parts = ($orderbookPartCount + $tradePartCount) -gt 0
+    }
+}
+
+function Get-LatestWsPartitionDate {
+    param([string]$RawRoot)
+    $dateSet = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($channel in @("orderbook", "trade")) {
+        $channelPath = Join-Path $RawRoot $channel
+        if (-not (Test-Path $channelPath)) {
+            continue
+        }
+        $channelDates = @(Get-ChildItem -Path $channelPath -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^date=\d{4}-\d{2}-\d{2}$" })
+        foreach ($dateDir in $channelDates) {
+            [void]$dateSet.Add($dateDir.Name.Substring(5))
+        }
+    }
+    if ($dateSet.Count -eq 0) {
+        return $null
+    }
+    return (@($dateSet | Sort-Object)[-1])
+}
+
+$batchDateSource = "DEFAULT_KST_YESTERDAY"
+$batchDate = (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+
+$envBatchDate = [string]$env:AUTOBOT_DAILY_BATCH_DATE
+if (-not [string]::IsNullOrWhiteSpace($envBatchDate)) {
+    $batchDate = $envBatchDate
+    $batchDateSource = "ENV_AUTOBOT_DAILY_BATCH_DATE"
+}
+if (-not [string]::IsNullOrWhiteSpace($Date)) {
+    $batchDate = $Date
+    $batchDateSource = "CLI_DATE_PARAM"
+}
+$batchDate = Resolve-DateToken -DateText $batchDate -LabelForError "batch_date"
+
+$utcTodayDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+$batchWsParts = Get-WsPartsForDate -RawRoot $RawWsRoot -DateValue $batchDate
+$utcTodayWsParts = $null
+$latestWsPartitionDate = $null
+$wsDateReason = "NO_WS_DATA_ANYWHERE"
+$wsDate = $batchDate
+
+if ($batchWsParts.has_parts) {
+    $wsDate = $batchDate
+    $wsDateReason = "MATCHED_BATCH_DATE_HAS_WS_PARTS"
+} else {
+    $utcTodayWsParts = Get-WsPartsForDate -RawRoot $RawWsRoot -DateValue $utcTodayDate
+    if ($utcTodayWsParts.has_parts) {
+        $wsDate = $utcTodayDate
+        $wsDateReason = "FALLBACK_TO_UTC_TODAY_HAS_WS_PARTS"
+    } else {
+        $latestWsPartitionDate = Get-LatestWsPartitionDate -RawRoot $RawWsRoot
+        if (-not [string]::IsNullOrWhiteSpace($latestWsPartitionDate)) {
+            $wsDate = $latestWsPartitionDate
+            $wsDateReason = "FALLBACK_TO_LATEST_AVAILABLE_PARTITION"
+        }
+    }
+}
+
+if ($null -eq $utcTodayWsParts) {
+    $utcTodayWsParts = Get-WsPartsForDate -RawRoot $RawWsRoot -DateValue $utcTodayDate
+}
+
+$wsParts = if ($wsDate -eq $batchDate) {
+    $batchWsParts
+} elseif ($wsDate -eq $utcTodayDate) {
+    $utcTodayWsParts
+} else {
+    Get-WsPartsForDate -RawRoot $RawWsRoot -DateValue $wsDate
 }
 
 $candlesPlanPathResolved = if ([System.IO.Path]::IsPathRooted($CandlesPlanPath)) { $CandlesPlanPath } else { Join-Path $ProjectRoot $CandlesPlanPath }
@@ -225,7 +343,7 @@ if (-not $SkipCandles) {
         "--market-mode", $CandlesMarketMode,
         "--top-n", $TopN,
         "--max-backfill-days-1m", $CandlesMaxBackfillDays1m,
-        "--end", $targetDate
+        "--end", $batchDate
     )
     if (-not [string]::IsNullOrWhiteSpace($CandlesMarkets)) {
         $candlesPlanArgs += @("--markets", $CandlesMarkets)
@@ -294,8 +412,8 @@ if (-not $SkipTicks) {
 $aggregateArgs = @(
     "-m", "autobot.cli",
     "micro", "aggregate",
-    "--start", $targetDate,
-    "--end", $targetDate,
+    "--start", $batchDate,
+    "--end", $batchDate,
     "--quote", $Quote,
     "--top-n", $TopN,
     "--raw-ticks-root", $RawTicksRoot,
@@ -332,7 +450,7 @@ $ticksReport = Load-JsonOrEmpty -PathValue "data/raw_ticks/upbit/_meta/ticks_col
 
 $reportDir = Join-Path $ProjectRoot "docs\reports"
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
-$reportPath = Join-Path $reportDir ("DAILY_MICRO_REPORT_" + $targetDate + ".md")
+$reportPath = Join-Path $reportDir ("DAILY_MICRO_REPORT_" + $batchDate + ".md")
 
 $bookAvailableRatio = To-Double (Get-PropValue -ObjectValue $stats -Name "book_available_ratio" -DefaultValue 0.0) 0.0
 $tradeSourceWsRatio = To-Double (Get-PropValue -ObjectValue $stats -Name "trade_source_ws_ratio" -DefaultValue $null) -1.0
@@ -349,25 +467,23 @@ if ($null -ne $joinMatchValue) {
 }
 
 # 1) orderbook verification: folder / validate / stats / health
-$orderbookDatePath = Join-Path $RawWsRoot ("orderbook/date=" + $targetDate)
-$tradeDatePath = Join-Path $RawWsRoot ("trade/date=" + $targetDate)
-$orderbookParts = @()
-$tradeParts = @()
-if (Test-Path $orderbookDatePath) {
-    $orderbookParts = @(Get-ChildItem -Path $orderbookDatePath -Recurse -File -Filter "*.jsonl.zst")
-}
-if (Test-Path $tradeDatePath) {
-    $tradeParts = @(Get-ChildItem -Path $tradeDatePath -Recurse -File -Filter "*.jsonl.zst")
-}
-$orderbookPartCount = $orderbookParts.Count
-$tradePartCount = $tradeParts.Count
-$orderbookBytes = To-Int64 (($orderbookParts | Measure-Object -Property Length -Sum).Sum) 0
-$tradeBytes = To-Int64 (($tradeParts | Measure-Object -Property Length -Sum).Sum) 0
+$orderbookDatePath = [string](Get-PropValue -ObjectValue $wsParts -Name "orderbook_date_path" -DefaultValue (Join-Path $RawWsRoot ("orderbook/date=" + $wsDate)))
+$tradeDatePath = [string](Get-PropValue -ObjectValue $wsParts -Name "trade_date_path" -DefaultValue (Join-Path $RawWsRoot ("trade/date=" + $wsDate)))
+$orderbookParts = @(Get-PropValue -ObjectValue $wsParts -Name "orderbook_parts" -DefaultValue @())
+$tradeParts = @(Get-PropValue -ObjectValue $wsParts -Name "trade_parts" -DefaultValue @())
+$orderbookPartCount = To-Int64 (Get-PropValue -ObjectValue $wsParts -Name "orderbook_part_count" -DefaultValue 0) 0
+$tradePartCount = To-Int64 (Get-PropValue -ObjectValue $wsParts -Name "trade_part_count" -DefaultValue 0) 0
+$orderbookBytes = To-Int64 (Get-PropValue -ObjectValue $wsParts -Name "orderbook_bytes" -DefaultValue 0) 0
+$tradeBytes = To-Int64 (Get-PropValue -ObjectValue $wsParts -Name "trade_bytes" -DefaultValue 0) 0
+$batchDateOrderbookPartCount = To-Int64 (Get-PropValue -ObjectValue $batchWsParts -Name "orderbook_part_count" -DefaultValue 0) 0
+$batchDateTradePartCount = To-Int64 (Get-PropValue -ObjectValue $batchWsParts -Name "trade_part_count" -DefaultValue 0) 0
+$batchDateHasWsParts = To-Bool (Get-PropValue -ObjectValue $batchWsParts -Name "has_parts" -DefaultValue $false) $false
+$utcTodayHasWsParts = To-Bool (Get-PropValue -ObjectValue $utcTodayWsParts -Name "has_parts" -DefaultValue $false) $false
 
 $wsValidateArgs = @(
     "-m", "autobot.cli",
     "collect", "ws-public", "validate",
-    "--date", $targetDate,
+    "--date", $wsDate,
     "--raw-root", $RawWsRoot,
     "--meta-dir", $RawWsMetaDir,
     "--quarantine-corrupt", $WsValidateQuarantineCorrupt,
@@ -383,7 +499,7 @@ $wsValidateParseOkRatio = To-Double (Get-PropValue -ObjectValue $wsValidateRepor
 $wsStatsArgs = @(
     "-m", "autobot.cli",
     "collect", "ws-public", "stats",
-    "--date", $targetDate,
+    "--date", $wsDate,
     "--raw-root", $RawWsRoot,
     "--meta-dir", $RawWsMetaDir
 )
@@ -505,17 +621,60 @@ $tieringT2 = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $tieringRepo
 $tieringSampleCount = To-Int64 (Get-PropValue -ObjectValue $tieringReport -Name "sample_count" -DefaultValue 0) 0
 $tieringFallbackCount = To-Int64 (Get-PropValue -ObjectValue $tieringReport -Name "micro_missing_fallback_count" -DefaultValue 0) 0
 
+$microParts = To-Int64 (Get-PropValue -ObjectValue $stats -Name "parts" -DefaultValue 0) 0
 $gateBookAvailablePass = $bookAvailableRatio -ge $GateBookAvailableMin
 $gateTradeSourceWsPass = $tradeSourceWsRatio -ge $GateTradeSourceWsMin
 $gateFallbackRatioPass = $smokeAvailable -and ($smokeOrdersSubmitted -gt 0) -and ($smokeFallbackRatio -lt $GateFallbackRatioMax)
 $gateTierDiversityPass = $smokeAvailable -and ($smokeTierUniqueCount -ge $GateTierMinCount)
 $gatePolicyEventsPass = $smokeAvailable -and ($smokePolicyEvents -ge $GatePolicyEventMin)
-$t151GatePass = $gateBookAvailablePass -and $gateTradeSourceWsPass -and $gateFallbackRatioPass -and $gateTierDiversityPass -and $gatePolicyEventsPass
+$t15PolicyGatePass = $gateFallbackRatioPass -and $gateTierDiversityPass -and $gatePolicyEventsPass
+$t15PolicyGateStatus = Get-PassFail -Condition $t15PolicyGatePass
+$t15PolicyGateReason = if (-not $smokeAvailable) { "SMOKE_REPORT_UNAVAILABLE" } elseif ($t15PolicyGatePass) { "OK" } else { "THRESHOLD_NOT_MET" }
 
-$gateReportPath = Join-Path $OutRoot "_meta/daily_t15_gate_report.json"
+$t15DataGatePassByThreshold = $gateBookAvailablePass -and $gateTradeSourceWsPass
+$t15DataGatePass = $t15DataGatePassByThreshold
+$t15DataGateStatus = if ($t15DataGatePass) { "PASS" } else { "FAIL" }
+$t15DataGateReason = if ($t15DataGatePass) { "OK" } else { "THRESHOLD_NOT_MET" }
+if (-not $batchDateHasWsParts) {
+    $t15DataGatePass = $false
+    $t15DataGateStatus = "DEFER"
+    $t15DataGateReason = "NO_WS_PARTS_FOR_BATCH_DATE"
+}
+$t15DataGateDisplayStatus = if ($t15DataGateStatus -eq "DEFER") { "DEFER" } else { Get-PassFail -Condition $t15DataGatePass }
+
+$t15OverallGatePass = $t15PolicyGatePass -and $t15DataGatePass
+$t15OverallGateStatus = Get-PassFail -Condition $t15OverallGatePass
+$t151GatePass = $t15OverallGatePass
+
+$outMetaDir = Join-Path $OutRoot "_meta"
+New-Item -ItemType Directory -Path $outMetaDir -Force | Out-Null
+$dateAlignmentPath = Join-Path $outMetaDir "daily_date_alignment.json"
+$gateReportPath = Join-Path $outMetaDir "daily_t15_gate_report.json"
+
+$dateAlignmentPayload = [ordered]@{
+    generated_at = (Get-Date).ToString("o")
+    batch_date = $batchDate
+    batch_date_source = $batchDateSource
+    ws_date = $wsDate
+    ws_date_reason = $wsDateReason
+    utc_today_date = $utcTodayDate
+    latest_available_partition = $latestWsPartitionDate
+    batch_date_has_ws_parts = $batchDateHasWsParts
+    utc_today_has_ws_parts = $utcTodayHasWsParts
+    batch_date_orderbook_parts = $batchDateOrderbookPartCount
+    batch_date_trade_parts = $batchDateTradePartCount
+    ws_date_orderbook_parts = $orderbookPartCount
+    ws_date_trade_parts = $tradePartCount
+}
+$dateAlignmentPayload | ConvertTo-Json -Depth 8 | Set-Content -Path $dateAlignmentPath -Encoding UTF8
+
 $gatePayload = [ordered]@{
     generated_at = (Get-Date).ToString("o")
-    target_date = $targetDate
+    target_date = $batchDate
+    batch_date = $batchDate
+    batch_date_source = $batchDateSource
+    ws_date = $wsDate
+    ws_date_reason = $wsDateReason
     thresholds = [ordered]@{
         book_available_ratio_min = $GateBookAvailableMin
         trade_source_ws_ratio_min = $GateTradeSourceWsMin
@@ -526,11 +685,43 @@ $gatePayload = [ordered]@{
     values = [ordered]@{
         book_available_ratio = $bookAvailableRatio
         trade_source_ws_ratio = $tradeSourceWsRatio
+        micro_parts = $microParts
+        join_match_ratio = $joinMatchValue
         micro_missing_fallback_ratio = $smokeFallbackRatio
         micro_missing_fallback_count = $smokeFallbackCount
         orders_submitted = $smokeOrdersSubmitted
         tier_unique_count = $smokeTierUniqueCount
         replace_cancel_timeout_total = $smokePolicyEvents
+    }
+    policy_gate = [ordered]@{
+        pass = $t15PolicyGatePass
+        status = $t15PolicyGateStatus
+        reason = $t15PolicyGateReason
+        checks = [ordered]@{
+            fallback_ratio_pass = $gateFallbackRatioPass
+            tier_diversity_pass = $gateTierDiversityPass
+            policy_events_pass = $gatePolicyEventsPass
+        }
+    }
+    data_gate = [ordered]@{
+        pass = $t15DataGatePass
+        status = $t15DataGateStatus
+        reason = $t15DataGateReason
+        checks = [ordered]@{
+            book_available_pass = $gateBookAvailablePass
+            trade_source_ws_pass = $gateTradeSourceWsPass
+            pass_by_threshold = $t15DataGatePassByThreshold
+        }
+        context = [ordered]@{
+            batch_date_has_ws_parts = $batchDateHasWsParts
+            batch_date_orderbook_parts = $batchDateOrderbookPartCount
+            batch_date_trade_parts = $batchDateTradePartCount
+        }
+    }
+    overall_gate = [ordered]@{
+        pass = $t15OverallGatePass
+        status = $t15OverallGateStatus
+        formula = "policy_gate.pass AND data_gate.pass"
     }
     gate = [ordered]@{
         book_available_pass = $gateBookAvailablePass
@@ -538,9 +729,27 @@ $gatePayload = [ordered]@{
         fallback_ratio_pass = $gateFallbackRatioPass
         tier_diversity_pass = $gateTierDiversityPass
         policy_events_pass = $gatePolicyEventsPass
-        overall_pass = $t151GatePass
+        overall_pass = $t15OverallGatePass
+    }
+    t15_policy_gate = $t15PolicyGatePass
+    t15_data_gate = $t15DataGatePass
+    t15_data_gate_status = $t15DataGateStatus
+    t15_overall_gate = $t15OverallGatePass
+    t15_1_revalidation_gate = $t15OverallGatePass
+    orderbook_verification_gate = $orderbookVerificationPass
+    data_gate_deferred = ($t15DataGateStatus -eq "DEFER")
+    data_gate_defer_reason = if ($t15DataGateStatus -eq "DEFER") { $t15DataGateReason } else { "" }
+    date_alignment_report = $dateAlignmentPath
+    ws_partition = [ordered]@{
+        batch_date = $batchDate
+        ws_date = $wsDate
+        ws_date_reason = $wsDateReason
+        utc_today = $utcTodayDate
+        latest_available_partition = $latestWsPartitionDate
     }
     orderbook_verification = [ordered]@{
+        ws_date = $wsDate
+        ws_date_reason = $wsDateReason
         folder_pass = $orderbookFolderPass
         validate_pass = $orderbookValidatePass
         stats_pass = $orderbookStatsPass
@@ -600,10 +809,14 @@ $gatePayload = [ordered]@{
 $gatePayload | ConvertTo-Json -Depth 8 | Set-Content -Path $gateReportPath -Encoding UTF8
 
 $reportLines = @(
-    "# DAILY_MICRO_REPORT_$targetDate",
+    "# DAILY_MICRO_REPORT_$batchDate",
     "",
     "## Summary",
-    "- target_date: $targetDate",
+    "- batch_date: $batchDate",
+    "- batch_date_source: $batchDateSource",
+    "- ws_date: $wsDate",
+    "- ws_date_reason: $wsDateReason",
+    "- target_date(legacy): $batchDate",
     "- quote/top_n: $Quote / $TopN",
     ("- candles_topup: {0}" -f $candlesTopupStatus),
     ("- book_available_ratio: {0:N6}" -f $bookAvailableRatio),
@@ -611,8 +824,11 @@ $reportLines = @(
     ("- micro_available_ratio: {0:N6}" -f $microAvailableRatio),
     "- join_match_ratio: $joinMatchRatio",
     ("- tiering_recommendation_status: {0}" -f $tieringStatus),
-    ("- orderbook_verification_gate: {0}" -f (Get-PassFail -Condition $orderbookVerificationPass)),
-    ("- t15_1_revalidation_gate: {0}" -f (Get-PassFail -Condition $t151GatePass)),
+    ("- orderbook_verification_gate(ws_date): {0}" -f (Get-PassFail -Condition $orderbookVerificationPass)),
+    ("- t15_policy_gate: {0}" -f (Get-PassFail -Condition $t15PolicyGatePass)),
+    ("- t15_data_gate: {0} (reason={1})" -f $t15DataGateDisplayStatus, $t15DataGateReason),
+    ("- t15_overall_gate: {0}" -f (Get-PassFail -Condition $t15OverallGatePass)),
+    ("- t15_1_revalidation_gate(legacy): {0}" -f (Get-PassFail -Condition $t151GatePass)),
     "",
     "## Candles Daily Top-up",
     ("- skipped: {0}" -f [bool]$SkipCandles),
@@ -622,7 +838,9 @@ $reportLines = @(
     ("- validate(checked={0}, warn={1}, fail={2})" -f $candlesValidateCheckedFiles, $candlesValidateWarnFiles, $candlesValidateFailFiles),
     ("- coverage_delta.average_delta_pct: {0}" -f ($(if ($null -eq $candlesCoverageDeltaPct) { "NA" } else { [string]$candlesCoverageDeltaPct }))),
     "",
-    "## Orderbook Verification (Folder / Validate / Stats / Health)",
+    "## Orderbook Verification (ws_date basis: Folder / Validate / Stats / Health)",
+    ("- ws_date: {0}" -f $wsDate),
+    ("- ws_date_reason: {0}" -f $wsDateReason),
     ("- folder(orderbook parts > 0): {0} (parts={1}, bytes={2})" -f (Get-PassFail -Condition $orderbookFolderPass), $orderbookPartCount, $orderbookBytes),
     ("- validate(fail_files=0, parse_ok>=0.99): {0} (exit={1}, checked={2}, fail_files={3}, parse_ok_ratio={4:N6})" -f (Get-PassFail -Condition $orderbookValidatePass), $wsValidateExec.ExitCode, $wsValidateCheckedFiles, $wsValidateFailFiles, $wsValidateParseOkRatio),
     ("- stats(orderbook_rows > 0): {0} (exit={1}, orderbook_rows={2}, trade_rows={3})" -f (Get-PassFail -Condition $orderbookStatsPass), $wsStatsExec.ExitCode, $wsStatsOrderbookRows, $wsStatsTradeRows),
@@ -630,13 +848,18 @@ $reportLines = @(
     ("- health(connected=true, orderbook_rx_lag_sec<={0}): {1} (connected={2}, orderbook_rx_lag_sec={3:N2}, trade_rx_lag_sec={4:N2}, health_lag_sec={5:N2}, subscribed_markets={6})" -f $HealthLagWarnSec, (Get-PassFail -Condition $orderbookHealthPass), $wsHealthConnected, $wsOrderbookRxLagSec, $wsTradeRxLagSec, $wsHealthLagSec, $wsSubscribedMarkets),
     ("- overall: {0}" -f (Get-PassFail -Condition $orderbookVerificationPass)),
     "",
-    "## T15.1 Revalidation Gate (Auto PASS/FAIL)",
-    ("- book_available_ratio >= {0:N3}: {1} (actual={2:N6})" -f $GateBookAvailableMin, (Get-PassFail -Condition $gateBookAvailablePass), $bookAvailableRatio),
-    ("- trade_source_ws_ratio >= {0:N3}: {1} (actual={2:N6})" -f $GateTradeSourceWsMin, (Get-PassFail -Condition $gateTradeSourceWsPass), $tradeSourceWsRatio),
-    ("- MICRO_MISSING_FALLBACK ratio < {0:P0}: {1} (actual={2:N6}, fallback_count={3}, orders_submitted={4})" -f $GateFallbackRatioMax, (Get-PassFail -Condition $gateFallbackRatioPass), $smokeFallbackRatio, $smokeFallbackCount, $smokeOrdersSubmitted),
-    ("- tier_unique_count >= {0}: {1} (actual={2})" -f $GateTierMinCount, (Get-PassFail -Condition $gateTierDiversityPass), $smokeTierUniqueCount),
-    ("- replace+cancel+timeout >= {0}: {1} (actual={2})" -f $GatePolicyEventMin, (Get-PassFail -Condition $gatePolicyEventsPass), $smokePolicyEvents),
-    ("- overall: {0}" -f (Get-PassFail -Condition $t151GatePass)),
+    "## T15.1 Revalidation Gates (Policy / Data / Overall)",
+    ("- t15_policy_gate: {0} (reason={1})" -f (Get-PassFail -Condition $t15PolicyGatePass), $t15PolicyGateReason),
+    ("  - MICRO_MISSING_FALLBACK ratio < {0:P0}: {1} (actual={2:N6}, fallback_count={3}, orders_submitted={4})" -f $GateFallbackRatioMax, (Get-PassFail -Condition $gateFallbackRatioPass), $smokeFallbackRatio, $smokeFallbackCount, $smokeOrdersSubmitted),
+    ("  - tier_unique_count >= {0}: {1} (actual={2})" -f $GateTierMinCount, (Get-PassFail -Condition $gateTierDiversityPass), $smokeTierUniqueCount),
+    ("  - replace+cancel+timeout >= {0}: {1} (actual={2})" -f $GatePolicyEventMin, (Get-PassFail -Condition $gatePolicyEventsPass), $smokePolicyEvents),
+    ("- t15_data_gate: {0} (reason={1})" -f $t15DataGateDisplayStatus, $t15DataGateReason),
+    ("  - book_available_ratio >= {0:N3}: {1} (actual={2:N6})" -f $GateBookAvailableMin, (Get-PassFail -Condition $gateBookAvailablePass), $bookAvailableRatio),
+    ("  - trade_source_ws_ratio >= {0:N3}: {1} (actual={2:N6})" -f $GateTradeSourceWsMin, (Get-PassFail -Condition $gateTradeSourceWsPass), $tradeSourceWsRatio),
+    ("  - batch_date_ws_parts(orderbook={0}, trade={1}, has_ws_parts={2})" -f $batchDateOrderbookPartCount, $batchDateTradePartCount, $batchDateHasWsParts),
+    "- note: data_gate can be DEFER during early operations when WS backfill is unavailable",
+    ("- t15_overall_gate(policy AND data): {0}" -f (Get-PassFail -Condition $t15OverallGatePass)),
+    ("- t15_1_revalidation_gate(legacy=overall): {0}" -f (Get-PassFail -Condition $t151GatePass)),
     "",
     "## Latest Paper Smoke (10m)",
     ("- smoke_run_attempted: {0}" -f $smokeRunAttempted),
@@ -667,14 +890,14 @@ $reportLines = @(
     ("- recommended_t2: {0}" -f ($(if ($null -eq $tieringT2) { "NA" } else { [string]$tieringT2 }))),
     "",
     "## Commands",
-    "- python -m autobot.cli collect plan-candles --base-dataset $CandlesBaseDataset --parquet-root $ParquetRoot --out $candlesPlanPathResolved --lookback-months $CandlesLookbackMonths --tf $CandlesTf --quote $Quote --market-mode $CandlesMarketMode --top-n $TopN --max-backfill-days-1m $CandlesMaxBackfillDays1m --end $targetDate",
+    "- python -m autobot.cli collect plan-candles --base-dataset $CandlesBaseDataset --parquet-root $ParquetRoot --out $candlesPlanPathResolved --lookback-months $CandlesLookbackMonths --tf $CandlesTf --quote $Quote --market-mode $CandlesMarketMode --top-n $TopN --max-backfill-days-1m $CandlesMaxBackfillDays1m --end $batchDate",
     "- python -m autobot.cli collect candles --plan $candlesPlanPathResolved --out-dataset $CandlesOutDataset --parquet-root $ParquetRoot --workers $CandlesWorkers --dry-run false --rate-limit-strict $CandlesRateLimitStrict",
     "- python -m autobot.cli collect ticks --mode daily --quote $Quote --top-n $TopN --days-ago $DaysAgo --raw-root $RawTicksRoot --rate-limit-strict true --workers $Workers --max-pages-per-target $MaxPagesPerTarget --dry-run false",
-    "- python -m autobot.cli micro aggregate --start $targetDate --end $targetDate --quote $Quote --top-n $TopN --raw-ticks-root $RawTicksRoot --raw-ws-root $RawWsRoot --out-root $OutRoot",
+    "- python -m autobot.cli micro aggregate --start $batchDate --end $batchDate --quote $Quote --top-n $TopN --raw-ticks-root $RawTicksRoot --raw-ws-root $RawWsRoot --out-root $OutRoot",
     "- python -m autobot.cli micro validate --out-root $OutRoot",
     "- python -m autobot.cli micro stats --out-root $OutRoot",
-    "- python -m autobot.cli collect ws-public validate --date $targetDate --raw-root $RawWsRoot --meta-dir $RawWsMetaDir --quarantine-corrupt $WsValidateQuarantineCorrupt --min-age-sec $WsValidateMinAgeSec",
-    "- python -m autobot.cli collect ws-public stats --date $targetDate --raw-root $RawWsRoot --meta-dir $RawWsMetaDir",
+    "- python -m autobot.cli collect ws-public validate --date $wsDate --raw-root $RawWsRoot --meta-dir $RawWsMetaDir --quarantine-corrupt $WsValidateQuarantineCorrupt --min-age-sec $WsValidateMinAgeSec",
+    "- python -m autobot.cli collect ws-public stats --date $wsDate --raw-root $RawWsRoot --meta-dir $RawWsMetaDir",
     "- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/paper_micro_smoke.ps1 -DurationSec $SmokeDurationSec -PaperMicroProvider $SmokePaperMicroProvider -WarmupSec $SmokeWarmupSec",
     "- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/recommend_micro_tiering.ps1 -RecentHours $TieringRecentHours -MinSamples $TieringMinSamples",
     "",
@@ -686,6 +909,7 @@ $reportLines = @(
     "- micro_aggregate_report: $aggregateReportPath",
     "- micro_validate_report: $validateReportPath",
     "- micro_manifest: $manifestPath",
+    "- daily_date_alignment: $dateAlignmentPath",
     "- ws_validate_report: $wsValidateReportPath",
     "- t15_gate_report: $gateReportPath",
     "- smoke_report: $smokeReportPath",
@@ -702,6 +926,11 @@ $reportLines = @(
 $report = $reportLines -join "`n"
 
 Set-Content -Path $reportPath -Value $report -Encoding UTF8
+Write-Host ("[daily-micro] batch_date={0}" -f $batchDate)
+Write-Host ("[daily-micro] ws_date={0} ({1})" -f $wsDate, $wsDateReason)
 Write-Host ("[daily-micro] orderbook_verification={0}" -f (Get-PassFail -Condition $orderbookVerificationPass))
+Write-Host ("[daily-micro] t15_policy_gate={0}" -f (Get-PassFail -Condition $t15PolicyGatePass))
+Write-Host ("[daily-micro] t15_data_gate={0} ({1})" -f $t15DataGateDisplayStatus, $t15DataGateReason)
+Write-Host ("[daily-micro] t15_overall_gate={0}" -f (Get-PassFail -Condition $t15OverallGatePass))
 Write-Host ("[daily-micro] t15_1_revalidation_gate={0}" -f (Get-PassFail -Condition $t151GatePass))
 Write-Host "[daily-micro] report=$reportPath"

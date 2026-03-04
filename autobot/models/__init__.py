@@ -17,6 +17,12 @@ from .train_v2_micro import (
     evaluate_registered_model_window,
     train_and_register_v2_micro,
 )
+from .train_v3_mtf_micro import (
+    TrainV3MtfMicroOptions,
+    TrainV3MtfMicroResult,
+    train_and_register_v3_mtf_micro,
+)
+from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
 from .metric_audit import MetricAuditOptions, MetricAuditResult, audit_predictions, audit_registered_model
 from .ablation import AblationOptions, AblationResult, run_ablation, select_ablation_feature_columns
 
@@ -34,6 +40,12 @@ __all__ = [
     "compare_registered_models",
     "evaluate_registered_model_window",
     "train_and_register_v2_micro",
+    "TrainV3MtfMicroOptions",
+    "TrainV3MtfMicroResult",
+    "train_and_register_v3_mtf_micro",
+    "ModelBtProxyOptions",
+    "ModelBtProxyResult",
+    "run_modelbt_proxy",
     "MetricAuditOptions",
     "MetricAuditResult",
     "audit_predictions",

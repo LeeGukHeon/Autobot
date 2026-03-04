@@ -112,11 +112,11 @@ def load_market_micro_frame(
     if not files:
         return pl.DataFrame(schema=_micro_schema(), orient="row")
 
-    lazy = pl.scan_parquet([str(path) for path in files]).filter(
-        (pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") <= int(to_ts_ms))
+    frame = _load_micro_files_robust(
+        files=files,
+        from_ts_ms=from_ts_ms,
+        to_ts_ms=to_ts_ms,
     )
-    wanted = [name for name in MICRO_KEY_COLUMNS + MICRO_VALUE_COLUMNS if name in lazy.collect_schema().names()]
-    frame = _collect_lazy(lazy.select(wanted))
     if frame.height <= 0:
         return pl.DataFrame(schema=_micro_schema(), orient="row")
     return (
@@ -321,3 +321,36 @@ def _collect_lazy(lazy_frame: pl.LazyFrame) -> pl.DataFrame:
         return lazy_frame.collect(engine="streaming")
     except TypeError:
         return lazy_frame.collect(streaming=True)
+
+
+def _load_micro_files_robust(
+    *,
+    files: list[Path],
+    from_ts_ms: int,
+    to_ts_ms: int,
+) -> pl.DataFrame:
+    try:
+        lazy = pl.scan_parquet([str(path) for path in files]).filter(
+            (pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") <= int(to_ts_ms))
+        )
+        wanted = [name for name in MICRO_KEY_COLUMNS + MICRO_VALUE_COLUMNS if name in lazy.collect_schema().names()]
+        return _collect_lazy(lazy.select(wanted))
+    except Exception:
+        # Fallback for mixed daily schemas (e.g., all-null columns inferred as Null on some dates).
+        parts: list[pl.DataFrame] = []
+        for path in files:
+            part = pl.read_parquet(str(path))
+            if "ts_ms" not in part.columns:
+                continue
+            wanted = [name for name in MICRO_KEY_COLUMNS + MICRO_VALUE_COLUMNS if name in part.columns]
+            if "ts_ms" not in wanted:
+                continue
+            sliced = (
+                part.select(wanted)
+                .filter((pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") <= int(to_ts_ms)))
+            )
+            if sliced.height > 0:
+                parts.append(sliced)
+        if not parts:
+            return pl.DataFrame(schema=_micro_schema(), orient="row")
+        return pl.concat(parts, how="vertical_relaxed")

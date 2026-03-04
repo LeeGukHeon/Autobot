@@ -1079,7 +1079,18 @@ def _feature_part_path(*, dataset_root: Path, tf: str, market: str) -> Path:
 
 
 def _input_part_file(*, dataset_root: Path, tf: str, market: str) -> Path:
-    return dataset_root / f"tf={tf}" / f"market={market}" / "part.parquet"
+    market_dir = dataset_root / f"tf={tf}" / f"market={market}"
+    legacy = market_dir / "part.parquet"
+    if legacy.exists():
+        return legacy
+    # Support modern partition writer output names.
+    canonical = market_dir / "part-000.parquet"
+    if canonical.exists():
+        return canonical
+    parts = sorted(path for path in market_dir.glob("part-*.parquet") if path.is_file())
+    if parts:
+        return parts[0]
+    return legacy
 
 
 def _input_files_fingerprint(*, dataset_root: Path, tf: str, markets: list[str]) -> str:
