@@ -79,6 +79,31 @@
 - `strategy.micro_gate.live_ws.reconnect.max_per_min`: integer (default: `3`)
 - `strategy.micro_gate.live_ws.reconnect.backoff_base_sec`: number (default: `1`)
 - `strategy.micro_gate.live_ws.reconnect.backoff_max_sec`: number (default: `32`)
+- `strategy.micro_order_policy.enabled`: bool (default: `false`)
+- `strategy.micro_order_policy.mode`: `trade_only | trade_and_book` (default: `trade_only`)
+- `strategy.micro_order_policy.on_missing`: `static_fallback | conservative | abort` (default: `static_fallback`)
+- `strategy.micro_order_policy.tiering.w_notional`: number (default: `1.0`)
+- `strategy.micro_order_policy.tiering.w_events`: number (default: `0.5`)
+- `strategy.micro_order_policy.tiering.t1`: number (default: `6.0`)
+- `strategy.micro_order_policy.tiering.t2`: number (default: `9.0`)
+- `strategy.micro_order_policy.tiers.LOW.timeout_ms`: integer (default: `120000`)
+- `strategy.micro_order_policy.tiers.LOW.replace_interval_ms`: integer (default: `60000`)
+- `strategy.micro_order_policy.tiers.LOW.max_replaces`: integer (default: `1`)
+- `strategy.micro_order_policy.tiers.LOW.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `PASSIVE_MAKER`)
+- `strategy.micro_order_policy.tiers.LOW.max_chase_bps`: integer (default: `10`)
+- `strategy.micro_order_policy.tiers.MID.timeout_ms`: integer (default: `45000`)
+- `strategy.micro_order_policy.tiers.MID.replace_interval_ms`: integer (default: `15000`)
+- `strategy.micro_order_policy.tiers.MID.max_replaces`: integer (default: `3`)
+- `strategy.micro_order_policy.tiers.MID.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `JOIN`)
+- `strategy.micro_order_policy.tiers.MID.max_chase_bps`: integer (default: `15`)
+- `strategy.micro_order_policy.tiers.HIGH.timeout_ms`: integer (default: `15000`)
+- `strategy.micro_order_policy.tiers.HIGH.replace_interval_ms`: integer (default: `5000`)
+- `strategy.micro_order_policy.tiers.HIGH.max_replaces`: integer (default: `5`)
+- `strategy.micro_order_policy.tiers.HIGH.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `CROSS_1T`)
+- `strategy.micro_order_policy.tiers.HIGH.max_chase_bps`: integer (default: `20`)
+- `strategy.micro_order_policy.safety.min_replace_interval_ms_global`: integer (default: `1500`)
+- `strategy.micro_order_policy.safety.max_replaces_per_min_per_market`: integer (default: `10`)
+- `strategy.micro_order_policy.safety.forbid_post_only_with_cross`: bool (default: `true`)
 
 ## Risk (Paper Runtime)
 - `risk.starting_krw`: number (default: `50000`)
@@ -315,6 +340,9 @@
   - `--micro-gate`: `on | off`
   - `--micro-gate-mode`: `trade_only | trade_and_book`
   - `--micro-gate-on-missing`: `warn_allow | block | allow`
+  - `--micro-order-policy`: `on | off`
+  - `--micro-order-policy-mode`: `trade_only | trade_and_book`
+  - `--micro-order-policy-on-missing`: `static_fallback | conservative | abort`
 
 ## CLI: Backtest Run
 - `python -m autobot.cli backtest run --market KRW-BTC --tf 5m --duration-days 7`
@@ -327,6 +355,7 @@
   - `--starting-krw`, `--per-trade-krw`, `--max-positions`, `--min-order-krw`
   - `--order-timeout-bars`, `--reprice-max-attempts`
   - `--micro-gate`, `--micro-gate-mode`, `--micro-gate-on-missing`
+  - `--micro-order-policy`, `--micro-order-policy-mode`, `--micro-order-policy-on-missing`
 
 ## CLI: Features
 - Build:

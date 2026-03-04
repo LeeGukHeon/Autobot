@@ -95,6 +95,13 @@ from .strategy.micro_gate_v1 import (
     MicroGateSettings,
     MicroGateTradeSettings,
 )
+from .strategy.micro_order_policy import (
+    MicroOrderPolicySafetySettings,
+    MicroOrderPolicySettings,
+    MicroOrderPolicyTieringSettings,
+    MicroOrderPolicyTiersSettings,
+    MicroOrderPolicyTierSettings,
+)
 from .strategy.micro_snapshot import LiveWsProviderSettings
 from .upbit import (
     ConfigError,
@@ -559,6 +566,12 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--micro-gate", choices=("on", "off"))
     paper_run_parser.add_argument("--micro-gate-mode", choices=("trade_only", "trade_and_book"))
     paper_run_parser.add_argument("--micro-gate-on-missing", choices=("warn_allow", "block", "allow"))
+    paper_run_parser.add_argument("--micro-order-policy", choices=("on", "off"))
+    paper_run_parser.add_argument("--micro-order-policy-mode", choices=("trade_only", "trade_and_book"))
+    paper_run_parser.add_argument(
+        "--micro-order-policy-on-missing",
+        choices=("static_fallback", "conservative", "abort"),
+    )
 
     backtest_parser = subparsers.add_parser("backtest", help="Backtest operations.")
     backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command", required=True)
@@ -583,6 +596,12 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_run_parser.add_argument("--micro-gate", choices=("on", "off"))
     backtest_run_parser.add_argument("--micro-gate-mode", choices=("trade_only", "trade_and_book"))
     backtest_run_parser.add_argument("--micro-gate-on-missing", choices=("warn_allow", "block", "allow"))
+    backtest_run_parser.add_argument("--micro-order-policy", choices=("on", "off"))
+    backtest_run_parser.add_argument("--micro-order-policy-mode", choices=("trade_only", "trade_and_book"))
+    backtest_run_parser.add_argument(
+        "--micro-order-policy-on-missing",
+        choices=("static_fallback", "conservative", "abort"),
+    )
 
     live_parser = subparsers.add_parser("live", help="Live runtime state/reconciliation operations.")
     live_subparsers = live_parser.add_subparsers(dest="live_command", required=True)
@@ -1709,6 +1728,12 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 cli_mode=getattr(args, "micro_gate_mode", None),
                 cli_on_missing=getattr(args, "micro_gate_on_missing", None),
             ),
+            micro_order_policy=_build_micro_order_policy_settings(
+                defaults=defaults["micro_order_policy"],
+                cli_enabled=getattr(args, "micro_order_policy", None),
+                cli_mode=getattr(args, "micro_order_policy_mode", None),
+                cli_on_missing=getattr(args, "micro_order_policy_on_missing", None),
+            ),
         )
 
         summary = run_live_paper_sync(upbit_settings=settings, run_settings=run_settings)
@@ -1788,6 +1813,12 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 cli_enabled=getattr(args, "micro_gate", None),
                 cli_mode=getattr(args, "micro_gate_mode", None),
                 cli_on_missing=getattr(args, "micro_gate_on_missing", None),
+            ),
+            micro_order_policy=_build_micro_order_policy_settings(
+                defaults=defaults["micro_order_policy"],
+                cli_enabled=getattr(args, "micro_order_policy", None),
+                cli_mode=getattr(args, "micro_order_policy_mode", None),
+                cli_on_missing=getattr(args, "micro_order_policy_on_missing", None),
             ),
         )
 
@@ -2240,6 +2271,11 @@ def _paper_defaults(
         strategy_root.get("candidates_v1", {}) if isinstance(strategy_root.get("candidates_v1"), dict) else {}
     )
     micro_gate_cfg = strategy_root.get("micro_gate", {}) if isinstance(strategy_root.get("micro_gate"), dict) else {}
+    micro_order_policy_cfg = (
+        strategy_root.get("micro_order_policy", {})
+        if isinstance(strategy_root.get("micro_order_policy"), dict)
+        else {}
+    )
     execution_policy = (
         strategy_doc.get("execution_policy", {}) if isinstance(strategy_doc.get("execution_policy"), dict) else {}
     )
@@ -2282,6 +2318,7 @@ def _paper_defaults(
             parquet_root=Path(data_defaults["parquet_root"]),
             default_tf="5m",
         ),
+        "micro_order_policy": _strategy_micro_order_policy_defaults(micro_order_policy_cfg=micro_order_policy_cfg),
     }
 
 
@@ -2306,6 +2343,11 @@ def _backtest_defaults(
         strategy_root.get("candidates_v1", {}) if isinstance(strategy_root.get("candidates_v1"), dict) else {}
     )
     micro_gate_cfg = strategy_root.get("micro_gate", {}) if isinstance(strategy_root.get("micro_gate"), dict) else {}
+    micro_order_policy_cfg = (
+        strategy_root.get("micro_order_policy", {})
+        if isinstance(strategy_root.get("micro_order_policy"), dict)
+        else {}
+    )
 
     root = backtest_doc.get("backtest", backtest_doc) if isinstance(backtest_doc, dict) else {}
     root = root if isinstance(root, dict) else {}
@@ -2342,6 +2384,7 @@ def _backtest_defaults(
             parquet_root=Path(data_defaults["parquet_root"]),
             default_tf=str(root.get("tf", "1m")).strip().lower() or "1m",
         ),
+        "micro_order_policy": _strategy_micro_order_policy_defaults(micro_order_policy_cfg=micro_order_policy_cfg),
     }
 
 
@@ -2403,6 +2446,75 @@ def _strategy_micro_gate_defaults(
     }
 
 
+def _strategy_micro_order_policy_defaults(*, micro_order_policy_cfg: dict[str, Any]) -> dict[str, Any]:
+    tiering_cfg = (
+        micro_order_policy_cfg.get("tiering", {})
+        if isinstance(micro_order_policy_cfg.get("tiering"), dict)
+        else {}
+    )
+    tiers_cfg = micro_order_policy_cfg.get("tiers", {}) if isinstance(micro_order_policy_cfg.get("tiers"), dict) else {}
+    safety_cfg = (
+        micro_order_policy_cfg.get("safety", {})
+        if isinstance(micro_order_policy_cfg.get("safety"), dict)
+        else {}
+    )
+
+    def _tier_values(name: str, *, timeout_ms: int, replace_interval_ms: int, max_replaces: int, price_mode: str, max_chase_bps: int) -> dict[str, Any]:
+        tier = tiers_cfg.get(name, {}) if isinstance(tiers_cfg.get(name), dict) else {}
+        return {
+            "timeout_ms": max(int(tier.get("timeout_ms", timeout_ms)), 1),
+            "replace_interval_ms": max(int(tier.get("replace_interval_ms", replace_interval_ms)), 1),
+            "max_replaces": max(int(tier.get("max_replaces", max_replaces)), 0),
+            "price_mode": str(tier.get("price_mode", price_mode)).strip().upper() or str(price_mode).strip().upper(),
+            "max_chase_bps": max(int(tier.get("max_chase_bps", max_chase_bps)), 0),
+            "post_only": bool(tier.get("post_only", False)),
+        }
+
+    return {
+        "enabled": bool(micro_order_policy_cfg.get("enabled", False)),
+        "mode": str(micro_order_policy_cfg.get("mode", "trade_only")).strip().lower() or "trade_only",
+        "on_missing": str(micro_order_policy_cfg.get("on_missing", "static_fallback")).strip().lower()
+        or "static_fallback",
+        "tiering": {
+            "w_notional": float(tiering_cfg.get("w_notional", 1.0)),
+            "w_events": float(tiering_cfg.get("w_events", 0.5)),
+            "t1": float(tiering_cfg.get("t1", 6.0)),
+            "t2": float(tiering_cfg.get("t2", 9.0)),
+        },
+        "tiers": {
+            "LOW": _tier_values(
+                "LOW",
+                timeout_ms=120_000,
+                replace_interval_ms=60_000,
+                max_replaces=1,
+                price_mode="PASSIVE_MAKER",
+                max_chase_bps=10,
+            ),
+            "MID": _tier_values(
+                "MID",
+                timeout_ms=45_000,
+                replace_interval_ms=15_000,
+                max_replaces=3,
+                price_mode="JOIN",
+                max_chase_bps=15,
+            ),
+            "HIGH": _tier_values(
+                "HIGH",
+                timeout_ms=15_000,
+                replace_interval_ms=5_000,
+                max_replaces=5,
+                price_mode="CROSS_1T",
+                max_chase_bps=20,
+            ),
+        },
+        "safety": {
+            "min_replace_interval_ms_global": max(int(safety_cfg.get("min_replace_interval_ms_global", 1500)), 1),
+            "max_replaces_per_min_per_market": max(int(safety_cfg.get("max_replaces_per_min_per_market", 10)), 1),
+            "forbid_post_only_with_cross": bool(safety_cfg.get("forbid_post_only_with_cross", True)),
+        },
+    }
+
+
 def _build_micro_gate_settings(
     *,
     defaults: dict[str, Any],
@@ -2455,6 +2567,71 @@ def _build_micro_gate_settings(
             message_rps=max(int(live_ws_cfg.get("message_rps", 5)), 1),
             message_rpm=max(int(live_ws_cfg.get("message_rpm", 100)), 1),
             max_subscribe_messages_per_min=max(int(live_ws_cfg.get("max_subscribe_messages_per_min", 100)), 1),
+        ),
+    )
+
+
+def _build_micro_order_policy_settings(
+    *,
+    defaults: dict[str, Any],
+    cli_enabled: str | None,
+    cli_mode: str | None,
+    cli_on_missing: str | None,
+) -> MicroOrderPolicySettings:
+    enabled = bool(defaults.get("enabled", False))
+    if cli_enabled is not None:
+        enabled = str(cli_enabled).strip().lower() == "on"
+
+    mode = str(cli_mode or defaults.get("mode", "trade_only")).strip().lower()
+    on_missing = str(cli_on_missing or defaults.get("on_missing", "static_fallback")).strip().lower()
+
+    tiering_cfg = defaults.get("tiering", {}) if isinstance(defaults.get("tiering"), dict) else {}
+    tiers_cfg = defaults.get("tiers", {}) if isinstance(defaults.get("tiers"), dict) else {}
+    safety_cfg = defaults.get("safety", {}) if isinstance(defaults.get("safety"), dict) else {}
+    low_cfg = tiers_cfg.get("LOW", {}) if isinstance(tiers_cfg.get("LOW"), dict) else {}
+    mid_cfg = tiers_cfg.get("MID", {}) if isinstance(tiers_cfg.get("MID"), dict) else {}
+    high_cfg = tiers_cfg.get("HIGH", {}) if isinstance(tiers_cfg.get("HIGH"), dict) else {}
+
+    return MicroOrderPolicySettings(
+        enabled=enabled,
+        mode=mode,
+        on_missing=on_missing,
+        tiering=MicroOrderPolicyTieringSettings(
+            w_notional=float(tiering_cfg.get("w_notional", 1.0)),
+            w_events=float(tiering_cfg.get("w_events", 0.5)),
+            t1=float(tiering_cfg.get("t1", 6.0)),
+            t2=float(tiering_cfg.get("t2", 9.0)),
+        ),
+        tiers=MicroOrderPolicyTiersSettings(
+            low=MicroOrderPolicyTierSettings(
+                timeout_ms=max(int(low_cfg.get("timeout_ms", 120_000)), 1),
+                replace_interval_ms=max(int(low_cfg.get("replace_interval_ms", 60_000)), 1),
+                max_replaces=max(int(low_cfg.get("max_replaces", 1)), 0),
+                price_mode=str(low_cfg.get("price_mode", "PASSIVE_MAKER")),
+                max_chase_bps=max(int(low_cfg.get("max_chase_bps", 10)), 0),
+                post_only=bool(low_cfg.get("post_only", False)),
+            ),
+            mid=MicroOrderPolicyTierSettings(
+                timeout_ms=max(int(mid_cfg.get("timeout_ms", 45_000)), 1),
+                replace_interval_ms=max(int(mid_cfg.get("replace_interval_ms", 15_000)), 1),
+                max_replaces=max(int(mid_cfg.get("max_replaces", 3)), 0),
+                price_mode=str(mid_cfg.get("price_mode", "JOIN")),
+                max_chase_bps=max(int(mid_cfg.get("max_chase_bps", 15)), 0),
+                post_only=bool(mid_cfg.get("post_only", False)),
+            ),
+            high=MicroOrderPolicyTierSettings(
+                timeout_ms=max(int(high_cfg.get("timeout_ms", 15_000)), 1),
+                replace_interval_ms=max(int(high_cfg.get("replace_interval_ms", 5_000)), 1),
+                max_replaces=max(int(high_cfg.get("max_replaces", 5)), 0),
+                price_mode=str(high_cfg.get("price_mode", "CROSS_1T")),
+                max_chase_bps=max(int(high_cfg.get("max_chase_bps", 20)), 0),
+                post_only=bool(high_cfg.get("post_only", False)),
+            ),
+        ),
+        safety=MicroOrderPolicySafetySettings(
+            min_replace_interval_ms_global=max(int(safety_cfg.get("min_replace_interval_ms_global", 1500)), 1),
+            max_replaces_per_min_per_market=max(int(safety_cfg.get("max_replaces_per_min_per_market", 10)), 1),
+            forbid_post_only_with_cross=bool(safety_cfg.get("forbid_post_only_with_cross", True)),
         ),
     )
 

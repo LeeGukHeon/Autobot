@@ -12,8 +12,31 @@ from typing import Any, Callable, Sequence
 
 from autobot.common.event_store import JsonlEventStore
 from autobot.execution.intent import OrderIntent, new_order_intent
+from autobot.execution.order_supervisor import (
+    PRICE_MODE_JOIN,
+    REASON_CHASE_LIMIT_EXCEEDED,
+    REASON_MAX_REPLACES_REACHED,
+    REASON_MIN_NOTIONAL_DUST_ABORT,
+    REASON_TIMEOUT_REPLACE,
+    SUPERVISOR_ACTION_ABORT,
+    SUPERVISOR_ACTION_REPLACE,
+    OrderExecProfile,
+    build_limit_price_from_mode,
+    evaluate_supervisor_action,
+    make_legacy_exec_profile,
+    mean,
+    order_exec_profile_from_dict,
+    order_exec_profile_to_dict,
+    percentile,
+    slippage_bps,
+)
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
+from autobot.strategy.micro_order_policy import (
+    REASON_MICRO_MISSING_FALLBACK,
+    MicroOrderPolicySettings,
+    MicroOrderPolicyV1,
+)
 from autobot.strategy.micro_snapshot import (
     LiveWsMicroSnapshotProvider,
     MicroSnapshotProvider,
@@ -66,6 +89,7 @@ class PaperRunSettings:
     rules_ttl_sec: int = 86400
     out_root_dir: str = "data/paper"
     micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
+    micro_order_policy: MicroOrderPolicySettings = field(default_factory=MicroOrderPolicySettings)
 
 
 @dataclass(frozen=True)
@@ -80,8 +104,20 @@ class PaperRunSummary:
     intents_failed: int
     candidates_total: int
     candidates_blocked_by_micro: int
+    candidates_aborted_by_policy: int
     micro_blocked_ratio: float
     micro_blocked_reasons: dict[str, int]
+    replaces_total: int
+    cancels_total: int
+    aborted_timeout_total: int
+    dust_abort_total: int
+    avg_time_to_fill_ms: float
+    p50_time_to_fill_ms: float
+    p90_time_to_fill_ms: float
+    slippage_bps_mean: float
+    slippage_bps_p50: float
+    slippage_bps_p90: float
+    fill_ratio: float
     fill_rate: float
     realized_pnl_quote: float
     unrealized_pnl_quote: float
@@ -320,14 +356,22 @@ class ExecutionUpdate:
     fills: list[FillEvent] = field(default_factory=list)
     failed_markets: list[str] = field(default_factory=list)
     success_markets: list[str] = field(default_factory=list)
+    supervisor_events: list[dict[str, Any]] = field(default_factory=list)
+    counter_deltas: dict[str, int] = field(default_factory=dict)
+    reason_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
 class _PendingIntent:
     intent: OrderIntent
     order_id: str
-    attempts: int
-    timeout_ts_ms: int
+    replace_count: int
+    created_ts_ms: int
+    last_action_ts_ms: int
+    last_replace_ts_ms: int
+    initial_ref_price: float
+    profile: OrderExecProfile
+    market: str
 
 
 class PaperExecutionGateway:
@@ -339,18 +383,36 @@ class PaperExecutionGateway:
         order_timeout_sec: float,
         reprice_max_attempts: int,
         reprice_tick_steps: int,
+        default_profile: OrderExecProfile | None = None,
+        max_replaces_per_min_per_market: int = 10,
     ) -> None:
         self._exchange = exchange
         self._rules_provider = rules_provider
-        self._order_timeout_ms = max(int(float(order_timeout_sec) * 1000), 1000)
-        self._reprice_max_attempts = max(int(reprice_max_attempts), 0)
-        self._reprice_tick_steps = max(int(reprice_tick_steps), 1)
+        self._legacy_default_profile = make_legacy_exec_profile(
+            timeout_ms=max(int(float(order_timeout_sec) * 1000), 1_000),
+            replace_interval_ms=max(int(float(order_timeout_sec) * 1000), 1_000),
+            max_replaces=max(int(reprice_max_attempts), 0),
+            price_mode=PRICE_MODE_JOIN,
+            max_chase_bps=max(int(reprice_tick_steps), 1) * 10_000,
+            min_replace_interval_ms_global=1_500,
+        )
+        self._default_profile = (
+            order_exec_profile_from_dict(order_exec_profile_to_dict(default_profile), fallback=self._legacy_default_profile)
+            if default_profile is not None
+            else self._legacy_default_profile
+        )
+        self._max_replaces_per_min_per_market = max(int(max_replaces_per_min_per_market), 1)
         self._pending_by_intent: dict[str, _PendingIntent] = {}
         self._intent_by_order_id: dict[str, str] = {}
+        self._replace_window_by_market: dict[str, deque[int]] = {}
 
     def submit_intent(self, *, intent: OrderIntent, latest_trade_price: float, ts_ms: int) -> ExecutionUpdate:
         update = ExecutionUpdate()
         rules = self._rules_provider.get_rules(market=intent.market, reference_price=intent.price, ts_ms=ts_ms)
+        profile = order_exec_profile_from_dict(
+            intent.meta.get("exec_profile"),
+            fallback=self._default_profile,
+        )
         order, fill = self._exchange.submit_limit_order(
             intent=intent,
             rules=rules,
@@ -361,7 +423,14 @@ class PaperExecutionGateway:
         update.orders_submitted.append(order)
 
         if order.state in {"OPEN", "PARTIAL"}:
-            self._activate_pending(intent=intent, order_id=order.order_id, attempts=0, ts_ms=ts_ms)
+            self._activate_pending(
+                intent=intent,
+                order_id=order.order_id,
+                replace_count=0,
+                ts_ms=ts_ms,
+                created_ts_ms=ts_ms,
+                profile=profile,
+            )
 
         if order.state == "FAILED":
             update.failed_markets.append(intent.market)
@@ -383,6 +452,9 @@ class PaperExecutionGateway:
             reference_price=event.trade_price,
             ts_ms=event.ts_ms,
         )
+        market_value = event.market.strip().upper()
+        self._trim_replace_window(market=market_value, now_ts_ms=event.ts_ms)
+        market_window = self._replace_window_by_market.setdefault(market_value, deque())
 
         fills = self._exchange.process_ticker(
             market=event.market,
@@ -402,7 +474,7 @@ class PaperExecutionGateway:
                     update.success_markets.append(pending.intent.market)
 
         for intent_id, pending in list(self._pending_by_intent.items()):
-            if event.ts_ms < pending.timeout_ts_ms:
+            if pending.market != market_value:
                 continue
 
             current_order = self._exchange.get_order(pending.order_id)
@@ -410,28 +482,78 @@ class PaperExecutionGateway:
                 self._clear_pending(intent_id)
                 continue
 
+            remaining_volume = max(current_order.volume_req - current_order.volume_filled, 0.0)
+            action = evaluate_supervisor_action(
+                profile=pending.profile,
+                side=current_order.side,
+                now_ts_ms=event.ts_ms,
+                created_ts_ms=pending.created_ts_ms,
+                last_action_ts_ms=pending.last_action_ts_ms,
+                last_replace_ts_ms=pending.last_replace_ts_ms,
+                replace_count=pending.replace_count,
+                remaining_volume=remaining_volume,
+                ref_price=event.trade_price,
+                tick_size=rules.tick_size,
+                initial_ref_price=pending.initial_ref_price,
+                min_total=rules.min_total,
+                replaces_last_minute=len(market_window),
+                max_replaces_per_min_per_market=self._max_replaces_per_min_per_market,
+            )
+            if action.action not in {SUPERVISOR_ACTION_ABORT, SUPERVISOR_ACTION_REPLACE}:
+                continue
+
+            reason_code = action.reason_code or REASON_TIMEOUT_REPLACE
             canceled = self._exchange.cancel_order(
                 pending.order_id,
                 ts_ms=event.ts_ms,
-                reason="ORDER_TIMEOUT",
+                reason=reason_code,
             )
-            if canceled is not None:
-                update.orders_canceled.append(canceled)
-
-            self._intent_by_order_id.pop(pending.order_id, None)
-
-            remaining_volume = max(current_order.volume_req - current_order.volume_filled, 0.0)
-            if pending.attempts >= self._reprice_max_attempts or remaining_volume <= 0:
+            if canceled is None:
                 update.failed_markets.append(pending.intent.market)
                 self._clear_pending(intent_id)
                 continue
 
-            new_price = _reprice_limit_price(
-                price=current_order.price,
-                tick_size=rules.tick_size,
-                side=current_order.side,
-                ticks=self._reprice_tick_steps,
+            update.orders_canceled.append(canceled)
+            update.supervisor_events.append(
+                {
+                    "event_type": "ORDER_TIMEOUT",
+                    "ts_ms": int(event.ts_ms),
+                    "payload": {
+                        "market": current_order.market,
+                        "side": current_order.side,
+                        "order_id": current_order.order_id,
+                        "intent_id": pending.intent.intent_id,
+                        "replace_count": pending.replace_count,
+                        "reason_code": reason_code,
+                    },
+                }
             )
+            update.supervisor_events.append(
+                {
+                    "event_type": "CANCEL_RESULT",
+                    "ts_ms": int(event.ts_ms),
+                    "payload": {
+                        "market": canceled.market,
+                        "side": canceled.side,
+                        "order_id": canceled.order_id,
+                        "state": canceled.state,
+                        "reason_code": reason_code,
+                    },
+                }
+            )
+
+            self._intent_by_order_id.pop(pending.order_id, None)
+
+            _reason_inc(update.reason_counts, reason_code, 1)
+            if action.action == SUPERVISOR_ACTION_ABORT:
+                _counter_inc(update.counter_deltas, "aborted_timeout_total", 1)
+                if reason_code == REASON_MIN_NOTIONAL_DUST_ABORT:
+                    _counter_inc(update.counter_deltas, "dust_abort_total", 1)
+                update.failed_markets.append(pending.intent.market)
+                self._clear_pending(intent_id)
+                continue
+
+            new_price = float(action.target_price if action.target_price is not None else current_order.price)
             reprice_intent = OrderIntent(
                 intent_id=pending.intent.intent_id,
                 ts_ms=event.ts_ms,
@@ -442,26 +564,44 @@ class PaperExecutionGateway:
                 volume=remaining_volume,
                 time_in_force=pending.intent.time_in_force,
                 reason_code=pending.intent.reason_code,
-                meta={
-                    **pending.intent.meta,
-                    "reprice_attempt": pending.attempts + 1,
-                },
+                meta={**pending.intent.meta, "reprice_attempt": pending.replace_count + 1},
             )
             new_order, new_fill = self._exchange.submit_limit_order(
                 intent=reprice_intent,
                 rules=rules,
                 latest_trade_price=event.trade_price,
                 ts_ms=event.ts_ms,
-                reprice_attempt=pending.attempts + 1,
+                reprice_attempt=pending.replace_count + 1,
             )
             update.orders_submitted.append(new_order)
+            _counter_inc(update.counter_deltas, "replaces_total", 1)
+            update.supervisor_events.append(
+                {
+                    "event_type": "ORDER_REPLACED",
+                    "ts_ms": int(event.ts_ms),
+                    "payload": {
+                        "market": current_order.market,
+                        "side": current_order.side,
+                        "prev_order_id": current_order.order_id,
+                        "new_order_id": new_order.order_id,
+                        "intent_id": pending.intent.intent_id,
+                        "replace_count": pending.replace_count + 1,
+                        "reason_code": reason_code,
+                        "new_price": float(new_price),
+                        "new_volume": float(remaining_volume),
+                    },
+                }
+            )
+            market_window.append(int(event.ts_ms))
 
             if new_order.state in {"OPEN", "PARTIAL"}:
                 self._activate_pending(
                     intent=reprice_intent,
                     order_id=new_order.order_id,
-                    attempts=pending.attempts + 1,
+                    replace_count=pending.replace_count + 1,
                     ts_ms=event.ts_ms,
+                    created_ts_ms=pending.created_ts_ms,
+                    profile=pending.profile,
                 )
             elif new_order.state == "FAILED":
                 update.failed_markets.append(reprice_intent.market)
@@ -471,21 +611,35 @@ class PaperExecutionGateway:
 
             if new_fill is not None:
                 update.fills.append(new_fill)
-                current = self._exchange.get_order(new_fill.order_id)
-                if current is not None:
-                    update.orders_filled.append(current)
+                latest = self._exchange.get_order(new_fill.order_id)
+                if latest is not None:
+                    update.orders_filled.append(latest)
                 update.success_markets.append(reprice_intent.market)
                 self._clear_pending(intent_id)
 
         return update
 
-    def _activate_pending(self, *, intent: OrderIntent, order_id: str, attempts: int, ts_ms: int) -> None:
-        timeout_ts_ms = int(ts_ms) + self._order_timeout_ms
+    def _activate_pending(
+        self,
+        *,
+        intent: OrderIntent,
+        order_id: str,
+        replace_count: int,
+        ts_ms: int,
+        created_ts_ms: int,
+        profile: OrderExecProfile,
+    ) -> None:
+        initial_ref_price = _safe_optional_float(intent.meta.get("initial_ref_price")) if isinstance(intent.meta, dict) else None
         self._pending_by_intent[intent.intent_id] = _PendingIntent(
             intent=intent,
             order_id=order_id,
-            attempts=attempts,
-            timeout_ts_ms=timeout_ts_ms,
+            replace_count=max(int(replace_count), 0),
+            created_ts_ms=int(created_ts_ms),
+            last_action_ts_ms=int(ts_ms),
+            last_replace_ts_ms=int(ts_ms),
+            initial_ref_price=float(initial_ref_price if initial_ref_price is not None else intent.price),
+            profile=profile,
+            market=intent.market.strip().upper(),
         )
         self._intent_by_order_id[order_id] = intent.intent_id
 
@@ -493,6 +647,12 @@ class PaperExecutionGateway:
         pending = self._pending_by_intent.pop(intent_id, None)
         if pending is not None:
             self._intent_by_order_id.pop(pending.order_id, None)
+
+    def _trim_replace_window(self, *, market: str, now_ts_ms: int) -> None:
+        queue = self._replace_window_by_market.setdefault(market, deque())
+        cutoff = int(now_ts_ms) - 60_000
+        while queue and int(queue[0]) < cutoff:
+            queue.popleft()
 
 class PaperRunEngine:
     def __init__(
@@ -521,11 +681,20 @@ class PaperRunEngine:
             "orders_submitted": 0,
             "orders_filled": 0,
             "orders_canceled": 0,
+            "cancels_total": 0,
+            "replaces_total": 0,
+            "aborted_timeout_total": 0,
+            "dust_abort_total": 0,
             "intents_failed": 0,
             "candidates_total": 0,
             "candidates_blocked_by_micro": 0,
+            "candidates_aborted_by_policy": 0,
             "micro_blocked_reasons": {},
+            "micro_policy_tier_counts": {},
+            "micro_policy_fallback_counts": {},
+            "order_supervisor_reasons": {},
         }
+        self._runtime_state: dict[str, Any] = {}
 
     async def run(self) -> PaperRunSummary:
         quote = self._run_settings.quote.strip().upper()
@@ -535,10 +704,24 @@ class PaperRunEngine:
             "orders_submitted": 0,
             "orders_filled": 0,
             "orders_canceled": 0,
+            "cancels_total": 0,
+            "replaces_total": 0,
+            "aborted_timeout_total": 0,
+            "dust_abort_total": 0,
             "intents_failed": 0,
             "candidates_total": 0,
             "candidates_blocked_by_micro": 0,
+            "candidates_aborted_by_policy": 0,
             "micro_blocked_reasons": {},
+            "micro_policy_tier_counts": {},
+            "micro_policy_fallback_counts": {},
+            "order_supervisor_reasons": {},
+        }
+        self._runtime_state = {
+            "intent_context": {},
+            "filled_intents": set(),
+            "time_to_fill_ms": [],
+            "slippage_bps": [],
         }
 
         markets = self._market_loader(quote)
@@ -559,6 +742,11 @@ class PaperRunEngine:
             )
         )
         micro_gate = MicroGateV1(self._run_settings.micro_gate) if self._run_settings.micro_gate.enabled else None
+        micro_order_policy = (
+            MicroOrderPolicyV1(self._run_settings.micro_order_policy)
+            if self._run_settings.micro_order_policy.enabled
+            else None
+        )
         micro_snapshot_provider = self._resolve_micro_snapshot_provider(markets=markets)
         trade_gate = TradeGateV1(
             GateSettings(
@@ -581,6 +769,12 @@ class PaperRunEngine:
             order_timeout_sec=self._run_settings.order_timeout_sec,
             reprice_max_attempts=self._run_settings.reprice_max_attempts,
             reprice_tick_steps=self._run_settings.reprice_tick_steps,
+            default_profile=_legacy_paper_exec_profile(self._run_settings),
+            max_replaces_per_min_per_market=(
+                self._run_settings.micro_order_policy.safety.max_replaces_per_min_per_market
+                if self._run_settings.micro_order_policy.enabled
+                else 10
+            ),
         )
 
         events_count = 0
@@ -590,6 +784,7 @@ class PaperRunEngine:
         intents_failed = 0
         candidates_total = 0
         candidates_blocked_by_micro = 0
+        candidates_aborted_by_policy = 0
         equity_curve: list[float] = []
         realized_trade_pnls: list[float] = []
         received_events = 0
@@ -614,6 +809,9 @@ class PaperRunEngine:
                     "top_n": self._run_settings.top_n,
                     "duration_sec": self._run_settings.duration_sec,
                     "markets_subscribed": len(markets),
+                    "micro_order_policy_enabled": bool(self._run_settings.micro_order_policy.enabled),
+                    "micro_order_policy_mode": str(self._run_settings.micro_order_policy.mode),
+                    "micro_order_policy_on_missing": str(self._run_settings.micro_order_policy.on_missing),
                 },
             )
 
@@ -639,6 +837,7 @@ class PaperRunEngine:
                 intents_failed = int(self._runtime_counters["intents_failed"])
                 candidates_total = int(self._runtime_counters["candidates_total"])
                 candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
+                candidates_aborted_by_policy = int(self._runtime_counters["candidates_aborted_by_policy"])
 
                 if market_has_ask_fill:
                     realized_after = exchange.total_realized_pnl()
@@ -665,6 +864,8 @@ class PaperRunEngine:
                         market_data=market_data,
                         candidate_generator=candidate_generator,
                         trade_gate=trade_gate,
+                        micro_order_policy=micro_order_policy,
+                        micro_snapshot_provider=micro_snapshot_provider,
                         exchange=exchange,
                         execution=execution,
                         event_store=store,
@@ -676,6 +877,7 @@ class PaperRunEngine:
                     intents_failed = int(self._runtime_counters["intents_failed"])
                     candidates_total = int(self._runtime_counters["candidates_total"])
                     candidates_blocked_by_micro = int(self._runtime_counters["candidates_blocked_by_micro"])
+                    candidates_aborted_by_policy = int(self._runtime_counters["candidates_aborted_by_policy"])
                     next_decision_at = now_monotonic + max(self._run_settings.decision_interval_sec, 0.2)
 
                 if now_monotonic >= next_report_at:
@@ -706,16 +908,29 @@ class PaperRunEngine:
                     "intents_failed": intents_failed,
                     "candidates_total": candidates_total,
                     "candidates_blocked_by_micro": candidates_blocked_by_micro,
+                    "candidates_aborted_by_policy": candidates_aborted_by_policy,
                     "micro_blocked_reasons": dict(self._runtime_counters.get("micro_blocked_reasons", {})),
+                    "micro_policy_tier_counts": dict(self._runtime_counters.get("micro_policy_tier_counts", {})),
+                    "micro_policy_fallback_counts": dict(
+                        self._runtime_counters.get("micro_policy_fallback_counts", {})
+                    ),
+                    "order_supervisor_reasons": dict(self._runtime_counters.get("order_supervisor_reasons", {})),
                 },
             )
 
-        fill_rate = (orders_filled / orders_submitted) if orders_submitted > 0 else 0.0
+        fill_ratio = (orders_filled / orders_submitted) if orders_submitted > 0 else 0.0
+        fill_rate = fill_ratio
         micro_blocked_reasons = _normalize_reason_counts(self._runtime_counters.get("micro_blocked_reasons", {}))
         micro_blocked_ratio = (candidates_blocked_by_micro / candidates_total) if candidates_total > 0 else 0.0
         max_drawdown_pct = _max_drawdown_pct(equity_curve)
         wins = sum(1 for pnl in realized_trade_pnls if pnl > 0)
         win_rate = (wins / len(realized_trade_pnls)) if realized_trade_pnls else 0.0
+        ttf_values = [float(value) for value in self._runtime_state.get("time_to_fill_ms", [])]
+        slippage_values = [float(value) for value in self._runtime_state.get("slippage_bps", [])]
+        replaces_total = int(self._runtime_counters.get("replaces_total", 0))
+        cancels_total = int(self._runtime_counters.get("cancels_total", 0))
+        aborted_timeout_total = int(self._runtime_counters.get("aborted_timeout_total", 0))
+        dust_abort_total = int(self._runtime_counters.get("dust_abort_total", 0))
 
         summary = PaperRunSummary(
             run_id=run_id,
@@ -728,8 +943,20 @@ class PaperRunEngine:
             intents_failed=intents_failed,
             candidates_total=candidates_total,
             candidates_blocked_by_micro=candidates_blocked_by_micro,
+            candidates_aborted_by_policy=candidates_aborted_by_policy,
             micro_blocked_ratio=micro_blocked_ratio,
             micro_blocked_reasons=micro_blocked_reasons,
+            replaces_total=replaces_total,
+            cancels_total=cancels_total,
+            aborted_timeout_total=aborted_timeout_total,
+            dust_abort_total=dust_abort_total,
+            avg_time_to_fill_ms=mean(ttf_values),
+            p50_time_to_fill_ms=percentile(ttf_values, 0.50),
+            p90_time_to_fill_ms=percentile(ttf_values, 0.90),
+            slippage_bps_mean=mean(slippage_values),
+            slippage_bps_p50=percentile(slippage_values, 0.50),
+            slippage_bps_p90=percentile(slippage_values, 0.90),
+            fill_ratio=fill_ratio,
             fill_rate=fill_rate,
             realized_pnl_quote=final_snapshot.realized_pnl_quote,
             unrealized_pnl_quote=final_snapshot.unrealized_pnl_quote,
@@ -746,6 +973,29 @@ class PaperRunEngine:
                 "reasons": micro_blocked_reasons,
             },
         )
+        _write_json(
+            path=run_root / "micro_order_policy_report.json",
+            payload={
+                "enabled": bool(self._run_settings.micro_order_policy.enabled),
+                "mode": str(self._run_settings.micro_order_policy.mode),
+                "on_missing": str(self._run_settings.micro_order_policy.on_missing),
+                "tiers": _normalize_reason_counts(self._runtime_counters.get("micro_policy_tier_counts", {})),
+                "fallback_reasons": _normalize_reason_counts(
+                    self._runtime_counters.get("micro_policy_fallback_counts", {})
+                ),
+                "replace_reasons": _normalize_reason_counts(self._runtime_counters.get("order_supervisor_reasons", {})),
+                "replaces_total": replaces_total,
+                "cancels_total": cancels_total,
+                "aborted_timeout_total": aborted_timeout_total,
+                "dust_abort_total": dust_abort_total,
+                "avg_time_to_fill_ms": mean(ttf_values),
+                "p50_time_to_fill_ms": percentile(ttf_values, 0.50),
+                "p90_time_to_fill_ms": percentile(ttf_values, 0.90),
+                "slippage_bps_mean": mean(slippage_values),
+                "slippage_bps_p50": percentile(slippage_values, 0.50),
+                "slippage_bps_p90": percentile(slippage_values, 0.90),
+            },
+        )
         return summary
 
     def _run_candidate_cycle(
@@ -757,6 +1007,8 @@ class PaperRunEngine:
         market_data: MarketDataHub,
         candidate_generator: CandidateGeneratorV1,
         trade_gate: TradeGateV1,
+        micro_order_policy: MicroOrderPolicyV1 | None,
+        micro_snapshot_provider: MicroSnapshotProvider | None,
         exchange: PaperSimExchange,
         execution: PaperExecutionGateway,
         event_store: JsonlEventStore,
@@ -812,6 +1064,8 @@ class PaperRunEngine:
                 latest_trade_price=latest_trade_price,
                 market_data=market_data,
                 trade_gate=trade_gate,
+                micro_order_policy=micro_order_policy,
+                micro_snapshot_provider=micro_snapshot_provider,
                 exchange=exchange,
                 execution=execution,
                 event_store=event_store,
@@ -827,6 +1081,8 @@ class PaperRunEngine:
         latest_trade_price: float,
         market_data: MarketDataHub,
         trade_gate: TradeGateV1,
+        micro_order_policy: MicroOrderPolicyV1 | None,
+        micro_snapshot_provider: MicroSnapshotProvider | None,
         exchange: PaperSimExchange,
         execution: PaperExecutionGateway,
         event_store: JsonlEventStore,
@@ -842,22 +1098,22 @@ class PaperRunEngine:
             reference_price=candidate.ref_price,
             ts_ms=ts_ms,
         )
-        limit_price = round_price_to_tick(
+        gate_price = round_price_to_tick(
             price=max(candidate.ref_price, ticker.trade_price),
             tick_size=rules.tick_size,
             side=candidate.proposed_side,
         )
-        volume = order_volume_from_notional(
+        gate_volume = order_volume_from_notional(
             notional_quote=self._run_settings.per_trade_krw,
-            price=limit_price,
+            price=gate_price,
         )
         fee_rate = rules.fee_rate(side=candidate.proposed_side, maker_or_taker="taker")
         decision = trade_gate.evaluate(
             ts_ms=ts_ms,
             market=candidate.market,
             side=candidate.proposed_side,
-            price=limit_price,
-            volume=volume,
+            price=gate_price,
+            volume=gate_volume,
             fee_rate=fee_rate,
             exchange=exchange,
             min_total_krw=rules.min_total,
@@ -901,6 +1157,72 @@ class PaperRunEngine:
                 },
             )
 
+        policy_decision = None
+        exec_profile = _legacy_paper_exec_profile(self._run_settings)
+        policy_diagnostics: dict[str, Any] = {}
+        if micro_order_policy is not None:
+            snapshot = (
+                micro_snapshot_provider.get(candidate.market, int(ts_ms))
+                if micro_snapshot_provider is not None
+                else None
+            )
+            policy_decision = micro_order_policy.evaluate(micro_snapshot=snapshot)
+            policy_diagnostics = dict(policy_decision.diagnostics or {})
+            if not policy_decision.allow:
+                self._runtime_counters["candidates_aborted_by_policy"] = int(
+                    self._runtime_counters.get("candidates_aborted_by_policy", 0)
+                ) + 1
+                _note_reason_count(
+                    reason_code=str(policy_decision.reason_code),
+                    reason_counts=self._runtime_counters.setdefault("micro_policy_fallback_counts", {}),
+                )
+                append_event(
+                    "MICRO_ORDER_POLICY_ABORT",
+                    ts_ms=ts_ms,
+                    payload={
+                        "market": candidate.market,
+                        "side": candidate.proposed_side,
+                        "reason_code": policy_decision.reason_code,
+                        "detail": policy_decision.detail,
+                        "diagnostics": policy_diagnostics,
+                    },
+                )
+                return False
+            if policy_decision.profile is not None:
+                exec_profile = policy_decision.profile
+            tier_code = str(policy_decision.tier or "NONE").strip().upper() or "NONE"
+            _note_reason_count(
+                reason_code=tier_code,
+                reason_counts=self._runtime_counters.setdefault("micro_policy_tier_counts", {}),
+            )
+            if str(policy_decision.reason_code).strip().upper() == REASON_MICRO_MISSING_FALLBACK:
+                _note_reason_count(
+                    reason_code=REASON_MICRO_MISSING_FALLBACK,
+                    reason_counts=self._runtime_counters.setdefault("micro_policy_fallback_counts", {}),
+                )
+
+        ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
+        limit_price = build_limit_price_from_mode(
+            side=candidate.proposed_side,
+            ref_price=ref_price,
+            tick_size=rules.tick_size,
+            price_mode=exec_profile.price_mode,
+        )
+        volume = order_volume_from_notional(
+            notional_quote=self._run_settings.per_trade_krw,
+            price=limit_price,
+        )
+        profile_payload = order_exec_profile_to_dict(exec_profile)
+        policy_payload = {
+            "enabled": bool(micro_order_policy is not None),
+            "tier": str(policy_decision.tier) if policy_decision is not None and policy_decision.tier is not None else None,
+            "reason_code": (
+                str(policy_decision.reason_code)
+                if policy_decision is not None
+                else "POLICY_DISABLED"
+            ),
+        }
+
         intent = new_order_intent(
             market=candidate.market,
             side=candidate.proposed_side,
@@ -916,9 +1238,23 @@ class PaperRunEngine:
                 "min_total": rules.min_total,
                 "gate_severity": decision.severity,
                 "gate_reasons": list(decision.gate_reasons),
+                "exec_profile": profile_payload,
+                "initial_ref_price": ref_price,
+                "micro_order_policy": policy_payload,
+                "micro_diagnostics": policy_diagnostics,
             },
             ts_ms=ts_ms,
         )
+        intent_context = self._runtime_state.setdefault("intent_context", {})
+        if isinstance(intent_context, dict) and intent.intent_id not in intent_context:
+            intent_context[intent.intent_id] = {
+                "first_submit_ts_ms": int(ts_ms),
+                "initial_ref_price": float(ref_price),
+                "side": intent.side,
+                "exec_profile": profile_payload,
+                "micro_diagnostics": policy_diagnostics,
+                "micro_order_policy": policy_payload,
+            }
         append_event("INTENT_CREATED", ts_ms=ts_ms, payload=asdict(intent))
 
         update = execution.submit_intent(intent=intent, latest_trade_price=latest_trade_price, ts_ms=ts_ms)
@@ -943,13 +1279,28 @@ class PaperRunEngine:
         counters: dict[str, Any],
     ) -> bool:
         has_ask_fill = False
+        intent_context = self._runtime_state.setdefault("intent_context", {})
+        filled_intents = self._runtime_state.setdefault("filled_intents", set())
+        time_to_fill_ms = self._runtime_state.setdefault("time_to_fill_ms", [])
+        slippage_values = self._runtime_state.setdefault("slippage_bps", [])
+        order_by_id = {order.order_id: order for order in update.orders_filled}
 
         for order in update.orders_submitted:
             event_store.append_order(order)
+            payload = asdict(order)
+            if isinstance(intent_context, dict):
+                context = intent_context.get(order.intent_id)
+                if isinstance(context, dict):
+                    exec_profile = context.get("exec_profile")
+                    diagnostics = context.get("micro_diagnostics")
+                    policy = context.get("micro_order_policy")
+                    payload["exec_profile"] = dict(exec_profile) if isinstance(exec_profile, dict) else {}
+                    payload["micro_diagnostics"] = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+                    payload["micro_order_policy"] = dict(policy) if isinstance(policy, dict) else {}
             append_event(
                 "ORDER_SUBMITTED",
                 ts_ms=order.updated_ts_ms,
-                payload=asdict(order),
+                payload=payload,
             )
             counters["orders_submitted"] += 1
 
@@ -961,16 +1312,59 @@ class PaperRunEngine:
                 payload=asdict(order),
             )
             counters["orders_canceled"] += 1
+            counters["cancels_total"] = int(counters.get("cancels_total", 0)) + 1
+
+        for item in update.supervisor_events:
+            event_type = str(item.get("event_type", "")).strip().upper()
+            ts_value = int(item.get("ts_ms", ts_ms))
+            payload = item.get("payload")
+            append_event(event_type, ts_ms=ts_value, payload=payload if isinstance(payload, dict) else {})
+
+        for key, delta in update.counter_deltas.items():
+            counters[key] = int(counters.get(key, 0)) + int(delta)
+
+        reason_counts = counters.setdefault("order_supervisor_reasons", {})
+        if isinstance(reason_counts, dict):
+            for reason, count in update.reason_counts.items():
+                _note_reason_count(reason_code=reason, reason_counts=reason_counts, delta=int(count))
 
         for fill in update.fills:
             event_store.append_fill(fill)
             append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=asdict(fill))
             counters["orders_filled"] += 1
+            order = order_by_id.get(fill.order_id)
+            if order is not None and isinstance(intent_context, dict):
+                context = intent_context.get(order.intent_id)
+                if isinstance(context, dict):
+                    ref_price = _safe_optional_float(context.get("initial_ref_price"))
+                    if ref_price is not None and ref_price > 0:
+                        slip = slippage_bps(
+                            side=order.side,
+                            fill_price=fill.price,
+                            ref_price=ref_price,
+                        )
+                        if slip is not None:
+                            slippage_values.append(float(slip))
 
         for order in update.orders_filled:
             event_store.append_order(order)
             if order.side == "ask":
                 has_ask_fill = True
+            if (
+                str(order.state).strip().upper() == "FILLED"
+                and isinstance(filled_intents, set)
+                and order.intent_id not in filled_intents
+                and isinstance(intent_context, dict)
+            ):
+                context = intent_context.get(order.intent_id)
+                if isinstance(context, dict):
+                    first_submit_ts = int(context.get("first_submit_ts_ms", order.created_ts_ms))
+                else:
+                    first_submit_ts = int(order.created_ts_ms)
+                elapsed_ms = max(int(order.updated_ts_ms) - first_submit_ts, 0)
+                if isinstance(time_to_fill_ms, list):
+                    time_to_fill_ms.append(float(elapsed_ms))
+                filled_intents.add(order.intent_id)
 
         for market in update.success_markets:
             trade_gate.record_success(market)
@@ -1005,7 +1399,7 @@ class PaperRunEngine:
 
     def _resolve_micro_snapshot_provider(self, *, markets: list[str]) -> MicroSnapshotProvider | None:
         cfg = self._run_settings.micro_gate
-        if not cfg.enabled:
+        if not (cfg.enabled or self._run_settings.micro_order_policy.enabled):
             return None
         if self._micro_snapshot_provider is not None:
             return self._micro_snapshot_provider
@@ -1054,6 +1448,33 @@ def _note_micro_block(*, reasons: tuple[str, ...], reason_counts: dict[str, Any]
         if not _is_micro_reason(reason):
             continue
         reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+
+
+def _counter_inc(counter: dict[str, int], key: str, delta: int = 1) -> None:
+    counter[str(key)] = int(counter.get(str(key), 0)) + int(delta)
+
+
+def _reason_inc(reason_counts: dict[str, int], reason: str, delta: int = 1) -> None:
+    _note_reason_count(reason_code=reason, reason_counts=reason_counts, delta=delta)
+
+
+def _note_reason_count(*, reason_code: str, reason_counts: dict[str, Any], delta: int = 1) -> None:
+    reason = str(reason_code).strip().upper()
+    if not reason:
+        return
+    reason_counts[reason] = int(reason_counts.get(reason, 0)) + int(delta)
+
+
+def _legacy_paper_exec_profile(settings: PaperRunSettings) -> OrderExecProfile:
+    timeout_ms = max(int(float(settings.order_timeout_sec) * 1000), 1_000)
+    return make_legacy_exec_profile(
+        timeout_ms=timeout_ms,
+        replace_interval_ms=timeout_ms,
+        max_replaces=max(int(settings.reprice_max_attempts), 0),
+        price_mode=PRICE_MODE_JOIN,
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1_500,
+    )
 
 
 def _normalize_reason_counts(value: Any) -> dict[str, int]:

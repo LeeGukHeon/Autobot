@@ -33,3 +33,35 @@
         max_per_min: 3
         backoff_base_sec: 1
         backoff_max_sec: 32
+  micro_order_policy:
+    enabled: false
+    mode: trade_only
+    on_missing: static_fallback
+    tiering:
+      w_notional: 1.0
+      w_events: 0.5
+      t1: 6.0
+      t2: 9.0
+    tiers:
+      LOW:
+        timeout_ms: 120000
+        replace_interval_ms: 60000
+        max_replaces: 1
+        price_mode: PASSIVE_MAKER
+        max_chase_bps: 10
+      MID:
+        timeout_ms: 45000
+        replace_interval_ms: 15000
+        max_replaces: 3
+        price_mode: JOIN
+        max_chase_bps: 15
+      HIGH:
+        timeout_ms: 15000
+        replace_interval_ms: 5000
+        max_replaces: 5
+        price_mode: CROSS_1T
+        max_chase_bps: 20
+    safety:
+      min_replace_interval_ms_global: 1500
+      max_replaces_per_min_per_market: 10
+      forbid_post_only_with_cross: true
