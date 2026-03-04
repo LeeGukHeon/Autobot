@@ -273,7 +273,7 @@ def _scan_market_frame(
     for col in feature_columns:
         if col not in names:
             raise ValueError(f"feature column missing in {market}: {col}")
-        expressions.append(pl.col(col).cast(pl.Float32).alias(col))
+        expressions.append(_feature_to_float_expr(col, schema=schema))
     expressions.append(pl.col("y_cls").cast(pl.Int8).alias("y_cls"))
     if "y_reg" in names:
         expressions.append(pl.col("y_reg").cast(pl.Float32).alias("y_reg"))
@@ -299,7 +299,45 @@ def _market_files(dataset_root: Path, tf: str, market: str) -> list[Path]:
     legacy = market_dir / "part.parquet"
     if legacy.exists():
         return [legacy]
+    nested: list[Path] = []
+    for date_dir in sorted(market_dir.glob("date=*")):
+        if not date_dir.is_dir():
+            continue
+        nested.extend(path for path in sorted(date_dir.glob("*.parquet")) if path.is_file())
+    if nested:
+        return nested
     return []
+
+
+def _feature_to_float_expr(column: str, *, schema: Any) -> pl.Expr:
+    dtype = schema.get(column)
+    if dtype == pl.Boolean:
+        return pl.col(column).cast(pl.Int8).cast(pl.Float32).alias(column)
+    if dtype in {
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+        pl.Float32,
+        pl.Float64,
+    }:
+        return pl.col(column).cast(pl.Float32).alias(column)
+    if column == "m_trade_source":
+        source = pl.col(column).cast(pl.Utf8).str.to_lowercase()
+        return (
+            pl.when(source == "ws")
+            .then(2.0)
+            .when(source == "rest")
+            .then(1.0)
+            .otherwise(0.0)
+            .cast(pl.Float32)
+            .alias(column)
+        )
+    return pl.col(column).cast(pl.Float32, strict=False).alias(column)
 
 
 def _load_json(path: Path) -> dict[str, Any]:

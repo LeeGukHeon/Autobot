@@ -51,12 +51,18 @@ from .data.micro import (
 )
 from .features import (
     FeatureBuildOptions,
+    FeatureBuildV2Options,
     FeatureValidateOptions,
+    FeatureValidateV2Options,
     build_features_dataset,
+    build_features_dataset_v2,
     features_stats,
+    features_stats_v2,
     load_features_config,
+    load_features_v2_config,
     sample_features,
     validate_features_dataset,
+    validate_features_dataset_v2,
 )
 from .live import (
     LiveDaemonSettings,
@@ -69,12 +75,19 @@ from .live import (
 )
 from .paper import PaperRunSettings, run_live_paper_sync
 from .models import (
+    AblationOptions,
+    MetricAuditOptions,
     TrainRunOptions,
-    evaluate_registered_model,
+    TrainV2MicroOptions,
+    audit_registered_model,
+    compare_registered_models,
+    evaluate_registered_model_window,
     list_registered_models,
     load_train_defaults,
+    run_ablation,
     show_registered_model,
     train_and_register,
+    train_and_register_v2_micro,
 )
 from .strategy import TopTradeValueScanner
 from .upbit import (
@@ -362,15 +375,27 @@ def build_parser() -> argparse.ArgumentParser:
     features_parser = subparsers.add_parser("features", help="Feature store operations.")
     features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
 
-    features_build_parser = features_subparsers.add_parser("build", help="Build features_v1 dataset.")
+    features_build_parser = features_subparsers.add_parser("build", help="Build features dataset (v1/v2).")
     features_build_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
     features_build_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_build_parser.add_argument("--top-n", type=int, help="Universe size")
     features_build_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     features_build_parser.add_argument("--end", help="End date YYYY-MM-DD")
-    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1",))
+    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
     features_build_parser.add_argument("--label-set", default="v1", choices=("v1",))
     features_build_parser.add_argument("--workers", type=int, default=1)
+    features_build_parser.add_argument("--base-candles", help="Base candles dataset/path for v2, ex: auto|candles_api_v1")
+    features_build_parser.add_argument("--micro-dataset", help="Micro dataset/path for v2, ex: micro_v1")
+    features_build_parser.add_argument("--require-micro", help="Require m_micro_available for v2 (true|false)")
+    features_build_parser.add_argument("--min-trade-events", type=int, help="v2 micro filter threshold")
+    features_build_parser.add_argument("--min-trade-coverage-ms", type=int, help="v2 micro filter threshold")
+    features_build_parser.add_argument("--min-book-events", type=int, help="v2 micro filter threshold")
+    features_build_parser.add_argument("--min-book-coverage-ms", type=int, help="v2 micro filter threshold")
+    features_build_parser.add_argument(
+        "--use-precomputed-features-v1",
+        help="Use existing features_v1 for mode B in v2 (true|false)",
+    )
+    features_build_parser.add_argument("--dry-run", default="false", help="v2 preflight-only run (true|false)")
     features_build_parser.add_argument(
         "--fail-on-warn",
         default="false",
@@ -381,6 +406,9 @@ def build_parser() -> argparse.ArgumentParser:
     features_validate_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
     features_validate_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_validate_parser.add_argument("--top-n", type=int, help="Universe size")
+    features_validate_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
+    features_validate_parser.add_argument("--join-match-warn", type=float, help="v2 join match warn threshold")
+    features_validate_parser.add_argument("--join-match-fail", type=float, help="v2 join match fail threshold")
 
     features_sample_parser = features_subparsers.add_parser("sample", help="Print feature rows for one market.")
     features_sample_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
@@ -391,17 +419,19 @@ def build_parser() -> argparse.ArgumentParser:
     features_stats_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
     features_stats_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_stats_parser.add_argument("--top-n", type=int, help="Universe size")
+    features_stats_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
 
     model_parser = subparsers.add_parser("model", help="Model training and registry operations.")
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
     model_train_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     model_train_parser.add_argument("--end", help="End date YYYY-MM-DD")
-    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1",))
+    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2"))
     model_train_parser.add_argument("--label-set", default="v1", choices=("v1",))
     model_train_parser.add_argument("--task", default="cls", choices=("cls",))
     model_train_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
@@ -424,6 +454,37 @@ def build_parser() -> argparse.ArgumentParser:
     model_show_parser = model_subparsers.add_parser("show", help="Show model run details.")
     model_show_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
     model_show_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
+
+    model_compare_parser = model_subparsers.add_parser("compare", help="Compare two registered models on same window.")
+    model_compare_parser.add_argument("--a", required=True, help="Model ref A, ex: latest_v1")
+    model_compare_parser.add_argument("--b", required=True, help="Model ref B, ex: latest_v2")
+    model_compare_parser.add_argument("--a-family", help="Optional model family for A")
+    model_compare_parser.add_argument("--b-family", help="Optional model family for B")
+    model_compare_parser.add_argument("--split", default="test", choices=("train", "valid", "test"))
+    model_compare_parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    model_compare_parser.add_argument("--end", help="End date YYYY-MM-DD")
+
+    model_audit_parser = model_subparsers.add_parser("audit", help="Audit registered model metrics against sklearn.")
+    model_audit_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
+    model_audit_parser.add_argument("--model-family", help="Registry family, ex: train_v2_micro")
+    model_audit_parser.add_argument("--split", default="test", choices=("train", "valid", "test"))
+    model_audit_parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    model_audit_parser.add_argument("--end", help="End date YYYY-MM-DD")
+    model_audit_parser.add_argument("--tolerance-warn", type=float, default=1e-6)
+    model_audit_parser.add_argument("--tolerance-fail", type=float, default=1e-3)
+
+    model_ablate_parser = model_subparsers.add_parser("ablate", help="Run A0~A4 feature ablations on v2 dataset.")
+    model_ablate_parser.add_argument("--feature-set", default="v2", choices=("v2",))
+    model_ablate_parser.add_argument("--tf", help="Timeframe, ex: 5m")
+    model_ablate_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    model_ablate_parser.add_argument("--top-n", type=int, help="Universe size")
+    model_ablate_parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    model_ablate_parser.add_argument("--end", help="End date YYYY-MM-DD")
+    model_ablate_parser.add_argument("--label-set", default="v1", choices=("v1",))
+    model_ablate_parser.add_argument("--ablations", default="A0,A1,A2,A3,A4", help="Comma list, ex: A0,A1,A2,A3,A4")
+    model_ablate_parser.add_argument("--booster-sweep-trials", type=int, default=30)
+    model_ablate_parser.add_argument("--seed", type=int)
+    model_ablate_parser.add_argument("--nthread", type=int)
 
     upbit_parser = subparsers.add_parser("upbit", help="Upbit REST smoke tests.")
     upbit_subparsers = upbit_parser.add_subparsers(dest="upbit_scope", required=True)
@@ -1174,90 +1235,233 @@ def _handle_micro_command(args: argparse.Namespace, config_dir: Path, base_confi
 
 
 def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
-    features_config = load_features_config(config_dir, base_config=base_config)
+    try:
+        feature_set = str(getattr(args, "feature_set", "v1")).strip().lower()
 
-    if args.features_command == "build":
-        options = FeatureBuildOptions(
-            tf=str(args.tf).strip().lower(),
-            quote=(str(args.quote).strip().upper() if args.quote else None),
-            top_n=args.top_n,
-            start=args.start,
-            end=args.end,
-            feature_set=str(args.feature_set).strip().lower(),
-            label_set=str(args.label_set).strip().lower(),
-            workers=max(int(args.workers), 1),
-            fail_on_warn=_parse_bool_arg(args.fail_on_warn, default=False),
-        )
-        summary = build_features_dataset(features_config, options)
-        print(
-            "[features][build] "
-            f"discovered={summary.discovered_markets} selected={len(summary.selected_markets)} "
-            f"processed={summary.processed_markets} ok={summary.ok_markets} "
-            f"warn={summary.warn_markets} fail={summary.fail_markets}"
-        )
-        print(f"[features][build] rows_total={summary.rows_total} min_ts_ms={summary.min_ts_ms} max_ts_ms={summary.max_ts_ms}")
-        print(f"[features][build] output={summary.output_path}")
-        print(f"[features][build] manifest={summary.manifest_file}")
-        print(f"[features][build] report={summary.build_report_file}")
-        code = 2 if summary.fail_markets > 0 else 0
-        if options.fail_on_warn and summary.warn_markets > 0:
-            code = 2
-        return code
+        if args.features_command == "build":
+            if feature_set == "v2":
+                features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
+                options_v2 = FeatureBuildV2Options(
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                    start=args.start,
+                    end=args.end,
+                    feature_set=feature_set,
+                    label_set=str(args.label_set).strip().lower(),
+                    workers=max(int(args.workers), 1),
+                    fail_on_warn=_parse_bool_arg(args.fail_on_warn, default=False),
+                    dry_run=_parse_bool_arg(args.dry_run, default=False),
+                    base_candles=(str(args.base_candles).strip() if args.base_candles else None),
+                    micro_dataset=(str(args.micro_dataset).strip() if args.micro_dataset else None),
+                    require_micro=(
+                        _parse_bool_arg(args.require_micro, default=True) if args.require_micro is not None else None
+                    ),
+                    min_trade_events=args.min_trade_events,
+                    min_trade_coverage_ms=args.min_trade_coverage_ms,
+                    min_book_events=args.min_book_events,
+                    min_book_coverage_ms=args.min_book_coverage_ms,
+                    use_precomputed_features_v1=(
+                        _parse_bool_arg(args.use_precomputed_features_v1, default=False)
+                        if args.use_precomputed_features_v1 is not None
+                        else None
+                    ),
+                )
+                summary_v2 = build_features_dataset_v2(features_v2_config, options_v2)
+                print(
+                    "[features][build][v2] "
+                    f"discovered={summary_v2.discovered_markets} selected={len(summary_v2.selected_markets)} "
+                    f"processed={summary_v2.processed_markets} ok={summary_v2.ok_markets} "
+                    f"warn={summary_v2.warn_markets} fail={summary_v2.fail_markets}"
+                )
+                print(
+                    f"[features][build][v2] rows_total={summary_v2.rows_total} "
+                    f"min_ts_ms={summary_v2.min_ts_ms} max_ts_ms={summary_v2.max_ts_ms}"
+                )
+                print(f"[features][build][v2] output={summary_v2.output_path}")
+                print(f"[features][build][v2] manifest={summary_v2.manifest_file}")
+                print(f"[features][build][v2] report={summary_v2.build_report_file}")
+                code = 2 if summary_v2.fail_markets > 0 else 0
+                if options_v2.fail_on_warn and summary_v2.warn_markets > 0:
+                    code = 2
+                return code
 
-    if args.features_command == "validate":
-        options = FeatureValidateOptions(
-            tf=str(args.tf).strip().lower(),
-            quote=(str(args.quote).strip().upper() if args.quote else None),
-            top_n=args.top_n,
-        )
-        summary = validate_features_dataset(features_config, options)
-        print(
-            "[features][validate] "
-            f"checked={summary.checked_files} ok={summary.ok_files} "
-            f"warn={summary.warn_files} fail={summary.fail_files}"
-        )
-        print(f"[features][validate] schema_ok={summary.schema_ok} null_ratio_overall={summary.null_ratio_overall:.6f}")
-        print(f"[features][validate] leakage_smoke={summary.leakage_smoke}")
-        print(f"[features][validate] report={summary.validate_report_file}")
-        if summary.fail_files > 0 or summary.leakage_smoke != "PASS":
-            return 2
-        return 0
+            features_config = load_features_config(config_dir, base_config=base_config)
+            options = FeatureBuildOptions(
+                tf=str(args.tf).strip().lower(),
+                quote=(str(args.quote).strip().upper() if args.quote else None),
+                top_n=args.top_n,
+                start=args.start,
+                end=args.end,
+                feature_set=feature_set,
+                label_set=str(args.label_set).strip().lower(),
+                workers=max(int(args.workers), 1),
+                fail_on_warn=_parse_bool_arg(args.fail_on_warn, default=False),
+            )
+            summary = build_features_dataset(features_config, options)
+            print(
+                "[features][build] "
+                f"discovered={summary.discovered_markets} selected={len(summary.selected_markets)} "
+                f"processed={summary.processed_markets} ok={summary.ok_markets} "
+                f"warn={summary.warn_markets} fail={summary.fail_markets}"
+            )
+            print(f"[features][build] rows_total={summary.rows_total} min_ts_ms={summary.min_ts_ms} max_ts_ms={summary.max_ts_ms}")
+            print(f"[features][build] output={summary.output_path}")
+            print(f"[features][build] manifest={summary.manifest_file}")
+            print(f"[features][build] report={summary.build_report_file}")
+            code = 2 if summary.fail_markets > 0 else 0
+            if options.fail_on_warn and summary.warn_markets > 0:
+                code = 2
+            return code
 
-    if args.features_command == "sample":
-        rows = sample_features(
-            features_config,
-            tf=str(args.tf).strip().lower(),
-            market=str(args.market).strip().upper(),
-            rows=max(int(args.rows), 0),
-        )
-        _print_json(rows)
-        return 0
+        if args.features_command == "validate":
+            if feature_set == "v2":
+                features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
+                options_v2 = FeatureValidateV2Options(
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                    join_match_warn=args.join_match_warn,
+                    join_match_fail=args.join_match_fail,
+                )
+                summary_v2 = validate_features_dataset_v2(features_v2_config, options_v2)
+                print(
+                    "[features][validate][v2] "
+                    f"checked={summary_v2.checked_files} ok={summary_v2.ok_files} "
+                    f"warn={summary_v2.warn_files} fail={summary_v2.fail_files}"
+                )
+                print(
+                    f"[features][validate][v2] schema_ok={summary_v2.schema_ok} "
+                    f"null_ratio_overall={summary_v2.null_ratio_overall:.6f}"
+                )
+                print(
+                    "[features][validate][v2] "
+                    f"join_match_ratio={summary_v2.join_match_ratio if summary_v2.join_match_ratio is not None else 'NA'} "
+                    f"micro_available_ratio={summary_v2.micro_available_ratio:.6f}"
+                )
+                print(f"[features][validate][v2] report={summary_v2.validate_report_file}")
+                return 2 if summary_v2.fail_files > 0 else 0
 
-    if args.features_command == "stats":
-        stats = features_stats(
-            features_config,
-            tf=str(args.tf).strip().lower(),
-            quote=(str(args.quote).strip().upper() if args.quote else None),
-            top_n=args.top_n,
-        )
-        _print_json(stats)
-        return 0
+            features_config = load_features_config(config_dir, base_config=base_config)
+            options = FeatureValidateOptions(
+                tf=str(args.tf).strip().lower(),
+                quote=(str(args.quote).strip().upper() if args.quote else None),
+                top_n=args.top_n,
+            )
+            summary = validate_features_dataset(features_config, options)
+            print(
+                "[features][validate] "
+                f"checked={summary.checked_files} ok={summary.ok_files} "
+                f"warn={summary.warn_files} fail={summary.fail_files}"
+            )
+            print(f"[features][validate] schema_ok={summary.schema_ok} null_ratio_overall={summary.null_ratio_overall:.6f}")
+            print(f"[features][validate] leakage_smoke={summary.leakage_smoke}")
+            print(f"[features][validate] report={summary.validate_report_file}")
+            if summary.fail_files > 0 or summary.leakage_smoke != "PASS":
+                return 2
+            return 0
 
-    raise ValueError(f"Unsupported features command: {args.features_command}")
+        if args.features_command == "sample":
+            features_config = load_features_config(config_dir, base_config=base_config)
+            rows = sample_features(
+                features_config,
+                tf=str(args.tf).strip().lower(),
+                market=str(args.market).strip().upper(),
+                rows=max(int(args.rows), 0),
+            )
+            _print_json(rows)
+            return 0
+
+        if args.features_command == "stats":
+            if feature_set == "v2":
+                features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
+                stats_v2 = features_stats_v2(
+                    features_v2_config,
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                )
+                _print_json(stats_v2)
+                return 0
+
+            features_config = load_features_config(config_dir, base_config=base_config)
+            stats = features_stats(
+                features_config,
+                tf=str(args.tf).strip().lower(),
+                quote=(str(args.quote).strip().upper() if args.quote else None),
+                top_n=args.top_n,
+            )
+            _print_json(stats)
+            return 0
+
+        raise ValueError(f"Unsupported features command: {args.features_command}")
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        print(f"[features][error] {exc}")
+        return 2
 
 
 def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
         defaults = load_train_defaults(config_dir, base_config=base_config)
         features_config = load_features_config(config_dir, base_config=base_config)
+        features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
         registry_root = Path(str(defaults["registry_root"]))
         logs_root = Path(str(defaults["logs_root"]))
-        model_family = str(getattr(args, "model_family", None) or defaults["model_family"]).strip()
-        if not model_family:
-            model_family = "train_v1"
 
         if args.model_command == "train":
+            trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer == "v2_micro":
+                model_family = str(getattr(args, "model_family", None) or "train_v2_micro").strip() or "train_v2_micro"
+                options_v2 = TrainV2MicroOptions(
+                    dataset_root=features_v2_config.output_dataset_root,
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=model_family,
+                    tf=str(args.tf or defaults["tf"]).strip().lower(),
+                    quote=str(args.quote or defaults["quote"]).strip().upper(),
+                    top_n=max(top_n, 1),
+                    start=str(args.start or defaults["start"]).strip(),
+                    end=str(args.end or defaults["end"]).strip(),
+                    feature_set=str(args.feature_set).strip().lower(),
+                    label_set=str(args.label_set).strip().lower(),
+                    task=str(args.task or defaults["task"]).strip().lower(),
+                    booster_sweep_trials=int(
+                        args.booster_sweep_trials
+                        if args.booster_sweep_trials is not None
+                        else defaults["booster_sweep_trials"]
+                    ),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    nthread=int(args.nthread if args.nthread is not None else defaults["nthread"]),
+                    batch_rows=max(int(defaults["batch_rows"]), 1),
+                    train_ratio=float(defaults["train_ratio"]),
+                    valid_ratio=float(defaults["valid_ratio"]),
+                    test_ratio=float(defaults["test_ratio"]),
+                    embargo_bars=max(int(defaults["embargo_bars"]), 0),
+                    fee_bps_est=float(defaults["fee_bps_est"]),
+                    safety_bps=float(defaults["safety_bps"]),
+                    ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
+                    ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
+                    min_rows_for_train=max(int(features_v2_config.build.min_rows_for_train), 1),
+                    parquet_root=features_v2_config.parquet_root,
+                    base_candles_dataset=str(features_v2_config.build.base_candles_dataset),
+                )
+                summary_v2 = train_and_register_v2_micro(options_v2)
+                print(
+                    "[model][train][v2_micro] "
+                    f"run_id={summary_v2.run_id} status={summary_v2.status} "
+                    f"test_precision_top5={summary_v2.leaderboard_row.get('test_precision_top5', 0.0):.6f} "
+                    f"test_pr_auc={summary_v2.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+                )
+                print(f"[model][train][v2_micro] run_dir={summary_v2.run_dir}")
+                print(f"[model][train][v2_micro] train_report={summary_v2.train_report_path}")
+                print(f"[model][train][v2_micro] compare_to_v1={summary_v2.compare_report_path}")
+                print(f"[model][train][v2_micro] promotion={summary_v2.promotion_path}")
+                return 0
+
+            model_family = str(getattr(args, "model_family", None) or defaults["model_family"]).strip()
+            if not model_family:
+                model_family = "train_v1"
             options = TrainRunOptions(
                 dataset_root=features_config.output_dataset_root,
                 registry_root=registry_root,
@@ -1307,10 +1511,14 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             return 0
 
         if args.model_command == "eval":
-            result = evaluate_registered_model(
+            model_ref, model_family = _resolve_model_ref_alias(
+                str(args.model_ref).strip(),
+                str(args.model_family).strip() if args.model_family else None,
+            )
+            result = evaluate_registered_model_window(
                 registry_root=registry_root,
-                model_ref=str(args.model_ref).strip(),
-                model_family=(str(args.model_family).strip() if args.model_family else None),
+                model_ref=model_ref,
+                model_family=model_family,
                 split=str(args.split).strip().lower(),
                 report_csv=(Path(args.report_csv) if args.report_csv else None),
             )
@@ -1333,6 +1541,93 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 model_family=(str(args.model_family).strip() if args.model_family else None),
             )
             _print_json(detail)
+            return 0
+
+        if args.model_command == "compare":
+            a_ref, a_family = _resolve_model_ref_alias(str(args.a).strip(), getattr(args, "a_family", None))
+            b_ref, b_family = _resolve_model_ref_alias(str(args.b).strip(), getattr(args, "b_family", None))
+            result = compare_registered_models(
+                registry_root=registry_root,
+                a_ref=a_ref,
+                b_ref=b_ref,
+                a_family=(str(a_family).strip() if a_family else None),
+                b_family=(str(b_family).strip() if b_family else None),
+                split=str(args.split).strip().lower(),
+                start=(str(args.start).strip() if args.start else None),
+                end=(str(args.end).strip() if args.end else None),
+            )
+            _print_json(result)
+            return 0
+
+        if args.model_command == "audit":
+            model_ref, model_family = _resolve_model_ref_alias(
+                str(args.model_ref).strip(),
+                str(args.model_family).strip() if args.model_family else None,
+            )
+            audit = audit_registered_model(
+                MetricAuditOptions(
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_ref=model_ref,
+                    model_family=model_family,
+                    split=str(args.split).strip().lower(),
+                    start=(str(args.start).strip() if args.start else None),
+                    end=(str(args.end).strip() if args.end else None),
+                    tolerance_warn=float(args.tolerance_warn),
+                    tolerance_fail=float(args.tolerance_fail),
+                )
+            )
+            issue_count = len(audit.payload.get("issues", [])) if isinstance(audit.payload, dict) else 0
+            print(
+                "[model][audit] "
+                f"status={audit.status} run_id={audit.run_id} split={audit.split} "
+                f"rows={audit.rows_in_split} issues={issue_count}"
+            )
+            print(f"[model][audit] report={audit.output_path}")
+            _print_json(audit.payload)
+            return 0 if audit.status == "PASS" else 2
+
+        if args.model_command == "ablate":
+            tf = str(args.tf or defaults["tf"]).strip().lower()
+            quote = str(args.quote or defaults["quote"]).strip().upper()
+            top_n = max(int(args.top_n if args.top_n is not None else defaults["top_n"]), 1)
+            start = str(args.start or defaults["start"]).strip()
+            end = str(args.end or defaults["end"]).strip()
+            ablation_ids = _parse_ablation_ids(getattr(args, "ablations", None))
+            result = run_ablation(
+                AblationOptions(
+                    dataset_root=features_v2_config.output_dataset_root,
+                    parquet_root=features_v2_config.parquet_root,
+                    logs_root=logs_root,
+                    tf=tf,
+                    quote=quote,
+                    top_n=top_n,
+                    start=start,
+                    end=end,
+                    feature_set=str(args.feature_set).strip().lower(),
+                    label_set=str(args.label_set).strip().lower(),
+                    booster_sweep_trials=max(int(args.booster_sweep_trials), 1),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    nthread=int(args.nthread if args.nthread is not None else defaults["nthread"]),
+                    batch_rows=max(int(defaults["batch_rows"]), 1),
+                    train_ratio=float(defaults["train_ratio"]),
+                    valid_ratio=float(defaults["valid_ratio"]),
+                    test_ratio=float(defaults["test_ratio"]),
+                    embargo_bars=max(int(defaults["embargo_bars"]), 0),
+                    fee_bps_est=float(defaults["fee_bps_est"]),
+                    safety_bps=float(defaults["safety_bps"]),
+                    ablations=ablation_ids,
+                    base_candles_dataset=str(features_v2_config.build.base_candles_dataset),
+                )
+            )
+            print(
+                "[model][ablate] "
+                f"rows={len(result.rows)} best_prec={result.summary.get('best_ablation_by_prec_top5')} "
+                f"best_ev={result.summary.get('best_ablation_by_ev_top5')}"
+            )
+            print(f"[model][ablate] csv={result.results_csv_path}")
+            print(f"[model][ablate] summary={result.summary_json_path}")
+            _print_json(result.summary)
             return 0
 
         raise ValueError(f"Unsupported model command: {args.model_command}")
@@ -2165,6 +2460,27 @@ def _parse_days_ago_csv(value: str | None, *, default: tuple[int, ...]) -> tuple
     return tuple(sorted(values))
 
 
+def _parse_ablation_ids(value: str | None) -> tuple[str, ...]:
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return ("A0", "A1", "A2", "A3", "A4")
+    seen: set[str] = set()
+    ids: list[str] = []
+    for token in raw.split(","):
+        aid = str(token).strip().upper()
+        if not aid:
+            continue
+        if aid not in {"A0", "A1", "A2", "A3", "A4"}:
+            raise ValueError(f"unsupported ablation id: {aid}")
+        if aid in seen:
+            continue
+        seen.add(aid)
+        ids.append(aid)
+    if not ids:
+        raise ValueError("ablations must include at least one of A0,A1,A2,A3,A4")
+    return tuple(ids)
+
+
 def _parse_orderbook_level_arg(value: Any) -> int | str | None:
     if value is None:
         return None
@@ -2175,6 +2491,21 @@ def _parse_orderbook_level_arg(value: Any) -> int | str | None:
         return int(text)
     except ValueError:
         return text
+
+
+def _resolve_model_ref_alias(model_ref: str, model_family: str | None = None) -> tuple[str, str | None]:
+    ref = str(model_ref).strip()
+    family = str(model_family).strip() if model_family else None
+    aliases: dict[str, tuple[str, str]] = {
+        "latest_v1": ("latest", "train_v1"),
+        "champion_v1": ("champion", "train_v1"),
+        "latest_v2": ("latest", "train_v2_micro"),
+        "champion_v2": ("champion", "train_v2_micro"),
+    }
+    if ref in aliases:
+        resolved_ref, resolved_family = aliases[ref]
+        return resolved_ref, (family or resolved_family)
+    return ref, family
 
 
 def _parse_bool_arg(value: Any, *, default: bool = False) -> bool:

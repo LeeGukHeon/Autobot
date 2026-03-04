@@ -45,6 +45,9 @@ autobot/data/micro/**/*.pyc
 models/
 !autobot/models/
 !autobot/models/**
+autobot/models/**/__pycache__/
+autobot/models/**/*.py[cod]
+autobot/models/**/*.pyo
 logs/
 
 # IDE / OS

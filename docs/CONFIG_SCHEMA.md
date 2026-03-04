@@ -172,6 +172,28 @@
 - `label_v1.fee_bps_est`: number (default: `10`)
 - `label_v1.safety_bps`: number (default: `5`)
 
+### Feature Set v2
+- config file: `config/features_v2.yaml`
+- `features_v2.output_dataset`: string (default: `features_v2`)
+- `features_v2.tf`: timeframe string (default: `5m`)
+- `features_v2.base_candles_dataset`: `auto | candles_api_v1 | candles_v1 | <path>`
+- `features_v2.micro_dataset`: dataset name or path (default: `micro_v1`)
+- `features_v2.alignment_mode`: `auto | start | end` (default: `auto`)
+- `features_v2.use_precomputed_features_v1`: bool (default: `false`)
+- `features_v2.precomputed_features_v1_dataset`: string (default: `features_v1`)
+- `features_v2.min_rows_for_train`: integer (default: `5000`)
+
+### Feature Set v2 Micro Filter
+- `features_v2.micro_filter.require_micro_available`: bool (default: `true`)
+- `features_v2.micro_filter.min_trade_events`: integer (default: `1`)
+- `features_v2.micro_filter.min_trade_coverage_ms`: integer (default: `60000`)
+- `features_v2.micro_filter.min_book_events`: integer (default: `1`)
+- `features_v2.micro_filter.min_book_coverage_ms`: integer (default: `60000`)
+
+### Feature Set v2 Validation
+- `features_v2.validation.join_match_warn`: float (default: `0.98`)
+- `features_v2.validation.join_match_fail`: float (default: `0.90`)
+
 ## Model Training (T14)
 - config file: `config/train.yaml`
 - `train.registry_root`: path (default: `models/registry`)
@@ -285,12 +307,18 @@
 ## CLI: Features
 - Build:
   - `python -m autobot.cli features build --tf 5m --quote KRW --top-n 20 --start 2024-01-01 --end 2026-03-01 --feature-set v1 --label-set v1 --workers 1 --fail-on-warn false`
+- Build (v2):
+  - `python -m autobot.cli features build --feature-set v2 --tf 5m --quote KRW --top-n 20 --start 2026-03-03 --end 2026-03-04 --base-candles auto --micro-dataset micro_v1 --require-micro true --dry-run false`
 - Validate:
   - `python -m autobot.cli features validate --tf 5m --quote KRW --top-n 20`
+- Validate (v2):
+  - `python -m autobot.cli features validate --feature-set v2 --tf 5m --quote KRW --top-n 20`
 - Sample:
   - `python -m autobot.cli features sample --tf 5m --market KRW-BTC --rows 10`
 - Stats:
   - `python -m autobot.cli features stats --tf 5m --quote KRW --top-n 20`
+- Stats (v2):
+  - `python -m autobot.cli features stats --feature-set v2 --tf 5m --quote KRW --top-n 20`
 
 ## CLI: Live State
 - `python -m autobot.cli live status`
