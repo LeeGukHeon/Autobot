@@ -99,3 +99,68 @@ python -m autobot.cli backtest run --strategy model_alpha_v1 --model-ref latest_
 
 ## 9) 기본값 고정
 - `config/strategy.yaml`에서 `strategy.micro_order_policy.enabled=true`로 기본 ON 고정
+
+## 10) A/C Validation Addendum (2026-03-05)
+- Scope: validate `A(universe quality soft ranking)` + `C(one_m synth penalty power)` with minimum 3-run set.
+- Window/conditions: `tf=5m`, `quote=KRW`, `top_n=50`, `start=2026-02-24`, `end=2026-03-04`.
+- Config variants:
+- `Run0 Baseline`: `A=off`, `C power=1.0`
+- `Run1 C-only`: `A=off`, `C power=2.0`
+- `Run2 A+C`: `A=on(lookback=3,beta=2,q_floor=0.2,oversample=3)`, `C power=2.0`
+
+### 10.1 Features Build Result (3-run)
+| run | dataset | rows_final | rows_dropped_no_micro | rows_dropped_one_m | one_m_synth_ratio_p50 | one_m_synth_ratio_p90 |
+|---|---|---:|---:|---:|---:|---:|
+| Run0 Baseline | `features_v3_ac_baseline` | 15,936 | 35,227 | 2,763 | 0.2000 | 0.8000 |
+| Run1 C-only | `features_v3_ac_conly` | 15,936 | 35,227 | 2,763 | 0.2000 | 0.8000 |
+| Run2 A+C | `features_v3_ac` | 15,936 | 35,227 | 2,763 | 0.2000 | 0.8000 |
+
+Interpretation:
+- `rows_dropped_no_micro` did not worsen with A-on in this window.
+- For this top50 window, A changed ordering but not final top50 set membership.
+
+### 10.2 Universe Quality Guard Checks
+- Lookback leakage guard:
+- `value_from_ts_ms=1771632000000 (2026-02-21T00:00:00Z)`
+- `to_ts_ms_exclusive=1771891200000 (2026-02-24T00:00:00Z)`
+- Confirmed window is `[start-lookback, start)`.
+- Candidate pool:
+- discovered markets `=60`
+- candidate_count `=60` (expected `top_n*oversample=150`, capped by discovered size)
+- Fallback:
+- `fallback.filled_count=0`, `warnings=[]` for all runs.
+
+### 10.3 Selected Markets (A on, top50)
+- `KRW-XRP, KRW-BTC, KRW-ENSO, KRW-AZTEC, KRW-ETH, KRW-FLOW, KRW-KITE, KRW-SOL, KRW-0G, KRW-DOGE, KRW-BERA, KRW-AXS, KRW-CYBER, KRW-LA, KRW-IP, KRW-ADA, KRW-XLM, KRW-BCH, KRW-LINK, KRW-ENS, KRW-IN, KRW-ARDR, KRW-BREV, KRW-BIRB, KRW-BOUNTY, KRW-AUCTION, KRW-F, KRW-AAVE, KRW-AKT, KRW-APT, KRW-ATH, KRW-BARD, KRW-CFG, KRW-COW, KRW-EDGE, KRW-EGLD, KRW-ENA, KRW-ESP, KRW-KAITO, KRW-KAVA, KRW-KNC, KRW-MANTRA, KRW-MOODENG, KRW-NEAR, KRW-ONDO, KRW-ORBS, KRW-PENGU, KRW-PEPE, KRW-SAHARA, KRW-SHIB`
+- Set-level diffs:
+- baseline vs C-only: no set diff
+- baseline vs A+C top50: no set diff
+- baseline vs A+C top20: set diff exists (`KRW-CYBER`, `KRW-DOGE`, `KRW-ARDR`, `KRW-ENS`, `KRW-IN`, `KRW-LINK`)
+
+### 10.4 A-on Score Effect on High Synth Markets
+- `KRW-BOUNTY`: synth `0.4713`, `q=0.5287`, `q^2=0.2795`, score scaled down.
+- `KRW-AUCTION`: synth `0.6319`, `q=0.3681`, `q^2=0.1355`, score scaled down.
+- `KRW-F`: synth `0.7435`, `q=0.2565`, `q^2=0.0658`, score scaled down.
+- In this window, these markets still remained within top50 due value rank and limited candidate depth.
+
+### 10.5 C-on Weight Effect (effective sample impact)
+- Sample-weight summary:
+- baseline (`power=1.0`): high-synth(`>=0.5`) `sample_weight mean=0.2987`
+- C-only/A+C (`power=2.0`): high-synth(`>=0.5`) `sample_weight mean=0.1027`
+- Mid-synth(`[0.4,0.6)`) mean: `0.5741 -> 0.3445`
+- C is functioning as intended (stronger down-weighting on synthetic-heavy rows).
+
+### 10.6 Backtest Note for This Validation
+- A quick C2-style backtest check was executed with `latest_v3` fixed model ref.
+- Result was effectively identical across runs.
+- This is expected because C changes training sample weights; without re-training per run, model-level impact cannot surface.
+
+### 10.7 Artifacts
+- Validation summary:
+- `logs/ac_validation_20260305/ac_validation_summary.json`
+- Sample-weight summary:
+- `logs/ac_validation_20260305/sample_weight_summary.json`
+- A+C universe report:
+- `data/features/features_v3_ac/_meta/universe_quality_report.json`
+- A+C build report:
+- `data/features/features_v3_ac/_meta/build_report.json`

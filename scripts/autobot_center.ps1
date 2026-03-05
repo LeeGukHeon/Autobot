@@ -318,31 +318,53 @@ function Get-SchedulerTaskStatus {
 
     function Query-SchtasksExact {
         param([string]$Name)
-        $previousErrorAction = $ErrorActionPreference
-        $hasNativePref = $false
-        $previousNativePref = $null
-        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
-            $hasNativePref = $true
-            $previousNativePref = $PSNativeCommandUseErrorActionPreference
-        }
-        try {
-            $ErrorActionPreference = "Continue"
-            if ($hasNativePref) {
-                $PSNativeCommandUseErrorActionPreference = $false
-            }
-            $output = & schtasks.exe /Query /TN ("\" + $Name) /FO LIST /V 2>&1
-            $lines = @($output | ForEach-Object { [string]$_ })
-            return [PSCustomObject]@{
-                ExitCode = [int]$LASTEXITCODE
-                OutputLines = $lines
-                OutputText = ($lines -join "`n")
-            }
-        } finally {
-            $ErrorActionPreference = $previousErrorAction
-            if ($hasNativePref) {
-                $PSNativeCommandUseErrorActionPreference = $previousNativePref
+        $candidates = @()
+        if (-not [string]::IsNullOrWhiteSpace($Name)) {
+            if ($Name.StartsWith("\")) {
+                $candidates += $Name
+            } else {
+                $candidates += ("\" + $Name)
+                $candidates += $Name
             }
         }
+
+        $lastResult = [PSCustomObject]@{
+            ExitCode = 1
+            OutputLines = @()
+            OutputText = ""
+        }
+        foreach ($candidate in $candidates) {
+            $previousErrorAction = $ErrorActionPreference
+            $hasNativePref = $false
+            $previousNativePref = $null
+            if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+                $hasNativePref = $true
+                $previousNativePref = $PSNativeCommandUseErrorActionPreference
+            }
+            try {
+                $ErrorActionPreference = "Continue"
+                if ($hasNativePref) {
+                    $PSNativeCommandUseErrorActionPreference = $false
+                }
+                $output = & schtasks.exe /Query /TN $candidate /FO LIST /V 2>&1
+                $lines = @($output | ForEach-Object { [string]$_ })
+                $result = [PSCustomObject]@{
+                    ExitCode = [int]$LASTEXITCODE
+                    OutputLines = $lines
+                    OutputText = ($lines -join "`n")
+                }
+                if ($result.ExitCode -eq 0) {
+                    return $result
+                }
+                $lastResult = $result
+            } finally {
+                $ErrorActionPreference = $previousErrorAction
+                if ($hasNativePref) {
+                    $PSNativeCommandUseErrorActionPreference = $previousNativePref
+                }
+            }
+        }
+        return $lastResult
     }
 
     try {
@@ -359,6 +381,31 @@ function Get-SchedulerTaskStatus {
             Error = ""
         }
     } catch {
+        try {
+            $allTasks = @(Get-ScheduledTask -ErrorAction Stop)
+            $target = (($TaskName.Trim().ToLowerInvariant()) -replace "[\\/_\-\s]+", "")
+            $resolved = $allTasks | Where-Object {
+                $nameNorm = (([string]$_.TaskName).Trim().ToLowerInvariant() -replace "[\\/_\-\s]+", "")
+                $nameNorm -eq $target
+            } | Select-Object -First 1
+            if ($null -ne $resolved) {
+                $resolvedPath = if ([string]::IsNullOrWhiteSpace([string]$resolved.TaskPath)) { "\" } else { [string]$resolved.TaskPath }
+                $resolvedInfo = Get-ScheduledTaskInfo -TaskName $resolved.TaskName -TaskPath $resolvedPath -ErrorAction Stop
+                return [PSCustomObject]@{
+                    TaskName = $TaskName
+                    Found = $true
+                    AccessDenied = $false
+                    State = [string]$resolved.State
+                    LastRunTime = $resolvedInfo.LastRunTime
+                    NextRunTime = $resolvedInfo.NextRunTime
+                    LastTaskResult = $resolvedInfo.LastTaskResult
+                    Error = ""
+                }
+            }
+        } catch {
+            # Continue to schtasks fallback.
+        }
+
         $schtasksResult = Query-SchtasksExact -Name $TaskName
         if ($schtasksResult.ExitCode -eq 0) {
             $stateValue = Parse-SchtasksField -Lines $schtasksResult.OutputLines -Keys @("Status", "상태")
@@ -378,7 +425,7 @@ function Get-SchedulerTaskStatus {
         }
 
         $outputLower = $schtasksResult.OutputText.ToLowerInvariant()
-        if ($outputLower.Contains("access is denied")) {
+        if ($outputLower.Contains("access is denied") -or $outputLower.Contains("액세스가 거부")) {
             return [PSCustomObject]@{
                 TaskName = $TaskName
                 Found = $true
@@ -399,7 +446,7 @@ function Get-SchedulerTaskStatus {
             LastRunTime = $null
             NextRunTime = $null
             LastTaskResult = $null
-            Error = $_.Exception.Message
+            Error = if (-not [string]::IsNullOrWhiteSpace($schtasksResult.OutputText)) { $schtasksResult.OutputText } else { $_.Exception.Message }
         }
     }
 }
@@ -434,6 +481,33 @@ function Invoke-Preflight {
     if ($check.ExitCode -ne 0) {
         Write-Host "[error] preflight failed. check log: $($check.LogFile)" -ForegroundColor Red
         return $false
+    }
+    return $true
+}
+
+function Set-FeaturesV3OneMSynthWeightPower {
+    param([double]$Power = 2.0)
+
+    $configPath = Resolve-PathFromRoot -PathValue "config/features_v3.yaml"
+    if (-not (Test-Path $configPath)) {
+        Write-Host "[warn] features_v3 config not found: $configPath" -ForegroundColor Yellow
+        return $false
+    }
+
+    $raw = Get-Content -Path $configPath -Raw -Encoding UTF8
+    $formattedPower = ("{0:0.0}" -f $Power)
+    $pattern = "(?m)^(\s*one_m_synth_weight_power:\s*)([0-9]+(?:\.[0-9]+)?)\s*$"
+    if (-not [regex]::IsMatch($raw, $pattern)) {
+        Write-Host "[warn] one_m_synth_weight_power key not found in $configPath" -ForegroundColor Yellow
+        return $false
+    }
+
+    $updated = [regex]::Replace($raw, $pattern, ("`$1{0}" -f $formattedPower), 1)
+    if ($updated -ne $raw) {
+        Set-Content -Path $configPath -Value $updated -Encoding UTF8
+        Write-Host "[config] features_v3.one_m_synth_weight_power -> $formattedPower"
+    } else {
+        Write-Host "[config] features_v3.one_m_synth_weight_power already $formattedPower"
     }
     return $true
 }
@@ -601,6 +675,8 @@ function Invoke-DailyPipelineNow {
 }
 
 function Invoke-WsDaemonTaskControl {
+    $taskName = "Autobot_WS_Public_Daemon"
+    $taskNameForSchtasks = "\" + $taskName
     Write-Host ""
     Write-Host "1) Start task (Autobot_WS_Public_Daemon)"
     Write-Host "2) Stop task (Autobot_WS_Public_Daemon)"
@@ -611,7 +687,7 @@ function Invoke-WsDaemonTaskControl {
             $result = Run-Command `
                 -Description "Start scheduled task Autobot_WS_Public_Daemon" `
                 -Exe "schtasks.exe" `
-                -Arguments @("/Run", "/TN", "Autobot_WS_Public_Daemon") `
+                -Arguments @("/Run", "/TN", $taskNameForSchtasks) `
                 -Tag "menu3_start_ws_daemon_task"
             if ($result.ExitCode -ne 0) {
                 Write-Host "[task] start failed. log: $($result.LogFile)" -ForegroundColor Yellow
@@ -625,7 +701,7 @@ function Invoke-WsDaemonTaskControl {
             $result = Run-Command `
                 -Description "Stop scheduled task Autobot_WS_Public_Daemon" `
                 -Exe "schtasks.exe" `
-                -Arguments @("/End", "/TN", "Autobot_WS_Public_Daemon") `
+                -Arguments @("/End", "/TN", $taskNameForSchtasks) `
                 -Tag "menu3_stop_ws_daemon_task"
             if ($result.ExitCode -ne 0) {
                 Write-Host "[task] stop failed. log: $($result.LogFile)" -ForegroundColor Yellow
@@ -635,7 +711,7 @@ function Invoke-WsDaemonTaskControl {
             return
         }
     }
-    $status = Get-SchedulerTaskStatus -TaskName "Autobot_WS_Public_Daemon"
+    $status = Get-SchedulerTaskStatus -TaskName $taskName
     if ($status.Found) {
         Write-Host ("[task] state={0}, last={1}, next={2}, result={3}" -f `
                 $status.State, `
@@ -810,6 +886,35 @@ function Invoke-ModelTrainWizard {
         default {
             $featureSet = "v1"
             $family = "train_v1"
+        }
+    }
+
+    if ($trainer -eq "v3_mtf_micro") {
+        $enforced = Set-FeaturesV3OneMSynthWeightPower -Power 2.0
+        if (-not $enforced) {
+            Write-Host "[model] cannot enforce features_v3.one_m_synth_weight_power=2.0. aborting train wizard." -ForegroundColor Yellow
+            return
+        }
+
+        $buildArgs = @(
+            "-m", "autobot.cli",
+            "features", "build",
+            "--feature-set", "v3",
+            "--tf", $tf,
+            "--quote", $quote,
+            "--top-n", "$topN",
+            "--start", $startDate,
+            "--end", $endDate
+        )
+        $buildResult = Run-Command `
+            -Description "Features Build Wizard (v3, one_m_synth_weight_power=2.0)" `
+            -Exe $script:PythonExe `
+            -Arguments $buildArgs `
+            -Tag "menu6_features_build_v3"
+
+        if ($buildResult.ExitCode -ne 0) {
+            Write-Host "[model] features build failed. log: $($buildResult.LogFile)" -ForegroundColor Yellow
+            return
         }
     }
 
