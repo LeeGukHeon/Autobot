@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable, Sequence
 
+from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent
 from autobot.common.event_store import JsonlEventStore
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
@@ -33,6 +34,8 @@ from autobot.execution.order_supervisor import (
     percentile,
     slippage_bps,
 )
+from autobot.models.dataset_loader import DatasetRequest, iter_feature_rows_grouped_by_ts
+from autobot.models.predictor import load_predictor_from_registry
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
 from autobot.strategy.micro_order_policy import (
@@ -45,6 +48,7 @@ from autobot.strategy.micro_snapshot import (
     MicroSnapshotProvider,
     OfflineMicroSnapshotProvider,
 )
+from autobot.strategy.model_alpha_v1 import ModelAlphaSettings, ModelAlphaStrategyV1
 from autobot.strategy.top20_scanner import TopTradeValueScanner
 from autobot.strategy.trade_gate_v1 import GateSettings, TradeGateV1
 from autobot.upbit import (
@@ -74,6 +78,7 @@ class PaperRunSettings:
     duration_sec: int = 600
     quote: str = "KRW"
     top_n: int = 20
+    tf: str = "5m"
     print_every_sec: float = 5.0
     decision_interval_sec: float = 1.0
     universe_refresh_sec: float = 60.0
@@ -91,6 +96,13 @@ class PaperRunSettings:
     max_consecutive_failures: int = 3
     rules_ttl_sec: int = 86400
     out_root_dir: str = "data/paper"
+    strategy: str = "candidates_v1"  # candidates_v1 | model_alpha_v1
+    model_ref: str | None = None
+    model_family: str | None = None
+    feature_set: str = "v3"
+    model_registry_root: str = "models/registry"
+    model_feature_dataset_root: str | None = None
+    model_alpha: ModelAlphaSettings = field(default_factory=ModelAlphaSettings)
     micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
     micro_order_policy: MicroOrderPolicySettings = field(default_factory=MicroOrderPolicySettings)
     paper_micro_provider: str = "offline_parquet"
@@ -813,6 +825,9 @@ class PaperRunEngine:
             raise RuntimeError(f"no markets available for quote={quote}")
 
         market_data = MarketDataHub(history_sec=max(self._run_settings.momentum_window_sec * 2, 300))
+        strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
+        if strategy_mode not in {"candidates_v1", "model_alpha_v1"}:
+            raise ValueError(f"unsupported paper strategy: {self._run_settings.strategy}")
         universe = UniverseProviderTop20(
             quote=quote,
             top_n=self._run_settings.top_n,
@@ -871,10 +886,29 @@ class PaperRunEngine:
         if warmup_completed:
             self._runtime_state["live_ws_warmup"]["satisfied"] = True
             self._runtime_state["live_ws_warmup"]["elapsed_sec"] = 0.0
+        model_strategy: ModelAlphaStrategyV1 | None = None
+        if strategy_mode == "model_alpha_v1":
+            model_interval_ms = _interval_ms_from_tf(self._run_settings.tf)
+            start_ts_ms = int(time.time() * 1000) - max(
+                int(self._run_settings.duration_sec) * 1000 + 86_400_000,
+                model_interval_ms * 4,
+            )
+            end_ts_ms = int(time.time() * 1000) + max(int(self._run_settings.duration_sec) * 1000, model_interval_ms * 2)
+            model_strategy = self._build_model_alpha_strategy(
+                active_markets=markets,
+                decision_start_ts_ms=start_ts_ms,
+                decision_end_ts_ms=end_ts_ms,
+            )
+        self._runtime_state["strategy_adapter"] = model_strategy
+        self._runtime_state["model_last_decision_ts_ms"] = None
         trade_gate = TradeGateV1(
             GateSettings(
                 per_trade_krw=self._run_settings.per_trade_krw,
-                max_positions=self._run_settings.max_positions,
+                max_positions=(
+                    max(int(self._run_settings.model_alpha.position.max_positions_total), 1)
+                    if strategy_mode == "model_alpha_v1"
+                    else self._run_settings.max_positions
+                ),
                 min_order_krw=self._run_settings.min_order_krw,
                 max_consecutive_failures=self._run_settings.max_consecutive_failures,
                 cooldown_sec_after_fail=self._run_settings.cooldown_sec_after_fail,
@@ -933,6 +967,7 @@ class PaperRunEngine:
                     "run_id": run_id,
                     "quote": quote,
                     "top_n": self._run_settings.top_n,
+                    "strategy": strategy_mode,
                     "duration_sec": self._run_settings.duration_sec,
                     "markets_subscribed": len(markets),
                     "micro_order_policy_enabled": bool(self._run_settings.micro_order_policy.enabled),
@@ -1028,6 +1063,7 @@ class PaperRunEngine:
                     append_event=append_event,
                     ts_ms=ticker.ts_ms,
                     counters=self._runtime_counters,
+                    strategy_adapter=model_strategy,
                 )
                 orders_submitted = int(self._runtime_counters["orders_submitted"])
                 orders_filled = int(self._runtime_counters["orders_filled"])
@@ -1056,20 +1092,41 @@ class PaperRunEngine:
 
                 if now_monotonic >= next_decision_at:
                     if warmup_completed:
-                        self._run_candidate_cycle(
-                            ts_ms=ticker.ts_ms,
-                            latest_trade_price=ticker.trade_price,
-                            universe=universe,
-                            market_data=market_data,
-                            candidate_generator=candidate_generator,
-                            trade_gate=trade_gate,
-                            micro_order_policy=micro_order_policy,
-                            micro_snapshot_provider=micro_snapshot_provider,
-                            exchange=exchange,
-                            execution=execution,
-                            event_store=store,
-                            append_event=append_event,
-                        )
+                        if strategy_mode == "model_alpha_v1" and model_strategy is not None:
+                            interval_ms = _interval_ms_from_tf(self._run_settings.tf)
+                            decision_ts_ms = (int(ticker.ts_ms) // interval_ms) * interval_ms
+                            last_model_decision_ts = _safe_int(self._runtime_state.get("model_last_decision_ts_ms"))
+                            if last_model_decision_ts is None or decision_ts_ms > last_model_decision_ts:
+                                self._run_model_alpha_cycle(
+                                    ts_ms=decision_ts_ms,
+                                    latest_trade_price=ticker.trade_price,
+                                    universe=universe,
+                                    market_data=market_data,
+                                    trade_gate=trade_gate,
+                                    micro_order_policy=micro_order_policy,
+                                    micro_snapshot_provider=micro_snapshot_provider,
+                                    exchange=exchange,
+                                    execution=execution,
+                                    event_store=store,
+                                    append_event=append_event,
+                                    strategy=model_strategy,
+                                )
+                                self._runtime_state["model_last_decision_ts_ms"] = decision_ts_ms
+                        else:
+                            self._run_candidate_cycle(
+                                ts_ms=ticker.ts_ms,
+                                latest_trade_price=ticker.trade_price,
+                                universe=universe,
+                                market_data=market_data,
+                                candidate_generator=candidate_generator,
+                                trade_gate=trade_gate,
+                                micro_order_policy=micro_order_policy,
+                                micro_snapshot_provider=micro_snapshot_provider,
+                                exchange=exchange,
+                                execution=execution,
+                                event_store=store,
+                                append_event=append_event,
+                            )
                         orders_submitted = int(self._runtime_counters["orders_submitted"])
                         orders_filled = int(self._runtime_counters["orders_filled"])
                         orders_canceled = int(self._runtime_counters["orders_canceled"])
@@ -1254,6 +1311,135 @@ class PaperRunEngine:
         )
         return summary
 
+    def _run_model_alpha_cycle(
+        self,
+        *,
+        ts_ms: int,
+        latest_trade_price: float,
+        universe: UniverseProviderTop20,
+        market_data: MarketDataHub,
+        trade_gate: TradeGateV1,
+        micro_order_policy: MicroOrderPolicyV1 | None,
+        micro_snapshot_provider: MicroSnapshotProvider | None,
+        exchange: PaperSimExchange,
+        execution: PaperExecutionGateway,
+        event_store: JsonlEventStore,
+        append_event: Callable[[str, int, dict[str, Any] | None], None],
+        strategy: ModelAlphaStrategyV1,
+    ) -> None:
+        markets = universe.markets()
+        open_markets = {market for market in markets if exchange.has_position(market)}
+        result = strategy.on_ts(
+            ts_ms=ts_ms,
+            active_markets=markets,
+            latest_prices=market_data.latest_prices(),
+            open_markets=open_markets,
+        )
+        self._runtime_counters["scored_rows"] = int(self._runtime_counters.get("scored_rows", 0)) + int(
+            result.scored_rows
+        )
+        self._runtime_counters["selected_rows"] = int(self._runtime_counters.get("selected_rows", 0)) + int(
+            result.selected_rows
+        )
+        self._runtime_counters["skipped_missing_features_rows"] = int(
+            self._runtime_counters.get("skipped_missing_features_rows", 0)
+        ) + int(result.skipped_missing_features_rows)
+        self._runtime_counters["dropped_min_prob_rows"] = int(self._runtime_counters.get("dropped_min_prob_rows", 0)) + int(
+            result.dropped_min_prob_rows
+        )
+        self._runtime_counters["dropped_top_pct_rows"] = int(self._runtime_counters.get("dropped_top_pct_rows", 0)) + int(
+            result.dropped_top_pct_rows
+        )
+        self._runtime_counters["blocked_min_candidates_ts"] = int(
+            self._runtime_counters.get("blocked_min_candidates_ts", 0)
+        ) + int(result.blocked_min_candidates_ts)
+        debug_reasons = self._runtime_counters.setdefault("debug_mismatch_reasons", {})
+        if isinstance(debug_reasons, dict):
+            for reason, count in result.skipped_reasons.items():
+                _note_reason_count(reason_code=reason, reason_counts=debug_reasons, delta=int(count))
+        append_event(
+            "MODEL_ALPHA_SELECTION",
+            ts_ms=ts_ms,
+            payload={
+                "scored_rows": int(result.scored_rows),
+                "selected_rows": int(result.selected_rows),
+                "intents": int(len(result.intents)),
+                "skipped_missing_features_rows": int(result.skipped_missing_features_rows),
+                "dropped_min_prob_rows": int(result.dropped_min_prob_rows),
+                "dropped_top_pct_rows": int(result.dropped_top_pct_rows),
+                "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
+                "reasons": dict(result.skipped_reasons),
+            },
+        )
+        for intent in result.intents:
+            if str(intent.side).strip().lower() == "ask":
+                self._runtime_counters["exit_intents_total"] = int(self._runtime_counters.get("exit_intents_total", 0)) + 1
+            candidate = _intent_to_candidate(intent)
+            self._try_submit_candidate(
+                ts_ms=ts_ms,
+                candidate=candidate,
+                latest_trade_price=latest_trade_price,
+                market_data=market_data,
+                trade_gate=trade_gate,
+                micro_order_policy=micro_order_policy,
+                micro_snapshot_provider=micro_snapshot_provider,
+                exchange=exchange,
+                execution=execution,
+                event_store=event_store,
+                append_event=append_event,
+            )
+
+    def _build_model_alpha_strategy(
+        self,
+        *,
+        active_markets: list[str],
+        decision_start_ts_ms: int,
+        decision_end_ts_ms: int,
+    ) -> ModelAlphaStrategyV1:
+        settings = self._run_settings
+        if str(settings.feature_set).strip().lower() != "v3":
+            raise ValueError("paper model_alpha_v1 currently requires --feature-set v3")
+        model_ref = str(settings.model_ref or settings.model_alpha.model_ref).strip()
+        if not model_ref:
+            raise ValueError("paper model_alpha_v1 requires model_ref")
+        model_family = str(settings.model_family).strip() if settings.model_family else settings.model_alpha.model_family
+        predictor = load_predictor_from_registry(
+            registry_root=Path(settings.model_registry_root),
+            model_ref=model_ref,
+            model_family=model_family,
+        )
+        dataset_root = (
+            Path(str(settings.model_feature_dataset_root))
+            if settings.model_feature_dataset_root
+            else predictor.dataset_root
+        )
+        if dataset_root is None:
+            raise ValueError("unable to resolve feature dataset root for paper model_alpha_v1")
+        if not dataset_root.exists():
+            raise FileNotFoundError(f"feature dataset root not found: {dataset_root}")
+        request = DatasetRequest(
+            dataset_root=dataset_root,
+            tf=str(settings.tf).strip().lower(),
+            quote=str(settings.quote).strip().upper(),
+            top_n=max(int(settings.top_n), 1),
+            start_ts_ms=int(decision_start_ts_ms),
+            end_ts_ms=int(decision_end_ts_ms),
+            markets=tuple(active_markets),
+            batch_rows=200_000,
+        )
+        groups = iter_feature_rows_grouped_by_ts(
+            request,
+            feature_columns=predictor.feature_columns,
+            extra_columns=("close",),
+        )
+        interval_ms = _interval_ms_from_tf(settings.tf)
+        return ModelAlphaStrategyV1(
+            predictor=predictor,
+            feature_groups=groups,
+            settings=settings.model_alpha,
+            interval_ms=interval_ms,
+        )
+
     def _run_candidate_cycle(
         self,
         *,
@@ -1354,20 +1540,62 @@ class PaperRunEngine:
             reference_price=candidate.ref_price,
             ts_ms=ts_ms,
         )
+        side_value = str(candidate.proposed_side).strip().lower()
+        forced_volume = None
+        if isinstance(candidate.meta, dict):
+            forced_volume = _safe_optional_float(candidate.meta.get("force_volume"))
+        if side_value == "ask" and (forced_volume is None or forced_volume <= 0):
+            base_currency = _base_currency(candidate.market)
+            if base_currency:
+                forced_volume = _safe_optional_float(getattr(exchange.coin_balance(base_currency), "free", 0.0))
+        if side_value == "ask" and exchange.has_open_order(candidate.market, side="ask"):
+            append_event(
+                "TRADE_GATE_BLOCKED",
+                ts_ms=ts_ms,
+                payload={
+                    "market": candidate.market,
+                    "side": side_value,
+                    "reason_code": "DUPLICATE_EXIT_ORDER",
+                    "detail": "ask order already open",
+                    "severity": "BLOCK",
+                    "gate_reasons": ["DUPLICATE_EXIT_ORDER"],
+                    "diagnostics": {},
+                },
+            )
+            return False
         gate_price = round_price_to_tick(
             price=max(candidate.ref_price, ticker.trade_price),
             tick_size=rules.tick_size,
-            side=candidate.proposed_side,
+            side=side_value,
         )
-        gate_volume = order_volume_from_notional(
-            notional_quote=self._run_settings.per_trade_krw,
-            price=gate_price,
+        gate_volume = (
+            float(forced_volume)
+            if forced_volume is not None and forced_volume > 0
+            else order_volume_from_notional(
+                notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
+                price=gate_price,
+            )
         )
-        fee_rate = rules.fee_rate(side=candidate.proposed_side, maker_or_taker="taker")
+        if gate_volume <= 0:
+            append_event(
+                "TRADE_GATE_BLOCKED",
+                ts_ms=ts_ms,
+                payload={
+                    "market": candidate.market,
+                    "side": side_value,
+                    "reason_code": "ZERO_VOLUME",
+                    "detail": "computed order volume is zero",
+                    "severity": "BLOCK",
+                    "gate_reasons": ["ZERO_VOLUME"],
+                    "diagnostics": {},
+                },
+            )
+            return False
+        fee_rate = rules.fee_rate(side=side_value, maker_or_taker="taker")
         decision = trade_gate.evaluate(
             ts_ms=ts_ms,
             market=candidate.market,
-            side=candidate.proposed_side,
+            side=side_value,
             price=gate_price,
             volume=gate_volume,
             fee_rate=fee_rate,
@@ -1388,7 +1616,7 @@ class PaperRunEngine:
                 ts_ms=ts_ms,
                 payload={
                     "market": candidate.market,
-                    "side": candidate.proposed_side,
+                    "side": side_value,
                     "reason_code": decision.reason_code,
                     "detail": decision.detail,
                     "severity": decision.severity,
@@ -1404,7 +1632,7 @@ class PaperRunEngine:
                 ts_ms=ts_ms,
                 payload={
                     "market": candidate.market,
-                    "side": candidate.proposed_side,
+                    "side": side_value,
                     "reason_code": decision.reason_code,
                     "detail": decision.detail,
                     "severity": decision.severity,
@@ -1451,7 +1679,7 @@ class PaperRunEngine:
                     ts_ms=ts_ms,
                     payload={
                         "market": candidate.market,
-                        "side": candidate.proposed_side,
+                        "side": side_value,
                         "reason_code": policy_decision.reason_code,
                         "detail": policy_decision.detail,
                         "diagnostics": policy_diagnostics,
@@ -1478,14 +1706,18 @@ class PaperRunEngine:
                 )
 
         limit_price = build_limit_price_from_mode(
-            side=candidate.proposed_side,
+            side=side_value,
             ref_price=ref_price,
             tick_size=rules.tick_size,
             price_mode=exec_profile.price_mode,
         )
-        volume = order_volume_from_notional(
-            notional_quote=self._run_settings.per_trade_krw,
-            price=limit_price,
+        volume = (
+            float(forced_volume)
+            if forced_volume is not None and forced_volume > 0
+            else order_volume_from_notional(
+                notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
+                price=limit_price,
+            )
         )
         profile_payload = order_exec_profile_to_dict(exec_profile)
         policy_payload = {
@@ -1497,15 +1729,20 @@ class PaperRunEngine:
                 else "POLICY_DISABLED"
             ),
         }
+        reason_code_value = "CANDIDATE_V1"
+        if isinstance(candidate.meta, dict):
+            raw_reason_code = candidate.meta.get("reason_code")
+            if isinstance(raw_reason_code, str) and raw_reason_code.strip():
+                reason_code_value = raw_reason_code.strip().upper()
 
         intent = new_order_intent(
             market=candidate.market,
-            side=candidate.proposed_side,
+            side=side_value,
             ord_type="limit",
             time_in_force="gtc",
             price=limit_price,
             volume=volume,
-            reason_code="CANDIDATE_V1",
+            reason_code=reason_code_value,
             meta={
                 **candidate.meta,
                 "candidate_score": candidate.score,
@@ -1541,6 +1778,7 @@ class PaperRunEngine:
             append_event=append_event,
             ts_ms=ts_ms,
             counters=self._runtime_counters,
+            strategy_adapter=self._runtime_state.get("strategy_adapter"),
         )
         return True
 
@@ -1553,6 +1791,7 @@ class PaperRunEngine:
         append_event: Callable[[str, int, dict[str, Any] | None], None],
         ts_ms: int,
         counters: dict[str, Any],
+        strategy_adapter: ModelAlphaStrategyV1 | None = None,
     ) -> bool:
         has_ask_fill = False
         intent_context = self._runtime_state.setdefault("intent_context", {})
@@ -1719,6 +1958,20 @@ class PaperRunEngine:
                         "reason_code": reason_code,
                     }
                 )
+            if order is not None and strategy_adapter is not None:
+                try:
+                    strategy_adapter.on_fill(
+                        StrategyFillEvent(
+                            ts_ms=int(fill.ts_ms),
+                            market=str(fill.market).strip().upper(),
+                            side=str(order.side).strip().lower(),
+                            price=float(fill.price),
+                            volume=float(fill.volume),
+                        )
+                    )
+                except Exception:
+                    # keep paper loop resilient even if strategy bookkeeping fails
+                    pass
 
         for order in update.orders_filled:
             event_store.append_order(order)
@@ -1933,6 +2186,49 @@ def _describe_micro_snapshot_provider(
         "class_name": provider.__class__.__name__,
         "live_ws_enabled": bool(micro_gate.live_ws.enabled),
     }
+
+
+def _intent_to_candidate(intent: StrategyOrderIntent) -> Candidate:
+    side = str(intent.side).strip().lower()
+    if side not in {"bid", "ask"}:
+        raise ValueError(f"invalid strategy intent side: {intent.side}")
+    meta = dict(intent.meta) if isinstance(intent.meta, dict) else {}
+    if intent.volume is not None:
+        meta["force_volume"] = float(intent.volume)
+    if intent.reason_code:
+        meta["reason_code"] = str(intent.reason_code)
+    if intent.prob is not None:
+        meta["model_prob"] = float(intent.prob)
+    score = float(intent.score if intent.score is not None else (intent.prob if intent.prob is not None else 0.0))
+    return Candidate(
+        market=str(intent.market).strip().upper(),
+        score=score,
+        proposed_side=side,
+        ref_price=float(intent.ref_price),
+        meta=meta,
+    )
+
+
+def _base_currency(market: str) -> str:
+    value = str(market).strip().upper()
+    if "-" not in value:
+        return ""
+    return value.split("-", 1)[1].strip().upper()
+
+
+def _interval_ms_from_tf(tf: str) -> int:
+    value = str(tf).strip().lower()
+    if value.endswith("m"):
+        try:
+            return max(int(value[:-1]), 1) * 60_000
+        except ValueError:
+            return 60_000
+    if value.endswith("h"):
+        try:
+            return max(int(value[:-1]), 1) * 3_600_000
+        except ValueError:
+            return 60_000
+    return 60_000
 
 
 def _is_micro_reason(reason: str) -> bool:

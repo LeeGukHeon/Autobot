@@ -669,6 +669,24 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--duration-sec", type=int, default=600)
     paper_run_parser.add_argument("--quote", help="Quote currency, ex: KRW")
     paper_run_parser.add_argument("--top-n", type=int)
+    paper_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
+    paper_run_parser.add_argument("--tf", help="Model timeframe when strategy=model_alpha_v1, ex: 5m")
+    paper_run_parser.add_argument("--model-ref", help="Registry model ref, ex: latest_v3")
+    paper_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
+    paper_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    paper_run_parser.add_argument("--top-pct", type=float)
+    paper_run_parser.add_argument("--min-prob", type=float)
+    paper_run_parser.add_argument("--min-cands-per-ts", type=int)
+    paper_run_parser.add_argument("--max-positions-total", type=int)
+    paper_run_parser.add_argument("--cooldown-bars", type=int)
+    paper_run_parser.add_argument("--exit-mode", choices=("hold", "risk"))
+    paper_run_parser.add_argument("--hold-bars", type=int)
+    paper_run_parser.add_argument("--tp-pct", type=float)
+    paper_run_parser.add_argument("--sl-pct", type=float)
+    paper_run_parser.add_argument("--trailing-pct", type=float)
+    paper_run_parser.add_argument("--execution-price-mode", choices=("PASSIVE_MAKER", "JOIN", "CROSS_1T"))
+    paper_run_parser.add_argument("--execution-timeout-bars", type=int)
+    paper_run_parser.add_argument("--execution-replace-max", type=int)
     paper_run_parser.add_argument("--print-every-sec", type=float)
     paper_run_parser.add_argument("--starting-krw", type=float)
     paper_run_parser.add_argument("--per-trade-krw", type=float)
@@ -2101,11 +2119,111 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         risk_doc = _load_yaml_doc(config_dir / "risk.yaml")
         strategy_doc = _load_yaml_doc(config_dir / "strategy.yaml")
         defaults = _paper_defaults(base_config=base_config, risk_doc=risk_doc, strategy_doc=strategy_doc)
+        strategy_mode = str(getattr(args, "strategy", None) or defaults.get("strategy", "candidates_v1")).strip().lower()
+        model_alpha_defaults = defaults.get("model_alpha", {}) if isinstance(defaults.get("model_alpha"), dict) else {}
+        model_alpha_selection_defaults = (
+            model_alpha_defaults.get("selection", {}) if isinstance(model_alpha_defaults.get("selection"), dict) else {}
+        )
+        model_alpha_position_defaults = (
+            model_alpha_defaults.get("position", {}) if isinstance(model_alpha_defaults.get("position"), dict) else {}
+        )
+        model_alpha_exit_defaults = (
+            model_alpha_defaults.get("exit", {}) if isinstance(model_alpha_defaults.get("exit"), dict) else {}
+        )
+        model_alpha_execution_defaults = (
+            model_alpha_defaults.get("execution", {}) if isinstance(model_alpha_defaults.get("execution"), dict) else {}
+        )
+        model_ref_value = str(
+            getattr(args, "model_ref", None)
+            or defaults.get("model_ref")
+            or model_alpha_defaults.get("model_ref", "latest_v3")
+        ).strip()
+        model_family_raw = getattr(args, "model_family", None)
+        if model_family_raw is None:
+            model_family_raw = defaults.get("model_family")
+        if model_family_raw in {None, ""}:
+            model_family_raw = model_alpha_defaults.get("model_family")
+        model_family_value = str(model_family_raw).strip() if model_family_raw else None
+        model_ref_value, model_family_value = _resolve_model_ref_alias(model_ref_value, model_family_value)
+        feature_set_value = str(
+            getattr(args, "feature_set", None)
+            or defaults.get("feature_set", model_alpha_defaults.get("feature_set", "v3"))
+        ).strip().lower() or "v3"
+        selection_top_pct = float(
+            getattr(args, "top_pct", None)
+            if getattr(args, "top_pct", None) is not None
+            else model_alpha_selection_defaults.get("top_pct", 0.05)
+        )
+        selection_min_prob = float(
+            getattr(args, "min_prob", None)
+            if getattr(args, "min_prob", None) is not None
+            else model_alpha_selection_defaults.get("min_prob", 0.58)
+        )
+        selection_min_cands = int(
+            getattr(args, "min_cands_per_ts", None)
+            if getattr(args, "min_cands_per_ts", None) is not None
+            else model_alpha_selection_defaults.get("min_candidates_per_ts", 10)
+        )
+        position_max_total = int(
+            getattr(args, "max_positions_total", None)
+            if getattr(args, "max_positions_total", None) is not None
+            else model_alpha_position_defaults.get("max_positions_total", defaults["max_positions"])
+        )
+        position_cooldown_bars = int(
+            getattr(args, "cooldown_bars", None)
+            if getattr(args, "cooldown_bars", None) is not None
+            else model_alpha_position_defaults.get("cooldown_bars", 6)
+        )
+        exit_mode = str(
+            getattr(args, "exit_mode", None) or model_alpha_exit_defaults.get("mode", "hold")
+        ).strip().lower() or "hold"
+        hold_bars_value = int(
+            getattr(args, "hold_bars", None)
+            if getattr(args, "hold_bars", None) is not None
+            else model_alpha_exit_defaults.get("hold_bars", 6)
+        )
+        tp_pct_value = float(
+            getattr(args, "tp_pct", None)
+            if getattr(args, "tp_pct", None) is not None
+            else model_alpha_exit_defaults.get("tp_pct", 0.02)
+        )
+        sl_pct_value = float(
+            getattr(args, "sl_pct", None)
+            if getattr(args, "sl_pct", None) is not None
+            else model_alpha_exit_defaults.get("sl_pct", 0.01)
+        )
+        trailing_pct_value = float(
+            getattr(args, "trailing_pct", None)
+            if getattr(args, "trailing_pct", None) is not None
+            else model_alpha_exit_defaults.get("trailing_pct", 0.0)
+        )
+        exec_timeout_bars = int(
+            getattr(args, "execution_timeout_bars", None)
+            if getattr(args, "execution_timeout_bars", None) is not None
+            else model_alpha_execution_defaults.get("timeout_bars", 2)
+        )
+        exec_replace_max = int(
+            getattr(args, "execution_replace_max", None)
+            if getattr(args, "execution_replace_max", None) is not None
+            else model_alpha_execution_defaults.get("replace_max", 2)
+        )
+        exec_price_mode = str(
+            getattr(args, "execution_price_mode", None)
+            or model_alpha_execution_defaults.get("price_mode", "JOIN")
+        ).strip().upper() or "JOIN"
+        paper_tf_value = str(args.tf or defaults.get("tf", "5m")).strip().lower() or "5m"
+        max_positions_value = max(
+            int(args.max_positions if args.max_positions is not None else defaults["max_positions"]),
+            1,
+        )
+        if strategy_mode == "model_alpha_v1":
+            max_positions_value = max(position_max_total, 1)
 
         run_settings = PaperRunSettings(
             duration_sec=max(int(args.duration_sec), 1),
             quote=str(args.quote or defaults["quote"]).strip().upper(),
             top_n=max(int(args.top_n if args.top_n is not None else defaults["top_n"]), 1),
+            tf=paper_tf_value,
             print_every_sec=max(
                 float(args.print_every_sec if args.print_every_sec is not None else defaults["print_every_sec"]),
                 1.0,
@@ -2122,13 +2240,49 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 float(args.per_trade_krw if args.per_trade_krw is not None else defaults["per_trade_krw"]),
                 1.0,
             ),
-            max_positions=max(int(args.max_positions if args.max_positions is not None else defaults["max_positions"]), 1),
+            max_positions=max_positions_value,
             min_order_krw=max(float(defaults["min_order_krw"]), 0.0),
             order_timeout_sec=max(float(defaults["order_timeout_sec"]), 1.0),
             reprice_max_attempts=max(int(defaults["reprice_max_attempts"]), 0),
             cooldown_sec_after_fail=max(int(defaults["cooldown_sec_after_fail"]), 0),
             max_consecutive_failures=max(int(defaults["max_consecutive_failures"]), 1),
             out_root_dir=str(defaults["paper_out_dir"]),
+            strategy=strategy_mode,
+            model_ref=model_ref_value or None,
+            model_family=model_family_value,
+            feature_set=feature_set_value,
+            model_registry_root=str(defaults.get("model_registry_root", "models/registry")),
+            model_feature_dataset_root=(
+                str(defaults.get("model_feature_dataset_root")).strip()
+                if defaults.get("model_feature_dataset_root") is not None
+                else None
+            ),
+            model_alpha=ModelAlphaSettings(
+                model_ref=str(model_ref_value or model_alpha_defaults.get("model_ref", "latest_v3")).strip() or "latest_v3",
+                model_family=model_family_value,
+                feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
+                selection=ModelAlphaSelectionSettings(
+                    top_pct=max(min(selection_top_pct, 1.0), 0.0),
+                    min_prob=max(min(selection_min_prob, 1.0), 0.0),
+                    min_candidates_per_ts=max(selection_min_cands, 0),
+                ),
+                position=ModelAlphaPositionSettings(
+                    max_positions_total=max(position_max_total, 1),
+                    cooldown_bars=max(position_cooldown_bars, 0),
+                ),
+                exit=ModelAlphaExitSettings(
+                    mode=exit_mode,
+                    hold_bars=max(hold_bars_value, 0),
+                    tp_pct=max(tp_pct_value, 0.0),
+                    sl_pct=max(sl_pct_value, 0.0),
+                    trailing_pct=max(trailing_pct_value, 0.0),
+                ),
+                execution=ModelAlphaExecutionSettings(
+                    price_mode=exec_price_mode,
+                    timeout_bars=max(exec_timeout_bars, 1),
+                    replace_max=max(exec_replace_max, 0),
+                ),
+            ),
             micro_gate=_build_micro_gate_settings(
                 defaults=defaults["micro_gate"],
                 cli_enabled=getattr(args, "micro_gate", None),
@@ -2169,7 +2323,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         summary = run_live_paper_sync(upbit_settings=settings, run_settings=run_settings)
         _print_json(asdict(summary))
         return 0
-    except (ConfigError, UpbitError, ValueError) as exc:
+    except (ConfigError, UpbitError, ValueError, RuntimeError) as exc:
         print(f"[paper][error] {exc}")
         return 2
 
@@ -2873,6 +3027,19 @@ def _paper_defaults(
         if isinstance(strategy_root.get("micro_order_policy"), dict)
         else {}
     )
+    model_alpha_cfg = (
+        strategy_root.get("model_alpha_v1", {}) if isinstance(strategy_root.get("model_alpha_v1"), dict) else {}
+    )
+    model_alpha_selection_cfg = (
+        model_alpha_cfg.get("selection", {}) if isinstance(model_alpha_cfg.get("selection"), dict) else {}
+    )
+    model_alpha_position_cfg = (
+        model_alpha_cfg.get("position", {}) if isinstance(model_alpha_cfg.get("position"), dict) else {}
+    )
+    model_alpha_exit_cfg = model_alpha_cfg.get("exit", {}) if isinstance(model_alpha_cfg.get("exit"), dict) else {}
+    model_alpha_execution_cfg = (
+        model_alpha_cfg.get("execution", {}) if isinstance(model_alpha_cfg.get("execution"), dict) else {}
+    )
     execution_policy = (
         strategy_doc.get("execution_policy", {}) if isinstance(strategy_doc.get("execution_policy"), dict) else {}
     )
@@ -2921,6 +3088,49 @@ def _paper_defaults(
         "paper_micro_warmup_min_trade_events_per_market": 1,
         "paper_micro_auto_health_path": "data/raw_ws/upbit/_meta/ws_public_health.json",
         "paper_micro_auto_health_stale_sec": 180,
+        "strategy": str(strategy_root.get("paper_strategy_name", "candidates_v1")).strip().lower() or "candidates_v1",
+        "tf": str(model_alpha_cfg.get("tf", "5m")).strip().lower() or "5m",
+        "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",
+        "model_family": (
+            str(model_alpha_cfg.get("model_family")).strip() if model_alpha_cfg.get("model_family") is not None else None
+        ),
+        "feature_set": str(model_alpha_cfg.get("feature_set", "v3")).strip().lower() or "v3",
+        "model_registry_root": str(strategy_root.get("model_registry_root", "models/registry")).strip() or "models/registry",
+        "model_feature_dataset_root": (
+            str(strategy_root.get("model_feature_dataset_root")).strip()
+            if strategy_root.get("model_feature_dataset_root") is not None
+            else None
+        ),
+        "model_alpha": {
+            "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",
+            "model_family": (
+                str(model_alpha_cfg.get("model_family")).strip()
+                if model_alpha_cfg.get("model_family") is not None
+                else None
+            ),
+            "feature_set": str(model_alpha_cfg.get("feature_set", "v3")).strip().lower() or "v3",
+            "selection": {
+                "top_pct": float(model_alpha_selection_cfg.get("top_pct", 0.05)),
+                "min_prob": float(model_alpha_selection_cfg.get("min_prob", 0.58)),
+                "min_candidates_per_ts": int(model_alpha_selection_cfg.get("min_candidates_per_ts", 10)),
+            },
+            "position": {
+                "max_positions_total": int(model_alpha_position_cfg.get("max_positions_total", 3)),
+                "cooldown_bars": int(model_alpha_position_cfg.get("cooldown_bars", 6)),
+            },
+            "exit": {
+                "mode": str(model_alpha_exit_cfg.get("mode", "hold")).strip().lower() or "hold",
+                "hold_bars": int(model_alpha_exit_cfg.get("hold_bars", 6)),
+                "tp_pct": float(model_alpha_exit_cfg.get("tp_pct", 0.02)),
+                "sl_pct": float(model_alpha_exit_cfg.get("sl_pct", 0.01)),
+                "trailing_pct": float(model_alpha_exit_cfg.get("trailing_pct", 0.0)),
+            },
+            "execution": {
+                "price_mode": str(model_alpha_execution_cfg.get("price_mode", "JOIN")).strip().upper() or "JOIN",
+                "timeout_bars": int(model_alpha_execution_cfg.get("timeout_bars", 2)),
+                "replace_max": int(model_alpha_execution_cfg.get("replace_max", 2)),
+            },
+        },
     }
 
 
