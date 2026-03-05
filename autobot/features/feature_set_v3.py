@@ -19,6 +19,7 @@ from .multitf_join_v1 import (
     OneMJoinStats,
     aggregate_1m_for_base,
     compute_high_tf_features,
+    densify_1m_candles,
     high_tf_prefix,
     join_1m_aggregate,
     join_high_tf_asof,
@@ -37,9 +38,14 @@ class FeatureSetV3BuildResult:
     rows_after_micro: int
     rows_dropped_no_micro: int
     rows_dropped_stale: int
+    rows_dropped_one_m_before_densify: int
     rows_dropped_one_m: int
+    rows_rescued_by_one_m_densify: int
     tail_dropped_rows: int
     micro_tf_used: str
+    one_m_synth_ratio_mean: float | None
+    one_m_synth_ratio_p50: float | None
+    one_m_synth_ratio_p90: float | None
     high_tf_stats: tuple[HighTfJoinStats, ...]
     one_m_stats: OneMJoinStats
 
@@ -64,6 +70,9 @@ def feature_columns_v3(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) ->
         "one_m_volume_sum",
         "one_m_range_mean",
         "one_m_missing_ratio",
+        "one_m_synth_ratio",
+        "one_m_real_count",
+        "one_m_real_volume_sum",
     )
     high: list[str] = []
     for tf in high_tfs:
@@ -107,7 +116,10 @@ def build_feature_set_v3_from_candles(
     high_tf_staleness_multiplier: float = 2.0,
     one_m_required_bars: int = 5,
     one_m_max_missing_ratio: float = 0.2,
+    one_m_drop_if_real_count_zero: bool = True,
     sample_weight_half_life_days: float = 60.0,
+    one_m_synth_weight_floor: float = 0.2,
+    one_m_synth_weight_power: float = 2.0,
     float_dtype: str = "float32",
 ) -> FeatureSetV3BuildResult:
     if base_candles_frame.height <= 0:
@@ -121,20 +133,43 @@ def build_feature_set_v3_from_candles(
             rows_after_micro=0,
             rows_dropped_no_micro=0,
             rows_dropped_stale=0,
+            rows_dropped_one_m_before_densify=0,
             rows_dropped_one_m=0,
+            rows_rescued_by_one_m_densify=0,
             tail_dropped_rows=0,
             micro_tf_used=micro_tf_used,
+            one_m_synth_ratio_mean=None,
+            one_m_synth_ratio_p50=None,
+            one_m_synth_ratio_p90=None,
             high_tf_stats=tuple(),
             one_m_stats=OneMJoinStats(0, 0, 0, max(int(one_m_required_bars), 1), float(one_m_max_missing_ratio)),
         )
 
     working = _compute_base_features(base_candles_frame, tf=tf, float_dtype=float_dtype).sort("ts_ms")
-    one_m_agg = aggregate_1m_for_base(one_m_candles_frame, base_tf=tf, float_dtype=float_dtype)
+    dense_start_ts_ms = int(working.get_column("ts_ms").min())
+    dense_end_ts_ms = int(working.get_column("ts_ms").max())
+
+    one_m_agg_before = aggregate_1m_for_base(one_m_candles_frame, base_tf=tf, float_dtype=float_dtype)
+    working_before, _ = join_1m_aggregate(
+        base_frame=working,
+        one_m_agg=one_m_agg_before,
+        required_bars=one_m_required_bars,
+        max_missing_ratio=one_m_max_missing_ratio,
+        drop_if_real_count_zero=False,
+    )
+
+    one_m_dense = densify_1m_candles(
+        one_m_candles_frame,
+        start_ts_ms=dense_start_ts_ms,
+        end_ts_ms=dense_end_ts_ms,
+    )
+    one_m_agg = aggregate_1m_for_base(one_m_dense, base_tf=tf, float_dtype=float_dtype)
     working, one_m_stats = join_1m_aggregate(
         base_frame=working,
         one_m_agg=one_m_agg,
         required_bars=one_m_required_bars,
         max_missing_ratio=one_m_max_missing_ratio,
+        drop_if_real_count_zero=one_m_drop_if_real_count_zero,
     )
 
     high_stats: list[HighTfJoinStats] = []
@@ -152,6 +187,7 @@ def build_feature_set_v3_from_candles(
         high_stats.append(stats)
 
     in_window = working.filter((pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") <= int(to_ts_ms))).sort("ts_ms")
+    in_window_before = working_before.filter((pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") <= int(to_ts_ms))).sort("ts_ms")
     rows_base_total = int(in_window.height)
     if rows_base_total <= 0:
         return FeatureSetV3BuildResult(
@@ -164,9 +200,14 @@ def build_feature_set_v3_from_candles(
             rows_after_micro=0,
             rows_dropped_no_micro=0,
             rows_dropped_stale=0,
+            rows_dropped_one_m_before_densify=0,
             rows_dropped_one_m=0,
+            rows_rescued_by_one_m_densify=0,
             tail_dropped_rows=0,
             micro_tf_used=micro_tf_used,
+            one_m_synth_ratio_mean=None,
+            one_m_synth_ratio_p50=None,
+            one_m_synth_ratio_p90=None,
             high_tf_stats=tuple(high_stats),
             one_m_stats=one_m_stats,
         )
@@ -174,7 +215,22 @@ def build_feature_set_v3_from_candles(
     stale_exprs = [pl.col(f"{high_tf_prefix(item)}_stale") == True for item in high_tfs if f"{high_tf_prefix(item)}_stale" in in_window.columns]  # noqa: E712
     stale_mask = pl.any_horizontal(stale_exprs) if stale_exprs else pl.lit(False)
     rows_dropped_stale = int(in_window.filter(stale_mask).height) if stale_exprs else 0
+    rows_dropped_one_m_before_densify = (
+        int(in_window_before.filter(pl.col("one_m_fail") == True).height) if "one_m_fail" in in_window_before.columns else 0  # noqa: E712
+    )
     rows_dropped_one_m = int(in_window.filter(pl.col("one_m_fail") == True).height) if "one_m_fail" in in_window.columns else 0  # noqa: E712
+    rows_rescued_by_one_m_densify = 0
+    if "one_m_fail" in in_window_before.columns and "one_m_fail" in in_window.columns:
+        rescue = (
+            in_window_before.select(["ts_ms", pl.col("one_m_fail").alias("before_fail")])
+            .join(
+                in_window.select(["ts_ms", pl.col("one_m_fail").alias("after_fail")]),
+                on="ts_ms",
+                how="inner",
+            )
+            .filter((pl.col("before_fail") == True) & (pl.col("after_fail") == False))  # noqa: E712
+        )
+        rows_rescued_by_one_m_densify = int(rescue.height)
 
     filtered = in_window
     if stale_exprs:
@@ -182,6 +238,7 @@ def build_feature_set_v3_from_candles(
     if "one_m_fail" in filtered.columns:
         filtered = filtered.filter(pl.col("one_m_fail") == False)  # noqa: E712
     rows_after_multitf = int(filtered.height)
+    one_m_synth_ratio_mean, one_m_synth_ratio_p50, one_m_synth_ratio_p90 = _one_m_synth_ratio_stats(filtered)
 
     labeled = apply_labeling_v1(frame=filtered, config=label_config)
     labeled, tail_dropped = apply_label_tail_guard(labeled, horizon_bars=label_config.horizon_bars)
@@ -203,6 +260,8 @@ def build_feature_set_v3_from_candles(
     output = _attach_sample_weight(
         output,
         half_life_days=max(float(sample_weight_half_life_days), 1e-6),
+        synth_weight_floor=one_m_synth_weight_floor,
+        synth_weight_power=one_m_synth_weight_power,
     )
     output = _cast_output(output, float_dtype=float_dtype)
 
@@ -216,9 +275,14 @@ def build_feature_set_v3_from_candles(
         rows_after_micro=rows_after_micro,
         rows_dropped_no_micro=int(micro_join.rows_dropped_no_micro),
         rows_dropped_stale=rows_dropped_stale,
+        rows_dropped_one_m_before_densify=rows_dropped_one_m_before_densify,
         rows_dropped_one_m=rows_dropped_one_m,
+        rows_rescued_by_one_m_densify=rows_rescued_by_one_m_densify,
         tail_dropped_rows=int(tail_dropped),
         micro_tf_used=micro_join.micro_tf_used,
+        one_m_synth_ratio_mean=one_m_synth_ratio_mean,
+        one_m_synth_ratio_p50=one_m_synth_ratio_p50,
+        one_m_synth_ratio_p90=one_m_synth_ratio_p90,
         high_tf_stats=tuple(high_stats),
         one_m_stats=one_m_stats,
     )
@@ -289,20 +353,35 @@ def _compute_base_features(base_candles_frame: pl.DataFrame, *, tf: str, float_d
     )
 
 
-def _attach_sample_weight(frame: pl.DataFrame, *, half_life_days: float) -> pl.DataFrame:
+def _attach_sample_weight(
+    frame: pl.DataFrame,
+    *,
+    half_life_days: float,
+    synth_weight_floor: float = 0.2,
+    synth_weight_power: float = 2.0,
+) -> pl.DataFrame:
     if frame.height <= 0:
         return frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("sample_weight"))
     max_ts = int(frame.get_column("ts_ms").max())
     decay = math.log(2.0) / max(float(half_life_days), 1e-9)
-    return frame.with_columns(
-        (
-            ((pl.lit(max_ts, dtype=pl.Int64) - pl.col("ts_ms").cast(pl.Int64)).cast(pl.Float64) / 86_400_000.0)
-            .mul(-decay)
-            .exp()
-            .cast(pl.Float64)
-            .alias("sample_weight")
-        )
+    floor = min(max(float(synth_weight_floor), 0.0), 1.0)
+    power = max(float(synth_weight_power), 0.0)
+
+    age_weight = (
+        ((pl.lit(max_ts, dtype=pl.Int64) - pl.col("ts_ms").cast(pl.Int64)).cast(pl.Float64) / 86_400_000.0)
+        .mul(-decay)
+        .exp()
+        .cast(pl.Float64)
     )
+    quality_weight: pl.Expr = pl.lit(1.0, dtype=pl.Float64)
+    if "one_m_synth_ratio" in frame.columns:
+        quality_weight = (
+            (pl.lit(1.0, dtype=pl.Float64) - pl.col("one_m_synth_ratio").cast(pl.Float64))
+            .clip(floor, 1.0)
+            .pow(power)
+            .fill_null(1.0)
+        )
+    return frame.with_columns((age_weight * quality_weight).cast(pl.Float64).alias("sample_weight"))
 
 
 def _cast_output(frame: pl.DataFrame, *, float_dtype: str) -> pl.DataFrame:
@@ -313,6 +392,7 @@ def _cast_output(frame: pl.DataFrame, *, float_dtype: str) -> pl.DataFrame:
         "is_gap",
         "candle_ok",
         "one_m_missing",
+        "one_m_no_real",
         "one_m_fail",
         "m_micro_trade_available",
         "m_micro_book_available",
@@ -322,6 +402,8 @@ def _cast_output(frame: pl.DataFrame, *, float_dtype: str) -> pl.DataFrame:
         "ts_ms",
         "one_m_count",
         "one_m_last_ts",
+        "one_m_synth_count",
+        "one_m_real_count",
         "src_ts_micro",
         "y_cls",
         "m_trade_events",
@@ -372,6 +454,9 @@ def _required_feature_columns_for_filter(*, high_tfs: tuple[str, ...]) -> tuple[
         "one_m_ret_std",
         "one_m_volume_sum",
         "one_m_range_mean",
+        "one_m_synth_ratio",
+        "one_m_real_count",
+        "one_m_real_volume_sum",
     )
     high: list[str] = []
     for tf in high_tfs:
@@ -409,3 +494,26 @@ def _dedupe_preserve(values: Iterable[str]) -> list[str]:
         seen.add(item)
         out.append(item)
     return out
+
+
+def _one_m_synth_ratio_stats(frame: pl.DataFrame) -> tuple[float | None, float | None, float | None]:
+    if frame.height <= 0 or "one_m_synth_ratio" not in frame.columns:
+        return None, None, None
+    values = [float(v) for v in frame.get_column("one_m_synth_ratio").drop_nulls().to_list()]
+    if not values:
+        return None, None, None
+    values.sort()
+    mean = float(sum(values) / len(values))
+    p50 = _quantile_sorted(values, 0.50)
+    p90 = _quantile_sorted(values, 0.90)
+    return mean, p50, p90
+
+
+def _quantile_sorted(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return float(values[0])
+    q_clamped = min(max(float(q), 0.0), 1.0)
+    idx = int(round((len(values) - 1) * q_clamped))
+    return float(values[idx])

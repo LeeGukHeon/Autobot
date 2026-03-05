@@ -34,9 +34,15 @@
         backoff_base_sec: 1
         backoff_max_sec: 32
   micro_order_policy:
-    enabled: false
+    enabled: true
     mode: trade_only
     on_missing: static_fallback
+    cross_tick_bps_max: 10.0
+    cross_escalate_after_timeouts: 2
+    cross_min_prob: null
+    cross_micro_stale_ms: null
+    abort_if_tick_bps_gt: null
+    tick_size_resolver: auto
     tiering:
       w_notional: 1.0
       w_events: 0.5

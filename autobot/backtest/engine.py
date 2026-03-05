@@ -14,12 +14,14 @@ from typing import Any, Callable, Sequence
 from autobot.common.event_store import JsonlEventStore
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
+    PRICE_MODE_CROSS_1T,
     PRICE_MODE_JOIN,
     REASON_MIN_NOTIONAL_DUST_ABORT,
     REASON_TIMEOUT_REPLACE,
     SUPERVISOR_ACTION_ABORT,
     SUPERVISOR_ACTION_REPLACE,
     OrderExecProfile,
+    SupervisorAction,
     build_limit_price_from_mode,
     evaluate_supervisor_action,
     make_legacy_exec_profile,
@@ -317,6 +319,8 @@ class ExecutionUpdate:
     supervisor_events: list[dict[str, Any]] = field(default_factory=list)
     counter_deltas: dict[str, int] = field(default_factory=dict)
     reason_counts: dict[str, int] = field(default_factory=dict)
+    order_exec_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    order_policy_diagnostics: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -342,6 +346,8 @@ class BacktestExecutionGateway:
         reprice_tick_steps: int,
         default_profile: OrderExecProfile | None = None,
         max_replaces_per_min_per_market: int = 10,
+        micro_order_policy: MicroOrderPolicyV1 | None = None,
+        micro_snapshot_provider: MicroSnapshotProvider | None = None,
     ) -> None:
         self._exchange = exchange
         self._legacy_default_profile = make_legacy_exec_profile(
@@ -361,6 +367,8 @@ class BacktestExecutionGateway:
         self._pending_by_intent: dict[str, _PendingIntent] = {}
         self._intent_by_order_id: dict[str, str] = {}
         self._replace_window_by_market: dict[str, deque[int]] = {}
+        self._micro_order_policy = micro_order_policy
+        self._micro_snapshot_provider = micro_snapshot_provider
 
     def submit_intent(
         self,
@@ -375,6 +383,12 @@ class BacktestExecutionGateway:
             intent.meta.get("exec_profile"),
             fallback=self._default_profile,
         )
+        profile_payload = order_exec_profile_to_dict(profile)
+        policy_diagnostics = (
+            dict(intent.meta.get("micro_diagnostics"))
+            if isinstance(intent.meta.get("micro_diagnostics"), dict)
+            else {}
+        )
         order, fill = self._exchange.submit_limit_order_deferred(
             intent=intent,
             rules=rules,
@@ -383,6 +397,9 @@ class BacktestExecutionGateway:
             reprice_attempt=0,
         )
         update.orders_submitted.append(order)
+        update.order_exec_profiles[order.order_id] = profile_payload
+        if policy_diagnostics:
+            update.order_policy_diagnostics[order.order_id] = dict(policy_diagnostics)
         if order.state in {"OPEN", "PARTIAL"}:
             self._activate_pending(
                 intent=intent,
@@ -432,8 +449,35 @@ class BacktestExecutionGateway:
                 continue
 
             remaining_volume = max(current_order.volume_req - current_order.volume_filled, 0.0)
+            effective_profile = pending.profile
+            policy_diagnostics: dict[str, Any] = {}
+            policy_abort_reason: str | None = None
+            if self._micro_order_policy is not None:
+                snapshot = (
+                    self._micro_snapshot_provider.get(market_value, int(bar.ts_ms))
+                    if self._micro_snapshot_provider is not None
+                    else None
+                )
+                model_prob = (
+                    _safe_optional_float(pending.intent.meta.get("model_prob"))
+                    if isinstance(pending.intent.meta, dict)
+                    else None
+                )
+                guard = self._micro_order_policy.resolve_guarded_profile(
+                    profile=pending.profile,
+                    market=market_value,
+                    ref_price=bar.close,
+                    tick_size=rules.tick_size,
+                    replace_attempt=pending.replace_count + 1,
+                    model_prob=model_prob,
+                    micro_snapshot=snapshot,
+                    now_ts_ms=bar.ts_ms,
+                )
+                effective_profile = guard.profile
+                policy_diagnostics = dict(guard.diagnostics or {})
+                policy_abort_reason = guard.abort_reason
             action = evaluate_supervisor_action(
-                profile=pending.profile,
+                profile=effective_profile,
                 side=current_order.side,
                 now_ts_ms=bar.ts_ms,
                 created_ts_ms=pending.created_ts_ms,
@@ -448,6 +492,11 @@ class BacktestExecutionGateway:
                 replaces_last_minute=len(market_window),
                 max_replaces_per_min_per_market=self._max_replaces_per_min_per_market,
             )
+            if policy_abort_reason is not None and action.action == SUPERVISOR_ACTION_REPLACE:
+                action = SupervisorAction(
+                    action=SUPERVISOR_ACTION_ABORT,
+                    reason_code=policy_abort_reason,
+                )
             if action.action not in {SUPERVISOR_ACTION_ABORT, SUPERVISOR_ACTION_REPLACE}:
                 continue
 
@@ -470,6 +519,7 @@ class BacktestExecutionGateway:
                         "intent_id": pending.intent.intent_id,
                         "replace_count": pending.replace_count,
                         "reason_code": reason_code,
+                        "micro_policy": dict(policy_diagnostics),
                     },
                 }
             )
@@ -508,7 +558,12 @@ class BacktestExecutionGateway:
                 volume=float(remaining_volume),
                 time_in_force=pending.intent.time_in_force,
                 reason_code=pending.intent.reason_code,
-                meta={**pending.intent.meta, "reprice_attempt": pending.replace_count + 1},
+                meta={
+                    **pending.intent.meta,
+                    "reprice_attempt": pending.replace_count + 1,
+                    "exec_profile": order_exec_profile_to_dict(effective_profile),
+                    "micro_diagnostics": dict(policy_diagnostics),
+                },
             )
             new_order, new_fill = self._exchange.submit_limit_order_deferred(
                 intent=reprice_intent,
@@ -533,11 +588,14 @@ class BacktestExecutionGateway:
                         "reason_code": reason_code,
                         "new_price": float(new_price),
                         "new_volume": float(remaining_volume),
+                        "price_mode": str(effective_profile.price_mode),
+                        "micro_policy": dict(policy_diagnostics),
                     },
                 }
             )
             market_window.append(int(bar.ts_ms))
 
+            effective_profile_payload = order_exec_profile_to_dict(effective_profile)
             if new_order.state in {"OPEN", "PARTIAL"}:
                 self._activate_pending(
                     intent=reprice_intent,
@@ -545,13 +603,17 @@ class BacktestExecutionGateway:
                     replace_count=pending.replace_count + 1,
                     ts_ms=bar.ts_ms,
                     created_ts_ms=pending.created_ts_ms,
-                    profile=pending.profile,
+                    profile=effective_profile,
                 )
             elif new_order.state == "FAILED":
                 update.failed_markets.append(pending.market)
                 self._clear_pending(intent_id)
             else:
                 self._clear_pending(intent_id)
+
+            update.order_exec_profiles[new_order.order_id] = effective_profile_payload
+            if policy_diagnostics:
+                update.order_policy_diagnostics[new_order.order_id] = dict(policy_diagnostics)
 
             if new_fill is not None:
                 update.fills.append(new_fill)
@@ -638,6 +700,10 @@ class BacktestRunEngine:
             "micro_blocked_reasons": {},
             "micro_policy_tier_counts": {},
             "micro_policy_fallback_counts": {},
+            "micro_policy_cross_allowed_count": 0,
+            "micro_policy_cross_used_count": 0,
+            "micro_policy_cross_block_reasons": {},
+            "micro_policy_resolver_failed_fallback_used": 0,
             "order_supervisor_reasons": {},
             "scored_rows": 0,
             "selected_rows": 0,
@@ -685,6 +751,9 @@ class BacktestRunEngine:
             if settings.micro_gate.enabled and micro_snapshot_provider is not None
             else None
         )
+        micro_order_policy = (
+            MicroOrderPolicyV1(settings.micro_order_policy) if settings.micro_order_policy.enabled else None
+        )
         trade_gate = TradeGateV1(
             GateSettings(
                 per_trade_krw=float(settings.per_trade_krw),
@@ -715,6 +784,8 @@ class BacktestRunEngine:
                 if settings.micro_order_policy.enabled
                 else 10
             ),
+            micro_order_policy=micro_order_policy,
+            micro_snapshot_provider=micro_snapshot_provider,
         )
 
         model_strategy = (
@@ -742,6 +813,10 @@ class BacktestRunEngine:
             "micro_blocked_reasons": {},
             "micro_policy_tier_counts": {},
             "micro_policy_fallback_counts": {},
+            "micro_policy_cross_allowed_count": 0,
+            "micro_policy_cross_used_count": 0,
+            "micro_policy_cross_block_reasons": {},
+            "micro_policy_resolver_failed_fallback_used": 0,
             "order_supervisor_reasons": {},
             "scored_rows": 0,
             "selected_rows": 0,
@@ -757,7 +832,10 @@ class BacktestRunEngine:
             "filled_intents": set(),
             "time_to_fill_ms": [],
             "slippage_bps": [],
+            "policy_tick_bps_values": [],
             "fill_records": [],
+            "order_exec_profile_by_order_id": {},
+            "order_policy_diag_by_order_id": {},
             "selection_per_ts": [],
             "strategy_adapter": model_strategy,
         }
@@ -801,10 +879,6 @@ class BacktestRunEngine:
                     "micro_order_policy_mode": str(settings.micro_order_policy.mode),
                     "micro_order_policy_on_missing": str(settings.micro_order_policy.on_missing),
                 },
-            )
-
-            micro_order_policy = (
-                MicroOrderPolicyV1(settings.micro_order_policy) if settings.micro_order_policy.enabled else None
             )
 
             while queue:
@@ -933,6 +1007,7 @@ class BacktestRunEngine:
         fill_rate = fill_ratio
         ttf_values = [float(value) for value in self._runtime_state.get("time_to_fill_ms", [])]
         slippage_values = [float(value) for value in self._runtime_state.get("slippage_bps", [])]
+        policy_tick_bps_values = [float(value) for value in self._runtime_state.get("policy_tick_bps_values", [])]
         replaces_total = int(self._runtime_counters.get("replaces_total", 0))
         cancels_total = int(self._runtime_counters.get("cancels_total", 0))
         aborted_timeout_total = int(self._runtime_counters.get("aborted_timeout_total", 0))
@@ -1013,6 +1088,19 @@ class BacktestRunEngine:
                 "slippage_bps_mean": mean(slippage_values),
                 "slippage_bps_p50": percentile(slippage_values, 0.50),
                 "slippage_bps_p90": percentile(slippage_values, 0.90),
+                "tick_bps_stats": {
+                    "mean": mean(policy_tick_bps_values),
+                    "p90": percentile(policy_tick_bps_values, 0.90),
+                    "max": max(policy_tick_bps_values) if policy_tick_bps_values else 0.0,
+                },
+                "cross_block_reasons": _normalize_reason_counts(
+                    self._runtime_counters.get("micro_policy_cross_block_reasons", {})
+                ),
+                "cross_allowed_count": int(self._runtime_counters.get("micro_policy_cross_allowed_count", 0)),
+                "cross_used_count": int(self._runtime_counters.get("micro_policy_cross_used_count", 0)),
+                "resolver_failed_fallback_used_count": int(
+                    self._runtime_counters.get("micro_policy_resolver_failed_fallback_used", 0)
+                ),
             },
         )
         _write_json(
@@ -1342,6 +1430,12 @@ class BacktestRunEngine:
                 },
             )
 
+        ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
+        model_prob = (
+            _safe_optional_float(candidate.meta.get("model_prob"))
+            if isinstance(candidate.meta, dict)
+            else None
+        )
         policy_decision = None
         exec_profile = _legacy_backtest_exec_profile(self._run_settings)
         policy_diagnostics: dict[str, Any] = {}
@@ -1351,7 +1445,15 @@ class BacktestRunEngine:
                 if micro_snapshot_provider is not None
                 else None
             )
-            policy_decision = micro_order_policy.evaluate(micro_snapshot=snapshot)
+            policy_decision = micro_order_policy.evaluate(
+                micro_snapshot=snapshot,
+                market=candidate.market,
+                ref_price=ref_price,
+                tick_size=rules.tick_size,
+                replace_attempt=0,
+                model_prob=model_prob,
+                now_ts_ms=ts_ms,
+            )
             policy_diagnostics = dict(policy_decision.diagnostics or {})
             if not policy_decision.allow:
                 self._runtime_counters["candidates_aborted_by_policy"] = int(
@@ -1375,6 +1477,12 @@ class BacktestRunEngine:
                 return False
             if policy_decision.profile is not None:
                 exec_profile = policy_decision.profile
+            _record_micro_policy_diagnostics(
+                counters=self._runtime_counters,
+                runtime_state=self._runtime_state,
+                diagnostics=policy_diagnostics,
+                count_cross_used=str(exec_profile.price_mode).strip().upper() == PRICE_MODE_CROSS_1T,
+            )
             tier_code = str(policy_decision.tier or "NONE").strip().upper() or "NONE"
             _note_reason_count(
                 reason_code=tier_code,
@@ -1386,7 +1494,6 @@ class BacktestRunEngine:
                     reason_counts=self._runtime_counters.setdefault("micro_policy_fallback_counts", {}),
                 )
 
-        ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
         limit_price = build_limit_price_from_mode(
             side=side_value,
             ref_price=ref_price,
@@ -1485,8 +1592,19 @@ class BacktestRunEngine:
         time_to_fill_ms = self._runtime_state.setdefault("time_to_fill_ms", [])
         slippage_values = self._runtime_state.setdefault("slippage_bps", [])
         fill_records = self._runtime_state.setdefault("fill_records", [])
+        order_exec_profile_by_order_id = self._runtime_state.setdefault("order_exec_profile_by_order_id", {})
+        order_policy_diag_by_order_id = self._runtime_state.setdefault("order_policy_diag_by_order_id", {})
         strategy_adapter = self._runtime_state.get("strategy_adapter")
         order_by_id = {order.order_id: order for order in update.orders_filled}
+
+        if isinstance(order_exec_profile_by_order_id, dict):
+            for order_id, payload in update.order_exec_profiles.items():
+                if isinstance(payload, dict):
+                    order_exec_profile_by_order_id[str(order_id)] = dict(payload)
+        if isinstance(order_policy_diag_by_order_id, dict):
+            for order_id, payload in update.order_policy_diagnostics.items():
+                if isinstance(payload, dict):
+                    order_policy_diag_by_order_id[str(order_id)] = dict(payload)
 
         for order in update.orders_submitted:
             event_store.append_order(order)
@@ -1494,12 +1612,28 @@ class BacktestRunEngine:
             if isinstance(intent_context, dict):
                 context = intent_context.get(order.intent_id)
                 if isinstance(context, dict):
-                    exec_profile = context.get("exec_profile")
-                    diagnostics = context.get("micro_diagnostics")
+                    exec_profile = (
+                        order_exec_profile_by_order_id.get(order.order_id)
+                        if isinstance(order_exec_profile_by_order_id, dict)
+                        else None
+                    )
+                    if not isinstance(exec_profile, dict):
+                        exec_profile = context.get("exec_profile")
+                    diagnostics = (
+                        order_policy_diag_by_order_id.get(order.order_id)
+                        if isinstance(order_policy_diag_by_order_id, dict)
+                        else None
+                    )
+                    if not isinstance(diagnostics, dict):
+                        diagnostics = context.get("micro_diagnostics")
                     policy = context.get("micro_order_policy")
                     payload["exec_profile"] = dict(exec_profile) if isinstance(exec_profile, dict) else {}
                     payload["micro_diagnostics"] = dict(diagnostics) if isinstance(diagnostics, dict) else {}
                     payload["micro_order_policy"] = dict(policy) if isinstance(policy, dict) else {}
+                    if isinstance(exec_profile, dict):
+                        context["exec_profile"] = dict(exec_profile)
+                    if isinstance(diagnostics, dict):
+                        context["micro_diagnostics"] = dict(diagnostics)
             append_event("ORDER_SUBMITTED", ts_ms=order.updated_ts_ms, payload=payload)
             counters["orders_submitted"] += 1
 
@@ -1513,7 +1647,28 @@ class BacktestRunEngine:
             event_type = str(item.get("event_type", "")).strip().upper()
             ts_value = int(item.get("ts_ms", ts_ms))
             payload = item.get("payload")
-            append_event(event_type, ts_ms=ts_value, payload=payload if isinstance(payload, dict) else {})
+            payload_dict = payload if isinstance(payload, dict) else {}
+            append_event(event_type, ts_ms=ts_value, payload=payload_dict)
+            policy_payload = payload_dict.get("micro_policy")
+            if not isinstance(policy_payload, dict):
+                continue
+            if event_type == "ORDER_TIMEOUT":
+                _record_micro_policy_diagnostics(
+                    counters=counters,
+                    runtime_state=self._runtime_state,
+                    diagnostics=policy_payload,
+                    count_cross_used=False,
+                )
+            elif event_type == "ORDER_REPLACED":
+                mode_value = str(payload_dict.get("price_mode", policy_payload.get("selected_price_mode", ""))).strip().upper()
+                _record_micro_policy_diagnostics(
+                    counters=counters,
+                    runtime_state=self._runtime_state,
+                    diagnostics=policy_payload,
+                    count_cross_used=(mode_value == PRICE_MODE_CROSS_1T),
+                    include_tick_sample=False,
+                    include_cross_gate=False,
+                )
 
         for key, delta in update.counter_deltas.items():
             counters[key] = int(counters.get(key, 0)) + int(delta)
@@ -1532,15 +1687,33 @@ class BacktestRunEngine:
             ref_price_value: float | None = None
             slippage_value: float | None = None
             price_mode_value = ""
+            tick_bps_value: float | None = None
             if order is not None and isinstance(intent_context, dict):
                 context = intent_context.get(order.intent_id)
                 if isinstance(context, dict):
                     ref_price = _safe_optional_float(context.get("initial_ref_price"))
                     ref_price_value = float(ref_price) if ref_price is not None else None
                     reason_code = str(context.get("reason_code", "")).strip()
-                    exec_profile_payload = context.get("exec_profile")
+                    exec_profile_payload = (
+                        order_exec_profile_by_order_id.get(order.order_id)
+                        if isinstance(order_exec_profile_by_order_id, dict)
+                        else None
+                    )
+                    if not isinstance(exec_profile_payload, dict):
+                        exec_profile_payload = context.get("exec_profile")
                     if isinstance(exec_profile_payload, dict):
                         price_mode_value = str(exec_profile_payload.get("price_mode", "")).strip().upper()
+                    policy_diag_payload = (
+                        order_policy_diag_by_order_id.get(order.order_id)
+                        if isinstance(order_policy_diag_by_order_id, dict)
+                        else None
+                    )
+                    if isinstance(policy_diag_payload, dict):
+                        tick_bps_raw = policy_diag_payload.get("tick_bps")
+                        try:
+                            tick_bps_value = float(tick_bps_raw) if tick_bps_raw is not None else None
+                        except (TypeError, ValueError):
+                            tick_bps_value = None
                     if ref_price is not None and ref_price > 0:
                         slip = slippage_bps(
                             side=order.side,
@@ -1557,6 +1730,7 @@ class BacktestRunEngine:
                         "market": str(fill.market).strip().upper(),
                         "side": (str(order.side).strip().lower() if order is not None else ""),
                         "ref_price": ref_price_value,
+                        "tick_bps": tick_bps_value,
                         "order_price": (float(order.price) if order is not None else None),
                         "fill_price": float(fill.price),
                         "slippage_bps": slippage_value,
@@ -1846,6 +2020,51 @@ def _note_reason_count(*, reason_code: str, reason_counts: dict[str, Any], delta
     reason_counts[reason] = int(reason_counts.get(reason, 0)) + int(delta)
 
 
+def _record_micro_policy_diagnostics(
+    *,
+    counters: dict[str, Any],
+    runtime_state: dict[str, Any],
+    diagnostics: dict[str, Any],
+    count_cross_used: bool,
+    include_tick_sample: bool = True,
+    include_cross_gate: bool = True,
+) -> None:
+    if not isinstance(diagnostics, dict):
+        return
+
+    if include_tick_sample:
+        tick_raw = diagnostics.get("tick_bps")
+        try:
+            tick_value = float(tick_raw) if tick_raw is not None else None
+        except (TypeError, ValueError):
+            tick_value = None
+        if tick_value is not None:
+            samples = runtime_state.setdefault("policy_tick_bps_values", [])
+            if isinstance(samples, list):
+                samples.append(float(tick_value))
+
+    if bool(diagnostics.get("resolver_failed_fallback_used", False)):
+        counters["micro_policy_resolver_failed_fallback_used"] = int(
+            counters.get("micro_policy_resolver_failed_fallback_used", 0)
+        ) + 1
+
+    if include_cross_gate:
+        cross_candidate = bool(diagnostics.get("cross_candidate", False))
+        cross_allowed = bool(diagnostics.get("cross_allowed", False))
+        if cross_candidate and cross_allowed:
+            counters["micro_policy_cross_allowed_count"] = int(counters.get("micro_policy_cross_allowed_count", 0)) + 1
+
+        block_reason = str(diagnostics.get("cross_block_reason", "")).strip().upper()
+        if cross_candidate and block_reason:
+            _note_reason_count(
+                reason_code=block_reason,
+                reason_counts=counters.setdefault("micro_policy_cross_block_reasons", {}),
+            )
+
+    if count_cross_used:
+        counters["micro_policy_cross_used_count"] = int(counters.get("micro_policy_cross_used_count", 0)) + 1
+
+
 def _legacy_backtest_exec_profile(settings: BacktestRunSettings) -> OrderExecProfile:
     interval_ms = _interval_ms_from_tf(settings.tf)
     timeout_ms = max(int(settings.order_timeout_bars), 1) * interval_ms
@@ -1890,6 +2109,8 @@ def _write_json(*, path: Path, payload: dict[str, Any]) -> None:
 def _write_trade_artifacts(*, run_root: Path, fill_records: Any) -> None:
     trades_path = run_root / "trades.csv"
     per_market_path = run_root / "per_market.csv"
+    slippage_by_market_path = run_root / "slippage_by_market.csv"
+    price_mode_by_market_path = run_root / "price_mode_by_market.csv"
     rows = [item for item in fill_records if isinstance(item, dict)] if isinstance(fill_records, list) else []
     rows.sort(key=lambda item: (int(item.get("ts_ms", 0)), str(item.get("market", "")), str(item.get("side", ""))))
 
@@ -1898,6 +2119,7 @@ def _write_trade_artifacts(*, run_root: Path, fill_records: Any) -> None:
         "market",
         "side",
         "ref_price",
+        "tick_bps",
         "order_price",
         "fill_price",
         "slippage_bps",
@@ -1974,6 +2196,92 @@ def _write_trade_artifacts(*, run_root: Path, fill_records: Any) -> None:
                     "notional_ask": float(item["notional_ask"]),
                     "fees_quote": float(item["fees_quote"]),
                     "net_flow_quote": float(item["net_flow_quote"]),
+                }
+            )
+
+    mode_aggregates: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        market = str(row.get("market", "")).strip().upper()
+        if not market:
+            continue
+        item = mode_aggregates.setdefault(
+            market,
+            {
+                "fills": 0,
+                "cross": 0,
+                "join": 0,
+                "passive": 0,
+                "other": 0,
+                "slippages": [],
+            },
+        )
+        item["fills"] = int(item["fills"]) + 1
+        mode = str(row.get("price_mode", "")).strip().upper()
+        if mode == PRICE_MODE_CROSS_1T:
+            item["cross"] = int(item["cross"]) + 1
+        elif mode == PRICE_MODE_JOIN:
+            item["join"] = int(item["join"]) + 1
+        elif mode.startswith("PASSIVE"):
+            item["passive"] = int(item["passive"]) + 1
+        else:
+            item["other"] = int(item["other"]) + 1
+        slip_raw = row.get("slippage_bps")
+        try:
+            slip_value = float(slip_raw) if slip_raw is not None else None
+        except (TypeError, ValueError):
+            slip_value = None
+        if slip_value is not None and isinstance(item.get("slippages"), list):
+            item["slippages"].append(slip_value)
+
+    slippage_by_market_fields = [
+        "market",
+        "fills",
+        "mean_bps",
+        "p50_bps",
+        "p90_bps",
+        "max_bps",
+        "cross_ratio",
+    ]
+    with slippage_by_market_path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=slippage_by_market_fields)
+        writer.writeheader()
+        for market in sorted(mode_aggregates):
+            item = mode_aggregates[market]
+            fills = int(item["fills"])
+            slippages = [float(value) for value in item.get("slippages", []) if isinstance(value, (int, float))]
+            writer.writerow(
+                {
+                    "market": market,
+                    "fills": fills,
+                    "mean_bps": mean(slippages),
+                    "p50_bps": percentile(slippages, 0.50),
+                    "p90_bps": percentile(slippages, 0.90),
+                    "max_bps": max(slippages) if slippages else 0.0,
+                    "cross_ratio": (int(item["cross"]) / fills) if fills > 0 else 0.0,
+                }
+            )
+
+    price_mode_by_market_fields = [
+        "market",
+        "JOIN_count",
+        "CROSS_1T_count",
+        "PASSIVE_count",
+        "OTHER_count",
+        "total_fills",
+    ]
+    with price_mode_by_market_path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=price_mode_by_market_fields)
+        writer.writeheader()
+        for market in sorted(mode_aggregates):
+            item = mode_aggregates[market]
+            writer.writerow(
+                {
+                    "market": market,
+                    "JOIN_count": int(item["join"]),
+                    "CROSS_1T_count": int(item["cross"]),
+                    "PASSIVE_count": int(item["passive"]),
+                    "OTHER_count": int(item["other"]),
+                    "total_fills": int(item["fills"]),
                 }
             )
 

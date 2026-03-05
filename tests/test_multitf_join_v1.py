@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from autobot.features.multitf_join_v1 import join_1m_aggregate, join_high_tf_asof
+from autobot.features.multitf_join_v1 import densify_1m_candles, join_1m_aggregate, join_high_tf_asof
 
 
 def test_high_tf_asof_join_does_not_use_future_rows() -> None:
@@ -54,3 +54,52 @@ def test_1m_join_marks_missing_ratio_and_failures() -> None:
     assert joined.get_column("one_m_missing_ratio").to_list() == [0.0, 0.4]
     assert joined.get_column("one_m_fail").to_list() == [False, True]
     assert stats.rows_failed == 1
+
+
+def test_densify_1m_fills_gaps_with_prev_close() -> None:
+    one_m = pl.DataFrame(
+        {
+            "ts_ms": [60_000, 180_000],
+            "open": [100.0, 103.0],
+            "high": [101.0, 104.0],
+            "low": [99.0, 102.0],
+            "close": [100.0, 103.0],
+            "volume_base": [5.0, 7.0],
+        }
+    )
+    dense = densify_1m_candles(one_m, start_ts_ms=60_000, end_ts_ms=180_000)
+
+    assert dense.get_column("ts_ms").to_list() == [60_000, 120_000, 180_000]
+    assert dense.get_column("is_synth_1m").to_list() == [False, True, False]
+    assert dense.get_column("close").to_list() == [100.0, 100.0, 103.0]
+    assert dense.get_column("volume_base").to_list() == [5.0, 0.0, 7.0]
+
+
+def test_1m_join_can_drop_windows_with_no_real_1m() -> None:
+    base = pl.DataFrame({"ts_ms": [300_000]})
+    one_m = pl.DataFrame(
+        {
+            "ts_ms": [300_000],
+            "one_m_count": [5],
+            "one_m_last_ts": [300_000],
+            "one_m_ret_mean": [0.0],
+            "one_m_ret_std": [0.0],
+            "one_m_volume_sum": [0.0],
+            "one_m_range_mean": [0.0],
+            "one_m_synth_count": [5],
+            "one_m_real_count": [0],
+            "one_m_real_volume_sum": [0.0],
+        }
+    )
+
+    joined, stats = join_1m_aggregate(
+        base_frame=base,
+        one_m_agg=one_m,
+        required_bars=5,
+        max_missing_ratio=0.2,
+        drop_if_real_count_zero=True,
+    )
+
+    assert joined.get_column("one_m_no_real").to_list() == [True]
+    assert joined.get_column("one_m_fail").to_list() == [True]
+    assert stats.rows_no_real == 1

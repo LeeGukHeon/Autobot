@@ -7,7 +7,7 @@ universe:
   quote: KRW
   mode: static_start
   top_n: 50
-  lookback_days: 7
+  lookback_days: 3
   fixed_list: []
 
 time_range:
@@ -42,7 +42,15 @@ features_v3:
   high_tf_staleness_multiplier: 2.0
   one_m_required_bars: 5
   one_m_max_missing_ratio: 0.2
+  one_m_drop_if_real_count_zero: true
+  one_m_synth_weight_floor: 0.2
+  one_m_synth_weight_power: 2.0
   sample_weight_half_life_days: 60
+  universe_quality_enabled: true
+  universe_quality_lookback_days: 3
+  universe_quality_beta: 2.0
+  universe_quality_q_floor: 0.2
+  universe_quality_oversample_factor: 3
   min_rows_for_train: 5000
   require_micro_validate_pass: true
   validation:

@@ -1519,7 +1519,15 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
                     "[features][build][v3] "
                     f"rows_base_total={summary_v3.rows_base_total} "
                     f"rows_dropped_no_micro={summary_v3.rows_dropped_no_micro} "
+                    f"rows_dropped_one_m_before_densify={summary_v3.rows_dropped_one_m_before_densify} "
+                    f"rows_dropped_one_m={summary_v3.rows_dropped_one_m} "
+                    f"rows_rescued_by_one_m_densify={summary_v3.rows_rescued_by_one_m_densify} "
                     f"rows_final={summary_v3.rows_final}"
+                )
+                print(
+                    "[features][build][v3] "
+                    f"one_m_synth_ratio_p50={summary_v3.one_m_synth_ratio_p50} "
+                    f"one_m_synth_ratio_p90={summary_v3.one_m_synth_ratio_p90}"
                 )
                 print(
                     "[features][build][v3] "
@@ -3121,6 +3129,23 @@ def _strategy_micro_order_policy_defaults(*, micro_order_policy_cfg: dict[str, A
         else {}
     )
 
+    def _optional_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number
+
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     def _tier_values(name: str, *, timeout_ms: int, replace_interval_ms: int, max_replaces: int, price_mode: str, max_chase_bps: int) -> dict[str, Any]:
         tier = tiers_cfg.get(name, {}) if isinstance(tiers_cfg.get(name), dict) else {}
         return {
@@ -3174,6 +3199,12 @@ def _strategy_micro_order_policy_defaults(*, micro_order_policy_cfg: dict[str, A
             "max_replaces_per_min_per_market": max(int(safety_cfg.get("max_replaces_per_min_per_market", 10)), 1),
             "forbid_post_only_with_cross": bool(safety_cfg.get("forbid_post_only_with_cross", True)),
         },
+        "cross_tick_bps_max": max(float(micro_order_policy_cfg.get("cross_tick_bps_max", 10.0)), 0.0),
+        "cross_escalate_after_timeouts": max(int(micro_order_policy_cfg.get("cross_escalate_after_timeouts", 2)), 0),
+        "cross_min_prob": _optional_float(micro_order_policy_cfg.get("cross_min_prob")),
+        "cross_micro_stale_ms": _optional_int(micro_order_policy_cfg.get("cross_micro_stale_ms")),
+        "abort_if_tick_bps_gt": _optional_float(micro_order_policy_cfg.get("abort_if_tick_bps_gt")),
+        "tick_size_resolver": str(micro_order_policy_cfg.get("tick_size_resolver", "auto")).strip().lower() or "auto",
     }
 
 
@@ -3254,6 +3285,22 @@ def _build_micro_order_policy_settings(
     mid_cfg = tiers_cfg.get("MID", {}) if isinstance(tiers_cfg.get("MID"), dict) else {}
     high_cfg = tiers_cfg.get("HIGH", {}) if isinstance(tiers_cfg.get("HIGH"), dict) else {}
 
+    def _optional_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     return MicroOrderPolicySettings(
         enabled=enabled,
         mode=mode,
@@ -3295,6 +3342,12 @@ def _build_micro_order_policy_settings(
             max_replaces_per_min_per_market=max(int(safety_cfg.get("max_replaces_per_min_per_market", 10)), 1),
             forbid_post_only_with_cross=bool(safety_cfg.get("forbid_post_only_with_cross", True)),
         ),
+        cross_tick_bps_max=max(float(defaults.get("cross_tick_bps_max", 10.0)), 0.0),
+        cross_escalate_after_timeouts=max(int(defaults.get("cross_escalate_after_timeouts", 2)), 0),
+        cross_min_prob=_optional_float(defaults.get("cross_min_prob")),
+        cross_micro_stale_ms=_optional_int(defaults.get("cross_micro_stale_ms")),
+        abort_if_tick_bps_gt=_optional_float(defaults.get("abort_if_tick_bps_gt")),
+        tick_size_resolver=str(defaults.get("tick_size_resolver", "auto")).strip().lower() or "auto",
     )
 
 

@@ -68,8 +68,15 @@ def test_pipeline_v3_drops_rows_when_micro_missing(tmp_path: Path) -> None:
     assert summary.rows_base_total > 0
     assert summary.rows_dropped_no_micro > 0
     assert summary.rows_final > 0
+    assert summary.rows_dropped_one_m_before_densify >= summary.rows_dropped_one_m
+    assert summary.rows_rescued_by_one_m_densify >= 0
     assert summary.effective_end is not None
     assert summary.effective_end <= "2026-01-02"
+
+    report = json.loads((features_root / "features_v3_test" / "_meta" / "build_report.json").read_text(encoding="utf-8"))
+    assert "rows_dropped_one_m_before_densify" in report
+    assert "rows_rescued_by_one_m_densify" in report
+    assert "one_m_synth_ratio_p50" in report
 
 
 def _write_candles(dataset_root: Path) -> None:

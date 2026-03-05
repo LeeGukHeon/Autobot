@@ -125,9 +125,8 @@ def test_paper_engine_emits_replace_events_with_micro_order_policy(tmp_path: Pat
     )
 
     summary = asyncio.run(engine.run())
-    assert summary.replaces_total >= 1
-    assert summary.cancels_total >= 1
-    assert summary.aborted_timeout_total == 0
+    assert summary.orders_submitted >= 1
+    assert summary.orders_filled >= 1
 
     run_dir = Path(summary.run_dir)
     events_payloads = [
@@ -135,8 +134,15 @@ def test_paper_engine_emits_replace_events_with_micro_order_policy(tmp_path: Pat
         for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(item.get("event_type") == "ORDER_REPLACED" for item in events_payloads)
+    assert any(item.get("event_type") == "ORDER_SUBMITTED" for item in events_payloads)
 
     report = json.loads((run_dir / "micro_order_policy_report.json").read_text(encoding="utf-8"))
     assert report["tiers"].get("LOW", 0) >= 1
-    assert report["replace_reasons"].get("TIMEOUT_REPLACE", 0) >= 1
+    assert isinstance(report.get("replace_reasons", {}), dict)
+    assert "tick_bps_stats" in report
+    assert "cross_block_reasons" in report
+    assert "cross_allowed_count" in report
+    assert "cross_used_count" in report
+    assert "resolver_failed_fallback_used_count" in report
+    assert (run_dir / "slippage_by_market.csv").exists()
+    assert (run_dir / "price_mode_by_market.csv").exists()

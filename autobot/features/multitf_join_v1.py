@@ -25,6 +25,80 @@ class OneMJoinStats:
     rows_failed: int
     required_bars: int
     max_missing_ratio: float
+    rows_no_real: int = 0
+
+
+def densify_1m_candles(
+    one_m_candles: pl.DataFrame,
+    *,
+    start_ts_ms: int,
+    end_ts_ms: int,
+) -> pl.DataFrame:
+    """Rebuild 1m candles on a full minute grid without forward-looking fills."""
+    schema = {
+        "ts_ms": pl.Int64,
+        "open": pl.Float64,
+        "high": pl.Float64,
+        "low": pl.Float64,
+        "close": pl.Float64,
+        "volume_base": pl.Float64,
+        "is_synth_1m": pl.Boolean,
+    }
+    if int(end_ts_ms) < int(start_ts_ms):
+        return pl.DataFrame(schema=schema)
+
+    required = {"ts_ms", "open", "high", "low", "close", "volume_base"}
+    missing = [name for name in required if name not in one_m_candles.columns]
+    if missing:
+        raise ValueError(f"1m frame missing columns: {missing}")
+
+    interval_ms = expected_interval_ms("1m")
+    frame = (
+        one_m_candles.select(["ts_ms", "open", "high", "low", "close", "volume_base"])
+        .with_columns((((pl.col("ts_ms") // interval_ms) * interval_ms).cast(pl.Int64)).alias("ts_ms"))
+        .sort("ts_ms")
+        .unique(subset=["ts_ms"], keep="last", maintain_order=True)
+        .filter((pl.col("ts_ms") >= int(start_ts_ms)) & (pl.col("ts_ms") <= int(end_ts_ms)))
+    )
+
+    ts_grid = list(range(int(start_ts_ms), int(end_ts_ms) + int(interval_ms), int(interval_ms)))
+    if not ts_grid:
+        return pl.DataFrame(schema=schema)
+    grid = pl.DataFrame({"ts_ms": ts_grid})
+
+    joined = grid.join(frame, on="ts_ms", how="left")
+    joined = joined.with_columns(
+        [
+            pl.col("close").is_null().alias("__is_missing"),
+            pl.col("close").fill_null(strategy="forward").alias("__prev_close"),
+        ]
+    )
+    synth_mask = pl.col("__is_missing") & pl.col("__prev_close").is_not_null()
+    joined = joined.with_columns(
+        [
+            synth_mask.alias("is_synth_1m"),
+            pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("open")).alias("open"),
+            pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("high")).alias("high"),
+            pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("low")).alias("low"),
+            pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("close")).alias("close"),
+            pl.when(synth_mask).then(0.0).otherwise(pl.col("volume_base")).alias("volume_base"),
+        ]
+    )
+    return (
+        joined.select(["ts_ms", "open", "high", "low", "close", "volume_base", "is_synth_1m"])
+        .with_columns(
+            [
+                pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+                pl.col("open").cast(pl.Float64).alias("open"),
+                pl.col("high").cast(pl.Float64).alias("high"),
+                pl.col("low").cast(pl.Float64).alias("low"),
+                pl.col("close").cast(pl.Float64).alias("close"),
+                pl.col("volume_base").cast(pl.Float64).alias("volume_base"),
+                pl.col("is_synth_1m").fill_null(False).cast(pl.Boolean).alias("is_synth_1m"),
+            ]
+        )
+        .sort("ts_ms")
+    )
 
 
 def high_tf_prefix(tf: str) -> str:
@@ -182,6 +256,10 @@ def aggregate_1m_for_base(
                 "one_m_ret_std": _float_dtype(float_dtype),
                 "one_m_volume_sum": _float_dtype(float_dtype),
                 "one_m_range_mean": _float_dtype(float_dtype),
+                "one_m_synth_count": pl.Int64,
+                "one_m_synth_ratio": _float_dtype(float_dtype),
+                "one_m_real_count": pl.Int64,
+                "one_m_real_volume_sum": _float_dtype(float_dtype),
             }
         )
 
@@ -193,6 +271,36 @@ def aggregate_1m_for_base(
     dtype = _float_dtype(float_dtype)
     base_interval_ms = expected_interval_ms(base_tf)
     frame = one_m_candles.sort("ts_ms")
+    if "is_synth_1m" not in frame.columns:
+        frame = frame.with_columns(pl.lit(False, dtype=pl.Boolean).alias("is_synth_1m"))
+    frame = frame.with_columns(pl.col("is_synth_1m").fill_null(False).cast(pl.Boolean).alias("is_synth_1m"))
+    frame = frame.filter(
+        pl.all_horizontal(
+            [
+                pl.col("ts_ms").is_not_null(),
+                pl.col("high").is_not_null(),
+                pl.col("low").is_not_null(),
+                pl.col("close").is_not_null(),
+                pl.col("volume_base").is_not_null(),
+            ]
+        )
+    )
+    if frame.height <= 0:
+        return pl.DataFrame(
+            schema={
+                "ts_ms": pl.Int64,
+                "one_m_count": pl.Int64,
+                "one_m_last_ts": pl.Int64,
+                "one_m_ret_mean": _float_dtype(float_dtype),
+                "one_m_ret_std": _float_dtype(float_dtype),
+                "one_m_volume_sum": _float_dtype(float_dtype),
+                "one_m_range_mean": _float_dtype(float_dtype),
+                "one_m_synth_count": pl.Int64,
+                "one_m_synth_ratio": _float_dtype(float_dtype),
+                "one_m_real_count": pl.Int64,
+                "one_m_real_volume_sum": _float_dtype(float_dtype),
+            }
+        )
     frame = frame.with_columns(
         [
             (pl.col("close").log() - pl.col("close").shift(1).log()).alias("__ret_1m"),
@@ -210,7 +318,27 @@ def aggregate_1m_for_base(
             pl.col("__ret_1m").std().cast(dtype).alias("one_m_ret_std"),
             pl.col("volume_base").sum().cast(dtype).alias("one_m_volume_sum"),
             pl.col("__range_1m").mean().cast(dtype).alias("one_m_range_mean"),
+            pl.col("is_synth_1m").cast(pl.Int64).sum().cast(pl.Int64).alias("one_m_synth_count"),
+            (pl.lit(1, dtype=pl.Int64) - pl.col("is_synth_1m").cast(pl.Int64))
+            .sum()
+            .cast(pl.Int64)
+            .alias("one_m_real_count"),
+            (
+                pl.when(pl.col("is_synth_1m"))
+                .then(0.0)
+                .otherwise(pl.col("volume_base"))
+                .sum()
+                .cast(dtype)
+                .alias("one_m_real_volume_sum")
+            ),
         ]
+    )
+    grouped = grouped.with_columns(
+        pl.when(pl.col("one_m_count") > 0)
+        .then(pl.col("one_m_synth_count").cast(pl.Float64) / pl.col("one_m_count").cast(pl.Float64))
+        .otherwise(1.0)
+        .cast(dtype)
+        .alias("one_m_synth_ratio")
     )
     return grouped.rename({"__base_ts": "ts_ms"}).sort("ts_ms")
 
@@ -221,6 +349,7 @@ def join_1m_aggregate(
     one_m_agg: pl.DataFrame,
     required_bars: int = 5,
     max_missing_ratio: float = 0.2,
+    drop_if_real_count_zero: bool = True,
 ) -> tuple[pl.DataFrame, OneMJoinStats]:
     rows_total = int(base_frame.height)
     if rows_total <= 0:
@@ -230,11 +359,13 @@ def join_1m_aggregate(
             rows_failed=0,
             required_bars=max(int(required_bars), 1),
             max_missing_ratio=float(max_missing_ratio),
+            rows_no_real=0,
         )
 
     joined = base_frame.sort("ts_ms")
     if one_m_agg.height > 0:
         joined = joined.join(one_m_agg.sort("ts_ms"), on="ts_ms", how="left")
+    joined = _ensure_one_m_default_columns(joined)
 
     required = max(int(required_bars), 1)
     joined = joined.with_columns(
@@ -245,21 +376,51 @@ def join_1m_aggregate(
             pl.col("one_m_ret_std").cast(pl.Float64).alias("one_m_ret_std"),
             pl.col("one_m_volume_sum").cast(pl.Float64).alias("one_m_volume_sum"),
             pl.col("one_m_range_mean").cast(pl.Float64).alias("one_m_range_mean"),
+            pl.col("one_m_synth_count").fill_null(0).cast(pl.Int64).alias("one_m_synth_count"),
+            (
+                pl.max_horizontal(
+                    [
+                        pl.lit(0, dtype=pl.Int64),
+                        pl.when(pl.col("one_m_real_count").is_not_null())
+                        .then(pl.col("one_m_real_count"))
+                        .otherwise(pl.col("one_m_count").fill_null(0) - pl.col("one_m_synth_count").fill_null(0))
+                        .cast(pl.Int64),
+                    ]
+                ).alias("one_m_real_count")
+            ),
+            (
+                pl.when(pl.col("one_m_real_volume_sum").is_not_null())
+                .then(pl.col("one_m_real_volume_sum"))
+                .otherwise(pl.col("one_m_volume_sum").fill_null(0.0))
+                .cast(pl.Float64)
+                .alias("one_m_real_volume_sum")
+            ),
         ]
     )
     joined = joined.with_columns(
         [
+            pl.when(pl.col("one_m_count") > 0)
+            .then(pl.col("one_m_synth_count").cast(pl.Float64) / pl.col("one_m_count").cast(pl.Float64))
+            .otherwise(1.0)
+            .alias("one_m_synth_ratio"),
             ((pl.lit(required, dtype=pl.Int64) - pl.col("one_m_count").clip(0, required)) / float(required)).alias(
                 "one_m_missing_ratio"
             ),
             (pl.col("one_m_count") < required).alias("one_m_missing"),
+            (pl.col("one_m_real_count") <= 0).alias("one_m_no_real"),
             (
-                (pl.col("one_m_count") < required)
-                & (
-                    (pl.lit(required, dtype=pl.Int64) - pl.col("one_m_count").clip(0, required)) / float(required)
-                    > float(max_missing_ratio)
+                (
+                    (pl.col("one_m_count") < required)
+                    & (
+                        (pl.lit(required, dtype=pl.Int64) - pl.col("one_m_count").clip(0, required)) / float(required)
+                        > float(max_missing_ratio)
+                    )
                 )
                 | (pl.col("one_m_last_ts") > pl.col("ts_ms"))
+                | (
+                    pl.lit(bool(drop_if_real_count_zero), dtype=pl.Boolean)
+                    & (pl.col("one_m_real_count") <= 0)
+                )
             )
             .fill_null(True)
             .alias("one_m_fail"),
@@ -267,6 +428,7 @@ def join_1m_aggregate(
     )
 
     rows_missing = int(joined.filter(pl.col("one_m_missing") == True).height)  # noqa: E712
+    rows_no_real = int(joined.filter(pl.col("one_m_real_count") <= 0).height)
     rows_failed = int(joined.filter(pl.col("one_m_fail") == True).height)  # noqa: E712
     return joined, OneMJoinStats(
         rows_total=rows_total,
@@ -274,6 +436,7 @@ def join_1m_aggregate(
         rows_failed=rows_failed,
         required_bars=required,
         max_missing_ratio=float(max_missing_ratio),
+        rows_no_real=rows_no_real,
     )
 
 
@@ -285,6 +448,27 @@ def _ensure_high_tf_default_columns(frame: pl.DataFrame, *, tf: str) -> pl.DataF
         (f"{prefix}_vol_3", pl.lit(None, dtype=pl.Float64)),
         (f"{prefix}_trend_slope", pl.lit(None, dtype=pl.Float64)),
         (f"{prefix}_regime_flag", pl.lit(None, dtype=pl.Int8)),
+    ]
+    out = frame
+    for name, expr in defaults:
+        if name in out.columns:
+            continue
+        out = out.with_columns(expr.alias(name))
+    return out
+
+
+def _ensure_one_m_default_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    defaults: list[tuple[str, pl.Expr]] = [
+        ("one_m_count", pl.lit(0, dtype=pl.Int64)),
+        ("one_m_last_ts", pl.lit(None, dtype=pl.Int64)),
+        ("one_m_ret_mean", pl.lit(None, dtype=pl.Float64)),
+        ("one_m_ret_std", pl.lit(None, dtype=pl.Float64)),
+        ("one_m_volume_sum", pl.lit(None, dtype=pl.Float64)),
+        ("one_m_range_mean", pl.lit(None, dtype=pl.Float64)),
+        ("one_m_synth_count", pl.lit(0, dtype=pl.Int64)),
+        ("one_m_synth_ratio", pl.lit(1.0, dtype=pl.Float64)),
+        ("one_m_real_count", pl.lit(None, dtype=pl.Int64)),
+        ("one_m_real_volume_sum", pl.lit(None, dtype=pl.Float64)),
     ]
     out = frame
     for name, expr in defaults:

@@ -42,7 +42,12 @@ FEATURES_V3_MANIFEST_SCHEMA: dict[str, pl.DataType] = {
     "rows_final": pl.Int64,
     "rows_dropped_no_micro": pl.Int64,
     "rows_dropped_stale": pl.Int64,
+    "rows_dropped_one_m_before_densify": pl.Int64,
     "rows_dropped_one_m": pl.Int64,
+    "rows_rescued_by_one_m_densify": pl.Int64,
+    "one_m_synth_ratio_mean": pl.Float64,
+    "one_m_synth_ratio_p50": pl.Float64,
+    "one_m_synth_ratio_p90": pl.Float64,
     "tail_dropped_rows": pl.Int64,
     "min_ts_ms": pl.Int64,
     "max_ts_ms": pl.Int64,
@@ -66,7 +71,15 @@ class FeaturesV3BuildConfig:
     high_tf_staleness_multiplier: float = 2.0
     one_m_required_bars: int = 5
     one_m_max_missing_ratio: float = 0.2
+    one_m_drop_if_real_count_zero: bool = True
+    one_m_synth_weight_floor: float = 0.2
+    one_m_synth_weight_power: float = 2.0
     sample_weight_half_life_days: float = 60.0
+    universe_quality_enabled: bool = True
+    universe_quality_lookback_days: int = 3
+    universe_quality_beta: float = 2.0
+    universe_quality_q_floor: float = 0.2
+    universe_quality_oversample_factor: int = 3
     min_rows_for_train: int = 5000
     require_micro_validate_pass: bool = True
 
@@ -123,7 +136,12 @@ class FeatureBuildV3Summary:
     fail_markets: int
     rows_base_total: int
     rows_dropped_no_micro: int
+    rows_dropped_one_m_before_densify: int
+    rows_dropped_one_m: int
+    rows_rescued_by_one_m_densify: int
     rows_final: int
+    one_m_synth_ratio_p50: float | None
+    one_m_synth_ratio_p90: float | None
     min_ts_ms: int | None
     max_ts_ms: int | None
     effective_start: str | None
@@ -200,7 +218,15 @@ def load_features_v3_config(
             high_tf_staleness_multiplier=max(float(root.get("high_tf_staleness_multiplier", 2.0)), 0.0),
             one_m_required_bars=max(int(root.get("one_m_required_bars", 5)), 1),
             one_m_max_missing_ratio=max(float(root.get("one_m_max_missing_ratio", 0.2)), 0.0),
+            one_m_drop_if_real_count_zero=bool(root.get("one_m_drop_if_real_count_zero", True)),
+            one_m_synth_weight_floor=min(max(float(root.get("one_m_synth_weight_floor", 0.2)), 0.0), 1.0),
+            one_m_synth_weight_power=max(float(root.get("one_m_synth_weight_power", 2.0)), 0.0),
             sample_weight_half_life_days=max(float(root.get("sample_weight_half_life_days", 60.0)), 1e-6),
+            universe_quality_enabled=bool(root.get("universe_quality_enabled", True)),
+            universe_quality_lookback_days=max(int(root.get("universe_quality_lookback_days", 3)), 1),
+            universe_quality_beta=max(float(root.get("universe_quality_beta", 2.0)), 0.0),
+            universe_quality_q_floor=min(max(float(root.get("universe_quality_q_floor", 0.2)), 0.0), 1.0),
+            universe_quality_oversample_factor=max(int(root.get("universe_quality_oversample_factor", 3)), 1),
             min_rows_for_train=max(int(root.get("min_rows_for_train", 5000)), 1),
             require_micro_validate_pass=bool(root.get("require_micro_validate_pass", True)),
         ),
@@ -241,6 +267,7 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
     meta_root.mkdir(parents=True, exist_ok=True)
     build_report_file = meta_root / "build_report.json"
     manifest_file = meta_root / "manifest.parquet"
+    universe_quality_report_file = meta_root / "universe_quality_report.json"
 
     micro_root = resolve_micro_dataset_root(
         dataset=(options.micro_dataset or config.build.micro_dataset),
@@ -266,7 +293,16 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
         end_ts_ms=end_ts_ms,
     )
     discovered_markets = len(discovered)
-    selected_markets = [item["market"] for item in discovered[:top_n]]
+    selected_markets, universe_quality_report = _select_v3_universe_markets(
+        config=config,
+        tf=tf,
+        top_n=top_n,
+        quote=quote,
+        start_ts_ms=start_ts_ms,
+        base_candles_root=base_root,
+        discovered_windows=discovered,
+    )
+    write_json(universe_quality_report_file, universe_quality_report)
     if not selected_markets:
         raise ValueError(
             f"no micro markets found in range {start_text}~{end_text}; "
@@ -290,6 +326,8 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
                 "selected_markets": selected_markets,
                 "base_candles_root": str(base_root),
                 "micro_root": str(micro_root),
+                "universe_quality_report_file": str(universe_quality_report_file),
+                "universe_selection": universe_quality_report,
                 "status": "PASS",
                 "dry_run": True,
             },
@@ -303,7 +341,12 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
             fail_markets=0,
             rows_base_total=0,
             rows_dropped_no_micro=0,
+            rows_dropped_one_m_before_densify=0,
+            rows_dropped_one_m=0,
+            rows_rescued_by_one_m_densify=0,
             rows_final=0,
+            one_m_synth_ratio_p50=None,
+            one_m_synth_ratio_p90=None,
             min_ts_ms=None,
             max_ts_ms=None,
             effective_start=None,
@@ -333,12 +376,17 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
     failures: list[dict[str, Any]] = []
     rows_base_total = 0
     rows_dropped_no_micro = 0
+    rows_dropped_one_m_before_densify = 0
+    rows_dropped_one_m = 0
+    rows_rescued_by_one_m_densify = 0
     rows_final = 0
     min_ts_total: int | None = None
     max_ts_total: int | None = None
     ok_markets = 0
     warn_markets = 0
     fail_markets = 0
+    one_m_synth_ratio_values: list[float] = []
+    market_synth_means: list[dict[str, Any]] = []
 
     for market in selected_markets:
         try:
@@ -387,7 +435,10 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
                 high_tf_staleness_multiplier=config.build.high_tf_staleness_multiplier,
                 one_m_required_bars=config.build.one_m_required_bars,
                 one_m_max_missing_ratio=config.build.one_m_max_missing_ratio,
+                one_m_drop_if_real_count_zero=config.build.one_m_drop_if_real_count_zero,
                 sample_weight_half_life_days=config.build.sample_weight_half_life_days,
+                one_m_synth_weight_floor=config.build.one_m_synth_weight_floor,
+                one_m_synth_weight_power=config.build.one_m_synth_weight_power,
                 float_dtype=config.float_dtype,
             )
 
@@ -415,9 +466,29 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
 
             rows_base_total += int(result.rows_base_total)
             rows_dropped_no_micro += int(result.rows_dropped_no_micro)
+            rows_dropped_one_m_before_densify += int(result.rows_dropped_one_m_before_densify)
+            rows_dropped_one_m += int(result.rows_dropped_one_m)
+            rows_rescued_by_one_m_densify += int(result.rows_rescued_by_one_m_densify)
             rows_final += market_rows_final
             min_ts_total = _safe_min(min_ts_total, market_min_ts)
             max_ts_total = _safe_max(max_ts_total, market_max_ts)
+
+            market_synth_mean = _safe_float(result.one_m_synth_ratio_mean)
+            market_synth_p50 = _safe_float(result.one_m_synth_ratio_p50)
+            market_synth_p90 = _safe_float(result.one_m_synth_ratio_p90)
+            if market_synth_mean is not None:
+                market_synth_means.append(
+                    {
+                        "market": market,
+                        "one_m_synth_ratio_mean": market_synth_mean,
+                    }
+                )
+            if market_rows_final > 0 and "one_m_synth_ratio" in frame.columns:
+                one_m_synth_ratio_values.extend(
+                    float(v)
+                    for v in frame.get_column("one_m_synth_ratio").drop_nulls().to_list()
+                    if v is not None
+                )
 
             details.append(
                 {
@@ -429,7 +500,12 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
                     "rows_final": market_rows_final,
                     "rows_dropped_no_micro": int(result.rows_dropped_no_micro),
                     "rows_dropped_stale": int(result.rows_dropped_stale),
+                    "rows_dropped_one_m_before_densify": int(result.rows_dropped_one_m_before_densify),
                     "rows_dropped_one_m": int(result.rows_dropped_one_m),
+                    "rows_rescued_by_one_m_densify": int(result.rows_rescued_by_one_m_densify),
+                    "one_m_synth_ratio_mean": market_synth_mean,
+                    "one_m_synth_ratio_p50": market_synth_p50,
+                    "one_m_synth_ratio_p90": market_synth_p90,
                     "tail_dropped_rows": int(result.tail_dropped_rows),
                     "min_ts_ms": market_min_ts,
                     "max_ts_ms": market_max_ts,
@@ -450,7 +526,12 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
                     "rows_final": market_rows_final,
                     "rows_dropped_no_micro": int(result.rows_dropped_no_micro),
                     "rows_dropped_stale": int(result.rows_dropped_stale),
+                    "rows_dropped_one_m_before_densify": int(result.rows_dropped_one_m_before_densify),
                     "rows_dropped_one_m": int(result.rows_dropped_one_m),
+                    "rows_rescued_by_one_m_densify": int(result.rows_rescued_by_one_m_densify),
+                    "one_m_synth_ratio_mean": market_synth_mean,
+                    "one_m_synth_ratio_p50": market_synth_p50,
+                    "one_m_synth_ratio_p90": market_synth_p90,
                     "tail_dropped_rows": int(result.tail_dropped_rows),
                     "min_ts_ms": market_min_ts,
                     "max_ts_ms": market_max_ts,
@@ -479,7 +560,12 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
                     "rows_final": 0,
                     "rows_dropped_no_micro": 0,
                     "rows_dropped_stale": 0,
+                    "rows_dropped_one_m_before_densify": 0,
                     "rows_dropped_one_m": 0,
+                    "rows_rescued_by_one_m_densify": 0,
+                    "one_m_synth_ratio_mean": None,
+                    "one_m_synth_ratio_p50": None,
+                    "one_m_synth_ratio_p90": None,
                     "tail_dropped_rows": 0,
                     "min_ts_ms": None,
                     "max_ts_ms": None,
@@ -514,6 +600,17 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
 
     effective_start = _ts_to_date(min_ts_total)
     effective_end = _ts_to_date(max_ts_total)
+    one_m_synth_ratio_p50 = _quantile(one_m_synth_ratio_values, 0.50)
+    one_m_synth_ratio_p90 = _quantile(one_m_synth_ratio_values, 0.90)
+    market_synth_desc = sorted(
+        market_synth_means,
+        key=lambda item: float(item.get("one_m_synth_ratio_mean", 0.0)),
+        reverse=True,
+    )
+    market_synth_asc = sorted(
+        market_synth_means,
+        key=lambda item: float(item.get("one_m_synth_ratio_mean", 0.0)),
+    )
     report = {
         "dataset_name": config.dataset_name,
         "tf": tf,
@@ -524,9 +621,18 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
         "effective_end": effective_end,
         "rows_base_total": rows_base_total,
         "rows_dropped_no_micro": rows_dropped_no_micro,
+        "rows_dropped_one_m_before_densify": rows_dropped_one_m_before_densify,
+        "rows_dropped_one_m": rows_dropped_one_m,
+        "rows_rescued_by_one_m_densify": rows_rescued_by_one_m_densify,
         "rows_final": rows_final,
+        "one_m_synth_ratio_p50": one_m_synth_ratio_p50,
+        "one_m_synth_ratio_p90": one_m_synth_ratio_p90,
+        "one_m_synth_ratio_market_top10": market_synth_desc[:10],
+        "one_m_synth_ratio_market_bottom10": market_synth_asc[:10],
         "selected_markets": selected_markets,
         "discovered_markets": discovered_markets,
+        "universe_quality_report_file": str(universe_quality_report_file),
+        "universe_selection": universe_quality_report,
         "status_counts": {
             "ok_markets": ok_markets,
             "warn_markets": warn_markets,
@@ -557,7 +663,12 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
         fail_markets=fail_markets,
         rows_base_total=rows_base_total,
         rows_dropped_no_micro=rows_dropped_no_micro,
+        rows_dropped_one_m_before_densify=rows_dropped_one_m_before_densify,
+        rows_dropped_one_m=rows_dropped_one_m,
+        rows_rescued_by_one_m_densify=rows_rescued_by_one_m_densify,
         rows_final=rows_final,
+        one_m_synth_ratio_p50=one_m_synth_ratio_p50,
+        one_m_synth_ratio_p90=one_m_synth_ratio_p90,
         min_ts_ms=min_ts_total,
         max_ts_ms=max_ts_total,
         effective_start=effective_start,
@@ -734,7 +845,12 @@ def features_stats_v3(
             "markets": [],
             "rows_base_total": 0,
             "rows_dropped_no_micro": 0,
+            "rows_dropped_one_m_before_densify": 0,
+            "rows_dropped_one_m": 0,
+            "rows_rescued_by_one_m_densify": 0,
             "rows_final": 0,
+            "one_m_synth_ratio_p50": None,
+            "one_m_synth_ratio_p90": None,
             "effective_start": None,
             "effective_end": None,
             "ready_for_train": False,
@@ -752,7 +868,11 @@ def features_stats_v3(
 
     rows_base_total = int(sum(int(item.get("rows_base_total") or 0) for item in rows))
     rows_dropped_no_micro = int(sum(int(item.get("rows_dropped_no_micro") or 0) for item in rows))
+    rows_dropped_one_m_before_densify = int(sum(int(item.get("rows_dropped_one_m_before_densify") or 0) for item in rows))
+    rows_dropped_one_m = int(sum(int(item.get("rows_dropped_one_m") or 0) for item in rows))
+    rows_rescued_by_one_m_densify = int(sum(int(item.get("rows_rescued_by_one_m_densify") or 0) for item in rows))
     rows_final = int(sum(int(item.get("rows_final") or 0) for item in rows))
+    synth_values = [float(item["one_m_synth_ratio_mean"]) for item in rows if item.get("one_m_synth_ratio_mean") is not None]
     min_ts = _safe_min_many([item.get("effective_start_ts_ms") for item in rows])
     max_ts = _safe_max_many([item.get("effective_end_ts_ms") for item in rows])
 
@@ -763,7 +883,12 @@ def features_stats_v3(
         "markets": [str(item.get("market")) for item in rows],
         "rows_base_total": rows_base_total,
         "rows_dropped_no_micro": rows_dropped_no_micro,
+        "rows_dropped_one_m_before_densify": rows_dropped_one_m_before_densify,
+        "rows_dropped_one_m": rows_dropped_one_m,
+        "rows_rescued_by_one_m_densify": rows_rescued_by_one_m_densify,
         "rows_final": rows_final,
+        "one_m_synth_ratio_p50": _quantile(synth_values, 0.50),
+        "one_m_synth_ratio_p90": _quantile(synth_values, 0.90),
         "effective_start": _ts_to_date(min_ts),
         "effective_end": _ts_to_date(max_ts),
         "ready_for_train": rows_final >= int(config.build.min_rows_for_train) and status_counts["FAIL"] == 0,
@@ -794,7 +919,12 @@ def _normalize_manifest_rows(rows: list[dict[str, Any]]) -> pl.DataFrame:
                 "rows_final": _coerce_int(item.get("rows_final")),
                 "rows_dropped_no_micro": _coerce_int(item.get("rows_dropped_no_micro")),
                 "rows_dropped_stale": _coerce_int(item.get("rows_dropped_stale")),
+                "rows_dropped_one_m_before_densify": _coerce_int(item.get("rows_dropped_one_m_before_densify")),
                 "rows_dropped_one_m": _coerce_int(item.get("rows_dropped_one_m")),
+                "rows_rescued_by_one_m_densify": _coerce_int(item.get("rows_rescued_by_one_m_densify")),
+                "one_m_synth_ratio_mean": _coerce_float(item.get("one_m_synth_ratio_mean")),
+                "one_m_synth_ratio_p50": _coerce_float(item.get("one_m_synth_ratio_p50")),
+                "one_m_synth_ratio_p90": _coerce_float(item.get("one_m_synth_ratio_p90")),
                 "tail_dropped_rows": _coerce_int(item.get("tail_dropped_rows")),
                 "min_ts_ms": _coerce_int(item.get("min_ts_ms")),
                 "max_ts_ms": _coerce_int(item.get("max_ts_ms")),
@@ -808,6 +938,296 @@ def _normalize_manifest_rows(rows: list[dict[str, Any]]) -> pl.DataFrame:
             }
         )
     return pl.DataFrame(normalized, schema=FEATURES_V3_MANIFEST_SCHEMA, orient="row")
+
+
+def _select_v3_universe_markets(
+    *,
+    config: FeaturesV3Config,
+    tf: str,
+    top_n: int,
+    quote: str,
+    start_ts_ms: int,
+    base_candles_root: Path,
+    discovered_windows: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, Any]]:
+    discovered_markets = [str(item.get("market", "")).strip().upper() for item in discovered_windows]
+    discovered_markets = [item for item in discovered_markets if item]
+    discovered_set = set(discovered_markets)
+    warnings: list[str] = []
+    quote_prefix = f"{quote}-"
+    mode = str(config.universe.mode).strip().lower()
+
+    report: dict[str, Any] = {
+        "mode": mode,
+        "quality_enabled": bool(config.build.universe_quality_enabled),
+        "parameters": {
+            "quote": quote,
+            "top_n": int(top_n),
+            "value_lookback_days": int(config.universe.lookback_days),
+            "quality_lookback_days": int(config.build.universe_quality_lookback_days),
+            "beta": float(config.build.universe_quality_beta),
+            "q_floor": float(config.build.universe_quality_q_floor),
+            "oversample_factor": int(config.build.universe_quality_oversample_factor),
+        },
+        "lookback_window": {
+            "value_from_ts_ms": int(start_ts_ms - max(1, int(config.universe.lookback_days)) * 86_400_000),
+            "quality_from_ts_ms": int(start_ts_ms - max(1, int(config.build.universe_quality_lookback_days)) * 86_400_000),
+            "to_ts_ms_exclusive": int(start_ts_ms),
+        },
+        "discovered_markets": int(len(discovered_markets)),
+        "selected_markets": [],
+        "warnings": [],
+        "candidates": [],
+        "fallback": {"enabled": True, "filled_count": 0, "reasons": []},
+    }
+
+    if not discovered_markets or top_n <= 0:
+        report["warnings"] = warnings
+        return [], report
+
+    if mode == "fixed_list":
+        fixed = [
+            item
+            for item in config.universe.fixed_list
+            if item.startswith(quote_prefix) and item in discovered_set
+        ]
+        selected = fixed[:top_n]
+        fallback_filled = 0
+        if len(selected) < top_n:
+            seen = set(selected)
+            for market in discovered_markets:
+                if market in seen:
+                    continue
+                selected.append(market)
+                seen.add(market)
+                fallback_filled += 1
+                if len(selected) >= top_n:
+                    break
+            if fallback_filled > 0:
+                warnings.append("FIXED_LIST_INSUFFICIENT_FILLED_FROM_DISCOVERED")
+
+        report["candidates"] = [
+            {
+                "market": market,
+                "source": "fixed_list" if market in fixed else "discovered_fallback",
+                "selected": market in set(selected),
+            }
+            for market in selected
+        ]
+        report["selected_markets"] = selected[:top_n]
+        report["warnings"] = warnings
+        report["fallback"] = {
+            "enabled": True,
+            "filled_count": int(fallback_filled),
+            "reasons": ["FIXED_LIST_INSUFFICIENT_FILLED_FROM_DISCOVERED"] if fallback_filled > 0 else [],
+        }
+        return selected[:top_n], report
+
+    value_lookback_days = max(1, int(config.universe.lookback_days))
+    quality_lookback_days = max(1, int(config.build.universe_quality_lookback_days))
+    value_from_ts_ms = int(start_ts_ms - value_lookback_days * 86_400_000)
+    quality_from_ts_ms = int(start_ts_ms - quality_lookback_days * 86_400_000)
+    to_ts_ms_exclusive = int(start_ts_ms)
+
+    ranked_by_value = _rank_markets_by_trade_value_v3(
+        dataset_root=base_candles_root,
+        tf=tf,
+        markets=discovered_markets,
+        from_ts_ms=value_from_ts_ms,
+        to_ts_ms_exclusive=to_ts_ms_exclusive,
+    )
+    if not ranked_by_value:
+        warnings.append("VALUE_LOOKBACK_EMPTY_FALLBACK_TO_MICRO_ROWS")
+        ranked_by_value = [
+            (str(item.get("market", "")).strip().upper(), float(item.get("rows") or 0.0))
+            for item in discovered_windows
+            if str(item.get("market", "")).strip().upper()
+        ]
+    elif max((float(item[1]) for item in ranked_by_value), default=0.0) <= 0.0:
+        warnings.append("VALUE_LOOKBACK_ALL_ZERO")
+
+    oversample_factor = max(1, int(config.build.universe_quality_oversample_factor))
+    oversample_size = min(len(ranked_by_value), max(int(top_n), int(top_n) * oversample_factor))
+    candidate_pool = ranked_by_value[:oversample_size]
+    quality_enabled = bool(config.build.universe_quality_enabled)
+    q_floor = min(max(float(config.build.universe_quality_q_floor), 0.0), 1.0)
+    beta = max(float(config.build.universe_quality_beta), 0.0)
+
+    candidates: list[dict[str, Any]] = []
+    for rank, (market, value_est) in enumerate(candidate_pool, start=1):
+        trade_value_est = float(value_est)
+        synth_ratio = None
+        real_ratio = None
+        real_count = None
+        expected_minutes = None
+        q_value = 1.0
+        quality_weight = 1.0
+        score = trade_value_est
+        source = "value_rank"
+        if quality_enabled:
+            synth_ratio, real_ratio, real_count, expected_minutes = _market_one_m_synth_ratio_lookback(
+                dataset_root=base_candles_root,
+                market=market,
+                from_ts_ms=quality_from_ts_ms,
+                to_ts_ms_exclusive=to_ts_ms_exclusive,
+            )
+            q_value = min(max(1.0 - float(synth_ratio), q_floor), 1.0)
+            quality_weight = q_value ** beta
+            score = trade_value_est * quality_weight
+
+        candidates.append(
+            {
+                "rank_by_value": int(rank),
+                "market": market,
+                "source": source,
+                "value_est": trade_value_est,
+                "one_m_synth_ratio_lookback": synth_ratio,
+                "one_m_real_ratio_lookback": real_ratio,
+                "one_m_real_count_lookback": real_count,
+                "one_m_expected_minutes_lookback": expected_minutes,
+                "q": float(q_value),
+                "quality_weight": float(quality_weight),
+                "score": float(score),
+                "selected": False,
+            }
+        )
+
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda item: (-float(item["score"]), -float(item["value_est"]), str(item["market"])),
+    )
+    selected = [str(item["market"]) for item in ranked_candidates[:top_n]]
+    fallback_filled = 0
+    fallback_reasons: list[str] = []
+    if len(selected) < top_n:
+        seen = set(selected)
+        for market, _ in ranked_by_value:
+            if market in seen:
+                continue
+            selected.append(market)
+            seen.add(market)
+            fallback_filled += 1
+            if len(selected) >= top_n:
+                break
+        if fallback_filled > 0:
+            fallback_reasons.append("UNIVERSE_FILL_FALLBACK_TO_VALUE_RANK")
+            warnings.append("UNIVERSE_FILL_FALLBACK_TO_VALUE_RANK")
+
+    selected_set = set(selected[:top_n])
+    for item in ranked_candidates:
+        item["selected"] = bool(item["market"] in selected_set)
+
+    report["selected_markets"] = selected[:top_n]
+    report["warnings"] = warnings
+    report["candidates"] = ranked_candidates
+    report["fallback"] = {
+        "enabled": True,
+        "filled_count": int(fallback_filled),
+        "reasons": fallback_reasons,
+    }
+    return selected[:top_n], report
+
+
+def _rank_markets_by_trade_value_v3(
+    *,
+    dataset_root: Path,
+    tf: str,
+    markets: list[str],
+    from_ts_ms: int,
+    to_ts_ms_exclusive: int,
+) -> list[tuple[str, float]]:
+    ranked: list[tuple[str, float]] = []
+    for market in markets:
+        value_est = _market_trade_value_est(
+            dataset_root=dataset_root,
+            tf=tf,
+            market=market,
+            from_ts_ms=from_ts_ms,
+            to_ts_ms_exclusive=to_ts_ms_exclusive,
+        )
+        ranked.append((market, float(value_est)))
+    ranked.sort(key=lambda item: (-float(item[1]), str(item[0])))
+    return ranked
+
+
+def _market_trade_value_est(
+    *,
+    dataset_root: Path,
+    tf: str,
+    market: str,
+    from_ts_ms: int,
+    to_ts_ms_exclusive: int,
+) -> float:
+    if to_ts_ms_exclusive <= from_ts_ms:
+        return 0.0
+    files = _candle_part_files(dataset_root=dataset_root, tf=tf, market=market)
+    if not files:
+        return 0.0
+    lazy = pl.scan_parquet([str(path) for path in files]).filter(
+        (pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") < int(to_ts_ms_exclusive))
+    )
+    schema = lazy.collect_schema()
+    names = set(schema.names())
+    if "volume_quote" in names and "close" in names and "volume_base" in names:
+        trade_value_expr = (
+            pl.when(pl.col("volume_quote").is_not_null())
+            .then(pl.col("volume_quote").cast(pl.Float64))
+            .otherwise((pl.col("close").cast(pl.Float64) * pl.col("volume_base").cast(pl.Float64)))
+            .sum()
+            .alias("trade_value")
+        )
+    elif "volume_quote" in names:
+        trade_value_expr = pl.col("volume_quote").cast(pl.Float64).sum().alias("trade_value")
+    elif "close" in names and "volume_base" in names:
+        trade_value_expr = (pl.col("close").cast(pl.Float64) * pl.col("volume_base").cast(pl.Float64)).sum().alias(
+            "trade_value"
+        )
+    else:
+        return 0.0
+    frame = _collect_lazy(lazy.select(trade_value_expr))
+    value = frame.item(row=0, column="trade_value") if frame.height > 0 else None
+    out = _safe_float(value)
+    return float(out) if out is not None else 0.0
+
+
+def _market_one_m_synth_ratio_lookback(
+    *,
+    dataset_root: Path,
+    market: str,
+    from_ts_ms: int,
+    to_ts_ms_exclusive: int,
+) -> tuple[float, float, float, int]:
+    if to_ts_ms_exclusive <= from_ts_ms:
+        return 1.0, 0.0, 0.0, 0
+    expected_minutes = max(0, int((int(to_ts_ms_exclusive) - int(from_ts_ms)) // 60_000))
+    if expected_minutes <= 0:
+        return 1.0, 0.0, 0.0, 0
+
+    files = _candle_part_files(dataset_root=dataset_root, tf="1m", market=market)
+    if not files:
+        return 1.0, 0.0, 0.0, expected_minutes
+    lazy = pl.scan_parquet([str(path) for path in files]).filter(
+        (pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") < int(to_ts_ms_exclusive))
+    )
+    schema = lazy.collect_schema()
+    if "volume_base" not in schema.names():
+        return 1.0, 0.0, 0.0, expected_minutes
+    frame = _collect_lazy(
+        lazy.select(
+            pl.col("volume_base")
+            .cast(pl.Float64)
+            .fill_null(0.0)
+            .gt(0.0)
+            .cast(pl.Int64)
+            .sum()
+            .alias("real_count")
+        )
+    )
+    real_count_value = frame.item(row=0, column="real_count") if frame.height > 0 else 0
+    real_count = float(real_count_value or 0.0)
+    real_ratio = min(max(real_count / float(expected_minutes), 0.0), 1.0)
+    synth_ratio = min(max(1.0 - real_ratio, 0.0), 1.0)
+    return float(synth_ratio), float(real_ratio), float(real_count), int(expected_minutes)
 
 
 def _discover_micro_market_windows(
@@ -1017,10 +1437,29 @@ def _build_feature_spec_payload(
         "sample_weight": {
             "column": "sample_weight",
             "half_life_days": float(config.build.sample_weight_half_life_days),
-            "formula": "exp(-ln(2)*age_days/half_life_days)",
+            "formula": "exp(-ln(2)*age_days/half_life_days) * clip((1-one_m_synth_ratio), floor, 1)^power",
+            "one_m_synth_quality_weight": {
+                "enabled": True,
+                "floor": float(config.build.one_m_synth_weight_floor),
+                "power": float(config.build.one_m_synth_weight_power),
+            },
         },
         "micro_mandatory": True,
+        "one_m_densify": {
+            "enabled": True,
+            "drop_if_real_count_zero": bool(config.build.one_m_drop_if_real_count_zero),
+        },
         "time_range": {"from_ts_ms": int(start_ts_ms), "to_ts_ms": int(end_ts_ms)},
+        "universe_selection": {
+            "mode": config.universe.mode,
+            "lookback_days": int(config.universe.lookback_days),
+            "quality_enabled": bool(config.build.universe_quality_enabled),
+            "quality_lookback_days": int(config.build.universe_quality_lookback_days),
+            "quality_q_floor": float(config.build.universe_quality_q_floor),
+            "quality_beta": float(config.build.universe_quality_beta),
+            "quality_oversample_factor": int(config.build.universe_quality_oversample_factor),
+            "score_formula": "value_est * clip((1-one_m_synth_ratio_lookback), q_floor, 1)^beta",
+        },
         "selected_markets": selected_markets,
         "base_candles_root": str(base_candles_root),
         "micro_root": str(micro_root),
@@ -1059,7 +1498,15 @@ def _config_snapshot(config: FeaturesV3Config) -> dict[str, Any]:
             "high_tf_staleness_multiplier": config.build.high_tf_staleness_multiplier,
             "one_m_required_bars": config.build.one_m_required_bars,
             "one_m_max_missing_ratio": config.build.one_m_max_missing_ratio,
+            "one_m_drop_if_real_count_zero": config.build.one_m_drop_if_real_count_zero,
+            "one_m_synth_weight_floor": config.build.one_m_synth_weight_floor,
+            "one_m_synth_weight_power": config.build.one_m_synth_weight_power,
             "sample_weight_half_life_days": config.build.sample_weight_half_life_days,
+            "universe_quality_enabled": config.build.universe_quality_enabled,
+            "universe_quality_lookback_days": config.build.universe_quality_lookback_days,
+            "universe_quality_beta": config.build.universe_quality_beta,
+            "universe_quality_q_floor": config.build.universe_quality_q_floor,
+            "universe_quality_oversample_factor": config.build.universe_quality_oversample_factor,
             "min_rows_for_train": config.build.min_rows_for_train,
             "require_micro_validate_pass": config.build.require_micro_validate_pass,
         },
@@ -1210,6 +1657,20 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            return float(text)
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _coerce_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -1253,3 +1714,28 @@ def _collect_lazy(lazy_frame: pl.LazyFrame) -> pl.DataFrame:
         return lazy_frame.collect(engine="streaming")
     except TypeError:
         return lazy_frame.collect(streaming=True)
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out != out:  # NaN
+        return None
+    return out
+
+
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    clean = sorted(float(v) for v in values if v is not None)
+    if not clean:
+        return None
+    if len(clean) == 1:
+        return float(clean[0])
+    q_clamped = min(max(float(q), 0.0), 1.0)
+    idx = int(round((len(clean) - 1) * q_clamped))
+    return float(clean[idx])

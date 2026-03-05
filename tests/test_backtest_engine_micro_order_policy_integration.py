@@ -119,3 +119,10 @@ def test_backtest_engine_emits_replace_events_with_micro_order_policy(tmp_path: 
     report = json.loads((run_dir / "micro_order_policy_report.json").read_text(encoding="utf-8"))
     assert report["tiers"].get("LOW", 0) >= 1
     assert report["replace_reasons"].get("TIMEOUT_REPLACE", 0) >= 1
+    assert "tick_bps_stats" in report
+    assert "cross_block_reasons" in report
+    assert "cross_allowed_count" in report
+    assert "cross_used_count" in report
+    assert "resolver_failed_fallback_used_count" in report
+    assert (run_dir / "slippage_by_market.csv").exists()
+    assert (run_dir / "price_mode_by_market.csv").exists()
