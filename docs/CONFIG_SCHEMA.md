@@ -104,6 +104,22 @@
 - `strategy.micro_order_policy.safety.min_replace_interval_ms_global`: integer (default: `1500`)
 - `strategy.micro_order_policy.safety.max_replaces_per_min_per_market`: integer (default: `10`)
 - `strategy.micro_order_policy.safety.forbid_post_only_with_cross`: bool (default: `true`)
+- `strategy.model_alpha_v1.model_ref`: string (default: `latest_v3`)
+- `strategy.model_alpha_v1.model_family`: string (default: `train_v3_mtf_micro`)
+- `strategy.model_alpha_v1.feature_set`: string (default: `v3`)
+- `strategy.model_alpha_v1.selection.top_pct`: number (default: `0.05`)
+- `strategy.model_alpha_v1.selection.min_prob`: number (default: `0.58`)
+- `strategy.model_alpha_v1.selection.min_candidates_per_ts`: integer (default: `10`)
+- `strategy.model_alpha_v1.position.max_positions_total`: integer (default: `3`)
+- `strategy.model_alpha_v1.position.cooldown_bars`: integer (default: `6`)
+- `strategy.model_alpha_v1.exit.mode`: `hold | risk` (default: `hold`)
+- `strategy.model_alpha_v1.exit.hold_bars`: integer (default: `6`)
+- `strategy.model_alpha_v1.exit.tp_pct`: number (default: `0.02`)
+- `strategy.model_alpha_v1.exit.sl_pct`: number (default: `0.01`)
+- `strategy.model_alpha_v1.exit.trailing_pct`: number (default: `0.0`)
+- `strategy.model_alpha_v1.execution.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `JOIN`)
+- `strategy.model_alpha_v1.execution.timeout_bars`: integer (default: `2`)
+- `strategy.model_alpha_v1.execution.replace_max`: integer (default: `2`)
 
 ## Risk (Paper Runtime)
 - `risk.starting_krw`: number (default: `50000`)
@@ -123,6 +139,12 @@
 - `backtest.to_ts_ms`: int64 nullable
 - `backtest.duration_days`: integer nullable
 - `backtest.seed`: integer (default: `0`)
+- `backtest.strategy.name`: `candidates_v1 | model_alpha_v1` (default: `candidates_v1`)
+- `backtest.strategy.model_ref`: string (default: `latest_v3`)
+- `backtest.strategy.model_family`: string (default: `train_v3_mtf_micro`)
+- `backtest.strategy.feature_set`: string (default: `v3`)
+- `backtest.strategy.model_registry_root`: path (default: `models/registry`)
+- `backtest.strategy.model_feature_dataset_root`: path nullable (default: `null`)
 
 ### Backtest Universe
 - `backtest.universe.mode`: `static_start | fixed_list` (default: `static_start`)
@@ -364,13 +386,19 @@
 ## CLI: Backtest Run
 - `python -m autobot.cli backtest run --market KRW-BTC --tf 5m --duration-days 7`
 - Main options:
+  - `--dataset-name`, `--parquet-root`
   - `--market` / `--markets`
   - `--tf`
-  - `--from-ts-ms`, `--to-ts-ms`, `--duration-days`
+  - `--start`, `--end`, `--from-ts-ms`, `--to-ts-ms`, `--duration-days`
   - `--quote`, `--top-n`, `--universe-mode`
   - `--dense-grid`
   - `--starting-krw`, `--per-trade-krw`, `--max-positions`, `--min-order-krw`
   - `--order-timeout-bars`, `--reprice-max-attempts`
+  - `--strategy`, `--model-ref`, `--model-family`, `--feature-set`
+  - `--entry`, `--top-pct`, `--min-prob`, `--min-cands-per-ts`
+  - `--exit-mode`, `--hold-bars`, `--tp-pct`, `--sl-pct`, `--trailing-pct`
+  - `--cooldown-bars`, `--max-positions-total`
+  - `--execution-price-mode`, `--execution-timeout-bars`, `--execution-replace-max`
   - `--micro-gate`, `--micro-gate-mode`, `--micro-gate-on-missing`
   - `--micro-order-policy`, `--micro-order-policy-mode`, `--micro-order-policy-on-missing`
 

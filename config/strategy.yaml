@@ -65,3 +65,24 @@
       min_replace_interval_ms_global: 1500
       max_replaces_per_min_per_market: 10
       forbid_post_only_with_cross: true
+  model_alpha_v1:
+    model_ref: latest_v3
+    model_family: train_v3_mtf_micro
+    feature_set: v3
+    selection:
+      top_pct: 0.05
+      min_prob: 0.58
+      min_candidates_per_ts: 10
+    position:
+      max_positions_total: 3
+      cooldown_bars: 6
+    exit:
+      mode: hold
+      hold_bars: 6
+      tp_pct: 0.02
+      sl_pct: 0.01
+      trailing_pct: 0.0
+    execution:
+      price_mode: JOIN
+      timeout_bars: 2
+      replace_max: 2

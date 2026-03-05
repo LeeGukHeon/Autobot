@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+import csv
 from dataclasses import asdict, dataclass, field
 import heapq
 import json
@@ -35,6 +36,9 @@ from autobot.paper.sim_exchange import (
     order_volume_from_notional,
     round_price_to_tick,
 )
+from autobot.models.dataset_loader import DatasetRequest, iter_feature_rows_grouped_by_ts
+from autobot.models.predictor import load_predictor_from_registry
+from autobot.strategy.model_alpha_v1 import ModelAlphaSettings, ModelAlphaStrategyV1
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
 from autobot.strategy.micro_order_policy import (
@@ -63,6 +67,7 @@ from .loader import CandleDataLoader
 from .metrics import max_drawdown_pct, win_rate
 from .reporting import write_summary_json
 from .run_id import build_backtest_run_id
+from .strategy_adapter import StrategyFillEvent, StrategyOrderIntent
 from .types import CandleBar
 from .universe import StaticUniverseProvider, build_static_start_universe
 
@@ -91,6 +96,13 @@ class BacktestRunSettings:
     rules_ttl_sec: int = 86_400
     momentum_window_sec: int = 60
     min_momentum_pct: float = 0.2
+    strategy: str = "candidates_v1"  # candidates_v1 | model_alpha_v1
+    model_ref: str | None = None
+    model_family: str | None = None
+    feature_set: str = "v3"
+    model_registry_root: str = "models/registry"
+    model_feature_dataset_root: str | None = None
+    model_alpha: ModelAlphaSettings = field(default_factory=ModelAlphaSettings)
     output_root_dir: str = "data/backtest"
     seed: int = 0
     micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
@@ -131,6 +143,13 @@ class BacktestRunSummary:
     unrealized_pnl_quote: float
     max_drawdown_pct: float
     win_rate: float
+    strategy: str = "candidates_v1"
+    scored_rows: int = 0
+    selected_rows: int = 0
+    skipped_missing_features_rows: int = 0
+    selection_ratio: float = 0.0
+    exposure_avg_open_positions: float = 0.0
+    exposure_max_open_positions: int = 0
 
 
 @dataclass(frozen=True)
@@ -620,6 +639,14 @@ class BacktestRunEngine:
             "micro_policy_tier_counts": {},
             "micro_policy_fallback_counts": {},
             "order_supervisor_reasons": {},
+            "scored_rows": 0,
+            "selected_rows": 0,
+            "skipped_missing_features_rows": 0,
+            "dropped_min_prob_rows": 0,
+            "dropped_top_pct_rows": 0,
+            "blocked_min_candidates_ts": 0,
+            "debug_mismatch_reasons": {},
+            "exit_intents_total": 0,
         }
         self._runtime_state: dict[str, Any] = {}
 
@@ -645,6 +672,7 @@ class BacktestRunEngine:
         run_root = Path(settings.output_root_dir) / "runs" / run_id
         universe = StaticUniverseProvider(active_markets)
         market_data = _BarDataHub(history_sec=max(settings.momentum_window_sec * 2, 300))
+        strategy_mode = str(settings.strategy).strip().lower() or "candidates_v1"
         candidate_generator = CandidateGeneratorV1(
             CandidateSettings(
                 momentum_window_sec=max(settings.momentum_window_sec, 1),
@@ -660,7 +688,11 @@ class BacktestRunEngine:
         trade_gate = TradeGateV1(
             GateSettings(
                 per_trade_krw=float(settings.per_trade_krw),
-                max_positions=max(int(settings.max_positions), 1),
+                max_positions=(
+                    max(int(settings.model_alpha.position.max_positions_total), 1)
+                    if strategy_mode == "model_alpha_v1"
+                    else max(int(settings.max_positions), 1)
+                ),
                 min_order_krw=max(float(settings.min_order_krw), 0.0),
                 max_consecutive_failures=3,
                 cooldown_sec_after_fail=60,
@@ -685,6 +717,16 @@ class BacktestRunEngine:
             ),
         )
 
+        model_strategy = (
+            self._build_model_alpha_strategy(
+                active_markets=active_markets,
+                from_ts_ms=from_ts_ms,
+                to_ts_ms=to_ts_ms,
+            )
+            if strategy_mode == "model_alpha_v1"
+            else None
+        )
+
         self._runtime_counters = {
             "orders_submitted": 0,
             "orders_filled": 0,
@@ -701,15 +743,27 @@ class BacktestRunEngine:
             "micro_policy_tier_counts": {},
             "micro_policy_fallback_counts": {},
             "order_supervisor_reasons": {},
+            "scored_rows": 0,
+            "selected_rows": 0,
+            "skipped_missing_features_rows": 0,
+            "dropped_min_prob_rows": 0,
+            "dropped_top_pct_rows": 0,
+            "blocked_min_candidates_ts": 0,
+            "debug_mismatch_reasons": {},
+            "exit_intents_total": 0,
         }
         self._runtime_state = {
             "intent_context": {},
             "filled_intents": set(),
             "time_to_fill_ms": [],
             "slippage_bps": [],
+            "fill_records": [],
+            "selection_per_ts": [],
+            "strategy_adapter": model_strategy,
         }
         bars_processed = 0
         equity_curve: list[float] = []
+        open_positions_curve: list[float] = []
         realized_trade_pnls: list[float] = []
         latest_bar_index_by_market: dict[str, int] = {}
         max_event_ts_ms = from_ts_ms
@@ -741,6 +795,8 @@ class BacktestRunEngine:
                     "to_ts_ms": to_ts_ms,
                     "markets": active_markets,
                     "dense_grid": bool(settings.dense_grid),
+                    "strategy": strategy_mode,
+                    "model_ref": str(settings.model_ref or settings.model_alpha.model_ref or ""),
                     "micro_order_policy_enabled": bool(settings.micro_order_policy.enabled),
                     "micro_order_policy_mode": str(settings.micro_order_policy.mode),
                     "micro_order_policy_on_missing": str(settings.micro_order_policy.on_missing),
@@ -752,64 +808,89 @@ class BacktestRunEngine:
             )
 
             while queue:
-                _, _, market, bar_index = heapq.heappop(queue)
-                bar = market_bars[market][bar_index]
-                bars_processed += 1
-                max_event_ts_ms = max(max_event_ts_ms, bar.ts_ms)
-                latest_bar_index_by_market[market] = bar_index
+                ts_batch = int(queue[0][0])
+                batch_items: list[tuple[str, int]] = []
+                while queue and int(queue[0][0]) == ts_batch:
+                    _, _, market, bar_index = heapq.heappop(queue)
+                    batch_items.append((market, bar_index))
 
-                rules = self._rules_provider.get_rules(
-                    market=bar.market,
-                    reference_price=bar.close,
-                    ts_ms=bar.ts_ms,
-                )
-                realized_before = exchange.total_realized_pnl()
-                has_ask_fill = self._apply_execution_update(
-                    update=execution.on_bar(bar=bar, bar_index=bar_index, rules=rules),
-                    trade_gate=trade_gate,
-                    event_store=store,
-                    append_event=append_event,
-                    ts_ms=bar.ts_ms,
-                    counters=self._runtime_counters,
-                )
-                if has_ask_fill:
-                    realized_after = exchange.total_realized_pnl()
-                    realized_delta = realized_after - realized_before
-                    if abs(realized_delta) > 1e-12:
-                        realized_trade_pnls.append(realized_delta)
+                for market, bar_index in batch_items:
+                    bar = market_bars[market][bar_index]
+                    bars_processed += 1
+                    max_event_ts_ms = max(max_event_ts_ms, bar.ts_ms)
+                    latest_bar_index_by_market[market] = bar_index
 
-                market_data.update(bar)
-                universe.update_if_needed(bar.ts_ms)
+                    rules = self._rules_provider.get_rules(
+                        market=bar.market,
+                        reference_price=bar.close,
+                        ts_ms=bar.ts_ms,
+                    )
+                    realized_before = exchange.total_realized_pnl()
+                    has_ask_fill = self._apply_execution_update(
+                        update=execution.on_bar(bar=bar, bar_index=bar_index, rules=rules),
+                        trade_gate=trade_gate,
+                        event_store=store,
+                        append_event=append_event,
+                        ts_ms=bar.ts_ms,
+                        counters=self._runtime_counters,
+                    )
+                    if has_ask_fill:
+                        realized_after = exchange.total_realized_pnl()
+                        realized_delta = realized_after - realized_before
+                        if abs(realized_delta) > 1e-12:
+                            realized_trade_pnls.append(realized_delta)
 
-                self._run_candidate_cycle(
-                    ts_ms=bar.ts_ms,
-                    current_market=market,
-                    latest_bar_index_by_market=latest_bar_index_by_market,
-                    universe=universe,
-                    market_data=market_data,
-                    candidate_generator=candidate_generator,
-                    trade_gate=trade_gate,
-                    micro_order_policy=micro_order_policy,
-                    micro_snapshot_provider=micro_snapshot_provider,
-                    exchange=exchange,
-                    execution=execution,
-                    event_store=store,
-                    append_event=append_event,
-                )
+                    market_data.update(bar)
+                    universe.update_if_needed(bar.ts_ms)
 
-                snapshot = exchange.portfolio_snapshot(ts_ms=bar.ts_ms, latest_prices=market_data.latest_prices())
-                store.append_equity(snapshot)
-                append_event("PORTFOLIO_SNAPSHOT", ts_ms=bar.ts_ms, payload=asdict(snapshot))
-                equity_curve.append(snapshot.equity_quote)
+                    if strategy_mode != "model_alpha_v1":
+                        self._run_candidate_cycle(
+                            ts_ms=bar.ts_ms,
+                            current_market=market,
+                            latest_bar_index_by_market=latest_bar_index_by_market,
+                            universe=universe,
+                            market_data=market_data,
+                            candidate_generator=candidate_generator,
+                            trade_gate=trade_gate,
+                            micro_order_policy=micro_order_policy,
+                            micro_snapshot_provider=micro_snapshot_provider,
+                            exchange=exchange,
+                            execution=execution,
+                            event_store=store,
+                            append_event=append_event,
+                        )
 
-                next_index = bar_index + 1
-                if next_index < len(market_bars[market]):
-                    heapq.heappush(queue, (market_bars[market][next_index].ts_ms, queue_seq, market, next_index))
-                    queue_seq += 1
+                    snapshot = exchange.portfolio_snapshot(ts_ms=bar.ts_ms, latest_prices=market_data.latest_prices())
+                    store.append_equity(snapshot)
+                    append_event("PORTFOLIO_SNAPSHOT", ts_ms=bar.ts_ms, payload=asdict(snapshot))
+                    equity_curve.append(snapshot.equity_quote)
+                    open_positions_curve.append(float(len(snapshot.positions)))
+
+                    next_index = bar_index + 1
+                    if next_index < len(market_bars[market]):
+                        heapq.heappush(queue, (market_bars[market][next_index].ts_ms, queue_seq, market, next_index))
+                        queue_seq += 1
+
+                if strategy_mode == "model_alpha_v1" and model_strategy is not None:
+                    self._run_model_alpha_cycle(
+                        ts_ms=ts_batch,
+                        latest_bar_index_by_market=latest_bar_index_by_market,
+                        universe=universe,
+                        market_data=market_data,
+                        trade_gate=trade_gate,
+                        micro_order_policy=micro_order_policy,
+                        micro_snapshot_provider=micro_snapshot_provider,
+                        exchange=exchange,
+                        execution=execution,
+                        event_store=store,
+                        append_event=append_event,
+                        strategy=model_strategy,
+                    )
 
             final_snapshot = exchange.portfolio_snapshot(ts_ms=max_event_ts_ms, latest_prices=market_data.latest_prices())
             store.append_equity(final_snapshot)
             append_event("PORTFOLIO_SNAPSHOT", ts_ms=max_event_ts_ms, payload=asdict(final_snapshot))
+            open_positions_curve.append(float(len(final_snapshot.positions)))
             append_event(
                 "RUN_COMPLETED",
                 ts_ms=max_event_ts_ms,
@@ -828,6 +909,14 @@ class BacktestRunEngine:
                         self._runtime_counters.get("micro_policy_fallback_counts", {})
                     ),
                     "order_supervisor_reasons": dict(self._runtime_counters.get("order_supervisor_reasons", {})),
+                    "scored_rows": int(self._runtime_counters.get("scored_rows", 0)),
+                    "selected_rows": int(self._runtime_counters.get("selected_rows", 0)),
+                    "skipped_missing_features_rows": int(
+                        self._runtime_counters.get("skipped_missing_features_rows", 0)
+                    ),
+                    "debug_mismatch_reasons": dict(self._runtime_counters.get("debug_mismatch_reasons", {})),
+                    "exposure_avg_open_positions": mean(open_positions_curve),
+                    "exposure_max_open_positions": int(max(open_positions_curve) if open_positions_curve else 0),
                 },
             )
 
@@ -848,6 +937,10 @@ class BacktestRunEngine:
         cancels_total = int(self._runtime_counters.get("cancels_total", 0))
         aborted_timeout_total = int(self._runtime_counters.get("aborted_timeout_total", 0))
         dust_abort_total = int(self._runtime_counters.get("dust_abort_total", 0))
+        scored_rows = int(self._runtime_counters.get("scored_rows", 0))
+        selected_rows = int(self._runtime_counters.get("selected_rows", 0))
+        skipped_missing_features_rows = int(self._runtime_counters.get("skipped_missing_features_rows", 0))
+        selection_ratio = (selected_rows / scored_rows) if scored_rows > 0 else 0.0
         summary = BacktestRunSummary(
             run_id=run_id,
             run_dir=str(run_root),
@@ -881,6 +974,13 @@ class BacktestRunEngine:
             unrealized_pnl_quote=final_snapshot.unrealized_pnl_quote,
             max_drawdown_pct=max_drawdown_pct(equity_curve),
             win_rate=win_rate(realized_trade_pnls),
+            strategy=str(strategy_mode),
+            scored_rows=scored_rows,
+            selected_rows=selected_rows,
+            skipped_missing_features_rows=skipped_missing_features_rows,
+            selection_ratio=selection_ratio,
+            exposure_avg_open_positions=mean(open_positions_curve),
+            exposure_max_open_positions=int(max(open_positions_curve) if open_positions_curve else 0),
         )
         write_summary_json(run_root, asdict(summary))
         _write_json(
@@ -914,6 +1014,38 @@ class BacktestRunEngine:
                 "slippage_bps_p50": percentile(slippage_values, 0.50),
                 "slippage_bps_p90": percentile(slippage_values, 0.90),
             },
+        )
+        _write_json(
+            path=run_root / "selection_stats.json",
+            payload={
+                "strategy": str(strategy_mode),
+                "scored_rows": scored_rows,
+                "selected_rows": selected_rows,
+                "selection_ratio": selection_ratio,
+                "dropped_min_prob_rows": int(self._runtime_counters.get("dropped_min_prob_rows", 0)),
+                "dropped_min_prob_ratio": (
+                    int(self._runtime_counters.get("dropped_min_prob_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
+                ),
+                "dropped_top_pct_rows": int(self._runtime_counters.get("dropped_top_pct_rows", 0)),
+                "dropped_top_pct_ratio": (
+                    int(self._runtime_counters.get("dropped_top_pct_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
+                ),
+                "blocked_min_candidates_ts": int(self._runtime_counters.get("blocked_min_candidates_ts", 0)),
+                "exit_intents_total": int(self._runtime_counters.get("exit_intents_total", 0)),
+                "per_ts": list(self._runtime_state.get("selection_per_ts", [])),
+            },
+        )
+        _write_json(
+            path=run_root / "debug_mismatch.json",
+            payload={
+                "strategy": str(strategy_mode),
+                "skipped_missing_features_rows": skipped_missing_features_rows,
+                "reasons": _normalize_reason_counts(self._runtime_counters.get("debug_mismatch_reasons", {})),
+            },
+        )
+        _write_trade_artifacts(
+            run_root=run_root,
+            fill_records=self._runtime_state.get("fill_records", []),
         )
         return summary
 
@@ -985,6 +1117,101 @@ class BacktestRunEngine:
             ):
                 break
 
+    def _run_model_alpha_cycle(
+        self,
+        *,
+        ts_ms: int,
+        latest_bar_index_by_market: dict[str, int],
+        universe: StaticUniverseProvider,
+        market_data: _BarDataHub,
+        trade_gate: TradeGateV1,
+        micro_order_policy: MicroOrderPolicyV1 | None,
+        micro_snapshot_provider: MicroSnapshotProvider | None,
+        exchange: BacktestSimExchange,
+        execution: BacktestExecutionGateway,
+        event_store: JsonlEventStore,
+        append_event: Callable[[str, int, dict[str, Any] | None], None],
+        strategy: ModelAlphaStrategyV1,
+    ) -> None:
+        markets = universe.markets()
+        open_markets = {market for market in markets if exchange.has_position(market)}
+        result = strategy.on_ts(
+            ts_ms=ts_ms,
+            active_markets=markets,
+            latest_prices=market_data.latest_prices(),
+            open_markets=open_markets,
+        )
+        self._runtime_counters["scored_rows"] = int(self._runtime_counters.get("scored_rows", 0)) + int(
+            result.scored_rows
+        )
+        self._runtime_counters["selected_rows"] = int(self._runtime_counters.get("selected_rows", 0)) + int(
+            result.selected_rows
+        )
+        self._runtime_counters["skipped_missing_features_rows"] = int(
+            self._runtime_counters.get("skipped_missing_features_rows", 0)
+        ) + int(result.skipped_missing_features_rows)
+        self._runtime_counters["dropped_min_prob_rows"] = int(self._runtime_counters.get("dropped_min_prob_rows", 0)) + int(
+            result.dropped_min_prob_rows
+        )
+        self._runtime_counters["dropped_top_pct_rows"] = int(self._runtime_counters.get("dropped_top_pct_rows", 0)) + int(
+            result.dropped_top_pct_rows
+        )
+        self._runtime_counters["blocked_min_candidates_ts"] = int(
+            self._runtime_counters.get("blocked_min_candidates_ts", 0)
+        ) + int(result.blocked_min_candidates_ts)
+        debug_reasons = self._runtime_counters.setdefault("debug_mismatch_reasons", {})
+        if isinstance(debug_reasons, dict):
+            for reason, count in result.skipped_reasons.items():
+                _note_reason_count(reason_code=reason, reason_counts=debug_reasons, delta=int(count))
+
+        selection_rows = self._runtime_state.setdefault("selection_per_ts", [])
+        if isinstance(selection_rows, list):
+            scored_rows_ts = int(result.scored_rows)
+            selected_rows_ts = int(result.selected_rows)
+            selection_rows.append(
+                {
+                    "ts_ms": int(ts_ms),
+                    "scored_rows": scored_rows_ts,
+                    "selected_rows": selected_rows_ts,
+                    "selected_ratio": (selected_rows_ts / scored_rows_ts) if scored_rows_ts > 0 else 0.0,
+                    "intents_created": int(len(result.intents)),
+                    "missing_rows": int(result.skipped_missing_features_rows),
+                }
+            )
+
+        append_event(
+            "MODEL_ALPHA_SELECTION",
+            ts_ms=ts_ms,
+            payload={
+                "scored_rows": int(result.scored_rows),
+                "selected_rows": int(result.selected_rows),
+                "intents": int(len(result.intents)),
+                "skipped_missing_features_rows": int(result.skipped_missing_features_rows),
+                "dropped_min_prob_rows": int(result.dropped_min_prob_rows),
+                "dropped_top_pct_rows": int(result.dropped_top_pct_rows),
+                "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
+                "reasons": dict(result.skipped_reasons),
+            },
+        )
+
+        for intent in result.intents:
+            if str(intent.side).strip().lower() == "ask":
+                self._runtime_counters["exit_intents_total"] = int(self._runtime_counters.get("exit_intents_total", 0)) + 1
+            candidate = _intent_to_candidate(intent)
+            self._try_submit_candidate(
+                ts_ms=ts_ms,
+                candidate=candidate,
+                latest_bar_index_by_market=latest_bar_index_by_market,
+                market_data=market_data,
+                trade_gate=trade_gate,
+                micro_order_policy=micro_order_policy,
+                micro_snapshot_provider=micro_snapshot_provider,
+                exchange=exchange,
+                execution=execution,
+                event_store=event_store,
+                append_event=append_event,
+            )
+
     def _try_submit_candidate(
         self,
         *,
@@ -1014,20 +1241,62 @@ class BacktestRunEngine:
             reference_price=candidate.ref_price,
             ts_ms=ts_ms,
         )
+        side_value = str(candidate.proposed_side).strip().lower()
+        forced_volume = None
+        if isinstance(candidate.meta, dict):
+            forced_volume = _safe_optional_float(candidate.meta.get("force_volume"))
+        if side_value == "ask" and (forced_volume is None or forced_volume <= 0):
+            base_currency = _base_currency(candidate.market)
+            if base_currency:
+                forced_volume = _safe_optional_float(getattr(exchange.coin_balance(base_currency), "free", 0.0))
+        if side_value == "ask" and exchange.has_open_order(candidate.market, side="ask"):
+            append_event(
+                "TRADE_GATE_BLOCKED",
+                ts_ms=ts_ms,
+                payload={
+                    "market": candidate.market,
+                    "side": side_value,
+                    "reason_code": "DUPLICATE_EXIT_ORDER",
+                    "detail": "ask order already open",
+                    "severity": "BLOCK",
+                    "gate_reasons": ["DUPLICATE_EXIT_ORDER"],
+                    "diagnostics": {},
+                },
+            )
+            return False
         gate_price = round_price_to_tick(
             price=max(float(candidate.ref_price), float(ticker.trade_price)),
             tick_size=rules.tick_size,
-            side=candidate.proposed_side,
+            side=side_value,
         )
-        gate_volume = order_volume_from_notional(
-            notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
-            price=gate_price,
+        gate_volume = (
+            float(forced_volume)
+            if forced_volume is not None and forced_volume > 0
+            else order_volume_from_notional(
+                notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
+                price=gate_price,
+            )
         )
-        fee_rate = rules.fee_rate(side=candidate.proposed_side, maker_or_taker="taker")
+        if gate_volume <= 0:
+            append_event(
+                "TRADE_GATE_BLOCKED",
+                ts_ms=ts_ms,
+                payload={
+                    "market": candidate.market,
+                    "side": side_value,
+                    "reason_code": "ZERO_VOLUME",
+                    "detail": "computed order volume is zero",
+                    "severity": "BLOCK",
+                    "gate_reasons": ["ZERO_VOLUME"],
+                    "diagnostics": {},
+                },
+            )
+            return False
+        fee_rate = rules.fee_rate(side=side_value, maker_or_taker="taker")
         decision = trade_gate.evaluate(
             ts_ms=ts_ms,
             market=candidate.market,
-            side=candidate.proposed_side,
+            side=side_value,
             price=gate_price,
             volume=gate_volume,
             fee_rate=fee_rate,
@@ -1048,7 +1317,7 @@ class BacktestRunEngine:
                 ts_ms=ts_ms,
                 payload={
                     "market": candidate.market,
-                    "side": candidate.proposed_side,
+                    "side": side_value,
                     "reason_code": decision.reason_code,
                     "detail": decision.detail,
                     "severity": decision.severity,
@@ -1064,7 +1333,7 @@ class BacktestRunEngine:
                 ts_ms=ts_ms,
                 payload={
                     "market": candidate.market,
-                    "side": candidate.proposed_side,
+                    "side": side_value,
                     "reason_code": decision.reason_code,
                     "detail": decision.detail,
                     "severity": decision.severity,
@@ -1097,7 +1366,7 @@ class BacktestRunEngine:
                     ts_ms=ts_ms,
                     payload={
                         "market": candidate.market,
-                        "side": candidate.proposed_side,
+                        "side": side_value,
                         "reason_code": policy_decision.reason_code,
                         "detail": policy_decision.detail,
                         "diagnostics": policy_diagnostics,
@@ -1119,15 +1388,21 @@ class BacktestRunEngine:
 
         ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
         limit_price = build_limit_price_from_mode(
-            side=candidate.proposed_side,
+            side=side_value,
             ref_price=ref_price,
             tick_size=rules.tick_size,
             price_mode=exec_profile.price_mode,
         )
-        volume = order_volume_from_notional(
-            notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
-            price=limit_price,
+        volume = (
+            float(forced_volume)
+            if forced_volume is not None and forced_volume > 0
+            else order_volume_from_notional(
+                notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
+                price=limit_price,
+            )
         )
+        if volume <= 0:
+            return False
         profile_payload = order_exec_profile_to_dict(exec_profile)
         policy_payload = {
             "enabled": bool(micro_order_policy is not None),
@@ -1141,12 +1416,16 @@ class BacktestRunEngine:
 
         intent = new_order_intent(
             market=candidate.market,
-            side=candidate.proposed_side,
+            side=side_value,
             ord_type="limit",
             time_in_force="gtc",
             price=limit_price,
             volume=volume,
-            reason_code="BACKTEST_CANDIDATE_V1",
+            reason_code=(
+                str(candidate.meta.get("reason_code"))
+                if isinstance(candidate.meta, dict) and str(candidate.meta.get("reason_code", "")).strip()
+                else "BACKTEST_CANDIDATE_V1"
+            ),
             meta={
                 **candidate.meta,
                 "candidate_score": candidate.score,
@@ -1167,6 +1446,7 @@ class BacktestRunEngine:
                 "first_submit_ts_ms": int(ts_ms),
                 "initial_ref_price": float(ref_price),
                 "side": intent.side,
+                "reason_code": intent.reason_code,
                 "exec_profile": profile_payload,
                 "micro_diagnostics": policy_diagnostics,
                 "micro_order_policy": policy_payload,
@@ -1204,6 +1484,8 @@ class BacktestRunEngine:
         filled_intents = self._runtime_state.setdefault("filled_intents", set())
         time_to_fill_ms = self._runtime_state.setdefault("time_to_fill_ms", [])
         slippage_values = self._runtime_state.setdefault("slippage_bps", [])
+        fill_records = self._runtime_state.setdefault("fill_records", [])
+        strategy_adapter = self._runtime_state.get("strategy_adapter")
         order_by_id = {order.order_id: order for order in update.orders_filled}
 
         for order in update.orders_submitted:
@@ -1246,10 +1528,19 @@ class BacktestRunEngine:
             append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=asdict(fill))
             counters["orders_filled"] += 1
             order = order_by_id.get(fill.order_id)
+            reason_code = ""
+            ref_price_value: float | None = None
+            slippage_value: float | None = None
+            price_mode_value = ""
             if order is not None and isinstance(intent_context, dict):
                 context = intent_context.get(order.intent_id)
                 if isinstance(context, dict):
                     ref_price = _safe_optional_float(context.get("initial_ref_price"))
+                    ref_price_value = float(ref_price) if ref_price is not None else None
+                    reason_code = str(context.get("reason_code", "")).strip()
+                    exec_profile_payload = context.get("exec_profile")
+                    if isinstance(exec_profile_payload, dict):
+                        price_mode_value = str(exec_profile_payload.get("price_mode", "")).strip().upper()
                     if ref_price is not None and ref_price > 0:
                         slip = slippage_bps(
                             side=order.side,
@@ -1257,7 +1548,42 @@ class BacktestRunEngine:
                             ref_price=ref_price,
                         )
                         if slip is not None:
-                            slippage_values.append(float(slip))
+                            slippage_value = float(slip)
+                            slippage_values.append(slippage_value)
+            if isinstance(fill_records, list):
+                fill_records.append(
+                    {
+                        "ts_ms": int(fill.ts_ms),
+                        "market": str(fill.market).strip().upper(),
+                        "side": (str(order.side).strip().lower() if order is not None else ""),
+                        "ref_price": ref_price_value,
+                        "order_price": (float(order.price) if order is not None else None),
+                        "fill_price": float(fill.price),
+                        "slippage_bps": slippage_value,
+                        "price_mode": price_mode_value,
+                        "price": float(fill.price),
+                        "volume": float(fill.volume),
+                        "notional_quote": float(fill.price) * float(fill.volume),
+                        "fee_quote": float(fill.fee_quote),
+                        "order_id": str(fill.order_id),
+                        "intent_id": (str(order.intent_id) if order is not None else ""),
+                        "reason_code": reason_code,
+                    }
+                )
+            if order is not None and strategy_adapter is not None and hasattr(strategy_adapter, "on_fill"):
+                try:
+                    strategy_adapter.on_fill(
+                        StrategyFillEvent(
+                            ts_ms=int(fill.ts_ms),
+                            market=str(fill.market).strip().upper(),
+                            side=str(order.side).strip().lower(),
+                            price=float(fill.price),
+                            volume=float(fill.volume),
+                        )
+                    )
+                except Exception:
+                    # keep backtest resilient even if strategy bookkeeping fails
+                    pass
 
         for order in update.orders_filled:
             event_store.append_order(order)
@@ -1312,6 +1638,58 @@ class BacktestRunEngine:
             cache_entries=cfg.cache_entries,
         )
         return self._micro_snapshot_provider
+
+    def _build_model_alpha_strategy(
+        self,
+        *,
+        active_markets: list[str],
+        from_ts_ms: int,
+        to_ts_ms: int,
+    ) -> ModelAlphaStrategyV1:
+        settings = self._run_settings
+        if str(settings.feature_set).strip().lower() != "v3":
+            raise ValueError("model_alpha_v1 currently requires --feature-set v3")
+        model_ref = str(settings.model_ref or settings.model_alpha.model_ref).strip()
+        if not model_ref:
+            raise ValueError("model_alpha_v1 requires model_ref")
+        model_family = str(settings.model_family).strip() if settings.model_family else settings.model_alpha.model_family
+        predictor = load_predictor_from_registry(
+            registry_root=Path(settings.model_registry_root),
+            model_ref=model_ref,
+            model_family=model_family,
+        )
+        dataset_root = (
+            Path(str(settings.model_feature_dataset_root))
+            if settings.model_feature_dataset_root
+            else predictor.dataset_root
+        )
+        if dataset_root is None:
+            raise ValueError("unable to resolve feature dataset root for model_alpha_v1")
+        if not dataset_root.exists():
+            raise FileNotFoundError(f"feature dataset root not found: {dataset_root}")
+
+        request = DatasetRequest(
+            dataset_root=dataset_root,
+            tf=str(settings.tf).strip().lower(),
+            quote=str(settings.quote).strip().upper(),
+            top_n=max(int(settings.top_n), 1),
+            start_ts_ms=int(from_ts_ms),
+            end_ts_ms=int(to_ts_ms),
+            markets=tuple(active_markets),
+            batch_rows=200_000,
+        )
+        groups = iter_feature_rows_grouped_by_ts(
+            request,
+            feature_columns=predictor.feature_columns,
+            extra_columns=("close",),
+        )
+        interval_ms = _interval_ms_from_tf(settings.tf)
+        return ModelAlphaStrategyV1(
+            predictor=predictor,
+            feature_groups=groups,
+            settings=settings.model_alpha,
+            interval_ms=interval_ms,
+        )
 
     def _resolve_markets(self) -> list[str]:
         explicit = _normalize_markets(market=self._run_settings.market, markets=self._run_settings.markets)
@@ -1404,6 +1782,27 @@ class BacktestRunEngine:
         return loaded
 
 
+def _intent_to_candidate(intent: StrategyOrderIntent) -> Candidate:
+    side = str(intent.side).strip().lower()
+    if side not in {"bid", "ask"}:
+        raise ValueError(f"invalid strategy intent side: {intent.side}")
+    meta = dict(intent.meta) if isinstance(intent.meta, dict) else {}
+    if intent.volume is not None:
+        meta["force_volume"] = float(intent.volume)
+    if intent.reason_code:
+        meta["reason_code"] = str(intent.reason_code)
+    if intent.prob is not None:
+        meta["model_prob"] = float(intent.prob)
+    score = float(intent.score if intent.score is not None else (intent.prob if intent.prob is not None else 0.0))
+    return Candidate(
+        market=str(intent.market).strip().upper(),
+        score=score,
+        proposed_side=side,
+        ref_price=float(intent.ref_price),
+        meta=meta,
+    )
+
+
 def _is_micro_reason(reason: str) -> bool:
     value = str(reason).strip().upper()
     if value.startswith("MICRO_"):
@@ -1488,6 +1887,97 @@ def _write_json(*, path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _write_trade_artifacts(*, run_root: Path, fill_records: Any) -> None:
+    trades_path = run_root / "trades.csv"
+    per_market_path = run_root / "per_market.csv"
+    rows = [item for item in fill_records if isinstance(item, dict)] if isinstance(fill_records, list) else []
+    rows.sort(key=lambda item: (int(item.get("ts_ms", 0)), str(item.get("market", "")), str(item.get("side", ""))))
+
+    trade_fields = [
+        "ts_ms",
+        "market",
+        "side",
+        "ref_price",
+        "order_price",
+        "fill_price",
+        "slippage_bps",
+        "price_mode",
+        "price",
+        "volume",
+        "notional_quote",
+        "fee_quote",
+        "order_id",
+        "intent_id",
+        "reason_code",
+    ]
+    trades_path.parent.mkdir(parents=True, exist_ok=True)
+    with trades_path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=trade_fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field) for field in trade_fields})
+
+    aggregates: dict[str, dict[str, float]] = {}
+    for row in rows:
+        market = str(row.get("market", "")).strip().upper()
+        if not market:
+            continue
+        item = aggregates.setdefault(
+            market,
+            {
+                "market": market,
+                "fills_total": 0.0,
+                "entry_fills": 0.0,
+                "exit_fills": 0.0,
+                "notional_bid": 0.0,
+                "notional_ask": 0.0,
+                "fees_quote": 0.0,
+                "net_flow_quote": 0.0,
+            },
+        )
+        side = str(row.get("side", "")).strip().lower()
+        notional = float(row.get("notional_quote", 0.0) or 0.0)
+        fees = float(row.get("fee_quote", 0.0) or 0.0)
+        item["fills_total"] += 1.0
+        item["fees_quote"] += fees
+        if side == "bid":
+            item["entry_fills"] += 1.0
+            item["notional_bid"] += notional
+            item["net_flow_quote"] -= notional + fees
+        elif side == "ask":
+            item["exit_fills"] += 1.0
+            item["notional_ask"] += notional
+            item["net_flow_quote"] += notional - fees
+
+    per_market_fields = [
+        "market",
+        "fills_total",
+        "entry_fills",
+        "exit_fills",
+        "notional_bid",
+        "notional_ask",
+        "fees_quote",
+        "net_flow_quote",
+    ]
+    with per_market_path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=per_market_fields)
+        writer.writeheader()
+        for market in sorted(aggregates):
+            item = aggregates[market]
+            writer.writerow(
+                {
+                    "market": market,
+                    "fills_total": int(item["fills_total"]),
+                    "entry_fills": int(item["entry_fills"]),
+                    "exit_fills": int(item["exit_fills"]),
+                    "notional_bid": float(item["notional_bid"]),
+                    "notional_ask": float(item["notional_ask"]),
+                    "fees_quote": float(item["fees_quote"]),
+                    "net_flow_quote": float(item["net_flow_quote"]),
+                }
+            )
+
+
 def run_backtest_sync(
     *,
     run_settings: BacktestRunSettings,
@@ -1560,6 +2050,13 @@ def _safe_optional_float(value: Any) -> float | None:
     if number < 0:
         return None
     return number
+
+
+def _base_currency(market: str) -> str:
+    value = str(market).strip().upper()
+    if "-" not in value:
+        return ""
+    return value.split("-", 1)[1]
 
 
 def _infer_tick_size(*, price: float, quote: str) -> float:

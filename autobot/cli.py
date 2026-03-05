@@ -74,6 +74,7 @@ from .features import (
     validate_features_dataset_v2,
     validate_features_dataset_v3,
 )
+from .features.feature_spec import parse_date_to_ts_ms
 from .live import (
     LiveDaemonSettings,
     LiveStateStore,
@@ -104,6 +105,13 @@ from .models import (
     train_and_register_v3_mtf_micro,
 )
 from .strategy import TopTradeValueScanner
+from .strategy.model_alpha_v1 import (
+    ModelAlphaExecutionSettings,
+    ModelAlphaExitSettings,
+    ModelAlphaPositionSettings,
+    ModelAlphaSelectionSettings,
+    ModelAlphaSettings,
+)
 from .strategy.micro_gate_v1 import (
     MicroGateBookSettings,
     MicroGateSettings,
@@ -694,12 +702,34 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command", required=True)
 
     backtest_run_parser = backtest_subparsers.add_parser("run", help="Run parquet candle backtest.")
+    backtest_run_parser.add_argument("--dataset-name", help="Candle dataset name, ex: candles_api_v1")
+    backtest_run_parser.add_argument("--parquet-root", help="Parquet root, ex: data/parquet")
     backtest_run_parser.add_argument("--tf", help="Timeframe, ex: 1m,5m")
     backtest_run_parser.add_argument("--market", help="Single market, ex: KRW-BTC")
     backtest_run_parser.add_argument("--markets", help="Comma separated markets, ex: KRW-BTC,KRW-ETH")
     backtest_run_parser.add_argument("--quote", help="Quote filter for universe mode, ex: KRW")
     backtest_run_parser.add_argument("--top-n", type=int, help="Universe size for static_start/fixed_list")
     backtest_run_parser.add_argument("--universe-mode", choices=("static_start", "fixed_list"))
+    backtest_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
+    backtest_run_parser.add_argument("--model-ref", help="Registry model ref, ex: latest_v3")
+    backtest_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
+    backtest_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    backtest_run_parser.add_argument("--entry", choices=("top_pct",))
+    backtest_run_parser.add_argument("--top-pct", type=float)
+    backtest_run_parser.add_argument("--min-prob", type=float)
+    backtest_run_parser.add_argument("--min-cands-per-ts", type=int)
+    backtest_run_parser.add_argument("--exit-mode", choices=("hold", "risk"))
+    backtest_run_parser.add_argument("--hold-bars", type=int)
+    backtest_run_parser.add_argument("--tp-pct", type=float)
+    backtest_run_parser.add_argument("--sl-pct", type=float)
+    backtest_run_parser.add_argument("--trailing-pct", type=float)
+    backtest_run_parser.add_argument("--cooldown-bars", type=int)
+    backtest_run_parser.add_argument("--max-positions-total", type=int)
+    backtest_run_parser.add_argument("--execution-price-mode", choices=("PASSIVE_MAKER", "JOIN", "CROSS_1T"))
+    backtest_run_parser.add_argument("--execution-timeout-bars", type=int)
+    backtest_run_parser.add_argument("--execution-replace-max", type=int)
+    backtest_run_parser.add_argument("--start", help="Start date YYYY-MM-DD (UTC day start).")
+    backtest_run_parser.add_argument("--end", help="End date YYYY-MM-DD (UTC day end).")
     backtest_run_parser.add_argument("--from-ts-ms", type=int)
     backtest_run_parser.add_argument("--to-ts-ms", type=int)
     backtest_run_parser.add_argument("--duration-days", type=int)
@@ -2152,12 +2182,153 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
         )
 
         markets_cli = _parse_csv_list(getattr(args, "markets", None), normalize=str.upper) or ()
+        strategy_mode = str(getattr(args, "strategy", None) or defaults.get("strategy", "candidates_v1")).strip().lower()
+        model_alpha_defaults = defaults.get("model_alpha", {}) if isinstance(defaults.get("model_alpha"), dict) else {}
+        model_alpha_selection_defaults = (
+            model_alpha_defaults.get("selection", {}) if isinstance(model_alpha_defaults.get("selection"), dict) else {}
+        )
+        model_alpha_position_defaults = (
+            model_alpha_defaults.get("position", {}) if isinstance(model_alpha_defaults.get("position"), dict) else {}
+        )
+        model_alpha_exit_defaults = (
+            model_alpha_defaults.get("exit", {}) if isinstance(model_alpha_defaults.get("exit"), dict) else {}
+        )
+        model_alpha_execution_defaults = (
+            model_alpha_defaults.get("execution", {}) if isinstance(model_alpha_defaults.get("execution"), dict) else {}
+        )
+        model_ref_value = str(
+            getattr(args, "model_ref", None)
+            or defaults.get("model_ref")
+            or model_alpha_defaults.get("model_ref", "latest_v3")
+        ).strip()
+        model_family_raw = getattr(args, "model_family", None)
+        if model_family_raw is None:
+            model_family_raw = defaults.get("model_family")
+        if model_family_raw in {None, ""}:
+            model_family_raw = model_alpha_defaults.get("model_family")
+        model_family_value = str(model_family_raw).strip() if model_family_raw else None
+        model_ref_value, model_family_value = _resolve_model_ref_alias(model_ref_value, model_family_value)
+        feature_set_value = str(
+            getattr(args, "feature_set", None)
+            or defaults.get("feature_set", model_alpha_defaults.get("feature_set", "v3"))
+        ).strip().lower() or "v3"
+        selection_top_pct = float(
+            getattr(args, "top_pct", None)
+            if getattr(args, "top_pct", None) is not None
+            else model_alpha_selection_defaults.get("top_pct", 0.05)
+        )
+        selection_min_prob = float(
+            getattr(args, "min_prob", None)
+            if getattr(args, "min_prob", None) is not None
+            else model_alpha_selection_defaults.get("min_prob", 0.58)
+        )
+        selection_min_cands = int(
+            getattr(args, "min_cands_per_ts", None)
+            if getattr(args, "min_cands_per_ts", None) is not None
+            else model_alpha_selection_defaults.get("min_candidates_per_ts", 10)
+        )
+        position_max_total = int(
+            getattr(args, "max_positions_total", None)
+            if getattr(args, "max_positions_total", None) is not None
+            else model_alpha_position_defaults.get("max_positions_total", defaults["max_positions"])
+        )
+        position_cooldown_bars = int(
+            getattr(args, "cooldown_bars", None)
+            if getattr(args, "cooldown_bars", None) is not None
+            else model_alpha_position_defaults.get("cooldown_bars", 6)
+        )
+        exit_mode = str(
+            getattr(args, "exit_mode", None) or model_alpha_exit_defaults.get("mode", "hold")
+        ).strip().lower() or "hold"
+        hold_bars_value = int(
+            getattr(args, "hold_bars", None)
+            if getattr(args, "hold_bars", None) is not None
+            else model_alpha_exit_defaults.get("hold_bars", 6)
+        )
+        tp_pct_value = float(
+            getattr(args, "tp_pct", None)
+            if getattr(args, "tp_pct", None) is not None
+            else model_alpha_exit_defaults.get("tp_pct", 0.02)
+        )
+        sl_pct_value = float(
+            getattr(args, "sl_pct", None)
+            if getattr(args, "sl_pct", None) is not None
+            else model_alpha_exit_defaults.get("sl_pct", 0.01)
+        )
+        trailing_pct_value = float(
+            getattr(args, "trailing_pct", None)
+            if getattr(args, "trailing_pct", None) is not None
+            else model_alpha_exit_defaults.get("trailing_pct", 0.0)
+        )
+        exec_timeout_bars = int(
+            getattr(args, "execution_timeout_bars", None)
+            if getattr(args, "execution_timeout_bars", None) is not None
+            else model_alpha_execution_defaults.get("timeout_bars", 2)
+        )
+        exec_replace_max = int(
+            getattr(args, "execution_replace_max", None)
+            if getattr(args, "execution_replace_max", None) is not None
+            else model_alpha_execution_defaults.get("replace_max", 2)
+        )
+        exec_price_mode = str(
+            getattr(args, "execution_price_mode", None)
+            or model_alpha_execution_defaults.get("price_mode", "JOIN")
+        ).strip().upper() or "JOIN"
+
+        max_positions_value = max(
+            int(args.max_positions if args.max_positions is not None else defaults["max_positions"]),
+            1,
+        )
+        order_timeout_bars_value = max(
+            int(args.order_timeout_bars if args.order_timeout_bars is not None else defaults["order_timeout_bars"]),
+            1,
+        )
+        reprice_max_attempts_value = max(
+            int(args.reprice_max_attempts if args.reprice_max_attempts is not None else defaults["reprice_max_attempts"]),
+            0,
+        )
+        if strategy_mode == "model_alpha_v1":
+            max_positions_value = max(position_max_total, 1)
+            if getattr(args, "order_timeout_bars", None) is None:
+                order_timeout_bars_value = max(exec_timeout_bars, 1)
+            if getattr(args, "reprice_max_attempts", None) is None:
+                reprice_max_attempts_value = max(exec_replace_max, 0)
+
+        from_ts_ms_value = (
+            getattr(args, "from_ts_ms", None)
+            if getattr(args, "from_ts_ms", None) is not None
+            else defaults["from_ts_ms"]
+        )
+        to_ts_ms_value = (
+            getattr(args, "to_ts_ms", None)
+            if getattr(args, "to_ts_ms", None) is not None
+            else defaults["to_ts_ms"]
+        )
+        if from_ts_ms_value is None and getattr(args, "start", None):
+            from_ts_ms_value = parse_date_to_ts_ms(str(getattr(args, "start")).strip())
+        if to_ts_ms_value is None and getattr(args, "end", None):
+            to_ts_ms_value = parse_date_to_ts_ms(str(getattr(args, "end")).strip(), end_of_day=True)
+
+        dataset_name_value = str(getattr(args, "dataset_name", None) or defaults["dataset_name"]).strip()
+        parquet_root_value = str(getattr(args, "parquet_root", None) or defaults["parquet_root"]).strip()
+        if (
+            strategy_mode == "model_alpha_v1"
+            and feature_set_value == "v3"
+            and getattr(args, "dataset_name", None) is None
+        ):
+            features_v3_cfg = load_features_v3_config(config_dir, base_config=base_config)
+            dataset_name_value = _resolve_backtest_dataset_name_for_v3(
+                parquet_root=Path(parquet_root_value),
+                base_candles_dataset=str(features_v3_cfg.build.base_candles_dataset),
+                fallback=dataset_name_value,
+            )
+
         run_settings = BacktestRunSettings(
-            dataset_name=str(defaults["dataset_name"]),
-            parquet_root=str(defaults["parquet_root"]),
+            dataset_name=dataset_name_value,
+            parquet_root=parquet_root_value,
             tf=str(args.tf or defaults["tf"]).strip().lower(),
-            from_ts_ms=getattr(args, "from_ts_ms", None) if getattr(args, "from_ts_ms", None) is not None else defaults["from_ts_ms"],
-            to_ts_ms=getattr(args, "to_ts_ms", None) if getattr(args, "to_ts_ms", None) is not None else defaults["to_ts_ms"],
+            from_ts_ms=from_ts_ms_value,
+            to_ts_ms=to_ts_ms_value,
             duration_days=(
                 int(getattr(args, "duration_days", defaults["duration_days"]))
                 if getattr(args, "duration_days", defaults["duration_days"]) is not None
@@ -2177,27 +2348,53 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 float(args.per_trade_krw if args.per_trade_krw is not None else defaults["per_trade_krw"]),
                 1.0,
             ),
-            max_positions=max(int(args.max_positions if args.max_positions is not None else defaults["max_positions"]), 1),
+            max_positions=max_positions_value,
             min_order_krw=max(
                 float(args.min_order_krw if args.min_order_krw is not None else defaults["min_order_krw"]),
                 0.0,
             ),
-            order_timeout_bars=max(
-                int(args.order_timeout_bars if args.order_timeout_bars is not None else defaults["order_timeout_bars"]),
-                1,
-            ),
-            reprice_max_attempts=max(
-                int(
-                    args.reprice_max_attempts
-                    if args.reprice_max_attempts is not None
-                    else defaults["reprice_max_attempts"]
-                ),
-                0,
-            ),
+            order_timeout_bars=order_timeout_bars_value,
+            reprice_max_attempts=reprice_max_attempts_value,
             reprice_tick_steps=max(int(defaults["reprice_tick_steps"]), 1),
             rules_ttl_sec=max(int(defaults["rules_ttl_sec"]), 1),
             momentum_window_sec=max(int(defaults["momentum_window_sec"]), 1),
             min_momentum_pct=float(defaults["min_momentum_pct"]),
+            strategy=strategy_mode,
+            model_ref=model_ref_value or None,
+            model_family=model_family_value,
+            feature_set=feature_set_value,
+            model_registry_root=str(defaults.get("model_registry_root", "models/registry")),
+            model_feature_dataset_root=(
+                str(defaults.get("model_feature_dataset_root")).strip()
+                if defaults.get("model_feature_dataset_root") is not None
+                else None
+            ),
+            model_alpha=ModelAlphaSettings(
+                model_ref=str(model_ref_value or model_alpha_defaults.get("model_ref", "latest_v3")).strip() or "latest_v3",
+                model_family=model_family_value,
+                feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
+                selection=ModelAlphaSelectionSettings(
+                    top_pct=max(min(selection_top_pct, 1.0), 0.0),
+                    min_prob=max(min(selection_min_prob, 1.0), 0.0),
+                    min_candidates_per_ts=max(selection_min_cands, 0),
+                ),
+                position=ModelAlphaPositionSettings(
+                    max_positions_total=max(position_max_total, 1),
+                    cooldown_bars=max(position_cooldown_bars, 0),
+                ),
+                exit=ModelAlphaExitSettings(
+                    mode=exit_mode,
+                    hold_bars=max(hold_bars_value, 0),
+                    tp_pct=max(tp_pct_value, 0.0),
+                    sl_pct=max(sl_pct_value, 0.0),
+                    trailing_pct=max(trailing_pct_value, 0.0),
+                ),
+                execution=ModelAlphaExecutionSettings(
+                    price_mode=exec_price_mode,
+                    timeout_bars=max(exec_timeout_bars, 1),
+                    replace_max=max(exec_replace_max, 0),
+                ),
+            ),
             output_root_dir=str(defaults["backtest_out_dir"]),
             seed=int(defaults["seed"]),
             micro_gate=_build_micro_gate_settings(
@@ -2745,6 +2942,19 @@ def _backtest_defaults(
         if isinstance(strategy_root.get("micro_order_policy"), dict)
         else {}
     )
+    model_alpha_cfg = (
+        strategy_root.get("model_alpha_v1", {}) if isinstance(strategy_root.get("model_alpha_v1"), dict) else {}
+    )
+    model_alpha_selection_cfg = (
+        model_alpha_cfg.get("selection", {}) if isinstance(model_alpha_cfg.get("selection"), dict) else {}
+    )
+    model_alpha_position_cfg = (
+        model_alpha_cfg.get("position", {}) if isinstance(model_alpha_cfg.get("position"), dict) else {}
+    )
+    model_alpha_exit_cfg = model_alpha_cfg.get("exit", {}) if isinstance(model_alpha_cfg.get("exit"), dict) else {}
+    model_alpha_execution_cfg = (
+        model_alpha_cfg.get("execution", {}) if isinstance(model_alpha_cfg.get("execution"), dict) else {}
+    )
 
     root = backtest_doc.get("backtest", backtest_doc) if isinstance(backtest_doc, dict) else {}
     root = root if isinstance(root, dict) else {}
@@ -2752,6 +2962,7 @@ def _backtest_defaults(
     data_cfg = root.get("data", {}) if isinstance(root.get("data"), dict) else {}
     execution_cfg = root.get("execution", {}) if isinstance(root.get("execution"), dict) else {}
     output_cfg = root.get("output", {}) if isinstance(root.get("output"), dict) else {}
+    strategy_cfg = root.get("strategy", {}) if isinstance(root.get("strategy"), dict) else {}
 
     return {
         "dataset_name": str(root.get("dataset_name", data_defaults["dataset_name"])),
@@ -2776,6 +2987,60 @@ def _backtest_defaults(
         "min_momentum_pct": float(candidates_cfg.get("min_momentum_pct", 0.2)),
         "backtest_out_dir": str(output_cfg.get("root", storage_base.get("backtest_dir", "data/backtest"))),
         "seed": int(root.get("seed", 0)),
+        "strategy": str(root.get("strategy_name", strategy_cfg.get("name", "candidates_v1"))).strip().lower()
+        or "candidates_v1",
+        "model_ref": str(
+            root.get("model_ref", strategy_cfg.get("model_ref", model_alpha_cfg.get("model_ref", "latest_v3")))
+        ).strip(),
+        "model_family": str(
+            root.get("model_family", strategy_cfg.get("model_family", model_alpha_cfg.get("model_family", "")))
+        ).strip(),
+        "feature_set": str(root.get("feature_set", strategy_cfg.get("feature_set", "v3"))).strip().lower() or "v3",
+        "model_registry_root": str(
+            root.get(
+                "model_registry_root",
+                strategy_cfg.get("model_registry_root", "models/registry"),
+            )
+        ).strip(),
+        "model_feature_dataset_root": (
+            str(root.get("model_feature_dataset_root")).strip()
+            if root.get("model_feature_dataset_root") is not None
+            else (
+                str(strategy_cfg.get("model_feature_dataset_root")).strip()
+                if strategy_cfg.get("model_feature_dataset_root") is not None
+                else None
+            )
+        ),
+        "model_alpha": {
+            "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",
+            "model_family": (
+                str(model_alpha_cfg.get("model_family")).strip()
+                if model_alpha_cfg.get("model_family") is not None
+                else None
+            ),
+            "feature_set": str(model_alpha_cfg.get("feature_set", "v3")).strip().lower() or "v3",
+            "selection": {
+                "top_pct": float(model_alpha_selection_cfg.get("top_pct", 0.05)),
+                "min_prob": float(model_alpha_selection_cfg.get("min_prob", 0.58)),
+                "min_candidates_per_ts": int(model_alpha_selection_cfg.get("min_candidates_per_ts", 10)),
+            },
+            "position": {
+                "max_positions_total": int(model_alpha_position_cfg.get("max_positions_total", 3)),
+                "cooldown_bars": int(model_alpha_position_cfg.get("cooldown_bars", 6)),
+            },
+            "exit": {
+                "mode": str(model_alpha_exit_cfg.get("mode", "hold")).strip().lower() or "hold",
+                "hold_bars": int(model_alpha_exit_cfg.get("hold_bars", 6)),
+                "tp_pct": float(model_alpha_exit_cfg.get("tp_pct", 0.02)),
+                "sl_pct": float(model_alpha_exit_cfg.get("sl_pct", 0.01)),
+                "trailing_pct": float(model_alpha_exit_cfg.get("trailing_pct", 0.0)),
+            },
+            "execution": {
+                "price_mode": str(model_alpha_execution_cfg.get("price_mode", "JOIN")).strip().upper() or "JOIN",
+                "timeout_bars": int(model_alpha_execution_cfg.get("timeout_bars", 2)),
+                "replace_max": int(model_alpha_execution_cfg.get("replace_max", 2)),
+            },
+        },
         "micro_gate": _strategy_micro_gate_defaults(
             micro_gate_cfg=micro_gate_cfg,
             parquet_root=Path(data_defaults["parquet_root"]),
@@ -3114,6 +3379,21 @@ def _resolve_base_candles_path(*, base_candles: str | None, default_dataset: str
     if candidate.is_absolute():
         return candidate
     return parquet_root / value
+
+
+def _resolve_backtest_dataset_name_for_v3(*, parquet_root: Path, base_candles_dataset: str, fallback: str) -> str:
+    value = str(base_candles_dataset).strip() or "auto"
+    if value.lower() == "auto":
+        for name in ("candles_api_v1", "candles_v1"):
+            if (parquet_root / name).exists():
+                return name
+        return str(fallback).strip() or "candles_v1"
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return str(fallback).strip() or "candles_v1"
+    if (parquet_root / candidate).exists():
+        return str(candidate).strip()
+    return str(fallback).strip() or "candles_v1"
 
 
 def _data_defaults(config: dict[str, Any]) -> dict[str, Any]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 import json
 from pathlib import Path
 from typing import Any, Iterator
@@ -54,6 +55,12 @@ class FeatureDataset:
     @property
     def rows(self) -> int:
         return int(self.X.shape[0])
+
+
+@dataclass(frozen=True)
+class FeatureTsGroup:
+    ts_ms: int
+    frame: pl.DataFrame
 
 
 def build_dataset_request(
@@ -223,6 +230,56 @@ def load_feature_dataset(
     )
 
 
+def iter_feature_rows_grouped_by_ts(
+    request: DatasetRequest,
+    *,
+    feature_columns: tuple[str, ...] | None = None,
+    extra_columns: tuple[str, ...] = ("close",),
+) -> Iterator[FeatureTsGroup]:
+    """Yield per-ts market rows without materializing a full all-market frame."""
+
+    feature_cols = feature_columns or feature_columns_from_spec(request.dataset_root)
+    selected_markets = select_markets(request)
+    if not selected_markets:
+        return
+
+    normalized_extra_cols = tuple(str(col).strip() for col in extra_columns if str(col).strip())
+    ordered_cols = ("ts_ms", "market", *feature_cols, *normalized_extra_cols)
+    heap: list[tuple[int, int, dict[str, Any], Iterator[dict[str, Any]]]] = []
+    seq = 0
+
+    for market in selected_markets:
+        frame = _scan_market_rows(
+            request=request,
+            market=market,
+            feature_columns=feature_cols,
+            extra_columns=normalized_extra_cols,
+        )
+        if frame.height <= 0:
+            continue
+        row_iter = frame.iter_rows(named=True)
+        first = next(row_iter, None)
+        if first is None:
+            continue
+        heapq.heappush(heap, (int(first["ts_ms"]), seq, first, row_iter))
+        seq += 1
+
+    while heap:
+        ts_ms = int(heap[0][0])
+        rows: list[dict[str, Any]] = []
+        while heap and int(heap[0][0]) == ts_ms:
+            _, seq_id, row, row_iter = heapq.heappop(heap)
+            rows.append(row)
+            nxt = next(row_iter, None)
+            if nxt is not None:
+                heapq.heappush(heap, (int(nxt["ts_ms"]), seq_id, nxt, row_iter))
+        if not rows:
+            continue
+        frame = pl.DataFrame(rows)
+        present_cols = [col for col in ordered_cols if col in frame.columns]
+        yield FeatureTsGroup(ts_ms=ts_ms, frame=frame.select(present_cols).sort("market"))
+
+
 def build_data_fingerprint(
     *,
     request: DatasetRequest,
@@ -291,6 +348,45 @@ def _scan_market_frame(
         expressions.append(pl.col("sample_weight").cast(pl.Float32).fill_null(1.0).alias("sample_weight"))
     else:
         expressions.append(pl.lit(1.0, dtype=pl.Float32).alias("sample_weight"))
+
+    selected = lazy.select(expressions)
+    if request.start_ts_ms is not None:
+        selected = selected.filter(pl.col("ts_ms") >= int(request.start_ts_ms))
+    if request.end_ts_ms is not None:
+        selected = selected.filter(pl.col("ts_ms") <= int(request.end_ts_ms))
+    selected = selected.sort("ts_ms")
+    return _collect_lazy(selected)
+
+
+def _scan_market_rows(
+    *,
+    request: DatasetRequest,
+    market: str,
+    feature_columns: tuple[str, ...],
+    extra_columns: tuple[str, ...],
+) -> pl.DataFrame:
+    market_files = _market_files(request.dataset_root, request.tf, market)
+    if not market_files:
+        return pl.DataFrame()
+
+    lazy = pl.scan_parquet([str(path) for path in market_files])
+    schema = lazy.collect_schema()
+    names = set(schema.names())
+
+    required_missing = [name for name in ("ts_ms",) if name not in names]
+    if required_missing:
+        raise ValueError(f"missing required columns in {market}: {required_missing}")
+
+    expressions: list[pl.Expr] = [pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"), pl.lit(market).alias("market")]
+    for col in feature_columns:
+        if col not in names:
+            raise ValueError(f"feature column missing in {market}: {col}")
+        expressions.append(_feature_to_float_expr(col, schema=schema))
+    for col in extra_columns:
+        if col in names:
+            expressions.append(pl.col(col).cast(pl.Float64, strict=False).alias(col))
+        else:
+            expressions.append(pl.lit(None, dtype=pl.Float64).alias(col))
 
     selected = lazy.select(expressions)
     if request.start_ts_ms is not None:
