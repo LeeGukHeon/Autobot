@@ -17,7 +17,7 @@ $ErrorActionPreference = "Stop"
 Set-Location $ProjectRoot
 
 $vendorSitePackages = Join-Path $ProjectRoot "python\site-packages"
-if (Test-Path $vendorSitePackages) {
+if ($IsWindows -and (Test-Path $vendorSitePackages)) {
     if ([string]::IsNullOrWhiteSpace($env:PYTHONPATH)) {
         $env:PYTHONPATH = $vendorSitePackages
     } elseif ($env:PYTHONPATH -notlike "*$vendorSitePackages*") {
