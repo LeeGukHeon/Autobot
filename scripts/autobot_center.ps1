@@ -1075,7 +1075,7 @@ function Invoke-ModelBtWizard {
         [int]$LookbackDaysOverride = 0
     )
 
-    $modelRef = "latest_v3"
+    $modelRef = "champion_v3"
     $modelFamily = "train_v3_mtf_micro"
     $tf = "5m"
     $quote = "KRW"
@@ -1086,7 +1086,7 @@ function Invoke-ModelBtWizard {
     $feeBps = 5.0
 
     if (-not $UseDefaultsMode) {
-        $modelRef = Read-DefaultValue -Prompt "Model ref (latest_v3/champion_v3/latest/run_id)" -DefaultValue $modelRef
+        $modelRef = Read-DefaultValue -Prompt "Model ref (champion_v3/latest_candidate_v3/latest/run_id)" -DefaultValue $modelRef
         $modelFamily = Read-DefaultValue -Prompt "Model family" -DefaultValue $modelFamily
         $lookbackDays = Read-DefaultInt -Prompt "ModelBT lookback days" -DefaultValue $lookbackDays
         $tf = Read-DefaultValue -Prompt "Timeframe" -DefaultValue $tf

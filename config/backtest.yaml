@@ -23,7 +23,7 @@ backtest:
 
   strategy:
     name: "candidates_v1"   # candidates_v1 | model_alpha_v1
-    model_ref: "latest_v3"
+    model_ref: "champion_v3"
     model_family: "train_v3_mtf_micro"
     feature_set: "v3"
     model_registry_root: "models/registry"

@@ -56,6 +56,34 @@ def save_run(payload: RegistrySavePayload) -> Path:
     return run_dir
 
 
+def update_pointer(
+    registry_root: Path,
+    model_family: str,
+    run_id: str,
+    *,
+    pointer_name: str,
+    family: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    if model_family == "_global":
+        path = registry_root / f"{pointer_name}.json"
+        body = {
+            "run_id": run_id,
+            "model_family": family,
+            "updated_at_utc": _utc_now(),
+        }
+    else:
+        path = registry_root / model_family / f"{pointer_name}.json"
+        body = {
+            "run_id": run_id,
+            "updated_at_utc": _utc_now(),
+        }
+    if extra:
+        body.update(dict(extra))
+    _write_json(path, body)
+    return path
+
+
 def update_latest_pointer(
     registry_root: Path,
     model_family: str,
@@ -63,21 +91,53 @@ def update_latest_pointer(
     *,
     family: str | None = None,
 ) -> Path:
-    if model_family == "_global":
-        path = registry_root / "latest.json"
-        body = {
-            "run_id": run_id,
-            "model_family": family,
-            "updated_at_utc": _utc_now(),
-        }
-    else:
-        path = registry_root / model_family / "latest.json"
-        body = {
-            "run_id": run_id,
-            "updated_at_utc": _utc_now(),
-        }
-    _write_json(path, body)
-    return path
+    return update_pointer(
+        registry_root,
+        model_family,
+        run_id,
+        pointer_name="latest",
+        family=family,
+    )
+
+
+def update_latest_candidate_pointer(
+    registry_root: Path,
+    model_family: str,
+    run_id: str,
+    *,
+    family: str | None = None,
+) -> Path:
+    return update_pointer(
+        registry_root,
+        model_family,
+        run_id,
+        pointer_name="latest_candidate",
+        family=family,
+    )
+
+
+def set_champion_pointer(
+    registry_root: Path,
+    model_family: str,
+    *,
+    run_id: str,
+    score: float,
+    score_key: str = "test_precision_top5",
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    payload = {
+        "score_key": score_key,
+        "score": float(score),
+    }
+    if extra:
+        payload.update(dict(extra))
+    return update_pointer(
+        registry_root,
+        model_family,
+        run_id,
+        pointer_name="champion",
+        extra=payload,
+    )
 
 
 def update_champion_pointer(
@@ -95,16 +155,67 @@ def update_champion_pointer(
     previous_score = float(previous.get("score", -1e18)) if isinstance(previous, dict) else -1e18
     replaced = float(score) > previous_score
     if replaced:
-        _write_json(
-            champion_path,
-            {
-                "run_id": run_id,
-                "score_key": score_key,
-                "score": float(score),
-                "updated_at_utc": _utc_now(),
-            },
+        champion_path = set_champion_pointer(
+            registry_root,
+            model_family,
+            run_id=run_id,
+            score=score,
+            score_key=score_key,
         )
     return champion_path, replaced
+
+
+def promote_run_to_champion(
+    registry_root: Path,
+    *,
+    model_ref: str,
+    model_family: str | None = None,
+    score_key: str = "test_precision_top5",
+) -> dict[str, Any]:
+    run_dir = resolve_run_dir(registry_root, model_ref=model_ref, model_family=model_family)
+    resolved_family = str(model_family).strip() if model_family else run_dir.parent.name
+    leaderboard_row = load_json(run_dir / "leaderboard_row.json")
+    if not leaderboard_row:
+        raise FileNotFoundError(f"missing leaderboard_row.json at {run_dir}")
+    if score_key not in leaderboard_row:
+        raise ValueError(f"leaderboard_row missing score_key='{score_key}' at {run_dir}")
+
+    score = float(leaderboard_row.get(score_key, 0.0))
+    champion_path = set_champion_pointer(
+        registry_root,
+        resolved_family,
+        run_id=run_dir.name,
+        score=score,
+        score_key=score_key,
+        extra={"promotion_mode": "manual"},
+    )
+
+    promotion_path = run_dir / "promotion_decision.json"
+    previous = load_json(promotion_path)
+    payload = dict(previous) if isinstance(previous, dict) else {}
+    payload.update(
+        {
+            "run_id": run_dir.name,
+            "promote": True,
+            "status": "champion",
+            "reasons": [],
+            "promotion_mode": "manual",
+            "promoted_at_utc": _utc_now(),
+            "score_key": score_key,
+            "score": score,
+        }
+    )
+    _write_json(promotion_path, payload)
+
+    return {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "model_family": resolved_family,
+        "score_key": score_key,
+        "score": score,
+        "champion_path": str(champion_path),
+        "promotion_path": str(promotion_path),
+    }
 
 
 def list_runs(registry_root: Path, *, model_family: str | None = None) -> list[dict[str, Any]]:
@@ -146,12 +257,14 @@ def resolve_run_dir(
     ref = str(model_ref).strip()
     if not ref:
         raise ValueError("model_ref must not be blank")
+    if ref == "candidate":
+        ref = "latest_candidate"
 
     as_path = Path(ref)
     if as_path.exists():
         return as_path
 
-    if ref in {"latest", "champion"}:
+    if ref in {"latest", "champion", "latest_candidate"}:
         pointer = _load_pointer(registry_root, pointer_name=ref, model_family=model_family)
         if not pointer:
             raise FileNotFoundError(f"pointer '{ref}' not found")

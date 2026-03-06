@@ -72,7 +72,7 @@
       max_replaces_per_min_per_market: 10
       forbid_post_only_with_cross: true
   model_alpha_v1:
-    model_ref: latest_v3
+    model_ref: champion_v3
     model_family: train_v3_mtf_micro
     feature_set: v3
     selection:

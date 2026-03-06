@@ -45,7 +45,7 @@ class ModelAlphaExecutionSettings:
 
 @dataclass(frozen=True)
 class ModelAlphaSettings:
-    model_ref: str = "latest_v3"
+    model_ref: str = "champion_v3"
     model_family: str | None = None
     feature_set: str = "v3"
     selection: ModelAlphaSelectionSettings = field(default_factory=ModelAlphaSelectionSettings)

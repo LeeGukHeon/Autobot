@@ -11,14 +11,30 @@ param(
     [string]$PaperMicroProvider = "offline_parquet",
     [int]$WarmupSec = 60,
     [int]$WarmupMinTradeEventsPerMarket = 1,
+    [string]$Strategy = "",
+    [string]$Tf = "",
+    [string]$ModelRef = "",
+    [string]$ModelFamily = "",
+    [string]$FeatureSet = "",
+    [double]$TopPct = -1.0,
+    [double]$MinProb = -1.0,
+    [int]$MinCandsPerTs = -1,
+    [int]$MaxPositionsTotal = -1,
+    [string]$ExitMode = "",
+    [int]$HoldBars = -1,
+    [double]$TpPct = -1.0,
+    [double]$SlPct = -1.0,
+    [double]$TrailingPct = -1.0,
+    [string]$PaperFeatureProvider = "",
     [string]$OutDir = "logs/paper_micro_smoke"
 )
 
 $ErrorActionPreference = "Stop"
 Set-Location $ProjectRoot
+$script:IsWindowsPlatform = [System.IO.Path]::DirectorySeparatorChar -eq '\'
 
 $vendorSitePackages = Join-Path $ProjectRoot "python\site-packages"
-if ($IsWindows -and (Test-Path $vendorSitePackages)) {
+if ($script:IsWindowsPlatform -and (Test-Path $vendorSitePackages)) {
     if ([string]::IsNullOrWhiteSpace($env:PYTHONPATH)) {
         $env:PYTHONPATH = $vendorSitePackages
     } elseif ($env:PYTHONPATH -notlike "*$vendorSitePackages*") {
@@ -207,6 +223,51 @@ $args = @(
     "--paper-micro-warmup-sec", $WarmupSec,
     "--paper-micro-warmup-min-trade-events-per-market", $WarmupMinTradeEventsPerMarket
 )
+if (-not [string]::IsNullOrWhiteSpace($Strategy)) {
+    $args += @("--strategy", $Strategy)
+}
+if (-not [string]::IsNullOrWhiteSpace($Tf)) {
+    $args += @("--tf", $Tf)
+}
+if (-not [string]::IsNullOrWhiteSpace($ModelRef)) {
+    $args += @("--model-ref", $ModelRef)
+}
+if (-not [string]::IsNullOrWhiteSpace($ModelFamily)) {
+    $args += @("--model-family", $ModelFamily)
+}
+if (-not [string]::IsNullOrWhiteSpace($FeatureSet)) {
+    $args += @("--feature-set", $FeatureSet)
+}
+if ($TopPct -ge 0.0) {
+    $args += @("--top-pct", $TopPct)
+}
+if ($MinProb -ge 0.0) {
+    $args += @("--min-prob", $MinProb)
+}
+if ($MinCandsPerTs -ge 0) {
+    $args += @("--min-cands-per-ts", $MinCandsPerTs)
+}
+if ($MaxPositionsTotal -ge 0) {
+    $args += @("--max-positions-total", $MaxPositionsTotal)
+}
+if (-not [string]::IsNullOrWhiteSpace($ExitMode)) {
+    $args += @("--exit-mode", $ExitMode)
+}
+if ($HoldBars -ge 0) {
+    $args += @("--hold-bars", $HoldBars)
+}
+if ($TpPct -ge 0.0) {
+    $args += @("--tp-pct", $TpPct)
+}
+if ($SlPct -ge 0.0) {
+    $args += @("--sl-pct", $SlPct)
+}
+if ($TrailingPct -ge 0.0) {
+    $args += @("--trailing-pct", $TrailingPct)
+}
+if (-not [string]::IsNullOrWhiteSpace($PaperFeatureProvider)) {
+    $args += @("--paper-feature-provider", $PaperFeatureProvider)
+}
 $exec = Invoke-CommandCapture -Exe $PythonExe -ArgList $args
 if ($exec.ExitCode -ne 0) {
     throw "paper smoke run failed (exit=$($exec.ExitCode)): $($exec.Output)"
@@ -311,6 +372,21 @@ $payload = [ordered]@{
     duration_sec = [int]$DurationSec
     quote = $Quote
     top_n = [int]$TopN
+    strategy = $Strategy
+    tf = $Tf
+    model_ref = $ModelRef
+    model_family = $ModelFamily
+    feature_set = $FeatureSet
+    top_pct = [double]$TopPct
+    min_prob = [double]$MinProb
+    min_cands_per_ts = [int]$MinCandsPerTs
+    max_positions_total = [int]$MaxPositionsTotal
+    exit_mode = $ExitMode
+    hold_bars = [int]$HoldBars
+    tp_pct = [double]$TpPct
+    sl_pct = [double]$SlPct
+    trailing_pct = [double]$TrailingPct
+    paper_feature_provider = $PaperFeatureProvider
     micro_provider = $microProvider
     micro_provider_info = $microProviderInfo
     warmup_elapsed_sec = [double]$warmupElapsedSec

@@ -24,7 +24,13 @@ from .dataset_loader import (
     load_label_spec,
 )
 from .model_card import render_model_card
-from .registry import RegistrySavePayload, make_run_id, save_run, update_champion_pointer
+from .registry import (
+    RegistrySavePayload,
+    load_json,
+    make_run_id,
+    save_run,
+    update_latest_candidate_pointer,
+)
 from .split import SPLIT_TEST, SPLIT_TRAIN, SPLIT_VALID, compute_time_splits, split_masks
 from .train_v1 import (
     _build_thresholds,
@@ -75,6 +81,7 @@ class TrainV3MtfMicroResult:
     metrics: dict[str, Any]
     thresholds: dict[str, Any]
     train_report_path: Path
+    promotion_path: Path
 
 
 def train_and_register_v3_mtf_micro(options: TrainV3MtfMicroOptions) -> TrainV3MtfMicroResult:
@@ -246,38 +253,51 @@ def train_and_register_v3_mtf_micro(options: TrainV3MtfMicroOptions) -> TrainV3M
             model_card_text=model_card,
         )
     )
-    update_champion_pointer(
+    update_latest_candidate_pointer(
         options.registry_root,
         options.model_family,
-        run_id=run_id,
-        score=float(leaderboard_row.get("test_precision_top5", 0.0)),
-        score_key="test_precision_top5",
+        run_id,
     )
+    update_latest_candidate_pointer(
+        options.registry_root,
+        "_global",
+        run_id,
+        family=options.model_family,
+    )
+    promotion = _manual_promotion_decision_v3(options=options, run_id=run_id)
+    promotion_path = run_dir / "promotion_decision.json"
+    promotion_path.write_text(
+        json.dumps(promotion, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    status = str(promotion.get("status", "candidate")).strip() or "candidate"
 
     finished_at = time.time()
     report_path = _write_train_report_v3(
         options.logs_root,
         {
             "run_id": run_id,
-            "status": "champion",
+            "status": status,
             "started_at_utc": datetime.fromtimestamp(started_at, tz=timezone.utc).isoformat(),
             "finished_at_utc": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
             "duration_sec": round(finished_at - started_at, 3),
             "rows": rows,
             "memory_estimate_mb": _estimate_dataset_memory_mb(dataset),
             "sweep_trials": booster.get("trials", []),
-            "champion": leaderboard_row,
+            "candidate": leaderboard_row,
+            "promotion": promotion,
         },
     )
 
     return TrainV3MtfMicroResult(
         run_id=run_id,
         run_dir=run_dir,
-        status="champion",
+        status=status,
         leaderboard_row=leaderboard_row,
         metrics=metrics,
         thresholds=thresholds,
         train_report_path=report_path,
+        promotion_path=promotion_path,
     )
 
 
@@ -497,6 +517,33 @@ def _write_train_report_v3(logs_root: Path, payload: dict[str, Any]) -> Path:
     path = logs_root / "train_v3_report.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _manual_promotion_decision_v3(
+    *,
+    options: TrainV3MtfMicroOptions,
+    run_id: str,
+) -> dict[str, Any]:
+    champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
+    champion_run_id = str(champion_doc.get("run_id", "")).strip()
+    reasons = ["MANUAL_PROMOTION_REQUIRED"]
+    if not champion_run_id:
+        reasons.append("NO_EXISTING_CHAMPION")
+    return {
+        "run_id": run_id,
+        "promote": False,
+        "status": "candidate",
+        "promotion_mode": "manual_gate",
+        "reasons": reasons,
+        "checks": {
+            "manual_review_required": True,
+            "existing_champion_present": bool(champion_run_id),
+        },
+        "candidate_ref": {
+            "model_ref": "latest_candidate",
+            "model_family": options.model_family,
+        },
+    }
 
 
 def _safe_float(value: Any) -> float:

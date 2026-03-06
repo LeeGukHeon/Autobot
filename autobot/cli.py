@@ -104,6 +104,7 @@ from .models import (
     train_and_register_v2_micro,
     train_and_register_v3_mtf_micro,
 )
+from .models.registry import promote_run_to_champion
 from .strategy import TopTradeValueScanner
 from .strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
@@ -136,6 +137,10 @@ from .upbit import (
 )
 from .upbit.ws import UpbitWebSocketPublicClient
 from .upbit.ws import UpbitWebSocketPrivateClient
+
+
+DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v3"
+DEFAULT_V3_CANDIDATE_REF = "latest_candidate_v3"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -561,6 +566,15 @@ def build_parser() -> argparse.ArgumentParser:
     model_show_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
     model_show_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
 
+    model_promote_parser = model_subparsers.add_parser("promote", help="Promote a registered model run to champion.")
+    model_promote_parser.add_argument(
+        "--model-ref",
+        default=DEFAULT_V3_CANDIDATE_REF,
+        help="latest_candidate_v3|latest_candidate|latest|run_id|run_dir",
+    )
+    model_promote_parser.add_argument("--model-family", help="Registry family, ex: train_v3_mtf_micro")
+    model_promote_parser.add_argument("--score-key", default="test_precision_top5", help="Leaderboard metric key to record")
+
     model_compare_parser = model_subparsers.add_parser("compare", help="Compare two registered models on same window.")
     model_compare_parser.add_argument("--a", required=True, help="Model ref A, ex: latest_v1")
     model_compare_parser.add_argument("--b", required=True, help="Model ref B, ex: latest_v2")
@@ -671,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--top-n", type=int)
     paper_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
     paper_run_parser.add_argument("--tf", help="Model timeframe when strategy=model_alpha_v1, ex: 5m")
-    paper_run_parser.add_argument("--model-ref", help="Registry model ref, ex: latest_v3")
+    paper_run_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     paper_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
     paper_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
     paper_run_parser.add_argument("--top-pct", type=float)
@@ -734,7 +748,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_run_parser.add_argument("--top-n", type=int, help="Universe size for static_start/fixed_list")
     backtest_run_parser.add_argument("--universe-mode", choices=("static_start", "fixed_list"))
     backtest_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
-    backtest_run_parser.add_argument("--model-ref", help="Registry model ref, ex: latest_v3")
+    backtest_run_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     backtest_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
     backtest_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
     backtest_run_parser.add_argument("--entry", choices=("top_pct",))
@@ -1821,6 +1835,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 )
                 print(f"[model][train][v3_mtf_micro] run_dir={summary_v3.run_dir}")
                 print(f"[model][train][v3_mtf_micro] train_report={summary_v3.train_report_path}")
+                print(f"[model][train][v3_mtf_micro] promotion={summary_v3.promotion_path}")
                 return 0
 
             if trainer == "v2_micro":
@@ -1947,12 +1962,37 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             return 0
 
         if args.model_command == "show":
+            model_ref, model_family = _resolve_model_ref_alias(
+                str(args.model_ref).strip(),
+                str(args.model_family).strip() if args.model_family else None,
+            )
             detail = show_registered_model(
                 registry_root=registry_root,
-                model_ref=str(args.model_ref).strip(),
-                model_family=(str(args.model_family).strip() if args.model_family else None),
+                model_ref=model_ref,
+                model_family=model_family,
             )
             _print_json(detail)
+            return 0
+
+        if args.model_command == "promote":
+            model_ref, model_family = _resolve_model_ref_alias(
+                str(args.model_ref).strip(),
+                str(args.model_family).strip() if args.model_family else None,
+            )
+            result = promote_run_to_champion(
+                registry_root=registry_root,
+                model_ref=model_ref,
+                model_family=model_family,
+                score_key=str(args.score_key).strip() or "test_precision_top5",
+            )
+            print(
+                "[model][promote] "
+                f"run_id={result.get('run_id')} family={result.get('model_family')} "
+                f"score_key={result.get('score_key')} score={float(result.get('score', 0.0)):.6f}"
+            )
+            print(f"[model][promote] champion={result.get('champion_path')}")
+            print(f"[model][promote] promotion={result.get('promotion_path')}")
+            _print_json(result)
             return 0
 
         if args.model_command == "compare":
@@ -2141,7 +2181,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         model_ref_value = str(
             getattr(args, "model_ref", None)
             or defaults.get("model_ref")
-            or model_alpha_defaults.get("model_ref", "latest_v3")
+            or model_alpha_defaults.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)
         ).strip()
         model_family_raw = getattr(args, "model_family", None)
         if model_family_raw is None:
@@ -2273,7 +2313,8 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 else None
             ),
             model_alpha=ModelAlphaSettings(
-                model_ref=str(model_ref_value or model_alpha_defaults.get("model_ref", "latest_v3")).strip() or "latest_v3",
+                model_ref=str(model_ref_value or model_alpha_defaults.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
+                or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
                 model_family=model_family_value,
                 feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
                 selection=ModelAlphaSelectionSettings(
@@ -2384,7 +2425,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
         model_ref_value = str(
             getattr(args, "model_ref", None)
             or defaults.get("model_ref")
-            or model_alpha_defaults.get("model_ref", "latest_v3")
+            or model_alpha_defaults.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)
         ).strip()
         model_family_raw = getattr(args, "model_family", None)
         if model_family_raw is None:
@@ -2555,7 +2596,8 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 else None
             ),
             model_alpha=ModelAlphaSettings(
-                model_ref=str(model_ref_value or model_alpha_defaults.get("model_ref", "latest_v3")).strip() or "latest_v3",
+                model_ref=str(model_ref_value or model_alpha_defaults.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
+                or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
                 model_family=model_family_value,
                 feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
                 selection=ModelAlphaSelectionSettings(
@@ -3121,7 +3163,8 @@ def _paper_defaults(
         "paper_live_micro_max_age_ms": int(strategy_root.get("paper_live_micro_max_age_ms", 300000)),
         "strategy": str(strategy_root.get("paper_strategy_name", "candidates_v1")).strip().lower() or "candidates_v1",
         "tf": str(model_alpha_cfg.get("tf", "5m")).strip().lower() or "5m",
-        "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",
+        "model_ref": str(model_alpha_cfg.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
+        or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
         "model_family": (
             str(model_alpha_cfg.get("model_family")).strip() if model_alpha_cfg.get("model_family") is not None else None
         ),
@@ -3133,7 +3176,8 @@ def _paper_defaults(
             else None
         ),
         "model_alpha": {
-            "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",
+            "model_ref": str(model_alpha_cfg.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
+            or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
             "model_family": (
                 str(model_alpha_cfg.get("model_family")).strip()
                 if model_alpha_cfg.get("model_family") is not None
@@ -3239,7 +3283,10 @@ def _backtest_defaults(
         "strategy": str(root.get("strategy_name", strategy_cfg.get("name", "candidates_v1"))).strip().lower()
         or "candidates_v1",
         "model_ref": str(
-            root.get("model_ref", strategy_cfg.get("model_ref", model_alpha_cfg.get("model_ref", "latest_v3")))
+            root.get(
+                "model_ref",
+                strategy_cfg.get("model_ref", model_alpha_cfg.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)),
+            )
         ).strip(),
         "model_family": str(
             root.get("model_family", strategy_cfg.get("model_family", model_alpha_cfg.get("model_family", "")))
@@ -3261,7 +3308,8 @@ def _backtest_defaults(
             )
         ),
         "model_alpha": {
-            "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",
+            "model_ref": str(model_alpha_cfg.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
+            or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
             "model_family": (
                 str(model_alpha_cfg.get("model_family")).strip()
                 if model_alpha_cfg.get("model_family") is not None
@@ -3802,6 +3850,8 @@ def _resolve_model_ref_alias(model_ref: str, model_family: str | None = None) ->
         "champion_v2": ("champion", "train_v2_micro"),
         "latest_v3": ("latest", "train_v3_mtf_micro"),
         "champion_v3": ("champion", "train_v3_mtf_micro"),
+        "latest_candidate_v3": ("latest_candidate", "train_v3_mtf_micro"),
+        "candidate_v3": ("latest_candidate", "train_v3_mtf_micro"),
     }
     if ref in aliases:
         resolved_ref, resolved_family = aliases[ref]
