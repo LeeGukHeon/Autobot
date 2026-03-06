@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
 import polars as pl
@@ -66,17 +66,19 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         self,
         *,
         predictor: ModelPredictor,
-        feature_groups: Iterable[FeatureTsGroup],
+        feature_groups: Iterable[FeatureTsGroup] | None,
         settings: ModelAlphaSettings,
         interval_ms: int,
+        live_frame_provider: Callable[[int, Sequence[str]], pl.DataFrame | None] | None = None,
     ) -> None:
         self._predictor = predictor
-        self._feature_iter = iter(feature_groups)
+        self._feature_iter = iter(feature_groups or ())
         self._settings = settings
         self._interval_ms = max(int(interval_ms), 1)
         self._pending_group: FeatureTsGroup | None = None
         self._positions: dict[str, _PositionState] = {}
         self._cooldown_until_ts_ms: dict[str, int] = {}
+        self._live_frame_provider = live_frame_provider
 
     def on_ts(
         self,
@@ -88,8 +90,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
     ) -> StrategyStepResult:
         ts_value = int(ts_ms)
         active_set = {str(item).strip().upper() for item in active_markets if str(item).strip()}
-        self._advance_to_ts(ts_value)
-        frame = self._take_group_if_equal(ts_value)
+        frame: pl.DataFrame | None
+        if self._live_frame_provider is not None:
+            frame = self._live_frame_provider(ts_value, tuple(sorted(active_set)))
+        else:
+            self._advance_to_ts(ts_value)
+            frame = self._take_group_if_equal(ts_value)
         frame_by_market: dict[str, dict[str, Any]] = {}
         if frame is not None and frame.height > 0:
             for row in frame.iter_rows(named=True):

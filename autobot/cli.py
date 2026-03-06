@@ -715,6 +715,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Minimum trade events per market to satisfy LIVE_WS warmup.",
     )
+    paper_run_parser.add_argument(
+        "--paper-feature-provider",
+        choices=("offline_parquet", "live_v3"),
+        help="Paper feature provider selection for model_alpha_v1.",
+    )
 
     backtest_parser = subparsers.add_parser("backtest", help="Backtest operations.")
     backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command", required=True)
@@ -2318,6 +2323,14 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 defaults.get("paper_micro_auto_health_path", "data/raw_ws/upbit/_meta/ws_public_health.json")
             ),
             paper_micro_auto_health_stale_sec=max(int(defaults.get("paper_micro_auto_health_stale_sec", 180)), 1),
+            paper_feature_provider=str(
+                getattr(args, "paper_feature_provider", None) or defaults.get("paper_feature_provider", "offline_parquet")
+            ).strip().lower(),
+            paper_live_parquet_root=str(defaults.get("paper_live_parquet_root", "data/parquet")).strip() or "data/parquet",
+            paper_live_candles_dataset=str(defaults.get("paper_live_candles_dataset", "candles_api_v1")).strip()
+            or "candles_api_v1",
+            paper_live_bootstrap_1m_bars=max(int(defaults.get("paper_live_bootstrap_1m_bars", 2000)), 256),
+            paper_live_micro_max_age_ms=max(int(defaults.get("paper_live_micro_max_age_ms", 300000)), 0),
         )
 
         summary = run_live_paper_sync(upbit_settings=settings, run_settings=run_settings)
@@ -3088,6 +3101,14 @@ def _paper_defaults(
         "paper_micro_warmup_min_trade_events_per_market": 1,
         "paper_micro_auto_health_path": "data/raw_ws/upbit/_meta/ws_public_health.json",
         "paper_micro_auto_health_stale_sec": 180,
+        "paper_feature_provider": (
+            str(strategy_root.get("paper_feature_provider", "offline_parquet")).strip().lower() or "offline_parquet"
+        ),
+        "paper_live_parquet_root": str(data_defaults["parquet_root"]),
+        "paper_live_candles_dataset": str(strategy_root.get("paper_live_candles_dataset", "candles_api_v1")).strip()
+        or "candles_api_v1",
+        "paper_live_bootstrap_1m_bars": int(strategy_root.get("paper_live_bootstrap_1m_bars", 2000)),
+        "paper_live_micro_max_age_ms": int(strategy_root.get("paper_live_micro_max_age_ms", 300000)),
         "strategy": str(strategy_root.get("paper_strategy_name", "candidates_v1")).strip().lower() or "candidates_v1",
         "tf": str(model_alpha_cfg.get("tf", "5m")).strip().lower() or "5m",
         "model_ref": str(model_alpha_cfg.get("model_ref", "latest_v3")).strip() or "latest_v3",

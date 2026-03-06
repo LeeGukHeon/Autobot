@@ -63,6 +63,7 @@ from autobot.upbit import (
 from autobot.upbit.ws import UpbitWebSocketPublicClient
 from autobot.upbit.ws.models import TickerEvent
 
+from .live_features_v3 import LiveFeatureProviderV3
 from .sim_exchange import (
     FillEvent,
     MarketRules,
@@ -110,6 +111,11 @@ class PaperRunSettings:
     paper_micro_warmup_min_trade_events_per_market: int = 1
     paper_micro_auto_health_path: str = "data/raw_ws/upbit/_meta/ws_public_health.json"
     paper_micro_auto_health_stale_sec: int = 180
+    paper_feature_provider: str = "offline_parquet"
+    paper_live_parquet_root: str = "data/parquet"
+    paper_live_candles_dataset: str = "candles_api_v1"
+    paper_live_bootstrap_1m_bars: int = 2000
+    paper_live_micro_max_age_ms: int = 300_000
 
 
 @dataclass(frozen=True)
@@ -818,6 +824,7 @@ class PaperRunEngine:
             "live_ws_acc_notional_by_market": {},
             "live_ws_last_event_ts_ms_by_market": {},
             "live_ws_warmup": {},
+            "live_feature_provider": None,
         }
 
         markets = self._market_loader(quote)
@@ -847,6 +854,7 @@ class PaperRunEngine:
             else None
         )
         micro_snapshot_provider = self._resolve_micro_snapshot_provider(markets=markets)
+        self._runtime_state["micro_snapshot_provider_for_features"] = micro_snapshot_provider
         micro_provider_info = dict(
             _describe_micro_snapshot_provider(
                 provider=micro_snapshot_provider,
@@ -889,11 +897,18 @@ class PaperRunEngine:
         model_strategy: ModelAlphaStrategyV1 | None = None
         if strategy_mode == "model_alpha_v1":
             model_interval_ms = _interval_ms_from_tf(self._run_settings.tf)
-            start_ts_ms = int(time.time() * 1000) - max(
-                int(self._run_settings.duration_sec) * 1000 + 86_400_000,
-                model_interval_ms * 4,
-            )
-            end_ts_ms = int(time.time() * 1000) + max(int(self._run_settings.duration_sec) * 1000, model_interval_ms * 2)
+            now_ms = int(time.time() * 1000)
+            feature_provider_mode = _normalize_paper_feature_provider(self._run_settings.paper_feature_provider)
+            if feature_provider_mode == "LIVE_V3":
+                anchor = (now_ms // model_interval_ms) * model_interval_ms
+                start_ts_ms = int(anchor - model_interval_ms * 4)
+                end_ts_ms = int(anchor + max(int(self._run_settings.duration_sec) * 1000, model_interval_ms * 4))
+            else:
+                start_ts_ms = now_ms - max(
+                    int(self._run_settings.duration_sec) * 1000 + 86_400_000,
+                    model_interval_ms * 4,
+                )
+                end_ts_ms = now_ms + max(int(self._run_settings.duration_sec) * 1000, model_interval_ms * 2)
             model_strategy = self._build_model_alpha_strategy(
                 active_markets=markets,
                 decision_start_ts_ms=start_ts_ms,
@@ -975,6 +990,7 @@ class PaperRunEngine:
                     "micro_order_policy_on_missing": str(self._run_settings.micro_order_policy.on_missing),
                     "micro_provider": str(micro_provider_info.get("provider") or "NONE"),
                     "micro_provider_info": dict(micro_provider_info),
+                    "feature_provider": _normalize_paper_feature_provider(self._run_settings.paper_feature_provider),
                     "warmup_sec": int(warmup_sec),
                     "warmup_min_trade_events_per_market": int(warmup_min_trade_events),
                 },
@@ -986,6 +1002,9 @@ class PaperRunEngine:
                 received_events += 1
                 market_data.update(ticker)
                 universe.update_ticker(ticker)
+                live_feature_provider = self._runtime_state.get("live_feature_provider")
+                if isinstance(live_feature_provider, LiveFeatureProviderV3):
+                    live_feature_provider.ingest_ticker(ticker)
                 if live_ws_provider is not None:
                     self._ingest_live_micro_from_ticker(provider=live_ws_provider, ticker=ticker)
                     trade_counts = self._runtime_state.get("live_ws_trade_events_by_market", {})
@@ -1255,6 +1274,7 @@ class PaperRunEngine:
         summary_payload = asdict(summary)
         summary_payload["micro_provider"] = str(micro_provider_info.get("provider") or "NONE")
         summary_payload["micro_provider_info"] = dict(micro_provider_info)
+        summary_payload["feature_provider"] = _normalize_paper_feature_provider(self._run_settings.paper_feature_provider)
         summary_payload["warmup_elapsed_sec"] = float(round(warmup_elapsed_sec, 3))
         summary_payload["warmup_satisfied"] = bool(warmup_satisfied)
         summary_payload["warmup_trade_events_total"] = int(warmup_trade_events_total)
@@ -1328,6 +1348,13 @@ class PaperRunEngine:
         strategy: ModelAlphaStrategyV1,
     ) -> None:
         markets = universe.markets()
+        live_feature_provider = self._runtime_state.get("live_feature_provider")
+        if isinstance(live_feature_provider, LiveFeatureProviderV3):
+            append_event(
+                "FEATURE_PROVIDER_STATUS",
+                ts_ms=ts_ms,
+                payload=live_feature_provider.status(now_ts_ms=ts_ms),
+            )
         open_markets = {market for market in markets if exchange.has_position(market)}
         result = strategy.on_ts(
             ts_ms=ts_ms,
@@ -1335,6 +1362,12 @@ class PaperRunEngine:
             latest_prices=market_data.latest_prices(),
             open_markets=open_markets,
         )
+        if isinstance(live_feature_provider, LiveFeatureProviderV3):
+            append_event(
+                "LIVE_FEATURES_BUILT",
+                ts_ms=ts_ms,
+                payload=live_feature_provider.last_build_stats(),
+            )
         self._runtime_counters["scored_rows"] = int(self._runtime_counters.get("scored_rows", 0)) + int(
             result.scored_rows
         )
@@ -1408,6 +1441,30 @@ class PaperRunEngine:
             model_ref=model_ref,
             model_family=model_family,
         )
+        feature_provider_mode = _normalize_paper_feature_provider(settings.paper_feature_provider)
+        if feature_provider_mode == "LIVE_V3":
+            live_feature_provider = LiveFeatureProviderV3(
+                feature_columns=predictor.feature_columns,
+                tf=str(settings.tf).strip().lower(),
+                micro_snapshot_provider=self._runtime_state.get("micro_snapshot_provider_for_features"),
+                micro_max_age_ms=max(int(settings.paper_live_micro_max_age_ms), 0),
+                parquet_root=str(settings.paper_live_parquet_root),
+                candles_dataset_name=str(settings.paper_live_candles_dataset),
+                bootstrap_1m_bars=max(int(settings.paper_live_bootstrap_1m_bars), 256),
+            )
+            self._runtime_state["live_feature_provider"] = live_feature_provider
+            interval_ms = _interval_ms_from_tf(settings.tf)
+            return ModelAlphaStrategyV1(
+                predictor=predictor,
+                feature_groups=(),
+                settings=settings.model_alpha,
+                interval_ms=interval_ms,
+                live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
+                    ts_ms=int(ts_ms),
+                    markets=markets,
+                ),
+            )
+
         dataset_root = (
             Path(str(settings.model_feature_dataset_root))
             if settings.model_feature_dataset_root
@@ -1432,6 +1489,7 @@ class PaperRunEngine:
             feature_columns=predictor.feature_columns,
             extra_columns=("close",),
         )
+        self._runtime_state["live_feature_provider"] = None
         interval_ms = _interval_ms_from_tf(settings.tf)
         return ModelAlphaStrategyV1(
             predictor=predictor,
@@ -2537,6 +2595,15 @@ def _normalize_paper_micro_provider(value: Any) -> str:
         return "LIVE_WS"
     if text in {"AUTO"}:
         return "AUTO"
+    if text in {"OFFLINE", "OFFLINE_PARQUET", "PARQUET"}:
+        return "OFFLINE_PARQUET"
+    return "OFFLINE_PARQUET"
+
+
+def _normalize_paper_feature_provider(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"LIVE_V3", "LIVE", "V3"}:
+        return "LIVE_V3"
     if text in {"OFFLINE", "OFFLINE_PARQUET", "PARQUET"}:
         return "OFFLINE_PARQUET"
     return "OFFLINE_PARQUET"
