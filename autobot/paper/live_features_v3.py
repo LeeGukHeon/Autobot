@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -49,6 +49,8 @@ class _MinuteCandle:
 @dataclass
 class _MarketState:
     bootstrap_loaded: bool = False
+    bootstrap_status: str = "UNSET"
+    bootstrap_rows: int = 0
     candles_1m: deque[_MinuteCandle] | None = None
     active: _ActiveMinute | None = None
     last_price: float | None = None
@@ -72,6 +74,8 @@ class LiveFeatureProviderV3:
         candles_dataset_name: str = "candles_api_v1",
         bootstrap_1m_bars: int = 2000,
         max_1m_history: int = 5000,
+        missing_feature_warn_ratio: float = 0.05,
+        missing_feature_skip_ratio: float = 0.20,
     ) -> None:
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
         self._tf = str(tf).strip().lower() or "5m"
@@ -88,8 +92,12 @@ class LiveFeatureProviderV3:
         self._max_1m_history = max(int(max_1m_history), self._bootstrap_1m_bars)
         self._lookback_1m_bars = max(min(self._max_1m_history, 5000), 2400)
         self._fallback_synth_1m_bars = 120
+        self._missing_feature_warn_ratio = min(max(float(missing_feature_warn_ratio), 0.0), 1.0)
+        self._missing_feature_skip_ratio = min(max(float(missing_feature_skip_ratio), 0.0), 1.0)
         self._market_state: dict[str, _MarketState] = {}
         self._latest_feature_ts_ms: int | None = None
+        self._last_requested_ts_ms: int | None = None
+        self._last_built_ts_ms: int | None = None
         self._last_build_stats: dict[str, Any] = {}
 
     def ingest_ticker(self, event: TickerEvent) -> None:
@@ -152,43 +160,83 @@ class LiveFeatureProviderV3:
     def build_frame(self, *, ts_ms: int, markets: Sequence[str]) -> pl.DataFrame:
         ts_value = int(ts_ms)
         requested = _normalize_markets(markets)
+        self._last_requested_ts_ms = ts_value
         rows: list[dict[str, Any]] = []
-        missing_markets: list[str] = []
-        stale_micro_count = 0
-        missing_micro_count = 0
+        built_markets: list[str] = []
+        skipped_markets: list[str] = []
+        skip_reasons: dict[str, int] = {}
+        built_reasons: dict[str, int] = {}
+        missing_feature_counter: Counter[str] = Counter()
+        warn_missing_feature_market_count = 0
         missing_feature_cells_total = 0
 
         for market in requested:
-            row, reason, missing_feature_cells = self._build_market_row(market=market, ts_ms=ts_value)
+            row, reason, missing_feature_cells, missing_features = self._build_market_row(market=market, ts_ms=ts_value)
             missing_feature_cells_total += int(missing_feature_cells)
+            for name in missing_features:
+                missing_feature_counter[str(name)] += 1
+            feature_count = max(len(self._feature_columns), 1)
+            missing_ratio = float(missing_feature_cells) / float(feature_count)
+            if missing_ratio > float(self._missing_feature_warn_ratio):
+                warn_missing_feature_market_count += 1
             if row is None:
-                missing_markets.append(market)
-                if reason == "STALE_MICRO":
-                    stale_micro_count += 1
-                if reason == "MISSING_MICRO":
-                    missing_micro_count += 1
+                skipped_markets.append(market)
+                skip_reasons[reason] = int(skip_reasons.get(reason, 0)) + 1
                 continue
-            if reason == "MISSING_MICRO":
-                missing_micro_count += 1
+            built_markets.append(market)
+            if reason != "OK":
+                built_reasons[reason] = int(built_reasons.get(reason, 0)) + 1
             rows.append(row)
+
+        total_feature_cells = max(len(self._feature_columns), 1) * max(len(requested), 1)
+        missing_feature_ratio = float(missing_feature_cells_total) / float(total_feature_cells)
+        missing_feature_topk = [
+            {"feature": name, "count": int(count)}
+            for name, count in sorted(
+                missing_feature_counter.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[:10]
+        ]
+        bootstrap_missing = 0
+        bootstrap_partial = 0
+        for market in requested:
+            state = self._market_state.get(market)
+            status = str(getattr(state, "bootstrap_status", "UNSET")).strip().upper() if state is not None else "UNSET"
+            if status in {"MISSING", "EMPTY"}:
+                bootstrap_missing += 1
+            elif status in {"PARTIAL"}:
+                bootstrap_partial += 1
 
         if rows:
             self._latest_feature_ts_ms = ts_value
+            self._last_built_ts_ms = ts_value
+        else:
+            self._last_built_ts_ms = None
         frame = _rows_to_frame(rows=rows, feature_columns=self._feature_columns)
         self._last_build_stats = {
             "provider": "LIVE_V3",
-            "ts_ms": ts_value,
+            "requested_ts_ms": ts_value,
+            "built_ts_ms": int(self._last_built_ts_ms) if self._last_built_ts_ms is not None else None,
             "requested_markets": int(len(requested)),
+            "built_markets": int(len(built_markets)),
+            "skipped_markets": int(len(skipped_markets)),
             "built_rows": int(frame.height),
-            "missing_markets_count": int(len(missing_markets)),
-            "missing_markets": list(missing_markets[:20]),
-            "stale_micro_count": int(stale_micro_count),
-            "missing_micro_count": int(missing_micro_count),
+            "built_market_samples": list(built_markets[:20]),
+            "skipped_market_samples": list(skipped_markets[:20]),
+            "skip_reasons": dict(sorted(skip_reasons.items(), key=lambda item: str(item[0]))),
+            "built_reasons": dict(sorted(built_reasons.items(), key=lambda item: str(item[0]))),
             "missing_feature_cells_total": int(missing_feature_cells_total),
+            "missing_feature_ratio": float(missing_feature_ratio),
+            "missing_feature_warn_market_count": int(warn_missing_feature_market_count),
+            "missing_feature_topk": missing_feature_topk,
+            "missing_feature_warn_ratio_threshold": float(self._missing_feature_warn_ratio),
+            "missing_feature_skip_ratio_threshold": float(self._missing_feature_skip_ratio),
+            "bootstrap_missing_markets_count": int(bootstrap_missing),
+            "bootstrap_partial_markets_count": int(bootstrap_partial),
         }
         return frame
 
-    def status(self, *, now_ts_ms: int) -> dict[str, Any]:
+    def status(self, *, now_ts_ms: int, requested_ts_ms: int | None = None) -> dict[str, Any]:
         latest = self._latest_feature_ts_ms
         gap_min = None
         if latest is not None:
@@ -196,6 +244,8 @@ class LiveFeatureProviderV3:
         return {
             "provider": "LIVE_V3",
             "now_ts_ms": int(now_ts_ms),
+            "requested_ts_ms": int(requested_ts_ms) if requested_ts_ms is not None else self._last_requested_ts_ms,
+            "built_ts_ms": int(self._last_built_ts_ms) if self._last_built_ts_ms is not None else None,
             "latest_feature_ts_ms": int(latest) if latest is not None else None,
             "gap_min": float(gap_min) if gap_min is not None else None,
         }
@@ -203,7 +253,7 @@ class LiveFeatureProviderV3:
     def last_build_stats(self) -> dict[str, Any]:
         return dict(self._last_build_stats)
 
-    def _build_market_row(self, *, market: str, ts_ms: int) -> tuple[dict[str, Any] | None, str, int]:
+    def _build_market_row(self, *, market: str, ts_ms: int) -> tuple[dict[str, Any] | None, str, int, tuple[str, ...]]:
         state = self._market_state.setdefault(market, _MarketState())
         if state.candles_1m is None:
             state.candles_1m = deque(maxlen=self._max_1m_history)
@@ -214,15 +264,15 @@ class LiveFeatureProviderV3:
         self._flush_active_until_ts(state=state, ts_ms=ts_ms)
         one_m = self._build_one_m_frame(state=state, ts_ms=ts_ms)
         if one_m.height <= 0:
-            return None, "NO_1M_HISTORY", 0
+            return None, "NO_1M_HISTORY", 0, ()
 
         base = _rollup_from_1m(one_m=one_m, tf=self._tf).filter(pl.col("ts_ms") <= int(ts_ms))
         if base.height <= 0:
-            return None, "NO_BASE_CANDLE", 0
+            return None, "NO_BASE_CANDLE", 0, ()
 
         base_featured = _compute_base_features(base, tf=self._tf, float_dtype="float32").sort("ts_ms")
         if base_featured.height <= 0:
-            return None, "NO_BASE_FEATURES", 0
+            return None, "NO_BASE_FEATURES", 0, ()
 
         dense_start = int(base_featured.get_column("ts_ms").min())
         dense_end = int(base_featured.get_column("ts_ms").max())
@@ -253,7 +303,7 @@ class LiveFeatureProviderV3:
 
         target = working.filter(pl.col("ts_ms") == int(ts_ms)).tail(1)
         if target.height <= 0:
-            return None, "NO_FEATURE_ROW_AT_TS", 0
+            return None, "NO_FEATURE_ROW_AT_TS", 0, ()
 
         base_row = target.row(0, named=True)
         close_value = _safe_float(base_row.get("close")) or _safe_float(state.last_price)
@@ -266,6 +316,7 @@ class LiveFeatureProviderV3:
             close_value=float(close_value),
         )
         missing_features = 0
+        missing_columns: list[str] = []
         out: dict[str, Any] = {
             "ts_ms": int(ts_ms),
             "market": market,
@@ -278,12 +329,18 @@ class LiveFeatureProviderV3:
             if value is None:
                 value = 0.0
                 missing_features += 1
+                missing_columns.append(str(col))
             normalized = _to_feature_float(value)
             if normalized is None:
                 normalized = 0.0
                 missing_features += 1
+                missing_columns.append(str(col))
             out[col] = float(normalized)
-        return out, micro_reason, missing_features
+        feature_count = max(len(self._feature_columns), 1)
+        missing_ratio = float(missing_features) / float(feature_count)
+        if missing_ratio > float(self._missing_feature_skip_ratio):
+            return None, "MISSING_FEATURE_RATIO_HIGH", missing_features, tuple(sorted(set(missing_columns)))
+        return out, micro_reason, missing_features, tuple(sorted(set(missing_columns)))
 
     def _micro_feature_values(self, *, market: str, ts_ms: int, close_value: float) -> tuple[dict[str, float], str]:
         default_values = _default_micro_feature_values()
@@ -367,6 +424,8 @@ class LiveFeatureProviderV3:
             state.candles_1m = deque(maxlen=self._max_1m_history)
         market_files = _market_files(dataset_root=self._candles_root, tf="1m", market=market)
         if not market_files:
+            state.bootstrap_status = "MISSING"
+            state.bootstrap_rows = 0
             return
 
         try:
@@ -391,7 +450,10 @@ class LiveFeatureProviderV3:
             frame = pl.DataFrame()
 
         if frame.height <= 0:
+            state.bootstrap_status = "EMPTY"
+            state.bootstrap_rows = 0
             return
+        loaded_rows = 0
         for row in frame.iter_rows(named=True):
             ts_value = _safe_int(row.get("ts_ms"))
             open_v = _safe_float(row.get("open"))
@@ -414,16 +476,42 @@ class LiveFeatureProviderV3:
             )
             state.last_price = float(close_v)
             state.last_closed_price = float(close_v)
+            loaded_rows += 1
+        state.bootstrap_rows = int(loaded_rows)
+        if loaded_rows <= 0:
+            state.bootstrap_status = "EMPTY"
+        elif loaded_rows < int(self._bootstrap_1m_bars):
+            state.bootstrap_status = "PARTIAL"
+        else:
+            state.bootstrap_status = "OK"
 
     def _flush_active_until_ts(self, *, state: _MarketState, ts_ms: int) -> None:
-        active = state.active
-        if active is None:
+        target_ts = int(ts_ms)
+        while True:
+            active = state.active
+            if active is None:
+                break
+            minute_end = int(active.minute_start_ts_ms) + 60_000
+            if minute_end > target_ts:
+                break
+            self._finalize_active_minute(state=state)
+            state.active = None
+
+        if state.candles_1m is None or not state.candles_1m:
             return
-        minute_end = int(active.minute_start_ts_ms) + 60_000
-        if minute_end > int(ts_ms):
+        last_ts = int(state.candles_1m[-1].ts_ms)
+        if last_ts >= target_ts:
             return
-        self._finalize_active_minute(state=state)
-        state.active = None
+        close_value = _safe_float(state.last_closed_price)
+        if close_value is None or close_value <= 0:
+            return
+        next_ts = last_ts + 60_000
+        min_next_ts = target_ts - max(int(self._lookback_1m_bars) - 1, 0) * 60_000
+        if next_ts < min_next_ts:
+            next_ts = min_next_ts
+        while next_ts <= target_ts:
+            self._append_synth_minute(state=state, ts_ms=next_ts, close=close_value)
+            next_ts += 60_000
 
     def _finalize_active_minute(self, *, state: _MarketState) -> None:
         active = state.active
@@ -443,6 +531,23 @@ class LiveFeatureProviderV3:
         state.candles_1m.append(candle)
         state.last_price = float(candle.close)
         state.last_closed_price = float(candle.close)
+
+    def _append_synth_minute(self, *, state: _MarketState, ts_ms: int, close: float) -> None:
+        if state.candles_1m is None:
+            state.candles_1m = deque(maxlen=self._max_1m_history)
+        if state.candles_1m and int(state.candles_1m[-1].ts_ms) >= int(ts_ms):
+            return
+        synth = _MinuteCandle(
+            ts_ms=int(ts_ms),
+            open=float(close),
+            high=float(close),
+            low=float(close),
+            close=float(close),
+            volume_base=0.0,
+            is_synth_1m=True,
+        )
+        state.candles_1m.append(synth)
+        state.last_closed_price = float(close)
 
     def _build_one_m_frame(self, *, state: _MarketState, ts_ms: int) -> pl.DataFrame:
         records: list[dict[str, Any]] = []

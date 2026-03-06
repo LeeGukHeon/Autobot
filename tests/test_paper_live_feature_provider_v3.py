@@ -70,6 +70,7 @@ def test_live_feature_provider_v3_builds_row_from_bootstrap_and_ticker(tmp_path:
         parquet_root=parquet_root,
         candles_dataset_name="candles_api_v1",
         bootstrap_1m_bars=2000,
+        missing_feature_skip_ratio=1.0,
     )
     provider.ingest_ticker(
         TickerEvent(
@@ -90,7 +91,29 @@ def test_live_feature_provider_v3_builds_row_from_bootstrap_and_ticker(tmp_path:
 
     status = provider.status(now_ts_ms=300_000)
     assert status["provider"] == "LIVE_V3"
+    assert int(status["requested_ts_ms"]) == 300_000
+    assert int(status["built_ts_ms"]) == 300_000
     assert int(status["latest_feature_ts_ms"]) == 300_000
+
+
+def test_live_feature_provider_v3_skips_when_missing_feature_ratio_too_high(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
+
+    provider = LiveFeatureProviderV3(
+        feature_columns=("logret_1", "f_missing_1", "f_missing_2", "f_missing_3", "f_missing_4"),
+        tf="5m",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+    )
+    frame = provider.build_frame(ts_ms=300_000, markets=["KRW-BTC"])
+    assert frame.height == 0
+    stats = provider.last_build_stats()
+    assert int(stats.get("skipped_markets", 0)) == 1
+    assert int((stats.get("skip_reasons") or {}).get("MISSING_FEATURE_RATIO_HIGH", 0)) == 1
+    assert float(stats.get("missing_feature_ratio", 0.0)) > 0.2
+    assert isinstance(stats.get("missing_feature_topk"), list)
 
 
 def test_paper_engine_model_alpha_live_v3_scores_without_no_feature_rows(tmp_path: Path) -> None:
@@ -173,8 +196,15 @@ def test_paper_engine_model_alpha_live_v3_scores_without_no_feature_rows(tmp_pat
     assert selections
     assert any(int(item.get("payload", {}).get("scored_rows", 0)) > 0 for item in selections)
     assert all("NO_FEATURE_ROWS_AT_TS" not in item.get("payload", {}).get("reasons", {}) for item in selections)
-    assert any(item.get("event_type") == "FEATURE_PROVIDER_STATUS" for item in payloads)
-    assert any(item.get("event_type") == "LIVE_FEATURES_BUILT" for item in payloads)
+    status_events = [item for item in payloads if item.get("event_type") == "FEATURE_PROVIDER_STATUS"]
+    assert status_events
+    assert "requested_ts_ms" in (status_events[-1].get("payload") or {})
+    assert "built_ts_ms" in (status_events[-1].get("payload") or {})
+    built_events = [item for item in payloads if item.get("event_type") == "LIVE_FEATURES_BUILT"]
+    assert built_events
+    built_payload = built_events[-1].get("payload") or {}
+    assert "skip_reasons" in built_payload
+    assert "missing_feature_ratio" in built_payload
 
 
 def _write_one_m_candles(*, dataset_root: Path, market: str) -> None:

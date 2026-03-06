@@ -2223,6 +2223,16 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         )
         if strategy_mode == "model_alpha_v1":
             max_positions_value = max(position_max_total, 1)
+            if getattr(args, "paper_feature_provider", None) is None:
+                print(
+                    "[paper][warn] --paper-feature-provider not set; "
+                    f"using default='{defaults.get('paper_feature_provider', 'offline_parquet')}'."
+                )
+            if getattr(args, "paper_micro_provider", None) is None:
+                print(
+                    "[paper][warn] --paper-micro-provider not set; "
+                    f"using default='{defaults.get('paper_micro_provider', 'offline_parquet')}'."
+                )
 
         run_settings = PaperRunSettings(
             duration_sec=max(int(args.duration_sec), 1),

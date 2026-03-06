@@ -1353,7 +1353,7 @@ class PaperRunEngine:
             append_event(
                 "FEATURE_PROVIDER_STATUS",
                 ts_ms=ts_ms,
-                payload=live_feature_provider.status(now_ts_ms=ts_ms),
+                payload=live_feature_provider.status(now_ts_ms=ts_ms, requested_ts_ms=ts_ms),
             )
         open_markets = {market for market in markets if exchange.has_position(market)}
         result = strategy.on_ts(
@@ -1363,10 +1363,14 @@ class PaperRunEngine:
             open_markets=open_markets,
         )
         if isinstance(live_feature_provider, LiveFeatureProviderV3):
+            live_payload = dict(live_feature_provider.last_build_stats())
+            live_payload["model_selection_scored_rows"] = int(result.scored_rows)
+            live_payload["model_selection_selected_rows"] = int(result.selected_rows)
+            live_payload["model_selection_blocked_min_candidates_ts"] = int(result.blocked_min_candidates_ts)
             append_event(
                 "LIVE_FEATURES_BUILT",
                 ts_ms=ts_ms,
-                payload=live_feature_provider.last_build_stats(),
+                payload=live_payload,
             )
         self._runtime_counters["scored_rows"] = int(self._runtime_counters.get("scored_rows", 0)) + int(
             result.scored_rows
@@ -1390,19 +1394,24 @@ class PaperRunEngine:
         if isinstance(debug_reasons, dict):
             for reason, count in result.skipped_reasons.items():
                 _note_reason_count(reason_code=reason, reason_counts=debug_reasons, delta=int(count))
+        selection_payload = {
+            "scored_rows": int(result.scored_rows),
+            "selected_rows": int(result.selected_rows),
+            "intents": int(len(result.intents)),
+            "skipped_missing_features_rows": int(result.skipped_missing_features_rows),
+            "dropped_min_prob_rows": int(result.dropped_min_prob_rows),
+            "dropped_top_pct_rows": int(result.dropped_top_pct_rows),
+            "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
+            "reasons": dict(result.skipped_reasons),
+        }
+        if isinstance(live_feature_provider, LiveFeatureProviderV3):
+            live_stats = live_feature_provider.last_build_stats()
+            selection_payload["live_feature_skip_reasons"] = dict(live_stats.get("skip_reasons", {}))
+            selection_payload["live_feature_skipped_markets"] = int(live_stats.get("skipped_markets", 0))
         append_event(
             "MODEL_ALPHA_SELECTION",
             ts_ms=ts_ms,
-            payload={
-                "scored_rows": int(result.scored_rows),
-                "selected_rows": int(result.selected_rows),
-                "intents": int(len(result.intents)),
-                "skipped_missing_features_rows": int(result.skipped_missing_features_rows),
-                "dropped_min_prob_rows": int(result.dropped_min_prob_rows),
-                "dropped_top_pct_rows": int(result.dropped_top_pct_rows),
-                "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
-                "reasons": dict(result.skipped_reasons),
-            },
+            payload=selection_payload,
         )
         for intent in result.intents:
             if str(intent.side).strip().lower() == "ask":
