@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from autobot.execution.order_supervisor import OrderExecProfile
 from autobot.strategy.micro_order_policy import (
     CROSS_BLOCK_TICK_BPS_TOO_HIGH,
     REASON_MICRO_MISSING_ABORT,
@@ -54,9 +55,11 @@ def test_micro_order_policy_assigns_tiers_from_liquidity_score() -> None:
     assert low.allow is True
     assert low.tier == TIER_LOW
     assert low.profile is not None
+    assert low.profile.price_mode == "PASSIVE_MAKER"
     assert high.allow is True
     assert high.tier == TIER_HIGH
     assert high.profile is not None
+    assert high.profile.price_mode == "JOIN"
 
 
 def test_micro_order_policy_missing_modes() -> None:
@@ -196,3 +199,32 @@ def test_micro_order_policy_abort_if_tick_bps_too_high() -> None:
 
     assert decision.allow is False
     assert decision.reason_code == REASON_TICK_BPS_ABORT
+
+
+def test_micro_order_policy_guards_base_profile_conservatively() -> None:
+    policy = MicroOrderPolicyV1(MicroOrderPolicySettings(enabled=True))
+    base_profile = OrderExecProfile(
+        timeout_ms=900_000,
+        replace_interval_ms=900_000,
+        max_replaces=4,
+        price_mode="JOIN",
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1_500,
+        post_only=False,
+    )
+    decision = policy.evaluate(
+        micro_snapshot=_snapshot(trade_events=1, trade_notional_krw=100.0),
+        base_profile=base_profile,
+        market="KRW-BTC",
+        ref_price=100_000_000.0,
+        tick_size=1_000.0,
+        replace_attempt=0,
+    )
+
+    assert decision.allow is True
+    assert decision.profile is not None
+    assert decision.profile.timeout_ms == 900_000
+    assert decision.profile.replace_interval_ms == 900_000
+    assert decision.profile.max_replaces == 1
+    assert decision.profile.price_mode == "PASSIVE_MAKER"
+    assert decision.diagnostics.get("profile_source") == "base_with_tier_guard"

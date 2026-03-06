@@ -142,6 +142,7 @@ class MicroOrderPolicyV1:
         self,
         *,
         micro_snapshot: MicroSnapshot | None,
+        base_profile: OrderExecProfile | None = None,
         market: str | None = None,
         ref_price: float | None = None,
         tick_size: float | None = None,
@@ -149,19 +150,31 @@ class MicroOrderPolicyV1:
         model_prob: float | None = None,
         now_ts_ms: int | None = None,
     ) -> MicroOrderPolicyDecision:
+        normalized_base_profile = (
+            normalize_order_exec_profile(
+                base_profile,
+                forbid_post_only_with_cross=bool(self._settings.safety.forbid_post_only_with_cross),
+            )
+            if base_profile is not None
+            else None
+        )
         if not self._settings.enabled:
-            profile = _profile_for_tier(self._settings, TIER_MID)
+            profile = normalized_base_profile if normalized_base_profile is not None else _profile_for_tier(self._settings, TIER_MID)
             return MicroOrderPolicyDecision(
                 allow=True,
                 reason_code=REASON_POLICY_OK,
                 detail="policy_disabled",
                 tier=TIER_MID,
                 profile=profile,
-                diagnostics={"enabled": False, "tier": TIER_MID},
+                diagnostics={
+                    "enabled": False,
+                    "tier": TIER_MID,
+                    "profile_source": "base_profile" if normalized_base_profile is not None else "static_mid",
+                },
             )
 
         if micro_snapshot is None:
-            base_decision = self._on_missing(reason="snapshot_missing")
+            base_decision = self._on_missing(reason="snapshot_missing", base_profile=normalized_base_profile)
         else:
             liq_score = (
                 float(self._settings.tiering.w_notional) * math.log1p(max(float(micro_snapshot.trade_notional_krw), 0.0))
@@ -169,7 +182,16 @@ class MicroOrderPolicyV1:
             )
             tier = _tier_from_score(liq_score, tiering=self._settings.tiering)
             tier = self._maybe_adjust_tier_for_book(micro_snapshot=micro_snapshot, tier=tier)
-            profile = _profile_for_tier(self._settings, tier)
+            tier_profile = _profile_for_tier(self._settings, tier)
+            profile = (
+                _merge_profiles_conservative(
+                    base_profile=normalized_base_profile,
+                    tier_profile=tier_profile,
+                    forbid_post_only_with_cross=bool(self._settings.safety.forbid_post_only_with_cross),
+                )
+                if normalized_base_profile is not None
+                else tier_profile
+            )
             diagnostics = {
                 "enabled": True,
                 "mode": self._settings.mode,
@@ -183,6 +205,11 @@ class MicroOrderPolicyV1:
                 "book_available": bool(micro_snapshot.book_available),
                 "spread_bps_mean": micro_snapshot.spread_bps_mean,
                 "depth_top5_notional_krw": micro_snapshot.depth_top5_notional_krw,
+                "profile_source": "base_with_tier_guard" if normalized_base_profile is not None else "tier_profile",
+                "base_profile_price_mode": (
+                    str(normalized_base_profile.price_mode) if normalized_base_profile is not None else None
+                ),
+                "tier_profile_price_mode": str(tier_profile.price_mode),
             }
             base_decision = MicroOrderPolicyDecision(
                 allow=True,
@@ -257,7 +284,8 @@ class MicroOrderPolicyV1:
         replace_value = max(int(replace_attempt), 0)
         escalate_after = max(int(self._settings.cross_escalate_after_timeouts), 0)
         cross_candidate = replace_value >= escalate_after
-        selected_mode = PRICE_MODE_JOIN
+        base_mode = str(base_profile.price_mode).strip().upper()
+        selected_mode = base_mode if base_mode in {PRICE_MODE_PASSIVE_MAKER, PRICE_MODE_JOIN} else PRICE_MODE_JOIN
         cross_allowed = False
         cross_block_reason: str | None = None
         abort_reason: str | None = None
@@ -330,7 +358,7 @@ class MicroOrderPolicyV1:
             abort_reason=abort_reason,
         )
 
-    def _on_missing(self, *, reason: str) -> MicroOrderPolicyDecision:
+    def _on_missing(self, *, reason: str, base_profile: OrderExecProfile | None = None) -> MicroOrderPolicyDecision:
         mode = self._settings.on_missing
         if mode == "abort":
             return MicroOrderPolicyDecision(
@@ -342,14 +370,31 @@ class MicroOrderPolicyV1:
                 diagnostics={"enabled": True, "on_missing": mode, "reason": reason},
             )
         fallback_tier = TIER_LOW if mode == "conservative" else TIER_MID
-        profile = _profile_for_tier(self._settings, fallback_tier)
+        tier_profile = _profile_for_tier(self._settings, fallback_tier)
+        profile = (
+            _merge_profiles_conservative(
+                base_profile=base_profile,
+                tier_profile=tier_profile,
+                forbid_post_only_with_cross=bool(self._settings.safety.forbid_post_only_with_cross),
+            )
+            if base_profile is not None
+            else tier_profile
+        )
         return MicroOrderPolicyDecision(
             allow=True,
             reason_code=REASON_MICRO_MISSING_FALLBACK,
             detail=reason,
             tier=fallback_tier,
             profile=profile,
-            diagnostics={"enabled": True, "on_missing": mode, "reason": reason, "tier": fallback_tier},
+            diagnostics={
+                "enabled": True,
+                "on_missing": mode,
+                "reason": reason,
+                "tier": fallback_tier,
+                "profile_source": "base_with_missing_fallback" if base_profile is not None else "tier_fallback",
+                "base_profile_price_mode": str(base_profile.price_mode) if base_profile is not None else None,
+                "tier_profile_price_mode": str(tier_profile.price_mode),
+            },
         )
 
     def _maybe_adjust_tier_for_book(self, *, micro_snapshot: MicroSnapshot, tier: str) -> str:
@@ -387,6 +432,50 @@ def _profile_for_tier(settings: MicroOrderPolicySettings, tier: str) -> OrderExe
         ),
         forbid_post_only_with_cross=bool(settings.safety.forbid_post_only_with_cross),
     )
+
+
+def _merge_profiles_conservative(
+    *,
+    base_profile: OrderExecProfile,
+    tier_profile: OrderExecProfile,
+    forbid_post_only_with_cross: bool,
+) -> OrderExecProfile:
+    base = normalize_order_exec_profile(
+        base_profile,
+        forbid_post_only_with_cross=forbid_post_only_with_cross,
+    )
+    tier = normalize_order_exec_profile(
+        tier_profile,
+        forbid_post_only_with_cross=forbid_post_only_with_cross,
+    )
+    return normalize_order_exec_profile(
+        OrderExecProfile(
+            timeout_ms=max(int(base.timeout_ms), int(tier.timeout_ms)),
+            replace_interval_ms=max(int(base.replace_interval_ms), int(tier.replace_interval_ms)),
+            max_replaces=min(int(base.max_replaces), int(tier.max_replaces)),
+            price_mode=_more_conservative_price_mode(base.price_mode, tier.price_mode),
+            max_chase_bps=min(int(base.max_chase_bps), int(tier.max_chase_bps)),
+            min_replace_interval_ms_global=max(
+                int(base.min_replace_interval_ms_global),
+                int(tier.min_replace_interval_ms_global),
+            ),
+            post_only=bool(base.post_only or tier.post_only),
+        ),
+        forbid_post_only_with_cross=forbid_post_only_with_cross,
+    )
+
+
+def _more_conservative_price_mode(left: str, right: str) -> str:
+    rank = {
+        PRICE_MODE_PASSIVE_MAKER: 0,
+        PRICE_MODE_JOIN: 1,
+        PRICE_MODE_CROSS_1T: 2,
+    }
+    left_mode = str(left).strip().upper()
+    right_mode = str(right).strip().upper()
+    left_rank = rank.get(left_mode, rank[PRICE_MODE_JOIN])
+    right_rank = rank.get(right_mode, rank[PRICE_MODE_JOIN])
+    return left_mode if left_rank <= right_rank else right_mode
 
 
 def _tier_from_score(score: float, *, tiering: MicroOrderPolicyTieringSettings) -> str:

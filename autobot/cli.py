@@ -143,6 +143,172 @@ DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v3"
 DEFAULT_V3_CANDIDATE_REF = "latest_candidate_v3"
 
 
+def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
+    name = str(preset).strip().lower() or "live_v3"
+    overrides: dict[str, Any] = {
+        "strategy": "model_alpha_v1",
+        "feature_set": "v3",
+    }
+    if name in {"default", "config"}:
+        return overrides
+    if name in {"live_v3", "live"}:
+        overrides.update(
+            {
+                "paper_feature_provider": "live_v3",
+                "paper_micro_provider": "live_ws",
+                "micro_gate": "off",
+                "micro_order_policy": "on",
+                "micro_order_policy_mode": "trade_only",
+                "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
+    if name in {"offline", "offline_v3"}:
+        overrides.update(
+            {
+                "paper_feature_provider": "offline_parquet",
+                "paper_micro_provider": "offline_parquet",
+            }
+        )
+        return overrides
+    raise ValueError(f"Unsupported paper alpha preset: {preset}")
+
+
+def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
+    preset = str(getattr(args, "preset", None) or "live_v3").strip().lower() or "live_v3"
+    overrides = _paper_alpha_preset_overrides(preset)
+    payload = {
+        "paper_command": "run",
+        "duration_sec": int(getattr(args, "duration_sec", 600)),
+        "quote": getattr(args, "quote", None),
+        "top_n": getattr(args, "top_n", None),
+        "strategy": str(overrides.get("strategy", "model_alpha_v1")),
+        "tf": getattr(args, "tf", None),
+        "model_ref": getattr(args, "model_ref", None),
+        "model_family": getattr(args, "model_family", None),
+        "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
+        "top_pct": getattr(args, "top_pct", None),
+        "min_prob": getattr(args, "min_prob", None),
+        "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
+        "max_positions_total": getattr(args, "max_positions_total", None),
+        "cooldown_bars": getattr(args, "cooldown_bars", None),
+        "exit_mode": getattr(args, "exit_mode", None),
+        "hold_bars": getattr(args, "hold_bars", None),
+        "tp_pct": getattr(args, "tp_pct", None),
+        "sl_pct": getattr(args, "sl_pct", None),
+        "trailing_pct": getattr(args, "trailing_pct", None),
+        "execution_price_mode": getattr(args, "execution_price_mode", None),
+        "execution_timeout_bars": getattr(args, "execution_timeout_bars", None),
+        "execution_replace_max": getattr(args, "execution_replace_max", None),
+        "print_every_sec": getattr(args, "print_every_sec", None),
+        "starting_krw": getattr(args, "starting_krw", None),
+        "per_trade_krw": getattr(args, "per_trade_krw", None),
+        "max_positions": getattr(args, "max_positions", None),
+        "micro_gate": getattr(args, "micro_gate", None) or overrides.get("micro_gate"),
+        "micro_gate_mode": getattr(args, "micro_gate_mode", None),
+        "micro_gate_on_missing": getattr(args, "micro_gate_on_missing", None),
+        "micro_order_policy": getattr(args, "micro_order_policy", None) or overrides.get("micro_order_policy"),
+        "micro_order_policy_mode": (
+            getattr(args, "micro_order_policy_mode", None) or overrides.get("micro_order_policy_mode")
+        ),
+        "micro_order_policy_on_missing": (
+            getattr(args, "micro_order_policy_on_missing", None)
+            or overrides.get("micro_order_policy_on_missing")
+        ),
+        "paper_micro_provider": getattr(args, "paper_micro_provider", None) or overrides.get("paper_micro_provider"),
+        "paper_micro_warmup_sec": getattr(args, "paper_micro_warmup_sec", None),
+        "paper_micro_warmup_min_trade_events_per_market": getattr(
+            args,
+            "paper_micro_warmup_min_trade_events_per_market",
+            None,
+        ),
+        "paper_feature_provider": getattr(args, "paper_feature_provider", None) or overrides.get("paper_feature_provider"),
+        "preset": preset,
+    }
+    for key, value in vars(args).items():
+        if key not in payload:
+            payload[key] = value
+    return argparse.Namespace(**payload)
+
+
+def _backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
+    name = str(preset).strip().lower() or "default"
+    overrides: dict[str, Any] = {
+        "strategy": "model_alpha_v1",
+        "feature_set": "v3",
+    }
+    if name == "default":
+        return overrides
+    if name == "acceptance":
+        overrides.update(
+            {
+                "micro_order_policy": "off",
+            }
+        )
+        return overrides
+    raise ValueError(f"Unsupported backtest alpha preset: {preset}")
+
+
+def _normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
+    preset = str(getattr(args, "preset", None) or "default").strip().lower() or "default"
+    overrides = _backtest_alpha_preset_overrides(preset)
+    duration_days = getattr(args, "days", None)
+    if duration_days is None:
+        duration_days = getattr(args, "duration_days", None)
+    payload = {
+        "backtest_command": "run",
+        "dataset_name": getattr(args, "dataset_name", None),
+        "parquet_root": getattr(args, "parquet_root", None),
+        "tf": getattr(args, "tf", None),
+        "market": getattr(args, "market", None),
+        "markets": getattr(args, "markets", None),
+        "quote": getattr(args, "quote", None),
+        "top_n": getattr(args, "top_n", None),
+        "universe_mode": getattr(args, "universe_mode", None),
+        "strategy": str(overrides.get("strategy", "model_alpha_v1")),
+        "model_ref": getattr(args, "model_ref", None),
+        "model_family": getattr(args, "model_family", None),
+        "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
+        "entry": "top_pct",
+        "top_pct": getattr(args, "top_pct", None),
+        "min_prob": getattr(args, "min_prob", None),
+        "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
+        "exit_mode": getattr(args, "exit_mode", None),
+        "hold_bars": getattr(args, "hold_bars", None),
+        "tp_pct": getattr(args, "tp_pct", None),
+        "sl_pct": getattr(args, "sl_pct", None),
+        "trailing_pct": getattr(args, "trailing_pct", None),
+        "cooldown_bars": getattr(args, "cooldown_bars", None),
+        "max_positions_total": getattr(args, "max_positions_total", None),
+        "execution_price_mode": getattr(args, "execution_price_mode", None),
+        "execution_timeout_bars": getattr(args, "execution_timeout_bars", None),
+        "execution_replace_max": getattr(args, "execution_replace_max", None),
+        "start": getattr(args, "start", None),
+        "end": getattr(args, "end", None),
+        "from_ts_ms": getattr(args, "from_ts_ms", None),
+        "to_ts_ms": getattr(args, "to_ts_ms", None),
+        "duration_days": duration_days,
+        "dense_grid": bool(getattr(args, "dense_grid", False)),
+        "starting_krw": getattr(args, "starting_krw", None),
+        "per_trade_krw": getattr(args, "per_trade_krw", None),
+        "max_positions": getattr(args, "max_positions", None),
+        "min_order_krw": getattr(args, "min_order_krw", None),
+        "order_timeout_bars": getattr(args, "order_timeout_bars", None),
+        "reprice_max_attempts": getattr(args, "reprice_max_attempts", None),
+        "micro_gate": getattr(args, "micro_gate", None),
+        "micro_gate_mode": getattr(args, "micro_gate_mode", None),
+        "micro_gate_on_missing": getattr(args, "micro_gate_on_missing", None),
+        "micro_order_policy": getattr(args, "micro_order_policy", None) or overrides.get("micro_order_policy"),
+        "micro_order_policy_mode": getattr(args, "micro_order_policy_mode", None),
+        "micro_order_policy_on_missing": getattr(args, "micro_order_policy_on_missing", None),
+        "preset": preset,
+    }
+    for key, value in vars(args).items():
+        if key not in payload:
+            payload[key] = value
+    return argparse.Namespace(**payload)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="autobot",
@@ -680,7 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
     paper_subparsers = paper_parser.add_subparsers(dest="paper_command", required=True)
 
     paper_run_parser = paper_subparsers.add_parser("run", help="Run live websocket paper trading.")
-    paper_run_parser.add_argument("--duration-sec", type=int, default=600)
+    paper_run_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
     paper_run_parser.add_argument("--quote", help="Quote currency, ex: KRW")
     paper_run_parser.add_argument("--top-n", type=int)
     paper_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
@@ -734,6 +900,52 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("offline_parquet", "live_v3"),
         help="Paper feature provider selection for model_alpha_v1.",
     )
+    paper_alpha_parser = paper_subparsers.add_parser(
+        "alpha",
+        help="Run model_alpha_v1 paper test with concise defaults.",
+    )
+    paper_alpha_parser.add_argument(
+        "--preset",
+        choices=("live_v3", "offline", "default"),
+        default="live_v3",
+        help="Shortcut preset. default=config-driven, live_v3=LIVE_V3+LIVE_WS, offline=offline parquet providers.",
+    )
+    paper_alpha_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
+    paper_alpha_parser.add_argument("--quote", help="Quote currency, ex: KRW")
+    paper_alpha_parser.add_argument("--top-n", type=int)
+    paper_alpha_parser.add_argument("--tf", help="Model timeframe, ex: 5m")
+    paper_alpha_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
+    paper_alpha_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
+    paper_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    paper_alpha_parser.add_argument("--top-pct", type=float)
+    paper_alpha_parser.add_argument("--min-prob", type=float)
+    paper_alpha_parser.add_argument("--min-cands-per-ts", type=int)
+    paper_alpha_parser.add_argument("--max-positions-total", type=int)
+    paper_alpha_parser.add_argument("--cooldown-bars", type=int)
+    paper_alpha_parser.add_argument("--exit-mode", choices=("hold", "risk"))
+    paper_alpha_parser.add_argument("--hold-bars", type=int)
+    paper_alpha_parser.add_argument("--tp-pct", type=float)
+    paper_alpha_parser.add_argument("--sl-pct", type=float)
+    paper_alpha_parser.add_argument("--trailing-pct", type=float)
+    paper_alpha_parser.add_argument("--execution-price-mode", choices=("PASSIVE_MAKER", "JOIN", "CROSS_1T"))
+    paper_alpha_parser.add_argument("--execution-timeout-bars", type=int)
+    paper_alpha_parser.add_argument("--execution-replace-max", type=int)
+    paper_alpha_parser.add_argument("--print-every-sec", type=float)
+    paper_alpha_parser.add_argument("--starting-krw", type=float)
+    paper_alpha_parser.add_argument("--per-trade-krw", type=float)
+    paper_alpha_parser.add_argument("--max-positions", type=int)
+    paper_alpha_parser.add_argument(
+        "--paper-micro-provider",
+        choices=("offline_parquet", "live_ws", "auto"),
+        help="Optional provider override on top of preset.",
+    )
+    paper_alpha_parser.add_argument(
+        "--paper-feature-provider",
+        choices=("offline_parquet", "live_v3"),
+        help="Optional provider override on top of preset.",
+    )
+    paper_alpha_parser.add_argument("--paper-micro-warmup-sec", type=int)
+    paper_alpha_parser.add_argument("--paper-micro-warmup-min-trade-events-per-market", type=int)
 
     backtest_parser = subparsers.add_parser("backtest", help="Backtest operations.")
     backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command", required=True)
@@ -786,6 +998,49 @@ def build_parser() -> argparse.ArgumentParser:
         "--micro-order-policy-on-missing",
         choices=("static_fallback", "conservative", "abort"),
     )
+    backtest_alpha_parser = backtest_subparsers.add_parser(
+        "alpha",
+        help="Run model_alpha_v1 backtest with concise defaults.",
+    )
+    backtest_alpha_parser.add_argument(
+        "--preset",
+        choices=("default", "acceptance"),
+        default="default",
+        help="Shortcut preset. acceptance disables micro_order_policy for cleaner alpha validation.",
+    )
+    backtest_alpha_parser.add_argument("--dataset-name", help="Candle dataset name, ex: candles_api_v1")
+    backtest_alpha_parser.add_argument("--parquet-root", help="Parquet root, ex: data/parquet")
+    backtest_alpha_parser.add_argument("--tf", help="Timeframe, ex: 1m,5m")
+    backtest_alpha_parser.add_argument("--market", help="Single market, ex: KRW-BTC")
+    backtest_alpha_parser.add_argument("--markets", help="Comma separated markets, ex: KRW-BTC,KRW-ETH")
+    backtest_alpha_parser.add_argument("--quote", help="Quote filter for universe mode, ex: KRW")
+    backtest_alpha_parser.add_argument("--top-n", type=int, help="Universe size for static_start/fixed_list")
+    backtest_alpha_parser.add_argument("--universe-mode", choices=("static_start", "fixed_list"))
+    backtest_alpha_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
+    backtest_alpha_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
+    backtest_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    backtest_alpha_parser.add_argument("--top-pct", type=float)
+    backtest_alpha_parser.add_argument("--min-prob", type=float)
+    backtest_alpha_parser.add_argument("--min-cands-per-ts", type=int)
+    backtest_alpha_parser.add_argument("--exit-mode", choices=("hold", "risk"))
+    backtest_alpha_parser.add_argument("--hold-bars", type=int)
+    backtest_alpha_parser.add_argument("--tp-pct", type=float)
+    backtest_alpha_parser.add_argument("--sl-pct", type=float)
+    backtest_alpha_parser.add_argument("--trailing-pct", type=float)
+    backtest_alpha_parser.add_argument("--cooldown-bars", type=int)
+    backtest_alpha_parser.add_argument("--max-positions-total", type=int)
+    backtest_alpha_parser.add_argument("--execution-price-mode", choices=("PASSIVE_MAKER", "JOIN", "CROSS_1T"))
+    backtest_alpha_parser.add_argument("--execution-timeout-bars", type=int)
+    backtest_alpha_parser.add_argument("--execution-replace-max", type=int)
+    backtest_alpha_parser.add_argument("--start", help="Start date YYYY-MM-DD (UTC day start).")
+    backtest_alpha_parser.add_argument("--end", help="End date YYYY-MM-DD (UTC day end).")
+    backtest_alpha_parser.add_argument("--from-ts-ms", type=int)
+    backtest_alpha_parser.add_argument("--to-ts-ms", type=int)
+    backtest_alpha_parser.add_argument("--days", type=int, help="Shortcut for --duration-days.")
+    backtest_alpha_parser.add_argument("--dense-grid", action="store_true")
+    backtest_alpha_parser.add_argument("--starting-krw", type=float)
+    backtest_alpha_parser.add_argument("--per-trade-krw", type=float)
+    backtest_alpha_parser.add_argument("--max-positions", type=int)
 
     live_parser = subparsers.add_parser("live", help="Live runtime state/reconciliation operations.")
     live_subparsers = live_parser.add_subparsers(dest="live_command", required=True)
@@ -2156,6 +2411,16 @@ def _handle_upbit_command(args: argparse.Namespace, config_dir: Path) -> int:
 
 def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
+        if args.paper_command == "alpha":
+            shortcut_args = _normalize_paper_alpha_args(args)
+            print(
+                "[paper][alpha] "
+                f"preset={getattr(shortcut_args, 'preset', 'live_v3')} "
+                f"feature_provider={getattr(shortcut_args, 'paper_feature_provider', None) or 'config'} "
+                f"micro_provider={getattr(shortcut_args, 'paper_micro_provider', None) or 'config'}"
+            )
+            return _handle_paper_command(shortcut_args, config_dir, base_config)
+
         if args.paper_command != "run":
             raise ValueError(f"Unsupported paper command: {args.paper_command}")
 
@@ -2199,16 +2464,21 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             if getattr(args, "top_pct", None) is not None
             else model_alpha_selection_defaults.get("top_pct", 0.05)
         )
-        selection_min_prob = float(
-            getattr(args, "min_prob", None)
-            if getattr(args, "min_prob", None) is not None
-            else model_alpha_selection_defaults.get("min_prob", 0.58)
+        selection_min_prob = _clamp_prob_value(
+            _optional_float_value(
+                getattr(args, "min_prob", None)
+                if getattr(args, "min_prob", None) is not None
+                else model_alpha_selection_defaults.get("min_prob")
+            )
         )
         selection_min_cands = int(
             getattr(args, "min_cands_per_ts", None)
             if getattr(args, "min_cands_per_ts", None) is not None
             else model_alpha_selection_defaults.get("min_candidates_per_ts", 10)
         )
+        selection_registry_threshold_key = str(
+            model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")
+        ).strip() or "top_5pct"
         position_max_total = int(
             getattr(args, "max_positions_total", None)
             if getattr(args, "max_positions_total", None) is not None
@@ -2218,6 +2488,19 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             getattr(args, "cooldown_bars", None)
             if getattr(args, "cooldown_bars", None) is not None
             else model_alpha_position_defaults.get("cooldown_bars", 6)
+        )
+        position_entry_min_notional_buffer_bps = max(
+            float(model_alpha_position_defaults.get("entry_min_notional_buffer_bps", 25.0)),
+            0.0,
+        )
+        position_sizing_mode = str(model_alpha_position_defaults.get("sizing_mode", "prob_ramp")).strip().lower() or "prob_ramp"
+        position_size_multiplier_min = max(
+            float(model_alpha_position_defaults.get("size_multiplier_min", 0.5)),
+            0.0,
+        )
+        position_size_multiplier_max = max(
+            float(model_alpha_position_defaults.get("size_multiplier_max", 1.5)),
+            position_size_multiplier_min,
         )
         exit_mode = str(
             getattr(args, "exit_mode", None) or model_alpha_exit_defaults.get("mode", "hold")
@@ -2242,6 +2525,10 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             if getattr(args, "trailing_pct", None) is not None
             else model_alpha_exit_defaults.get("trailing_pct", 0.0)
         )
+        expected_exit_slippage_bps_value = _optional_float_value(
+            model_alpha_exit_defaults.get("expected_exit_slippage_bps")
+        )
+        expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
         exec_timeout_bars = int(
             getattr(args, "execution_timeout_bars", None)
             if getattr(args, "execution_timeout_bars", None) is not None
@@ -2275,7 +2562,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 )
 
         run_settings = PaperRunSettings(
-            duration_sec=max(int(args.duration_sec), 1),
+            duration_sec=max(int(args.duration_sec), 0),
             quote=str(args.quote or defaults["quote"]).strip().upper(),
             top_n=max(int(args.top_n if args.top_n is not None else defaults["top_n"]), 1),
             tf=paper_tf_value,
@@ -2319,12 +2606,17 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
                 selection=ModelAlphaSelectionSettings(
                     top_pct=max(min(selection_top_pct, 1.0), 0.0),
-                    min_prob=max(min(selection_min_prob, 1.0), 0.0),
+                    min_prob=selection_min_prob,
                     min_candidates_per_ts=max(selection_min_cands, 0),
+                    registry_threshold_key=selection_registry_threshold_key,
                 ),
                 position=ModelAlphaPositionSettings(
                     max_positions_total=max(position_max_total, 1),
                     cooldown_bars=max(position_cooldown_bars, 0),
+                    entry_min_notional_buffer_bps=position_entry_min_notional_buffer_bps,
+                    sizing_mode=position_sizing_mode,
+                    size_multiplier_min=position_size_multiplier_min,
+                    size_multiplier_max=position_size_multiplier_max,
                 ),
                 exit=ModelAlphaExitSettings(
                     mode=exit_mode,
@@ -2332,6 +2624,16 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                     tp_pct=max(tp_pct_value, 0.0),
                     sl_pct=max(sl_pct_value, 0.0),
                     trailing_pct=max(trailing_pct_value, 0.0),
+                    expected_exit_slippage_bps=(
+                        max(expected_exit_slippage_bps_value, 0.0)
+                        if expected_exit_slippage_bps_value is not None
+                        else None
+                    ),
+                    expected_exit_fee_bps=(
+                        max(expected_exit_fee_bps_value, 0.0)
+                        if expected_exit_fee_bps_value is not None
+                        else None
+                    ),
                 ),
                 execution=ModelAlphaExecutionSettings(
                     price_mode=exec_price_mode,
@@ -2394,6 +2696,15 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
 
 def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
+        if args.backtest_command == "alpha":
+            shortcut_args = _normalize_backtest_alpha_args(args)
+            print(
+                "[backtest][alpha] "
+                f"preset={getattr(shortcut_args, 'preset', 'default')} "
+                f"micro_order_policy={getattr(shortcut_args, 'micro_order_policy', None) or 'config'}"
+            )
+            return _handle_backtest_command(shortcut_args, config_dir, base_config)
+
         if args.backtest_command != "run":
             raise ValueError(f"Unsupported backtest command: {args.backtest_command}")
 
@@ -2443,16 +2754,21 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             if getattr(args, "top_pct", None) is not None
             else model_alpha_selection_defaults.get("top_pct", 0.05)
         )
-        selection_min_prob = float(
-            getattr(args, "min_prob", None)
-            if getattr(args, "min_prob", None) is not None
-            else model_alpha_selection_defaults.get("min_prob", 0.58)
+        selection_min_prob = _clamp_prob_value(
+            _optional_float_value(
+                getattr(args, "min_prob", None)
+                if getattr(args, "min_prob", None) is not None
+                else model_alpha_selection_defaults.get("min_prob")
+            )
         )
         selection_min_cands = int(
             getattr(args, "min_cands_per_ts", None)
             if getattr(args, "min_cands_per_ts", None) is not None
             else model_alpha_selection_defaults.get("min_candidates_per_ts", 10)
         )
+        selection_registry_threshold_key = str(
+            model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")
+        ).strip() or "top_5pct"
         position_max_total = int(
             getattr(args, "max_positions_total", None)
             if getattr(args, "max_positions_total", None) is not None
@@ -2462,6 +2778,19 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             getattr(args, "cooldown_bars", None)
             if getattr(args, "cooldown_bars", None) is not None
             else model_alpha_position_defaults.get("cooldown_bars", 6)
+        )
+        position_entry_min_notional_buffer_bps = max(
+            float(model_alpha_position_defaults.get("entry_min_notional_buffer_bps", 25.0)),
+            0.0,
+        )
+        position_sizing_mode = str(model_alpha_position_defaults.get("sizing_mode", "prob_ramp")).strip().lower() or "prob_ramp"
+        position_size_multiplier_min = max(
+            float(model_alpha_position_defaults.get("size_multiplier_min", 0.5)),
+            0.0,
+        )
+        position_size_multiplier_max = max(
+            float(model_alpha_position_defaults.get("size_multiplier_max", 1.5)),
+            position_size_multiplier_min,
         )
         exit_mode = str(
             getattr(args, "exit_mode", None) or model_alpha_exit_defaults.get("mode", "hold")
@@ -2486,6 +2815,10 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             if getattr(args, "trailing_pct", None) is not None
             else model_alpha_exit_defaults.get("trailing_pct", 0.0)
         )
+        expected_exit_slippage_bps_value = _optional_float_value(
+            model_alpha_exit_defaults.get("expected_exit_slippage_bps")
+        )
+        expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
         exec_timeout_bars = int(
             getattr(args, "execution_timeout_bars", None)
             if getattr(args, "execution_timeout_bars", None) is not None
@@ -2602,12 +2935,17 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
                 selection=ModelAlphaSelectionSettings(
                     top_pct=max(min(selection_top_pct, 1.0), 0.0),
-                    min_prob=max(min(selection_min_prob, 1.0), 0.0),
+                    min_prob=selection_min_prob,
                     min_candidates_per_ts=max(selection_min_cands, 0),
+                    registry_threshold_key=selection_registry_threshold_key,
                 ),
                 position=ModelAlphaPositionSettings(
                     max_positions_total=max(position_max_total, 1),
                     cooldown_bars=max(position_cooldown_bars, 0),
+                    entry_min_notional_buffer_bps=position_entry_min_notional_buffer_bps,
+                    sizing_mode=position_sizing_mode,
+                    size_multiplier_min=position_size_multiplier_min,
+                    size_multiplier_max=position_size_multiplier_max,
                 ),
                 exit=ModelAlphaExitSettings(
                     mode=exit_mode,
@@ -2615,6 +2953,16 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     tp_pct=max(tp_pct_value, 0.0),
                     sl_pct=max(sl_pct_value, 0.0),
                     trailing_pct=max(trailing_pct_value, 0.0),
+                    expected_exit_slippage_bps=(
+                        max(expected_exit_slippage_bps_value, 0.0)
+                        if expected_exit_slippage_bps_value is not None
+                        else None
+                    ),
+                    expected_exit_fee_bps=(
+                        max(expected_exit_fee_bps_value, 0.0)
+                        if expected_exit_fee_bps_value is not None
+                        else None
+                    ),
                 ),
                 execution=ModelAlphaExecutionSettings(
                     price_mode=exec_price_mode,
@@ -3070,6 +3418,21 @@ def _load_yaml_doc(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _optional_float_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clamp_prob_value(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(min(float(value), 1.0), 0.0)
+
+
 def _paper_defaults(
     *,
     base_config: dict[str, Any],
@@ -3186,12 +3549,26 @@ def _paper_defaults(
             "feature_set": str(model_alpha_cfg.get("feature_set", "v3")).strip().lower() or "v3",
             "selection": {
                 "top_pct": float(model_alpha_selection_cfg.get("top_pct", 0.05)),
-                "min_prob": float(model_alpha_selection_cfg.get("min_prob", 0.58)),
+                "min_prob": _clamp_prob_value(_optional_float_value(model_alpha_selection_cfg.get("min_prob"))),
                 "min_candidates_per_ts": int(model_alpha_selection_cfg.get("min_candidates_per_ts", 10)),
+                "registry_threshold_key": (
+                    str(model_alpha_selection_cfg.get("registry_threshold_key", "top_5pct")).strip() or "top_5pct"
+                ),
             },
             "position": {
                 "max_positions_total": int(model_alpha_position_cfg.get("max_positions_total", 3)),
                 "cooldown_bars": int(model_alpha_position_cfg.get("cooldown_bars", 6)),
+                "entry_min_notional_buffer_bps": max(
+                    float(model_alpha_position_cfg.get("entry_min_notional_buffer_bps", 25.0)),
+                    0.0,
+                ),
+                "sizing_mode": str(model_alpha_position_cfg.get("sizing_mode", "prob_ramp")).strip().lower()
+                or "prob_ramp",
+                "size_multiplier_min": max(float(model_alpha_position_cfg.get("size_multiplier_min", 0.5)), 0.0),
+                "size_multiplier_max": max(
+                    float(model_alpha_position_cfg.get("size_multiplier_max", 1.5)),
+                    max(float(model_alpha_position_cfg.get("size_multiplier_min", 0.5)), 0.0),
+                ),
             },
             "exit": {
                 "mode": str(model_alpha_exit_cfg.get("mode", "hold")).strip().lower() or "hold",
@@ -3199,6 +3576,10 @@ def _paper_defaults(
                 "tp_pct": float(model_alpha_exit_cfg.get("tp_pct", 0.02)),
                 "sl_pct": float(model_alpha_exit_cfg.get("sl_pct", 0.01)),
                 "trailing_pct": float(model_alpha_exit_cfg.get("trailing_pct", 0.0)),
+                "expected_exit_slippage_bps": _optional_float_value(
+                    model_alpha_exit_cfg.get("expected_exit_slippage_bps")
+                ),
+                "expected_exit_fee_bps": _optional_float_value(model_alpha_exit_cfg.get("expected_exit_fee_bps")),
             },
             "execution": {
                 "price_mode": str(model_alpha_execution_cfg.get("price_mode", "JOIN")).strip().upper() or "JOIN",
@@ -3318,12 +3699,26 @@ def _backtest_defaults(
             "feature_set": str(model_alpha_cfg.get("feature_set", "v3")).strip().lower() or "v3",
             "selection": {
                 "top_pct": float(model_alpha_selection_cfg.get("top_pct", 0.05)),
-                "min_prob": float(model_alpha_selection_cfg.get("min_prob", 0.58)),
+                "min_prob": _clamp_prob_value(_optional_float_value(model_alpha_selection_cfg.get("min_prob"))),
                 "min_candidates_per_ts": int(model_alpha_selection_cfg.get("min_candidates_per_ts", 10)),
+                "registry_threshold_key": (
+                    str(model_alpha_selection_cfg.get("registry_threshold_key", "top_5pct")).strip() or "top_5pct"
+                ),
             },
             "position": {
                 "max_positions_total": int(model_alpha_position_cfg.get("max_positions_total", 3)),
                 "cooldown_bars": int(model_alpha_position_cfg.get("cooldown_bars", 6)),
+                "entry_min_notional_buffer_bps": max(
+                    float(model_alpha_position_cfg.get("entry_min_notional_buffer_bps", 25.0)),
+                    0.0,
+                ),
+                "sizing_mode": str(model_alpha_position_cfg.get("sizing_mode", "prob_ramp")).strip().lower()
+                or "prob_ramp",
+                "size_multiplier_min": max(float(model_alpha_position_cfg.get("size_multiplier_min", 0.5)), 0.0),
+                "size_multiplier_max": max(
+                    float(model_alpha_position_cfg.get("size_multiplier_max", 1.5)),
+                    max(float(model_alpha_position_cfg.get("size_multiplier_min", 0.5)), 0.0),
+                ),
             },
             "exit": {
                 "mode": str(model_alpha_exit_cfg.get("mode", "hold")).strip().lower() or "hold",
@@ -3331,6 +3726,10 @@ def _backtest_defaults(
                 "tp_pct": float(model_alpha_exit_cfg.get("tp_pct", 0.02)),
                 "sl_pct": float(model_alpha_exit_cfg.get("sl_pct", 0.01)),
                 "trailing_pct": float(model_alpha_exit_cfg.get("trailing_pct", 0.0)),
+                "expected_exit_slippage_bps": _optional_float_value(
+                    model_alpha_exit_cfg.get("expected_exit_slippage_bps")
+                ),
+                "expected_exit_fee_bps": _optional_float_value(model_alpha_exit_cfg.get("expected_exit_fee_bps")),
             },
             "execution": {
                 "price_mode": str(model_alpha_execution_cfg.get("price_mode", "JOIN")).strip().upper() or "JOIN",

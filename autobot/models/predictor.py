@@ -21,6 +21,7 @@ class ModelPredictor:
     model_family: str | None
     feature_columns: tuple[str, ...]
     train_config: dict[str, Any]
+    thresholds: dict[str, Any]
 
     @property
     def dataset_root(self) -> Path | None:
@@ -50,6 +51,7 @@ def load_predictor_from_registry(
     model_bundle_raw = load_model_bundle(run_dir)
     if not isinstance(model_bundle_raw, dict):
         raise ValueError(f"unsupported model bundle type at {run_dir}: {type(model_bundle_raw)!r}")
+    thresholds = load_json(run_dir / "thresholds.json")
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -68,4 +70,5 @@ def load_predictor_from_registry(
         model_family=(str(model_family).strip() if model_family else None),
         feature_columns=feature_columns,
         train_config=train_config,
+        thresholds=thresholds if isinstance(thresholds, dict) else {},
     )

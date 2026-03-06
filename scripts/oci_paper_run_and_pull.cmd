@@ -91,7 +91,7 @@ echo [INFO] duration_sec=%DURATION_SEC% (%DURATION_LABEL%)
 echo [INFO] unit_name=%UNIT_NAME%
 
 echo [INFO] Starting remote unit: %UNIT_NAME%
-ssh -i "%KEY_PATH%" "%SERVER%" "sudo systemd-run --unit=%UNIT_NAME% --collect --uid=ubuntu --gid=ubuntu --working-directory=%REMOTE_ROOT% -p StandardOutput=journal -p StandardError=journal /bin/bash -lc 'source %REMOTE_ROOT%/.venv/bin/activate && python -m autobot.cli paper run --duration-sec %DURATION_SEC% --quote KRW --top-n %TOP_N% --strategy model_alpha_v1 --model-ref champion_v3 --feature-set v3 --tf %TF% --top-pct 0.20 --min-prob 0.50 --min-cands-per-ts 1 --exit-mode hold --hold-bars 6 --paper-micro-provider live_ws --paper-feature-provider live_v3 --micro-order-policy on --micro-order-policy-mode trade_only --micro-order-policy-on-missing static_fallback'"
+ssh -i "%KEY_PATH%" "%SERVER%" "sudo systemd-run --unit=%UNIT_NAME% --collect --uid=ubuntu --gid=ubuntu --working-directory=%REMOTE_ROOT% -p StandardOutput=journal -p StandardError=journal /bin/bash -lc 'source %REMOTE_ROOT%/.venv/bin/activate && python -m autobot.cli paper alpha --preset live_v3 --duration-sec %DURATION_SEC% --quote KRW --top-n %TOP_N% --model-ref champion_v3 --tf %TF% --top-pct 0.20 --min-prob 0.50 --min-cands-per-ts 1 --hold-bars 6'"
 if errorlevel 1 (
   echo [ERROR] Failed to start remote systemd unit.
   goto fail

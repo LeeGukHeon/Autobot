@@ -22,11 +22,14 @@ class StrategyOrderIntent:
 class StrategyStepResult:
     intents: tuple[StrategyOrderIntent, ...] = ()
     scored_rows: int = 0
+    eligible_rows: int = 0
     selected_rows: int = 0
     skipped_missing_features_rows: int = 0
     dropped_min_prob_rows: int = 0
     dropped_top_pct_rows: int = 0
     blocked_min_candidates_ts: int = 0
+    min_prob_used: float = 0.0
+    min_prob_source: str = "manual"
     skipped_reasons: dict[str, int] = field(default_factory=dict)
 
 
@@ -37,6 +40,7 @@ class StrategyFillEvent:
     side: str
     price: float
     volume: float
+    fee_quote: float = 0.0
 
 
 class BacktestStrategyAdapter(Protocol):

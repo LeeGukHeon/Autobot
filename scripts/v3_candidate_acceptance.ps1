@@ -32,6 +32,8 @@ param(
     [double]$BacktestMinRealizedPnlQuote = 0.0,
     [double]$BacktestMinPnlDeltaVsChampion = 0.0,
     [string[]]$RestartUnits = @(),
+    [string[]]$KnownRuntimeUnits = @("autobot-paper-alpha.service", "autobot-live-alpha.service"),
+    [bool]$AutoRestartKnownUnits = $true,
     [switch]$SkipDailyPipeline,
     [switch]$SkipReportRefresh,
     [switch]$SkipPromote,
@@ -253,23 +255,20 @@ function Invoke-BacktestAndLoadSummary {
     $before = Get-DirectorySnapshot -PathValue $runsDir
     $args = @(
         "-m", "autobot.cli",
-        "backtest", "run",
-        "--strategy", "model_alpha_v1",
+        "backtest", "alpha",
+        "--preset", "acceptance",
         "--model-ref", $ModelRef,
         "--model-family", $ModelFamily,
-        "--feature-set", "v3",
         "--tf", $Tf,
         "--quote", $Quote,
         "--top-n", $BacktestTopN,
         "--start", $StartDate,
         "--end", $EndDate,
-        "--entry", "top_pct",
         "--top-pct", $BacktestTopPct,
         "--min-prob", $BacktestMinProb,
         "--min-cands-per-ts", $BacktestMinCandidatesPerTs,
         "--exit-mode", "hold",
-        "--hold-bars", $HoldBars,
-        "--micro-order-policy", "off"
+        "--hold-bars", $HoldBars
     )
     $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
     $runDir = if ($DryRun) { "" } else { Resolve-NewRunDirectory -RunsDir $runsDir -BeforeSnapshot $before }
@@ -315,6 +314,132 @@ function Invoke-RestartUnits {
         }
     }
     return @($results)
+}
+
+function Get-UnitStates {
+    param([string[]]$Units)
+    $results = @()
+    foreach ($unit in $Units) {
+        $trimmed = [string]$unit
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+        $trimmed = $trimmed.Trim()
+        if ($script:IsWindowsPlatform) {
+            $results += [ordered]@{
+                unit = $trimmed
+                attempted = $false
+                active = $false
+                reason = "WINDOWS_SYSTEMCTL_UNAVAILABLE"
+            }
+            continue
+        }
+        $activeExec = Invoke-CommandCapture -Exe "systemctl" -ArgList @("is-active", $trimmed) -AllowFailure
+        $enabledExec = Invoke-CommandCapture -Exe "systemctl" -ArgList @("is-enabled", $trimmed) -AllowFailure
+        $results += [ordered]@{
+            unit = $trimmed
+            attempted = $true
+            active = ($activeExec.ExitCode -eq 0) -and (([string]$activeExec.Output).Trim() -eq "active")
+            enabled = ($enabledExec.ExitCode -eq 0)
+            active_output_preview = (Get-OutputPreview -Text ([string]$activeExec.Output))
+            enabled_output_preview = (Get-OutputPreview -Text ([string]$enabledExec.Output))
+        }
+    }
+    return @($results)
+}
+
+function Merge-UniqueStringArray {
+    param(
+        [string[]]$First = @(),
+        [string[]]$Second = @()
+    )
+    $seen = @{}
+    $values = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($First) + @($Second)) {
+        $text = [string]$item
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        $text = $text.Trim()
+        if ($seen.ContainsKey($text)) {
+            continue
+        }
+        $seen[$text] = $true
+        $values.Add($text) | Out-Null
+    }
+    return @($values.ToArray())
+}
+
+function Build-ReportMarkdown {
+    param($ReportValue)
+    $lines = New-Object System.Collections.Generic.List[string]
+    $generatedAt = [string](Get-PropValue -ObjectValue $ReportValue -Name "generated_at" -DefaultValue "")
+    $batchDateValue = [string](Get-PropValue -ObjectValue $ReportValue -Name "batch_date" -DefaultValue "")
+    $candidate = Get-PropValue -ObjectValue $ReportValue -Name "candidate" -DefaultValue @{}
+    $steps = Get-PropValue -ObjectValue $ReportValue -Name "steps" -DefaultValue @{}
+    $gates = Get-PropValue -ObjectValue $ReportValue -Name "gates" -DefaultValue @{}
+    $reasons = @(Get-PropValue -ObjectValue $ReportValue -Name "reasons" -DefaultValue @())
+    $runtimeBefore = @(Get-PropValue -ObjectValue $ReportValue -Name "runtime_units_before" -DefaultValue @())
+    $restartTargets = @(Get-PropValue -ObjectValue $ReportValue -Name "restart_targets" -DefaultValue @())
+
+    $lines.Add("# V3 Candidate Acceptance") | Out-Null
+    $lines.Add("") | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($generatedAt)) {
+        $lines.Add("- generated_at: $generatedAt") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($batchDateValue)) {
+        $lines.Add("- batch_date: $batchDateValue") | Out-Null
+    }
+    $lines.Add("- overall_pass: $([string](Get-PropValue -ObjectValue $gates -Name 'overall_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_run_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'run_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- champion_before_run_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_before_run_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- champion_after_run_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_after_run_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("") | Out-Null
+
+    $lines.Add("## Gates") | Out-Null
+    foreach ($gateName in @("backtest", "paper")) {
+        $gateValue = Get-PropValue -ObjectValue $gates -Name $gateName -DefaultValue @{}
+        $lines.Add("- $gateName.pass: $([string](Get-PropValue -ObjectValue $gateValue -Name 'pass' -DefaultValue ''))") | Out-Null
+    }
+    if ($reasons.Count -gt 0) {
+        $lines.Add("") | Out-Null
+        $lines.Add("## Reasons") | Out-Null
+        foreach ($reason in $reasons) {
+            $lines.Add("- $([string]$reason)") | Out-Null
+        }
+    }
+
+    $backtestCandidate = Get-PropValue -ObjectValue $steps -Name "backtest_candidate" -DefaultValue @{}
+    $paperCandidate = Get-PropValue -ObjectValue $steps -Name "paper_candidate" -DefaultValue @{}
+    $promoteStep = Get-PropValue -ObjectValue $steps -Name "promote" -DefaultValue @{}
+    $lines.Add("") | Out-Null
+    $lines.Add("## Candidate Metrics") | Out-Null
+    $lines.Add("- backtest_orders_filled: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
+    $lines.Add("- backtest_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
+    $lines.Add("- paper_orders_submitted: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_submitted' -DefaultValue ''))") | Out-Null
+    $lines.Add("- paper_t15_gate_pass: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 't15_gate_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- promoted: $([string](Get-PropValue -ObjectValue $promoteStep -Name 'promoted' -DefaultValue ''))") | Out-Null
+
+    if ($runtimeBefore.Count -gt 0) {
+        $lines.Add("") | Out-Null
+        $lines.Add("## Runtime Units Before") | Out-Null
+        foreach ($item in $runtimeBefore) {
+            $unitName = [string](Get-PropValue -ObjectValue $item -Name "unit" -DefaultValue "")
+            $activeValue = [string](Get-PropValue -ObjectValue $item -Name "active" -DefaultValue "")
+            $enabledValue = [string](Get-PropValue -ObjectValue $item -Name "enabled" -DefaultValue "")
+            if (-not [string]::IsNullOrWhiteSpace($unitName)) {
+                $lines.Add("- $unitName active=$activeValue enabled=$enabledValue") | Out-Null
+            }
+        }
+    }
+    if ($restartTargets.Count -gt 0) {
+        $lines.Add("") | Out-Null
+        $lines.Add("## Restart Targets") | Out-Null
+        foreach ($item in $restartTargets) {
+            $lines.Add("- $([string]$item)") | Out-Null
+        }
+    }
+    return ($lines -join "`n") + "`n"
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -378,6 +503,8 @@ $report = [ordered]@{
         backtest_min_realized_pnl_quote = [double]$BacktestMinRealizedPnlQuote
         backtest_min_pnl_delta_vs_champion = [double]$BacktestMinPnlDeltaVsChampion
         restart_units = @($RestartUnits)
+        known_runtime_units = @($KnownRuntimeUnits)
+        auto_restart_known_units = [bool]$AutoRestartKnownUnits
     }
     windows_by_step = [ordered]@{
         train = [ordered]@{ start = $trainStartDate; end = $effectiveBatchDate }
@@ -389,15 +516,44 @@ $report = [ordered]@{
     reasons = @()
 }
 
+$runtimeUnitsBefore = if ($DryRun) { @() } else { @(Get-UnitStates -Units $KnownRuntimeUnits) }
+$activeKnownUnits = @(
+    $runtimeUnitsBefore |
+        Where-Object { $true -eq (Get-PropValue -ObjectValue $_ -Name "active" -DefaultValue $false) } |
+        ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "unit" -DefaultValue "") }
+)
+$effectiveRestartUnits = if ($AutoRestartKnownUnits) {
+    Merge-UniqueStringArray -First $RestartUnits -Second $activeKnownUnits
+} else {
+    Merge-UniqueStringArray -First $RestartUnits -Second @()
+}
+$report.runtime_units_before = @($runtimeUnitsBefore)
+$report.restart_targets = @($effectiveRestartUnits)
+
 function Save-Report {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $runReportPath = Join-Path $resolvedOutDir ("v3_candidate_acceptance_" + $stamp + ".json")
     $latestReportPath = Join-Path $resolvedOutDir "latest.json"
-    $report | ConvertTo-Json -Depth 8 | Set-Content -Path $runReportPath -Encoding UTF8
-    $report | ConvertTo-Json -Depth 8 | Set-Content -Path $latestReportPath -Encoding UTF8
+    $runMarkdownPath = Join-Path $resolvedOutDir ("v3_candidate_acceptance_" + $stamp + ".md")
+    $latestMarkdownPath = Join-Path $resolvedOutDir "latest.md"
+    $reportJson = $report | ConvertTo-Json -Depth 8
+    $reportMarkdown = Build-ReportMarkdown -ReportValue $report
+    $reportJson | Set-Content -Path $runReportPath -Encoding UTF8
+    $reportJson | Set-Content -Path $latestReportPath -Encoding UTF8
+    $reportMarkdown | Set-Content -Path $runMarkdownPath -Encoding UTF8
+    $reportMarkdown | Set-Content -Path $latestMarkdownPath -Encoding UTF8
+    $candidateRunDirValue = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report -Name "candidate" -DefaultValue @{}) -Name "run_dir" -DefaultValue "")
+    if (-not [string]::IsNullOrWhiteSpace($candidateRunDirValue) -and (Test-Path $candidateRunDirValue)) {
+        $candidateReportJsonPath = Join-Path $candidateRunDirValue "acceptance_report.json"
+        $candidateReportMdPath = Join-Path $candidateRunDirValue "acceptance_report.md"
+        $reportJson | Set-Content -Path $candidateReportJsonPath -Encoding UTF8
+        $reportMarkdown | Set-Content -Path $candidateReportMdPath -Encoding UTF8
+    }
     return [PSCustomObject]@{
         RunReportPath = $runReportPath
         LatestReportPath = $latestReportPath
+        RunMarkdownPath = $runMarkdownPath
+        LatestMarkdownPath = $latestMarkdownPath
     }
 }
 
@@ -608,9 +764,11 @@ try {
         $promoteStep.reason = "OVERALL_GATE_FAILED"
     }
     $report.steps.promote = $promoteStep
+    $championAfter = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $championPointerPath }
+    $report.candidate.champion_after_run_id = [string](Get-PropValue -ObjectValue $championAfter -Name "run_id" -DefaultValue "")
 
     if (To-Bool (Get-PropValue -ObjectValue $promoteStep -Name "promoted" -DefaultValue $false) $false) {
-        $restartResults = Invoke-RestartUnits -UnitsToRestart $RestartUnits
+        $restartResults = Invoke-RestartUnits -UnitsToRestart $effectiveRestartUnits
         $report.steps.restart_units = @($restartResults)
     } else {
         $report.steps.restart_units = @()

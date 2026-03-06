@@ -11,6 +11,7 @@ from autobot.models.predictor import ModelPredictor
 from autobot.models.registry import RegistrySavePayload, save_run
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
     ModelAlphaPositionSettings,
     ModelAlphaSelectionSettings,
@@ -44,6 +45,7 @@ def _build_strategy(
     *,
     groups: list[tuple[int, pl.DataFrame]],
     settings: ModelAlphaSettings,
+    thresholds: dict[str, float] | None = None,
 ) -> ModelAlphaStrategyV1:
     predictor = ModelPredictor(
         run_dir=Path("."),
@@ -52,6 +54,7 @@ def _build_strategy(
         model_family="train_v3_mtf_micro",
         feature_columns=("f1",),
         train_config={"dataset_root": "unused"},
+        thresholds=thresholds or {},
     )
     from autobot.models.dataset_loader import FeatureTsGroup
 
@@ -89,6 +92,91 @@ def test_model_alpha_selection_allows_zero_without_forced_pick() -> None:
     assert not any(intent.side == "bid" for intent in result.intents)
 
 
+def test_model_alpha_uses_registry_threshold_when_min_prob_is_null() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [2.0, 0.4, -0.3],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+        ),
+        thresholds={"top_5pct": 0.7},
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+    assert result.min_prob_source == "registry:top_5pct"
+    assert result.min_prob_used == 0.7
+    assert result.eligible_rows == 1
+    assert result.selected_rows == 1
+    assert [intent.market for intent in result.intents if intent.side == "bid"] == ["KRW-BTC"]
+
+
+def test_model_alpha_manual_min_prob_overrides_registry_threshold() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH"],
+            "f1": [2.0, 0.3],
+            "close": [100.0, 200.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.5, min_candidates_per_ts=1),
+        ),
+        thresholds={"top_5pct": 0.95},
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0},
+        open_markets=set(),
+    )
+    assert result.min_prob_source == "manual"
+    assert result.min_prob_used == 0.5
+    assert result.eligible_rows == 2
+    assert result.selected_rows == 2
+
+
+def test_model_alpha_min_candidates_blocks_on_eligible_rows() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [2.0, -0.3, -0.7],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.7, min_candidates_per_ts=2),
+        ),
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+    assert result.scored_rows == 3
+    assert result.eligible_rows == 1
+    assert result.blocked_min_candidates_ts == 1
+    assert result.selected_rows == 0
+    assert not any(intent.side == "bid" for intent in result.intents)
+
+
 def test_model_alpha_min_candidates_can_block_all_entries() -> None:
     frame = pl.DataFrame(
         {
@@ -113,6 +201,45 @@ def test_model_alpha_min_candidates_can_block_all_entries() -> None:
     assert result.blocked_min_candidates_ts == 1
     assert result.selected_rows == 0
     assert not any(intent.side == "bid" for intent in result.intents)
+
+
+def test_model_alpha_prob_ramp_sets_notional_multiplier_from_conviction() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH"],
+            "f1": [2.0, 0.3],
+            "close": [100.0, 200.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(
+                max_positions_total=2,
+                cooldown_bars=0,
+                sizing_mode="prob_ramp",
+                size_multiplier_min=0.5,
+                size_multiplier_max=1.5,
+            ),
+        ),
+        thresholds={"top_5pct": 0.5},
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0},
+        open_markets=set(),
+    )
+    bid_intents = {intent.market: intent for intent in result.intents if intent.side == "bid"}
+    assert set(bid_intents) == {"KRW-BTC", "KRW-ETH"}
+    btc_multiplier = float((bid_intents["KRW-BTC"].meta or {}).get("notional_multiplier", 0.0))
+    eth_multiplier = float((bid_intents["KRW-ETH"].meta or {}).get("notional_multiplier", 0.0))
+    assert btc_multiplier > eth_multiplier
+    assert 0.5 < eth_multiplier < 1.5
+    assert eth_multiplier >= 0.5
+    assert btc_multiplier <= 1.5
 
 
 def test_model_alpha_cooldown_and_hold_exit() -> None:
@@ -185,6 +312,88 @@ def test_model_alpha_risk_exit_tp() -> None:
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in result.intents)
 
 
+def test_model_alpha_risk_exit_tp_uses_net_return_after_fees() -> None:
+    strategy = _build_strategy(
+        groups=[],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="risk", hold_bars=0, tp_pct=0.001, sl_pct=0.2, trailing_pct=0.0),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            fee_quote=0.1,
+        )
+    )
+    too_small = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.15},
+        open_markets={"KRW-BTC"},
+    )
+    assert not any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in too_small.intents)
+
+    enough = strategy.on_ts(
+        ts_ms=302_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.35},
+        open_markets={"KRW-BTC"},
+    )
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in enough.intents)
+
+
+def test_model_alpha_risk_exit_respects_expected_exit_cost_overrides() -> None:
+    strategy = _build_strategy(
+        groups=[],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(
+                mode="risk",
+                hold_bars=0,
+                tp_pct=0.001,
+                sl_pct=0.2,
+                trailing_pct=0.0,
+                expected_exit_slippage_bps=20.0,
+                expected_exit_fee_bps=10.0,
+            ),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            fee_quote=0.0,
+        )
+    )
+    blocked = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.35},
+        open_markets={"KRW-BTC"},
+    )
+    assert not any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in blocked.intents)
+
+    enough = strategy.on_ts(
+        ts_ms=302_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.60},
+        open_markets={"KRW-BTC"},
+    )
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in enough.intents)
+
+
 def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     dataset_root = tmp_path / "features_v3"
@@ -192,7 +401,7 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     out_root = tmp_path / "backtest"
     _write_candles(parquet_root / "candles_v1")
     _write_features(dataset_root)
-    _save_model_run(registry_root=registry_root, dataset_root=dataset_root)
+    _save_model_run(registry_root=registry_root, dataset_root=dataset_root, thresholds={"top_5pct": 0.5})
 
     settings = BacktestRunSettings(
         dataset_name="candles_v1",
@@ -217,9 +426,10 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
         model_alpha=ModelAlphaSettings(
             model_ref="run_v3",
             model_family="train_v3_mtf_micro",
-            selection=ModelAlphaSelectionSettings(top_pct=0.5, min_prob=0.0, min_candidates_per_ts=2),
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
             position=ModelAlphaPositionSettings(max_positions_total=1, cooldown_bars=0),
             exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+            execution=ModelAlphaExecutionSettings(price_mode="PASSIVE_MAKER", timeout_bars=3, replace_max=4),
         ),
     )
     engine = BacktestRunEngine(
@@ -239,7 +449,147 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
 
     selection_stats = json.loads((run_dir / "selection_stats.json").read_text(encoding="utf-8"))
     assert int(selection_stats.get("scored_rows", 0)) > 0
+    assert int(selection_stats.get("eligible_rows", 0)) > 0
     assert int(selection_stats.get("selected_rows", 0)) >= 0
+    assert float(selection_stats.get("min_prob_used", 0.0)) == 0.5
+    assert str(selection_stats.get("min_prob_source")) == "registry:top_5pct"
+
+    events_payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert intent_events
+    intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})
+    exec_profile = intent_meta.get("exec_profile") or {}
+    assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
+    assert int(exec_profile.get("timeout_ms", 0)) == 900_000
+    assert int(exec_profile.get("replace_interval_ms", 0)) == 900_000
+    assert int(exec_profile.get("max_replaces", -1)) == 4
+
+
+def test_backtest_model_alpha_entry_sizing_respects_min_total_buffer(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    dataset_root = tmp_path / "features_v3"
+    registry_root = tmp_path / "registry"
+    out_root = tmp_path / "backtest"
+    _write_candles(parquet_root / "candles_v1")
+    _write_features(dataset_root)
+    _save_model_run(registry_root=registry_root, dataset_root=dataset_root, thresholds={"top_5pct": 0.5})
+
+    settings = BacktestRunSettings(
+        dataset_name="candles_v1",
+        parquet_root=str(parquet_root),
+        tf="5m",
+        quote="KRW",
+        top_n=2,
+        markets=("KRW-BTC", "KRW-ETH"),
+        universe_mode="fixed_list",
+        from_ts_ms=0,
+        to_ts_ms=3_600_000,
+        starting_krw=200_000.0,
+        per_trade_krw=4_900.0,
+        max_positions=1,
+        output_root_dir=str(out_root),
+        strategy="model_alpha_v1",
+        model_ref="run_v3",
+        model_family="train_v3_mtf_micro",
+        feature_set="v3",
+        model_registry_root=str(registry_root),
+        model_feature_dataset_root=str(dataset_root),
+        model_alpha=ModelAlphaSettings(
+            model_ref="run_v3",
+            model_family="train_v3_mtf_micro",
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(
+                max_positions_total=1,
+                cooldown_bars=0,
+                entry_min_notional_buffer_bps=100.0,
+            ),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+        ),
+    )
+    summary = BacktestRunEngine(
+        run_settings=settings,
+        upbit_settings=None,
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    ).run()
+    run_dir = Path(summary.run_dir)
+    payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    intent_events = [item for item in payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert intent_events
+    intent_payload = intent_events[0].get("payload") or {}
+    assert float(intent_payload.get("price", 0.0)) * float(intent_payload.get("volume", 0.0)) >= 5_050.0
+
+
+def test_backtest_model_alpha_entry_sizing_uses_prob_ramp_multiplier(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    dataset_root = tmp_path / "features_v3"
+    registry_root = tmp_path / "registry"
+    out_root = tmp_path / "backtest"
+    _write_candles(parquet_root / "candles_v1")
+    _write_features(dataset_root)
+    _save_model_run(registry_root=registry_root, dataset_root=dataset_root, thresholds={"top_5pct": 0.0})
+
+    settings = BacktestRunSettings(
+        dataset_name="candles_v1",
+        parquet_root=str(parquet_root),
+        tf="5m",
+        quote="KRW",
+        top_n=2,
+        markets=("KRW-BTC", "KRW-ETH"),
+        universe_mode="fixed_list",
+        from_ts_ms=0,
+        to_ts_ms=3_600_000,
+        starting_krw=200_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=1,
+        output_root_dir=str(out_root),
+        strategy="model_alpha_v1",
+        model_ref="run_v3",
+        model_family="train_v3_mtf_micro",
+        feature_set="v3",
+        model_registry_root=str(registry_root),
+        model_feature_dataset_root=str(dataset_root),
+        model_alpha=ModelAlphaSettings(
+            model_ref="run_v3",
+            model_family="train_v3_mtf_micro",
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(
+                max_positions_total=1,
+                cooldown_bars=0,
+                sizing_mode="prob_ramp",
+                size_multiplier_min=0.5,
+                size_multiplier_max=1.5,
+            ),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+        ),
+    )
+    summary = BacktestRunEngine(
+        run_settings=settings,
+        upbit_settings=None,
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    ).run()
+    run_dir = Path(summary.run_dir)
+    payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    intent_events = [item for item in payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert intent_events
+    intent_payload = intent_events[0].get("payload") or {}
+    meta = intent_payload.get("meta") or {}
+    assert float(meta.get("notional_multiplier", 0.0)) > 1.0
+    assert float(meta.get("target_notional_quote", 0.0)) > 10_000.0
+    assert float(intent_payload.get("price", 0.0)) * float(intent_payload.get("volume", 0.0)) >= float(
+        meta.get("target_notional_quote", 0.0)
+    )
 
 
 def _write_candles(dataset_root: Path) -> None:
@@ -285,7 +635,7 @@ def _write_features(dataset_root: Path) -> None:
         ).write_parquet(part_dir / "part-000.parquet")
 
 
-def _save_model_run(*, registry_root: Path, dataset_root: Path) -> None:
+def _save_model_run(*, registry_root: Path, dataset_root: Path, thresholds: dict[str, float] | None = None) -> None:
     save_run(
         RegistrySavePayload(
             registry_root=registry_root,
@@ -293,7 +643,7 @@ def _save_model_run(*, registry_root: Path, dataset_root: Path) -> None:
             run_id="run_v3",
             model_bundle={"model_type": "xgboost", "scaler": None, "estimator": _DummyEstimator()},
             metrics={},
-            thresholds={},
+            thresholds=thresholds or {},
             feature_spec={"feature_columns": ["f1"]},
             label_spec={"label_columns": ["y_reg", "y_cls"]},
             train_config={"dataset_root": str(dataset_root), "feature_columns": ["f1"], "batch_rows": 1000},

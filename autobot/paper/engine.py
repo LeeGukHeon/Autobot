@@ -76,7 +76,7 @@ from .sim_exchange import (
 
 @dataclass(frozen=True)
 class PaperRunSettings:
-    duration_sec: int = 600
+    duration_sec: int = 600  # 0 means run until externally stopped
     quote: str = "KRW"
     top_n: int = 20
     tf: str = "5m"
@@ -783,6 +783,15 @@ class PaperRunEngine:
             "micro_policy_cross_block_reasons": {},
             "micro_policy_resolver_failed_fallback_used": 0,
             "order_supervisor_reasons": {},
+            "scored_rows": 0,
+            "eligible_rows": 0,
+            "selected_rows": 0,
+            "skipped_missing_features_rows": 0,
+            "dropped_min_prob_rows": 0,
+            "dropped_top_pct_rows": 0,
+            "blocked_min_candidates_ts": 0,
+            "debug_mismatch_reasons": {},
+            "exit_intents_total": 0,
         }
         self._runtime_state: dict[str, Any] = {}
 
@@ -810,6 +819,15 @@ class PaperRunEngine:
             "micro_policy_cross_block_reasons": {},
             "micro_policy_resolver_failed_fallback_used": 0,
             "order_supervisor_reasons": {},
+            "scored_rows": 0,
+            "eligible_rows": 0,
+            "selected_rows": 0,
+            "skipped_missing_features_rows": 0,
+            "dropped_min_prob_rows": 0,
+            "dropped_top_pct_rows": 0,
+            "blocked_min_candidates_ts": 0,
+            "debug_mismatch_reasons": {},
+            "exit_intents_total": 0,
         }
         self._runtime_state = {
             "intent_context": {},
@@ -941,7 +959,7 @@ class PaperRunEngine:
             order_timeout_sec=self._run_settings.order_timeout_sec,
             reprice_max_attempts=self._run_settings.reprice_max_attempts,
             reprice_tick_steps=self._run_settings.reprice_tick_steps,
-            default_profile=_legacy_paper_exec_profile(self._run_settings),
+            default_profile=_strategy_paper_exec_profile(self._run_settings),
             max_replaces_per_min_per_market=(
                 self._run_settings.micro_order_policy.safety.max_replaces_per_min_per_market
                 if self._run_settings.micro_order_policy.enabled
@@ -966,7 +984,11 @@ class PaperRunEngine:
         run_started_monotonic = time.monotonic()
         next_decision_at = run_started_monotonic
         next_report_at = run_started_monotonic + max(self._run_settings.print_every_sec, 1.0)
-        deadline_monotonic = run_started_monotonic + float(self._run_settings.duration_sec)
+        deadline_monotonic = (
+            run_started_monotonic + float(self._run_settings.duration_sec)
+            if int(self._run_settings.duration_sec) > 0
+            else None
+        )
 
         with JsonlEventStore(run_root) as store:
 
@@ -996,8 +1018,13 @@ class PaperRunEngine:
                 },
             )
 
-            async for ticker in self._ws_client.stream_ticker(markets, duration_sec=self._run_settings.duration_sec):
-                if time.monotonic() >= deadline_monotonic:
+            stream_duration_sec = (
+                float(self._run_settings.duration_sec)
+                if int(self._run_settings.duration_sec) > 0
+                else None
+            )
+            async for ticker in self._ws_client.stream_ticker(markets, duration_sec=stream_duration_sec):
+                if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                     break
                 received_events += 1
                 market_data.update(ticker)
@@ -1240,10 +1267,11 @@ class PaperRunEngine:
         aborted_timeout_total = int(self._runtime_counters.get("aborted_timeout_total", 0))
         dust_abort_total = int(self._runtime_counters.get("dust_abort_total", 0))
 
+        actual_duration_sec = max(time.monotonic() - run_started_monotonic, 0.0)
         summary = PaperRunSummary(
             run_id=run_id,
             run_dir=str(run_root),
-            duration_sec=float(self._run_settings.duration_sec),
+            duration_sec=float(actual_duration_sec),
             events=events_count,
             orders_submitted=orders_submitted,
             orders_filled=orders_filled,
@@ -1365,8 +1393,11 @@ class PaperRunEngine:
         if isinstance(live_feature_provider, LiveFeatureProviderV3):
             live_payload = dict(live_feature_provider.last_build_stats())
             live_payload["model_selection_scored_rows"] = int(result.scored_rows)
+            live_payload["model_selection_eligible_rows"] = int(result.eligible_rows)
             live_payload["model_selection_selected_rows"] = int(result.selected_rows)
             live_payload["model_selection_blocked_min_candidates_ts"] = int(result.blocked_min_candidates_ts)
+            live_payload["model_selection_min_prob_used"] = float(result.min_prob_used)
+            live_payload["model_selection_min_prob_source"] = str(result.min_prob_source)
             append_event(
                 "LIVE_FEATURES_BUILT",
                 ts_ms=ts_ms,
@@ -1374,6 +1405,9 @@ class PaperRunEngine:
             )
         self._runtime_counters["scored_rows"] = int(self._runtime_counters.get("scored_rows", 0)) + int(
             result.scored_rows
+        )
+        self._runtime_counters["eligible_rows"] = int(self._runtime_counters.get("eligible_rows", 0)) + int(
+            result.eligible_rows
         )
         self._runtime_counters["selected_rows"] = int(self._runtime_counters.get("selected_rows", 0)) + int(
             result.selected_rows
@@ -1394,14 +1428,19 @@ class PaperRunEngine:
         if isinstance(debug_reasons, dict):
             for reason, count in result.skipped_reasons.items():
                 _note_reason_count(reason_code=reason, reason_counts=debug_reasons, delta=int(count))
+        self._runtime_state["model_alpha_min_prob_used"] = float(result.min_prob_used)
+        self._runtime_state["model_alpha_min_prob_source"] = str(result.min_prob_source)
         selection_payload = {
             "scored_rows": int(result.scored_rows),
+            "eligible_rows": int(result.eligible_rows),
             "selected_rows": int(result.selected_rows),
             "intents": int(len(result.intents)),
             "skipped_missing_features_rows": int(result.skipped_missing_features_rows),
             "dropped_min_prob_rows": int(result.dropped_min_prob_rows),
             "dropped_top_pct_rows": int(result.dropped_top_pct_rows),
             "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
+            "min_prob_used": float(result.min_prob_used),
+            "min_prob_source": str(result.min_prob_source),
             "reasons": dict(result.skipped_reasons),
         }
         if isinstance(live_feature_provider, LiveFeatureProviderV3):
@@ -1611,6 +1650,17 @@ class PaperRunEngine:
         forced_volume = None
         if isinstance(candidate.meta, dict):
             forced_volume = _safe_optional_float(candidate.meta.get("force_volume"))
+        entry_notional_quote = (
+            _entry_notional_quote_for_strategy(
+                strategy_mode=str(self._run_settings.strategy).strip().lower() or "candidates_v1",
+                per_trade_krw=float(self._run_settings.per_trade_krw),
+                min_total_krw=max(float(rules.min_total), float(self._run_settings.min_order_krw)),
+                model_alpha_settings=self._run_settings.model_alpha,
+                candidate_meta=(candidate.meta if isinstance(candidate.meta, dict) else None),
+            )
+            if side_value == "bid" and (forced_volume is None or forced_volume <= 0)
+            else None
+        )
         if side_value == "ask" and (forced_volume is None or forced_volume <= 0):
             base_currency = _base_currency(candidate.market)
             if base_currency:
@@ -1639,7 +1689,7 @@ class PaperRunEngine:
             float(forced_volume)
             if forced_volume is not None and forced_volume > 0
             else order_volume_from_notional(
-                notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
+                notional_quote=max(float(entry_notional_quote or self._run_settings.per_trade_krw), 1.0),
                 price=gate_price,
             )
         )
@@ -1714,8 +1764,9 @@ class PaperRunEngine:
             if isinstance(candidate.meta, dict)
             else None
         )
+        strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
         policy_decision = None
-        exec_profile = _legacy_paper_exec_profile(self._run_settings)
+        exec_profile = _strategy_paper_exec_profile(self._run_settings)
         policy_diagnostics: dict[str, Any] = {}
         if micro_order_policy is not None:
             snapshot = (
@@ -1725,6 +1776,7 @@ class PaperRunEngine:
             )
             policy_decision = micro_order_policy.evaluate(
                 micro_snapshot=snapshot,
+                base_profile=(exec_profile if strategy_mode == "model_alpha_v1" else None),
                 market=candidate.market,
                 ref_price=ref_price,
                 tick_size=rules.tick_size,
@@ -1782,7 +1834,7 @@ class PaperRunEngine:
             float(forced_volume)
             if forced_volume is not None and forced_volume > 0
             else order_volume_from_notional(
-                notional_quote=max(float(self._run_settings.per_trade_krw), 1.0),
+                notional_quote=max(float(entry_notional_quote or self._run_settings.per_trade_krw), 1.0),
                 price=limit_price,
             )
         )
@@ -1813,6 +1865,7 @@ class PaperRunEngine:
             meta={
                 **candidate.meta,
                 "candidate_score": candidate.score,
+                "target_notional_quote": (float(entry_notional_quote) if entry_notional_quote is not None else None),
                 "tick_size": rules.tick_size,
                 "min_total": rules.min_total,
                 "gate_severity": decision.severity,
@@ -2034,6 +2087,7 @@ class PaperRunEngine:
                             side=str(order.side).strip().lower(),
                             price=float(fill.price),
                             volume=float(fill.volume),
+                            fee_quote=float(fill.fee_quote),
                         )
                     )
                 except Exception:
@@ -2564,6 +2618,52 @@ def _write_trade_artifacts(*, run_root: Path, fill_records: Any) -> None:
                     "total_fills": int(item["fills"]),
                 }
             )
+
+
+def _model_alpha_paper_exec_profile(settings: PaperRunSettings) -> OrderExecProfile:
+    interval_ms = _interval_ms_from_tf(settings.tf)
+    timeout_ms = max(int(settings.model_alpha.execution.timeout_bars), 1) * interval_ms
+    return make_legacy_exec_profile(
+        timeout_ms=timeout_ms,
+        replace_interval_ms=timeout_ms,
+        max_replaces=max(int(settings.model_alpha.execution.replace_max), 0),
+        price_mode=str(settings.model_alpha.execution.price_mode),
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1_500,
+    )
+
+
+def _entry_notional_quote_for_strategy(
+    *,
+    strategy_mode: str,
+    per_trade_krw: float,
+    min_total_krw: float,
+    model_alpha_settings: ModelAlphaSettings,
+    candidate_meta: dict[str, Any] | None = None,
+) -> float:
+    target_notional = max(float(per_trade_krw), 1.0)
+    if str(strategy_mode).strip().lower() != "model_alpha_v1":
+        return target_notional
+    target_notional *= _resolve_candidate_notional_multiplier(candidate_meta)
+    buffer_bps = max(float(model_alpha_settings.position.entry_min_notional_buffer_bps), 0.0)
+    min_total_with_buffer = max(float(min_total_krw), 0.0) * (1.0 + (buffer_bps / 10_000.0))
+    return max(target_notional, min_total_with_buffer)
+
+
+def _resolve_candidate_notional_multiplier(candidate_meta: dict[str, Any] | None) -> float:
+    if not isinstance(candidate_meta, dict):
+        return 1.0
+    value = _safe_optional_float(candidate_meta.get("notional_multiplier"))
+    if value is None or value <= 0:
+        return 1.0
+    return float(value)
+
+
+def _strategy_paper_exec_profile(settings: PaperRunSettings) -> OrderExecProfile:
+    strategy_mode = str(settings.strategy).strip().lower() or "candidates_v1"
+    if strategy_mode == "model_alpha_v1":
+        return _model_alpha_paper_exec_profile(settings)
+    return _legacy_paper_exec_profile(settings)
 
 
 def _legacy_paper_exec_profile(settings: PaperRunSettings) -> OrderExecProfile:

@@ -17,14 +17,19 @@ from autobot.models.predictor import ModelPredictor
 @dataclass(frozen=True)
 class ModelAlphaSelectionSettings:
     top_pct: float = 0.05
-    min_prob: float = 0.58
+    min_prob: float | None = None
     min_candidates_per_ts: int = 10
+    registry_threshold_key: str = "top_5pct"
 
 
 @dataclass(frozen=True)
 class ModelAlphaPositionSettings:
     max_positions_total: int = 3
     cooldown_bars: int = 6
+    entry_min_notional_buffer_bps: float = 25.0
+    sizing_mode: str = "prob_ramp"  # fixed | prob_ramp
+    size_multiplier_min: float = 0.5
+    size_multiplier_max: float = 1.5
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,8 @@ class ModelAlphaExitSettings:
     tp_pct: float = 0.02
     sl_pct: float = 0.01
     trailing_pct: float = 0.0
+    expected_exit_slippage_bps: float | None = None
+    expected_exit_fee_bps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,7 @@ class _PositionState:
     entry_ts_ms: int
     entry_price: float
     peak_price: float
+    entry_fee_rate: float
 
 
 class ModelAlphaStrategyV1(BacktestStrategyAdapter):
@@ -90,6 +98,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
     ) -> StrategyStepResult:
         ts_value = int(ts_ms)
         active_set = {str(item).strip().upper() for item in active_markets if str(item).strip()}
+        min_prob_used, min_prob_source = _resolve_selection_min_prob(
+            predictor=self._predictor,
+            settings=self._settings.selection,
+        )
         frame: pl.DataFrame | None
         if self._live_frame_provider is not None:
             frame = self._live_frame_provider(ts_value, tuple(sorted(active_set)))
@@ -144,6 +156,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 intents=tuple(intents),
                 skipped_missing_features_rows=max(int(missing_rows), 0),
                 skipped_reasons={"NO_FEATURE_ROWS_AT_TS": int(missing_rows)} if missing_rows > 0 else {},
+                min_prob_used=min_prob_used,
+                min_prob_source=min_prob_source,
             )
 
         frame_active = frame.filter(pl.col("market").is_in(list(active_set))) if active_set else frame
@@ -155,35 +169,41 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 scored_rows=0,
                 skipped_missing_features_rows=int(missing_rows),
                 skipped_reasons={"NO_ACTIVE_MARKET_FEATURE_ROWS": int(missing_rows)} if missing_rows > 0 else {},
-            )
-
-        min_candidates = max(int(self._settings.selection.min_candidates_per_ts), 0)
-        if scored_rows < min_candidates:
-            blocked_min_candidates_ts = 1
-            _inc_reason(skipped_reasons, "MIN_CANDIDATES_NOT_MET")
-            return StrategyStepResult(
-                intents=tuple(intents),
-                scored_rows=scored_rows,
-                selected_rows=0,
-                skipped_missing_features_rows=int(missing_rows),
-                blocked_min_candidates_ts=blocked_min_candidates_ts,
-                skipped_reasons=skipped_reasons,
+                min_prob_used=min_prob_used,
+                min_prob_source=min_prob_source,
             )
 
         matrix = frame_active.select(list(self._predictor.feature_columns)).to_numpy().astype(np.float32, copy=False)
         probs = self._predictor.predict_scores(matrix).astype(np.float64, copy=False)
         scored = frame_active.with_columns(pl.Series(name="model_prob", values=probs))
-        min_prob = float(self._settings.selection.min_prob)
-        eligible = scored.filter(pl.col("model_prob") >= min_prob)
-        dropped_min_prob_rows = max(scored_rows - int(eligible.height), 0)
+        eligible = scored.filter(pl.col("model_prob") >= float(min_prob_used))
+        eligible_rows = int(eligible.height)
+        dropped_min_prob_rows = max(scored_rows - eligible_rows, 0)
 
-        select_count = int(math.floor(int(eligible.height) * max(float(self._settings.selection.top_pct), 0.0)))
+        min_candidates = max(int(self._settings.selection.min_candidates_per_ts), 0)
+        if eligible_rows < min_candidates:
+            blocked_min_candidates_ts = 1
+            _inc_reason(skipped_reasons, "MIN_CANDIDATES_NOT_MET")
+            return StrategyStepResult(
+                intents=tuple(intents),
+                scored_rows=scored_rows,
+                eligible_rows=eligible_rows,
+                selected_rows=0,
+                skipped_missing_features_rows=int(missing_rows),
+                dropped_min_prob_rows=dropped_min_prob_rows,
+                blocked_min_candidates_ts=blocked_min_candidates_ts,
+                min_prob_used=min_prob_used,
+                min_prob_source=min_prob_source,
+                skipped_reasons=skipped_reasons,
+            )
+
+        select_count = int(math.floor(eligible_rows * max(float(self._settings.selection.top_pct), 0.0)))
         if select_count > 0:
             selected = eligible.sort("model_prob", descending=True).head(select_count)
         else:
             selected = eligible.head(0)
         selected_rows = int(selected.height)
-        dropped_top_pct_rows = max(int(eligible.height) - selected_rows, 0)
+        dropped_top_pct_rows = max(eligible_rows - selected_rows, 0)
 
         active_positions = len(open_markets)
         max_positions = max(int(self._settings.position.max_positions_total), 1)
@@ -216,7 +236,18 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     reason_code="MODEL_ALPHA_ENTRY_V1",
                     prob=float(row.get("model_prob", 0.0)),
                     score=float(row.get("model_prob", 0.0)),
-                    meta={"strategy": "model_alpha_v1", "model_prob": float(row.get("model_prob", 0.0))},
+                    meta={
+                        "strategy": "model_alpha_v1",
+                        "model_prob": float(row.get("model_prob", 0.0)),
+                        "selection_min_prob_used": float(min_prob_used),
+                        "selection_min_prob_source": str(min_prob_source),
+                        "sizing_mode": str(self._settings.position.sizing_mode),
+                        "notional_multiplier": _resolve_entry_notional_multiplier(
+                            prob=float(row.get("model_prob", 0.0)),
+                            threshold=float(min_prob_used),
+                            settings=self._settings.position,
+                        ),
+                    },
                 )
             )
             can_open -= 1
@@ -224,11 +255,14 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         return StrategyStepResult(
             intents=tuple(intents),
             scored_rows=scored_rows,
+            eligible_rows=eligible_rows,
             selected_rows=selected_rows,
             skipped_missing_features_rows=int(missing_rows),
             dropped_min_prob_rows=dropped_min_prob_rows,
             dropped_top_pct_rows=dropped_top_pct_rows,
             blocked_min_candidates_ts=blocked_min_candidates_ts,
+            min_prob_used=min_prob_used,
+            min_prob_source=min_prob_source,
             skipped_reasons=skipped_reasons,
         )
 
@@ -239,10 +273,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         side = str(event.side).strip().lower()
         if side == "bid":
             price = max(float(event.price), 1e-12)
+            notional = max(float(event.price) * float(event.volume), 1e-12)
+            fee_rate = max(float(event.fee_quote), 0.0) / notional
             self._positions[market] = _PositionState(
                 entry_ts_ms=int(event.ts_ms),
                 entry_price=price,
                 peak_price=price,
+                entry_fee_rate=fee_rate,
             )
             return
 
@@ -266,11 +303,28 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         tp_pct = max(float(self._settings.exit.tp_pct), 0.0)
         sl_pct = max(float(self._settings.exit.sl_pct), 0.0)
         trailing_pct = max(float(self._settings.exit.trailing_pct), 0.0)
-        if tp_pct > 0 and ref_price >= entry_price * (1.0 + tp_pct):
+        exit_fee_rate, exit_slippage_bps = _resolve_expected_exit_costs(
+            settings=self._settings,
+            observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
+        )
+        net_return = _net_return_after_costs(
+            entry_price=entry_price,
+            exit_price=float(ref_price),
+            entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
+            exit_fee_rate=exit_fee_rate,
+            exit_slippage_bps=exit_slippage_bps,
+        )
+        trailing_drawdown = _net_drawdown_from_peak_after_costs(
+            peak_price=max(float(state.peak_price), entry_price),
+            current_price=float(ref_price),
+            exit_fee_rate=exit_fee_rate,
+            exit_slippage_bps=exit_slippage_bps,
+        )
+        if tp_pct > 0 and net_return >= tp_pct:
             return "MODEL_ALPHA_EXIT_TP"
-        if sl_pct > 0 and ref_price <= entry_price * (1.0 - sl_pct):
+        if sl_pct > 0 and net_return <= -sl_pct:
             return "MODEL_ALPHA_EXIT_SL"
-        if trailing_pct > 0 and ref_price <= state.peak_price * (1.0 - trailing_pct):
+        if trailing_pct > 0 and trailing_drawdown >= trailing_pct:
             return "MODEL_ALPHA_EXIT_TRAILING"
         if hold_ms > 0 and int(ts_ms) - int(state.entry_ts_ms) >= hold_ms:
             return "MODEL_ALPHA_EXIT_TIMEOUT"
@@ -320,3 +374,138 @@ def _inc_reason(reason_counts: dict[str, int], reason: str, delta: int = 1) -> N
     if not key:
         return
     reason_counts[key] = int(reason_counts.get(key, 0)) + int(delta)
+
+
+def _resolve_selection_min_prob(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSelectionSettings,
+) -> tuple[float, str]:
+    manual_min_prob = _safe_optional_float(settings.min_prob)
+    if manual_min_prob is not None:
+        return _clamp_prob(manual_min_prob), "manual"
+
+    threshold_key = str(settings.registry_threshold_key).strip()
+    thresholds = predictor.thresholds if isinstance(predictor.thresholds, dict) else {}
+    registry_value = _safe_optional_float(thresholds.get(threshold_key))
+    if registry_value is not None:
+        return _clamp_prob(registry_value), f"registry:{threshold_key}"
+
+    if threshold_key != "top_5pct":
+        fallback_value = _safe_optional_float(thresholds.get("top_5pct"))
+        if fallback_value is not None:
+            return _clamp_prob(fallback_value), "registry:top_5pct_fallback"
+
+    return 0.0, "fallback_zero"
+
+
+def _resolve_entry_notional_multiplier(
+    *,
+    prob: float,
+    threshold: float,
+    settings: ModelAlphaPositionSettings,
+) -> float:
+    mode = str(settings.sizing_mode).strip().lower() or "prob_ramp"
+    if mode == "fixed":
+        return 1.0
+
+    min_multiplier = max(float(settings.size_multiplier_min), 0.0)
+    max_multiplier = max(float(settings.size_multiplier_max), min_multiplier)
+    if mode != "prob_ramp":
+        return 1.0
+
+    prob_value = _clamp_prob(prob)
+    threshold_value = _clamp_prob(threshold)
+    conviction_span = max(1.0 - threshold_value, 1e-12)
+    conviction = max(prob_value - threshold_value, 0.0) / conviction_span
+    conviction = max(min(conviction, 1.0), 0.0)
+    return min_multiplier + (conviction * (max_multiplier - min_multiplier))
+
+
+def _clamp_prob(value: float) -> float:
+    return max(min(float(value), 1.0), 0.0)
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_expected_exit_costs(
+    *,
+    settings: ModelAlphaSettings,
+    observed_entry_fee_rate: float,
+) -> tuple[float, float]:
+    exit_cfg = settings.exit
+    fee_bps_override = _safe_optional_float(exit_cfg.expected_exit_fee_bps)
+    if fee_bps_override is None:
+        exit_fee_rate = max(float(observed_entry_fee_rate), 0.0)
+    else:
+        exit_fee_rate = max(float(fee_bps_override), 0.0) / 10_000.0
+
+    slippage_bps_override = _safe_optional_float(exit_cfg.expected_exit_slippage_bps)
+    if slippage_bps_override is None:
+        exit_slippage_bps = _default_expected_exit_slippage_bps(settings.execution.price_mode)
+    else:
+        exit_slippage_bps = max(float(slippage_bps_override), 0.0)
+    return exit_fee_rate, exit_slippage_bps
+
+
+def _default_expected_exit_slippage_bps(price_mode: str) -> float:
+    mode = str(price_mode).strip().upper()
+    if mode == "PASSIVE_MAKER":
+        return 0.0
+    if mode == "CROSS_1T":
+        return 6.0
+    return 2.5
+
+
+def _net_return_after_costs(
+    *,
+    entry_price: float,
+    exit_price: float,
+    entry_fee_rate: float,
+    exit_fee_rate: float,
+    exit_slippage_bps: float,
+) -> float:
+    entry_value = max(float(entry_price), 1e-12)
+    exit_value = max(float(exit_price), 1e-12)
+    entry_cost = entry_value * (1.0 + max(float(entry_fee_rate), 0.0))
+    exit_proceeds = _expected_exit_proceeds(
+        exit_price=exit_value,
+        exit_fee_rate=exit_fee_rate,
+        exit_slippage_bps=exit_slippage_bps,
+    )
+    return (exit_proceeds / max(entry_cost, 1e-12)) - 1.0
+
+
+def _net_drawdown_from_peak_after_costs(
+    *,
+    peak_price: float,
+    current_price: float,
+    exit_fee_rate: float,
+    exit_slippage_bps: float,
+) -> float:
+    peak_value = max(float(peak_price), 1e-12)
+    current_value = max(float(current_price), 1e-12)
+    peak_proceeds = _expected_exit_proceeds(
+        exit_price=peak_value,
+        exit_fee_rate=exit_fee_rate,
+        exit_slippage_bps=exit_slippage_bps,
+    )
+    current_proceeds = _expected_exit_proceeds(
+        exit_price=current_value,
+        exit_fee_rate=exit_fee_rate,
+        exit_slippage_bps=exit_slippage_bps,
+    )
+    return 1.0 - (current_proceeds / max(peak_proceeds, 1e-12))
+
+
+def _expected_exit_proceeds(*, exit_price: float, exit_fee_rate: float, exit_slippage_bps: float) -> float:
+    slip_multiplier = max(1.0 - (max(float(exit_slippage_bps), 0.0) / 10_000.0), 0.0)
+    effective_exit_price = max(float(exit_price), 1e-12) * slip_multiplier
+    return effective_exit_price * (1.0 - max(float(exit_fee_rate), 0.0))
