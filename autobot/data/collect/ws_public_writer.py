@@ -51,10 +51,18 @@ class WsRawRotatingWriter:
         self._open_parts: dict[str, _OpenPart] = {}
         self._next_seq: dict[str, int] = {}
         self._closed_parts: list[dict[str, Any]] = []
+        self._drained_closed_parts = 0
 
     @property
     def closed_parts(self) -> list[dict[str, Any]]:
         return list(self._closed_parts)
+
+    def drain_closed_parts(self) -> list[dict[str, Any]]:
+        if self._drained_closed_parts >= len(self._closed_parts):
+            return []
+        drained = self._closed_parts[self._drained_closed_parts :]
+        self._drained_closed_parts = len(self._closed_parts)
+        return list(drained)
 
     def write(self, *, channel: str, row: dict[str, Any], event_ts_ms: int) -> None:
         channel_value = str(channel).strip().lower()

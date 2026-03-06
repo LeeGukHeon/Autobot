@@ -247,6 +247,13 @@ def collect_ws_public_from_plan(options: WsPublicCollectOptions) -> WsPublicColl
         max_bytes=options.max_bytes,
     )
 
+    def _flush_manifest_state() -> None:
+        _flush_writer_manifest_state(
+            writer=writer,
+            manifest_path=options.manifest_path,
+            runs_summary_path=options.runs_summary_path,
+        )
+
     counters = _RuntimeCounters()
     details: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -279,6 +286,7 @@ def collect_ws_public_from_plan(options: WsPublicCollectOptions) -> WsPublicColl
                 keepalive_stale_sec=max(int(options.keepalive_stale_sec), 30),
                 health_snapshot_path=options.health_snapshot_path,
                 health_update_sec=max(int(options.health_update_sec), 1),
+                manifest_flush_callback=_flush_manifest_state,
                 run_id=run_id,
             )
         )
@@ -287,8 +295,7 @@ def collect_ws_public_from_plan(options: WsPublicCollectOptions) -> WsPublicColl
         counters.fatal_reason = counters.fatal_reason or "RUNTIME_EXCEPTION"
 
     closed_parts = writer.close()
-    append_ws_manifest_rows(options.manifest_path, closed_parts)
-    _update_ws_runs_summary(options.manifest_path, options.runs_summary_path)
+    _flush_manifest_state()
 
     files_written = len(closed_parts)
     bytes_written = int(sum(int(item.get("bytes", 0)) for item in closed_parts))
@@ -451,6 +458,13 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
         max_bytes=max(int(options.max_bytes), 1024),
     )
 
+    def _flush_manifest_state() -> None:
+        _flush_writer_manifest_state(
+            writer=writer,
+            manifest_path=options.manifest_path,
+            runs_summary_path=options.runs_summary_path,
+        )
+
     failures: list[dict[str, Any]] = []
     details: list[dict[str, Any]] = []
     runtime_counters = _RuntimeCounters(subscribed_markets_count=len(initial_codes))
@@ -511,6 +525,7 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
                 keepalive_stale_sec=max(int(options.keepalive_stale_sec), 30),
                 health_snapshot_path=options.health_snapshot_path,
                 health_update_sec=max(int(options.health_update_sec), 1),
+                manifest_flush_callback=_flush_manifest_state,
                 run_id=run_id,
             )
         )
@@ -519,8 +534,7 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
         runtime_counters.fatal_reason = runtime_counters.fatal_reason or "RUNTIME_EXCEPTION"
 
     closed_parts = writer.close()
-    append_ws_manifest_rows(options.manifest_path, closed_parts)
-    _update_ws_runs_summary(options.manifest_path, options.runs_summary_path)
+    _flush_manifest_state()
 
     files_written = len(closed_parts)
     bytes_written = int(sum(int(item.get("bytes", 0)) for item in closed_parts))
@@ -787,6 +801,7 @@ async def _run_ws_collection(
     keepalive_stale_sec: int,
     health_snapshot_path: Path | None,
     health_update_sec: int,
+    manifest_flush_callback: Callable[[], None] | None,
     run_id: str,
 ) -> _RuntimeCounters:
     counters = _RuntimeCounters()
@@ -979,6 +994,8 @@ async def _run_ws_collection(
                             row=normalized,
                             event_ts_ms=int(normalized.get("trade_ts_ms")),
                         )
+                        if manifest_flush_callback is not None:
+                            manifest_flush_callback()
                         counters.written_trade += 1
                     elif channel == "orderbook":
                         counters.received_orderbook += 1
@@ -1002,6 +1019,8 @@ async def _run_ws_collection(
                             row=normalized,
                             event_ts_ms=int(normalized.get("ts_ms")),
                         )
+                        if manifest_flush_callback is not None:
+                            manifest_flush_callback()
                         counters.written_orderbook += 1
                         orderbook_state[market] = _orderbook_state_snapshot(normalized)
                     else:
@@ -1249,6 +1268,19 @@ def _load_plan(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("ws public plan file must contain JSON object")
     return raw
+
+
+def _flush_writer_manifest_state(
+    *,
+    writer: WsRawRotatingWriter,
+    manifest_path: Path,
+    runs_summary_path: Path,
+) -> None:
+    pending_parts = writer.drain_closed_parts()
+    if not pending_parts:
+        return
+    append_ws_manifest_rows(manifest_path, pending_parts)
+    _update_ws_runs_summary(manifest_path, runs_summary_path)
 
 
 def _update_ws_runs_summary(manifest_path: Path, summary_path: Path) -> None:

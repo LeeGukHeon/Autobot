@@ -5,11 +5,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autobot.data.collect.ws_public_collector import (
+    _flush_writer_manifest_state,
     _normalize_keepalive_mode,
     fetch_top_quote_markets,
     load_ws_public_status,
     purge_ws_public_retention,
 )
+from autobot.data.collect.ws_public_manifest import load_ws_manifest
+from autobot.data.collect.ws_public_writer import WsRawRotatingWriter
 
 
 class _DummySettings:
@@ -124,3 +127,58 @@ def test_fetch_top_quote_markets_uses_ticker_ranking(monkeypatch) -> None:
         max_markets=10,
     )
     assert markets == ("KRW-BTC", "KRW-XRP")
+
+
+def test_flush_writer_manifest_state_updates_manifest_and_runs_summary_incrementally(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw_ws" / "upbit" / "public"
+    meta_dir = tmp_path / "raw_ws" / "upbit" / "_meta"
+    manifest_path = meta_dir / "ws_manifest.parquet"
+    runs_summary_path = meta_dir / "ws_runs_summary.json"
+
+    writer = WsRawRotatingWriter(
+        raw_root=raw_root,
+        run_id="test-run",
+        rotate_sec=3600,
+        max_bytes=1024,
+    )
+    row = {
+        "channel": "trade",
+        "market": "KRW-BTC",
+        "trade_ts_ms": 1_700_000_000_000,
+        "recv_ts_ms": 1_700_000_000_010,
+        "price": 100.0,
+        "volume": 0.1,
+        "ask_bid": "BID",
+        "source": "ws",
+        "collected_at_ms": 1_700_000_000_020,
+        "pad": "x" * 1500,
+    }
+
+    writer.write(channel="trade", row=row, event_ts_ms=1_700_000_000_000)
+    second_row = dict(row)
+    second_row["trade_ts_ms"] = 1_700_000_000_100
+    writer.write(channel="trade", row=second_row, event_ts_ms=1_700_000_000_100)
+
+    _flush_writer_manifest_state(
+        writer=writer,
+        manifest_path=manifest_path,
+        runs_summary_path=runs_summary_path,
+    )
+    manifest = load_ws_manifest(manifest_path)
+    assert manifest.height == 1
+    assert int(manifest.get_column("rows").sum()) == 1
+
+    writer.close()
+    _flush_writer_manifest_state(
+        writer=writer,
+        manifest_path=manifest_path,
+        runs_summary_path=runs_summary_path,
+    )
+    manifest = load_ws_manifest(manifest_path)
+    assert manifest.height == 2
+    assert int(manifest.get_column("rows").sum()) == 2
+
+    summary = json.loads(runs_summary_path.read_text(encoding="utf-8"))
+    assert summary["runs"][-1]["run_id"] == "test-run"
+    assert summary["runs"][-1]["parts"] == 2
+    assert summary["runs"][-1]["trade_rows"] == 2

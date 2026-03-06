@@ -44,3 +44,42 @@ def test_ws_writer_rotation_and_read(tmp_path: Path) -> None:
 
     tmp_files = list(raw_root.glob("**/*.tmp"))
     assert tmp_files == []
+
+
+def test_ws_writer_drain_closed_parts_returns_only_new_parts(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw_ws" / "upbit" / "public"
+    writer = WsRawRotatingWriter(
+        raw_root=raw_root,
+        run_id="test-run",
+        rotate_sec=3600,
+        max_bytes=1024,
+    )
+
+    base_row = {
+        "channel": "trade",
+        "market": "KRW-BTC",
+        "trade_ts_ms": 1_700_000_000_000,
+        "recv_ts_ms": 1_700_000_000_010,
+        "price": 100.0,
+        "volume": 0.1,
+        "ask_bid": "BID",
+        "source": "ws",
+        "collected_at_ms": 1_700_000_000_020,
+        "pad": "x" * 1500,
+    }
+
+    writer.write(channel="trade", row=base_row, event_ts_ms=1_700_000_000_000)
+    second_row = dict(base_row)
+    second_row["trade_ts_ms"] = 1_700_000_000_100
+    writer.write(channel="trade", row=second_row, event_ts_ms=1_700_000_000_100)
+
+    drained = writer.drain_closed_parts()
+    assert len(drained) == 1
+    assert sum(int(item["rows"]) for item in drained) == 1
+    assert writer.drain_closed_parts() == []
+
+    closed_parts = writer.close()
+    drained_after_close = writer.drain_closed_parts()
+    assert len(closed_parts) == 2
+    assert len(drained_after_close) == 1
+    assert sum(int(item["rows"]) for item in drained_after_close) == 1
