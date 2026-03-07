@@ -134,10 +134,15 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     result = train_and_register_v4_crypto_cs(options)
 
     assert result.status == "candidate"
+    assert result.walk_forward_report_path is not None
+    assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
     assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
     assert load_json(options.registry_root / "latest_candidate.json")["run_id"] == result.run_id
-    assert load_json(result.promotion_path)["reasons"] == ["MANUAL_PROMOTION_REQUIRED", "NO_EXISTING_CHAMPION"]
+    reasons = load_json(result.promotion_path)["reasons"]
+    assert "MANUAL_PROMOTION_REQUIRED" in reasons
+    assert "NO_EXISTING_CHAMPION" in reasons
+    assert "NO_WALK_FORWARD_EVIDENCE" in reasons
 
 
 def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monkeypatch) -> None:
@@ -244,5 +249,9 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
     result = train_and_register_v4_crypto_cs(options)
 
     assert result.status == "candidate"
+    assert result.walk_forward_report_path is not None
+    assert result.walk_forward_report_path.exists()
     assert result.leaderboard_row["task"] == "reg"
     assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
+    reasons = load_json(result.promotion_path)["reasons"]
+    assert "NO_WALK_FORWARD_EVIDENCE" in reasons

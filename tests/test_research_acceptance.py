@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from autobot.models.research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
+
+
+def test_summarize_walk_forward_windows_aggregates_expected_fields() -> None:
+    summary = summarize_walk_forward_windows(
+        [
+            {
+                "metrics": {
+                    "classification": {"pr_auc": 0.60, "roc_auc": 0.70, "log_loss": 0.45, "brier_score": 0.20},
+                    "trading": {"top_5pct": {"precision": 0.62, "ev_net": 0.0012}},
+                }
+            },
+            {
+                "metrics": {
+                    "classification": {"pr_auc": 0.64, "roc_auc": 0.74, "log_loss": 0.40, "brier_score": 0.18},
+                    "trading": {"top_5pct": {"precision": 0.66, "ev_net": -0.0002}},
+                }
+            },
+        ]
+    )
+
+    assert summary["windows_run"] == 2
+    assert round(float(summary["precision_top5_mean"]), 4) == 0.64
+    assert round(float(summary["positive_window_ratio"]), 4) == 0.5
+
+
+def test_compare_balanced_pareto_prefers_candidate_on_utility_tie_break() -> None:
+    candidate = {
+        "ev_net_top5_mean": 0.0011,
+        "precision_top5_mean": 0.63,
+        "pr_auc_mean": 0.61,
+        "positive_window_ratio": 0.66,
+        "log_loss_mean": 0.39,
+        "brier_score_mean": 0.18,
+    }
+    champion = {
+        "ev_net_top5_mean": 0.0012,
+        "precision_top5_mean": 0.62,
+        "pr_auc_mean": 0.58,
+        "positive_window_ratio": 0.50,
+        "log_loss_mean": 0.42,
+        "brier_score_mean": 0.19,
+    }
+
+    compare = compare_balanced_pareto(candidate, champion)
+
+    assert compare["comparable"] is True
+    assert compare["candidate_dominates"] is False
+    assert compare["champion_dominates"] is False
+    assert compare["decision"] == "candidate_edge"
+    assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]

@@ -43,6 +43,7 @@ from .train_v1 import (
     _estimate_dataset_memory_mb,
     _evaluate_split,
     _fit_booster_sweep,
+    _load_registered_eval_dataset,
     _predict_scores,
     _try_import_xgboost,
     _validate_split_counts,
@@ -407,27 +408,19 @@ def evaluate_registered_model_window(
         raise ValueError("split must be one of train|valid|test")
 
     run_dir = resolve_run_dir(registry_root, model_ref=model_ref, model_family=model_family)
-    train_config = load_json(run_dir / "train_config.yaml")
-    if not train_config:
+    base_train_config = load_json(run_dir / "train_config.yaml")
+    if not base_train_config:
         raise ValueError(f"invalid train_config.yaml at {run_dir}")
-
-    start_ts_ms = parse_date_to_ts_ms(start) if start else int(train_config.get("start_ts_ms"))
-    end_ts_ms = parse_date_to_ts_ms(end, end_of_day=True) if end else int(train_config.get("end_ts_ms"))
+    start_ts_ms = parse_date_to_ts_ms(start) if start else int(base_train_config.get("start_ts_ms"))
+    end_ts_ms = parse_date_to_ts_ms(end, end_of_day=True) if end else int(base_train_config.get("end_ts_ms"))
     if end_ts_ms < start_ts_ms:
         raise ValueError("compare/eval end must be >= start")
 
-    request = DatasetRequest(
-        dataset_root=Path(str(train_config.get("dataset_root", ""))),
-        tf=str(train_config.get("tf", "5m")).strip().lower(),
-        quote=str(train_config.get("quote", "KRW")).strip().upper(),
-        top_n=int(train_config.get("top_n", 20)),
+    train_config, dataset, label_columns = _load_registered_eval_dataset(
+        run_dir=run_dir,
         start_ts_ms=start_ts_ms,
         end_ts_ms=end_ts_ms,
-        markets=tuple(str(item).strip().upper() for item in train_config.get("markets", []) if str(item).strip()),
-        batch_rows=max(int(train_config.get("batch_rows", 200_000)), 1),
     )
-    feature_cols = tuple(str(item) for item in train_config.get("feature_columns", []))
-    dataset = load_feature_dataset(request, feature_columns=feature_cols if feature_cols else None)
 
     labels, _ = compute_time_splits(
         dataset.ts_ms,
@@ -456,6 +449,7 @@ def evaluate_registered_model_window(
         "start_ts_ms": int(start_ts_ms),
         "end_ts_ms": int(end_ts_ms),
     }
+    result["label_columns"] = label_columns
 
     if report_csv is not None:
         frame = pl.DataFrame(

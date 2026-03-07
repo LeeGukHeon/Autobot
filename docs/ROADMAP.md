@@ -257,9 +257,11 @@ D:\MyApps\Autobot
 - `model_alpha_v1`은 점수 기반 selection/portfolio/runtime handoff 계약이 유지되는 한 그대로 재사용한다.
 
 ### 실행 순서
-- 1단계: `label_v2` 설계 및 offline dataset contract 확정
-- 2단계: `feature_set_v4`에 spillover/trend/periodicity/interaction pack 추가
-- 3단계: 새 trainer와 rolling acceptance 구축
+- 1단계: `label_v2` 설계 및 offline dataset contract 확정 `완료`
+- 2단계: `feature_set_v4`에 spillover/trend/periodicity/interaction pack 추가 `진행 중`
+  - 현재는 `spillover + breadth` pack까지 반영됨
+- 3단계: 새 trainer와 rolling acceptance 구축 `진행 중`
+  - 현재는 `v4 trainer + anchored walk-forward evidence`까지 반영됨
 - 4단계: backtest 우위 확인 후 `LIVE_V4` parity 추가
 - 5단계: paper soak 검증 통과 시 champion 승급 경로 연결
 

@@ -2188,6 +2188,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 )
                 print(f"[model][train][v4_crypto_cs] run_dir={summary_v4.run_dir}")
                 print(f"[model][train][v4_crypto_cs] train_report={summary_v4.train_report_path}")
+                if summary_v4.walk_forward_report_path is not None:
+                    print(f"[model][train][v4_crypto_cs] walk_forward={summary_v4.walk_forward_report_path}")
                 print(f"[model][train][v4_crypto_cs] promotion={summary_v4.promotion_path}")
                 return 0
 

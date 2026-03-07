@@ -406,22 +406,7 @@ def evaluate_registered_model(
         raise ValueError("split must be one of train|valid|test")
 
     run_dir = resolve_run_dir(registry_root, model_ref=model_ref, model_family=model_family)
-    train_config = load_json(run_dir / "train_config.yaml")
-    if not train_config:
-        raise ValueError(f"invalid train_config.yaml at {run_dir}")
-
-    request = DatasetRequest(
-        dataset_root=Path(str(train_config.get("dataset_root", ""))),
-        tf=str(train_config.get("tf", "5m")).strip().lower(),
-        quote=str(train_config.get("quote", "KRW")).strip().upper(),
-        top_n=int(train_config.get("top_n", 20)),
-        start_ts_ms=int(train_config.get("start_ts_ms")),
-        end_ts_ms=int(train_config.get("end_ts_ms")),
-        markets=tuple(str(item).strip().upper() for item in train_config.get("markets", []) if str(item).strip()),
-        batch_rows=max(int(train_config.get("batch_rows", 200_000)), 1),
-    )
-    feature_cols = tuple(str(item) for item in train_config.get("feature_columns", []))
-    dataset = load_feature_dataset(request, feature_columns=feature_cols if feature_cols else None)
+    train_config, dataset, label_columns = _load_registered_eval_dataset(run_dir=run_dir)
 
     labels, _ = compute_time_splits(
         dataset.ts_ms,
@@ -445,6 +430,7 @@ def evaluate_registered_model(
     )
     result["run_dir"] = str(run_dir)
     result["split"] = split_name
+    result["label_columns"] = label_columns
 
     if report_csv is not None:
         frame = pl.DataFrame(
@@ -460,6 +446,56 @@ def evaluate_registered_model(
         frame.write_csv(report_csv)
         result["report_csv"] = str(report_csv)
     return result
+
+
+def _load_registered_eval_dataset(
+    *,
+    run_dir: Path,
+    start_ts_ms: int | None = None,
+    end_ts_ms: int | None = None,
+) -> tuple[dict[str, Any], Any, dict[str, str]]:
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise ValueError(f"invalid train_config.yaml at {run_dir}")
+
+    request = DatasetRequest(
+        dataset_root=Path(str(train_config.get("dataset_root", ""))),
+        tf=str(train_config.get("tf", "5m")).strip().lower(),
+        quote=str(train_config.get("quote", "KRW")).strip().upper(),
+        top_n=int(train_config.get("top_n", 20)),
+        start_ts_ms=(int(start_ts_ms) if start_ts_ms is not None else int(train_config.get("start_ts_ms"))),
+        end_ts_ms=(int(end_ts_ms) if end_ts_ms is not None else int(train_config.get("end_ts_ms"))),
+        markets=tuple(str(item).strip().upper() for item in train_config.get("markets", []) if str(item).strip()),
+        batch_rows=max(int(train_config.get("batch_rows", 200_000)), 1),
+    )
+    feature_cols = tuple(str(item) for item in train_config.get("feature_columns", []))
+    label_columns = _resolve_registered_label_columns(train_config)
+    dataset = load_feature_dataset(
+        request,
+        feature_columns=feature_cols if feature_cols else None,
+        y_cls_column=label_columns["y_cls"],
+        y_reg_column=label_columns["y_reg"],
+    )
+    return train_config, dataset, label_columns
+
+
+def _resolve_registered_label_columns(train_config: dict[str, Any]) -> dict[str, str]:
+    y_cls_name = str(train_config.get("y_cls_column", "")).strip()
+    y_reg_name = str(train_config.get("y_reg_column", "")).strip()
+    label_columns = train_config.get("label_columns", [])
+    if isinstance(label_columns, list):
+        for value in label_columns:
+            text = str(value).strip()
+            if not text:
+                continue
+            if not y_cls_name and text.startswith("y_cls"):
+                y_cls_name = text
+            if not y_reg_name and text.startswith("y_reg"):
+                y_reg_name = text
+    return {
+        "y_cls": y_cls_name or "y_cls",
+        "y_reg": y_reg_name or "y_reg",
+    }
 
 
 def list_registered_models(*, registry_root: Path, model_family: str | None = None) -> list[dict[str, Any]]:

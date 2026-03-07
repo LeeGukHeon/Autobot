@@ -24,6 +24,7 @@ from .dataset_loader import (
     load_label_spec,
 )
 from .model_card import render_model_card
+from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
 from .registry import (
     RegistrySavePayload,
     load_json,
@@ -31,7 +32,14 @@ from .registry import (
     save_run,
     update_latest_candidate_pointer,
 )
-from .split import SPLIT_TEST, SPLIT_TRAIN, SPLIT_VALID, compute_time_splits, split_masks
+from .split import (
+    SPLIT_TEST,
+    SPLIT_TRAIN,
+    SPLIT_VALID,
+    compute_anchored_walk_forward_splits,
+    compute_time_splits,
+    split_masks,
+)
 from .train_v1 import (
     _build_thresholds,
     _estimate_dataset_memory_mb,
@@ -71,6 +79,11 @@ class TrainV4CryptoCsOptions:
     ev_scan_steps: int
     ev_min_selected: int
     min_rows_for_train: int = 5000
+    walk_forward_enabled: bool = True
+    walk_forward_windows: int = 3
+    walk_forward_sweep_trials: int = 3
+    walk_forward_min_train_rows: int = 1_000
+    walk_forward_min_test_rows: int = 200
 
 
 @dataclass(frozen=True)
@@ -83,6 +96,7 @@ class TrainV4CryptoCsResult:
     thresholds: dict[str, Any]
     train_report_path: Path
     promotion_path: Path
+    walk_forward_report_path: Path | None = None
 
 
 def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4CryptoCsResult:
@@ -207,6 +221,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         fee_bps_est=options.fee_bps_est,
         safety_bps=options.safety_bps,
     )
+    walk_forward = _run_walk_forward_v4(
+        options=options,
+        task=task,
+        dataset=dataset,
+        interval_ms=interval_ms,
+    )
 
     thresholds = _build_thresholds(
         valid_scores=valid_scores,
@@ -225,6 +245,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         rows=rows,
         valid_metrics=valid_metrics,
         test_metrics=test_metrics,
+        walk_forward_summary=walk_forward.get("summary", {}),
         best_params=dict(booster.get("best_params", {})),
         sweep_records=list(booster.get("trials", [])),
     )
@@ -287,7 +308,16 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         run_id,
         family=options.model_family,
     )
-    promotion = _manual_promotion_decision_v4(options=options, run_id=run_id)
+    walk_forward_report_path = run_dir / "walk_forward_report.json"
+    walk_forward_report_path.write_text(
+        json.dumps(walk_forward, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    promotion = _manual_promotion_decision_v4(
+        options=options,
+        run_id=run_id,
+        walk_forward=walk_forward,
+    )
     promotion_path = run_dir / "promotion_decision.json"
     promotion_path.write_text(
         json.dumps(promotion, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -309,6 +339,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "memory_estimate_mb": _estimate_dataset_memory_mb(dataset),
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
+            "walk_forward": walk_forward,
             "promotion": promotion,
         },
     )
@@ -322,7 +353,201 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         thresholds=thresholds,
         train_report_path=report_path,
         promotion_path=promotion_path,
+        walk_forward_report_path=walk_forward_report_path,
     )
+
+
+def _run_walk_forward_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    task: str,
+    dataset: Any,
+    interval_ms: int,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "policy": "balanced_pareto_offline",
+        "enabled": bool(options.walk_forward_enabled),
+        "windows_requested": max(int(options.walk_forward_windows), 0),
+        "windows": [],
+        "skipped_windows": [],
+        "summary": summarize_walk_forward_windows([]),
+        "compare_to_champion": compare_balanced_pareto({}, {}),
+    }
+    if not bool(options.walk_forward_enabled):
+        report["skip_reason"] = "DISABLED"
+        return report
+
+    try:
+        window_specs = compute_anchored_walk_forward_splits(
+            dataset.ts_ms,
+            valid_ratio=options.valid_ratio,
+            test_ratio=options.test_ratio,
+            window_count=max(int(options.walk_forward_windows), 1),
+            embargo_bars=options.embargo_bars,
+            interval_ms=interval_ms,
+        )
+    except ValueError as exc:
+        report["skip_reason"] = str(exc)
+        return report
+
+    min_train_rows = max(int(options.walk_forward_min_train_rows), 1)
+    min_test_rows = max(int(options.walk_forward_min_test_rows), 1)
+    sweep_trials = max(min(int(options.walk_forward_sweep_trials), int(options.booster_sweep_trials)), 1)
+    windows: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for labels, info in window_specs:
+        masks = split_masks(labels)
+        train_mask = masks[SPLIT_TRAIN]
+        valid_mask = masks[SPLIT_VALID]
+        test_mask = masks[SPLIT_TEST]
+        row_counts = {
+            "train": int(np.sum(train_mask)),
+            "valid": int(np.sum(valid_mask)),
+            "test": int(np.sum(test_mask)),
+            "drop": int(np.sum(masks["drop"])),
+        }
+        if row_counts["train"] < min_train_rows or row_counts["test"] < min_test_rows or row_counts["valid"] <= 0:
+            skipped.append(
+                {
+                    "window_index": info.window_index,
+                    "counts": row_counts,
+                    "reason": "INSUFFICIENT_ROWS",
+                }
+            )
+            continue
+
+        bundle = _fit_walk_forward_window_model(
+            task=task,
+            options=options,
+            sweep_trials=sweep_trials,
+            x_train=dataset.X[train_mask],
+            y_cls_train=dataset.y_cls[train_mask],
+            y_reg_train=dataset.y_reg[train_mask],
+            w_train=dataset.sample_weight[train_mask],
+            x_valid=dataset.X[valid_mask],
+            y_valid_cls=dataset.y_cls[valid_mask],
+            y_valid_reg=dataset.y_reg[valid_mask],
+            w_valid=dataset.sample_weight[valid_mask],
+        )
+        scores = _predict_scores(bundle, dataset.X[test_mask])
+        metrics = _evaluate_split(
+            y_cls=dataset.y_cls[test_mask],
+            y_reg=dataset.y_reg[test_mask],
+            scores=scores,
+            markets=dataset.markets[test_mask],
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        windows.append(
+            {
+                "window_index": info.window_index,
+                "time_window": {
+                    "valid_start_ts": int(info.valid_start_ts),
+                    "test_start_ts": int(info.test_start_ts),
+                    "test_end_ts": int(info.test_end_ts),
+                },
+                "counts": row_counts,
+                "metrics": _compact_eval_metrics(metrics),
+            }
+        )
+
+    report["windows"] = windows
+    report["skipped_windows"] = skipped
+    report["windows_generated"] = len(window_specs)
+    report["summary"] = summarize_walk_forward_windows(windows)
+    champion_summary = _load_champion_walk_forward_summary(options=options)
+    report["compare_to_champion"] = compare_balanced_pareto(report["summary"], champion_summary or {})
+    if champion_summary:
+        report["champion_summary"] = champion_summary
+    return report
+
+
+def _fit_walk_forward_window_model(
+    *,
+    task: str,
+    options: TrainV4CryptoCsOptions,
+    sweep_trials: int,
+    x_train: np.ndarray,
+    y_cls_train: np.ndarray,
+    y_reg_train: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    w_valid: np.ndarray,
+) -> dict[str, Any]:
+    if task == "cls":
+        booster = _fit_booster_sweep_weighted(
+            x_train=x_train,
+            y_train=y_cls_train,
+            w_train=w_train,
+            x_valid=x_valid,
+            y_valid=y_valid_cls,
+            w_valid=w_valid,
+            y_reg_valid=y_valid_reg,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+            seed=options.seed,
+            nthread=options.nthread,
+            trials=sweep_trials,
+        )
+        return dict(booster.get("bundle", {}))
+    booster = _fit_booster_sweep_regression(
+        x_train=x_train,
+        y_train=y_reg_train,
+        w_train=w_train,
+        x_valid=x_valid,
+        y_valid_cls=y_valid_cls,
+        y_valid_reg=y_valid_reg,
+        w_valid=w_valid,
+        fee_bps_est=options.fee_bps_est,
+        safety_bps=options.safety_bps,
+        seed=options.seed,
+        nthread=options.nthread,
+        trials=sweep_trials,
+    )
+    return dict(booster.get("bundle", {}))
+
+
+def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    cls = metrics.get("classification", {}) if isinstance(metrics, dict) else {}
+    top5 = (metrics.get("trading", {}) or {}).get("top_5pct", {})
+    summary = metrics.get("per_market_summary", {}) if isinstance(metrics, dict) else {}
+    return {
+        "rows": int(metrics.get("rows", 0)) if isinstance(metrics, dict) else 0,
+        "classification": {
+            "roc_auc": _safe_float(cls.get("roc_auc")),
+            "pr_auc": _safe_float(cls.get("pr_auc")),
+            "log_loss": _safe_float(cls.get("log_loss")),
+            "brier_score": _safe_float(cls.get("brier_score")),
+        },
+        "trading": {
+            "top_5pct": {
+                "precision": _safe_float(top5.get("precision")),
+                "ev_net": _safe_float(top5.get("ev_net")),
+                "selected_rows": int(top5.get("selected_rows", 0) or 0),
+            }
+        },
+        "per_market_summary": {
+            "market_count": int(summary.get("market_count", 0) or 0),
+            "positive_markets": int(summary.get("positive_markets", 0) or 0),
+        },
+    }
+
+
+def _load_champion_walk_forward_summary(*, options: TrainV4CryptoCsOptions) -> dict[str, Any] | None:
+    champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
+    champion_run_id = str(champion_doc.get("run_id", "")).strip()
+    if not champion_run_id:
+        return None
+    run_dir = options.registry_root / options.model_family / champion_run_id
+    walk_forward = load_json(run_dir / "walk_forward_report.json")
+    if isinstance(walk_forward.get("summary"), dict) and walk_forward.get("summary"):
+        return dict(walk_forward["summary"])
+    metrics = load_json(run_dir / "metrics.json")
+    summary = metrics.get("walk_forward") if isinstance(metrics, dict) else None
+    return dict(summary) if isinstance(summary, dict) and summary else None
 
 
 def _fit_booster_sweep_regression(
@@ -441,6 +666,7 @@ def _build_v4_metrics_doc(
     rows: dict[str, int],
     valid_metrics: dict[str, Any],
     test_metrics: dict[str, Any],
+    walk_forward_summary: dict[str, Any],
     best_params: dict[str, Any],
     sweep_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -487,6 +713,7 @@ def _build_v4_metrics_doc(
             "params": best_params,
         },
         "champion_metrics": test_metrics,
+        "walk_forward": walk_forward_summary,
     }
 
 
@@ -539,6 +766,8 @@ def _train_config_snapshot_v4(
     payload["autobot_version"] = autobot_version
     payload["trainer"] = "v4_crypto_cs"
     payload["task"] = task
+    payload["y_cls_column"] = "y_cls_topq_12"
+    payload["y_reg_column"] = "y_reg_net_12"
     payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12"]
     return payload
 
@@ -554,12 +783,26 @@ def _manual_promotion_decision_v4(
     *,
     options: TrainV4CryptoCsOptions,
     run_id: str,
+    walk_forward: dict[str, Any],
 ) -> dict[str, Any]:
     champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
     champion_run_id = str(champion_doc.get("run_id", "")).strip()
     reasons = ["MANUAL_PROMOTION_REQUIRED"]
+    compare_doc = walk_forward.get("compare_to_champion", {}) if isinstance(walk_forward, dict) else {}
+    walk_summary = walk_forward.get("summary", {}) if isinstance(walk_forward, dict) else {}
+    windows_run = int(walk_summary.get("windows_run", 0) or 0)
     if not champion_run_id:
         reasons.append("NO_EXISTING_CHAMPION")
+    if windows_run <= 0:
+        reasons.append("NO_WALK_FORWARD_EVIDENCE")
+    else:
+        decision = str(compare_doc.get("decision", "")).strip().lower()
+        if decision == "candidate_edge":
+            reasons.append("OFFLINE_BALANCED_PARETO_PASS")
+        elif decision == "champion_edge":
+            reasons.append("OFFLINE_BALANCED_PARETO_FAIL")
+        elif decision:
+            reasons.append("OFFLINE_BALANCED_PARETO_HOLD")
     return {
         "run_id": run_id,
         "promote": False,
@@ -569,6 +812,15 @@ def _manual_promotion_decision_v4(
         "checks": {
             "manual_review_required": True,
             "existing_champion_present": bool(champion_run_id),
+            "walk_forward_present": windows_run > 0,
+            "walk_forward_windows_run": windows_run,
+            "balanced_pareto_comparable": bool(compare_doc.get("comparable", False)),
+            "balanced_pareto_candidate_edge": str(compare_doc.get("decision", "")) == "candidate_edge",
+        },
+        "research_acceptance": {
+            "policy": str(compare_doc.get("policy", "balanced_pareto_offline")),
+            "walk_forward_summary": walk_summary,
+            "compare_to_champion": compare_doc,
         },
         "candidate_ref": {
             "model_ref": "latest_candidate",

@@ -101,14 +101,33 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     label_spec = json.loads((features_root / "features_v4_test" / "_meta" / "label_spec.json").read_text(encoding="utf-8"))
     assert label_spec["label_set_version"] == "v2_crypto_cs"
     assert label_spec["label_columns"] == ["y_reg_net_12", "y_rank_cs_12", "y_cls_topq_12"]
+    feature_spec = json.loads(
+        (features_root / "features_v4_test" / "_meta" / "feature_spec.json").read_text(encoding="utf-8")
+    )
+    assert "btc_ret_12" in feature_spec["feature_columns"]
+    assert "market_breadth_pos_12" in feature_spec["feature_columns"]
+    assert "turnover_concentration_hhi" in feature_spec["feature_columns"]
 
     files = sorted((features_root / "features_v4_test").glob("tf=5m/market=*/date=*/*.parquet"))
     assert files
     frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical_relaxed")
     assert set(("market", "sample_weight", "y_reg_net_12", "y_rank_cs_12", "y_cls_topq_12")).issubset(frame.columns)
+    assert set(
+        (
+            "btc_ret_12",
+            "eth_ret_12",
+            "leader_basket_ret_12",
+            "market_breadth_pos_12",
+            "market_dispersion_12",
+            "turnover_concentration_hhi",
+            "rel_strength_vs_btc_12",
+        )
+    ).issubset(frame.columns)
     assert set(frame.get_column("market").unique().to_list()) == {"KRW-BTC", "KRW-ETH"}
     assert set(frame.get_column("y_cls_topq_12").drop_nulls().unique().to_list()) == {0, 1}
     assert frame.filter(pl.col("y_rank_cs_12").is_between(0.0, 1.0, closed="both")).height == frame.height
+    assert frame.filter(pl.col("market_breadth_pos_12").is_between(0.0, 1.0, closed="both")).height == frame.height
+    assert frame.get_column("turnover_concentration_hhi").null_count() == 0
 
 
 def _write_candles(dataset_root: Path) -> None:

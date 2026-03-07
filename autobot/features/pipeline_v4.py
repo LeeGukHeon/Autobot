@@ -12,8 +12,12 @@ import polars as pl
 
 from autobot.data import expected_interval_ms
 
-from .feature_blocks_v3 import required_feature_columns_v3
-from .feature_set_v3 import build_feature_set_v3_from_candles, feature_columns_v3
+from .feature_set_v3 import build_feature_set_v3_from_candles
+from .feature_set_v4 import (
+    attach_spillover_breadth_features_v4,
+    feature_columns_v4,
+    required_feature_columns_v4,
+)
 from .feature_spec import (
     FeatureSetV1Config,
     LabelV1Config,
@@ -318,7 +322,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             "run micro aggregate and keep collecting ws/ticks data."
         )
 
-    feature_cols = list(feature_columns_v3(high_tfs=config.build.high_tfs))
+    feature_cols = list(feature_columns_v4(high_tfs=config.build.high_tfs))
     label_cols = ["y_reg_net_12", "y_rank_cs_12", "y_cls_topq_12"]
     feature_spec_hash = sha256_json(feature_cols)
     label_spec_hash = sha256_json(label_cols)
@@ -493,8 +497,13 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
 
     combined = pl.concat(market_frames, how="vertical_relaxed") if market_frames else pl.DataFrame()
     if combined.height > 0:
-        labeled = apply_labeling_v2_crypto_cs(
+        enriched = attach_spillover_breadth_features_v4(
             combined.sort(["ts_ms", "market"]),
+            quote=quote,
+            float_dtype=config.float_dtype,
+        )
+        labeled = apply_labeling_v2_crypto_cs(
+            enriched,
             config=config.label_v2,
             ts_col="ts_ms",
             market_col="market",
@@ -506,7 +515,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             "ts_ms",
             "market",
             "sample_weight",
-            *required_feature_columns_v3(high_tfs=config.build.high_tfs),
+            *required_feature_columns_v4(high_tfs=config.build.high_tfs),
             *label_cols,
         ]
         labeled = labeled.filter(
@@ -736,7 +745,7 @@ def validate_features_dataset_v4(config: FeaturesV4Config, options: FeatureValid
     feature_cols = (
         feature_spec.get("feature_columns")
         if isinstance(feature_spec.get("feature_columns"), list)
-        else list(feature_columns_v3(high_tfs=config.build.high_tfs))
+        else list(feature_columns_v4(high_tfs=config.build.high_tfs))
     )
     required = ["ts_ms", "market"] + [str(item) for item in feature_cols] + [
         "sample_weight",

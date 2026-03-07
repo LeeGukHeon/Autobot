@@ -288,10 +288,32 @@ Current implementation checkpoint:
 - Phase 1 is in place:
   - `labeling_v2_crypto_cs.py`
   - `feature_set=v4` offline dataset lane
+- Phase 2 has started:
+  - `spillover + breadth` pack is now wired into `pipeline_v4`
+  - current added columns:
+    - `btc_ret_{1,3,12}`
+    - `eth_ret_{1,3,12}`
+    - `leader_basket_ret_{1,3,12}`
+    - `market_breadth_pos_{1,12}`
+    - `market_dispersion_12`
+    - `turnover_concentration_hhi`
+    - `rel_strength_vs_btc_12`
+  - periodicity, trend-volume aggregates, and interaction pack are still pending
 - Phase 3 has started:
   - `train_v4_crypto_cs.py` added as a separate offline trainer lane
   - current scope supports single-split offline training with `task=cls|reg`
-  - rolling walk-forward acceptance is still pending
+  - anchored rolling walk-forward evidence is now added for the `v4` lane
+  - current offline compare uses `balanced_pareto_offline` on walk-forward aggregate metrics:
+    - `ev_net_top5`
+    - `precision_top5`
+    - `pr_auc`
+    - `log_loss`
+  - full execution-aware Pareto comparison on:
+    - realized pnl
+    - max drawdown
+    - fill rate
+    - slippage
+    remains pending until the backtest/paper parity phase
   - paper/live parity for `v4` is still pending
 
 ### Phase 0: Refactor For Clean Extension
@@ -313,7 +335,8 @@ Current implementation checkpoint:
 ### Phase 3: Trainer and Offline Evaluation
 - Add `train_v4_crypto_cs.py`
 - Add rolling walk-forward evaluation
-- Compare against v3 champion on balanced Pareto basis
+- Compare against `v4` champion on balanced Pareto basis using offline aggregate metrics first
+- Keep execution-aware backtest/paper acceptance as a later phase, not mixed into the first trainer lane
 
 ### Phase 4: Runtime Parity
 - Add `LIVE_V4`
