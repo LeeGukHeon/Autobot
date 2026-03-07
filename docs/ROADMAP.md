@@ -268,7 +268,11 @@ D:\MyApps\Autobot
   - `model_alpha_v1` paper 경로도 `feature_set=v4`를 허용함
   - `paper alpha`는 `live_v4`, `candidate_v4`, `offline_v4` preset을 지원함
   - `LIVE_V3`는 그대로 유지하고, 실거래 서비스는 아직 `v4`로 올리지 않음
-- 5단계: paper soak 검증 통과 시 champion 승급 경로 연결
+- 5단계: paper soak 검증 통과 시 champion 승급 경로 연결 `진행 중`
+  - 공통 `candidate_acceptance.ps1` 실행기 추가
+  - `v3_candidate_acceptance.ps1`, `v4_candidate_acceptance.ps1` wrapper 분리
+  - `v4`도 이제 `train -> candidate/champion backtest -> paper soak -> promote` 루프를 같은 계약으로 탈 수 있음
+  - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 
 ### 설계 문서
 - 상세 설계와 구현/삭제 기준은 `docs/TICKETS/T18_2_crypto_alpha_research_alignment_v1.md`를 따른다.

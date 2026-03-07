@@ -352,6 +352,19 @@ Current implementation checkpoint:
     - `offline_v4`
   - `backtest alpha` and `paper alpha` parser choices now allow `--feature-set v4`
   - live service rollout is still intentionally pending
+- Phase 5 has started:
+  - `candidate_acceptance.ps1` is extracted as the generic acceptance runner
+  - `v3_candidate_acceptance.ps1` is now only a thin v3 wrapper
+  - `v4_candidate_acceptance.ps1` is added as the v4 wrapper with:
+    - `trainer=v4_crypto_cs`
+    - `feature_set=v4`
+    - `label_set=v2`
+    - `candidate_model_ref=latest_candidate_v4`
+    - `champion_model_ref=champion_v4`
+    - `paper_feature_provider=live_v4`
+  - current result:
+    - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
+    - server/runtime rollout is still intentionally left on the v3 lane until v4 passes paper evidence
 
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`
@@ -389,6 +402,9 @@ Current implementation checkpoint:
   - promote v4 candidate to champion lane
   - keep v3 as legacy fallback for one transition period
   - only then consider removal of truly dead compatibility code
+  - current status:
+    - acceptance runner and wrappers are ready
+    - automated server adoption is not enabled yet
 
 ## Explicit Non-Goals
 - Adding on-chain data first
