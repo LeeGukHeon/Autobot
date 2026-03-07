@@ -275,6 +275,8 @@ D:\MyApps\Autobot
     - `min_prob=0.00`
     - `min_candidates_per_ts=1`
     - `paper_max_fallback_ratio=0.20`
+  - generic `candidate_acceptance.ps1` defaults now match that same shared compare profile, so direct invocation no longer falls back to old legacy `0.52/0.10/3` values
+  - ad-hoc OCI paper helper now defers to `paper alpha --preset` runtime defaults instead of hardcoding selection cutoff values
   - `LIVE_V4`는 요청된 `v4` 컬럼이 하나라도 빠지면 zero-fill로 점수를 내지 않고 `MISSING_V4_FEATURE_COLUMNS` hard gate로 빈 frame을 반환함
   - `LIVE_V3`는 그대로 유지하고, 실거래 서비스는 아직 `v4`로 올리지 않음
 - 5단계: paper soak 검증 통과 시 champion 승급 경로 연결 `진행 중`

@@ -381,6 +381,7 @@ Current implementation checkpoint:
     - lane-specific difference remains only in trainer evidence:
       - `v3`: `trainer_evidence=ignore`
       - `v4`: `trainer_evidence=required`
+    - generic `candidate_acceptance.ps1` defaults are aligned to the same compare profile, so direct/manual invocation does not silently fall back to older legacy constants
   - the `v4` relaxed runtime breadth settings are a temporary bootstrap lane, not a permanent production target:
     - runtime `live_v4/candidate_v4` stays on `top_pct=0.50`, `min_candidates_per_ts=1` until `v4` has roughly `14+` effective days of usable history
   - current result:
@@ -409,6 +410,7 @@ Current implementation checkpoint:
   - `PAPER_PRESET`
   - `MODEL_REF`
   so ad-hoc OCI paper runs can target v4 without editing the command body
+  - the command now defers to `paper alpha --preset` runtime defaults rather than hardcoding `min_prob/top_pct/min_candidates`
 - `autobot_center.ps1` now allows:
   - `trainer=v4_crypto_cs`
   - `features build --feature-set v4 --label-set v2`

@@ -500,6 +500,11 @@
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
   - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
+  - direct invocation defaults now match the shared fixed compare profile:
+    - `top_pct=0.50`
+    - `min_prob=0.00`
+    - `min_candidates_per_ts=1`
+    - `paper_max_fallback_ratio=0.20`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
 - `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
   - v3/v4 acceptance now shares one fixed compare profile for backtest/paper soak:
@@ -517,6 +522,8 @@
   - default units:
     - `autobot-daily-v4-accept.service`
     - `autobot-daily-v4-accept.timer`
+- `scripts/oci_paper_run_and_pull.cmd`
+  - ad-hoc OCI paper runs now defer to `paper alpha --preset` defaults instead of hardcoding `min_prob/top_pct/min_candidates`
   - default schedule:
     - `OnCalendar=*-*-* 04:20:00`
   - intended default v4 semantics:

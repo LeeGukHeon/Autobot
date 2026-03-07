@@ -93,7 +93,7 @@ echo [INFO] duration_sec=%DURATION_SEC% (%DURATION_LABEL%)
 echo [INFO] unit_name=%UNIT_NAME%
 
 echo [INFO] Starting remote unit: %UNIT_NAME%
-ssh -i "%KEY_PATH%" "%SERVER%" "sudo systemd-run --unit=%UNIT_NAME% --collect --uid=ubuntu --gid=ubuntu --working-directory=%REMOTE_ROOT% -p StandardOutput=journal -p StandardError=journal /bin/bash -lc 'source %REMOTE_ROOT%/.venv/bin/activate && python -m autobot.cli paper alpha --preset %PAPER_PRESET% --duration-sec %DURATION_SEC% --quote KRW --top-n %TOP_N% --model-ref %MODEL_REF% --tf %TF% --top-pct 0.20 --min-prob 0.50 --min-cands-per-ts 1 --hold-bars 6'"
+ssh -i "%KEY_PATH%" "%SERVER%" "sudo systemd-run --unit=%UNIT_NAME% --collect --uid=ubuntu --gid=ubuntu --working-directory=%REMOTE_ROOT% -p StandardOutput=journal -p StandardError=journal /bin/bash -lc 'source %REMOTE_ROOT%/.venv/bin/activate && python -m autobot.cli paper alpha --preset %PAPER_PRESET% --duration-sec %DURATION_SEC% --quote KRW --top-n %TOP_N% --model-ref %MODEL_REF% --tf %TF%'"
 if errorlevel 1 (
   echo [ERROR] Failed to start remote systemd unit.
   goto fail
