@@ -393,6 +393,7 @@ Current implementation checkpoint:
   - `candidate_v4`
   - `offline_v4`
   as valid paper runtime presets, while keeping the default rollout on `live_v3`
+  - when `live_v4` or `offline_v4` is started on a fresh server with no `champion_v4` pointer yet, the installer bootstraps `champion_v4` from `latest_candidate_v4` (or `latest_v4`) before starting the service
 - `oci_paper_run_and_pull.cmd` now externalizes:
   - `PAPER_PRESET`
   - `MODEL_REF`

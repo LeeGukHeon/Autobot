@@ -495,6 +495,7 @@
 ## Runtime Presets And Acceptance Scripts
 - `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+  - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
 - `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`

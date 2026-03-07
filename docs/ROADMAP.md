@@ -286,6 +286,7 @@ D:\MyApps\Autobot
     - 승급 시에는 각 lane이 자기 runtime unit만 자동 재기동한다
       - `v3` acceptance -> `autobot-paper-alpha.service`
       - `v4` acceptance -> `autobot-paper-v4.service`
+    - `live_v4` lane은 fresh install에서 `champion_v4`가 비어 있으면 최신 candidate/latest run으로 bootstrap promote를 한 번 수행한 뒤 기동한다
   - 별도 지연 실행용 `autobot-daily-v4-accept.timer`는 fallback 운영 경로로만 남긴다
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 
