@@ -213,6 +213,27 @@ D:\MyApps\Autobot
 - 의사결정 이벤트 로깅 + SQLite 복구 가능성 확보
 - API 키 보안(출금권한 비활성/IP 제한)
 
+## 17.1) 현재 운영 로드맵 (2026-03 기준)
+
+### 모델 승급 운영
+- `train_v3_mtf_micro`는 새 학습 결과를 즉시 champion으로 승급하지 않고 `candidate`로 등록한다.
+- 기본 운영 모델은 `champion_v3`, 최신 실험 결과는 `latest_candidate_v3`로 분리한다.
+- 매일 `00:10` 데이터 수집 이후 `candidate acceptance`를 실행한다.
+- acceptance 기본 흐름은 `daily pipeline -> candidate train -> candidate/champion backtest compare -> 3h paper soak -> pass 시 promote -> 활성 runtime restart`다.
+
+### 승급 판단 정책
+- 승급 판단은 단일 PnL 우세가 아니라 `strict`, `balanced_pareto`, `conservative_pareto` 정책 중 하나로 수행한다.
+- 기본 정책은 `balanced_pareto`다.
+- `balanced_pareto`는 하드 탈락 조건 통과 후 `realized_pnl_quote`, `max_drawdown_pct`, `fill_rate`, `slippage_bps_mean`을 Pareto 기준으로 비교한다.
+- Pareto 상 우열이 즉시 결정되지 않으면 `Calmar-like score = realized_pnl_quote / max_drawdown_pct`를 tie-break 효용 지표로 사용한다.
+- paper soak는 승급의 주 성능 게이트가 아니라, 운영/배선 이상 여부를 확인하는 보조 게이트다.
+
+### 즉시 다음 개선 항목
+- 다중 시도/튜닝에 대한 과최적화 보정을 위해 `Deflated Sharpe Ratio` 또는 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
+- 단일 backtest window 대신 rolling walk-forward acceptance를 도입한다.
+- paper soak 리포트를 운영 검증용과 성능 해석용으로 분리한다.
+- promote 후 활성 `paper/live` 서비스 자동 재시작을 기본 운영 루프로 유지한다.
+
 ## 18) 단계별 티켓 로드맵
 - T00: Repo Bootstrap
 - T01: CSV -> Parquet + Schema

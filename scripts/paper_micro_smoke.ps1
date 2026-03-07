@@ -343,6 +343,11 @@ if ($microCacheMarketsWithSamples -lt 0) {
 }
 
 $ordersSubmitted = To-Int64 (Get-PropValue -ObjectValue $summary -Name "orders_submitted" -DefaultValue 0) 0
+$ordersFilled = To-Int64 (Get-PropValue -ObjectValue $summary -Name "orders_filled" -DefaultValue 0) 0
+$fillRate = To-Double (Get-PropValue -ObjectValue $summary -Name "fill_rate" -DefaultValue 0.0) 0.0
+$realizedPnlQuote = To-Double (Get-PropValue -ObjectValue $summary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
+$maxDrawdownPct = To-Double (Get-PropValue -ObjectValue $summary -Name "max_drawdown_pct" -DefaultValue 0.0) 0.0
+$slippageBpsMean = To-Double (Get-PropValue -ObjectValue $summary -Name "slippage_bps_mean" -DefaultValue 0.0) 0.0
 $fallbackReasons = Get-PropValue -ObjectValue $policy -Name "fallback_reasons" -DefaultValue @{}
 $microMissingFallbackCount = To-Int64 (Get-PropValue -ObjectValue $fallbackReasons -Name "MICRO_MISSING_FALLBACK" -DefaultValue 0) 0
 $fallbackTotalCount = Get-MapSum -MapValue $fallbackReasons
@@ -394,6 +399,11 @@ $payload = [ordered]@{
     warmup_trade_events_total = [int64]$warmupTradeEventsTotal
     micro_cache_markets_with_samples = [int64]$microCacheMarketsWithSamples
     orders_submitted = [int64]$ordersSubmitted
+    orders_filled = [int64]$ordersFilled
+    fill_rate = [double]$fillRate
+    realized_pnl_quote = [double]$realizedPnlQuote
+    max_drawdown_pct = [double]$maxDrawdownPct
+    slippage_bps_mean = [double]$slippageBpsMean
     micro_missing_fallback_count = [int64]$microMissingFallbackCount
     fallback_total_count = [int64]$fallbackTotalCount
     micro_missing_fallback_ratio = [double]$microMissingFallbackRatio
@@ -450,6 +460,11 @@ Write-Host ("[paper-smoke] warmup_elapsed_sec={0:N3}" -f $warmupElapsedSec)
 Write-Host ("[paper-smoke] warmup_satisfied={0}" -f $warmupSatisfied)
 Write-Host ("[paper-smoke] warmup_trade_events_total={0}" -f $warmupTradeEventsTotal)
 Write-Host ("[paper-smoke] micro_cache_markets_with_samples={0}" -f $microCacheMarketsWithSamples)
+Write-Host ("[paper-smoke] orders_filled={0}" -f $ordersFilled)
+Write-Host ("[paper-smoke] fill_rate={0:N6}" -f $fillRate)
+Write-Host ("[paper-smoke] realized_pnl_quote={0:N6}" -f $realizedPnlQuote)
+Write-Host ("[paper-smoke] max_drawdown_pct={0:N6}" -f $maxDrawdownPct)
+Write-Host ("[paper-smoke] slippage_bps_mean={0:N6}" -f $slippageBpsMean)
 if ($microProvider -eq "LIVE_WS") {
     Write-Host ("[paper-smoke] live_ws_connected={0}" -f $wsConnected)
     Write-Host ("[paper-smoke] live_ws_subscribed_markets={0}" -f $wsSubscribedMarketsCount)
