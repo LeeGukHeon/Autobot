@@ -279,6 +279,9 @@ D:\MyApps\Autobot
   - lane별 acceptance 기준은 wrapper에 명시값으로 고정한다
     - `v3`: `balanced_pareto`, `trainer_evidence=ignore`, `top_pct=0.10`, `min_prob=0.52`, `min_candidates=3`, `paper_max_fallback_ratio=0.10`
     - `v4`: `balanced_pareto`, `trainer_evidence=required`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
+  - `v4`의 완화 기준은 임시 bootstrap 설정으로 취급한다
+    - 되돌림 트리거: `v4` usable history가 대략 `14일+` 확보되고, 최근 rolling paper fallback ratio가 안정적으로 `0.10` 아래에 머무를 때
+    - 그 시점에는 `top_pct/min_prob/min_candidates`와 `paper_max_fallback_ratio`를 다시 조이는 작업을 우선순위로 둔다
   - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
   - 현재 운영 기본은 `00:10` shared orchestrator다
     - `daily_micro_pipeline_for_server.ps1`를 한 번만 돌려 raw/micro/report를 갱신한다
