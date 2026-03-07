@@ -65,6 +65,7 @@ from autobot.upbit.ws.models import TickerEvent
 
 from .live_features_v3 import LiveFeatureProviderV3
 from .live_features_v4 import LiveFeatureProviderV4
+from .run_id import build_paper_run_id
 from .sim_exchange import (
     FillEvent,
     MarketRules,
@@ -798,7 +799,7 @@ class PaperRunEngine:
 
     async def run(self) -> PaperRunSummary:
         quote = self._run_settings.quote.strip().upper()
-        run_id = f"paper-{time.strftime('%Y%m%d-%H%M%S')}"
+        run_id = build_paper_run_id()
         run_root = Path(self._run_settings.out_root_dir) / "runs" / run_id
         self._runtime_counters = {
             "orders_submitted": 0,

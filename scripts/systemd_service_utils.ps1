@@ -48,3 +48,21 @@ function Install-UnitFile {
         Remove-Item -Path $tmpPath -Force -ErrorAction SilentlyContinue
     }
 }
+
+function Install-DropInFile {
+    param(
+        [string]$UnitName,
+        [string]$DropInName,
+        [string]$Content
+    )
+    $tmpPath = [System.IO.Path]::GetTempFileName()
+    try {
+        Set-Content -Path $tmpPath -Encoding UTF8 -Value $Content
+        & sudo install -D -m 0644 $tmpPath ("/etc/systemd/system/" + $UnitName + ".d/" + $DropInName)
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to install drop-in file: $UnitName/$DropInName"
+        }
+    } finally {
+        Remove-Item -Path $tmpPath -Force -ErrorAction SilentlyContinue
+    }
+}

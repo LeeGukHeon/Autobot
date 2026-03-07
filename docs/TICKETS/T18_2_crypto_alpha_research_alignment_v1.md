@@ -380,9 +380,11 @@ Current implementation checkpoint:
       - candidate-edge compare outcomes from the trainer lane
     - this prevents the v4 lane from silently falling back to a pure single-window `v3`-style decision
     - server/runtime rollout is still intentionally left on the v3 lane until v4 passes paper evidence
-    - v4 daily automation should remain parallel:
-      - keep `autobot-daily-micro.timer` as `00:10` collection + v3 lane
-      - add a later `autobot-daily-v4-accept.timer` for v4-only acceptance on the same collected batch
+    - current rollout should use a shared `00:10` orchestrator:
+      - run the shared daily collection pipeline once
+      - rebuild `features_v3` and `features_v4` for the same batch date
+      - fan out `v3` and `v4` acceptance in parallel after feature refresh
+    - a later `v4`-only timer remains only as a fallback path, not the preferred rollout
 
 ### Ops Hardening Notes
 - `install_server_runtime_services.ps1` now exposes:
@@ -415,6 +417,26 @@ Current implementation checkpoint:
   - rationale:
     - the current `autobot-daily-micro.service` can run until roughly `03:xx`
     - a later timer lowers overlap risk while keeping the same batch date
+- `daily_parallel_acceptance_for_server.ps1` is the preferred same-time orchestrator
+  - current intended order:
+    - shared `daily_micro_pipeline_for_server.ps1`
+    - `features build --feature-set v3`
+    - `features build --feature-set v4 --label-set v2`
+    - parallel launch of `v3_candidate_acceptance.ps1` and `v4_candidate_acceptance.ps1`
+  - both acceptance wrappers run with:
+    - `SkipDailyPipeline`
+    - `SkipReportRefresh`
+  - v4 lane additionally runs with:
+    - `AutoRestartKnownUnits=false`
+  - reason:
+    - same batch date
+    - same paper window
+    - no duplicated collection/report mutation
+- `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
+  - current target timer remains:
+    - `autobot-daily-micro.timer`
+    - `OnCalendar=*-*-* 00:10:00`
+  - also disables `autobot-daily-v4-accept.timer` when the same-time rollout is selected
 
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`

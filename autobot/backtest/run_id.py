@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 
 
 def build_backtest_run_id(
@@ -24,4 +25,5 @@ def build_backtest_run_id(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha1(encoded).hexdigest()[:10]
-    return f"backtest-{time.strftime('%Y%m%d-%H%M%S')}-{digest}"
+    token = uuid.uuid4().hex[:8]
+    return f"backtest-{time.strftime('%Y%m%d-%H%M%S')}-{digest}-{token}"

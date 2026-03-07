@@ -1,0 +1,72 @@
+param(
+    [string]$ProjectRoot = "",
+    [string]$PythonExe = "",
+    [string]$WrapperScript = "",
+    [string]$TargetServiceName = "autobot-daily-micro.service",
+    [string]$TargetTimerName = "autobot-daily-micro.timer",
+    [string]$DisableTimerName = "autobot-daily-v4-accept.timer",
+    [switch]$NoRestartTimer,
+    [switch]$DryRun
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot "systemd_service_utils.ps1")
+
+function Resolve-DefaultWrapperScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/daily_parallel_acceptance_for_server.ps1")
+}
+
+$resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
+$resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
+$resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
+$resolvedWrapperScript = if ([string]::IsNullOrWhiteSpace($WrapperScript)) { Resolve-DefaultWrapperScript -Root $resolvedProjectRoot } else { $WrapperScript }
+$resolvedPwshExe = Resolve-PwshExe
+
+$wrapperArgList = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $resolvedWrapperScript,
+    "-ProjectRoot", $resolvedProjectRoot,
+    "-PythonExe", $resolvedPythonExe
+)
+$execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
+
+$overrideContent = @"
+[Service]
+TimeoutStartSec=0
+ExecStart=
+ExecStart=$execStartCommand
+"@
+
+if ($DryRun) {
+    Write-Host ("[daily-parallel-install][dry-run] target_service={0}" -f $TargetServiceName)
+    Write-Host $overrideContent
+    Write-Host ("[daily-parallel-install][dry-run] target_timer={0}" -f $TargetTimerName)
+    if (-not [string]::IsNullOrWhiteSpace($DisableTimerName)) {
+        Write-Host ("[daily-parallel-install][dry-run] disable_timer={0}" -f $DisableTimerName)
+    }
+    exit 0
+}
+
+Install-DropInFile -UnitName $TargetServiceName -DropInName "override.conf" -Content $overrideContent
+
+& sudo systemctl daemon-reload
+if ($LASTEXITCODE -ne 0) {
+    throw "systemctl daemon-reload failed"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($DisableTimerName)) {
+    & sudo systemctl disable --now $DisableTimerName 2>$null
+}
+
+if (-not $NoRestartTimer) {
+    & sudo systemctl restart $TargetTimerName
+    if ($LASTEXITCODE -ne 0) {
+        throw "systemctl restart failed: $TargetTimerName"
+    }
+}
+
+& systemctl cat $TargetServiceName

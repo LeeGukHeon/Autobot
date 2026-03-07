@@ -514,6 +514,18 @@
     - reuse `00:10` collection outputs
     - `SkipDailyPipeline=true`
     - `SkipReportRefresh=true`
+- `scripts/daily_parallel_acceptance_for_server.ps1`: shared same-time orchestrator for `v3` and `v4`
+  - runs shared daily collection once, then rebuilds both feature datasets, then launches `v3` and `v4` acceptance in parallel
+  - current defaults:
+    - `TrainTopN=50`
+    - `Tf=5m`
+    - `V3TrainLookbackDays=30`
+    - `V4TrainLookbackDays=30`
+  - `v4` lane uses the same batch date but runs with `AutoRestartKnownUnits=false`
+- `scripts/install_server_daily_parallel_acceptance_service.ps1`: rewires `autobot-daily-micro.service` to the shared orchestrator
+  - current intended rollout:
+    - `autobot-daily-micro.timer` stays at `00:10`
+    - the separate delayed `autobot-daily-v4-accept.timer` is disabled
 
 ## CLI: Live State
 - `python -m autobot.cli live status`
