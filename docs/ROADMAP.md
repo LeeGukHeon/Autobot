@@ -259,7 +259,7 @@ D:\MyApps\Autobot
 ### 실행 순서
 - 1단계: `label_v2` 설계 및 offline dataset contract 확정 `완료`
 - 2단계: `feature_set_v4`에 spillover/trend/periodicity/interaction pack 추가 `진행 중`
-  - 현재는 `spillover + breadth` pack까지 반영됨
+  - 현재는 `spillover + breadth + periodicity` pack까지 반영됨
 - 3단계: 새 trainer와 rolling acceptance 구축 `진행 중`
   - 현재는 `v4 trainer + anchored walk-forward evidence`까지 반영됨
 - 4단계: backtest 우위 확인 후 `LIVE_V4` parity 추가

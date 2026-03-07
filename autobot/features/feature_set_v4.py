@@ -1,6 +1,8 @@
-"""FeatureSet v4: v3 core + cross-sectional spillover/breadth pack."""
+"""FeatureSet v4: v3 core + spillover/breadth + periodicity packs."""
 
 from __future__ import annotations
+
+import math
 
 import polars as pl
 
@@ -26,12 +28,32 @@ def spillover_breadth_feature_columns_v4() -> tuple[str, ...]:
     )
 
 
+def periodicity_feature_columns_v4() -> tuple[str, ...]:
+    return (
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "weekend_flag",
+        "asia_us_overlap_flag",
+        "utc_session_bucket",
+    )
+
+
 def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
-    return tuple(list(feature_columns_v3_contract(high_tfs=high_tfs)) + list(spillover_breadth_feature_columns_v4()))
+    return tuple(
+        list(feature_columns_v3_contract(high_tfs=high_tfs))
+        + list(spillover_breadth_feature_columns_v4())
+        + list(periodicity_feature_columns_v4())
+    )
 
 
 def required_feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
-    return tuple(list(required_feature_columns_v3(high_tfs=high_tfs)) + list(spillover_breadth_feature_columns_v4()))
+    return tuple(
+        list(required_feature_columns_v3(high_tfs=high_tfs))
+        + list(spillover_breadth_feature_columns_v4())
+        + list(periodicity_feature_columns_v4())
+    )
 
 
 def attach_spillover_breadth_features_v4(
@@ -120,6 +142,49 @@ def attach_spillover_breadth_features_v4(
             "__market_mean_ret_12",
         ]
     )
+
+
+def attach_periodicity_features_v4(frame: pl.DataFrame, *, float_dtype: str = "float32") -> pl.DataFrame:
+    if frame.height <= 0:
+        return frame
+    if "ts_ms" not in frame.columns:
+        raise ValueError("v4 periodicity features require ts_ms column")
+
+    dtype = pl.Float64 if str(float_dtype).strip().lower() == "float64" else pl.Float32
+    two_pi = math.pi * 2.0
+    working = frame.with_columns(
+        [
+            pl.from_epoch(pl.col("ts_ms"), time_unit="ms").dt.hour().cast(pl.Float64).alias("__hour_utc"),
+            pl.from_epoch(pl.col("ts_ms"), time_unit="ms").dt.weekday().cast(pl.Float64).alias("__dow_utc"),
+        ]
+    ).with_columns(
+        [
+            (pl.col("__hour_utc") * (two_pi / 24.0)).sin().alias("hour_sin"),
+            (pl.col("__hour_utc") * (two_pi / 24.0)).cos().alias("hour_cos"),
+            (pl.col("__dow_utc") * (two_pi / 7.0)).sin().alias("dow_sin"),
+            (pl.col("__dow_utc") * (two_pi / 7.0)).cos().alias("dow_cos"),
+            (pl.col("__dow_utc") >= 5.0).cast(pl.Float64).alias("weekend_flag"),
+            ((pl.col("__hour_utc") >= 12.0) & (pl.col("__hour_utc") < 16.0)).cast(pl.Float64).alias("asia_us_overlap_flag"),
+            (
+                pl.when(pl.col("__hour_utc") < 8.0)
+                .then(0.0)
+                .when(pl.col("__hour_utc") < 13.0)
+                .then(1.0)
+                .when(pl.col("__hour_utc") < 21.0)
+                .then(2.0)
+                .otherwise(3.0)
+            ).alias("utc_session_bucket"),
+        ]
+    )
+
+    exprs: list[pl.Expr] = []
+    final_cols = set(periodicity_feature_columns_v4())
+    for name in working.columns:
+        if name in final_cols:
+            exprs.append(pl.col(name).cast(dtype).alias(name))
+        else:
+            exprs.append(pl.col(name).alias(name))
+    return working.with_columns(exprs).drop(["__hour_utc", "__dow_utc"])
 
 
 def _leader_frame(frame: pl.DataFrame, *, market: str, prefix: str) -> pl.DataFrame:

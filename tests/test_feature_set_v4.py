@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import polars as pl
 
-from autobot.features.feature_set_v4 import attach_spillover_breadth_features_v4, feature_columns_v4
+from autobot.features.feature_set_v4 import (
+    attach_periodicity_features_v4,
+    attach_spillover_breadth_features_v4,
+    feature_columns_v4,
+)
 
 
 def test_attach_spillover_breadth_features_v4_adds_cross_sectional_columns() -> None:
@@ -46,3 +50,31 @@ def test_feature_columns_v4_extends_v3_contract() -> None:
     assert "m_spread_proxy" in columns
     assert "btc_ret_12" in columns
     assert "market_dispersion_12" in columns
+    assert "hour_sin" in columns
+    assert "utc_session_bucket" in columns
+
+
+def test_attach_periodicity_features_v4_adds_utc_time_columns() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [
+                1_704_067_200_000,  # 2024-01-01 00:00:00 UTC
+                1_704_114_000_000,  # 2024-01-01 13:00:00 UTC
+            ],
+            "market": ["KRW-BTC", "KRW-BTC"],
+        }
+    )
+
+    out = attach_periodicity_features_v4(frame, float_dtype="float32")
+
+    for column in ("hour_sin", "hour_cos", "dow_sin", "dow_cos", "weekend_flag", "asia_us_overlap_flag", "utc_session_bucket"):
+        assert column in out.columns
+        assert out.get_column(column).null_count() == 0
+
+    first = out.row(0, named=True)
+    second = out.row(1, named=True)
+    assert round(float(first["hour_sin"]), 6) == 0.0
+    assert round(float(first["hour_cos"]), 6) == 1.0
+    assert float(first["utc_session_bucket"]) == 0.0
+    assert float(second["asia_us_overlap_flag"]) == 1.0
+    assert float(second["utc_session_bucket"]) == 2.0

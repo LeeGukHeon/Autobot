@@ -107,6 +107,9 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert "btc_ret_12" in feature_spec["feature_columns"]
     assert "market_breadth_pos_12" in feature_spec["feature_columns"]
     assert "turnover_concentration_hhi" in feature_spec["feature_columns"]
+    assert "hour_sin" in feature_spec["feature_columns"]
+    assert "asia_us_overlap_flag" in feature_spec["feature_columns"]
+    assert "utc_session_bucket" in feature_spec["feature_columns"]
 
     files = sorted((features_root / "features_v4_test").glob("tf=5m/market=*/date=*/*.parquet"))
     assert files
@@ -121,6 +124,13 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
             "market_dispersion_12",
             "turnover_concentration_hhi",
             "rel_strength_vs_btc_12",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "weekend_flag",
+            "asia_us_overlap_flag",
+            "utc_session_bucket",
         )
     ).issubset(frame.columns)
     assert set(frame.get_column("market").unique().to_list()) == {"KRW-BTC", "KRW-ETH"}
@@ -128,6 +138,11 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert frame.filter(pl.col("y_rank_cs_12").is_between(0.0, 1.0, closed="both")).height == frame.height
     assert frame.filter(pl.col("market_breadth_pos_12").is_between(0.0, 1.0, closed="both")).height == frame.height
     assert frame.get_column("turnover_concentration_hhi").null_count() == 0
+    assert frame.filter(pl.col("hour_sin").is_between(-1.0, 1.0, closed="both")).height == frame.height
+    assert frame.filter(pl.col("dow_cos").is_between(-1.0, 1.0, closed="both")).height == frame.height
+    assert frame.filter(pl.col("weekend_flag").is_in([0.0, 1.0])).height == frame.height
+    assert frame.filter(pl.col("asia_us_overlap_flag").is_in([0.0, 1.0])).height == frame.height
+    assert frame.filter(pl.col("utc_session_bucket").is_in([0.0, 1.0, 2.0, 3.0])).height == frame.height
 
 
 def _write_candles(dataset_root: Path) -> None:
