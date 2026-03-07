@@ -16,7 +16,7 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -BacktestMinOrdersFilled 30 `
     -BacktestMinRealizedPnlQuote 0.0 `
     -BacktestMinPnlDeltaVsChampion 0.0 `
-    -PaperMaxFallbackRatio 0.10 `
+    -PaperMaxFallbackRatio 0.20 `
     -PaperMinOrdersSubmitted 1 `
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `

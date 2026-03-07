@@ -374,8 +374,8 @@ Current implementation checkpoint:
       - `backtest_min_candidates_per_ts=1`
     - trainer-side execution acceptance now consumes the same sparse-aware overrides instead of falling back to baseline `strategy.yaml` selection defaults
   - lane wrappers should keep criteria explicit instead of inheriting generic defaults:
-    - `v3`: `balanced_pareto`, `trainer_evidence=ignore`, `top_pct=0.10`, `min_prob=0.52`, `min_candidates=3`
-    - `v4`: `balanced_pareto`, `trainer_evidence=required`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`
+    - `v3`: `balanced_pareto`, `trainer_evidence=ignore`, `top_pct=0.10`, `min_prob=0.52`, `min_candidates=3`, `paper_max_fallback_ratio=0.10`
+    - `v4`: `balanced_pareto`, `trainer_evidence=required`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
   - current result:
     - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
     - generic acceptance now reads trainer-side `promotion_decision.json` evidence and can require:
