@@ -253,6 +253,15 @@
 - `label_v1.fee_bps_est`: number (default: `10`)
 - `label_v1.safety_bps`: number (default: `5`)
 
+### Label v2 Crypto Cross-Section
+- config file: `config/features_v4.yaml`
+- `label_v2.horizon_bars`: integer (default: `12`)
+- `label_v2.fee_bps_est`: number (default: `10`)
+- `label_v2.safety_bps`: number (default: `5`)
+- `label_v2.top_quantile`: float in `(0, 0.5)` (default: `0.2`)
+- `label_v2.bottom_quantile`: float in `(0, 0.5)` (default: `0.2`)
+- `label_v2.neutral_policy`: `drop | keep_as_class` (default: `drop`)
+
 ### Feature Set v2
 - config file: `config/features_v2.yaml`
 - `features_v2.output_dataset`: string (default: `features_v2`)
@@ -297,6 +306,30 @@
 - `features_v3.min_rows_for_train`: integer (default: `5000`)
 - `features_v3.require_micro_validate_pass`: bool (default: `true`)
 - `features_v3.validation.leakage_fail_on_future_ts`: bool (default: `true`)
+
+### Feature Set v4
+- config file: `config/features_v4.yaml`
+- current scope: research lane for `features build|validate|stats` only
+- `features_v4.output_dataset`: string (default: `features_v4`)
+- `features_v4.tf`: timeframe string (`5m` only)
+- `features_v4.base_candles_dataset`: `auto | candles_api_v1 | candles_v1 | <path>`
+- `features_v4.micro_dataset`: dataset name or path (default: `micro_v1`)
+- `features_v4.high_tfs`: timeframe array subset of `[15m,60m,240m]`
+- `features_v4.high_tf_staleness_multiplier`: float (default: `2.0`)
+- `features_v4.one_m_required_bars`: integer (default: `5`)
+- `features_v4.one_m_max_missing_ratio`: float (default: `0.2`)
+- `features_v4.one_m_drop_if_real_count_zero`: bool (default: `true`)
+- `features_v4.one_m_synth_weight_floor`: float in `[0,1]` (default: `0.2`)
+- `features_v4.one_m_synth_weight_power`: float `>= 0` (default: `2.0`)
+- `features_v4.sample_weight_half_life_days`: float (default: `60`)
+- `features_v4.universe_quality_enabled`: bool (default: `true`)
+- `features_v4.universe_quality_lookback_days`: integer (default: `3`)
+- `features_v4.universe_quality_beta`: float `>= 0` (default: `2.0`)
+- `features_v4.universe_quality_q_floor`: float in `[0,1]` (default: `0.2`)
+- `features_v4.universe_quality_oversample_factor`: integer `>= 1` (default: `3`)
+- `features_v4.min_rows_for_train`: integer (default: `5000`)
+- `features_v4.require_micro_validate_pass`: bool (default: `true`)
+- `features_v4.validation.leakage_fail_on_future_ts`: bool (default: `true`)
 
 ## Model Training (T14)
 - config file: `config/train.yaml`
@@ -441,10 +474,16 @@
   - `python -m autobot.cli features stats --feature-set v2 --tf 5m --quote KRW --top-n 20`
 - Build (v3):
   - `python -m autobot.cli features build --feature-set v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05`
+- Build (v4):
+  - `python -m autobot.cli features build --feature-set v4 --label-set v2 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05`
 - Validate (v3):
   - `python -m autobot.cli features validate --feature-set v3 --tf 5m --quote KRW --top-n 50`
+- Validate (v4):
+  - `python -m autobot.cli features validate --feature-set v4 --tf 5m --quote KRW --top-n 50`
 - Stats (v3):
   - `python -m autobot.cli features stats --feature-set v3 --tf 5m --quote KRW --top-n 50`
+- Stats (v4):
+  - `python -m autobot.cli features stats --feature-set v4 --tf 5m --quote KRW --top-n 50`
 
 ## CLI: ModelBt Proxy
 - `python -m autobot.cli modelbt run --model-ref latest_v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --select top_pct --top-pct 0.05 --hold-bars 6 --fee-bps 5`

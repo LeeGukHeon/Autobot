@@ -57,22 +57,28 @@ from .features import (
     FeatureBuildOptions,
     FeatureBuildV2Options,
     FeatureBuildV3Options,
+    FeatureBuildV4Options,
     FeatureValidateOptions,
     FeatureValidateV2Options,
     FeatureValidateV3Options,
+    FeatureValidateV4Options,
     build_features_dataset,
     build_features_dataset_v2,
     build_features_dataset_v3,
+    build_features_dataset_v4,
     features_stats,
     features_stats_v2,
     features_stats_v3,
+    features_stats_v4,
     load_features_config,
     load_features_v2_config,
     load_features_v3_config,
+    load_features_v4_config,
     sample_features,
     validate_features_dataset,
     validate_features_dataset_v2,
     validate_features_dataset_v3,
+    validate_features_dataset_v4,
 )
 from .features.feature_spec import parse_date_to_ts_ms
 from .live import (
@@ -656,8 +662,8 @@ def build_parser() -> argparse.ArgumentParser:
     features_build_parser.add_argument("--top-n", type=int, help="Universe size")
     features_build_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     features_build_parser.add_argument("--end", help="End date YYYY-MM-DD")
-    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
-    features_build_parser.add_argument("--label-set", default="v1", choices=("v1",))
+    features_build_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3", "v4"))
+    features_build_parser.add_argument("--label-set", default="v1", choices=("v1", "v2"))
     features_build_parser.add_argument("--workers", type=int, default=1)
     features_build_parser.add_argument("--base-candles", help="Base candles dataset/path for v2/v3, ex: auto|candles_api_v1")
     features_build_parser.add_argument("--micro-dataset", help="Micro dataset/path for v2/v3, ex: micro_v1")
@@ -683,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     features_validate_parser.add_argument("--top-n", type=int, help="Universe size")
     features_validate_parser.add_argument("--start", help="Optional start date YYYY-MM-DD (v3)")
     features_validate_parser.add_argument("--end", help="Optional end date YYYY-MM-DD (v3)")
-    features_validate_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
+    features_validate_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3", "v4"))
     features_validate_parser.add_argument("--join-match-warn", type=float, help="v2 join match warn threshold")
     features_validate_parser.add_argument("--join-match-fail", type=float, help="v2 join match fail threshold")
 
@@ -696,7 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     features_stats_parser.add_argument("--tf", default="5m", help="Timeframe, ex: 5m")
     features_stats_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_stats_parser.add_argument("--top-n", type=int, help="Universe size")
-    features_stats_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
+    features_stats_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3", "v4"))
 
     model_parser = subparsers.add_parser("model", help="Model training and registry operations.")
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
@@ -1784,6 +1790,56 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
         feature_set = str(getattr(args, "feature_set", "v1")).strip().lower()
 
         if args.features_command == "build":
+            if feature_set == "v4":
+                features_v4_config = load_features_v4_config(config_dir, base_config=base_config)
+                options_v4 = FeatureBuildV4Options(
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                    start=args.start,
+                    end=args.end,
+                    feature_set=feature_set,
+                    label_set=str(args.label_set).strip().lower(),
+                    workers=max(int(args.workers), 1),
+                    fail_on_warn=_parse_bool_arg(args.fail_on_warn, default=False),
+                    dry_run=_parse_bool_arg(args.dry_run, default=False),
+                    base_candles=(str(args.base_candles).strip() if args.base_candles else None),
+                    micro_dataset=(str(args.micro_dataset).strip() if args.micro_dataset else None),
+                )
+                summary_v4 = build_features_dataset_v4(features_v4_config, options_v4)
+                print(
+                    "[features][build][v4] "
+                    f"discovered={summary_v4.discovered_markets} selected={len(summary_v4.selected_markets)} "
+                    f"processed={summary_v4.processed_markets} ok={summary_v4.ok_markets} "
+                    f"warn={summary_v4.warn_markets} fail={summary_v4.fail_markets}"
+                )
+                print(
+                    "[features][build][v4] "
+                    f"rows_base_total={summary_v4.rows_base_total} "
+                    f"rows_dropped_no_micro={summary_v4.rows_dropped_no_micro} "
+                    f"rows_dropped_one_m_before_densify={summary_v4.rows_dropped_one_m_before_densify} "
+                    f"rows_dropped_one_m={summary_v4.rows_dropped_one_m} "
+                    f"rows_rescued_by_one_m_densify={summary_v4.rows_rescued_by_one_m_densify} "
+                    f"rows_final={summary_v4.rows_final}"
+                )
+                print(
+                    "[features][build][v4] "
+                    f"one_m_synth_ratio_p50={summary_v4.one_m_synth_ratio_p50} "
+                    f"one_m_synth_ratio_p90={summary_v4.one_m_synth_ratio_p90}"
+                )
+                print(
+                    "[features][build][v4] "
+                    f"effective_start={summary_v4.effective_start} "
+                    f"effective_end={summary_v4.effective_end}"
+                )
+                print(f"[features][build][v4] output={summary_v4.output_path}")
+                print(f"[features][build][v4] manifest={summary_v4.manifest_file}")
+                print(f"[features][build][v4] report={summary_v4.build_report_file}")
+                code = 2 if summary_v4.fail_markets > 0 else 0
+                if options_v4.fail_on_warn and summary_v4.warn_markets > 0:
+                    code = 2
+                return code
+
             if feature_set == "v3":
                 features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
                 options_v3 = FeatureBuildV3Options(
@@ -1910,6 +1966,34 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
             return code
 
         if args.features_command == "validate":
+            if feature_set == "v4":
+                features_v4_config = load_features_v4_config(config_dir, base_config=base_config)
+                options_v4 = FeatureValidateV4Options(
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                    start=args.start,
+                    end=args.end,
+                )
+                summary_v4 = validate_features_dataset_v4(features_v4_config, options_v4)
+                print(
+                    "[features][validate][v4] "
+                    f"checked={summary_v4.checked_files} ok={summary_v4.ok_files} "
+                    f"warn={summary_v4.warn_files} fail={summary_v4.fail_files}"
+                )
+                print(
+                    "[features][validate][v4] "
+                    f"schema_ok={summary_v4.schema_ok} "
+                    f"null_ratio_overall={summary_v4.null_ratio_overall:.6f} "
+                    f"leakage_smoke={summary_v4.leakage_smoke} "
+                    f"staleness_fail_rows={summary_v4.staleness_fail_rows}"
+                )
+                print(f"[features][validate][v4] dropped_rows_no_micro={summary_v4.dropped_rows_no_micro}")
+                print(f"[features][validate][v4] report={summary_v4.validate_report_file}")
+                if summary_v4.fail_files > 0 or summary_v4.leakage_smoke != "PASS":
+                    return 2
+                return 0
+
             if feature_set == "v3":
                 features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
                 options_v3 = FeatureValidateV3Options(
@@ -1996,6 +2080,17 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
             return 0
 
         if args.features_command == "stats":
+            if feature_set == "v4":
+                features_v4_config = load_features_v4_config(config_dir, base_config=base_config)
+                stats_v4 = features_stats_v4(
+                    features_v4_config,
+                    tf=str(args.tf).strip().lower(),
+                    quote=(str(args.quote).strip().upper() if args.quote else None),
+                    top_n=args.top_n,
+                )
+                _print_json(stats_v4)
+                return 0
+
             if feature_set == "v3":
                 features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
                 stats_v3 = features_stats_v3(
