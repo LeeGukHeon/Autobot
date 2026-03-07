@@ -110,6 +110,12 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert "hour_sin" in feature_spec["feature_columns"]
     assert "asia_us_overlap_flag" in feature_spec["feature_columns"]
     assert "utc_session_bucket" in feature_spec["feature_columns"]
+    assert "price_trend_short" in feature_spec["feature_columns"]
+    assert "volume_trend_long" in feature_spec["feature_columns"]
+    assert "trend_consensus" in feature_spec["feature_columns"]
+    assert "mom_x_illiq" in feature_spec["feature_columns"]
+    assert "one_m_pressure_x_spread" in feature_spec["feature_columns"]
+    assert "volume_z_x_trend" in feature_spec["feature_columns"]
 
     files = sorted((features_root / "features_v4_test").glob("tf=5m/market=*/date=*/*.parquet"))
     assert files
@@ -131,6 +137,18 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
             "weekend_flag",
             "asia_us_overlap_flag",
             "utc_session_bucket",
+            "price_trend_short",
+            "price_trend_med",
+            "price_trend_long",
+            "volume_trend_long",
+            "trend_consensus",
+            "trend_vs_market",
+            "mom_x_illiq",
+            "mom_x_spread",
+            "spread_x_vol",
+            "rel_strength_x_btc_regime",
+            "one_m_pressure_x_spread",
+            "volume_z_x_trend",
         )
     ).issubset(frame.columns)
     assert set(frame.get_column("market").unique().to_list()) == {"KRW-BTC", "KRW-ETH"}
@@ -143,6 +161,12 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert frame.filter(pl.col("weekend_flag").is_in([0.0, 1.0])).height == frame.height
     assert frame.filter(pl.col("asia_us_overlap_flag").is_in([0.0, 1.0])).height == frame.height
     assert frame.filter(pl.col("utc_session_bucket").is_in([0.0, 1.0, 2.0, 3.0])).height == frame.height
+    assert frame.get_column("price_trend_short").null_count() == 0
+    assert frame.get_column("volume_trend_long").null_count() == 0
+    assert frame.filter(pl.col("trend_consensus").is_between(-1.0, 1.0, closed="both")).height == frame.height
+    assert frame.get_column("mom_x_illiq").null_count() == 0
+    assert frame.get_column("one_m_pressure_x_spread").null_count() == 0
+    assert frame.get_column("volume_z_x_trend").null_count() == 0
 
 
 def _write_candles(dataset_root: Path) -> None:

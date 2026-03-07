@@ -288,8 +288,8 @@ Current implementation checkpoint:
 - Phase 1 is in place:
   - `labeling_v2_crypto_cs.py`
   - `feature_set=v4` offline dataset lane
-- Phase 2 has started:
-  - `spillover + breadth + periodicity` pack is now wired into `pipeline_v4`
+- Phase 2 is effectively complete for the first offline lane:
+  - `spillover + breadth + periodicity + trend-volume + interaction` pack is now wired into `pipeline_v4`
   - current added columns:
     - `btc_ret_{1,3,12}`
     - `eth_ret_{1,3,12}`
@@ -303,7 +303,19 @@ Current implementation checkpoint:
     - `weekend_flag`
     - `asia_us_overlap_flag`
     - `utc_session_bucket`
-  - trend-volume aggregates and interaction pack are still pending
+    - `price_trend_short`
+    - `price_trend_med`
+    - `price_trend_long`
+    - `volume_trend_long`
+    - `trend_consensus`
+    - `trend_vs_market`
+    - `mom_x_illiq`
+    - `mom_x_spread`
+    - `spread_x_vol`
+    - `rel_strength_x_btc_regime`
+    - `one_m_pressure_x_spread`
+    - `volume_z_x_trend`
+  - next major gap is no longer offline feature coverage, but execution-aware acceptance and live parity
 - Phase 3 has started:
   - `train_v4_crypto_cs.py` added as a separate offline trainer lane
   - current scope supports single-split offline training with `task=cls|reg`

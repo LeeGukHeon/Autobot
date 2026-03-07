@@ -14,8 +14,10 @@ from autobot.data import expected_interval_ms
 
 from .feature_set_v3 import build_feature_set_v3_from_candles
 from .feature_set_v4 import (
+    attach_interaction_features_v4,
     attach_periodicity_features_v4,
     attach_spillover_breadth_features_v4,
+    attach_trend_volume_features_v4,
     feature_columns_v4,
     required_feature_columns_v4,
 )
@@ -504,6 +506,14 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             float_dtype=config.float_dtype,
         )
         enriched = attach_periodicity_features_v4(
+            enriched,
+            float_dtype=config.float_dtype,
+        )
+        enriched = attach_trend_volume_features_v4(
+            enriched,
+            float_dtype=config.float_dtype,
+        )
+        enriched = attach_interaction_features_v4(
             enriched,
             float_dtype=config.float_dtype,
         )

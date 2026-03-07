@@ -1,4 +1,4 @@
-"""FeatureSet v4: v3 core + spillover/breadth + periodicity packs."""
+"""FeatureSet v4: v3 core + spillover/breadth + periodicity + interaction packs."""
 
 from __future__ import annotations
 
@@ -40,11 +40,35 @@ def periodicity_feature_columns_v4() -> tuple[str, ...]:
     )
 
 
+def trend_volume_feature_columns_v4() -> tuple[str, ...]:
+    return (
+        "price_trend_short",
+        "price_trend_med",
+        "price_trend_long",
+        "volume_trend_long",
+        "trend_consensus",
+        "trend_vs_market",
+    )
+
+
+def interaction_feature_columns_v4() -> tuple[str, ...]:
+    return (
+        "mom_x_illiq",
+        "mom_x_spread",
+        "spread_x_vol",
+        "rel_strength_x_btc_regime",
+        "one_m_pressure_x_spread",
+        "volume_z_x_trend",
+    )
+
+
 def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
     return tuple(
         list(feature_columns_v3_contract(high_tfs=high_tfs))
         + list(spillover_breadth_feature_columns_v4())
         + list(periodicity_feature_columns_v4())
+        + list(trend_volume_feature_columns_v4())
+        + list(interaction_feature_columns_v4())
     )
 
 
@@ -53,6 +77,8 @@ def required_feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "2
         list(required_feature_columns_v3(high_tfs=high_tfs))
         + list(spillover_breadth_feature_columns_v4())
         + list(periodicity_feature_columns_v4())
+        + list(trend_volume_feature_columns_v4())
+        + list(interaction_feature_columns_v4())
     )
 
 
@@ -187,6 +213,132 @@ def attach_periodicity_features_v4(frame: pl.DataFrame, *, float_dtype: str = "f
     return working.with_columns(exprs).drop(["__hour_utc", "__dow_utc"])
 
 
+def attach_trend_volume_features_v4(frame: pl.DataFrame, *, float_dtype: str = "float32") -> pl.DataFrame:
+    if frame.height <= 0:
+        return frame
+    if "market" not in frame.columns or "ts_ms" not in frame.columns:
+        raise ValueError("v4 trend-volume features require market and ts_ms columns")
+
+    dtype = pl.Float64 if str(float_dtype).strip().lower() == "float64" else pl.Float32
+    working = frame.sort(["market", "ts_ms"])
+
+    volume_base_expr = (
+        pl.coalesce(
+            [
+                pl.col("one_m_real_volume_sum").cast(pl.Float64),
+                pl.col("one_m_volume_sum").cast(pl.Float64),
+                pl.col("volume_base").cast(pl.Float64),
+            ]
+        )
+        .fill_null(0.0)
+        .clip(lower_bound=0.0)
+    )
+    volume_log_expr = volume_base_expr.log1p()
+
+    working = working.with_columns(
+        [
+            volume_log_expr.alias("__volume_log"),
+            pl.col("volume_z")
+            .cast(pl.Float64)
+            .rolling_mean(window_size=12, min_samples=3)
+            .over("market")
+            .fill_null(pl.col("volume_z").cast(pl.Float64))
+            .alias("__volume_z_roll"),
+            (
+                volume_log_expr
+                - volume_log_expr.rolling_mean(window_size=12, min_samples=3).over("market")
+            )
+            .fill_null(0.0)
+            .alias("__volume_log_dev"),
+        ]
+    )
+    working = working.with_columns(
+        [
+            _mean_horizontal_expr(working.columns, ("logret_1", "logret_3", "logret_12")).alias("price_trend_short"),
+            _mean_horizontal_expr(
+                working.columns,
+                ("logret_12", "logret_36", "h15m_ret_1", "h60m_ret_1"),
+            ).alias("price_trend_med"),
+            _mean_horizontal_expr(
+                working.columns,
+                ("logret_36", "h60m_ret_3", "h240m_ret_1", "h240m_ret_3"),
+            ).alias("price_trend_long"),
+            _mean_horizontal_expr(working.columns, ("volume_z", "__volume_z_roll", "__volume_log_dev")).alias("volume_trend_long"),
+        ]
+    )
+    working = working.with_columns(
+        [
+            _mean_horizontal_expr(working.columns, ("price_trend_short", "price_trend_med", "price_trend_long"), transform="sign").alias("trend_consensus"),
+            (
+                pl.col("price_trend_med").cast(pl.Float64)
+                - pl.col("leader_basket_ret_12").cast(pl.Float64)
+            ).fill_null(pl.col("price_trend_med").cast(pl.Float64)).alias("trend_vs_market"),
+        ]
+    )
+
+    exprs: list[pl.Expr] = []
+    final_cols = set(trend_volume_feature_columns_v4())
+    for name in working.columns:
+        if name in final_cols:
+            exprs.append(pl.col(name).cast(dtype).alias(name))
+        else:
+            exprs.append(pl.col(name).alias(name))
+    return working.with_columns(exprs).drop(["__volume_log", "__volume_z_roll", "__volume_log_dev"])
+
+
+def attach_interaction_features_v4(frame: pl.DataFrame, *, float_dtype: str = "float32") -> pl.DataFrame:
+    if frame.height <= 0:
+        return frame
+    dtype = pl.Float64 if str(float_dtype).strip().lower() == "float64" else pl.Float32
+    columns = frame.columns
+
+    spread_expr = _col_or_zero(columns, "m_spread_proxy")
+    vol_expr = _col_or_zero(columns, "vol_12")
+    mom_expr = _col_or_zero(columns, "price_trend_short")
+    trend_expr = _col_or_zero(columns, "price_trend_med")
+    volume_z_expr = _col_or_zero(columns, "volume_z")
+    rel_strength_expr = _col_or_zero(columns, "rel_strength_vs_btc_12")
+    btc_regime_expr = _sign_expr(_col_or_zero(columns, "btc_ret_12"))
+    signed_pressure = (
+        pl.when(_col_or_zero(columns, "m_trade_volume_base") > 0.0)
+        .then(_col_or_zero(columns, "m_signed_volume") / _col_or_zero(columns, "m_trade_volume_base"))
+        .otherwise(_col_or_zero(columns, "one_m_ret_mean"))
+    ).fill_null(0.0)
+    illiq_expr = (
+        pl.lit(1.0, dtype=pl.Float64)
+        / (
+            pl.lit(1.0, dtype=pl.Float64)
+            + pl.coalesce(
+                [
+                    _col_or_zero(columns, "m_trade_volume_base").clip(lower_bound=0.0).log1p(),
+                    _col_or_zero(columns, "one_m_real_volume_sum").clip(lower_bound=0.0).log1p(),
+                    _col_or_zero(columns, "volume_base").clip(lower_bound=0.0).log1p(),
+                ]
+            )
+        )
+    ).fill_null(0.0)
+
+    working = frame.with_columns(
+        [
+            (mom_expr * illiq_expr).alias("mom_x_illiq"),
+            (mom_expr * spread_expr).alias("mom_x_spread"),
+            (spread_expr * vol_expr).alias("spread_x_vol"),
+            (rel_strength_expr * btc_regime_expr).alias("rel_strength_x_btc_regime"),
+            (signed_pressure * spread_expr).alias("one_m_pressure_x_spread"),
+            (volume_z_expr * trend_expr).alias("volume_z_x_trend"),
+        ]
+    )
+
+    exprs: list[pl.Expr] = []
+    final_cols = set(interaction_feature_columns_v4())
+    for name in working.columns:
+        if name in final_cols:
+            exprs.append(pl.col(name).cast(dtype).alias(name))
+        else:
+            exprs.append(pl.col(name).alias(name))
+    return working.with_columns(exprs)
+
+
 def _leader_frame(frame: pl.DataFrame, *, market: str, prefix: str) -> pl.DataFrame:
     leader = frame.filter(pl.col("market") == market)
     if leader.height <= 0:
@@ -218,3 +370,41 @@ def _leader_mean_expr(a_col: str, b_col: str, fallback_col: str) -> pl.Expr:
         .then(pl.col(b_col))
         .otherwise(pl.col(fallback_col))
     )
+
+
+def _col_or_zero(columns: list[str], name: str) -> pl.Expr:
+    if name in columns:
+        return pl.col(name).cast(pl.Float64)
+    return pl.lit(0.0, dtype=pl.Float64)
+
+
+def _sign_expr(expr: pl.Expr) -> pl.Expr:
+    return (
+        pl.when(expr > 0.0)
+        .then(1.0)
+        .when(expr < 0.0)
+        .then(-1.0)
+        .otherwise(0.0)
+    )
+
+
+def _mean_horizontal_expr(columns: list[str], names: tuple[str, ...], *, transform: str = "identity") -> pl.Expr:
+    exprs: list[pl.Expr] = []
+    for name in names:
+        if name not in columns:
+            continue
+        expr = pl.col(name).cast(pl.Float64)
+        if transform == "sign":
+            expr = (
+                pl.when(expr > 0.0)
+                .then(1.0)
+                .when(expr < 0.0)
+                .then(-1.0)
+                .otherwise(0.0)
+            )
+        exprs.append(expr)
+    if not exprs:
+        return pl.lit(0.0, dtype=pl.Float64)
+    if len(exprs) == 1:
+        return exprs[0]
+    return pl.mean_horizontal(exprs)
