@@ -276,6 +276,9 @@ D:\MyApps\Autobot
   - `v4_candidate_acceptance.ps1`는 trainer가 미리 만든 `walk-forward + execution_acceptance` 증빙을 `required` gate로 읽음
   - 현재 얕은 `v4` 히스토리에 맞춰 wrapper 기본 selection은 `sparse-aware`로 완화함 (`top_pct=0.5`, `min_prob=0.0`, `min_candidates=1`)
   - trainer 내부 `execution_acceptance`도 이제 wrapper와 동일한 `top_n/top_pct/min_prob/min_candidates/hold_bars` override를 받아 같은 sparse-aware 설정으로 비교함
+  - lane별 acceptance 기준은 wrapper에 명시값으로 고정한다
+    - `v3`: `balanced_pareto`, `trainer_evidence=ignore`, `top_pct=0.10`, `min_prob=0.52`, `min_candidates=3`
+    - `v4`: `balanced_pareto`, `trainer_evidence=required`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`
   - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
   - 현재 운영 기본은 `00:10` shared orchestrator다
     - `daily_micro_pipeline_for_server.ps1`를 한 번만 돌려 raw/micro/report를 갱신한다

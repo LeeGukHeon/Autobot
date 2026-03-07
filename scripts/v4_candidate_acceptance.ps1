@@ -8,10 +8,18 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -CandidateModelRef "latest_candidate_v4" `
     -ChampionModelRef "champion_v4" `
     -PaperFeatureProvider "live_v4" `
+    -PromotionPolicy "balanced_pareto" `
     -TrainerEvidenceMode "required" `
     -BacktestTopPct 0.5 `
     -BacktestMinProb 0.0 `
     -BacktestMinCandidatesPerTs 1 `
+    -BacktestMinOrdersFilled 30 `
+    -BacktestMinRealizedPnlQuote 0.0 `
+    -BacktestMinPnlDeltaVsChampion 0.0 `
+    -PaperMaxFallbackRatio 0.10 `
+    -PaperMinOrdersSubmitted 1 `
+    -PaperMinTierCount 1 `
+    -PaperMinPolicyEvents 0 `
     -KnownRuntimeUnits @("autobot-paper-v4.service", "autobot-live-alpha.service") `
     -OutDir "logs/model_v4_acceptance" `
     -ReportPrefix "v4_candidate_acceptance" `
