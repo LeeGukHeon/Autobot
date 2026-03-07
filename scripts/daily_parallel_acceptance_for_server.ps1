@@ -126,8 +126,59 @@ function Start-AcceptanceProcess {
         Process = $process
         StdoutPath = $stdoutPath
         StderrPath = $stderrPath
+        StartedAtUtc = [DateTime]::UtcNow
         Command = $PwshExe + " " + (($ArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
     }
+}
+
+function Resolve-ReportedJsonPathFromLog {
+    param(
+        [string]$LogPath,
+        [string]$LogTag
+    )
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or [string]::IsNullOrWhiteSpace($LogTag) -or (-not (Test-Path $LogPath))) {
+        return ""
+    }
+    $pattern = '^\[' + [Regex]::Escape($LogTag) + '\] report=(.+)$'
+    $match = Get-Content -Path $LogPath -Encoding UTF8 | Select-String -Pattern $pattern | Select-Object -Last 1
+    if ($null -eq $match) {
+        return ""
+    }
+    $reportedPath = [string]$match.Matches[0].Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
+function Resolve-FreshLatestJsonPath {
+    param(
+        [string]$LatestPath,
+        [DateTime]$StartedAtUtc
+    )
+    if ([string]::IsNullOrWhiteSpace($LatestPath) -or (-not (Test-Path $LatestPath))) {
+        return ""
+    }
+    $item = Get-Item -Path $LatestPath -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        return ""
+    }
+    if ($item.LastWriteTimeUtc -lt $StartedAtUtc.AddSeconds(-2)) {
+        return ""
+    }
+    return $item.FullName
+}
+
+function Load-JsonReportOrEmpty {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
+        return @{}
+    }
+    $raw = Get-Content -Path $PathValue -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return @{}
+    }
+    return $raw | ConvertFrom-Json
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -254,6 +305,7 @@ try {
         } else {
             $laneProcesses += [PSCustomObject]@{
                 name = "v3"
+                log_tag = "v3-accept"
                 meta = Start-AcceptanceProcess -PwshExe $psExe -ArgList $v3Args -LogPrefix "v3_accept" -LogDir $logsDir -WorkingDirectory $resolvedProjectRoot
             }
         }
@@ -284,6 +336,7 @@ try {
         } else {
             $laneProcesses += [PSCustomObject]@{
                 name = "v4"
+                log_tag = "v4-accept"
                 meta = Start-AcceptanceProcess -PwshExe $psExe -ArgList $v4Args -LogPrefix "v4_accept" -LogDir $logsDir -WorkingDirectory $resolvedProjectRoot
             }
         }
@@ -299,22 +352,30 @@ try {
             } else {
                 Join-Path $resolvedProjectRoot "logs/model_v4_acceptance/latest.json"
             }
-            $latestReport = @{}
-            if (Test-Path $latestReportPath) {
-                $raw = Get-Content -Path $latestReportPath -Raw -Encoding UTF8
-                if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                    $latestReport = $raw | ConvertFrom-Json
-                }
+            $runReportPath = Resolve-ReportedJsonPathFromLog -LogPath $lane.meta.StdoutPath -LogTag $lane.log_tag
+            $freshLatestPath = Resolve-FreshLatestJsonPath -LatestPath $latestReportPath -StartedAtUtc $lane.meta.StartedAtUtc
+            $effectiveReportPath = if (-not [string]::IsNullOrWhiteSpace($runReportPath) -and (Test-Path $runReportPath)) {
+                $runReportPath
+            } else {
+                $freshLatestPath
             }
+            $effectiveReport = Load-JsonReportOrEmpty -PathValue $effectiveReportPath
+            $latestOverallPass = To-Bool (
+                Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $effectiveReport -Name "gates" -DefaultValue @{}) -Name "overall_pass" -DefaultValue $false
+            ) $false
+            $latestReasons = @(Get-PropValue -ObjectValue $effectiveReport -Name "reasons" -DefaultValue @())
             $report.lanes[$lane.name] = [ordered]@{
                 attempted = $true
                 exit_code = [int]$lane.meta.Process.ExitCode
                 command = $lane.meta.Command
                 stdout_log = $lane.meta.StdoutPath
                 stderr_log = $lane.meta.StderrPath
+                run_report_path = $runReportPath
                 latest_report_path = $latestReportPath
-                latest_overall_pass = [bool](if ($null -ne $latestReport) { $latestReport.gates.overall_pass } else { $false })
-                latest_reasons = @(if ($null -ne $latestReport) { $latestReport.reasons } else { @() })
+                effective_report_path = $effectiveReportPath
+                effective_report_source = if ($effectiveReportPath -eq $runReportPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($effectiveReportPath)) { "latest_fresh_fallback" } else { "missing" }
+                latest_overall_pass = [bool]$latestOverallPass
+                latest_reasons = @($latestReasons)
             }
         }
     }

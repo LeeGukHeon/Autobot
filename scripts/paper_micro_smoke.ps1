@@ -351,7 +351,9 @@ $slippageBpsMean = To-Double (Get-PropValue -ObjectValue $summary -Name "slippag
 $fallbackReasons = Get-PropValue -ObjectValue $policy -Name "fallback_reasons" -DefaultValue @{}
 $microMissingFallbackCount = To-Int64 (Get-PropValue -ObjectValue $fallbackReasons -Name "MICRO_MISSING_FALLBACK" -DefaultValue 0) 0
 $fallbackTotalCount = Get-MapSum -MapValue $fallbackReasons
-$microMissingFallbackRatio = if ($ordersSubmitted -gt 0) { [double]$microMissingFallbackCount / [double]$ordersSubmitted } else { 1.0 }
+$ordersSubmittedPass = $ordersSubmitted -ge $MinOrdersSubmitted
+$fallbackRatioEvaluated = $ordersSubmitted -gt 0
+$microMissingFallbackRatio = if ($fallbackRatioEvaluated) { [double]$microMissingFallbackCount / [double]$ordersSubmitted } else { 0.0 }
 
 $tiers = Get-PropValue -ObjectValue $policy -Name "tiers" -DefaultValue @{}
 [object[]]$tierKeys = @(Get-PositiveMapKeys -MapValue $tiers)
@@ -362,11 +364,24 @@ $cancelsTotal = To-Int64 (Get-PropValue -ObjectValue $policy -Name "cancels_tota
 $abortedTimeoutTotal = To-Int64 (Get-PropValue -ObjectValue $policy -Name "aborted_timeout_total" -DefaultValue 0) 0
 $replaceCancelTimeoutTotal = $replacesTotal + $cancelsTotal + $abortedTimeoutTotal
 
-$smokeConnectivityPass = ($ordersSubmitted -ge $MinOrdersSubmitted) -and ($microMissingFallbackRatio -lt $MaxFallbackRatio)
-$gateFallbackPass = ($ordersSubmitted -ge $MinOrdersSubmitted) -and ($microMissingFallbackRatio -lt $MaxFallbackRatio)
+$gateFallbackPass = if ($fallbackRatioEvaluated) { $microMissingFallbackRatio -lt $MaxFallbackRatio } else { $true }
 $gateTierPass = $tierUniqueCount -ge $MinTierCount
 $gatePolicyEventsPass = $replaceCancelTimeoutTotal -ge $MinPolicyEvents
-$t151GatePass = $gateFallbackPass -and $gateTierPass -and $gatePolicyEventsPass
+$smokeConnectivityPass = $ordersSubmittedPass -and $gateFallbackPass
+$t151GatePass = $ordersSubmittedPass -and $gateFallbackPass -and $gateTierPass -and $gatePolicyEventsPass
+$gateFailures = @()
+if (-not $ordersSubmittedPass) {
+    $gateFailures += "MIN_ORDERS_SUBMITTED"
+}
+if (-not $gateFallbackPass) {
+    $gateFailures += "FALLBACK_RATIO_EXCEEDED"
+}
+if (-not $gateTierPass) {
+    $gateFailures += "MIN_TIER_COUNT"
+}
+if (-not $gatePolicyEventsPass) {
+    $gateFailures += "MIN_POLICY_EVENTS"
+}
 
 $runId = [System.IO.Path]::GetFileName($newRunDir)
 $generatedAt = (Get-Date).ToString("o")
@@ -421,12 +436,15 @@ $payload = [ordered]@{
         min_policy_events = [int]$MinPolicyEvents
     }
     gates = [ordered]@{
+        orders_submitted_pass = $ordersSubmittedPass
+        fallback_ratio_evaluated = $fallbackRatioEvaluated
         smoke_connectivity_pass = $smokeConnectivityPass
         fallback_ratio_pass = $gateFallbackPass
         tier_diversity_pass = $gateTierPass
         policy_events_pass = $gatePolicyEventsPass
         t15_gate_pass = $t151GatePass
     }
+    gate_failures = @($gateFailures)
     live_ws = [ordered]@{
         health_snapshot_available = [bool]$wsHealthAvailable
         ws_connected = $wsConnected
@@ -454,6 +472,7 @@ Write-Host ("[paper-smoke] micro_provider={0}" -f $microProvider)
 Write-Host ("[paper-smoke] orders_submitted={0}" -f $ordersSubmitted)
 Write-Host ("[paper-smoke] micro_missing_fallback_count={0}" -f $microMissingFallbackCount)
 Write-Host ("[paper-smoke] micro_missing_fallback_ratio={0:N6}" -f $microMissingFallbackRatio)
+Write-Host ("[paper-smoke] fallback_ratio_evaluated={0}" -f $fallbackRatioEvaluated)
 Write-Host ("[paper-smoke] tier_unique_count={0} ({1})" -f $tierUniqueCount, ($tierKeys -join ","))
 Write-Host ("[paper-smoke] replace_cancel_timeout_total={0}" -f $replaceCancelTimeoutTotal)
 Write-Host ("[paper-smoke] warmup_elapsed_sec={0:N3}" -f $warmupElapsedSec)
@@ -472,5 +491,6 @@ if ($microProvider -eq "LIVE_WS") {
 }
 Write-Host ("[paper-smoke] smoke_connectivity_pass={0}" -f $smokeConnectivityPass)
 Write-Host ("[paper-smoke] t15_gate_pass={0}" -f $t151GatePass)
+Write-Host ("[paper-smoke] gate_failures={0}" -f ($gateFailures -join ","))
 Write-Host ("[paper-smoke] report={0}" -f $runReportPath)
 Write-Host ("[paper-smoke] latest={0}" -f $latestReportPath)

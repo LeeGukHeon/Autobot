@@ -287,6 +287,9 @@ D:\MyApps\Autobot
       - `v3` acceptance -> `autobot-paper-alpha.service`
       - `v4` acceptance -> `autobot-paper-v4.service`
     - `live_v4` lane은 fresh install에서 `champion_v4`가 비어 있으면 최신 candidate/latest run으로 bootstrap promote를 한 번 수행한 뒤 기동한다
+    - orchestrator는 각 child lane stdout의 고유 `report=` 경로를 우선 읽고, lane-global `latest.json`은 신선한 경우에만 fallback으로 사용한다
+    - `paper_micro_smoke`는 주문 0건 구간을 `fallback_ratio=1.0`로 오해하지 않고 `min_orders_submitted` 실패와 분리해서 기록한다
+    - 수동 `paper alpha --preset live_v4` 실행 시 `champion_v4` 포인터가 없으면 `latest_candidate_v4`, 그다음 `latest_v4`로 안전 fallback 한다
   - 별도 지연 실행용 `autobot-daily-v4-accept.timer`는 fallback 운영 경로로만 남긴다
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 

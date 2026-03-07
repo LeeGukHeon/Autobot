@@ -435,6 +435,11 @@ Current implementation checkpoint:
     - same paper window
     - no duplicated collection/report mutation
     - each lane can promote/restart independently without touching the other lane's always-on paper
+  - operational hardening now also includes:
+    - the orchestrator reads each child lane's unique `report=` path from stdout before falling back to lane-global `latest.json`
+    - `candidate_acceptance.ps1` does the same for `paper_micro_smoke` output so same-lane manual runs do not silently poison paper soak status
+    - `paper_micro_smoke.ps1` separates `min_orders_submitted` failure from true fallback-ratio failure instead of treating all zero-order windows as `fallback_ratio=1.0`
+    - ad-hoc `paper alpha --preset live_v4` is now safe on a fresh registry: if `champion_v4` is missing, runtime falls back to `latest_candidate_v4`, then `latest_v4`
 - `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
   - current target timer remains:
     - `autobot-daily-micro.timer`

@@ -282,6 +282,41 @@ def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(**payload)
 
 
+def _load_registry_pointer_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _resolve_v4_runtime_model_ref_fallback(
+    model_ref: str,
+    model_family: str | None,
+    registry_root: Path,
+) -> tuple[str, str | None, str | None]:
+    ref = str(model_ref).strip()
+    family = str(model_family).strip() if model_family else None
+    if ref != "champion" or family != "train_v4_crypto_cs":
+        return ref, family, None
+
+    champion_payload = _load_registry_pointer_payload(registry_root / family / "champion.json")
+    if str(champion_payload.get("run_id", "")).strip():
+        return ref, family, None
+
+    latest_candidate_payload = _load_registry_pointer_payload(registry_root / family / "latest_candidate.json")
+    if str(latest_candidate_payload.get("run_id", "")).strip():
+        return "latest_candidate", family, "[paper][warn] champion_v4 pointer missing; falling back to latest_candidate_v4."
+
+    latest_payload = _load_registry_pointer_payload(registry_root / family / "latest.json")
+    if str(latest_payload.get("run_id", "")).strip():
+        return "latest", family, "[paper][warn] champion_v4 pointer missing; falling back to latest_v4."
+
+    return ref, family, None
+
+
 def _backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     name = str(preset).strip().lower() or "default"
     overrides: dict[str, Any] = {
@@ -2760,6 +2795,16 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             model_family_raw = model_alpha_defaults.get("model_family")
         model_family_value = str(model_family_raw).strip() if model_family_raw else None
         model_ref_value, model_family_value = _resolve_model_ref_alias(model_ref_value, model_family_value)
+        registry_root_value = Path(str(defaults.get("model_registry_root", "models/registry")).strip() or "models/registry")
+        if not registry_root_value.is_absolute():
+            registry_root_value = (config_dir.parent / registry_root_value).resolve()
+        model_ref_value, model_family_value, runtime_fallback_warning = _resolve_v4_runtime_model_ref_fallback(
+            model_ref_value,
+            model_family_value,
+            registry_root_value,
+        )
+        if runtime_fallback_warning:
+            print(runtime_fallback_warning)
         feature_set_value = str(
             getattr(args, "feature_set", None)
             or defaults.get("feature_set", model_alpha_defaults.get("feature_set", "v3"))
@@ -2898,7 +2943,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             model_ref=model_ref_value or None,
             model_family=model_family_value,
             feature_set=feature_set_value,
-            model_registry_root=str(defaults.get("model_registry_root", "models/registry")),
+            model_registry_root=str(registry_root_value),
             model_feature_dataset_root=(
                 str(defaults.get("model_feature_dataset_root")).strip()
                 if defaults.get("model_feature_dataset_root") is not None

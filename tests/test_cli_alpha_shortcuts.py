@@ -11,6 +11,7 @@ from autobot.cli import (
     _normalize_backtest_alpha_args,
     _handle_model_command,
     _normalize_paper_alpha_args,
+    _resolve_v4_runtime_model_ref_fallback,
     build_parser,
 )
 
@@ -110,6 +111,47 @@ def test_normalize_paper_alpha_args_uses_live_v4_preset_defaults() -> None:
     assert normalized.model_family == "train_v4_crypto_cs"
     assert normalized.paper_feature_provider == "live_v4"
     assert normalized.paper_micro_provider == "live_ws"
+
+
+def test_resolve_v4_runtime_model_ref_fallback_uses_latest_candidate_when_champion_missing(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    family_dir = registry_root / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True)
+    (family_dir / "latest_candidate.json").write_text(
+        '{"run_id":"run-v4-candidate","model_family":"train_v4_crypto_cs"}\n',
+        encoding="utf-8",
+    )
+
+    resolved_ref, resolved_family, warning = _resolve_v4_runtime_model_ref_fallback(
+        "champion",
+        "train_v4_crypto_cs",
+        registry_root,
+    )
+
+    assert resolved_ref == "latest_candidate"
+    assert resolved_family == "train_v4_crypto_cs"
+    assert warning is not None
+    assert "latest_candidate_v4" in warning
+
+
+def test_resolve_v4_runtime_model_ref_fallback_preserves_existing_champion(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    family_dir = registry_root / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True)
+    (family_dir / "champion.json").write_text(
+        '{"run_id":"run-v4-champion","model_family":"train_v4_crypto_cs"}\n',
+        encoding="utf-8",
+    )
+
+    resolved_ref, resolved_family, warning = _resolve_v4_runtime_model_ref_fallback(
+        "champion",
+        "train_v4_crypto_cs",
+        registry_root,
+    )
+
+    assert resolved_ref == "champion"
+    assert resolved_family == "train_v4_crypto_cs"
+    assert warning is None
 
 
 def test_build_parser_supports_backtest_alpha_shortcut() -> None:

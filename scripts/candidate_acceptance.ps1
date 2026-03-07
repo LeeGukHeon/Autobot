@@ -864,6 +864,44 @@ function Save-Report {
     }
 }
 
+function Resolve-ReportedJsonPathFromText {
+    param(
+        [string]$TextValue,
+        [string]$LogTag
+    )
+    if ([string]::IsNullOrWhiteSpace($TextValue) -or [string]::IsNullOrWhiteSpace($LogTag)) {
+        return ""
+    }
+    $pattern = '(?m)^\[' + [Regex]::Escape($LogTag) + '\] report=(.+)$'
+    $match = [Regex]::Match($TextValue, $pattern)
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
+function Resolve-FreshLatestJsonPath {
+    param(
+        [string]$LatestPath,
+        [DateTime]$StartedAtUtc
+    )
+    if ([string]::IsNullOrWhiteSpace($LatestPath) -or (-not (Test-Path $LatestPath))) {
+        return ""
+    }
+    $item = Get-Item -Path $LatestPath -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        return ""
+    }
+    if ($item.LastWriteTimeUtc -lt $StartedAtUtc.AddSeconds(-2)) {
+        return ""
+    }
+    return $item.FullName
+}
+
 try {
     if (-not $SkipDailyPipeline) {
         $dailyArgs = @(
@@ -1203,6 +1241,7 @@ try {
             pass = $null
         }
     } else {
+        $paperExecStartedAtUtc = [DateTime]::UtcNow
         $paperSmokeArgs = @(
             "-NoProfile",
             "-File", $resolvedPaperSmokeScript,
@@ -1233,13 +1272,22 @@ try {
         )
         $paperExec = Invoke-CommandCapture -Exe $psExe -ArgList $paperSmokeArgs
         $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"
-        $paperSmoke = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $paperSmokeLatestPath }
+        $paperSmokeRunPath = if ($DryRun) { "" } else { Resolve-ReportedJsonPathFromText -TextValue ([string]$paperExec.Output) -LogTag "paper-smoke" }
+        $paperSmokeEffectivePath = if (-not [string]::IsNullOrWhiteSpace($paperSmokeRunPath) -and (Test-Path $paperSmokeRunPath)) {
+            $paperSmokeRunPath
+        } else {
+            Resolve-FreshLatestJsonPath -LatestPath $paperSmokeLatestPath -StartedAtUtc $paperExecStartedAtUtc
+        }
+        $paperSmoke = if ($DryRun) { @{} } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { Load-JsonOrEmpty -PathValue $paperSmokeEffectivePath } else { @{} }
         $paperPass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "t15_gate_pass" -DefaultValue $false) $false
         $report.steps.paper_candidate = [ordered]@{
             exit_code = [int]$paperExec.ExitCode
             command = $paperExec.Command
             output_preview = (Get-OutputPreview -Text ([string]$paperExec.Output))
-            smoke_report_path = $paperSmokeLatestPath
+            smoke_report_path = $paperSmokeEffectivePath
+            smoke_report_run_path = $paperSmokeRunPath
+            smoke_report_latest_path = $paperSmokeLatestPath
+            smoke_report_source = if ($paperSmokeEffectivePath -eq $paperSmokeRunPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { "latest_fresh_fallback" } else { "missing" }
             run_id = [string](Get-PropValue -ObjectValue $paperSmoke -Name "run_id" -DefaultValue "")
             orders_submitted = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_submitted" -DefaultValue 0) 0)
             orders_filled = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_filled" -DefaultValue 0) 0)
@@ -1315,7 +1363,7 @@ try {
             "-ProjectRoot", $resolvedProjectRoot,
             "-PythonExe", $resolvedPythonExe,
             "-Date", $effectiveBatchDate,
-            "-SmokeReportJson", $paperSmokeLatestPath,
+            "-SmokeReportJson", $(if ([string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { $paperSmokeLatestPath } else { $paperSmokeEffectivePath }),
             "-SkipCandles",
             "-SkipTicks",
             "-SkipAggregate",
