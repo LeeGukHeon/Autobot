@@ -46,6 +46,7 @@ def _build_strategy(
     groups: list[tuple[int, pl.DataFrame]],
     settings: ModelAlphaSettings,
     thresholds: dict[str, float] | None = None,
+    selection_recommendations: dict[str, object] | None = None,
 ) -> ModelAlphaStrategyV1:
     predictor = ModelPredictor(
         run_dir=Path("."),
@@ -55,6 +56,7 @@ def _build_strategy(
         feature_columns=("f1",),
         train_config={"dataset_root": "unused"},
         thresholds=thresholds or {},
+        selection_recommendations=selection_recommendations or {},
     )
     from autobot.models.dataset_loader import FeatureTsGroup
 
@@ -147,6 +149,93 @@ def test_model_alpha_manual_min_prob_overrides_registry_threshold() -> None:
     assert result.min_prob_used == 0.5
     assert result.eligible_rows == 2
     assert result.selected_rows == 2
+
+
+def test_model_alpha_uses_registry_selection_recommendations_when_enabled() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-DOGE"],
+            "f1": [2.0, 1.0, 0.4, -0.1],
+            "close": [100.0, 200.0, 300.0, 400.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(
+                top_pct=0.10,
+                min_prob=None,
+                min_candidates_per_ts=10,
+                use_learned_recommendations=True,
+            ),
+        ),
+        thresholds={"top_5pct": 0.5, "ev_opt": 0.6, "ev_opt_selected_rows": 2},
+        selection_recommendations={
+            "by_threshold_key": {
+                "top_5pct": {
+                    "recommended_top_pct": 0.5,
+                    "recommended_min_candidates_per_ts": 1,
+                }
+            }
+        },
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-DOGE"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0, "KRW-DOGE": 400.0},
+        open_markets=set(),
+    )
+    assert result.min_prob_source == "registry:top_5pct"
+    assert result.top_pct_source == "registry_recommendation:top_5pct"
+    assert result.min_candidates_source == "registry_recommendation:top_5pct"
+    assert result.top_pct_used == 0.5
+    assert result.min_candidates_used == 1
+    assert result.eligible_rows == 3
+    assert result.selected_rows == 1
+
+
+def test_model_alpha_manual_selection_can_disable_registry_recommendations() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [2.0, 1.0, 0.4],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(
+                top_pct=1.0,
+                min_prob=None,
+                min_candidates_per_ts=2,
+                use_learned_recommendations=False,
+            ),
+        ),
+        thresholds={"top_5pct": 0.5, "ev_opt": 0.6, "ev_opt_selected_rows": 2},
+        selection_recommendations={
+            "by_threshold_key": {
+                "top_5pct": {
+                    "recommended_top_pct": 0.5,
+                    "recommended_min_candidates_per_ts": 1,
+                }
+            }
+        },
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+    assert result.top_pct_source == "manual"
+    assert result.min_candidates_source == "manual"
+    assert result.top_pct_used == 1.0
+    assert result.min_candidates_used == 2
+    assert result.eligible_rows == 3
+    assert result.selected_rows == 3
 
 
 def test_model_alpha_min_candidates_blocks_on_eligible_rows() -> None:
@@ -453,12 +542,19 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert int(selection_stats.get("selected_rows", 0)) >= 0
     assert float(selection_stats.get("min_prob_used", 0.0)) == 0.5
     assert str(selection_stats.get("min_prob_source")) == "registry:top_5pct"
+    assert "top_pct_used" in selection_stats
+    assert "min_candidates_used" in selection_stats
 
     events_payloads = [
         json.loads(line)
         for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    selection_events = [item for item in events_payloads if item.get("event_type") == "MODEL_ALPHA_SELECTION"]
+    assert selection_events
+    selection_payload = selection_events[0].get("payload", {})
+    assert "top_pct_used" in selection_payload
+    assert "min_candidates_used" in selection_payload
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

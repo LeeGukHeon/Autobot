@@ -139,6 +139,8 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     result = train_and_register_v4_crypto_cs(options)
 
     assert result.status == "candidate"
+    selection_doc = load_json(result.run_dir / "selection_recommendations.json")
+    assert "by_threshold_key" in selection_doc
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
@@ -254,6 +256,8 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
     result = train_and_register_v4_crypto_cs(options)
 
     assert result.status == "candidate"
+    selection_doc = load_json(result.run_dir / "selection_recommendations.json")
+    assert "by_threshold_key" in selection_doc
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert result.leaderboard_row["task"] == "reg"
@@ -397,4 +401,5 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert execution_options.model_alpha_settings.selection.top_pct == 0.5
     assert execution_options.model_alpha_settings.selection.min_prob == 0.0
     assert execution_options.model_alpha_settings.selection.min_candidates_per_ts == 1
+    assert execution_options.model_alpha_settings.selection.use_learned_recommendations is False
     assert execution_options.model_alpha_settings.exit.hold_bars == 9

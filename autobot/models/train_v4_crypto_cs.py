@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -14,7 +14,7 @@ import numpy as np
 from autobot import __version__ as autobot_version
 from autobot.data import expected_interval_ms
 from autobot.features.feature_spec import parse_date_to_ts_ms
-from autobot.strategy.model_alpha_v1 import ModelAlphaSettings
+from autobot.strategy.model_alpha_v1 import ModelAlphaSelectionSettings, ModelAlphaSettings
 
 from .dataset_loader import (
     build_data_fingerprint,
@@ -43,6 +43,7 @@ from .split import (
     split_masks,
 )
 from .train_v1 import (
+    build_selection_recommendations,
     _build_thresholds,
     _estimate_dataset_memory_mb,
     _evaluate_split,
@@ -100,7 +101,9 @@ class TrainV4CryptoCsOptions:
     execution_acceptance_reprice_max_attempts: int = 1
     execution_acceptance_reprice_tick_steps: int = 1
     execution_acceptance_rules_ttl_sec: int = 86_400
-    execution_acceptance_model_alpha: ModelAlphaSettings = ModelAlphaSettings()
+    execution_acceptance_model_alpha: ModelAlphaSettings = ModelAlphaSettings(
+        selection=ModelAlphaSelectionSettings(use_learned_recommendations=False)
+    )
 
 
 @dataclass(frozen=True)
@@ -254,6 +257,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         ev_scan_steps=options.ev_scan_steps,
         ev_min_selected=options.ev_min_selected,
     )
+    selection_recommendations = build_selection_recommendations(
+        valid_scores=valid_scores,
+        valid_ts_ms=dataset.ts_ms[valid_mask],
+        thresholds=thresholds,
+    )
     metrics = _build_v4_metrics_doc(
         run_id=run_id,
         options=options,
@@ -301,6 +309,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         task=task,
         feature_cols=dataset.feature_names,
         markets=dataset.selected_markets,
+        selection_recommendations=selection_recommendations,
     )
 
     run_dir = save_run(
@@ -317,6 +326,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             data_fingerprint=data_fingerprint,
             leaderboard_row=leaderboard_row,
             model_card_text=model_card,
+            selection_recommendations=selection_recommendations,
         )
     )
     update_latest_candidate_pointer(options.registry_root, options.model_family, run_id)
@@ -369,6 +379,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "candidate": leaderboard_row,
             "walk_forward": walk_forward,
             "execution_acceptance": execution_acceptance,
+            "selection_recommendations": selection_recommendations,
             "promotion": promotion,
         },
     )
@@ -783,6 +794,7 @@ def _train_config_snapshot_v4(
     task: str,
     feature_cols: tuple[str, ...],
     markets: tuple[str, ...],
+    selection_recommendations: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -805,6 +817,7 @@ def _train_config_snapshot_v4(
     payload["y_cls_column"] = "y_cls_topq_12"
     payload["y_reg_column"] = "y_reg_net_12"
     payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12"]
+    payload["selection_recommendations"] = selection_recommendations
     return payload
 
 
@@ -829,6 +842,14 @@ def _run_execution_acceptance_v4(
             "compare_to_champion": {},
         }
     try:
+        selection = replace(
+            options.execution_acceptance_model_alpha.selection,
+            use_learned_recommendations=False,
+        )
+        execution_model_alpha = replace(
+            options.execution_acceptance_model_alpha,
+            selection=selection,
+        )
         return run_execution_acceptance(
             ExecutionAcceptanceOptions(
                 registry_root=options.registry_root,
@@ -857,7 +878,7 @@ def _run_execution_acceptance_v4(
                 reprice_max_attempts=max(int(options.execution_acceptance_reprice_max_attempts), 0),
                 reprice_tick_steps=max(int(options.execution_acceptance_reprice_tick_steps), 1),
                 rules_ttl_sec=max(int(options.execution_acceptance_rules_ttl_sec), 1),
-                model_alpha_settings=options.execution_acceptance_model_alpha,
+                model_alpha_settings=execution_model_alpha,
             )
         )
     except Exception as exc:

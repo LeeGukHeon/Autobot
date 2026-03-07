@@ -80,6 +80,7 @@
       min_prob: null
       min_candidates_per_ts: 10
       registry_threshold_key: top_5pct
+      use_learned_recommendations: true
     position:
       max_positions_total: 3
       cooldown_bars: 6

@@ -33,6 +33,7 @@ from .registry import (
 )
 from .split import SPLIT_TEST, SPLIT_TRAIN, SPLIT_VALID, compute_time_splits, split_masks
 from .train_v1 import (
+    build_selection_recommendations,
     _build_thresholds,
     _estimate_dataset_memory_mb,
     _evaluate_split,
@@ -192,6 +193,11 @@ def train_and_register_v3_mtf_micro(options: TrainV3MtfMicroOptions) -> TrainV3M
         ev_scan_steps=options.ev_scan_steps,
         ev_min_selected=options.ev_min_selected,
     )
+    selection_recommendations = build_selection_recommendations(
+        valid_scores=valid_scores,
+        valid_ts_ms=dataset.ts_ms[valid_mask],
+        thresholds=thresholds,
+    )
     metrics = _build_v3_metrics_doc(
         run_id=run_id,
         options=options,
@@ -235,6 +241,7 @@ def train_and_register_v3_mtf_micro(options: TrainV3MtfMicroOptions) -> TrainV3M
         options=options,
         feature_cols=dataset.feature_names,
         markets=dataset.selected_markets,
+        selection_recommendations=selection_recommendations,
     )
 
     run_dir = save_run(
@@ -251,6 +258,7 @@ def train_and_register_v3_mtf_micro(options: TrainV3MtfMicroOptions) -> TrainV3M
             data_fingerprint=data_fingerprint,
             leaderboard_row=leaderboard_row,
             model_card_text=model_card,
+            selection_recommendations=selection_recommendations,
         )
     )
     update_latest_candidate_pointer(
@@ -286,6 +294,7 @@ def train_and_register_v3_mtf_micro(options: TrainV3MtfMicroOptions) -> TrainV3M
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
             "promotion": promotion,
+            "selection_recommendations": selection_recommendations,
         },
     )
 
@@ -497,6 +506,7 @@ def _train_config_snapshot_v3(
     options: TrainV3MtfMicroOptions,
     feature_cols: tuple[str, ...],
     markets: tuple[str, ...],
+    selection_recommendations: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -509,6 +519,7 @@ def _train_config_snapshot_v3(
     payload["created_at_utc"] = _utc_now()
     payload["autobot_version"] = autobot_version
     payload["trainer"] = "v3_mtf_micro"
+    payload["selection_recommendations"] = selection_recommendations
     return payload
 
 

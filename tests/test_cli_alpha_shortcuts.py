@@ -68,6 +68,7 @@ def test_normalize_paper_alpha_args_uses_live_v3_preset_defaults() -> None:
     assert normalized.top_pct == 0.10
     assert normalized.min_prob is None
     assert normalized.min_cands_per_ts == 3
+    assert normalized.use_learned_selection_recommendations is True
     assert normalized.paper_feature_provider == "live_v3"
     assert normalized.paper_micro_provider == "live_ws"
     assert normalized.micro_order_policy == "on"
@@ -117,6 +118,7 @@ def test_normalize_paper_alpha_args_uses_live_v4_preset_defaults() -> None:
     assert normalized.top_pct == 0.50
     assert normalized.min_prob is None
     assert normalized.min_cands_per_ts == 1
+    assert normalized.use_learned_selection_recommendations is True
     assert normalized.paper_feature_provider == "live_v4"
     assert normalized.paper_micro_provider == "live_ws"
 
@@ -217,6 +219,7 @@ def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> Non
     assert normalized.feature_set == "v3"
     assert normalized.duration_days == 7
     assert normalized.micro_order_policy == "off"
+    assert normalized.use_learned_selection_recommendations is False
 
 
 def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_path: Path) -> None:
@@ -336,6 +339,7 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
     assert options.execution_acceptance_model_alpha.selection.top_pct == 0.5
     assert options.execution_acceptance_model_alpha.selection.min_prob == 0.0
     assert options.execution_acceptance_model_alpha.selection.min_candidates_per_ts == 1
+    assert options.execution_acceptance_model_alpha.selection.use_learned_recommendations is False
     assert options.execution_acceptance_model_alpha.exit.hold_bars == 6
 
 

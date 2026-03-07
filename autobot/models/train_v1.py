@@ -509,6 +509,7 @@ def show_registered_model(*, registry_root: Path, model_ref: str, model_family: 
         "leaderboard_row": load_json(run_dir / "leaderboard_row.json"),
         "metrics": load_json(run_dir / "metrics.json"),
         "thresholds": load_json(run_dir / "thresholds.json"),
+        "selection_recommendations": load_json(run_dir / "selection_recommendations.json"),
         "data_fingerprint": load_json(run_dir / "data_fingerprint.json"),
     }
 
@@ -786,6 +787,88 @@ def _build_thresholds(
     }
 
 
+def build_selection_recommendations(
+    *,
+    valid_scores: np.ndarray,
+    valid_ts_ms: np.ndarray,
+    thresholds: dict[str, Any],
+    min_ts_coverage: float = 0.85,
+    min_one_pick_coverage: float = 0.75,
+) -> dict[str, Any]:
+    scores = np.asarray(valid_scores, dtype=np.float64)
+    ts_ms = np.asarray(valid_ts_ms, dtype=np.int64)
+    if scores.size <= 0 or ts_ms.size <= 0 or scores.size != ts_ms.size:
+        return {}
+
+    total_rows = int(scores.size)
+    ev_selected_rows = max(int(_safe_int_metric(thresholds.get("ev_opt_selected_rows"))), 0)
+    by_key: dict[str, Any] = {}
+    for threshold_key in ("top_1pct", "top_5pct", "top_10pct", "ev_opt"):
+        threshold_value = _safe_optional_float_metric(thresholds.get(threshold_key))
+        if threshold_value is None:
+            continue
+        eligible_mask = scores >= float(threshold_value)
+        eligible_rows = int(np.sum(eligible_mask))
+        positive_counts = _group_counts_by_ts(ts_ms[eligible_mask])
+        coverage_count = _quantile_int(positive_counts, float(min_one_pick_coverage))
+        coverage_floor = (1.0 / float(coverage_count)) if coverage_count > 0 else 1.0
+        density_ratio = 1.0
+        if threshold_key != "ev_opt" and ev_selected_rows > 0 and eligible_rows > 0:
+            density_ratio = max(min(float(ev_selected_rows) / float(eligible_rows), 1.0), 0.0)
+        recommended_top_pct = 1.0
+        if eligible_rows > 0:
+            recommended_top_pct = max(density_ratio, coverage_floor, 1.0 / float(eligible_rows))
+        recommended_top_pct = max(min(float(recommended_top_pct), 1.0), 0.0)
+        recommended_min_candidates = _recommend_min_candidates_for_ts_counts(
+            positive_counts,
+            coverage_target=float(min_ts_coverage),
+        )
+        min_candidates_coverage = (
+            float(np.mean(positive_counts >= recommended_min_candidates)) if positive_counts.size > 0 else 0.0
+        )
+        by_key[threshold_key] = {
+            "threshold": float(threshold_value),
+            "eligible_rows": eligible_rows,
+            "eligible_ratio": (float(eligible_rows) / float(total_rows)) if total_rows > 0 else 0.0,
+            "eligible_ts_nonzero": int(positive_counts.size),
+            "eligible_ts_count_quantile_for_min_one_pick": int(coverage_count),
+            "recommended_top_pct": float(recommended_top_pct),
+            "recommended_min_candidates_per_ts": int(recommended_min_candidates),
+            "recommended_min_candidates_coverage": float(min_candidates_coverage),
+            "top_pct_source": (
+                "ev_opt_relative_to_threshold_plus_ts_coverage_floor"
+                if threshold_key != "ev_opt"
+                else "identity_threshold_with_ts_coverage_floor"
+            ),
+            "min_candidates_source": "ts_coverage_target",
+        }
+    return {
+        "version": 1,
+        "created_at_utc": _utc_now(),
+        "min_ts_coverage_target": float(min_ts_coverage),
+        "min_one_pick_coverage_target": float(min_one_pick_coverage),
+        "by_threshold_key": by_key,
+    }
+
+
+def _safe_optional_float_metric(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int_metric(value: Any) -> int:
+    try:
+        if value is None:
+            return 0
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _select_champion(candidates: dict[str, dict[str, Any]]) -> tuple[str, dict[str, Any]]:
     if not candidates:
         raise ValueError("no model candidates available")
@@ -820,6 +903,37 @@ def _extract_model_metric_block(payload: dict[str, Any] | None) -> dict[str, Any
         "valid": payload.get("valid_metrics"),
         "test": payload.get("test_metrics"),
     }
+
+
+def _group_counts_by_ts(ts_ms: np.ndarray) -> np.ndarray:
+    values = np.asarray(ts_ms, dtype=np.int64)
+    if values.size <= 0:
+        return np.array([], dtype=np.int64)
+    _, counts = np.unique(values, return_counts=True)
+    return counts.astype(np.int64, copy=False)
+
+
+def _quantile_int(values: np.ndarray, quantile: float) -> int:
+    arr = np.asarray(values, dtype=np.int64)
+    if arr.size <= 0:
+        return 1
+    return max(int(np.ceil(float(np.quantile(arr, min(max(quantile, 0.0), 1.0))))), 1)
+
+
+def _recommend_min_candidates_for_ts_counts(values: np.ndarray, *, coverage_target: float) -> int:
+    arr = np.asarray(values, dtype=np.int64)
+    if arr.size <= 0:
+        return 1
+    target = min(max(float(coverage_target), 0.0), 1.0)
+    best = 1
+    max_value = int(np.max(arr))
+    for candidate in range(1, max_value + 1):
+        coverage = float(np.mean(arr >= candidate))
+        if coverage >= target:
+            best = candidate
+        else:
+            break
+    return max(int(best), 1)
 
 
 def _make_leaderboard_row(

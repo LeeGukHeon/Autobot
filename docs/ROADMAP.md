@@ -267,9 +267,14 @@ D:\MyApps\Autobot
   - `LIVE_V4` paper provider 추가
   - `model_alpha_v1` paper 경로도 `feature_set=v4`를 허용함
   - `paper alpha`는 `live_v4`, `candidate_v4`, `offline_v4` preset을 지원함
-  - runtime preset now owns lane breadth criteria explicitly, while keeping `min_prob` unset so always-on paper uses learned registry thresholds:
-    - `live_v3`: `top_pct=0.10`, `min_candidates_per_ts=3`, `min_prob -> registry`
-    - `live_v4/candidate_v4`: `top_pct=0.50`, `min_candidates_per_ts=1`, `min_prob -> registry`
+  - runtime은 이제 `selection_recommendations.json`을 우선 읽어 learned selection breadth를 사용함
+    - learned runtime knobs:
+      - `recommended_top_pct`
+      - `recommended_min_candidates_per_ts`
+    - `min_prob`는 계속 registry threshold를 사용함
+  - runtime preset의 lane 숫자는 이제 fallback 값이다:
+    - `live_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`, `min_prob -> registry`
+    - `live_v4/candidate_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob -> registry`
   - acceptance stays on one shared fixed compare profile across `v3` and `v4`:
     - `top_pct=0.50`
     - `min_prob=0.00`
@@ -284,14 +289,18 @@ D:\MyApps\Autobot
   - `v3_candidate_acceptance.ps1`, `v4_candidate_acceptance.ps1` wrapper 분리
   - `v4`도 이제 `train -> candidate/champion backtest -> paper soak -> promote` 루프를 같은 계약으로 탈 수 있음
   - `v4_candidate_acceptance.ps1`는 trainer가 미리 만든 `walk-forward + execution_acceptance` 증빙을 `required` gate로 읽음
-  - 현재 얕은 `v4` 히스토리에 맞춰 wrapper 기본 selection은 `sparse-aware`로 완화함 (`top_pct=0.5`, `min_prob=0.0`, `min_candidates=1`)
-  - trainer 내부 `execution_acceptance`도 이제 wrapper와 동일한 `top_n/top_pct/min_prob/min_candidates/hold_bars` override를 받아 같은 sparse-aware 설정으로 비교함
-  - lane별 acceptance 기준은 wrapper에 명시값으로 고정한다
-    - `v3`: `balanced_pareto`, `trainer_evidence=ignore`, `top_pct=0.10`, `min_prob=0.52`, `min_candidates=3`, `paper_max_fallback_ratio=0.10`
-    - `v4`: `balanced_pareto`, `trainer_evidence=required`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
+  - trainer는 이제 `selection_recommendations.json`도 함께 저장한다
+    - runtime은 이 learned recommendation을 우선 사용하고
+    - acceptance는 의도적으로 사용하지 않는다
+  - trainer 내부 `execution_acceptance`도 이제 wrapper와 동일한 `top_n/top_pct/min_prob/min_candidates/hold_bars` compare override를 받아 같은 고정 기준으로 비교함
+  - lane별 acceptance는 같은 fixed compare profile을 공유한다
+    - 공통: `balanced_pareto`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
+    - 차이는 trainer evidence만 남긴다
+      - `v3`: `trainer_evidence=ignore`
+      - `v4`: `trainer_evidence=required`
   - `v4`의 완화 기준은 임시 bootstrap 설정으로 취급한다
     - 되돌림 트리거: `v4` usable history가 대략 `14일+` 확보되고, 최근 rolling paper fallback ratio가 안정적으로 `0.10` 아래에 머무를 때
-    - 그 시점에는 `top_pct/min_prob/min_candidates`와 `paper_max_fallback_ratio`를 다시 조이는 작업을 우선순위로 둔다
+    - 그 시점에는 fallback runtime breadth(`top_pct/min_candidates`)와 `paper_max_fallback_ratio`를 다시 조이는 작업을 우선순위로 둔다
   - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
   - 현재 운영 기본은 `00:10` shared orchestrator다
     - `daily_micro_pipeline_for_server.ps1`를 한 번만 돌려 raw/micro/report를 갱신한다

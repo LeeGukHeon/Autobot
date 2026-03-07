@@ -1115,6 +1115,12 @@ class BacktestRunEngine:
                 "selection_ratio": selection_ratio,
                 "min_prob_used": float(self._runtime_state.get("model_alpha_min_prob_used", 0.0)),
                 "min_prob_source": str(self._runtime_state.get("model_alpha_min_prob_source", "manual")),
+                "top_pct_used": float(self._runtime_state.get("model_alpha_top_pct_used", 0.0)),
+                "top_pct_source": str(self._runtime_state.get("model_alpha_top_pct_source", "manual")),
+                "min_candidates_used": int(self._runtime_state.get("model_alpha_min_candidates_used", 0)),
+                "min_candidates_source": str(
+                    self._runtime_state.get("model_alpha_min_candidates_source", "manual")
+                ),
                 "dropped_min_prob_rows": int(self._runtime_counters.get("dropped_min_prob_rows", 0)),
                 "dropped_min_prob_ratio": (
                     int(self._runtime_counters.get("dropped_min_prob_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
@@ -1261,6 +1267,10 @@ class BacktestRunEngine:
                 _note_reason_count(reason_code=reason, reason_counts=debug_reasons, delta=int(count))
         self._runtime_state["model_alpha_min_prob_used"] = float(result.min_prob_used)
         self._runtime_state["model_alpha_min_prob_source"] = str(result.min_prob_source)
+        self._runtime_state["model_alpha_top_pct_used"] = float(result.top_pct_used)
+        self._runtime_state["model_alpha_top_pct_source"] = str(result.top_pct_source)
+        self._runtime_state["model_alpha_min_candidates_used"] = int(result.min_candidates_used)
+        self._runtime_state["model_alpha_min_candidates_source"] = str(result.min_candidates_source)
 
         selection_rows = self._runtime_state.setdefault("selection_per_ts", [])
         if isinstance(selection_rows, list):
@@ -1278,6 +1288,10 @@ class BacktestRunEngine:
                     "missing_rows": int(result.skipped_missing_features_rows),
                     "min_prob_used": float(result.min_prob_used),
                     "min_prob_source": str(result.min_prob_source),
+                    "top_pct_used": float(result.top_pct_used),
+                    "top_pct_source": str(result.top_pct_source),
+                    "min_candidates_used": int(result.min_candidates_used),
+                    "min_candidates_source": str(result.min_candidates_source),
                 }
             )
 
@@ -1295,6 +1309,10 @@ class BacktestRunEngine:
                 "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
                 "min_prob_used": float(result.min_prob_used),
                 "min_prob_source": str(result.min_prob_source),
+                "top_pct_used": float(result.top_pct_used),
+                "top_pct_source": str(result.top_pct_source),
+                "min_candidates_used": int(result.min_candidates_used),
+                "min_candidates_source": str(result.min_candidates_source),
                 "reasons": dict(result.skipped_reasons),
             },
         )

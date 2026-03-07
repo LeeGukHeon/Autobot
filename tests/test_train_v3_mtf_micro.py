@@ -116,6 +116,8 @@ def test_train_v3_registers_candidate_without_auto_promotion(tmp_path, monkeypat
     result = train_and_register_v3_mtf_micro(options)
 
     assert result.status == "candidate"
+    selection_doc = load_json(result.run_dir / "selection_recommendations.json")
+    assert "by_threshold_key" in selection_doc
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
     assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
     assert load_json(options.registry_root / "latest_candidate.json")["run_id"] == result.run_id

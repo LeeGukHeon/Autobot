@@ -168,6 +168,7 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "model_family": "train_v3_mtf_micro",
                 "top_pct": 0.10,
                 "min_cands_per_ts": 3,
+                "use_learned_selection_recommendations": True,
                 "paper_feature_provider": "live_v3",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
@@ -185,6 +186,7 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "model_family": "train_v4_crypto_cs",
                 "top_pct": 0.50,
                 "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
                 "paper_feature_provider": "live_v4",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
@@ -202,6 +204,7 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "model_family": "train_v4_crypto_cs",
                 "top_pct": 0.50,
                 "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
                 "paper_feature_provider": "live_v4",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
@@ -218,6 +221,7 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "model_family": "train_v3_mtf_micro",
                 "top_pct": 0.10,
                 "min_cands_per_ts": 3,
+                "use_learned_selection_recommendations": True,
                 "paper_feature_provider": "offline_parquet",
                 "paper_micro_provider": "offline_parquet",
             }
@@ -231,6 +235,7 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "model_family": "train_v4_crypto_cs",
                 "top_pct": 0.50,
                 "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
                 "paper_feature_provider": "offline_parquet",
                 "paper_micro_provider": "offline_parquet",
             }
@@ -267,6 +272,7 @@ def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
             if getattr(args, "min_cands_per_ts", None) is not None
             else overrides.get("min_cands_per_ts")
         ),
+        "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
         "max_positions_total": getattr(args, "max_positions_total", None),
         "cooldown_bars": getattr(args, "cooldown_bars", None),
         "exit_mode": getattr(args, "exit_mode", None),
@@ -355,6 +361,7 @@ def _backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
         overrides.update(
             {
                 "micro_order_policy": "off",
+                "use_learned_selection_recommendations": False,
             }
         )
         return overrides
@@ -385,6 +392,7 @@ def _normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespa
         "top_pct": getattr(args, "top_pct", None),
         "min_prob": getattr(args, "min_prob", None),
         "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
+        "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
         "exit_mode": getattr(args, "exit_mode", None),
         "hold_bars": getattr(args, "hold_bars", None),
         "tp_pct": getattr(args, "tp_pct", None),
@@ -419,6 +427,19 @@ def _normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespa
         if key not in payload:
             payload[key] = value
     return argparse.Namespace(**payload)
+
+
+def _selection_use_learned_recommendations(
+    *,
+    args: argparse.Namespace,
+    model_alpha_selection_defaults: dict[str, Any],
+) -> bool:
+    override = getattr(args, "use_learned_selection_recommendations", None)
+    if override is not None:
+        return bool(override)
+    if getattr(args, "top_pct", None) is not None or getattr(args, "min_cands_per_ts", None) is not None:
+        return False
+    return bool(model_alpha_selection_defaults.get("use_learned_recommendations", True))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2402,6 +2423,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                                 str(model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")).strip()
                                 or "top_5pct"
                             ),
+                            use_learned_recommendations=False,
                         ),
                         position=ModelAlphaPositionSettings(
                             max_positions_total=max(
@@ -2890,6 +2912,10 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             getattr(args, "feature_set", None)
             or defaults.get("feature_set", model_alpha_defaults.get("feature_set", "v3"))
         ).strip().lower() or "v3"
+        selection_use_learned_recommendations = _selection_use_learned_recommendations(
+            args=args,
+            model_alpha_selection_defaults=model_alpha_selection_defaults,
+        )
         selection_top_pct = float(
             getattr(args, "top_pct", None)
             if getattr(args, "top_pct", None) is not None
@@ -3040,6 +3066,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                     min_prob=selection_min_prob,
                     min_candidates_per_ts=max(selection_min_cands, 0),
                     registry_threshold_key=selection_registry_threshold_key,
+                    use_learned_recommendations=selection_use_learned_recommendations,
                 ),
                 position=ModelAlphaPositionSettings(
                     max_positions_total=max(position_max_total, 1),
@@ -3180,6 +3207,10 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             getattr(args, "feature_set", None)
             or defaults.get("feature_set", model_alpha_defaults.get("feature_set", "v3"))
         ).strip().lower() or "v3"
+        selection_use_learned_recommendations = _selection_use_learned_recommendations(
+            args=args,
+            model_alpha_selection_defaults=model_alpha_selection_defaults,
+        )
         selection_top_pct = float(
             getattr(args, "top_pct", None)
             if getattr(args, "top_pct", None) is not None
@@ -3373,6 +3404,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     min_prob=selection_min_prob,
                     min_candidates_per_ts=max(selection_min_cands, 0),
                     registry_threshold_key=selection_registry_threshold_key,
+                    use_learned_recommendations=selection_use_learned_recommendations,
                 ),
                 position=ModelAlphaPositionSettings(
                     max_positions_total=max(position_max_total, 1),
@@ -3989,6 +4021,9 @@ def _paper_defaults(
                 "registry_threshold_key": (
                     str(model_alpha_selection_cfg.get("registry_threshold_key", "top_5pct")).strip() or "top_5pct"
                 ),
+                "use_learned_recommendations": bool(
+                    model_alpha_selection_cfg.get("use_learned_recommendations", True)
+                ),
             },
             "position": {
                 "max_positions_total": int(model_alpha_position_cfg.get("max_positions_total", 3)),
@@ -4138,6 +4173,9 @@ def _backtest_defaults(
                 "min_candidates_per_ts": int(model_alpha_selection_cfg.get("min_candidates_per_ts", 10)),
                 "registry_threshold_key": (
                     str(model_alpha_selection_cfg.get("registry_threshold_key", "top_5pct")).strip() or "top_5pct"
+                ),
+                "use_learned_recommendations": bool(
+                    model_alpha_selection_cfg.get("use_learned_recommendations", True)
                 ),
             },
             "position": {

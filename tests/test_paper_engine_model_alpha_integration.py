@@ -218,6 +218,8 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
     assert "eligible_rows" in selection_payload
     assert "min_prob_used" in selection_payload
     assert "min_prob_source" in selection_payload
+    assert "top_pct_used" in selection_payload
+    assert "min_candidates_used" in selection_payload
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

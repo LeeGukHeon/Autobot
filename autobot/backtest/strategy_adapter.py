@@ -30,6 +30,10 @@ class StrategyStepResult:
     blocked_min_candidates_ts: int = 0
     min_prob_used: float = 0.0
     min_prob_source: str = "manual"
+    top_pct_used: float = 0.0
+    top_pct_source: str = "manual"
+    min_candidates_used: int = 0
+    min_candidates_source: str = "manual"
     skipped_reasons: dict[str, int] = field(default_factory=dict)
 
 

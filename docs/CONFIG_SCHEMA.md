@@ -118,6 +118,13 @@
 - `strategy.model_alpha_v1.selection.min_prob`: number nullable (default: `null`, uses registry threshold when null)
 - `strategy.model_alpha_v1.selection.min_candidates_per_ts`: integer (default: `10`)
 - `strategy.model_alpha_v1.selection.registry_threshold_key`: `top_1pct | top_5pct | top_10pct | ev_opt` (default: `top_5pct`)
+- `strategy.model_alpha_v1.selection.use_learned_recommendations`: bool (default: `true`)
+  - when `true`, runtime first reads model-run `selection_recommendations.json` for the active `registry_threshold_key`
+  - learned runtime knobs are:
+    - `recommended_top_pct`
+    - `recommended_min_candidates_per_ts`
+  - if the loaded model has no recommendation entry for the active threshold key, runtime falls back to config/preset `top_pct` and `min_candidates_per_ts`
+  - this learned-selection path is for always-on runtime/paper usage, not the fixed acceptance compare profile
 - `strategy.model_alpha_v1.position.max_positions_total`: integer (default: `3`)
 - `strategy.model_alpha_v1.position.cooldown_bars`: integer (default: `6`)
 - `strategy.model_alpha_v1.position.entry_min_notional_buffer_bps`: number (default: `25.0`)
@@ -494,9 +501,10 @@
 
 ## Runtime Presets And Acceptance Scripts
 - `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
-- runtime presets now pin lane-specific breadth knobs but keep `min_prob` unset so runtime uses the learned registry threshold:
-  - `live_v3/offline_v3`: `top_pct=0.10`, `min_candidates_per_ts=3`, `min_prob=null -> registry threshold`
-  - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
+- runtime presets keep `min_prob` unset so runtime uses the learned registry threshold, and their lane-specific breadth knobs are fallback values only:
+  - `live_v3/offline_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`, `min_prob=null -> registry threshold`
+  - `live_v4/candidate_v4/offline_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
+  - when the loaded model run contains `selection_recommendations.json`, runtime uses the learned recommendation entry for the active `registry_threshold_key` instead of these fallback breadth values
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
   - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
@@ -512,6 +520,7 @@
     - `min_prob=0.00`
     - `min_candidates_per_ts=1`
     - `paper_max_fallback_ratio=0.20`
+  - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass
 - `scripts/daily_candidate_acceptance_for_server.ps1`: server wrapper for delayed acceptance runs that reuse already-collected data

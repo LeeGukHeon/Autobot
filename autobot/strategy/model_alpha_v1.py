@@ -20,6 +20,7 @@ class ModelAlphaSelectionSettings:
     min_prob: float | None = None
     min_candidates_per_ts: int = 10
     registry_threshold_key: str = "top_5pct"
+    use_learned_recommendations: bool = True
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,14 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             predictor=self._predictor,
             settings=self._settings.selection,
         )
+        top_pct_used, top_pct_source = _resolve_selection_top_pct(
+            predictor=self._predictor,
+            settings=self._settings.selection,
+        )
+        min_candidates_used, min_candidates_source = _resolve_selection_min_candidates(
+            predictor=self._predictor,
+            settings=self._settings.selection,
+        )
         frame: pl.DataFrame | None
         if self._live_frame_provider is not None:
             frame = self._live_frame_provider(ts_value, tuple(sorted(active_set)))
@@ -158,6 +167,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 skipped_reasons={"NO_FEATURE_ROWS_AT_TS": int(missing_rows)} if missing_rows > 0 else {},
                 min_prob_used=min_prob_used,
                 min_prob_source=min_prob_source,
+                top_pct_used=top_pct_used,
+                top_pct_source=top_pct_source,
+                min_candidates_used=min_candidates_used,
+                min_candidates_source=min_candidates_source,
             )
 
         frame_active = frame.filter(pl.col("market").is_in(list(active_set))) if active_set else frame
@@ -171,6 +184,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 skipped_reasons={"NO_ACTIVE_MARKET_FEATURE_ROWS": int(missing_rows)} if missing_rows > 0 else {},
                 min_prob_used=min_prob_used,
                 min_prob_source=min_prob_source,
+                top_pct_used=top_pct_used,
+                top_pct_source=top_pct_source,
+                min_candidates_used=min_candidates_used,
+                min_candidates_source=min_candidates_source,
             )
 
         matrix = frame_active.select(list(self._predictor.feature_columns)).to_numpy().astype(np.float32, copy=False)
@@ -180,7 +197,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         eligible_rows = int(eligible.height)
         dropped_min_prob_rows = max(scored_rows - eligible_rows, 0)
 
-        min_candidates = max(int(self._settings.selection.min_candidates_per_ts), 0)
+        min_candidates = max(int(min_candidates_used), 0)
         if eligible_rows < min_candidates:
             blocked_min_candidates_ts = 1
             _inc_reason(skipped_reasons, "MIN_CANDIDATES_NOT_MET")
@@ -194,10 +211,14 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 blocked_min_candidates_ts=blocked_min_candidates_ts,
                 min_prob_used=min_prob_used,
                 min_prob_source=min_prob_source,
+                top_pct_used=top_pct_used,
+                top_pct_source=top_pct_source,
+                min_candidates_used=min_candidates_used,
+                min_candidates_source=min_candidates_source,
                 skipped_reasons=skipped_reasons,
             )
 
-        select_count = int(math.floor(eligible_rows * max(float(self._settings.selection.top_pct), 0.0)))
+        select_count = int(math.floor(eligible_rows * max(float(top_pct_used), 0.0)))
         if select_count > 0:
             selected = eligible.sort("model_prob", descending=True).head(select_count)
         else:
@@ -241,6 +262,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "model_prob": float(row.get("model_prob", 0.0)),
                         "selection_min_prob_used": float(min_prob_used),
                         "selection_min_prob_source": str(min_prob_source),
+                        "selection_top_pct_used": float(top_pct_used),
+                        "selection_top_pct_source": str(top_pct_source),
+                        "selection_min_candidates_used": int(min_candidates_used),
+                        "selection_min_candidates_source": str(min_candidates_source),
                         "sizing_mode": str(self._settings.position.sizing_mode),
                         "notional_multiplier": _resolve_entry_notional_multiplier(
                             prob=float(row.get("model_prob", 0.0)),
@@ -263,6 +288,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             blocked_min_candidates_ts=blocked_min_candidates_ts,
             min_prob_used=min_prob_used,
             min_prob_source=min_prob_source,
+            top_pct_used=top_pct_used,
+            top_pct_source=top_pct_source,
+            min_candidates_used=min_candidates_used,
+            min_candidates_source=min_candidates_source,
             skipped_reasons=skipped_reasons,
         )
 
@@ -397,6 +426,69 @@ def _resolve_selection_min_prob(
             return _clamp_prob(fallback_value), "registry:top_5pct_fallback"
 
     return 0.0, "fallback_zero"
+
+
+def _resolve_selection_top_pct(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSelectionSettings,
+) -> tuple[float, str]:
+    manual_value = max(min(float(settings.top_pct), 1.0), 0.0)
+    if not bool(settings.use_learned_recommendations):
+        return manual_value, "manual"
+
+    recommendation, source = _resolve_selection_recommendation_entry(
+        predictor=predictor,
+        settings=settings,
+    )
+    recommended_value = _safe_optional_float(recommendation.get("recommended_top_pct")) if recommendation else None
+    if recommended_value is not None:
+        return _clamp_prob(recommended_value), source
+    return manual_value, "manual_fallback"
+
+
+def _resolve_selection_min_candidates(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSelectionSettings,
+) -> tuple[int, str]:
+    manual_value = max(int(settings.min_candidates_per_ts), 0)
+    if not bool(settings.use_learned_recommendations):
+        return manual_value, "manual"
+
+    recommendation, source = _resolve_selection_recommendation_entry(
+        predictor=predictor,
+        settings=settings,
+    )
+    try:
+        recommended_value = recommendation.get("recommended_min_candidates_per_ts") if recommendation else None
+        if recommended_value is not None:
+            return max(int(recommended_value), 0), source
+    except (TypeError, ValueError):
+        pass
+    return manual_value, "manual_fallback"
+
+
+def _resolve_selection_recommendation_entry(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSelectionSettings,
+) -> tuple[dict[str, Any], str]:
+    recommendations = predictor.selection_recommendations if isinstance(predictor.selection_recommendations, dict) else {}
+    by_key = recommendations.get("by_threshold_key")
+    if not isinstance(by_key, dict):
+        return {}, "manual_fallback"
+
+    threshold_key = str(settings.registry_threshold_key).strip() or "top_5pct"
+    entry = by_key.get(threshold_key)
+    if isinstance(entry, dict):
+        return entry, f"registry_recommendation:{threshold_key}"
+
+    if threshold_key != "top_5pct":
+        fallback_entry = by_key.get("top_5pct")
+        if isinstance(fallback_entry, dict):
+            return fallback_entry, "registry_recommendation:top_5pct_fallback"
+    return {}, "manual_fallback"
 
 
 def _resolve_entry_notional_multiplier(

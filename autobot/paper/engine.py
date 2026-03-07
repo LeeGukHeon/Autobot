@@ -1400,6 +1400,10 @@ class PaperRunEngine:
             live_payload["model_selection_blocked_min_candidates_ts"] = int(result.blocked_min_candidates_ts)
             live_payload["model_selection_min_prob_used"] = float(result.min_prob_used)
             live_payload["model_selection_min_prob_source"] = str(result.min_prob_source)
+            live_payload["model_selection_top_pct_used"] = float(result.top_pct_used)
+            live_payload["model_selection_top_pct_source"] = str(result.top_pct_source)
+            live_payload["model_selection_min_candidates_used"] = int(result.min_candidates_used)
+            live_payload["model_selection_min_candidates_source"] = str(result.min_candidates_source)
             append_event(
                 "LIVE_FEATURES_BUILT",
                 ts_ms=ts_ms,
@@ -1432,6 +1436,10 @@ class PaperRunEngine:
                 _note_reason_count(reason_code=reason, reason_counts=debug_reasons, delta=int(count))
         self._runtime_state["model_alpha_min_prob_used"] = float(result.min_prob_used)
         self._runtime_state["model_alpha_min_prob_source"] = str(result.min_prob_source)
+        self._runtime_state["model_alpha_top_pct_used"] = float(result.top_pct_used)
+        self._runtime_state["model_alpha_top_pct_source"] = str(result.top_pct_source)
+        self._runtime_state["model_alpha_min_candidates_used"] = int(result.min_candidates_used)
+        self._runtime_state["model_alpha_min_candidates_source"] = str(result.min_candidates_source)
         selection_payload = {
             "scored_rows": int(result.scored_rows),
             "eligible_rows": int(result.eligible_rows),
@@ -1443,6 +1451,10 @@ class PaperRunEngine:
             "blocked_min_candidates_ts": int(result.blocked_min_candidates_ts),
             "min_prob_used": float(result.min_prob_used),
             "min_prob_source": str(result.min_prob_source),
+            "top_pct_used": float(result.top_pct_used),
+            "top_pct_source": str(result.top_pct_source),
+            "min_candidates_used": int(result.min_candidates_used),
+            "min_candidates_source": str(result.min_candidates_source),
             "reasons": dict(result.skipped_reasons),
         }
         if _is_live_feature_provider(live_feature_provider):

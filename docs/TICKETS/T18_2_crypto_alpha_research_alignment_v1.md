@@ -355,9 +355,15 @@ Current implementation checkpoint:
     - `live_v4`
     - `candidate_v4`
     - `offline_v4`
-  - runtime presets now pin lane-specific breadth controls instead of inheriting baseline `strategy.yaml` defaults:
-    - `live_v3/offline_v3`: `top_pct=0.10`, `min_candidates_per_ts=3`, while `min_prob` stays unset and resolves from the model registry threshold
-    - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_candidates_per_ts=1`, while `min_prob` stays unset and resolves from the model registry threshold
+  - runtime now prefers learned selection breadth from the model run itself:
+    - each run may write `selection_recommendations.json`
+    - runtime `model_alpha_v1` uses the active threshold key's:
+      - `recommended_top_pct`
+      - `recommended_min_candidates_per_ts`
+    - `min_prob` still stays unset and resolves from the model registry threshold
+  - runtime presets keep lane-specific breadth numbers only as fallback values when a model run has no recommendation entry:
+    - `live_v3/offline_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`
+    - `live_v4/candidate_v4/offline_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`
   - `backtest alpha` and `paper alpha` parser choices now allow `--feature-set v4`
   - live service rollout is still intentionally pending
 - Phase 5 has started:
@@ -371,19 +377,20 @@ Current implementation checkpoint:
     - `champion_model_ref=champion_v4`
     - `paper_feature_provider=live_v4`
     - `trainer_evidence_mode=required`
-    - sparse-aware serving defaults for the current shallow v4 history:
+    - acceptance compare profile:
       - `backtest_top_pct=0.5`
       - `backtest_min_prob=0.0`
       - `backtest_min_candidates_per_ts=1`
-    - trainer-side execution acceptance now consumes the same sparse-aware overrides instead of falling back to baseline `strategy.yaml` selection defaults
+    - trainer-side execution acceptance now consumes the same fixed compare overrides instead of falling back to baseline `strategy.yaml` selection defaults
   - lane wrappers keep acceptance criteria explicit instead of inheriting generic defaults:
     - shared compare profile for `v3` and `v4`: `balanced_pareto`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
     - lane-specific difference remains only in trainer evidence:
       - `v3`: `trainer_evidence=ignore`
       - `v4`: `trainer_evidence=required`
     - generic `candidate_acceptance.ps1` defaults are aligned to the same compare profile, so direct/manual invocation does not silently fall back to older legacy constants
+    - acceptance intentionally does not consume learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays constant across retrains
   - the `v4` relaxed runtime breadth settings are a temporary bootstrap lane, not a permanent production target:
-    - runtime `live_v4/candidate_v4` stays on `top_pct=0.50`, `min_candidates_per_ts=1` until `v4` has roughly `14+` effective days of usable history
+    - runtime `live_v4/candidate_v4` keeps fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1` until `v4` has roughly `14+` effective days of usable history
   - current result:
     - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
     - generic acceptance now reads trainer-side `promotion_decision.json` evidence and can require:

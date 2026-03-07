@@ -22,6 +22,7 @@ class ModelPredictor:
     feature_columns: tuple[str, ...]
     train_config: dict[str, Any]
     thresholds: dict[str, Any]
+    selection_recommendations: dict[str, Any]
 
     @property
     def dataset_root(self) -> Path | None:
@@ -52,6 +53,11 @@ def load_predictor_from_registry(
     if not isinstance(model_bundle_raw, dict):
         raise ValueError(f"unsupported model bundle type at {run_dir}: {type(model_bundle_raw)!r}")
     thresholds = load_json(run_dir / "thresholds.json")
+    selection_recommendations = load_json(run_dir / "selection_recommendations.json")
+    if not selection_recommendations:
+        raw_train_recommendations = train_config.get("selection_recommendations")
+        if isinstance(raw_train_recommendations, dict):
+            selection_recommendations = raw_train_recommendations
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -71,4 +77,5 @@ def load_predictor_from_registry(
         feature_columns=feature_columns,
         train_config=train_config,
         thresholds=thresholds if isinstance(thresholds, dict) else {},
+        selection_recommendations=selection_recommendations if isinstance(selection_recommendations, dict) else {},
     )
