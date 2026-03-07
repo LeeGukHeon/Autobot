@@ -3177,13 +3177,17 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
         parquet_root_value = str(getattr(args, "parquet_root", None) or defaults["parquet_root"]).strip()
         if (
             strategy_mode == "model_alpha_v1"
-            and feature_set_value == "v3"
+            and feature_set_value in {"v3", "v4"}
             and getattr(args, "dataset_name", None) is None
         ):
-            features_v3_cfg = load_features_v3_config(config_dir, base_config=base_config)
+            features_runtime_cfg = (
+                load_features_v4_config(config_dir, base_config=base_config)
+                if feature_set_value == "v4"
+                else load_features_v3_config(config_dir, base_config=base_config)
+            )
             dataset_name_value = _resolve_backtest_dataset_name_for_model_features(
                 parquet_root=Path(parquet_root_value),
-                base_candles_dataset=str(features_v3_cfg.build.base_candles_dataset),
+                base_candles_dataset=str(features_runtime_cfg.build.base_candles_dataset),
                 fallback=dataset_name_value,
             )
 

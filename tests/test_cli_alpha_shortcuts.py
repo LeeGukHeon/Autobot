@@ -5,7 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import autobot.cli as cli_mod
+from autobot.backtest import BacktestRunSummary
 from autobot.cli import (
+    _handle_backtest_command,
     _normalize_backtest_alpha_args,
     _handle_model_command,
     _normalize_paper_alpha_args,
@@ -267,3 +269,127 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
     )
 
     assert _handle_model_command(args, tmp_path / "config", {}) == 0
+
+
+def test_handle_backtest_command_v4_resolves_base_candles_dataset(monkeypatch, tmp_path: Path) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "backtest",
+            "alpha",
+            "--preset",
+            "acceptance",
+            "--model-ref",
+            "latest_candidate_v4",
+            "--model-family",
+            "train_v4_crypto_cs",
+            "--feature-set",
+            "v4",
+            "--tf",
+            "5m",
+            "--quote",
+            "KRW",
+            "--top-n",
+            "20",
+            "--start",
+            "2026-03-03",
+            "--end",
+            "2026-03-06",
+        ]
+    )
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli_mod, "_load_yaml_doc", lambda path: {})
+    monkeypatch.setattr(
+        cli_mod,
+        "_backtest_defaults",
+        lambda **kwargs: {
+            "dataset_name": "candles_v1",
+            "parquet_root": "data/parquet",
+            "tf": "5m",
+            "from_ts_ms": None,
+            "to_ts_ms": None,
+            "duration_days": None,
+            "strategy": "model_alpha_v1",
+            "model_ref": "latest_candidate_v4",
+            "model_family": "train_v4_crypto_cs",
+            "feature_set": "v4",
+            "max_positions": 2,
+            "order_timeout_bars": 5,
+            "reprice_max_attempts": 1,
+            "universe_mode": "static_start",
+            "quote": "KRW",
+            "top_n": 20,
+            "dense_grid": False,
+            "starting_krw": 50000.0,
+            "per_trade_krw": 10000.0,
+            "min_order_krw": 5000.0,
+            "reprice_tick_steps": 1,
+            "rules_ttl_sec": 86400,
+            "momentum_window_sec": 60,
+            "min_momentum_pct": 0.2,
+            "backtest_out_dir": str(tmp_path / "runs"),
+            "seed": 0,
+            "micro_gate": {},
+            "micro_order_policy": {},
+            "model_alpha": {},
+            "model_registry_root": "models/registry",
+            "model_feature_dataset_root": None,
+        },
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "load_features_v4_config",
+        lambda *args, **kwargs: SimpleNamespace(
+            build=SimpleNamespace(base_candles_dataset="candles_api_v1"),
+        ),
+    )
+    monkeypatch.setattr(cli_mod, "_resolve_backtest_dataset_name_for_model_features", lambda **kwargs: "candles_api_v1")
+    monkeypatch.setattr(cli_mod, "load_upbit_settings", lambda config_dir: object())
+    monkeypatch.setattr(cli_mod, "_ensure_upbit_runtime_available", lambda: None)
+    monkeypatch.setattr(cli_mod, "_print_json", lambda payload: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "run_backtest_sync",
+        lambda run_settings, upbit_settings=None: (
+            captured.setdefault("run_settings", run_settings),
+            BacktestRunSummary(
+                run_id="bt-v4",
+                run_dir=str(tmp_path / "runs" / "bt-v4"),
+                tf="5m",
+                from_ts_ms=0,
+                to_ts_ms=0,
+                bars_processed=0,
+                markets=["KRW-BTC"],
+                orders_submitted=0,
+                orders_filled=0,
+                orders_canceled=0,
+                intents_failed=0,
+                candidates_total=0,
+                candidates_blocked_by_micro=0,
+                candidates_aborted_by_policy=0,
+                micro_blocked_ratio=0.0,
+                micro_blocked_reasons={},
+                replaces_total=0,
+                cancels_total=0,
+                aborted_timeout_total=0,
+                dust_abort_total=0,
+                avg_time_to_fill_ms=0.0,
+                p50_time_to_fill_ms=0.0,
+                p90_time_to_fill_ms=0.0,
+                slippage_bps_mean=0.0,
+                slippage_bps_p50=0.0,
+                slippage_bps_p90=0.0,
+                fill_ratio=0.0,
+                fill_rate=0.0,
+                realized_pnl_quote=0.0,
+                unrealized_pnl_quote=0.0,
+                max_drawdown_pct=0.0,
+                win_rate=0.0,
+            ),
+        )[1],
+    )
+
+    assert _handle_backtest_command(args, tmp_path / "config", {}) == 0
+    assert str(captured["run_settings"].dataset_name) == "candles_api_v1"
