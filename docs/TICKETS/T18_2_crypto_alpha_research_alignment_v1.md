@@ -325,12 +325,15 @@ Current implementation checkpoint:
     - `precision_top5`
     - `pr_auc`
     - `log_loss`
-  - full execution-aware Pareto comparison on:
-    - realized pnl
-    - max drawdown
-    - fill rate
-    - slippage
-    remains pending until the backtest/paper parity phase
+  - execution-aware backtest acceptance is now wired as a separate report:
+    - `execution_acceptance_report.json`
+    - current compare policy: `balanced_pareto_execution`
+    - current metrics:
+      - realized pnl
+      - max drawdown
+      - fill rate
+      - slippage
+  - `model_alpha_v1` backtest path now accepts `feature_set=v4` for this research lane
   - paper/live parity for `v4` is still pending
 
 ### Phase 0: Refactor For Clean Extension
@@ -353,7 +356,7 @@ Current implementation checkpoint:
 - Add `train_v4_crypto_cs.py`
 - Add rolling walk-forward evaluation
 - Compare against `v4` champion on balanced Pareto basis using offline aggregate metrics first
-- Keep execution-aware backtest/paper acceptance as a later phase, not mixed into the first trainer lane
+- Add execution-aware backtest acceptance as a separate evidence report, while keeping paper/live parity as a later phase
 
 ### Phase 4: Runtime Parity
 - Add `LIVE_V4`

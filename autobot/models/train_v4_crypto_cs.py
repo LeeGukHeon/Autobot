@@ -14,6 +14,7 @@ import numpy as np
 from autobot import __version__ as autobot_version
 from autobot.data import expected_interval_ms
 from autobot.features.feature_spec import parse_date_to_ts_ms
+from autobot.strategy.model_alpha_v1 import ModelAlphaSettings
 
 from .dataset_loader import (
     build_data_fingerprint,
@@ -23,6 +24,7 @@ from .dataset_loader import (
     load_feature_spec,
     load_label_spec,
 )
+from .execution_acceptance import ExecutionAcceptanceOptions, run_execution_acceptance
 from .model_card import render_model_card
 from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
 from .registry import (
@@ -84,6 +86,20 @@ class TrainV4CryptoCsOptions:
     walk_forward_sweep_trials: int = 3
     walk_forward_min_train_rows: int = 1_000
     walk_forward_min_test_rows: int = 200
+    execution_acceptance_enabled: bool = False
+    execution_acceptance_dataset_name: str = "candles_v1"
+    execution_acceptance_parquet_root: Path = Path("data/parquet")
+    execution_acceptance_output_root: Path = Path("data/backtest")
+    execution_acceptance_dense_grid: bool = False
+    execution_acceptance_starting_krw: float = 50_000.0
+    execution_acceptance_per_trade_krw: float = 10_000.0
+    execution_acceptance_max_positions: int = 2
+    execution_acceptance_min_order_krw: float = 5_000.0
+    execution_acceptance_order_timeout_bars: int = 5
+    execution_acceptance_reprice_max_attempts: int = 1
+    execution_acceptance_reprice_tick_steps: int = 1
+    execution_acceptance_rules_ttl_sec: int = 86_400
+    execution_acceptance_model_alpha: ModelAlphaSettings = ModelAlphaSettings()
 
 
 @dataclass(frozen=True)
@@ -97,6 +113,7 @@ class TrainV4CryptoCsResult:
     train_report_path: Path
     promotion_path: Path
     walk_forward_report_path: Path | None = None
+    execution_acceptance_report_path: Path | None = None
 
 
 def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4CryptoCsResult:
@@ -313,10 +330,20 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(walk_forward, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    execution_acceptance = _run_execution_acceptance_v4(
+        options=options,
+        run_id=run_id,
+    )
+    execution_acceptance_report_path = run_dir / "execution_acceptance_report.json"
+    execution_acceptance_report_path.write_text(
+        json.dumps(execution_acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     promotion = _manual_promotion_decision_v4(
         options=options,
         run_id=run_id,
         walk_forward=walk_forward,
+        execution_acceptance=execution_acceptance,
     )
     promotion_path = run_dir / "promotion_decision.json"
     promotion_path.write_text(
@@ -340,6 +367,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
             "walk_forward": walk_forward,
+            "execution_acceptance": execution_acceptance,
             "promotion": promotion,
         },
     )
@@ -354,6 +382,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         train_report_path=report_path,
         promotion_path=promotion_path,
         walk_forward_report_path=walk_forward_report_path,
+        execution_acceptance_report_path=execution_acceptance_report_path,
     )
 
 
@@ -758,6 +787,8 @@ def _train_config_snapshot_v4(
     payload["dataset_root"] = str(options.dataset_root)
     payload["registry_root"] = str(options.registry_root)
     payload["logs_root"] = str(options.logs_root)
+    payload["execution_acceptance_parquet_root"] = str(options.execution_acceptance_parquet_root)
+    payload["execution_acceptance_output_root"] = str(options.execution_acceptance_output_root)
     payload["feature_columns"] = list(feature_cols)
     payload["markets"] = list(markets)
     payload["start_ts_ms"] = parse_date_to_ts_ms(options.start)
@@ -779,11 +810,62 @@ def _write_train_report_v4(logs_root: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def _run_execution_acceptance_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    run_id: str,
+) -> dict[str, Any]:
+    if not bool(options.execution_acceptance_enabled):
+        return {
+            "policy": "balanced_pareto_execution",
+            "enabled": False,
+            "status": "skipped",
+            "skip_reason": "DISABLED",
+            "compare_to_champion": {},
+        }
+    try:
+        return run_execution_acceptance(
+            ExecutionAcceptanceOptions(
+                registry_root=options.registry_root,
+                model_family=options.model_family,
+                candidate_ref=run_id,
+                parquet_root=options.execution_acceptance_parquet_root,
+                dataset_name=str(options.execution_acceptance_dataset_name).strip() or "candles_v1",
+                output_root_dir=options.execution_acceptance_output_root,
+                tf=str(options.tf).strip().lower(),
+                quote=str(options.quote).strip().upper(),
+                top_n=max(int(options.top_n), 1),
+                start_ts_ms=parse_date_to_ts_ms(options.start),
+                end_ts_ms=parse_date_to_ts_ms(options.end, end_of_day=True),
+                feature_set=str(options.feature_set).strip().lower() or "v4",
+                dense_grid=bool(options.execution_acceptance_dense_grid),
+                starting_krw=max(float(options.execution_acceptance_starting_krw), 0.0),
+                per_trade_krw=max(float(options.execution_acceptance_per_trade_krw), 1.0),
+                max_positions=max(int(options.execution_acceptance_max_positions), 1),
+                min_order_krw=max(float(options.execution_acceptance_min_order_krw), 0.0),
+                order_timeout_bars=max(int(options.execution_acceptance_order_timeout_bars), 1),
+                reprice_max_attempts=max(int(options.execution_acceptance_reprice_max_attempts), 0),
+                reprice_tick_steps=max(int(options.execution_acceptance_reprice_tick_steps), 1),
+                rules_ttl_sec=max(int(options.execution_acceptance_rules_ttl_sec), 1),
+                model_alpha_settings=options.execution_acceptance_model_alpha,
+            )
+        )
+    except Exception as exc:
+        return {
+            "policy": "balanced_pareto_execution",
+            "enabled": True,
+            "status": "skipped",
+            "skip_reason": f"{type(exc).__name__}: {exc}",
+            "compare_to_champion": {},
+        }
+
+
 def _manual_promotion_decision_v4(
     *,
     options: TrainV4CryptoCsOptions,
     run_id: str,
     walk_forward: dict[str, Any],
+    execution_acceptance: dict[str, Any],
 ) -> dict[str, Any]:
     champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
     champion_run_id = str(champion_doc.get("run_id", "")).strip()
@@ -791,6 +873,12 @@ def _manual_promotion_decision_v4(
     compare_doc = walk_forward.get("compare_to_champion", {}) if isinstance(walk_forward, dict) else {}
     walk_summary = walk_forward.get("summary", {}) if isinstance(walk_forward, dict) else {}
     windows_run = int(walk_summary.get("windows_run", 0) or 0)
+    execution_status = str(execution_acceptance.get("status", "")).strip().lower()
+    execution_compare = (
+        execution_acceptance.get("compare_to_champion", {})
+        if isinstance(execution_acceptance, dict)
+        else {}
+    )
     if not champion_run_id:
         reasons.append("NO_EXISTING_CHAMPION")
     if windows_run <= 0:
@@ -803,6 +891,16 @@ def _manual_promotion_decision_v4(
             reasons.append("OFFLINE_BALANCED_PARETO_FAIL")
         elif decision:
             reasons.append("OFFLINE_BALANCED_PARETO_HOLD")
+    if bool(options.execution_acceptance_enabled):
+        execution_decision = str(execution_compare.get("decision", "")).strip().lower()
+        if execution_status == "skipped":
+            reasons.append("NO_EXECUTION_AWARE_EVIDENCE")
+        elif execution_decision == "candidate_edge":
+            reasons.append("EXECUTION_BALANCED_PARETO_PASS")
+        elif execution_decision == "champion_edge":
+            reasons.append("EXECUTION_BALANCED_PARETO_FAIL")
+        elif execution_status:
+            reasons.append("EXECUTION_BALANCED_PARETO_HOLD")
     return {
         "run_id": run_id,
         "promote": False,
@@ -816,12 +914,17 @@ def _manual_promotion_decision_v4(
             "walk_forward_windows_run": windows_run,
             "balanced_pareto_comparable": bool(compare_doc.get("comparable", False)),
             "balanced_pareto_candidate_edge": str(compare_doc.get("decision", "")) == "candidate_edge",
+            "execution_acceptance_enabled": bool(options.execution_acceptance_enabled),
+            "execution_acceptance_present": execution_status in {"candidate_only", "compared"},
+            "execution_balanced_pareto_comparable": bool(execution_compare.get("comparable", False)),
+            "execution_balanced_pareto_candidate_edge": str(execution_compare.get("decision", "")) == "candidate_edge",
         },
         "research_acceptance": {
             "policy": str(compare_doc.get("policy", "balanced_pareto_offline")),
             "walk_forward_summary": walk_summary,
             "compare_to_champion": compare_doc,
         },
+        "execution_acceptance": execution_acceptance,
         "candidate_ref": {
             "model_ref": "latest_candidate",
             "model_family": options.model_family,

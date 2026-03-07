@@ -469,6 +469,61 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert int(exec_profile.get("max_replaces", -1)) == 4
 
 
+def test_backtest_model_alpha_v4_run_uses_v4_feature_dataset(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    dataset_root = tmp_path / "features_v4"
+    registry_root = tmp_path / "registry"
+    out_root = tmp_path / "backtest"
+    _write_candles(parquet_root / "candles_v1")
+    _write_features(dataset_root)
+    _save_model_run(
+        registry_root=registry_root,
+        dataset_root=dataset_root,
+        thresholds={"top_5pct": 0.5},
+        model_family="train_v4_crypto_cs",
+        run_id="run_v4",
+    )
+
+    settings = BacktestRunSettings(
+        dataset_name="candles_v1",
+        parquet_root=str(parquet_root),
+        tf="5m",
+        quote="KRW",
+        top_n=2,
+        markets=("KRW-BTC", "KRW-ETH"),
+        universe_mode="fixed_list",
+        from_ts_ms=0,
+        to_ts_ms=3_600_000,
+        starting_krw=200_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=1,
+        output_root_dir=str(out_root),
+        strategy="model_alpha_v1",
+        model_ref="run_v4",
+        model_family="train_v4_crypto_cs",
+        feature_set="v4",
+        model_registry_root=str(registry_root),
+        model_feature_dataset_root=str(dataset_root),
+        model_alpha=ModelAlphaSettings(
+            model_ref="run_v4",
+            model_family="train_v4_crypto_cs",
+            feature_set="v4",
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(max_positions_total=1, cooldown_bars=0),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+        ),
+    )
+
+    summary = BacktestRunEngine(
+        run_settings=settings,
+        upbit_settings=None,
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    ).run()
+
+    assert summary.strategy == "model_alpha_v1"
+    assert summary.orders_submitted > 0
+
+
 def test_backtest_model_alpha_entry_sizing_respects_min_total_buffer(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     dataset_root = tmp_path / "features_v3"
@@ -635,12 +690,19 @@ def _write_features(dataset_root: Path) -> None:
         ).write_parquet(part_dir / "part-000.parquet")
 
 
-def _save_model_run(*, registry_root: Path, dataset_root: Path, thresholds: dict[str, float] | None = None) -> None:
+def _save_model_run(
+    *,
+    registry_root: Path,
+    dataset_root: Path,
+    thresholds: dict[str, float] | None = None,
+    model_family: str = "train_v3_mtf_micro",
+    run_id: str = "run_v3",
+) -> None:
     save_run(
         RegistrySavePayload(
             registry_root=registry_root,
-            model_family="train_v3_mtf_micro",
-            run_id="run_v3",
+            model_family=model_family,
+            run_id=run_id,
             model_bundle={"model_type": "xgboost", "scaler": None, "estimator": _DummyEstimator()},
             metrics={},
             thresholds=thresholds or {},
@@ -648,7 +710,7 @@ def _save_model_run(*, registry_root: Path, dataset_root: Path, thresholds: dict
             label_spec={"label_columns": ["y_reg", "y_cls"]},
             train_config={"dataset_root": str(dataset_root), "feature_columns": ["f1"], "batch_rows": 1000},
             data_fingerprint={},
-            leaderboard_row={"run_id": "run_v3", "test_precision_top5": 0.1},
+            leaderboard_row={"run_id": run_id, "test_precision_top5": 0.1},
             model_card_text="# model alpha",
         )
     )

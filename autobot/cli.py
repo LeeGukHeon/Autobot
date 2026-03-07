@@ -2134,6 +2134,15 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
 def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
         defaults = load_train_defaults(config_dir, base_config=base_config)
+        risk_doc = _load_optional_yaml(config_dir / "risk.yaml")
+        strategy_doc = _load_optional_yaml(config_dir / "strategy.yaml")
+        backtest_doc = _load_optional_yaml(config_dir / "backtest.yaml")
+        backtest_defaults = _backtest_defaults(
+            base_config=base_config,
+            risk_doc=risk_doc,
+            strategy_doc=strategy_doc,
+            backtest_doc=backtest_doc,
+        )
         features_config = load_features_config(config_dir, base_config=base_config)
         features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
         features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
@@ -2147,6 +2156,32 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             if trainer == "v4_crypto_cs":
                 model_family = (
                     str(getattr(args, "model_family", None) or "train_v4_crypto_cs").strip() or "train_v4_crypto_cs"
+                )
+                backtest_dataset_name_v4 = _resolve_backtest_dataset_name_for_model_features(
+                    parquet_root=Path(str(backtest_defaults["parquet_root"])),
+                    base_candles_dataset=str(features_v4_config.build.base_candles_dataset),
+                    fallback=str(backtest_defaults["dataset_name"]).strip() or "candles_v1",
+                )
+                model_alpha_backtest_defaults = backtest_defaults.get("model_alpha", {})
+                model_alpha_selection_defaults = (
+                    model_alpha_backtest_defaults.get("selection", {})
+                    if isinstance(model_alpha_backtest_defaults.get("selection"), dict)
+                    else {}
+                )
+                model_alpha_position_defaults = (
+                    model_alpha_backtest_defaults.get("position", {})
+                    if isinstance(model_alpha_backtest_defaults.get("position"), dict)
+                    else {}
+                )
+                model_alpha_exit_defaults = (
+                    model_alpha_backtest_defaults.get("exit", {})
+                    if isinstance(model_alpha_backtest_defaults.get("exit"), dict)
+                    else {}
+                )
+                model_alpha_execution_defaults = (
+                    model_alpha_backtest_defaults.get("execution", {})
+                    if isinstance(model_alpha_backtest_defaults.get("execution"), dict)
+                    else {}
                 )
                 options_v4 = TrainV4CryptoCsOptions(
                     dataset_root=features_v4_config.output_dataset_root,
@@ -2178,6 +2213,82 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
                     ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
                     min_rows_for_train=max(int(features_v4_config.build.min_rows_for_train), 1),
+                    execution_acceptance_enabled=True,
+                    execution_acceptance_dataset_name=backtest_dataset_name_v4,
+                    execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
+                    execution_acceptance_output_root=logs_root / "train_v4_execution_backtest",
+                    execution_acceptance_dense_grid=bool(backtest_defaults["dense_grid"]),
+                    execution_acceptance_starting_krw=float(backtest_defaults["starting_krw"]),
+                    execution_acceptance_per_trade_krw=float(backtest_defaults["per_trade_krw"]),
+                    execution_acceptance_max_positions=max(int(backtest_defaults["max_positions"]), 1),
+                    execution_acceptance_min_order_krw=max(float(backtest_defaults["min_order_krw"]), 0.0),
+                    execution_acceptance_order_timeout_bars=max(int(backtest_defaults["order_timeout_bars"]), 1),
+                    execution_acceptance_reprice_max_attempts=max(int(backtest_defaults["reprice_max_attempts"]), 0),
+                    execution_acceptance_reprice_tick_steps=max(int(backtest_defaults["reprice_tick_steps"]), 1),
+                    execution_acceptance_rules_ttl_sec=max(int(backtest_defaults["rules_ttl_sec"]), 1),
+                    execution_acceptance_model_alpha=ModelAlphaSettings(
+                        model_ref="candidate_v4",
+                        model_family=model_family,
+                        feature_set="v4",
+                        selection=ModelAlphaSelectionSettings(
+                            top_pct=max(min(float(model_alpha_selection_defaults.get("top_pct", 0.05)), 1.0), 0.0),
+                            min_prob=_clamp_prob_value(
+                                _optional_float_value(model_alpha_selection_defaults.get("min_prob"))
+                            ),
+                            min_candidates_per_ts=max(
+                                int(model_alpha_selection_defaults.get("min_candidates_per_ts", 10)),
+                                0,
+                            ),
+                            registry_threshold_key=(
+                                str(model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")).strip()
+                                or "top_5pct"
+                            ),
+                        ),
+                        position=ModelAlphaPositionSettings(
+                            max_positions_total=max(
+                                int(model_alpha_position_defaults.get("max_positions_total", 3)),
+                                1,
+                            ),
+                            cooldown_bars=max(int(model_alpha_position_defaults.get("cooldown_bars", 6)), 0),
+                            entry_min_notional_buffer_bps=max(
+                                float(model_alpha_position_defaults.get("entry_min_notional_buffer_bps", 25.0)),
+                                0.0,
+                            ),
+                            sizing_mode=(
+                                str(model_alpha_position_defaults.get("sizing_mode", "prob_ramp")).strip().lower()
+                                or "prob_ramp"
+                            ),
+                            size_multiplier_min=max(
+                                float(model_alpha_position_defaults.get("size_multiplier_min", 0.5)),
+                                0.0,
+                            ),
+                            size_multiplier_max=max(
+                                float(model_alpha_position_defaults.get("size_multiplier_max", 1.5)),
+                                max(float(model_alpha_position_defaults.get("size_multiplier_min", 0.5)), 0.0),
+                            ),
+                        ),
+                        exit=ModelAlphaExitSettings(
+                            mode=str(model_alpha_exit_defaults.get("mode", "hold")).strip().lower() or "hold",
+                            hold_bars=max(int(model_alpha_exit_defaults.get("hold_bars", 6)), 0),
+                            tp_pct=max(float(model_alpha_exit_defaults.get("tp_pct", 0.02)), 0.0),
+                            sl_pct=max(float(model_alpha_exit_defaults.get("sl_pct", 0.01)), 0.0),
+                            trailing_pct=max(float(model_alpha_exit_defaults.get("trailing_pct", 0.0)), 0.0),
+                            expected_exit_slippage_bps=_optional_float_value(
+                                model_alpha_exit_defaults.get("expected_exit_slippage_bps")
+                            ),
+                            expected_exit_fee_bps=_optional_float_value(
+                                model_alpha_exit_defaults.get("expected_exit_fee_bps")
+                            ),
+                        ),
+                        execution=ModelAlphaExecutionSettings(
+                            price_mode=(
+                                str(model_alpha_execution_defaults.get("price_mode", "JOIN")).strip().upper()
+                                or "JOIN"
+                            ),
+                            timeout_bars=max(int(model_alpha_execution_defaults.get("timeout_bars", 2)), 1),
+                            replace_max=max(int(model_alpha_execution_defaults.get("replace_max", 2)), 0),
+                        ),
+                    ),
                 )
                 summary_v4 = train_and_register_v4_crypto_cs(options_v4)
                 print(
@@ -2190,6 +2301,10 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 print(f"[model][train][v4_crypto_cs] train_report={summary_v4.train_report_path}")
                 if summary_v4.walk_forward_report_path is not None:
                     print(f"[model][train][v4_crypto_cs] walk_forward={summary_v4.walk_forward_report_path}")
+                if summary_v4.execution_acceptance_report_path is not None:
+                    print(
+                        f"[model][train][v4_crypto_cs] execution_acceptance={summary_v4.execution_acceptance_report_path}"
+                    )
                 print(f"[model][train][v4_crypto_cs] promotion={summary_v4.promotion_path}")
                 return 0
 
@@ -3023,7 +3138,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             and getattr(args, "dataset_name", None) is None
         ):
             features_v3_cfg = load_features_v3_config(config_dir, base_config=base_config)
-            dataset_name_value = _resolve_backtest_dataset_name_for_v3(
+            dataset_name_value = _resolve_backtest_dataset_name_for_model_features(
                 parquet_root=Path(parquet_root_value),
                 base_candles_dataset=str(features_v3_cfg.build.base_candles_dataset),
                 fallback=dataset_name_value,
@@ -4269,7 +4384,12 @@ def _resolve_base_candles_path(*, base_candles: str | None, default_dataset: str
     return parquet_root / value
 
 
-def _resolve_backtest_dataset_name_for_v3(*, parquet_root: Path, base_candles_dataset: str, fallback: str) -> str:
+def _resolve_backtest_dataset_name_for_model_features(
+    *,
+    parquet_root: Path,
+    base_candles_dataset: str,
+    fallback: str,
+) -> str:
     value = str(base_candles_dataset).strip() or "auto"
     if value.lower() == "auto":
         for name in ("candles_api_v1", "candles_v1"):

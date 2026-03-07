@@ -15,6 +15,14 @@ _LOWER_IS_BETTER = (
     "log_loss_mean",
     "brier_score_mean",
 )
+_EXEC_HIGHER_IS_BETTER = (
+    "realized_pnl_quote",
+    "fill_rate",
+)
+_EXEC_LOWER_IS_BETTER = (
+    "max_drawdown_pct",
+    "slippage_bps_mean",
+)
 
 
 def compare_balanced_pareto(
@@ -137,6 +145,114 @@ def summarize_walk_forward_windows(windows: list[dict[str, Any]]) -> dict[str, A
         "log_loss_mean": sum(log_loss_values) / count,
         "brier_score_mean": sum(brier_values) / count,
         "positive_window_ratio": float(positive_windows) / count,
+    }
+
+
+def compare_execution_balanced_pareto(
+    candidate_summary: dict[str, Any] | None,
+    champion_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    candidate = dict(candidate_summary or {})
+    champion = dict(champion_summary or {})
+    if not candidate or not champion:
+        missing = []
+        if not candidate:
+            missing.append("candidate_summary")
+        if not champion:
+            missing.append("champion_summary")
+        return {
+            "policy": "balanced_pareto_execution",
+            "comparable": False,
+            "reasons": [f"MISSING_{name.upper()}" for name in missing],
+            "candidate_dominates": False,
+            "champion_dominates": False,
+            "utility_score": 0.0,
+            "utility_components": {},
+            "decision": "insufficient_evidence",
+        }
+
+    candidate_fills = int(candidate.get("orders_filled", 0) or 0)
+    champion_fills = int(champion.get("orders_filled", 0) or 0)
+    reasons: list[str] = []
+    if candidate_fills <= 0:
+        reasons.append("CANDIDATE_NO_FILLS")
+    if champion_fills <= 0:
+        reasons.append("CHAMPION_NO_FILLS")
+    if reasons:
+        return {
+            "policy": "balanced_pareto_execution",
+            "comparable": False,
+            "reasons": reasons,
+            "candidate_dominates": False,
+            "champion_dominates": False,
+            "utility_score": 0.0,
+            "utility_components": {},
+            "decision": "insufficient_evidence",
+        }
+
+    candidate_dominates = True
+    champion_dominates = True
+    strict_candidate_edge = False
+    strict_champion_edge = False
+    utility_components: dict[str, float] = {}
+    deltas: dict[str, float] = {}
+
+    for key in _EXEC_HIGHER_IS_BETTER:
+        cand = _safe_float(candidate.get(key))
+        champ = _safe_float(champion.get(key))
+        deltas[key] = cand - champ
+        utility_components[key] = _normalized_advantage(cand, champ, higher_is_better=True)
+        if cand < champ:
+            candidate_dominates = False
+        if cand > champ:
+            strict_candidate_edge = True
+            champion_dominates = False
+        elif cand < champ:
+            strict_champion_edge = True
+
+    for key in _EXEC_LOWER_IS_BETTER:
+        cand = _safe_float(candidate.get(key))
+        champ = _safe_float(champion.get(key))
+        deltas[key] = champ - cand
+        utility_components[key] = _normalized_advantage(cand, champ, higher_is_better=False)
+        if cand > champ:
+            candidate_dominates = False
+        if cand < champ:
+            strict_candidate_edge = True
+            champion_dominates = False
+        elif cand > champ:
+            strict_champion_edge = True
+
+    candidate_dominates = candidate_dominates and strict_candidate_edge
+    champion_dominates = champion_dominates and strict_champion_edge
+    utility_score = sum(utility_components.values()) / float(len(utility_components)) if utility_components else 0.0
+
+    if candidate_dominates and not champion_dominates:
+        decision = "candidate_edge"
+        reasons = ["PARETO_DOMINANCE"]
+    elif champion_dominates and not candidate_dominates:
+        decision = "champion_edge"
+        reasons = ["CHAMPION_PARETO_DOMINANCE"]
+    elif utility_score > 0.0:
+        decision = "candidate_edge"
+        reasons = ["UTILITY_TIE_BREAK_PASS"]
+    elif utility_score < 0.0:
+        decision = "champion_edge"
+        reasons = ["UTILITY_TIE_BREAK_FAIL"]
+    else:
+        decision = "indeterminate"
+        reasons = ["UTILITY_TIE_BREAK_FLAT"]
+
+    return {
+        "policy": "balanced_pareto_execution",
+        "comparable": True,
+        "candidate_dominates": bool(candidate_dominates),
+        "champion_dominates": bool(champion_dominates),
+        "utility_score": float(utility_score),
+        "utility_components": utility_components,
+        "deltas": deltas,
+        "decision": decision,
+        "reasons": reasons,
     }
 
 

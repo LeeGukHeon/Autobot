@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from autobot.models.research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
+from autobot.models.research_acceptance import (
+    compare_balanced_pareto,
+    compare_execution_balanced_pareto,
+    summarize_walk_forward_windows,
+)
 
 
 def test_summarize_walk_forward_windows_aggregates_expected_fields() -> None:
@@ -45,6 +49,31 @@ def test_compare_balanced_pareto_prefers_candidate_on_utility_tie_break() -> Non
     }
 
     compare = compare_balanced_pareto(candidate, champion)
+
+    assert compare["comparable"] is True
+    assert compare["candidate_dominates"] is False
+    assert compare["champion_dominates"] is False
+    assert compare["decision"] == "candidate_edge"
+    assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]
+
+
+def test_compare_execution_balanced_pareto_prefers_candidate_on_utility_tie_break() -> None:
+    candidate = {
+        "orders_filled": 12,
+        "realized_pnl_quote": 980.0,
+        "fill_rate": 0.94,
+        "max_drawdown_pct": 0.72,
+        "slippage_bps_mean": 3.2,
+    }
+    champion = {
+        "orders_filled": 11,
+        "realized_pnl_quote": 1000.0,
+        "fill_rate": 0.91,
+        "max_drawdown_pct": 0.81,
+        "slippage_bps_mean": 3.8,
+    }
+
+    compare = compare_execution_balanced_pareto(candidate, champion)
 
     assert compare["comparable"] is True
     assert compare["candidate_dominates"] is False

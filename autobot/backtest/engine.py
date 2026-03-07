@@ -1853,8 +1853,9 @@ class BacktestRunEngine:
         to_ts_ms: int,
     ) -> ModelAlphaStrategyV1:
         settings = self._run_settings
-        if str(settings.feature_set).strip().lower() != "v3":
-            raise ValueError("model_alpha_v1 currently requires --feature-set v3")
+        feature_set = str(settings.feature_set).strip().lower() or "v3"
+        if feature_set not in {"v3", "v4"}:
+            raise ValueError("model_alpha_v1 currently requires --feature-set v3 or v4")
         model_ref = str(settings.model_ref or settings.model_alpha.model_ref).strip()
         if not model_ref:
             raise ValueError("model_alpha_v1 requires model_ref")
