@@ -63,6 +63,11 @@ def test_normalize_paper_alpha_args_uses_live_v3_preset_defaults() -> None:
     assert normalized.paper_command == "run"
     assert normalized.strategy == "model_alpha_v1"
     assert normalized.feature_set == "v3"
+    assert normalized.model_ref == "champion_v3"
+    assert normalized.model_family == "train_v3_mtf_micro"
+    assert normalized.top_pct == 0.10
+    assert normalized.min_prob == 0.52
+    assert normalized.min_cands_per_ts == 3
     assert normalized.paper_feature_provider == "live_v3"
     assert normalized.paper_micro_provider == "live_ws"
     assert normalized.micro_order_policy == "on"
@@ -109,6 +114,9 @@ def test_normalize_paper_alpha_args_uses_live_v4_preset_defaults() -> None:
     assert normalized.feature_set == "v4"
     assert normalized.model_ref == "champion_v4"
     assert normalized.model_family == "train_v4_crypto_cs"
+    assert normalized.top_pct == 0.50
+    assert normalized.min_prob == 0.0
+    assert normalized.min_cands_per_ts == 1
     assert normalized.paper_feature_provider == "live_v4"
     assert normalized.paper_micro_provider == "live_ws"
 

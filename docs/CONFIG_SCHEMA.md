@@ -494,6 +494,9 @@
 
 ## Runtime Presets And Acceptance Scripts
 - `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+- runtime presets now pin lane-specific selection criteria instead of inheriting `config/strategy.yaml` defaults:
+  - `live_v3/offline_v3`: `top_pct=0.10`, `min_prob=0.52`, `min_candidates_per_ts=3`
+  - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_prob=0.00`, `min_candidates_per_ts=1`
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
   - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`

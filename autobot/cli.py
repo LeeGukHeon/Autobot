@@ -164,6 +164,11 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     if name in {"live_v3", "live"}:
         overrides.update(
             {
+                "model_ref": DEFAULT_MODEL_ALPHA_RUNTIME_REF,
+                "model_family": "train_v3_mtf_micro",
+                "top_pct": 0.10,
+                "min_prob": 0.52,
+                "min_cands_per_ts": 3,
                 "paper_feature_provider": "live_v3",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
@@ -179,6 +184,9 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "feature_set": "v4",
                 "model_ref": DEFAULT_V4_RUNTIME_REF,
                 "model_family": "train_v4_crypto_cs",
+                "top_pct": 0.50,
+                "min_prob": 0.0,
+                "min_cands_per_ts": 1,
                 "paper_feature_provider": "live_v4",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
@@ -194,6 +202,9 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "feature_set": "v4",
                 "model_ref": DEFAULT_V4_CANDIDATE_REF,
                 "model_family": "train_v4_crypto_cs",
+                "top_pct": 0.50,
+                "min_prob": 0.0,
+                "min_cands_per_ts": 1,
                 "paper_feature_provider": "live_v4",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
@@ -206,6 +217,11 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     if name in {"offline", "offline_v3"}:
         overrides.update(
             {
+                "model_ref": DEFAULT_MODEL_ALPHA_RUNTIME_REF,
+                "model_family": "train_v3_mtf_micro",
+                "top_pct": 0.10,
+                "min_prob": 0.52,
+                "min_cands_per_ts": 3,
                 "paper_feature_provider": "offline_parquet",
                 "paper_micro_provider": "offline_parquet",
             }
@@ -217,6 +233,9 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "feature_set": "v4",
                 "model_ref": DEFAULT_V4_RUNTIME_REF,
                 "model_family": "train_v4_crypto_cs",
+                "top_pct": 0.50,
+                "min_prob": 0.0,
+                "min_cands_per_ts": 1,
                 "paper_feature_provider": "offline_parquet",
                 "paper_micro_provider": "offline_parquet",
             }
@@ -238,9 +257,21 @@ def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
         "model_ref": getattr(args, "model_ref", None) or overrides.get("model_ref"),
         "model_family": getattr(args, "model_family", None) or overrides.get("model_family"),
         "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
-        "top_pct": getattr(args, "top_pct", None),
-        "min_prob": getattr(args, "min_prob", None),
-        "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
+        "top_pct": (
+            getattr(args, "top_pct", None)
+            if getattr(args, "top_pct", None) is not None
+            else overrides.get("top_pct")
+        ),
+        "min_prob": (
+            getattr(args, "min_prob", None)
+            if getattr(args, "min_prob", None) is not None
+            else overrides.get("min_prob")
+        ),
+        "min_cands_per_ts": (
+            getattr(args, "min_cands_per_ts", None)
+            if getattr(args, "min_cands_per_ts", None) is not None
+            else overrides.get("min_cands_per_ts")
+        ),
         "max_positions_total": getattr(args, "max_positions_total", None),
         "cooldown_bars": getattr(args, "cooldown_bars", None),
         "exit_mode": getattr(args, "exit_mode", None),

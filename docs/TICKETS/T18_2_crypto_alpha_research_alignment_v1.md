@@ -355,6 +355,9 @@ Current implementation checkpoint:
     - `live_v4`
     - `candidate_v4`
     - `offline_v4`
+  - runtime presets now pin lane-specific selection criteria instead of inheriting baseline `strategy.yaml` defaults:
+    - `live_v3/offline_v3`: `top_pct=0.10`, `min_prob=0.52`, `min_candidates_per_ts=3`
+    - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_prob=0.00`, `min_candidates_per_ts=1`
   - `backtest alpha` and `paper alpha` parser choices now allow `--feature-set v4`
   - live service rollout is still intentionally pending
 - Phase 5 has started:
