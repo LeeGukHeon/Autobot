@@ -59,7 +59,7 @@ features_v4:
   universe_quality_beta: 2.0
   universe_quality_q_floor: 0.2
   universe_quality_oversample_factor: 3
-  min_rows_for_train: 5000
+  min_rows_for_train: 4000
   require_micro_validate_pass: true
   validation:
     leakage_fail_on_future_ts: true

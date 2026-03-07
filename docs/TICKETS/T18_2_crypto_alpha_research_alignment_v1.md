@@ -316,6 +316,9 @@ Current implementation checkpoint:
     - `one_m_pressure_x_spread`
     - `volume_z_x_trend`
   - next major gap is no longer offline feature coverage, but execution-aware acceptance and live parity
+  - `features_v4.min_rows_for_train` is currently relaxed to `4000`
+    - reason: current server micro history is still shallow enough that `5000` blocks the first real `v4` lane runs
+    - intent: keep the research lane moving without mutating the frozen `v3` baseline
 - Phase 3 has started:
   - `train_v4_crypto_cs.py` added as a separate offline trainer lane
   - current scope supports single-split offline training with `task=cls|reg`
