@@ -274,6 +274,7 @@ D:\MyApps\Autobot
   - `v3_candidate_acceptance.ps1`, `v4_candidate_acceptance.ps1` wrapper 분리
   - `v4`도 이제 `train -> candidate/champion backtest -> paper soak -> promote` 루프를 같은 계약으로 탈 수 있음
   - `v4_candidate_acceptance.ps1`는 trainer가 미리 만든 `walk-forward + execution_acceptance` 증빙을 `required` gate로 읽음
+  - 현재 얕은 `v4` 히스토리에 맞춰 wrapper 기본 selection은 `sparse-aware`로 완화함 (`top_pct=0.5`, `min_prob=0.0`, `min_candidates=1`)
   - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 

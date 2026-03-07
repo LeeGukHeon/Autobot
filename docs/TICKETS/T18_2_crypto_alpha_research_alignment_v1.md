@@ -368,6 +368,10 @@ Current implementation checkpoint:
     - `champion_model_ref=champion_v4`
     - `paper_feature_provider=live_v4`
     - `trainer_evidence_mode=required`
+    - sparse-aware serving defaults for the current shallow v4 history:
+      - `backtest_top_pct=0.5`
+      - `backtest_min_prob=0.0`
+      - `backtest_min_candidates_per_ts=1`
   - current result:
     - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
     - generic acceptance now reads trainer-side `promotion_decision.json` evidence and can require:
