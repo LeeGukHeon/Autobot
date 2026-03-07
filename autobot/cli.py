@@ -803,6 +803,31 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--booster-sweep-trials", type=int)
     model_train_parser.add_argument("--seed", type=int)
     model_train_parser.add_argument("--nthread", type=int)
+    model_train_parser.add_argument(
+        "--execution-acceptance-top-n",
+        type=int,
+        help="Override trainer-internal execution acceptance universe size.",
+    )
+    model_train_parser.add_argument(
+        "--execution-acceptance-top-pct",
+        type=float,
+        help="Override trainer-internal execution acceptance top_pct for model_alpha_v1.",
+    )
+    model_train_parser.add_argument(
+        "--execution-acceptance-min-prob",
+        type=float,
+        help="Override trainer-internal execution acceptance min_prob for model_alpha_v1.",
+    )
+    model_train_parser.add_argument(
+        "--execution-acceptance-min-cands-per-ts",
+        type=int,
+        help="Override trainer-internal execution acceptance min_candidates_per_ts for model_alpha_v1.",
+    )
+    model_train_parser.add_argument(
+        "--execution-acceptance-hold-bars",
+        type=int,
+        help="Override trainer-internal execution acceptance hold_bars for model_alpha_v1.",
+    )
 
     model_eval_parser = model_subparsers.add_parser("eval", help="Evaluate registered model on split.")
     model_eval_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
@@ -2261,6 +2286,40 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     if isinstance(model_alpha_backtest_defaults.get("execution"), dict)
                     else {}
                 )
+                exec_acceptance_top_n = max(
+                    int(getattr(args, "execution_acceptance_top_n", None))
+                    if getattr(args, "execution_acceptance_top_n", None) is not None
+                    else top_n,
+                    1,
+                )
+                exec_acceptance_top_pct = max(
+                    min(
+                        float(getattr(args, "execution_acceptance_top_pct", None))
+                        if getattr(args, "execution_acceptance_top_pct", None) is not None
+                        else float(model_alpha_selection_defaults.get("top_pct", 0.05)),
+                        1.0,
+                    ),
+                    0.0,
+                )
+                exec_acceptance_min_prob = _clamp_prob_value(
+                    _optional_float_value(
+                        getattr(args, "execution_acceptance_min_prob", None)
+                        if getattr(args, "execution_acceptance_min_prob", None) is not None
+                        else model_alpha_selection_defaults.get("min_prob")
+                    )
+                )
+                exec_acceptance_min_cands = max(
+                    int(getattr(args, "execution_acceptance_min_cands_per_ts", None))
+                    if getattr(args, "execution_acceptance_min_cands_per_ts", None) is not None
+                    else int(model_alpha_selection_defaults.get("min_candidates_per_ts", 10)),
+                    0,
+                )
+                exec_acceptance_hold_bars = max(
+                    int(getattr(args, "execution_acceptance_hold_bars", None))
+                    if getattr(args, "execution_acceptance_hold_bars", None) is not None
+                    else int(model_alpha_exit_defaults.get("hold_bars", 6)),
+                    0,
+                )
                 options_v4 = TrainV4CryptoCsOptions(
                     dataset_root=features_v4_config.output_dataset_root,
                     registry_root=registry_root,
@@ -2295,6 +2354,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     execution_acceptance_dataset_name=backtest_dataset_name_v4,
                     execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
                     execution_acceptance_output_root=logs_root / "train_v4_execution_backtest",
+                    execution_acceptance_top_n=exec_acceptance_top_n,
                     execution_acceptance_dense_grid=bool(backtest_defaults["dense_grid"]),
                     execution_acceptance_starting_krw=float(backtest_defaults["starting_krw"]),
                     execution_acceptance_per_trade_krw=float(backtest_defaults["per_trade_krw"]),
@@ -2309,14 +2369,9 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                         model_family=model_family,
                         feature_set="v4",
                         selection=ModelAlphaSelectionSettings(
-                            top_pct=max(min(float(model_alpha_selection_defaults.get("top_pct", 0.05)), 1.0), 0.0),
-                            min_prob=_clamp_prob_value(
-                                _optional_float_value(model_alpha_selection_defaults.get("min_prob"))
-                            ),
-                            min_candidates_per_ts=max(
-                                int(model_alpha_selection_defaults.get("min_candidates_per_ts", 10)),
-                                0,
-                            ),
+                            top_pct=exec_acceptance_top_pct,
+                            min_prob=exec_acceptance_min_prob,
+                            min_candidates_per_ts=exec_acceptance_min_cands,
                             registry_threshold_key=(
                                 str(model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")).strip()
                                 or "top_5pct"
@@ -2347,7 +2402,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                         ),
                         exit=ModelAlphaExitSettings(
                             mode=str(model_alpha_exit_defaults.get("mode", "hold")).strip().lower() or "hold",
-                            hold_bars=max(int(model_alpha_exit_defaults.get("hold_bars", 6)), 0),
+                            hold_bars=exec_acceptance_hold_bars,
                             tp_pct=max(float(model_alpha_exit_defaults.get("tp_pct", 0.02)), 0.0),
                             sl_pct=max(float(model_alpha_exit_defaults.get("sl_pct", 0.01)), 0.0),
                             trailing_pct=max(float(model_alpha_exit_defaults.get("trailing_pct", 0.0)), 0.0),

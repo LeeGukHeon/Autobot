@@ -90,6 +90,7 @@ class TrainV4CryptoCsOptions:
     execution_acceptance_dataset_name: str = "candles_v1"
     execution_acceptance_parquet_root: Path = Path("data/parquet")
     execution_acceptance_output_root: Path = Path("data/backtest")
+    execution_acceptance_top_n: int = 0
     execution_acceptance_dense_grid: bool = False
     execution_acceptance_starting_krw: float = 50_000.0
     execution_acceptance_per_trade_krw: float = 10_000.0
@@ -789,6 +790,10 @@ def _train_config_snapshot_v4(
     payload["logs_root"] = str(options.logs_root)
     payload["execution_acceptance_parquet_root"] = str(options.execution_acceptance_parquet_root)
     payload["execution_acceptance_output_root"] = str(options.execution_acceptance_output_root)
+    payload["execution_acceptance_top_n"] = max(
+        int(options.execution_acceptance_top_n) if int(options.execution_acceptance_top_n) > 0 else int(options.top_n),
+        1,
+    )
     payload["feature_columns"] = list(feature_cols)
     payload["markets"] = list(markets)
     payload["start_ts_ms"] = parse_date_to_ts_ms(options.start)
@@ -834,7 +839,12 @@ def _run_execution_acceptance_v4(
                 output_root_dir=options.execution_acceptance_output_root,
                 tf=str(options.tf).strip().lower(),
                 quote=str(options.quote).strip().upper(),
-                top_n=max(int(options.top_n), 1),
+                top_n=max(
+                    int(options.execution_acceptance_top_n)
+                    if int(options.execution_acceptance_top_n) > 0
+                    else int(options.top_n),
+                    1,
+                ),
                 start_ts_ms=parse_date_to_ts_ms(options.start),
                 end_ts_ms=parse_date_to_ts_ms(options.end, end_of_day=True),
                 feature_set=str(options.feature_set).strip().lower() or "v4",

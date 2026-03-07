@@ -231,6 +231,16 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
             "KRW",
             "--top-n",
             "50",
+            "--execution-acceptance-top-n",
+            "20",
+            "--execution-acceptance-top-pct",
+            "0.5",
+            "--execution-acceptance-min-prob",
+            "0.0",
+            "--execution-acceptance-min-cands-per-ts",
+            "1",
+            "--execution-acceptance-hold-bars",
+            "6",
             "--start",
             "2026-03-03",
             "--end",
@@ -295,10 +305,11 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
         ),
     )
     monkeypatch.setattr(cli_mod, "_resolve_backtest_dataset_name_for_model_features", lambda **kwargs: "candles_v1")
-    monkeypatch.setattr(
-        cli_mod,
-        "train_and_register_v4_crypto_cs",
-        lambda options: SimpleNamespace(
+    captured: dict[str, object] = {}
+
+    def _fake_train_and_register_v4(options):
+        captured["options"] = options
+        return SimpleNamespace(
             run_id="run-v4-test",
             status="candidate",
             leaderboard_row={"test_precision_top5": 0.12, "test_pr_auc": 0.34},
@@ -307,10 +318,17 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
             walk_forward_report_path=tmp_path / "logs" / "walk_forward.json",
             execution_acceptance_report_path=tmp_path / "logs" / "execution_acceptance.json",
             promotion_path=tmp_path / "logs" / "promotion.json",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cli_mod, "train_and_register_v4_crypto_cs", _fake_train_and_register_v4)
 
     assert _handle_model_command(args, tmp_path / "config", {}) == 0
+    options = captured["options"]
+    assert options.execution_acceptance_top_n == 20
+    assert options.execution_acceptance_model_alpha.selection.top_pct == 0.5
+    assert options.execution_acceptance_model_alpha.selection.min_prob == 0.0
+    assert options.execution_acceptance_model_alpha.selection.min_candidates_per_ts == 1
+    assert options.execution_acceptance_model_alpha.exit.hold_bars == 6
 
 
 def test_handle_backtest_command_v4_resolves_base_candles_dataset(monkeypatch, tmp_path: Path) -> None:

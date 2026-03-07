@@ -7,6 +7,11 @@ import numpy as np
 from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
 from autobot.models.train_v4_crypto_cs import TrainV4CryptoCsOptions, train_and_register_v4_crypto_cs
+from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaExitSettings,
+    ModelAlphaSelectionSettings,
+    ModelAlphaSettings,
+)
 
 
 class DummyClassifier:
@@ -329,17 +334,20 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
         lambda **kwargs: {"manifest_sha256": "abc"},
     )
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.render_model_card", lambda **kwargs: "# card")
-    monkeypatch.setattr(
-        "autobot.models.train_v4_crypto_cs.run_execution_acceptance",
-        lambda options: {
+    captured: dict[str, object] = {}
+
+    def _fake_run_execution_acceptance(options):
+        captured["options"] = options
+        return {
             "policy": "balanced_pareto_execution",
             "enabled": True,
             "status": "compared",
             "compare_to_champion": {"decision": "candidate_edge", "comparable": True},
             "candidate_summary": {"orders_filled": 9},
             "champion_summary": {"orders_filled": 7},
-        },
-    )
+        }
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.run_execution_acceptance", _fake_run_execution_acceptance)
 
     options = TrainV4CryptoCsOptions(
         dataset_root=tmp_path / "features_v4",
@@ -368,6 +376,11 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
         ev_min_selected=1,
         min_rows_for_train=1,
         execution_acceptance_enabled=True,
+        execution_acceptance_top_n=11,
+        execution_acceptance_model_alpha=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=0.5, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(hold_bars=9),
+        ),
     )
 
     result = train_and_register_v4_crypto_cs(options)
@@ -379,3 +392,9 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert execution_doc["status"] == "compared"
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
+    execution_options = captured["options"]
+    assert execution_options.top_n == 11
+    assert execution_options.model_alpha_settings.selection.top_pct == 0.5
+    assert execution_options.model_alpha_settings.selection.min_prob == 0.0
+    assert execution_options.model_alpha_settings.selection.min_candidates_per_ts == 1
+    assert execution_options.model_alpha_settings.exit.hold_bars == 9

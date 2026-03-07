@@ -956,7 +956,12 @@ try {
         "--end", $effectiveBatchDate,
         "--booster-sweep-trials", $BoosterSweepTrials,
         "--seed", $Seed,
-        "--nthread", $NThread
+        "--nthread", $NThread,
+        "--execution-acceptance-top-n", $BacktestTopN,
+        "--execution-acceptance-top-pct", $BacktestTopPct,
+        "--execution-acceptance-min-prob", $BacktestMinProb,
+        "--execution-acceptance-min-cands-per-ts", $BacktestMinCandidatesPerTs,
+        "--execution-acceptance-hold-bars", $HoldBars
     )
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
     $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }

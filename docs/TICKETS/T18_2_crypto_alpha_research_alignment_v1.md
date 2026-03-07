@@ -372,6 +372,7 @@ Current implementation checkpoint:
       - `backtest_top_pct=0.5`
       - `backtest_min_prob=0.0`
       - `backtest_min_candidates_per_ts=1`
+    - trainer-side execution acceptance now consumes the same sparse-aware overrides instead of falling back to baseline `strategy.yaml` selection defaults
   - current result:
     - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
     - generic acceptance now reads trainer-side `promotion_decision.json` evidence and can require:
