@@ -426,12 +426,14 @@ Current implementation checkpoint:
   - both acceptance wrappers run with:
     - `SkipDailyPipeline`
     - `SkipReportRefresh`
-  - v4 lane additionally runs with:
-    - `AutoRestartKnownUnits=false`
+  - runtime pairing:
+    - `v3` lane owns `autobot-paper-alpha.service`
+    - `v4` lane owns `autobot-paper-v4.service`
   - reason:
     - same batch date
     - same paper window
     - no duplicated collection/report mutation
+    - each lane can promote/restart independently without touching the other lane's always-on paper
 - `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
   - current target timer remains:
     - `autobot-daily-micro.timer`

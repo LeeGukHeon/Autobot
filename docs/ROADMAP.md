@@ -280,7 +280,12 @@ D:\MyApps\Autobot
     - `daily_micro_pipeline_for_server.ps1`를 한 번만 돌려 raw/micro/report를 갱신한다
     - 그 다음 `features_v3`와 `features_v4`를 같은 batch date로 갱신한다
     - 마지막에 `v3`와 `v4` acceptance를 병렬 fan-out 한다
-    - `v4`는 자동 promote는 가능하지만 기본적으로 runtime auto-restart는 하지 않는다
+    - 상시 paper는 `v3`와 `v4`를 lane별 systemd unit으로 동시에 유지할 수 있다
+      - `v3`: `autobot-paper-alpha.service` -> `paper alpha --preset live_v3`
+      - `v4`: `autobot-paper-v4.service` -> `paper alpha --preset live_v4`
+    - 승급 시에는 각 lane이 자기 runtime unit만 자동 재기동한다
+      - `v3` acceptance -> `autobot-paper-alpha.service`
+      - `v4` acceptance -> `autobot-paper-v4.service`
   - 별도 지연 실행용 `autobot-daily-v4-accept.timer`는 fallback 운영 경로로만 남긴다
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 

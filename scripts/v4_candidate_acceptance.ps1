@@ -12,6 +12,7 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -BacktestTopPct 0.5 `
     -BacktestMinProb 0.0 `
     -BacktestMinCandidatesPerTs 1 `
+    -KnownRuntimeUnits @("autobot-paper-v4.service", "autobot-live-alpha.service") `
     -OutDir "logs/model_v4_acceptance" `
     -ReportPrefix "v4_candidate_acceptance" `
     -ReportTitle "V4 Candidate Acceptance" `

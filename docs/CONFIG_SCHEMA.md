@@ -521,7 +521,10 @@
     - `Tf=5m`
     - `V3TrainLookbackDays=30`
     - `V4TrainLookbackDays=30`
-  - `v4` lane uses the same batch date but runs with `AutoRestartKnownUnits=false`
+  - intended runtime pairing:
+    - `v3` lane -> `autobot-paper-alpha.service`
+    - `v4` lane -> `autobot-paper-v4.service`
+  - each lane reuses the same batch date and only restarts its own runtime unit on promote
 - `scripts/install_server_daily_parallel_acceptance_service.ps1`: rewires `autobot-daily-micro.service` to the shared orchestrator
   - current intended rollout:
     - `autobot-daily-micro.timer` stays at `00:10`

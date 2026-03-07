@@ -270,8 +270,7 @@ try {
             "-PythonExe", $resolvedPythonExe,
             "-BatchDate", $effectiveBatchDate,
             "-SkipDailyPipeline",
-            "-SkipReportRefresh",
-            "-AutoRestartKnownUnits", "false"
+            "-SkipReportRefresh"
         )
         if ($DryRun) {
             $v4Exec = Invoke-CommandCapture -Exe $psExe -ArgList $v4Args

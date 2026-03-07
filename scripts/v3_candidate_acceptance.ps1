@@ -8,6 +8,7 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -CandidateModelRef "latest_candidate_v3" `
     -ChampionModelRef "champion_v3" `
     -PaperFeatureProvider "live_v3" `
+    -KnownRuntimeUnits @("autobot-paper-alpha.service", "autobot-live-alpha.service") `
     -OutDir "logs/model_v3_acceptance" `
     -ReportPrefix "v3_candidate_acceptance" `
     -ReportTitle "V3 Candidate Acceptance" `
