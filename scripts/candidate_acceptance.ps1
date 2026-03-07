@@ -864,6 +864,17 @@ function Save-Report {
     }
 }
 
+function Write-ReportPointers {
+    param(
+        [string]$LogTag,
+        [object]$Paths,
+        [bool]$OverallPass
+    )
+    Write-Host ("[{0}] overall_pass={1}" -f $LogTag, $OverallPass)
+    Write-Host ("[{0}] report={1}" -f $LogTag, $Paths.RunReportPath)
+    Write-Host ("[{0}] latest={1}" -f $LogTag, $Paths.LatestReportPath)
+}
+
 function Resolve-ReportedJsonPathFromText {
     param(
         [string]$TextValue,
@@ -923,7 +934,7 @@ try {
             $report.reasons = @("DAILY_PIPELINE_FAILED")
             $report.gates.overall_pass = $false
             $paths = Save-Report
-            Write-Host ("[{0}] overall_pass=False report={1}" -f $LogTag, $paths.LatestReportPath)
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
             exit 2
         }
     } else {
@@ -968,7 +979,7 @@ try {
         $report.reasons = @("TRAIN_OR_CANDIDATE_POINTER_FAILED")
         $report.gates.overall_pass = $false
         $paths = Save-Report
-        Write-Host ("[{0}] overall_pass=False report={1}" -f $LogTag, $paths.LatestReportPath)
+        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
         exit 2
     }
     $report.candidate = [ordered]@{
@@ -1390,9 +1401,7 @@ try {
     Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
     Write-Host ("[{0}] backtest_pass={1}" -f $LogTag, $backtestPass)
     Write-Host ("[{0}] paper_pass={1}" -f $LogTag, $paperPass)
-    Write-Host ("[{0}] overall_pass={1}" -f $LogTag, $overallPass)
-    Write-Host ("[{0}] report={1}" -f $LogTag, $paths.RunReportPath)
-    Write-Host ("[{0}] latest={1}" -f $LogTag, $paths.LatestReportPath)
+    Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $overallPass
     if ($DryRun) {
         exit 0
     }
@@ -1408,6 +1417,6 @@ try {
     }
     $paths = Save-Report
     Write-Host ("[{0}][error] {1}" -f $LogTag, $_.Exception.Message)
-    Write-Host ("[{0}] latest={1}" -f $LogTag, $paths.LatestReportPath)
+    Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
     exit 2
 }
