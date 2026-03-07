@@ -842,9 +842,11 @@ function Invoke-ModelTrainWizard {
     $tf = "5m"
     $quote = "KRW"
     $topN = 50
+    $labelSet = "v1"
+    $task = "cls"
 
     if (-not $UseDefaultsMode) {
-        $trainer = (Read-DefaultValue -Prompt "Trainer (v1, v2_micro, v3_mtf_micro)" -DefaultValue $trainer).ToLowerInvariant()
+        $trainer = (Read-DefaultValue -Prompt "Trainer (v1, v2_micro, v3_mtf_micro, v4_crypto_cs)" -DefaultValue $trainer).ToLowerInvariant()
         $lookbackDays = Read-DefaultInt -Prompt "Train window lookback days" -DefaultValue $lookbackDays
         $tf = Read-DefaultValue -Prompt "Timeframe" -DefaultValue $tf
         $quote = Read-DefaultValue -Prompt "Quote" -DefaultValue $quote
@@ -860,8 +862,9 @@ function Invoke-ModelTrainWizard {
 
     if ($trainer -eq "v2") { $trainer = "v2_micro" }
     if ($trainer -eq "v3") { $trainer = "v3_mtf_micro" }
+    if ($trainer -eq "v4") { $trainer = "v4_crypto_cs" }
 
-    if (@("v1", "v2_micro", "v3_mtf_micro") -notcontains $trainer) {
+    if (@("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs") -notcontains $trainer) {
         Write-Host "[warn] invalid trainer. fallback to v3_mtf_micro." -ForegroundColor Yellow
         $trainer = "v3_mtf_micro"
     }
@@ -882,6 +885,12 @@ function Invoke-ModelTrainWizard {
         "v3_mtf_micro" {
             $featureSet = "v3"
             $family = "train_v3_mtf_micro"
+        }
+        "v4_crypto_cs" {
+            $featureSet = "v4"
+            $family = "train_v4_crypto_cs"
+            $labelSet = "v2"
+            $task = "cls"
         }
         default {
             $featureSet = "v1"
@@ -918,11 +927,36 @@ function Invoke-ModelTrainWizard {
         }
     }
 
+    if ($trainer -eq "v4_crypto_cs") {
+        $buildArgs = @(
+            "-m", "autobot.cli",
+            "features", "build",
+            "--feature-set", "v4",
+            "--label-set", "v2",
+            "--tf", $tf,
+            "--quote", $quote,
+            "--top-n", "$topN",
+            "--start", $startDate,
+            "--end", $endDate
+        )
+        $buildResult = Run-Command `
+            -Description "Features Build Wizard (v4, label_v2)" `
+            -Exe $script:PythonExe `
+            -Arguments $buildArgs `
+            -Tag "menu6_features_build_v4"
+
+        if ($buildResult.ExitCode -ne 0) {
+            Write-Host "[model] features build failed. log: $($buildResult.LogFile)" -ForegroundColor Yellow
+            return
+        }
+    }
+
     $trainArgs = @(
         "-m", "autobot.cli",
         "model", "train",
         "--trainer", $trainer,
         "--feature-set", $featureSet,
+        "--label-set", $labelSet,
         "--model-family", $family,
         "--tf", $tf,
         "--quote", $quote,
@@ -930,6 +964,9 @@ function Invoke-ModelTrainWizard {
         "--start", $startDate,
         "--end", $endDate
     )
+    if ($trainer -eq "v4_crypto_cs") {
+        $trainArgs += @("--task", $task)
+    }
     $trainResult = Run-Command `
         -Description "Model Train Wizard ($trainer)" `
         -Exe $script:PythonExe `
@@ -1086,7 +1123,7 @@ function Invoke-ModelBtWizard {
     $feeBps = 5.0
 
     if (-not $UseDefaultsMode) {
-        $modelRef = Read-DefaultValue -Prompt "Model ref (champion_v3/latest_candidate_v3/latest/run_id)" -DefaultValue $modelRef
+        $modelRef = Read-DefaultValue -Prompt "Model ref (champion_v3/champion_v4/latest_candidate_v3/latest_candidate_v4/latest/run_id)" -DefaultValue $modelRef
         $modelFamily = Read-DefaultValue -Prompt "Model family" -DefaultValue $modelFamily
         $lookbackDays = Read-DefaultInt -Prompt "ModelBT lookback days" -DefaultValue $lookbackDays
         $tf = Read-DefaultValue -Prompt "Timeframe" -DefaultValue $tf

@@ -106,6 +106,39 @@ def test_live_feature_provider_v4_builds_v4_columns_from_live_v3_base(tmp_path: 
     assert stats["base_provider"] == "LIVE_V3"
 
 
+def test_live_feature_provider_v4_hard_gates_missing_requested_columns(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
+
+    provider = LiveFeatureProviderV4(
+        feature_columns=(
+            "logret_1",
+            "btc_ret_12",
+            "missing_v4_feature_for_test",
+        ),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+    )
+    provider.ingest_ticker(
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=301_000,
+            trade_price=121.0,
+            acc_trade_price_24h=1_000_100_000.0,
+        )
+    )
+
+    frame = provider.build_frame(ts_ms=300_000, markets=["KRW-BTC"])
+    assert frame.height == 0
+    stats = provider.last_build_stats()
+    assert stats["hard_gate_triggered"] is True
+    assert stats["skip_reason"] == "MISSING_V4_FEATURE_COLUMNS"
+    assert "missing_v4_feature_for_test" in stats["missing_feature_columns"]
+
+
 def test_paper_engine_model_alpha_live_v4_scores_without_no_feature_rows(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     registry_root = tmp_path / "registry"

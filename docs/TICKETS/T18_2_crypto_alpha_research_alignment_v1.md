@@ -342,6 +342,8 @@ Current implementation checkpoint:
     - reuses the stable `LIVE_V3` base frame
     - applies `spillover + breadth + periodicity + trend-volume + interaction` packs after the v3 build
     - projects only the requested `v4` contract columns
+    - if any requested `v4` contract column is missing, it now returns an empty frame with `hard_gate_triggered=true`
+    - missing columns are reported as `MISSING_V4_FEATURE_COLUMNS` instead of being silently zero-filled
   - `PaperRunEngine` now accepts:
     - `paper_feature_provider=LIVE_V4`
     - `strategy=model_alpha_v1`
@@ -362,9 +364,31 @@ Current implementation checkpoint:
     - `candidate_model_ref=latest_candidate_v4`
     - `champion_model_ref=champion_v4`
     - `paper_feature_provider=live_v4`
+    - `trainer_evidence_mode=required`
   - current result:
     - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
+    - generic acceptance now reads trainer-side `promotion_decision.json` evidence and can require:
+      - walk-forward evidence
+      - execution acceptance evidence
+      - candidate-edge compare outcomes from the trainer lane
+    - this prevents the v4 lane from silently falling back to a pure single-window `v3`-style decision
     - server/runtime rollout is still intentionally left on the v3 lane until v4 passes paper evidence
+
+### Ops Hardening Notes
+- `install_server_runtime_services.ps1` now exposes:
+  - `live_v3`
+  - `live_v4`
+  - `candidate_v4`
+  - `offline_v4`
+  as valid paper runtime presets, while keeping the default rollout on `live_v3`
+- `oci_paper_run_and_pull.cmd` now externalizes:
+  - `PAPER_PRESET`
+  - `MODEL_REF`
+  so ad-hoc OCI paper runs can target v4 without editing the command body
+- `autobot_center.ps1` now allows:
+  - `trainer=v4_crypto_cs`
+  - `features build --feature-set v4 --label-set v2`
+  from the train wizard path
 
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`

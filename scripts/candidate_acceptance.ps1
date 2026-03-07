@@ -43,6 +43,8 @@ param(
     [double]$BacktestMinPnlDeltaVsChampion = 0.0,
     [ValidateSet("strict", "balanced_pareto", "conservative_pareto")]
     [string]$PromotionPolicy = "balanced_pareto",
+    [ValidateSet("ignore", "informational", "required")]
+    [string]$TrainerEvidenceMode = "ignore",
     [bool]$BacktestAllowStabilityOverride = $true,
     [double]$BacktestChampionPnlTolerancePct = 0.05,
     [double]$BacktestChampionMinDrawdownImprovementPct = 0.10,
@@ -253,6 +255,129 @@ function Resolve-PromotionPolicyConfig {
     }
     if ($BoundParams.ContainsKey("BacktestChampionMinUtilityEdgePct")) {
         $resolved.backtest_champion_min_utility_edge_pct = [double]$BacktestChampionMinUtilityEdgePct
+    }
+    return $resolved
+}
+
+function Resolve-TrainerEvidence {
+    param(
+        [Parameter(Mandatory = $false)]$PromotionDecision,
+        [string]$Mode
+    )
+    $resolved = [ordered]@{
+        mode = $Mode
+        available = $false
+        required = ($Mode -eq "required")
+        source = "promotion_decision"
+        pass = $null
+        offline_pass = $false
+        execution_pass = $true
+        reasons = @()
+        checks = [ordered]@{
+            existing_champion_present = $false
+            walk_forward_present = $false
+            walk_forward_windows_run = 0
+            offline_comparable = $false
+            offline_candidate_edge = $false
+            execution_acceptance_enabled = $false
+            execution_acceptance_present = $false
+            execution_comparable = $false
+            execution_candidate_edge = $false
+        }
+        offline = [ordered]@{
+            policy = ""
+            decision = ""
+            comparable = $false
+        }
+        execution = [ordered]@{
+            status = ""
+            policy = ""
+            decision = ""
+            comparable = $false
+        }
+    }
+    if ($Mode -eq "ignore") {
+        $resolved.reasons = @("IGNORED_BY_POLICY")
+        return $resolved
+    }
+    if ($null -eq $PromotionDecision -or (@($PromotionDecision.PSObject.Properties).Count -eq 0 -and -not ($PromotionDecision -is [System.Collections.IDictionary]))) {
+        $resolved.pass = $false
+        $resolved.reasons = @("MISSING_PROMOTION_DECISION")
+        return $resolved
+    }
+
+    $checks = Get-PropValue -ObjectValue $PromotionDecision -Name "checks" -DefaultValue @{}
+    $research = Get-PropValue -ObjectValue $PromotionDecision -Name "research_acceptance" -DefaultValue @{}
+    $offlineCompare = Get-PropValue -ObjectValue $research -Name "compare_to_champion" -DefaultValue @{}
+    $walkSummary = Get-PropValue -ObjectValue $research -Name "walk_forward_summary" -DefaultValue @{}
+    $executionDoc = Get-PropValue -ObjectValue $PromotionDecision -Name "execution_acceptance" -DefaultValue @{}
+    $executionCompare = Get-PropValue -ObjectValue $executionDoc -Name "compare_to_champion" -DefaultValue @{}
+
+    $existingChampionPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "existing_champion_present" -DefaultValue $false) $false
+    $walkForwardPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "walk_forward_present" -DefaultValue $false) $false
+    $walkForwardWindowsRun = [int](To-Int64 (Get-PropValue -ObjectValue $checks -Name "walk_forward_windows_run" -DefaultValue 0) 0)
+    $offlineComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "balanced_pareto_comparable" -DefaultValue $false) $false
+    $offlineCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "balanced_pareto_candidate_edge" -DefaultValue $false) $false
+    $executionEnabled = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_acceptance_enabled" -DefaultValue $false) $false
+    $executionPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_acceptance_present" -DefaultValue $false) $false
+    $executionComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_balanced_pareto_comparable" -DefaultValue $false) $false
+    $executionCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_balanced_pareto_candidate_edge" -DefaultValue $false) $false
+
+    $offlineDecision = [string](Get-PropValue -ObjectValue $offlineCompare -Name "decision" -DefaultValue "")
+    $offlinePolicy = [string](Get-PropValue -ObjectValue $research -Name "policy" -DefaultValue "")
+    $executionStatus = [string](Get-PropValue -ObjectValue $executionDoc -Name "status" -DefaultValue "")
+    $executionDecision = [string](Get-PropValue -ObjectValue $executionCompare -Name "decision" -DefaultValue "")
+    $executionPolicy = [string](Get-PropValue -ObjectValue $executionCompare -Name "policy" -DefaultValue "")
+
+    $resolved.available = $walkForwardPresent -or $executionPresent -or (-not [string]::IsNullOrWhiteSpace($offlineDecision)) -or (-not [string]::IsNullOrWhiteSpace($executionDecision))
+    $resolved.checks.existing_champion_present = $existingChampionPresent
+    $resolved.checks.walk_forward_present = $walkForwardPresent
+    $resolved.checks.walk_forward_windows_run = $walkForwardWindowsRun
+    $resolved.checks.offline_comparable = $offlineComparable
+    $resolved.checks.offline_candidate_edge = $offlineCandidateEdge
+    $resolved.checks.execution_acceptance_enabled = $executionEnabled
+    $resolved.checks.execution_acceptance_present = $executionPresent
+    $resolved.checks.execution_comparable = $executionComparable
+    $resolved.checks.execution_candidate_edge = $executionCandidateEdge
+    $resolved.offline.policy = $offlinePolicy
+    $resolved.offline.decision = $offlineDecision
+    $resolved.offline.comparable = $offlineComparable
+    $resolved.execution.status = $executionStatus
+    $resolved.execution.policy = $executionPolicy
+    $resolved.execution.decision = $executionDecision
+    $resolved.execution.comparable = $executionComparable
+
+    if (-not $walkForwardPresent) {
+        $resolved.reasons += "NO_WALK_FORWARD_EVIDENCE"
+    } elseif ($existingChampionPresent) {
+        if (-not $offlineComparable) {
+            $resolved.reasons += "OFFLINE_NOT_COMPARABLE"
+        } elseif (-not $offlineCandidateEdge) {
+            $resolved.reasons += "OFFLINE_NOT_CANDIDATE_EDGE"
+        }
+    }
+
+    $offlinePass = $walkForwardPresent -and ((-not $existingChampionPresent) -or ($offlineComparable -and $offlineCandidateEdge))
+    $executionPass = $true
+    if ($executionEnabled) {
+        if (-not $executionPresent) {
+            $executionPass = $false
+            $resolved.reasons += "NO_EXECUTION_EVIDENCE"
+        } elseif ($existingChampionPresent) {
+            if (-not $executionComparable) {
+                $executionPass = $false
+                $resolved.reasons += "EXECUTION_NOT_COMPARABLE"
+            } elseif (-not $executionCandidateEdge) {
+                $executionPass = $false
+                $resolved.reasons += "EXECUTION_NOT_CANDIDATE_EDGE"
+            }
+        }
+    }
+    $resolved.offline_pass = $offlinePass
+    $resolved.execution_pass = $executionPass
+    $resolved.pass = $offlinePass -and $executionPass
+    if ($resolved.available -and $resolved.reasons.Count -eq 0) {
+        $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
     }
     return $resolved
 }
@@ -520,6 +645,8 @@ function Build-ReportMarkdown {
     $backtestCandidate = Get-PropValue -ObjectValue $steps -Name "backtest_candidate" -DefaultValue @{}
     $paperCandidate = Get-PropValue -ObjectValue $steps -Name "paper_candidate" -DefaultValue @{}
     $promoteStep = Get-PropValue -ObjectValue $steps -Name "promote" -DefaultValue @{}
+    $trainStep = Get-PropValue -ObjectValue $steps -Name "train" -DefaultValue @{}
+    $trainerEvidence = Get-PropValue -ObjectValue $trainStep -Name "trainer_evidence" -DefaultValue @{}
     $config = Get-PropValue -ObjectValue $ReportValue -Name "config" -DefaultValue @{}
     $lines.Add("") | Out-Null
     $lines.Add("## Candidate Metrics") | Out-Null
@@ -527,6 +654,7 @@ function Build-ReportMarkdown {
     $lines.Add("- feature_set: $([string](Get-PropValue -ObjectValue $config -Name 'feature_set' -DefaultValue ''))") | Out-Null
     $lines.Add("- label_set: $([string](Get-PropValue -ObjectValue $config -Name 'label_set' -DefaultValue ''))") | Out-Null
     $lines.Add("- promotion_policy: $([string](Get-PropValue -ObjectValue $config -Name 'promotion_policy' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_mode: $([string](Get-PropValue -ObjectValue $config -Name 'trainer_evidence_mode' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_orders_filled: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_fill_rate: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'fill_rate' -DefaultValue ''))") | Out-Null
@@ -539,6 +667,16 @@ function Build-ReportMarkdown {
     $lines.Add("- paper_slippage_bps_mean: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'slippage_bps_mean' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_t15_gate_pass: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 't15_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- promoted: $([string](Get-PropValue -ObjectValue $promoteStep -Name 'promoted' -DefaultValue ''))") | Out-Null
+
+    $lines.Add("") | Out-Null
+    $lines.Add("## Trainer Evidence") | Out-Null
+    $lines.Add("- available: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'available' -DefaultValue ''))") | Out-Null
+    $lines.Add("- required: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'required' -DefaultValue ''))") | Out-Null
+    $lines.Add("- pass: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- offline_pass: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'offline_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- execution_pass: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'execution_pass' -DefaultValue ''))") | Out-Null
+    $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
+    $lines.Add("- reasons: $([string]($trainerEvidenceReasons -join ','))") | Out-Null
 
     $backtestGate = Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{}
     $lines.Add("") | Out-Null
@@ -561,6 +699,12 @@ function Build-ReportMarkdown {
     $lines.Add("- slippage_deterioration_bps: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'vs_champion_slippage_deterioration_bps' -DefaultValue ''))") | Out-Null
     $lines.Add("- slippage_guard_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'vs_champion_slippage_guard_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- stability_override_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'vs_champion_stability_override_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_applied: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_applied' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_available: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_available' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_gate_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_offline_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_offline_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- trainer_evidence_execution_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_execution_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- decision_basis: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'decision_basis' -DefaultValue ''))") | Out-Null
     $lines.Add("- compare_mode: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'compare_mode' -DefaultValue ''))") | Out-Null
 
@@ -641,6 +785,7 @@ $report = [ordered]@{
         strategy = $StrategyName
         candidate_model_ref = $CandidateModelRef
         champion_model_ref = $ChampionModelRef
+        trainer_evidence_mode = $TrainerEvidenceMode
         train_top_n = [int]$TrainTopN
         backtest_top_n = [int]$BacktestTopN
         booster_sweep_trials = [int]$BoosterSweepTrials
@@ -770,6 +915,7 @@ try {
     $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
+    $trainerEvidence = Resolve-TrainerEvidence -PromotionDecision $promotionDecision -Mode $TrainerEvidenceMode
     $report.steps.train = [ordered]@{
         exit_code = [int]$trainExec.ExitCode
         command = $trainExec.Command
@@ -778,6 +924,7 @@ try {
         candidate_run_dir = $candidateRunDir
         promotion_decision_path = $promotionDecisionPath
         promotion_decision_status = [string](Get-PropValue -ObjectValue $promotionDecision -Name "status" -DefaultValue "")
+        trainer_evidence = $trainerEvidence
     }
     if (($trainExec.ExitCode -ne 0) -or ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($candidateRunId))) {
         $report.reasons = @("TRAIN_OR_CANDIDATE_POINTER_FAILED")
@@ -842,6 +989,13 @@ try {
     $championParetoDominates = $false
     $paretoIncomparable = $false
     $stabilityOverridePass = $false
+    $trainerEvidenceApplied = $TrainerEvidenceMode -ne "ignore"
+    $trainerEvidenceAvailable = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "available" -DefaultValue $false) $false
+    $trainerEvidencePass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "pass" -DefaultValue $false) $false
+    $trainerEvidenceOfflinePass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "offline_pass" -DefaultValue $false) $false
+    $trainerEvidenceExecutionPass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "execution_pass" -DefaultValue $true) $true
+    $trainerEvidenceGatePass = if ($TrainerEvidenceMode -eq "required") { $trainerEvidencePass } else { $true }
+    $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
     $decisionBasis = if ($championCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
     if ($championCompareEvaluated) {
         $strictChampionDeltaPass = $championDeltaQuote -ge $BacktestMinPnlDeltaVsChampion
@@ -968,7 +1122,10 @@ try {
             }
         }
     }
-    $backtestPass = $candidateBacktestPass -and $championDeltaPass
+    $backtestPass = $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass
+    if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
+        $decisionBasis = "TRAINER_EVIDENCE_REQUIRED_FAIL"
+    }
     $report.steps.backtest_candidate = [ordered]@{
         exit_code = [int]$candidateBacktest.Exec.ExitCode
         command = $candidateBacktest.Exec.Command
@@ -1022,6 +1179,13 @@ try {
         vs_champion_slippage_deterioration_bps = $slippageDeteriorationBps
         vs_champion_slippage_guard_pass = $slippageGuardPass
         vs_champion_stability_override_pass = $stabilityOverridePass
+        trainer_evidence_applied = $trainerEvidenceApplied
+        trainer_evidence_available = $trainerEvidenceAvailable
+        trainer_evidence_pass = $trainerEvidencePass
+        trainer_evidence_gate_pass = $trainerEvidenceGatePass
+        trainer_evidence_offline_pass = $trainerEvidenceOfflinePass
+        trainer_evidence_execution_pass = $trainerEvidenceExecutionPass
+        trainer_evidence_reasons = @($trainerEvidenceReasons)
         decision_basis = $decisionBasis
         compare_mode = $promotionPolicyConfig.name
         pass = $backtestPass
@@ -1098,6 +1262,9 @@ try {
     $reasons = @()
     if (-not $backtestPass) {
         $reasons += "BACKTEST_ACCEPTANCE_FAILED"
+    }
+    if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
+        $reasons += "TRAINER_EVIDENCE_REQUIRED_FAILED"
     }
     if ($SkipPaperSoak) {
         $reasons += "PAPER_SOAK_SKIPPED"

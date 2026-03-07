@@ -492,6 +492,15 @@
 ## CLI: ModelBt Proxy
 - `python -m autobot.cli modelbt run --model-ref latest_v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --select top_pct --top-pct 0.05 --hold-bars 6 --fee-bps 5`
 
+## Runtime Presets And Acceptance Scripts
+- `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+- `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+- `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
+- `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
+- `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
+  - `trainer_evidence_mode=required`
+  - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass
+
 ## CLI: Live State
 - `python -m autobot.cli live status`
 - `python -m autobot.cli live reconcile --dry-run`

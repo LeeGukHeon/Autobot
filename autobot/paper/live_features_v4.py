@@ -91,6 +91,9 @@ class LiveFeatureProviderV4:
             frame=enriched,
             feature_columns=self._feature_columns,
         )
+        hard_gate_triggered = len(missing_columns) > 0
+        if hard_gate_triggered:
+            final_frame = final_frame.head(0)
         self._last_build_stats = {
             "provider": "LIVE_V4",
             "base_provider": "LIVE_V3",
@@ -98,6 +101,8 @@ class LiveFeatureProviderV4:
             "built_rows": int(final_frame.height),
             "requested_feature_count": int(len(self._feature_columns)),
             "missing_feature_columns": list(missing_columns),
+            "hard_gate_triggered": hard_gate_triggered,
+            "skip_reason": "MISSING_V4_FEATURE_COLUMNS" if hard_gate_triggered else "",
             "base_provider_stats": dict(base_stats),
         }
         return final_frame
@@ -130,5 +135,16 @@ def _project_requested_columns(
         if name in working.columns:
             continue
         missing_columns.append(str(name))
-        working = working.with_columns(pl.lit(0.0, dtype=pl.Float32).alias(str(name)))
-    return working.select(required_order), tuple(missing_columns)
+    if missing_columns:
+        schema: dict[str, pl.DataType] = {}
+        for name in required_order:
+            if name in working.columns:
+                schema[name] = working.schema[name]
+            elif name == "ts_ms":
+                schema[name] = pl.Int64
+            elif name == "market":
+                schema[name] = pl.Utf8
+            else:
+                schema[name] = pl.Float32
+        return pl.DataFrame(schema=schema), tuple(missing_columns)
+    return working.select(required_order), tuple()

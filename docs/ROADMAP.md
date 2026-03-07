@@ -267,11 +267,14 @@ D:\MyApps\Autobot
   - `LIVE_V4` paper provider 추가
   - `model_alpha_v1` paper 경로도 `feature_set=v4`를 허용함
   - `paper alpha`는 `live_v4`, `candidate_v4`, `offline_v4` preset을 지원함
+  - `LIVE_V4`는 요청된 `v4` 컬럼이 하나라도 빠지면 zero-fill로 점수를 내지 않고 `MISSING_V4_FEATURE_COLUMNS` hard gate로 빈 frame을 반환함
   - `LIVE_V3`는 그대로 유지하고, 실거래 서비스는 아직 `v4`로 올리지 않음
 - 5단계: paper soak 검증 통과 시 champion 승급 경로 연결 `진행 중`
   - 공통 `candidate_acceptance.ps1` 실행기 추가
   - `v3_candidate_acceptance.ps1`, `v4_candidate_acceptance.ps1` wrapper 분리
   - `v4`도 이제 `train -> candidate/champion backtest -> paper soak -> promote` 루프를 같은 계약으로 탈 수 있음
+  - `v4_candidate_acceptance.ps1`는 trainer가 미리 만든 `walk-forward + execution_acceptance` 증빙을 `required` gate로 읽음
+  - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 
 ### 설계 문서

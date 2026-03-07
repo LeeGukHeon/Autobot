@@ -3,6 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$PaperUnitName = "autobot-paper-alpha.service",
     [int]$PaperDurationSec = 0,
+    [ValidateSet("live_v3", "live_v4", "candidate_v4", "offline_v4")]
     [string]$PaperPreset = "live_v3",
     [string[]]$PaperCliArgs = @(),
     [switch]$NoStart,
