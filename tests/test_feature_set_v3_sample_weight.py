@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from autobot.features.feature_set_v3 import _attach_sample_weight, feature_columns_v3
+from autobot.features.feature_blocks_v3 import attach_sample_weight_v3
+from autobot.features.feature_set_v3 import feature_columns_v3
 
 
 def test_feature_columns_v3_includes_one_m_coverage_fields() -> None:
@@ -19,7 +20,7 @@ def test_attach_sample_weight_downweights_high_synth_ratio() -> None:
             "one_m_synth_ratio": [0.0, 1.0],
         }
     )
-    weighted = _attach_sample_weight(
+    weighted = attach_sample_weight_v3(
         frame,
         half_life_days=1_000_000.0,
         synth_weight_floor=0.2,

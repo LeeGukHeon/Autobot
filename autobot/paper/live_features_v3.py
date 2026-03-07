@@ -11,7 +11,7 @@ from typing import Any, Sequence
 import polars as pl
 
 from autobot.data import expected_interval_ms
-from autobot.features.feature_set_v3 import _compute_base_features
+from autobot.features.feature_blocks_v3 import compute_base_features_v3
 from autobot.features.micro_join import prefixed_micro_columns
 from autobot.features.multitf_join_v1 import (
     aggregate_1m_for_base,
@@ -270,7 +270,7 @@ class LiveFeatureProviderV3:
         if base.height <= 0:
             return None, "NO_BASE_CANDLE", 0, ()
 
-        base_featured = _compute_base_features(base, tf=self._tf, float_dtype="float32").sort("ts_ms")
+        base_featured = compute_base_features_v3(base, tf=self._tf, float_dtype="float32").sort("ts_ms")
         if base_featured.height <= 0:
             return None, "NO_BASE_FEATURES", 0, ()
 

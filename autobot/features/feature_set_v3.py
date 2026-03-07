@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
-from typing import Iterable
 
 import polars as pl
 
 from autobot.data import expected_interval_ms
 
+from .feature_blocks_v3 import (
+    attach_sample_weight_v3,
+    cast_feature_output_v3,
+    compute_base_features_v3,
+    feature_columns_v3_contract,
+    required_feature_columns_v3,
+)
 from .feature_set_v2 import apply_label_tail_guard
 from .labeling_v1 import apply_labeling_v1, drop_neutral_rows
-from .micro_join import prefixed_micro_columns
 from .micro_required_join_v1 import MicroRequiredJoinResult, join_micro_required
 from .multitf_join_v1 import (
     HighTfJoinStats,
@@ -51,54 +55,7 @@ class FeatureSetV3BuildResult:
 
 
 def feature_columns_v3(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
-    base = (
-        "logret_1",
-        "logret_3",
-        "logret_12",
-        "logret_36",
-        "vol_12",
-        "vol_36",
-        "range_pct",
-        "body_pct",
-        "volume_log",
-        "volume_z",
-    )
-    one_m = (
-        "one_m_count",
-        "one_m_ret_mean",
-        "one_m_ret_std",
-        "one_m_volume_sum",
-        "one_m_range_mean",
-        "one_m_missing_ratio",
-        "one_m_synth_ratio",
-        "one_m_real_count",
-        "one_m_real_volume_sum",
-    )
-    high: list[str] = []
-    for tf in high_tfs:
-        prefix = high_tf_prefix(tf)
-        high.extend(
-            [
-                f"{prefix}_ret_1",
-                f"{prefix}_ret_3",
-                f"{prefix}_vol_3",
-                f"{prefix}_trend_slope",
-                f"{prefix}_regime_flag",
-            ]
-        )
-
-    micro = list(prefixed_micro_columns())
-    micro.extend(
-        [
-            "m_spread_proxy",
-            "m_trade_volume_base",
-            "m_trade_buy_ratio",
-            "m_signed_volume",
-            "m_source_ws",
-            "m_source_rest",
-        ]
-    )
-    return tuple(_dedupe_preserve(list(base) + list(one_m) + high + micro))
+    return feature_columns_v3_contract(high_tfs=high_tfs)
 
 
 def build_feature_set_v3_from_candles(
@@ -145,7 +102,7 @@ def build_feature_set_v3_from_candles(
             one_m_stats=OneMJoinStats(0, 0, 0, max(int(one_m_required_bars), 1), float(one_m_max_missing_ratio)),
         )
 
-    working = _compute_base_features(base_candles_frame, tf=tf, float_dtype=float_dtype).sort("ts_ms")
+    working = compute_base_features_v3(base_candles_frame, tf=tf, float_dtype=float_dtype).sort("ts_ms")
     dense_start_ts_ms = int(working.get_column("ts_ms").min())
     dense_end_ts_ms = int(working.get_column("ts_ms").max())
 
@@ -245,7 +202,7 @@ def build_feature_set_v3_from_candles(
     labeled = drop_neutral_rows(frame=labeled, config=label_config)
     required_non_null = [
         name
-        for name in _required_feature_columns_for_filter(high_tfs=high_tfs)
+        for name in required_feature_columns_v3(high_tfs=high_tfs)
         if name in labeled.columns and name != "m_trade_source"
     ]
     required_non_null.extend([name for name in ("y_reg", "y_cls") if name in labeled.columns])
@@ -257,13 +214,13 @@ def build_feature_set_v3_from_candles(
     output = micro_join.frame
     rows_after_micro = int(output.height)
 
-    output = _attach_sample_weight(
+    output = attach_sample_weight_v3(
         output,
         half_life_days=max(float(sample_weight_half_life_days), 1e-6),
         synth_weight_floor=one_m_synth_weight_floor,
         synth_weight_power=one_m_synth_weight_power,
     )
-    output = _cast_output(output, float_dtype=float_dtype)
+    output = cast_feature_output_v3(output, float_dtype=float_dtype, high_tfs=high_tfs)
 
     return FeatureSetV3BuildResult(
         frame=output.sort("ts_ms"),
@@ -287,70 +244,8 @@ def build_feature_set_v3_from_candles(
         one_m_stats=one_m_stats,
     )
 
-
 def _compute_base_features(base_candles_frame: pl.DataFrame, *, tf: str, float_dtype: str) -> pl.DataFrame:
-    required = {"ts_ms", "open", "high", "low", "close", "volume_base"}
-    missing = [name for name in required if name not in base_candles_frame.columns]
-    if missing:
-        raise ValueError(f"base candles missing required columns: {missing}")
-
-    frame = base_candles_frame.sort("ts_ms")
-    frame = frame.with_columns(
-        [
-            (pl.col("close").log() - pl.col("close").shift(1).log()).alias("logret_1"),
-            (pl.col("close").log() - pl.col("close").shift(3).log()).alias("logret_3"),
-            (pl.col("close").log() - pl.col("close").shift(12).log()).alias("logret_12"),
-            (pl.col("close").log() - pl.col("close").shift(36).log()).alias("logret_36"),
-            pl.col("volume_base").log1p().alias("volume_log"),
-            (pl.col("high") / pl.col("low") - 1.0).alias("range_pct"),
-            ((pl.col("close") - pl.col("open")) / pl.col("open")).alias("body_pct"),
-        ]
-    )
-    frame = frame.with_columns(
-        [
-            pl.col("logret_1").rolling_std(window_size=12, min_samples=12).alias("vol_12"),
-            pl.col("logret_1").rolling_std(window_size=36, min_samples=36).alias("vol_36"),
-        ]
-    )
-    volume_mean = pl.col("volume_log").rolling_mean(window_size=36, min_samples=36)
-    volume_std = pl.col("volume_log").rolling_std(window_size=36, min_samples=36)
-    interval_ms = expected_interval_ms(tf)
-    frame = frame.with_columns(
-        [
-            ((pl.col("volume_log") - volume_mean) / volume_std).alias("volume_z"),
-            (pl.col("ts_ms").diff() > int(interval_ms)).fill_null(False).alias("is_gap"),
-            (
-                (pl.col("high") >= pl.max_horizontal(["open", "close", "low"]))
-                & (pl.col("low") <= pl.min_horizontal(["open", "close", "high"]))
-            )
-            .fill_null(False)
-            .alias("candle_ok"),
-        ]
-    )
-
-    keep = [
-        "ts_ms",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume_base",
-        "logret_1",
-        "logret_3",
-        "logret_12",
-        "logret_36",
-        "vol_12",
-        "vol_36",
-        "range_pct",
-        "body_pct",
-        "volume_log",
-        "volume_z",
-        "is_gap",
-        "candle_ok",
-    ]
-    return frame.select([name for name in keep if name in frame.columns]).with_columns(
-        [pl.col("ts_ms").cast(pl.Int64).alias("ts_ms")]
-    )
+    return compute_base_features_v3(base_candles_frame, tf=tf, float_dtype=float_dtype)
 
 
 def _attach_sample_weight(
@@ -360,140 +255,20 @@ def _attach_sample_weight(
     synth_weight_floor: float = 0.2,
     synth_weight_power: float = 2.0,
 ) -> pl.DataFrame:
-    if frame.height <= 0:
-        return frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("sample_weight"))
-    max_ts = int(frame.get_column("ts_ms").max())
-    decay = math.log(2.0) / max(float(half_life_days), 1e-9)
-    floor = min(max(float(synth_weight_floor), 0.0), 1.0)
-    power = max(float(synth_weight_power), 0.0)
-
-    age_weight = (
-        ((pl.lit(max_ts, dtype=pl.Int64) - pl.col("ts_ms").cast(pl.Int64)).cast(pl.Float64) / 86_400_000.0)
-        .mul(-decay)
-        .exp()
-        .cast(pl.Float64)
+    return attach_sample_weight_v3(
+        frame,
+        half_life_days=half_life_days,
+        synth_weight_floor=synth_weight_floor,
+        synth_weight_power=synth_weight_power,
     )
-    quality_weight: pl.Expr = pl.lit(1.0, dtype=pl.Float64)
-    if "one_m_synth_ratio" in frame.columns:
-        quality_weight = (
-            (pl.lit(1.0, dtype=pl.Float64) - pl.col("one_m_synth_ratio").cast(pl.Float64))
-            .clip(floor, 1.0)
-            .pow(power)
-            .fill_null(1.0)
-        )
-    return frame.with_columns((age_weight * quality_weight).cast(pl.Float64).alias("sample_weight"))
 
 
 def _cast_output(frame: pl.DataFrame, *, float_dtype: str) -> pl.DataFrame:
-    if frame.height <= 0:
-        return frame
-    dtype = pl.Float64 if str(float_dtype).strip().lower() == "float64" else pl.Float32
-    bool_columns = {
-        "is_gap",
-        "candle_ok",
-        "one_m_missing",
-        "one_m_no_real",
-        "one_m_fail",
-        "m_micro_trade_available",
-        "m_micro_book_available",
-        "m_micro_available",
-    }
-    int_columns = {
-        "ts_ms",
-        "one_m_count",
-        "one_m_last_ts",
-        "one_m_synth_count",
-        "one_m_real_count",
-        "src_ts_micro",
-        "y_cls",
-        "m_trade_events",
-        "m_book_events",
-        "m_trade_coverage_ms",
-        "m_book_coverage_ms",
-        "m_trade_count",
-        "m_buy_count",
-        "m_sell_count",
-        "m_book_update_count",
-        "m_source_ws",
-        "m_source_rest",
-    }
-    for tf in ("15m", "60m", "240m"):
-        int_columns.add(f"src_ts_{tf}")
-        int_columns.add(f"{high_tf_prefix(tf)}_regime_flag")
-
-    exprs: list[pl.Expr] = []
-    for name, col_dtype in frame.schema.items():
-        if name in int_columns:
-            cast = pl.Int8 if name == "y_cls" else pl.Int64
-            exprs.append(pl.col(name).cast(cast).alias(name))
-        elif name in bool_columns:
-            exprs.append(pl.col(name).cast(pl.Boolean).alias(name))
-        elif name == "m_trade_source":
-            exprs.append(pl.col(name).fill_null("none").cast(pl.Utf8).alias(name))
-        elif col_dtype in {pl.Float32, pl.Float64} or name in feature_columns_v3():
-            exprs.append(pl.col(name).cast(dtype).alias(name))
-        else:
-            exprs.append(pl.col(name).alias(name))
-    return frame.with_columns(exprs)
+    return cast_feature_output_v3(frame, float_dtype=float_dtype)
 
 
 def _required_feature_columns_for_filter(*, high_tfs: tuple[str, ...]) -> tuple[str, ...]:
-    base = (
-        "logret_1",
-        "logret_3",
-        "logret_12",
-        "logret_36",
-        "vol_12",
-        "vol_36",
-        "range_pct",
-        "body_pct",
-        "volume_log",
-        "volume_z",
-        "one_m_count",
-        "one_m_ret_mean",
-        "one_m_ret_std",
-        "one_m_volume_sum",
-        "one_m_range_mean",
-        "one_m_synth_ratio",
-        "one_m_real_count",
-        "one_m_real_volume_sum",
-    )
-    high: list[str] = []
-    for tf in high_tfs:
-        prefix = high_tf_prefix(tf)
-        high.extend(
-            [
-                f"{prefix}_ret_1",
-                f"{prefix}_ret_3",
-                f"{prefix}_vol_3",
-                f"{prefix}_trend_slope",
-                f"{prefix}_regime_flag",
-            ]
-        )
-    micro = (
-        "m_micro_available",
-        "m_trade_events",
-        "m_book_events",
-        "m_trade_coverage_ms",
-        "m_book_coverage_ms",
-        "m_spread_proxy",
-        "m_trade_volume_base",
-        "m_source_ws",
-        "m_source_rest",
-    )
-    return tuple(_dedupe_preserve(list(base) + high + list(micro)))
-
-
-def _dedupe_preserve(values: Iterable[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for raw in values:
-        item = str(raw).strip()
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
+    return required_feature_columns_v3(high_tfs=high_tfs)
 
 
 def _one_m_synth_ratio_stats(frame: pl.DataFrame) -> tuple[float | None, float | None, float | None]:

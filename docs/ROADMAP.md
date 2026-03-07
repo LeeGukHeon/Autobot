@@ -234,6 +234,38 @@ D:\MyApps\Autobot
 - paper soak 리포트를 운영 검증용과 성능 해석용으로 분리한다.
 - promote 후 활성 `paper/live` 서비스 자동 재시작을 기본 운영 루프로 유지한다.
 
+## 17.2) 코인 연구 정렬 알파 vNext (T18.2)
+
+### 왜 지금 이 작업을 하는가
+- 현재 운영 baseline은 `feature_set=v3`, `label_set=v1`, `trainer=train_v3_mtf_micro`, `strategy=model_alpha_v1`로 안정화되어 있다.
+- 하지만 현재 학습 목표는 `12 x 5m` 이후 종가 기반 이진분류이고, 실제 운용은 cross-sectional selection + execution overlay 구조다.
+- 즉 데이터가 부족하다기보다 `학습 목표`, `피처 계약`, `실제 선택 로직` 사이의 미스매치가 다음 병목이다.
+
+### 방향성
+- 최근 코인 단면 연구와 가장 잘 맞는 방향은 다음 5개다.
+- `label`을 절대 방향 이진분류 중심에서 `순이익/상대순위` 중심으로 재설계한다.
+- `cross-coin spillover`와 `market breadth`를 feature contract에 추가한다.
+- 가격 + 거래량 기반 `trend aggregate` 피처를 추가한다.
+- 코인 24/7 시장의 `hour-of-day`, `day-of-week`, `overlap` 주기성을 피처에 반영한다.
+- `liquidity x risk x momentum` 상호작용을 소수의 명시적 피처로 추가한다.
+
+### 레거시 정리 원칙
+- 운영 baseline인 `v3/v1/train_v3_mtf_micro/model_alpha_v1`은 freeze한다.
+- 기존 `v3`나 `label_v1` 의미를 in-place로 바꾸지 않는다.
+- 연구용 새 계약은 새 버전(`v4`, `label_v2`, 새 trainer wrapper`)으로 추가한다.
+- 단, 구현은 copy-paste가 아니라 공통 빌딩 블록 추출 후 thin wrapper 방식으로 진행한다.
+- `model_alpha_v1`은 점수 기반 selection/portfolio/runtime handoff 계약이 유지되는 한 그대로 재사용한다.
+
+### 실행 순서
+- 1단계: `label_v2` 설계 및 offline dataset contract 확정
+- 2단계: `feature_set_v4`에 spillover/trend/periodicity/interaction pack 추가
+- 3단계: 새 trainer와 rolling acceptance 구축
+- 4단계: backtest 우위 확인 후 `LIVE_V4` parity 추가
+- 5단계: paper soak 검증 통과 시 champion 승급 경로 연결
+
+### 설계 문서
+- 상세 설계와 구현/삭제 기준은 `docs/TICKETS/T18_2_crypto_alpha_research_alignment_v1.md`를 따른다.
+
 ## 18) 단계별 티켓 로드맵
 - T00: Repo Bootstrap
 - T01: CSV -> Parquet + Schema
@@ -247,6 +279,7 @@ D:\MyApps\Autobot
 - T08: Live execution v1 (order manager + state machine)
 - T09: ML pipeline v1
 - T10: Meta risk-on/off
+- T18.2: Crypto alpha vNext (`label_v2`, `feature_set_v4`, rolling acceptance, legacy freeze/cleanup)
 
 ## 19) 첫 작업 지시문 요약
 - 디렉터리 구조 생성
