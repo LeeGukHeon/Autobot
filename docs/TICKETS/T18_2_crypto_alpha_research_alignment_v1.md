@@ -355,9 +355,9 @@ Current implementation checkpoint:
     - `live_v4`
     - `candidate_v4`
     - `offline_v4`
-  - runtime presets now pin lane-specific selection criteria instead of inheriting baseline `strategy.yaml` defaults:
-    - `live_v3/offline_v3`: `top_pct=0.10`, `min_prob=0.52`, `min_candidates_per_ts=3`
-    - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_prob=0.00`, `min_candidates_per_ts=1`
+  - runtime presets now pin lane-specific breadth controls instead of inheriting baseline `strategy.yaml` defaults:
+    - `live_v3/offline_v3`: `top_pct=0.10`, `min_candidates_per_ts=3`, while `min_prob` stays unset and resolves from the model registry threshold
+    - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_candidates_per_ts=1`, while `min_prob` stays unset and resolves from the model registry threshold
   - `backtest alpha` and `paper alpha` parser choices now allow `--feature-set v4`
   - live service rollout is still intentionally pending
 - Phase 5 has started:
@@ -376,12 +376,13 @@ Current implementation checkpoint:
       - `backtest_min_prob=0.0`
       - `backtest_min_candidates_per_ts=1`
     - trainer-side execution acceptance now consumes the same sparse-aware overrides instead of falling back to baseline `strategy.yaml` selection defaults
-  - lane wrappers should keep criteria explicit instead of inheriting generic defaults:
-    - `v3`: `balanced_pareto`, `trainer_evidence=ignore`, `top_pct=0.10`, `min_prob=0.52`, `min_candidates=3`, `paper_max_fallback_ratio=0.10`
-    - `v4`: `balanced_pareto`, `trainer_evidence=required`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
-  - the `v4` relaxed thresholds are a temporary bootstrap lane, not a permanent production target:
-    - tighten them after `v4` has roughly `14+` effective days of usable feature history
-    - and after rolling paper fallback ratio stays consistently below `0.10`
+  - lane wrappers keep acceptance criteria explicit instead of inheriting generic defaults:
+    - shared compare profile for `v3` and `v4`: `balanced_pareto`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
+    - lane-specific difference remains only in trainer evidence:
+      - `v3`: `trainer_evidence=ignore`
+      - `v4`: `trainer_evidence=required`
+  - the `v4` relaxed runtime breadth settings are a temporary bootstrap lane, not a permanent production target:
+    - runtime `live_v4/candidate_v4` stays on `top_pct=0.50`, `min_candidates_per_ts=1` until `v4` has roughly `14+` effective days of usable history
   - current result:
     - v4 can use the same `train -> backtest compare -> paper soak -> promote` contract
     - generic acceptance now reads trainer-side `promotion_decision.json` evidence and can require:

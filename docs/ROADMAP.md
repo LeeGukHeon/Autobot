@@ -267,9 +267,14 @@ D:\MyApps\Autobot
   - `LIVE_V4` paper provider 추가
   - `model_alpha_v1` paper 경로도 `feature_set=v4`를 허용함
   - `paper alpha`는 `live_v4`, `candidate_v4`, `offline_v4` preset을 지원함
-  - runtime preset now owns lane criteria explicitly, so always-on paper no longer falls back to conservative `config/strategy.yaml` defaults:
-    - `live_v3`: `top_pct=0.10`, `min_prob=0.52`, `min_candidates_per_ts=3`
-    - `live_v4/candidate_v4`: `top_pct=0.50`, `min_prob=0.00`, `min_candidates_per_ts=1`
+  - runtime preset now owns lane breadth criteria explicitly, while keeping `min_prob` unset so always-on paper uses learned registry thresholds:
+    - `live_v3`: `top_pct=0.10`, `min_candidates_per_ts=3`, `min_prob -> registry`
+    - `live_v4/candidate_v4`: `top_pct=0.50`, `min_candidates_per_ts=1`, `min_prob -> registry`
+  - acceptance stays on one shared fixed compare profile across `v3` and `v4`:
+    - `top_pct=0.50`
+    - `min_prob=0.00`
+    - `min_candidates_per_ts=1`
+    - `paper_max_fallback_ratio=0.20`
   - `LIVE_V4`는 요청된 `v4` 컬럼이 하나라도 빠지면 zero-fill로 점수를 내지 않고 `MISSING_V4_FEATURE_COLUMNS` hard gate로 빈 frame을 반환함
   - `LIVE_V3`는 그대로 유지하고, 실거래 서비스는 아직 `v4`로 올리지 않음
 - 5단계: paper soak 검증 통과 시 champion 승급 경로 연결 `진행 중`

@@ -1,4 +1,7 @@
 $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe" } else { "pwsh" }
+# Acceptance intentionally uses the same fixed compare profile as v4.
+# Runtime/live_v3 paper continues to use learned registry thresholds, while acceptance stays
+# on a shared apples-to-apples test profile for champion promotion decisions.
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `
     -ModelFamily "train_v3_mtf_micro" `
     -Trainer "v3_mtf_micro" `
@@ -10,13 +13,13 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -PaperFeatureProvider "live_v3" `
     -PromotionPolicy "balanced_pareto" `
     -TrainerEvidenceMode "ignore" `
-    -BacktestTopPct 0.10 `
-    -BacktestMinProb 0.52 `
-    -BacktestMinCandidatesPerTs 3 `
+    -BacktestTopPct 0.50 `
+    -BacktestMinProb 0.0 `
+    -BacktestMinCandidatesPerTs 1 `
     -BacktestMinOrdersFilled 30 `
     -BacktestMinRealizedPnlQuote 0.0 `
     -BacktestMinPnlDeltaVsChampion 0.0 `
-    -PaperMaxFallbackRatio 0.10 `
+    -PaperMaxFallbackRatio 0.20 `
     -PaperMinOrdersSubmitted 1 `
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `

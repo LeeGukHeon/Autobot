@@ -494,14 +494,19 @@
 
 ## Runtime Presets And Acceptance Scripts
 - `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
-- runtime presets now pin lane-specific selection criteria instead of inheriting `config/strategy.yaml` defaults:
-  - `live_v3/offline_v3`: `top_pct=0.10`, `min_prob=0.52`, `min_candidates_per_ts=3`
-  - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_prob=0.00`, `min_candidates_per_ts=1`
+- runtime presets now pin lane-specific breadth knobs but keep `min_prob` unset so runtime uses the learned registry threshold:
+  - `live_v3/offline_v3`: `top_pct=0.10`, `min_candidates_per_ts=3`, `min_prob=null -> registry threshold`
+  - `live_v4/candidate_v4/offline_v4`: `top_pct=0.50`, `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
   - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
 - `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
+  - v3/v4 acceptance now shares one fixed compare profile for backtest/paper soak:
+    - `top_pct=0.50`
+    - `min_prob=0.00`
+    - `min_candidates_per_ts=1`
+    - `paper_max_fallback_ratio=0.20`
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass
 - `scripts/daily_candidate_acceptance_for_server.ps1`: server wrapper for delayed acceptance runs that reuse already-collected data

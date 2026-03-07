@@ -1,7 +1,7 @@
 $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe" } else { "pwsh" }
-# Temporary sparse-aware bootstrap criteria for the current shallow v4 history.
-# Tighten these back toward v3-style conservatism after v4 has at least ~14 effective days
-# of usable history and the recent rolling paper fallback ratio stays comfortably below 0.10.
+# Acceptance intentionally uses the same fixed compare profile as v3.
+# Runtime/live_v4 paper continues to use learned registry thresholds, while acceptance stays
+# on a shared apples-to-apples test profile for champion promotion decisions.
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `
     -ModelFamily "train_v4_crypto_cs" `
     -Trainer "v4_crypto_cs" `
