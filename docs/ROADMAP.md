@@ -260,10 +260,14 @@ D:\MyApps\Autobot
 - 1단계: `label_v2` 설계 및 offline dataset contract 확정 `완료`
 - 2단계: `feature_set_v4`에 spillover/trend/periodicity/interaction pack 추가 `사실상 완료`
   - 현재는 `spillover + breadth + periodicity + trend-volume + interaction` pack까지 반영됨
-- 3단계: 새 trainer와 rolling acceptance 구축 `진행 중`
+- 3단계: 새 trainer와 rolling acceptance 구축 `완료`
   - 현재는 `v4 trainer + anchored walk-forward evidence + execution-aware backtest acceptance`까지 반영됨
   - `model_alpha_v1` backtest 경로도 이제 `feature_set=v4`를 허용함
-- 4단계: `LIVE_V4` parity와 paper preset 연결
+- 4단계: `LIVE_V4` parity와 paper preset 연결 `진행 중`
+  - `LIVE_V4` paper provider 추가
+  - `model_alpha_v1` paper 경로도 `feature_set=v4`를 허용함
+  - `paper alpha`는 `live_v4`, `candidate_v4`, `offline_v4` preset을 지원함
+  - `LIVE_V3`는 그대로 유지하고, 실거래 서비스는 아직 `v4`로 올리지 않음
 - 5단계: paper soak 검증 통과 시 champion 승급 경로 연결
 
 ### 설계 문서

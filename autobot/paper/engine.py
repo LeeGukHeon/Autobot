@@ -64,6 +64,7 @@ from autobot.upbit.ws import UpbitWebSocketPublicClient
 from autobot.upbit.ws.models import TickerEvent
 
 from .live_features_v3 import LiveFeatureProviderV3
+from .live_features_v4 import LiveFeatureProviderV4
 from .sim_exchange import (
     FillEvent,
     MarketRules,
@@ -917,7 +918,7 @@ class PaperRunEngine:
             model_interval_ms = _interval_ms_from_tf(self._run_settings.tf)
             now_ms = int(time.time() * 1000)
             feature_provider_mode = _normalize_paper_feature_provider(self._run_settings.paper_feature_provider)
-            if feature_provider_mode == "LIVE_V3":
+            if feature_provider_mode in {"LIVE_V3", "LIVE_V4"}:
                 anchor = (now_ms // model_interval_ms) * model_interval_ms
                 start_ts_ms = int(anchor - model_interval_ms * 4)
                 end_ts_ms = int(anchor + max(int(self._run_settings.duration_sec) * 1000, model_interval_ms * 4))
@@ -1030,7 +1031,7 @@ class PaperRunEngine:
                 market_data.update(ticker)
                 universe.update_ticker(ticker)
                 live_feature_provider = self._runtime_state.get("live_feature_provider")
-                if isinstance(live_feature_provider, LiveFeatureProviderV3):
+                if _is_live_feature_provider(live_feature_provider):
                     live_feature_provider.ingest_ticker(ticker)
                 if live_ws_provider is not None:
                     self._ingest_live_micro_from_ticker(provider=live_ws_provider, ticker=ticker)
@@ -1377,7 +1378,7 @@ class PaperRunEngine:
     ) -> None:
         markets = universe.markets()
         live_feature_provider = self._runtime_state.get("live_feature_provider")
-        if isinstance(live_feature_provider, LiveFeatureProviderV3):
+        if _is_live_feature_provider(live_feature_provider):
             append_event(
                 "FEATURE_PROVIDER_STATUS",
                 ts_ms=ts_ms,
@@ -1390,7 +1391,7 @@ class PaperRunEngine:
             latest_prices=market_data.latest_prices(),
             open_markets=open_markets,
         )
-        if isinstance(live_feature_provider, LiveFeatureProviderV3):
+        if _is_live_feature_provider(live_feature_provider):
             live_payload = dict(live_feature_provider.last_build_stats())
             live_payload["model_selection_scored_rows"] = int(result.scored_rows)
             live_payload["model_selection_eligible_rows"] = int(result.eligible_rows)
@@ -1443,7 +1444,7 @@ class PaperRunEngine:
             "min_prob_source": str(result.min_prob_source),
             "reasons": dict(result.skipped_reasons),
         }
-        if isinstance(live_feature_provider, LiveFeatureProviderV3):
+        if _is_live_feature_provider(live_feature_provider):
             live_stats = live_feature_provider.last_build_stats()
             selection_payload["live_feature_skip_reasons"] = dict(live_stats.get("skip_reasons", {}))
             selection_payload["live_feature_skipped_markets"] = int(live_stats.get("skipped_markets", 0))
@@ -1478,8 +1479,9 @@ class PaperRunEngine:
         decision_end_ts_ms: int,
     ) -> ModelAlphaStrategyV1:
         settings = self._run_settings
-        if str(settings.feature_set).strip().lower() != "v3":
-            raise ValueError("paper model_alpha_v1 currently requires --feature-set v3")
+        feature_set = str(settings.feature_set).strip().lower() or "v3"
+        if feature_set not in {"v3", "v4"}:
+            raise ValueError("paper model_alpha_v1 currently requires --feature-set v3 or v4")
         model_ref = str(settings.model_ref or settings.model_alpha.model_ref).strip()
         if not model_ref:
             raise ValueError("paper model_alpha_v1 requires model_ref")
@@ -1491,9 +1493,37 @@ class PaperRunEngine:
         )
         feature_provider_mode = _normalize_paper_feature_provider(settings.paper_feature_provider)
         if feature_provider_mode == "LIVE_V3":
+            if feature_set != "v3":
+                raise ValueError("paper LIVE_V3 provider requires --feature-set v3")
             live_feature_provider = LiveFeatureProviderV3(
                 feature_columns=predictor.feature_columns,
                 tf=str(settings.tf).strip().lower(),
+                micro_snapshot_provider=self._runtime_state.get("micro_snapshot_provider_for_features"),
+                micro_max_age_ms=max(int(settings.paper_live_micro_max_age_ms), 0),
+                parquet_root=str(settings.paper_live_parquet_root),
+                candles_dataset_name=str(settings.paper_live_candles_dataset),
+                bootstrap_1m_bars=max(int(settings.paper_live_bootstrap_1m_bars), 256),
+            )
+            self._runtime_state["live_feature_provider"] = live_feature_provider
+            interval_ms = _interval_ms_from_tf(settings.tf)
+            return ModelAlphaStrategyV1(
+                predictor=predictor,
+                feature_groups=(),
+                settings=settings.model_alpha,
+                interval_ms=interval_ms,
+                live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
+                    ts_ms=int(ts_ms),
+                    markets=markets,
+                ),
+            )
+
+        if feature_provider_mode == "LIVE_V4":
+            if feature_set != "v4":
+                raise ValueError("paper LIVE_V4 provider requires --feature-set v4")
+            live_feature_provider = LiveFeatureProviderV4(
+                feature_columns=predictor.feature_columns,
+                tf=str(settings.tf).strip().lower(),
+                quote=str(settings.quote).strip().upper(),
                 micro_snapshot_provider=self._runtime_state.get("micro_snapshot_provider_for_features"),
                 micro_max_age_ms=max(int(settings.paper_live_micro_max_age_ms), 0),
                 parquet_root=str(settings.paper_live_parquet_root),
@@ -2711,11 +2741,17 @@ def _normalize_paper_micro_provider(value: Any) -> str:
 
 def _normalize_paper_feature_provider(value: Any) -> str:
     text = str(value or "").strip().upper()
+    if text in {"LIVE_V4", "V4"}:
+        return "LIVE_V4"
     if text in {"LIVE_V3", "LIVE", "V3"}:
         return "LIVE_V3"
     if text in {"OFFLINE", "OFFLINE_PARQUET", "PARQUET"}:
         return "OFFLINE_PARQUET"
     return "OFFLINE_PARQUET"
+
+
+def _is_live_feature_provider(provider: Any) -> bool:
+    return isinstance(provider, (LiveFeatureProviderV3, LiveFeatureProviderV4))
 
 
 def _is_ws_public_daemon_running(*, health_path: Path, stale_sec: int) -> bool:

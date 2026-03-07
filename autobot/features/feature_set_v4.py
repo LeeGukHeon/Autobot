@@ -98,8 +98,20 @@ def attach_spillover_breadth_features_v4(
     eth_market = f"{leader_quote}-ETH"
     dtype = pl.Float64 if str(float_dtype).strip().lower() == "float64" else pl.Float32
 
+    volume_candidates: list[pl.Expr] = []
+    if "volume_base" in frame.columns:
+        volume_candidates.append(pl.col("volume_base").cast(pl.Float64))
+    if "one_m_real_volume_sum" in frame.columns:
+        volume_candidates.append(pl.col("one_m_real_volume_sum").cast(pl.Float64))
+    if "one_m_volume_sum" in frame.columns:
+        volume_candidates.append(pl.col("one_m_volume_sum").cast(pl.Float64))
+    volume_base_expr = (
+        pl.coalesce(volume_candidates).fill_null(0.0)
+        if volume_candidates
+        else pl.lit(0.0, dtype=pl.Float64)
+    )
     working = frame.sort(["ts_ms", "market"]).with_columns(
-        (pl.col("close").cast(pl.Float64) * pl.col("volume_base").cast(pl.Float64))
+        (pl.col("close").cast(pl.Float64) * volume_base_expr)
         .clip(lower_bound=0.0)
         .alias("__quote_turnover")
     )
@@ -222,16 +234,17 @@ def attach_trend_volume_features_v4(frame: pl.DataFrame, *, float_dtype: str = "
     dtype = pl.Float64 if str(float_dtype).strip().lower() == "float64" else pl.Float32
     working = frame.sort(["market", "ts_ms"])
 
+    volume_candidates: list[pl.Expr] = []
+    if "one_m_real_volume_sum" in working.columns:
+        volume_candidates.append(pl.col("one_m_real_volume_sum").cast(pl.Float64))
+    if "one_m_volume_sum" in working.columns:
+        volume_candidates.append(pl.col("one_m_volume_sum").cast(pl.Float64))
+    if "volume_base" in working.columns:
+        volume_candidates.append(pl.col("volume_base").cast(pl.Float64))
     volume_base_expr = (
-        pl.coalesce(
-            [
-                pl.col("one_m_real_volume_sum").cast(pl.Float64),
-                pl.col("one_m_volume_sum").cast(pl.Float64),
-                pl.col("volume_base").cast(pl.Float64),
-            ]
-        )
-        .fill_null(0.0)
-        .clip(lower_bound=0.0)
+        pl.coalesce(volume_candidates).fill_null(0.0).clip(lower_bound=0.0)
+        if volume_candidates
+        else pl.lit(0.0, dtype=pl.Float64)
     )
     volume_log_expr = volume_base_expr.log1p()
 
@@ -257,11 +270,11 @@ def attach_trend_volume_features_v4(frame: pl.DataFrame, *, float_dtype: str = "
             _mean_horizontal_expr(working.columns, ("logret_1", "logret_3", "logret_12")).alias("price_trend_short"),
             _mean_horizontal_expr(
                 working.columns,
-                ("logret_12", "logret_36", "h15m_ret_1", "h60m_ret_1"),
+                ("logret_12", "logret_36", "tf15m_ret_1", "h15m_ret_1", "tf60m_ret_1", "h60m_ret_1"),
             ).alias("price_trend_med"),
             _mean_horizontal_expr(
                 working.columns,
-                ("logret_36", "h60m_ret_3", "h240m_ret_1", "h240m_ret_3"),
+                ("logret_36", "tf60m_ret_3", "h60m_ret_3", "tf240m_ret_1", "h240m_ret_1", "tf240m_ret_3", "h240m_ret_3"),
             ).alias("price_trend_long"),
             _mean_horizontal_expr(working.columns, ("volume_z", "__volume_z_roll", "__volume_log_dev")).alias("volume_trend_long"),
         ]

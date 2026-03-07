@@ -334,7 +334,24 @@ Current implementation checkpoint:
       - fill rate
       - slippage
   - `model_alpha_v1` backtest path now accepts `feature_set=v4` for this research lane
-  - paper/live parity for `v4` is still pending
+  - paper/live parity for `v4` was the next major gap
+- Phase 4 is now in progress:
+  - `LiveFeatureProviderV4` is added as a thin composition layer over `LIVE_V3`
+  - `LIVE_V3` itself remains stable; no multi-contract mutation was added there
+  - current `LIVE_V4` path:
+    - reuses the stable `LIVE_V3` base frame
+    - applies `spillover + breadth + periodicity + trend-volume + interaction` packs after the v3 build
+    - projects only the requested `v4` contract columns
+  - `PaperRunEngine` now accepts:
+    - `paper_feature_provider=LIVE_V4`
+    - `strategy=model_alpha_v1`
+    - `feature_set=v4`
+  - `paper alpha` presets now include:
+    - `live_v4`
+    - `candidate_v4`
+    - `offline_v4`
+  - `backtest alpha` and `paper alpha` parser choices now allow `--feature-set v4`
+  - live service rollout is still intentionally pending
 
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`
@@ -362,6 +379,10 @@ Current implementation checkpoint:
 - Add `LIVE_V4`
 - Add paper/backtest preset support
 - Keep live service off until paper parity is proven
+  - current status:
+    - `LIVE_V4` paper provider implemented
+    - v4 paper presets implemented
+    - live runtime deployment still not started
 
 ### Phase 5: Promote and Sunset
 - If v4 proves superior and stable:

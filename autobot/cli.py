@@ -149,6 +149,8 @@ from .upbit.ws import UpbitWebSocketPrivateClient
 
 DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v3"
 DEFAULT_V3_CANDIDATE_REF = "latest_candidate_v3"
+DEFAULT_V4_RUNTIME_REF = "champion_v4"
+DEFAULT_V4_CANDIDATE_REF = "latest_candidate_v4"
 
 
 def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
@@ -171,9 +173,50 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
             }
         )
         return overrides
+    if name in {"live_v4", "v4"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_V4_RUNTIME_REF,
+                "model_family": "train_v4_crypto_cs",
+                "paper_feature_provider": "live_v4",
+                "paper_micro_provider": "live_ws",
+                "micro_gate": "off",
+                "micro_order_policy": "on",
+                "micro_order_policy_mode": "trade_only",
+                "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
+    if name in {"candidate_v4", "live_candidate_v4"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_V4_CANDIDATE_REF,
+                "model_family": "train_v4_crypto_cs",
+                "paper_feature_provider": "live_v4",
+                "paper_micro_provider": "live_ws",
+                "micro_gate": "off",
+                "micro_order_policy": "on",
+                "micro_order_policy_mode": "trade_only",
+                "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
     if name in {"offline", "offline_v3"}:
         overrides.update(
             {
+                "paper_feature_provider": "offline_parquet",
+                "paper_micro_provider": "offline_parquet",
+            }
+        )
+        return overrides
+    if name in {"offline_v4"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_V4_RUNTIME_REF,
+                "model_family": "train_v4_crypto_cs",
                 "paper_feature_provider": "offline_parquet",
                 "paper_micro_provider": "offline_parquet",
             }
@@ -192,8 +235,8 @@ def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
         "top_n": getattr(args, "top_n", None),
         "strategy": str(overrides.get("strategy", "model_alpha_v1")),
         "tf": getattr(args, "tf", None),
-        "model_ref": getattr(args, "model_ref", None),
-        "model_family": getattr(args, "model_family", None),
+        "model_ref": getattr(args, "model_ref", None) or overrides.get("model_ref"),
+        "model_family": getattr(args, "model_family", None) or overrides.get("model_family"),
         "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
         "top_pct": getattr(args, "top_pct", None),
         "min_prob": getattr(args, "min_prob", None),
@@ -861,7 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--tf", help="Model timeframe when strategy=model_alpha_v1, ex: 5m")
     paper_run_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     paper_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
-    paper_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    paper_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3", "v4"))
     paper_run_parser.add_argument("--top-pct", type=float)
     paper_run_parser.add_argument("--min-prob", type=float)
     paper_run_parser.add_argument("--min-cands-per-ts", type=int)
@@ -905,7 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_run_parser.add_argument(
         "--paper-feature-provider",
-        choices=("offline_parquet", "live_v3"),
+        choices=("offline_parquet", "live_v3", "live_v4"),
         help="Paper feature provider selection for model_alpha_v1.",
     )
     paper_alpha_parser = paper_subparsers.add_parser(
@@ -914,9 +957,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_alpha_parser.add_argument(
         "--preset",
-        choices=("live_v3", "offline", "default"),
+        choices=("live_v3", "live_v4", "candidate_v4", "offline", "offline_v4", "default"),
         default="live_v3",
-        help="Shortcut preset. default=config-driven, live_v3=LIVE_V3+LIVE_WS, offline=offline parquet providers.",
+        help="Shortcut preset. default=config-driven, live_v3/live_v4 use live providers, offline variants use parquet providers.",
     )
     paper_alpha_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
     paper_alpha_parser.add_argument("--quote", help="Quote currency, ex: KRW")
@@ -924,7 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
     paper_alpha_parser.add_argument("--tf", help="Model timeframe, ex: 5m")
     paper_alpha_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     paper_alpha_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
-    paper_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    paper_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3", "v4"))
     paper_alpha_parser.add_argument("--top-pct", type=float)
     paper_alpha_parser.add_argument("--min-prob", type=float)
     paper_alpha_parser.add_argument("--min-cands-per-ts", type=int)
@@ -949,7 +992,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_alpha_parser.add_argument(
         "--paper-feature-provider",
-        choices=("offline_parquet", "live_v3"),
+        choices=("offline_parquet", "live_v3", "live_v4"),
         help="Optional provider override on top of preset.",
     )
     paper_alpha_parser.add_argument("--paper-micro-warmup-sec", type=int)
@@ -970,7 +1013,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
     backtest_run_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     backtest_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
-    backtest_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    backtest_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3", "v4"))
     backtest_run_parser.add_argument("--entry", choices=("top_pct",))
     backtest_run_parser.add_argument("--top-pct", type=float)
     backtest_run_parser.add_argument("--min-prob", type=float)
@@ -1026,7 +1069,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_alpha_parser.add_argument("--universe-mode", choices=("static_start", "fixed_list"))
     backtest_alpha_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     backtest_alpha_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
-    backtest_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3"))
+    backtest_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3", "v4"))
     backtest_alpha_parser.add_argument("--top-pct", type=float)
     backtest_alpha_parser.add_argument("--min-prob", type=float)
     backtest_alpha_parser.add_argument("--min-cands-per-ts", type=int)
