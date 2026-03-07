@@ -2177,9 +2177,9 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
 def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
         defaults = load_train_defaults(config_dir, base_config=base_config)
-        risk_doc = _load_optional_yaml(config_dir / "risk.yaml")
-        strategy_doc = _load_optional_yaml(config_dir / "strategy.yaml")
-        backtest_doc = _load_optional_yaml(config_dir / "backtest.yaml")
+        risk_doc = _load_yaml_doc(config_dir / "risk.yaml")
+        strategy_doc = _load_yaml_doc(config_dir / "strategy.yaml")
+        backtest_doc = _load_yaml_doc(config_dir / "backtest.yaml")
         backtest_defaults = _backtest_defaults(
             base_config=base_config,
             risk_doc=risk_doc,

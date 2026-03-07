@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+from types import SimpleNamespace
 
+import autobot.cli as cli_mod
 from autobot.cli import (
     _normalize_backtest_alpha_args,
+    _handle_model_command,
     _normalize_paper_alpha_args,
     build_parser,
 )
@@ -161,3 +165,105 @@ def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> Non
     assert normalized.feature_set == "v3"
     assert normalized.duration_days == 7
     assert normalized.micro_order_policy == "off"
+
+
+def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_path: Path) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "model",
+            "train",
+            "--trainer",
+            "v4_crypto_cs",
+            "--feature-set",
+            "v4",
+            "--label-set",
+            "v2",
+            "--task",
+            "cls",
+            "--tf",
+            "5m",
+            "--quote",
+            "KRW",
+            "--top-n",
+            "50",
+            "--start",
+            "2026-03-03",
+            "--end",
+            "2026-03-06",
+        ]
+    )
+
+    monkeypatch.setattr(
+        cli_mod,
+        "load_train_defaults",
+        lambda config_dir, base_config: {
+            "registry_root": str(tmp_path / "registry"),
+            "logs_root": str(tmp_path / "logs"),
+            "top_n": 50,
+            "tf": "5m",
+            "quote": "KRW",
+            "start": "2026-03-03",
+            "end": "2026-03-06",
+            "task": "cls",
+            "booster_sweep_trials": 1,
+            "seed": 42,
+            "nthread": 1,
+            "batch_rows": 256,
+            "train_ratio": 0.6,
+            "valid_ratio": 0.2,
+            "test_ratio": 0.2,
+            "embargo_bars": 0,
+            "fee_bps_est": 10.0,
+            "safety_bps": 5.0,
+            "ev_scan_steps": 10,
+            "ev_min_selected": 1,
+        },
+    )
+    monkeypatch.setattr(cli_mod, "_load_yaml_doc", lambda path: {})
+    monkeypatch.setattr(
+        cli_mod,
+        "_backtest_defaults",
+        lambda **kwargs: {
+            "parquet_root": "data/parquet",
+            "dataset_name": "candles_v1",
+            "dense_grid": False,
+            "starting_krw": 50000.0,
+            "per_trade_krw": 10000.0,
+            "max_positions": 2,
+            "min_order_krw": 5000.0,
+            "order_timeout_bars": 5,
+            "reprice_max_attempts": 1,
+            "reprice_tick_steps": 1,
+            "rules_ttl_sec": 86400,
+            "model_alpha": {},
+        },
+    )
+    monkeypatch.setattr(cli_mod, "load_features_config", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(cli_mod, "load_features_v2_config", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(cli_mod, "load_features_v3_config", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        cli_mod,
+        "load_features_v4_config",
+        lambda *args, **kwargs: SimpleNamespace(
+            build=SimpleNamespace(base_candles_dataset="candles_api_v1", min_rows_for_train=1),
+            output_dataset_root=tmp_path / "features_v4",
+        ),
+    )
+    monkeypatch.setattr(cli_mod, "_resolve_backtest_dataset_name_for_model_features", lambda **kwargs: "candles_v1")
+    monkeypatch.setattr(
+        cli_mod,
+        "train_and_register_v4_crypto_cs",
+        lambda options: SimpleNamespace(
+            run_id="run-v4-test",
+            status="candidate",
+            leaderboard_row={"test_precision_top5": 0.12, "test_pr_auc": 0.34},
+            run_dir=tmp_path / "registry" / "train_v4_crypto_cs" / "run-v4-test",
+            train_report_path=tmp_path / "logs" / "train_report.json",
+            walk_forward_report_path=tmp_path / "logs" / "walk_forward.json",
+            execution_acceptance_report_path=tmp_path / "logs" / "execution_acceptance.json",
+            promotion_path=tmp_path / "logs" / "promotion.json",
+        ),
+    )
+
+    assert _handle_model_command(args, tmp_path / "config", {}) == 0
