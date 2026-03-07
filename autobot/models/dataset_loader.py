@@ -151,11 +151,21 @@ def iter_feature_batches(
     request: DatasetRequest,
     *,
     feature_columns: tuple[str, ...] | None = None,
+    y_cls_column: str = "y_cls",
+    y_reg_column: str = "y_reg",
 ) -> Iterator[FeatureBatch]:
     feature_cols = feature_columns or feature_columns_from_spec(request.dataset_root)
+    y_cls_name = str(y_cls_column).strip() or "y_cls"
+    y_reg_name = str(y_reg_column).strip() or "y_reg"
     selected_markets = select_markets(request)
     for market in selected_markets:
-        frame = _scan_market_frame(request=request, market=market, feature_columns=feature_cols)
+        frame = _scan_market_frame(
+            request=request,
+            market=market,
+            feature_columns=feature_cols,
+            y_cls_column=y_cls_name,
+            y_reg_column=y_reg_name,
+        )
         if frame.height <= 0:
             continue
         frame = frame.drop_nulls(subset=["y_cls"])
@@ -184,6 +194,8 @@ def load_feature_dataset(
     request: DatasetRequest,
     *,
     feature_columns: tuple[str, ...] | None = None,
+    y_cls_column: str = "y_cls",
+    y_reg_column: str = "y_reg",
 ) -> FeatureDataset:
     feature_cols = feature_columns or feature_columns_from_spec(request.dataset_root)
     x_parts: list[np.ndarray] = []
@@ -195,7 +207,12 @@ def load_feature_dataset(
     rows_by_market: dict[str, int] = {}
     selected_markets: set[str] = set()
 
-    for batch in iter_feature_batches(request, feature_columns=feature_cols):
+    for batch in iter_feature_batches(
+        request,
+        feature_columns=feature_cols,
+        y_cls_column=y_cls_column,
+        y_reg_column=y_reg_column,
+    ):
         x_parts.append(batch.X)
         y_cls_parts.append(batch.y_cls)
         y_reg_parts.append(batch.y_reg)
@@ -321,6 +338,8 @@ def _scan_market_frame(
     request: DatasetRequest,
     market: str,
     feature_columns: tuple[str, ...],
+    y_cls_column: str,
+    y_reg_column: str,
 ) -> pl.DataFrame:
     market_files = _market_files(request.dataset_root, request.tf, market)
     if not market_files:
@@ -330,7 +349,7 @@ def _scan_market_frame(
     schema = lazy.collect_schema()
     names = set(schema.names())
 
-    required_missing = [name for name in ("ts_ms", "y_cls") if name not in names]
+    required_missing = [name for name in ("ts_ms", y_cls_column) if name not in names]
     if required_missing:
         raise ValueError(f"missing required columns in {market}: {required_missing}")
 
@@ -339,9 +358,9 @@ def _scan_market_frame(
         if col not in names:
             raise ValueError(f"feature column missing in {market}: {col}")
         expressions.append(_feature_to_float_expr(col, schema=schema))
-    expressions.append(pl.col("y_cls").cast(pl.Int8).alias("y_cls"))
-    if "y_reg" in names:
-        expressions.append(pl.col("y_reg").cast(pl.Float32).alias("y_reg"))
+    expressions.append(pl.col(y_cls_column).cast(pl.Int8).alias("y_cls"))
+    if y_reg_column in names:
+        expressions.append(pl.col(y_reg_column).cast(pl.Float32).alias("y_reg"))
     else:
         expressions.append(pl.lit(np.nan, dtype=pl.Float32).alias("y_reg"))
     if "sample_weight" in names:

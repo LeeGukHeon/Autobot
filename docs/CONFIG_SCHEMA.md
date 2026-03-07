@@ -309,7 +309,7 @@
 
 ### Feature Set v4
 - config file: `config/features_v4.yaml`
-- current scope: research lane for `features build|validate|stats` only
+- current scope: research lane for `features build|validate|stats` and `model train`
 - `features_v4.output_dataset`: string (default: `features_v4`)
 - `features_v4.tf`: timeframe string (`5m` only)
 - `features_v4.base_candles_dataset`: `auto | candles_api_v1 | candles_v1 | <path>`
@@ -367,6 +367,10 @@
   - `python -m autobot.cli model train --tf 5m --quote KRW --top-n 20 --start 2024-01-01 --end 2026-03-01 --feature-set v1 --label-set v1 --task cls --run-baseline true --run-booster true --booster-sweep-trials 15 --seed 42 --nthread 6`
 - Train (v3):
   - `python -m autobot.cli model train --trainer v3_mtf_micro --feature-set v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --seed 42 --booster-sweep-trials 30`
+- Train (v4):
+  - `python -m autobot.cli model train --trainer v4_crypto_cs --feature-set v4 --label-set v2 --task cls --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --seed 42 --booster-sweep-trials 30`
+- Train (v4 reg):
+  - `python -m autobot.cli model train --trainer v4_crypto_cs --feature-set v4 --label-set v2 --task reg --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --seed 42 --booster-sweep-trials 30`
 - Eval:
   - `python -m autobot.cli model eval --model-ref latest --split test --report-csv out.csv`
 - List:

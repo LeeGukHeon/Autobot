@@ -681,7 +681,12 @@ def _predict_scores(model_bundle: dict[str, Any], x: np.ndarray) -> np.ndarray:
             raise ValueError("sgd bundle missing scaler")
         transformed = scaler.transform(x)
         return estimator.predict_proba(transformed)[:, 1].astype(np.float64, copy=False)
-    return estimator.predict_proba(x)[:, 1].astype(np.float64, copy=False)
+    if hasattr(estimator, "predict_proba"):
+        return estimator.predict_proba(x)[:, 1].astype(np.float64, copy=False)
+    if hasattr(estimator, "predict"):
+        raw = np.asarray(estimator.predict(x), dtype=np.float64)
+        return 1.0 / (1.0 + np.exp(-raw))
+    raise ValueError(f"unsupported estimator score interface for model_type='{model_type}'")
 
 
 def _evaluate_split(

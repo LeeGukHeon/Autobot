@@ -98,6 +98,7 @@ from .models import (
     TrainRunOptions,
     TrainV2MicroOptions,
     TrainV3MtfMicroOptions,
+    TrainV4CryptoCsOptions,
     audit_registered_model,
     compare_registered_models,
     evaluate_registered_model_window,
@@ -109,6 +110,7 @@ from .models import (
     train_and_register,
     train_and_register_v2_micro,
     train_and_register_v3_mtf_micro,
+    train_and_register_v4_crypto_cs,
 )
 from .models.registry import promote_run_to_champion
 from .strategy import TopTradeValueScanner
@@ -708,15 +710,15 @@ def build_parser() -> argparse.ArgumentParser:
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
-    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro"))
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
     model_train_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     model_train_parser.add_argument("--end", help="End date YYYY-MM-DD")
-    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3"))
-    model_train_parser.add_argument("--label-set", default="v1", choices=("v1",))
-    model_train_parser.add_argument("--task", default="cls", choices=("cls",))
+    model_train_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3", "v4"))
+    model_train_parser.add_argument("--label-set", default="v1", choices=("v1", "v2"))
+    model_train_parser.add_argument("--task", default="cls", choices=("cls", "reg"))
     model_train_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
     model_train_parser.add_argument("--run-baseline", default="true", help="Enable baseline track (true|false).")
     model_train_parser.add_argument("--run-booster", default="true", help="Enable booster track (true|false).")
@@ -2135,12 +2137,60 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         features_config = load_features_config(config_dir, base_config=base_config)
         features_v2_config = load_features_v2_config(config_dir, base_config=base_config)
         features_v3_config = load_features_v3_config(config_dir, base_config=base_config)
+        features_v4_config = load_features_v4_config(config_dir, base_config=base_config)
         registry_root = Path(str(defaults["registry_root"]))
         logs_root = Path(str(defaults["logs_root"]))
 
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer == "v4_crypto_cs":
+                model_family = (
+                    str(getattr(args, "model_family", None) or "train_v4_crypto_cs").strip() or "train_v4_crypto_cs"
+                )
+                options_v4 = TrainV4CryptoCsOptions(
+                    dataset_root=features_v4_config.output_dataset_root,
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=model_family,
+                    tf=str(args.tf or defaults["tf"]).strip().lower(),
+                    quote=str(args.quote or defaults["quote"]).strip().upper(),
+                    top_n=max(top_n, 1),
+                    start=str(args.start or defaults["start"]).strip(),
+                    end=str(args.end or defaults["end"]).strip(),
+                    feature_set=str(args.feature_set).strip().lower(),
+                    label_set=str(args.label_set).strip().lower(),
+                    task=str(args.task or defaults["task"]).strip().lower(),
+                    booster_sweep_trials=int(
+                        args.booster_sweep_trials
+                        if args.booster_sweep_trials is not None
+                        else defaults["booster_sweep_trials"]
+                    ),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    nthread=int(args.nthread if args.nthread is not None else defaults["nthread"]),
+                    batch_rows=max(int(defaults["batch_rows"]), 1),
+                    train_ratio=float(defaults["train_ratio"]),
+                    valid_ratio=float(defaults["valid_ratio"]),
+                    test_ratio=float(defaults["test_ratio"]),
+                    embargo_bars=max(int(defaults["embargo_bars"]), 0),
+                    fee_bps_est=float(defaults["fee_bps_est"]),
+                    safety_bps=float(defaults["safety_bps"]),
+                    ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
+                    ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
+                    min_rows_for_train=max(int(features_v4_config.build.min_rows_for_train), 1),
+                )
+                summary_v4 = train_and_register_v4_crypto_cs(options_v4)
+                print(
+                    "[model][train][v4_crypto_cs] "
+                    f"run_id={summary_v4.run_id} status={summary_v4.status} "
+                    f"test_precision_top5={summary_v4.leaderboard_row.get('test_precision_top5', 0.0):.6f} "
+                    f"test_pr_auc={summary_v4.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+                )
+                print(f"[model][train][v4_crypto_cs] run_dir={summary_v4.run_dir}")
+                print(f"[model][train][v4_crypto_cs] train_report={summary_v4.train_report_path}")
+                print(f"[model][train][v4_crypto_cs] promotion={summary_v4.promotion_path}")
+                return 0
+
             if trainer == "v3_mtf_micro":
                 model_family = (
                     str(getattr(args, "model_family", None) or "train_v3_mtf_micro").strip() or "train_v3_mtf_micro"
@@ -4346,6 +4396,10 @@ def _resolve_model_ref_alias(model_ref: str, model_family: str | None = None) ->
         "champion_v3": ("champion", "train_v3_mtf_micro"),
         "latest_candidate_v3": ("latest_candidate", "train_v3_mtf_micro"),
         "candidate_v3": ("latest_candidate", "train_v3_mtf_micro"),
+        "latest_v4": ("latest", "train_v4_crypto_cs"),
+        "champion_v4": ("champion", "train_v4_crypto_cs"),
+        "latest_candidate_v4": ("latest_candidate", "train_v4_crypto_cs"),
+        "candidate_v4": ("latest_candidate", "train_v4_crypto_cs"),
     }
     if ref in aliases:
         resolved_ref, resolved_family = aliases[ref]

@@ -284,6 +284,16 @@ Legacy rule:
 
 ## Implementation Order
 
+Current implementation checkpoint:
+- Phase 1 is in place:
+  - `labeling_v2_crypto_cs.py`
+  - `feature_set=v4` offline dataset lane
+- Phase 3 has started:
+  - `train_v4_crypto_cs.py` added as a separate offline trainer lane
+  - current scope supports single-split offline training with `task=cls|reg`
+  - rolling walk-forward acceptance is still pending
+  - paper/live parity for `v4` is still pending
+
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`
 - Extract shared trainer evaluation helpers if needed

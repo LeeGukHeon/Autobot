@@ -22,6 +22,11 @@ from .train_v3_mtf_micro import (
     TrainV3MtfMicroResult,
     train_and_register_v3_mtf_micro,
 )
+from .train_v4_crypto_cs import (
+    TrainV4CryptoCsOptions,
+    TrainV4CryptoCsResult,
+    train_and_register_v4_crypto_cs,
+)
 from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
 from .metric_audit import MetricAuditOptions, MetricAuditResult, audit_predictions, audit_registered_model
 from .ablation import AblationOptions, AblationResult, run_ablation, select_ablation_feature_columns
@@ -43,6 +48,9 @@ __all__ = [
     "TrainV3MtfMicroOptions",
     "TrainV3MtfMicroResult",
     "train_and_register_v3_mtf_micro",
+    "TrainV4CryptoCsOptions",
+    "TrainV4CryptoCsResult",
+    "train_and_register_v4_crypto_cs",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",
     "run_modelbt_proxy",
