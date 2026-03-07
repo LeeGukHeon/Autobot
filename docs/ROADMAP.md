@@ -276,6 +276,10 @@ D:\MyApps\Autobot
   - `v4_candidate_acceptance.ps1`는 trainer가 미리 만든 `walk-forward + execution_acceptance` 증빙을 `required` gate로 읽음
   - 현재 얕은 `v4` 히스토리에 맞춰 wrapper 기본 selection은 `sparse-aware`로 완화함 (`top_pct=0.5`, `min_prob=0.0`, `min_candidates=1`)
   - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
+  - `v4` 자동화는 `00:10` 수집/v3 승급 루프를 대체하지 않고, 같은 배치 데이터를 재사용하는 병렬 daily acceptance로 추가한다
+    - 권장 기본 시각: `04:20 KST`
+    - 기본 동작: `SkipDailyPipeline + SkipReportRefresh`
+    - 목적: `autobot-daily-micro.service`와 충돌 없이 같은 날짜 배치로 `v4`를 별도 평가
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 
 ### 설계 문서

@@ -500,6 +500,20 @@
 - `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass
+- `scripts/daily_candidate_acceptance_for_server.ps1`: server wrapper for delayed acceptance runs that reuse already-collected data
+  - default batch date when omitted: previous local day (`yyyy-MM-dd`)
+  - supports `-SkipDailyPipeline` and `-SkipReportRefresh`
+  - can soft-skip when `-BlockOnActiveUnits` contains currently active systemd units
+- `scripts/install_server_daily_acceptance_service.ps1`: installs a timer/service pair for delayed post-collection acceptance
+  - default units:
+    - `autobot-daily-v4-accept.service`
+    - `autobot-daily-v4-accept.timer`
+  - default schedule:
+    - `OnCalendar=*-*-* 04:20:00`
+  - intended default v4 semantics:
+    - reuse `00:10` collection outputs
+    - `SkipDailyPipeline=true`
+    - `SkipReportRefresh=true`
 
 ## CLI: Live State
 - `python -m autobot.cli live status`

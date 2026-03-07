@@ -380,6 +380,9 @@ Current implementation checkpoint:
       - candidate-edge compare outcomes from the trainer lane
     - this prevents the v4 lane from silently falling back to a pure single-window `v3`-style decision
     - server/runtime rollout is still intentionally left on the v3 lane until v4 passes paper evidence
+    - v4 daily automation should remain parallel:
+      - keep `autobot-daily-micro.timer` as `00:10` collection + v3 lane
+      - add a later `autobot-daily-v4-accept.timer` for v4-only acceptance on the same collected batch
 
 ### Ops Hardening Notes
 - `install_server_runtime_services.ps1` now exposes:
@@ -396,6 +399,22 @@ Current implementation checkpoint:
   - `trainer=v4_crypto_cs`
   - `features build --feature-set v4 --label-set v2`
   from the train wizard path
+- `daily_candidate_acceptance_for_server.ps1` is the server wrapper for delayed post-collection acceptance runs
+  - intended default for the v4 lane:
+    - `SkipDailyPipeline=true`
+    - `SkipReportRefresh=true`
+    - `BlockOnActiveUnits=autobot-daily-micro.service`
+  - reason:
+    - reuse the same `00:10` collection outputs without re-running collection or rewriting the shared daily report
+- `install_server_daily_acceptance_service.ps1` installs a dedicated timer/service pair for the v4 parallel lane
+  - intended default units:
+    - `autobot-daily-v4-accept.service`
+    - `autobot-daily-v4-accept.timer`
+  - intended default schedule:
+    - `04:20 KST`
+  - rationale:
+    - the current `autobot-daily-micro.service` can run until roughly `03:xx`
+    - a later timer lowers overlap risk while keeping the same batch date
 
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`
