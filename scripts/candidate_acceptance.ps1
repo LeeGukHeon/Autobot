@@ -1716,6 +1716,9 @@ try {
     }
 
     $paperPass = $null
+    $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"
+    $paperSmokeRunPath = ""
+    $paperSmokeEffectivePath = ""
     if ($SkipPaperSoak) {
         $report.steps.paper_candidate = [ordered]@{
             attempted = $false
@@ -1760,7 +1763,6 @@ try {
             )
         }
         $paperExec = Invoke-CommandCapture -Exe $psExe -ArgList $paperSmokeArgs
-        $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"
         $paperSmokeRunPath = if ($DryRun) { "" } else { Resolve-ReportedJsonPathFromText -TextValue ([string]$paperExec.Output) -LogTag "paper-smoke" }
         $paperSmokeEffectivePath = if ($DryRun) {
             ""
@@ -1994,13 +1996,18 @@ try {
     }
 
     if (-not $SkipReportRefresh) {
+        $refreshSmokeReportPath = if (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) {
+            $paperSmokeEffectivePath
+        } else {
+            $paperSmokeLatestPath
+        }
         $refreshArgs = @(
             "-NoProfile",
             "-File", $resolvedDailyPipelineScript,
             "-ProjectRoot", $resolvedProjectRoot,
             "-PythonExe", $resolvedPythonExe,
             "-Date", $effectiveBatchDate,
-            "-SmokeReportJson", $(if ([string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { $paperSmokeLatestPath } else { $paperSmokeEffectivePath }),
+            "-SmokeReportJson", $refreshSmokeReportPath,
             "-SkipCandles",
             "-SkipTicks",
             "-SkipAggregate",

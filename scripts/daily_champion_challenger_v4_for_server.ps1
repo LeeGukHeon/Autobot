@@ -145,6 +145,43 @@ function Test-ObjectHasValues {
     return $true
 }
 
+function Get-StringArray {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    return @($Value | ForEach-Object { [string]$_ })
+}
+
+function Test-AcceptanceFatalFailure {
+    param(
+        [int]$ExitCode,
+        [Parameter(Mandatory = $false)]$AcceptanceReport
+    )
+    if ($ExitCode -eq 0) {
+        return $false
+    }
+    if (($ExitCode -ne 2) -or (-not (Test-ObjectHasValues -ObjectValue $AcceptanceReport))) {
+        return $true
+    }
+    $steps = Get-PropValue -ObjectValue $AcceptanceReport -Name "steps" -DefaultValue @{}
+    $exceptionStep = Get-PropValue -ObjectValue $steps -Name "exception" -DefaultValue @{}
+    if (Test-ObjectHasValues -ObjectValue $exceptionStep) {
+        return $true
+    }
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    foreach ($reason in $reasons) {
+        if (@(
+            "UNHANDLED_EXCEPTION",
+            "DAILY_PIPELINE_FAILED",
+            "TRAIN_OR_CANDIDATE_POINTER_FAILED"
+        ) -contains [string]$reason) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Write-JsonFile {
     param(
         [string]$PathValue,
@@ -431,19 +468,25 @@ if ($runSpawnPhase) {
         $acceptArgs += "-DryRun"
     }
 
-    $acceptExec = Invoke-CommandCapture -Exe $psExe -ArgList $acceptArgs
+    $acceptExec = Invoke-CommandCapture -Exe $psExe -ArgList $acceptArgs -AllowFailure
     $acceptReportPath = Resolve-ReportedJsonPath -OutputText $acceptExec.Output
     $acceptReport = Load-JsonOrEmpty -PathValue $acceptReportPath
+    if (Test-AcceptanceFatalFailure -ExitCode $acceptExec.ExitCode -AcceptanceReport $acceptReport) {
+        throw ("candidate acceptance failed unexpectedly (exit_code={0}, report={1})" -f $acceptExec.ExitCode, $acceptReportPath)
+    }
     $candidateRunId = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $acceptReport -Name "steps" -DefaultValue @{}) -Name "train" -DefaultValue @{}) -Name "candidate_run_id" -DefaultValue "")
     $backtestPass = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $acceptReport -Name "gates" -DefaultValue @{}) -Name "backtest" -DefaultValue @{}) -Name "pass" -DefaultValue $false)
     $overallPass = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $acceptReport -Name "gates" -DefaultValue @{}) -Name "overall_pass" -DefaultValue $false)
+    $acceptReasons = Get-StringArray -Value (Get-PropValue -ObjectValue $acceptReport -Name "reasons" -DefaultValue @())
     $report.steps.train_candidate = [ordered]@{
+        exit_code = [int]$acceptExec.ExitCode
         command = $acceptExec.Command
         output_preview = $acceptExec.Output
         report_path = $acceptReportPath
         candidate_run_id = $candidateRunId
         backtest_pass = $backtestPass
         overall_pass = $overallPass
+        reasons = @($acceptReasons)
     }
 
     if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and $backtestPass) {
@@ -478,7 +521,17 @@ if ($runSpawnPhase) {
         $report.steps.start_challenger = [ordered]@{
             skipped = $true
             candidate_run_id = $candidateRunId
-            reason = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "NO_CANDIDATE_RUN_ID" } elseif (-not $backtestPass) { "BACKTEST_SANITY_FAILED" } else { "UNKNOWN" }
+            acceptance_exit_code = [int]$acceptExec.ExitCode
+            acceptance_reasons = @($acceptReasons)
+            reason = if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
+                "NO_CANDIDATE_RUN_ID"
+            } elseif (-not $backtestPass) {
+                "BACKTEST_SANITY_FAILED"
+            } elseif (-not $overallPass) {
+                "ACCEPTANCE_REJECTED"
+            } else {
+                "UNKNOWN"
+            }
         }
         if (-not $DryRun) {
             & sudo systemctl stop $ChallengerUnitName 2>$null

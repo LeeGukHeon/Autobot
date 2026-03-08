@@ -543,7 +543,12 @@ $orderbookHealthPass = $wsHealthConnected -and ($wsOrderbookRxLagSec -ge 0) -and
 $orderbookVerificationPass = $orderbookFolderPass -and $orderbookValidatePass -and $orderbookStatsPass -and $orderbookHealthPass
 
 # 2) T15.1 revalidation gate: auto PASS/FAIL
-$smokeReportPath = if ([System.IO.Path]::IsPathRooted($SmokeReportJson)) { $SmokeReportJson } else { Join-Path $ProjectRoot $SmokeReportJson }
+$resolvedSmokeReportJson = if ([string]::IsNullOrWhiteSpace($SmokeReportJson)) {
+    "logs/paper_micro_smoke/latest.json"
+} else {
+    $SmokeReportJson
+}
+$smokeReportPath = if ([System.IO.Path]::IsPathRooted($resolvedSmokeReportJson)) { $resolvedSmokeReportJson } else { Join-Path $ProjectRoot $resolvedSmokeReportJson }
 $smokeScriptPath = Join-Path $ProjectRoot "scripts/paper_micro_smoke.ps1"
 $smokeRunAttempted = $false
 $smokeRunExitCode = -1
@@ -597,7 +602,12 @@ $smokeLiveWsHealthAvailable = To-Bool (Get-PropValue -ObjectValue $smokeLiveWs -
 $smokeLiveWsHealthPath = [string](Get-PropValue -ObjectValue $smokeLiveWs -Name "health_snapshot_path" -DefaultValue "NA")
 
 # 3) Tiering recommendation (liq_score quantiles from recent paper runs)
-$tieringReportPath = if ([System.IO.Path]::IsPathRooted($TieringReportJson)) { $TieringReportJson } else { Join-Path $ProjectRoot $TieringReportJson }
+$resolvedTieringReportJson = if ([string]::IsNullOrWhiteSpace($TieringReportJson)) {
+    "logs/micro_tiering/latest.json"
+} else {
+    $TieringReportJson
+}
+$tieringReportPath = if ([System.IO.Path]::IsPathRooted($resolvedTieringReportJson)) { $resolvedTieringReportJson } else { Join-Path $ProjectRoot $resolvedTieringReportJson }
 $tieringScriptPath = Join-Path $ProjectRoot "scripts/recommend_micro_tiering.ps1"
 $tieringRunAttempted = $false
 $tieringRunExitCode = -1
