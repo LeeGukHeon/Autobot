@@ -254,6 +254,28 @@ Acceptance:
   - `constraint_reasons`
   - `fallback_used=false/true`
 
+Status:
+- completed
+- `v4` now derives `selection_recommendations.json` from a walk-forward grid search instead of the old coverage heuristic
+- optimizer evaluates a bounded grid of:
+  - `top_pct`
+  - `min_candidates_per_ts`
+  for each threshold key
+- objective uses the runtime-style selection simulation on walk-forward OOS windows
+- runtime contract stays backward-compatible:
+  - `recommended_top_pct`
+  - `recommended_min_candidates_per_ts`
+  are still the fields consumed by `model_alpha_v1`
+- provenance is now persisted:
+  - `objective`
+  - `objective_score`
+  - `selected_grid_point`
+  - `constraint_reasons`
+  - `fallback_used`
+  - `recommendation_source`
+  - `windows_covered`
+  - `feasible_window_ratio`
+
 ### Phase 5. Overlay Calibration Loop
 Priority: medium
 
@@ -312,6 +334,7 @@ Implement in this order:
 1. Phase 1
 2. Phase 2
 3. Phase 3
+4. Phase 4
 3. Phase 3
 4. Phase 4
 5. Phase 5

@@ -36,6 +36,11 @@ from .research_acceptance import (
     compare_spa_like_window_test,
     summarize_walk_forward_windows,
 )
+from .selection_optimizer import (
+    SelectionGridConfig,
+    build_selection_recommendations_from_walk_forward,
+    build_window_selection_objectives,
+)
 from .registry import (
     RegistrySavePayload,
     load_json,
@@ -254,13 +259,6 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         fee_bps_est=options.fee_bps_est,
         safety_bps=options.safety_bps,
     )
-    walk_forward = _run_walk_forward_v4(
-        options=options,
-        task=task,
-        dataset=dataset,
-        interval_ms=interval_ms,
-    )
-
     thresholds = _build_thresholds(
         valid_scores=valid_scores,
         y_reg_valid=y_reg_valid,
@@ -269,10 +267,21 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         ev_scan_steps=options.ev_scan_steps,
         ev_min_selected=options.ev_min_selected,
     )
-    selection_recommendations = build_selection_recommendations(
+    fallback_selection_recommendations = build_selection_recommendations(
         valid_scores=valid_scores,
         valid_ts_ms=dataset.ts_ms[valid_mask],
         thresholds=thresholds,
+    )
+    walk_forward = _run_walk_forward_v4(
+        options=options,
+        task=task,
+        dataset=dataset,
+        interval_ms=interval_ms,
+        thresholds=thresholds,
+    )
+    selection_recommendations = build_selection_recommendations_from_walk_forward(
+        windows=walk_forward.get("windows", []),
+        fallback_recommendations=fallback_selection_recommendations,
     )
     metrics = _build_v4_metrics_doc(
         run_id=run_id,
@@ -416,6 +425,7 @@ def _run_walk_forward_v4(
     task: str,
     dataset: Any,
     interval_ms: int,
+    thresholds: dict[str, Any],
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "policy": "balanced_pareto_offline",
@@ -517,6 +527,15 @@ def _run_walk_forward_v4(
                 "counts": row_counts,
                 "metrics": _compact_eval_metrics(metrics),
                 "oos_slices": oos_slices,
+                "selection_optimization": build_window_selection_objectives(
+                    scores=scores,
+                    y_reg=dataset.y_reg[test_mask],
+                    ts_ms=dataset.ts_ms[test_mask],
+                    thresholds=thresholds,
+                    fee_bps_est=options.fee_bps_est,
+                    safety_bps=options.safety_bps,
+                    config=SelectionGridConfig(),
+                ),
                 "trial_records": list(fitted.get("trial_records", [])),
             }
         )
