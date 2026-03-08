@@ -2529,6 +2529,46 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                                 int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
                                 0,
                             ),
+                            conservative_timeout_scale=max(
+                                float(model_alpha_operational_defaults.get("conservative_timeout_scale", 1.25)),
+                                0.10,
+                            ),
+                            aggressive_timeout_scale=max(
+                                float(model_alpha_operational_defaults.get("aggressive_timeout_scale", 0.75)),
+                                0.10,
+                            ),
+                            conservative_replace_interval_scale=max(
+                                float(model_alpha_operational_defaults.get("conservative_replace_interval_scale", 1.50)),
+                                0.10,
+                            ),
+                            aggressive_replace_interval_scale=max(
+                                float(model_alpha_operational_defaults.get("aggressive_replace_interval_scale", 0.50)),
+                                0.10,
+                            ),
+                            conservative_max_replaces_scale=max(
+                                float(model_alpha_operational_defaults.get("conservative_max_replaces_scale", 0.50)),
+                                0.0,
+                            ),
+                            aggressive_max_replaces_bonus=max(
+                                int(model_alpha_operational_defaults.get("aggressive_max_replaces_bonus", 1)),
+                                0,
+                            ),
+                            conservative_max_chase_bps_scale=max(
+                                float(model_alpha_operational_defaults.get("conservative_max_chase_bps_scale", 0.75)),
+                                0.0,
+                            ),
+                            aggressive_max_chase_bps_bonus=max(
+                                int(model_alpha_operational_defaults.get("aggressive_max_chase_bps_bonus", 5)),
+                                0,
+                            ),
+                            runtime_timeout_ms_floor=max(
+                                int(model_alpha_operational_defaults.get("runtime_timeout_ms_floor", 5_000)),
+                                1_000,
+                            ),
+                            runtime_replace_interval_ms_floor=max(
+                                int(model_alpha_operational_defaults.get("runtime_replace_interval_ms_floor", 1_500)),
+                                1,
+                            ),
                         ),
                     ),
                 )
@@ -3218,6 +3258,46 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                         int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
                         0,
                     ),
+                    conservative_timeout_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_timeout_scale", 1.25)),
+                        0.10,
+                    ),
+                    aggressive_timeout_scale=max(
+                        float(model_alpha_operational_defaults.get("aggressive_timeout_scale", 0.75)),
+                        0.10,
+                    ),
+                    conservative_replace_interval_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_replace_interval_scale", 1.50)),
+                        0.10,
+                    ),
+                    aggressive_replace_interval_scale=max(
+                        float(model_alpha_operational_defaults.get("aggressive_replace_interval_scale", 0.50)),
+                        0.10,
+                    ),
+                    conservative_max_replaces_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_max_replaces_scale", 0.50)),
+                        0.0,
+                    ),
+                    aggressive_max_replaces_bonus=max(
+                        int(model_alpha_operational_defaults.get("aggressive_max_replaces_bonus", 1)),
+                        0,
+                    ),
+                    conservative_max_chase_bps_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_max_chase_bps_scale", 0.75)),
+                        0.0,
+                    ),
+                    aggressive_max_chase_bps_bonus=max(
+                        int(model_alpha_operational_defaults.get("aggressive_max_chase_bps_bonus", 5)),
+                        0,
+                    ),
+                    runtime_timeout_ms_floor=max(
+                        int(model_alpha_operational_defaults.get("runtime_timeout_ms_floor", 5_000)),
+                        1_000,
+                    ),
+                    runtime_replace_interval_ms_floor=max(
+                        int(model_alpha_operational_defaults.get("runtime_replace_interval_ms_floor", 1_500)),
+                        1,
+                    ),
                 ),
             ),
             micro_gate=_build_micro_gate_settings(
@@ -3612,6 +3692,46 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     ),
                     snapshot_stale_ms=max(
                         int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
+                        1,
+                    ),
+                    conservative_timeout_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_timeout_scale", 1.25)),
+                        0.10,
+                    ),
+                    aggressive_timeout_scale=max(
+                        float(model_alpha_operational_defaults.get("aggressive_timeout_scale", 0.75)),
+                        0.10,
+                    ),
+                    conservative_replace_interval_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_replace_interval_scale", 1.50)),
+                        0.10,
+                    ),
+                    aggressive_replace_interval_scale=max(
+                        float(model_alpha_operational_defaults.get("aggressive_replace_interval_scale", 0.50)),
+                        0.10,
+                    ),
+                    conservative_max_replaces_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_max_replaces_scale", 0.50)),
+                        0.0,
+                    ),
+                    aggressive_max_replaces_bonus=max(
+                        int(model_alpha_operational_defaults.get("aggressive_max_replaces_bonus", 1)),
+                        0,
+                    ),
+                    conservative_max_chase_bps_scale=max(
+                        float(model_alpha_operational_defaults.get("conservative_max_chase_bps_scale", 0.75)),
+                        0.0,
+                    ),
+                    aggressive_max_chase_bps_bonus=max(
+                        int(model_alpha_operational_defaults.get("aggressive_max_chase_bps_bonus", 5)),
+                        0,
+                    ),
+                    runtime_timeout_ms_floor=max(
+                        int(model_alpha_operational_defaults.get("runtime_timeout_ms_floor", 5_000)),
+                        1_000,
+                    ),
+                    runtime_replace_interval_ms_floor=max(
+                        int(model_alpha_operational_defaults.get("runtime_replace_interval_ms_floor", 1_500)),
                         1,
                     ),
                 ),

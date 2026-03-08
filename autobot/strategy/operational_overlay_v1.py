@@ -40,6 +40,16 @@ class ModelAlphaOperationalSettings:
     max_execution_spread_bps_for_cross: float = 6.0
     min_execution_depth_krw_for_cross: float = 1_500_000.0
     snapshot_stale_ms: int = 15_000
+    conservative_timeout_scale: float = 1.25
+    aggressive_timeout_scale: float = 0.75
+    conservative_replace_interval_scale: float = 1.50
+    aggressive_replace_interval_scale: float = 0.50
+    conservative_max_replaces_scale: float = 0.50
+    aggressive_max_replaces_bonus: int = 1
+    conservative_max_chase_bps_scale: float = 0.75
+    aggressive_max_chase_bps_bonus: int = 5
+    runtime_timeout_ms_floor: int = 5_000
+    runtime_replace_interval_ms_floor: int = 1_500
 
 
 @dataclass(frozen=True)
@@ -271,13 +281,40 @@ def resolve_operational_execution_overlay(
         mode = "aggressive"
         adjusted_mode = _promote_price_mode(adjusted_mode)
 
+    timeout_ms = int(normalized.timeout_ms)
+    replace_interval_ms = int(normalized.replace_interval_ms)
+    max_replaces = int(normalized.max_replaces)
+    max_chase_bps = int(normalized.max_chase_bps)
+    timeout_floor = max(int(settings.runtime_timeout_ms_floor), 1_000)
+    replace_floor = max(
+        int(settings.runtime_replace_interval_ms_floor),
+        int(normalized.min_replace_interval_ms_global),
+        1,
+    )
+    if conservative:
+        timeout_ms = max(int(math.ceil(timeout_ms * float(settings.conservative_timeout_scale))), timeout_floor)
+        replace_interval_ms = max(
+            int(math.ceil(replace_interval_ms * float(settings.conservative_replace_interval_scale))),
+            replace_floor,
+        )
+        max_replaces = max(int(math.floor(max_replaces * float(settings.conservative_max_replaces_scale))), 0)
+        max_chase_bps = max(int(math.floor(max_chase_bps * float(settings.conservative_max_chase_bps_scale))), 0)
+    elif aggressive:
+        timeout_ms = max(int(math.floor(timeout_ms * float(settings.aggressive_timeout_scale))), timeout_floor)
+        replace_interval_ms = max(
+            int(math.floor(replace_interval_ms * float(settings.aggressive_replace_interval_scale))),
+            replace_floor,
+        )
+        max_replaces = max(max_replaces + max(int(settings.aggressive_max_replaces_bonus), 0), max_replaces)
+        max_chase_bps = max(max_chase_bps + max(int(settings.aggressive_max_chase_bps_bonus), 0), 0)
+
     profile = normalize_order_exec_profile(
         OrderExecProfile(
-            timeout_ms=int(normalized.timeout_ms),
-            replace_interval_ms=int(normalized.replace_interval_ms),
-            max_replaces=int(normalized.max_replaces),
+            timeout_ms=timeout_ms,
+            replace_interval_ms=replace_interval_ms,
+            max_replaces=max_replaces,
             price_mode=adjusted_mode,
-            max_chase_bps=int(normalized.max_chase_bps),
+            max_chase_bps=max_chase_bps,
             min_replace_interval_ms_global=int(normalized.min_replace_interval_ms_global),
             post_only=bool(normalized.post_only),
         )
@@ -294,6 +331,14 @@ def resolve_operational_execution_overlay(
             "runtime_risk_multiplier": float(runtime_risk),
             "base_price_mode": str(normalized.price_mode),
             "selected_price_mode": str(profile.price_mode),
+            "base_timeout_ms": int(normalized.timeout_ms),
+            "selected_timeout_ms": int(profile.timeout_ms),
+            "base_replace_interval_ms": int(normalized.replace_interval_ms),
+            "selected_replace_interval_ms": int(profile.replace_interval_ms),
+            "base_max_replaces": int(normalized.max_replaces),
+            "selected_max_replaces": int(profile.max_replaces),
+            "base_max_chase_bps": int(normalized.max_chase_bps),
+            "selected_max_chase_bps": int(profile.max_chase_bps),
             "micro_quality": asdict(micro_quality),
         },
     )

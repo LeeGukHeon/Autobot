@@ -319,8 +319,8 @@ def test_paper_engine_model_alpha_micro_policy_guards_strategy_exec_profile(tmp_
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})
     exec_profile = intent_meta.get("exec_profile") or {}
     assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
-    assert int(exec_profile.get("timeout_ms", 0)) == 900_000
-    assert int(exec_profile.get("replace_interval_ms", 0)) == 900_000
+    assert int(exec_profile.get("timeout_ms", 0)) == 1_125_000
+    assert int(exec_profile.get("replace_interval_ms", 0)) == 1_350_000
     assert int(exec_profile.get("max_replaces", -1)) == 1
 
 

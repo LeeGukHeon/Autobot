@@ -236,7 +236,7 @@ D:\MyApps\Autobot
 - 후보-챔피언의 offline compare 지표는 계속 리포트에 남기지만, promote의 직접 결정권은 paper 쪽에 둔다.
 
 ### 즉시 다음 개선 항목
-- 다중 시도/튜닝에 대한 과최적화 보정을 위해 `Deflated Sharpe Ratio` 또는 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
+- 현재 `DSR-style` sanity check를 유지하고, 다음 단계로 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
 - 단일 backtest window 대신 rolling walk-forward acceptance를 도입한다.
 - paper soak 리포트를 운영 검증용과 성능 해석용으로 분리한다.
 - promote 후 활성 `paper/live` 서비스 자동 재시작을 기본 운영 루프로 유지한다.
@@ -251,16 +251,19 @@ D:\MyApps\Autobot
 ### 구현 상태
 - `rolling paper evidence` 반영
   - paper final gate는 단순 end-of-run pnl만이 아니라 rolling window evidence도 본다.
+- `paper history evidence` 반영
+  - 최근 run들의 비음수 비율, 양수 비율, 중앙 micro quality도 paper final gate에 포함한다.
 - `risk multiplier` 반영
   - regime score와 micro feature quality를 바탕으로 sizing을 보정한다.
 - `dynamic max_positions` 반영
   - breadth/regime quality에 따라 effective slot count를 조정한다.
-- `execution aggressiveness` v1 반영
-  - runtime은 micro quality와 session 상태에 따라 `price_mode`를 보수적/공격적으로 조정한다.
-  - v1은 의도적으로 `timeout/replace`는 건드리지 않는다.
+- `execution aggressiveness` v2 반영
+  - runtime은 micro quality와 session 상태에 따라 `price_mode`뿐 아니라 `timeout/replace/max_replaces/max_chase_bps`까지 조정한다.
 - `micro quality composite` 반영
   - spread, depth, coverage, snapshot age를 합성 점수화한다.
-  - 품질이 극단적으로 낮으면 runtime에서 진입을 차단한다.
+  - 품질이 극단적으로 낮으면 runtime에서 진입을 차단하고, paper final gate는 평균 quality 하한도 본다.
+- `DSR-style sanity check` 반영
+  - backtest sanity gate는 `equity.csv` 기반의 lightweight `deflated_sharpe_ratio_est`를 기록하고 최소 하한을 확인한다.
 
 ### 설계 문서
 - 상세 내용은 `docs/TICKETS/T18_3_operational_runtime_overlay_v1.md`를 따른다.

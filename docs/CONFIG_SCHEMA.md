@@ -155,9 +155,20 @@
 - `strategy.model_alpha_v1.operational.max_execution_spread_bps_for_cross`: number (default: `6.0`)
 - `strategy.model_alpha_v1.operational.min_execution_depth_krw_for_cross`: number (default: `1500000.0`)
 - `strategy.model_alpha_v1.operational.snapshot_stale_ms`: integer (default: `15000`)
+- `strategy.model_alpha_v1.operational.conservative_timeout_scale`: number (default: `1.25`)
+- `strategy.model_alpha_v1.operational.aggressive_timeout_scale`: number (default: `0.75`)
+- `strategy.model_alpha_v1.operational.conservative_replace_interval_scale`: number (default: `1.50`)
+- `strategy.model_alpha_v1.operational.aggressive_replace_interval_scale`: number (default: `0.50`)
+- `strategy.model_alpha_v1.operational.conservative_max_replaces_scale`: number (default: `0.50`)
+- `strategy.model_alpha_v1.operational.aggressive_max_replaces_bonus`: integer (default: `1`)
+- `strategy.model_alpha_v1.operational.conservative_max_chase_bps_scale`: number (default: `0.75`)
+- `strategy.model_alpha_v1.operational.aggressive_max_chase_bps_bonus`: integer (default: `5`)
+- `strategy.model_alpha_v1.operational.runtime_timeout_ms_floor`: integer (default: `5000`)
+- `strategy.model_alpha_v1.operational.runtime_replace_interval_ms_floor`: integer (default: `1500`)
 - operational overlay note:
   - this layer is enabled only for paper/live-style runtime
   - backtest compare remains fixed-profile and does not use online operational adaptation
+  - runtime can now adjust `price_mode`, `timeout_ms`, `replace_interval_ms`, `max_replaces`, and `max_chase_bps`
 
 ## Risk (Paper Runtime)
 - `risk.starting_krw`: number (default: `50000`)
@@ -541,15 +552,23 @@
     - `paper_max_fallback_ratio=0.20`
     - `paper_min_orders_filled=2`
     - `paper_min_realized_pnl_quote=0.0`
+    - `paper_min_micro_quality_score_mean=0.25`
   - promote policy is now `paper_final_balanced`
     - backtest acts as a sanity gate
     - paper soak is the final promote gate
     - paper final gate now evaluates learned runtime behavior plus rolling evidence:
       - `paper_min_orders_filled`
       - `paper_min_realized_pnl_quote`
+      - `paper_min_micro_quality_score_mean`
       - `paper_min_active_windows`
       - `paper_min_nonnegative_window_ratio`
       - `paper_max_fill_concentration_ratio`
+      - recent-run history:
+        - `paper_history_min_completed_runs`
+        - `paper_history_min_nonnegative_run_ratio`
+        - `paper_history_min_positive_run_ratio`
+        - `paper_history_min_median_micro_quality_score`
+    - backtest sanity gate also records a lightweight `deflated_sharpe_ratio_est` from the generated `equity.csv`
   - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass

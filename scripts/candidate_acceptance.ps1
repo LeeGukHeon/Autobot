@@ -39,13 +39,20 @@ param(
     [int]$PaperMinOrdersSubmitted = 1,
     [int]$PaperMinOrdersFilled = 2,
     [double]$PaperMinRealizedPnlQuote = 0.0,
+    [double]$PaperMinMicroQualityScoreMean = 0.25,
     [int]$PaperMinActiveWindows = 1,
     [double]$PaperMinNonnegativeWindowRatio = 0.34,
     [double]$PaperMaxFillConcentrationRatio = 0.85,
+    [int]$PaperHistoryWindowRuns = 5,
+    [int]$PaperHistoryMinCompletedRuns = 2,
+    [double]$PaperHistoryMinNonnegativeRunRatio = 0.40,
+    [double]$PaperHistoryMinPositiveRunRatio = 0.20,
+    [double]$PaperHistoryMinMedianMicroQualityScore = 0.25,
     [int]$PaperMinTierCount = 1,
     [int]$PaperMinPolicyEvents = 0,
     [int]$BacktestMinOrdersFilled = 30,
     [double]$BacktestMinRealizedPnlQuote = 0.0,
+    [double]$BacktestMinDeflatedSharpeRatio = 0.20,
     [double]$BacktestMinPnlDeltaVsChampion = 0.0,
     [ValidateSet("strict", "balanced_pareto", "conservative_pareto", "paper_final_balanced")]
     [string]$PromotionPolicy = "balanced_pareto",
@@ -445,6 +452,140 @@ function Invoke-CommandCapture {
         Command = $commandText
         DryRun = $false
     }
+}
+
+function Get-MedianDouble {
+    param([double[]]$Values)
+    if ($null -eq $Values -or $Values.Count -le 0) {
+        return 0.0
+    }
+    $ordered = @($Values | Sort-Object)
+    $count = $ordered.Count
+    $middle = [int]([math]::Floor($count / 2))
+    if (($count % 2) -eq 1) {
+        return [double]$ordered[$middle]
+    }
+    return ([double]$ordered[$middle - 1] + [double]$ordered[$middle]) / 2.0
+}
+
+function Invoke-BacktestStatValidation {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$RunDir,
+        [int]$TrialCount
+    )
+    if ([string]::IsNullOrWhiteSpace($RunDir)) {
+        return @{}
+    }
+    $args = @(
+        "-m", "autobot.models.stat_validation",
+        "--run-dir", $RunDir,
+        "--trial-count", ([string]([Math]::Max([int]$TrialCount, 1)))
+    )
+    $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    if ($exec.ExitCode -ne 0) {
+        return @{
+            comparable = $false
+            reasons = @("STAT_VALIDATION_COMMAND_FAILED")
+            exit_code = [int]$exec.ExitCode
+            output_preview = (Get-OutputPreview -Text ([string]$exec.Output))
+        }
+    }
+    try {
+        $parsed = [string]$exec.Output | ConvertFrom-Json
+        if ($parsed -is [System.Collections.IDictionary]) {
+            return $parsed
+        }
+        return $parsed
+    } catch {
+        return @{
+            comparable = $false
+            reasons = @("STAT_VALIDATION_JSON_PARSE_FAILED")
+            output_preview = (Get-OutputPreview -Text ([string]$exec.Output))
+        }
+    }
+}
+
+function Get-PaperHistoryEvidence {
+    param(
+        [string]$DirectoryPath,
+        [int]$WindowRuns,
+        [int]$MinCompletedRuns
+    )
+    $result = [ordered]@{
+        completed_runs = 0
+        sufficient_history = $false
+        nonnegative_run_ratio = 0.0
+        positive_run_ratio = 0.0
+        median_micro_quality_score_mean = 0.0
+        median_fallback_ratio = 0.0
+        reports = @()
+    }
+    if ([string]::IsNullOrWhiteSpace($DirectoryPath) -or (-not (Test-Path $DirectoryPath))) {
+        return $result
+    }
+    $files = @(
+        Get-ChildItem -Path $DirectoryPath -Filter "paper_micro_smoke_*.json" -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First ([Math]::Max([int]$WindowRuns, 1))
+    )
+    if ($files.Count -le 0) {
+        return $result
+    }
+    $docs = @()
+    foreach ($file in $files) {
+        try {
+            $doc = Load-JsonOrEmpty -PathValue $file.FullName
+        } catch {
+            continue
+        }
+        if ($null -eq $doc) {
+            continue
+        }
+        $runId = [string](Get-PropValue -ObjectValue $doc -Name "run_id" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($runId)) {
+            continue
+        }
+        $docs += $doc
+    }
+    if ($docs.Count -le 0) {
+        return $result
+    }
+    $nonnegativeCount = 0
+    $positiveCount = 0
+    $microQualityValues = @()
+    $fallbackValues = @()
+    foreach ($doc in $docs) {
+        $pnl = [double](To-Double (Get-PropValue -ObjectValue $doc -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0)
+        if ($pnl -ge 0.0) {
+            $nonnegativeCount += 1
+        }
+        if ($pnl -gt 0.0) {
+            $positiveCount += 1
+        }
+        $microQualityValues += [double](To-Double (Get-PropValue -ObjectValue $doc -Name "micro_quality_score_mean" -DefaultValue 0.0) 0.0)
+        $fallbackValues += [double](To-Double (Get-PropValue -ObjectValue $doc -Name "micro_missing_fallback_ratio" -DefaultValue 0.0) 0.0)
+    }
+    $completedRuns = $docs.Count
+    $result.completed_runs = [int]$completedRuns
+    $result.sufficient_history = ($completedRuns -ge ([Math]::Max([int]$MinCompletedRuns, 1)))
+    $result.nonnegative_run_ratio = [double]($nonnegativeCount / [double]$completedRuns)
+    $result.positive_run_ratio = [double]($positiveCount / [double]$completedRuns)
+    $result.median_micro_quality_score_mean = [double](Get-MedianDouble -Values $microQualityValues)
+    $result.median_fallback_ratio = [double](Get-MedianDouble -Values $fallbackValues)
+    $result.reports = @(
+        foreach ($doc in $docs) {
+            [ordered]@{
+                run_id = [string](Get-PropValue -ObjectValue $doc -Name "run_id" -DefaultValue "")
+                realized_pnl_quote = [double](To-Double (Get-PropValue -ObjectValue $doc -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0)
+                micro_quality_score_mean = [double](To-Double (Get-PropValue -ObjectValue $doc -Name "micro_quality_score_mean" -DefaultValue 0.0) 0.0)
+                micro_missing_fallback_ratio = [double](To-Double (Get-PropValue -ObjectValue $doc -Name "micro_missing_fallback_ratio" -DefaultValue 0.0) 0.0)
+                generated_at = [string](Get-PropValue -ObjectValue $doc -Name "generated_at" -DefaultValue "")
+            }
+        }
+    )
+    return $result
 }
 
 function Get-PowerShellExe {
@@ -1026,6 +1167,14 @@ try {
     $candidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
     $candidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $candidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
     $candidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $candidateRealizedPnl -MaxDrawdownPct $candidateMaxDrawdownPct
+    $candidateStatValidation = Invoke-BacktestStatValidation `
+        -PythonPath $resolvedPythonExe `
+        -Root $resolvedProjectRoot `
+        -RunDir $candidateBacktest.RunDir `
+        -TrialCount $BoosterSweepTrials
+    $candidateDeflatedSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0) 0.0
+    $candidateProbabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
+    $candidateStatComparable = To-Bool (Get-PropValue -ObjectValue $candidateStatValidation -Name "comparable" -DefaultValue $false) $false
 
     $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
     $championBacktest = $null
@@ -1036,6 +1185,9 @@ try {
     $championSlippageBpsMean = $null
     $championCalmarLikeScore = $null
     $championCompareEvaluated = $false
+    $championStatValidation = @{}
+    $championDeflatedSharpeRatio = $null
+    $championProbabilisticSharpeRatio = $null
     if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
         $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $ChampionModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary
@@ -1044,10 +1196,18 @@ try {
         $championMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $championSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
         $championSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $championSummary -Name "slippage_bps_mean" -DefaultValue $null)
         $championCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $championRealizedPnl -MaxDrawdownPct $championMaxDrawdownPct
+        $championStatValidation = Invoke-BacktestStatValidation `
+            -PythonPath $resolvedPythonExe `
+            -Root $resolvedProjectRoot `
+            -RunDir $championBacktest.RunDir `
+            -TrialCount $BoosterSweepTrials
+        $championDeflatedSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $championStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue $null)
+        $championProbabilisticSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $championStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue $null)
         $championCompareEvaluated = $true
     }
 
-    $candidateBacktestPass = ($candidateOrdersFilled -ge $BacktestMinOrdersFilled) -and ($candidateRealizedPnl -ge $BacktestMinRealizedPnlQuote)
+    $candidateDeflatedSharpePass = (-not $candidateStatComparable) -or ($candidateDeflatedSharpeRatio -ge $BacktestMinDeflatedSharpeRatio)
+    $candidateBacktestPass = ($candidateOrdersFilled -ge $BacktestMinOrdersFilled) -and ($candidateRealizedPnl -ge $BacktestMinRealizedPnlQuote) -and $candidateDeflatedSharpePass
     $championDeltaPass = $true
     $strictChampionDeltaPass = $true
     $championDeltaQuote = $candidateRealizedPnl - $championRealizedPnl
@@ -1222,6 +1382,9 @@ try {
         max_drawdown_pct = [double]$candidateMaxDrawdownPct
         slippage_bps_mean = $candidateSlippageBpsMean
         calmar_like_score = $candidateCalmarLikeScore
+        deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
+        probabilistic_sharpe_ratio = [double]$candidateProbabilisticSharpeRatio
+        stat_validation = $candidateStatValidation
     }
     $report.steps.backtest_champion = if ($championCompareEvaluated) {
         [ordered]@{
@@ -1235,6 +1398,9 @@ try {
             max_drawdown_pct = [double]$championMaxDrawdownPct
             slippage_bps_mean = $championSlippageBpsMean
             calmar_like_score = $championCalmarLikeScore
+            deflated_sharpe_ratio_est = $championDeflatedSharpeRatio
+            probabilistic_sharpe_ratio = $championProbabilisticSharpeRatio
+            stat_validation = $championStatValidation
         }
     } else {
         [ordered]@{ attempted = $false; reason = "NO_EXISTING_CHAMPION" }
@@ -1242,6 +1408,10 @@ try {
     $report.gates.backtest = [ordered]@{
         candidate_min_orders_pass = ($candidateOrdersFilled -ge $BacktestMinOrdersFilled)
         candidate_min_realized_pnl_pass = ($candidateRealizedPnl -ge $BacktestMinRealizedPnlQuote)
+        candidate_dsr_evaluated = $candidateStatComparable
+        candidate_min_deflated_sharpe_ratio = [double]$BacktestMinDeflatedSharpeRatio
+        candidate_deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
+        candidate_deflated_sharpe_pass = $candidateDeflatedSharpePass
         compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
         vs_champion_evaluated = $championCompareEvaluated
         vs_champion_pass = $championDeltaPass
@@ -1333,16 +1503,40 @@ try {
         $paperT15GatePass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "t15_gate_pass" -DefaultValue $false) $false
         $paperOrdersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_filled" -DefaultValue 0) 0)
         $paperRealizedPnl = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0)
+        $paperMicroQualityScoreMean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "micro_quality_score_mean" -DefaultValue 0.0) 0.0)
         $paperActiveWindows = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_active_windows" -DefaultValue 0) 0)
         $paperNonnegativeWindowRatio = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_nonnegative_active_window_ratio" -DefaultValue 0.0) 0.0)
         $paperFillConcentrationRatio = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_max_fill_concentration_ratio" -DefaultValue 0.0) 0.0)
         $paperOrdersFilledPass = $paperOrdersFilled -ge $PaperMinOrdersFilled
         $paperRealizedPnlPass = $paperRealizedPnl -ge $PaperMinRealizedPnlQuote
+        $paperMicroQualityPass = $paperMicroQualityScoreMean -ge $PaperMinMicroQualityScoreMean
         $paperActiveWindowsPass = $paperActiveWindows -ge $PaperMinActiveWindows
         $paperNonnegativeWindowPass = $paperNonnegativeWindowRatio -ge $PaperMinNonnegativeWindowRatio
         $paperFillConcentrationPass = $paperFillConcentrationRatio -le $PaperMaxFillConcentrationRatio
+        $paperHistoryEvidence = Get-PaperHistoryEvidence `
+            -DirectoryPath $resolvedPaperSmokeOutDir `
+            -WindowRuns $PaperHistoryWindowRuns `
+            -MinCompletedRuns $PaperHistoryMinCompletedRuns
+        $paperHistorySufficient = To-Bool (Get-PropValue -ObjectValue $paperHistoryEvidence -Name "sufficient_history" -DefaultValue $false) $false
+        $paperHistoryCompletedRuns = [int](To-Int64 (Get-PropValue -ObjectValue $paperHistoryEvidence -Name "completed_runs" -DefaultValue 0) 0)
+        $paperHistoryNonnegativeRunRatio = [double](To-Double (Get-PropValue -ObjectValue $paperHistoryEvidence -Name "nonnegative_run_ratio" -DefaultValue 0.0) 0.0)
+        $paperHistoryPositiveRunRatio = [double](To-Double (Get-PropValue -ObjectValue $paperHistoryEvidence -Name "positive_run_ratio" -DefaultValue 0.0) 0.0)
+        $paperHistoryMedianMicroQualityScore = [double](To-Double (Get-PropValue -ObjectValue $paperHistoryEvidence -Name "median_micro_quality_score_mean" -DefaultValue 0.0) 0.0)
+        $paperHistoryMedianFallbackRatio = [double](To-Double (Get-PropValue -ObjectValue $paperHistoryEvidence -Name "median_fallback_ratio" -DefaultValue 0.0) 0.0)
+        $paperHistoryNonnegativePass = (-not $paperHistorySufficient) -or ($paperHistoryNonnegativeRunRatio -ge $PaperHistoryMinNonnegativeRunRatio)
+        $paperHistoryPositivePass = (-not $paperHistorySufficient) -or ($paperHistoryPositiveRunRatio -ge $PaperHistoryMinPositiveRunRatio)
+        $paperHistoryMicroQualityPass = (-not $paperHistorySufficient) -or ($paperHistoryMedianMicroQualityScore -ge $PaperHistoryMinMedianMicroQualityScore)
         $paperPass = if ($promotionPolicyConfig.paper_final_gate) {
-            $paperT15GatePass -and $paperOrdersFilledPass -and $paperRealizedPnlPass -and $paperActiveWindowsPass -and $paperNonnegativeWindowPass -and $paperFillConcentrationPass
+            $paperT15GatePass `
+                -and $paperOrdersFilledPass `
+                -and $paperRealizedPnlPass `
+                -and $paperMicroQualityPass `
+                -and $paperActiveWindowsPass `
+                -and $paperNonnegativeWindowPass `
+                -and $paperFillConcentrationPass `
+                -and $paperHistoryNonnegativePass `
+                -and $paperHistoryPositivePass `
+                -and $paperHistoryMicroQualityPass
         } else {
             $paperT15GatePass
         }
@@ -1361,11 +1555,18 @@ try {
             realized_pnl_quote = $paperRealizedPnl
             max_drawdown_pct = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "max_drawdown_pct" -DefaultValue 0.0) 0.0)
             slippage_bps_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "slippage_bps_mean" -DefaultValue 0.0) 0.0)
-            micro_quality_score_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "micro_quality_score_mean" -DefaultValue 0.0) 0.0)
+            micro_quality_score_mean = $paperMicroQualityScoreMean
             runtime_risk_multiplier_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "runtime_risk_multiplier_mean" -DefaultValue 1.0) 1.0)
             rolling_active_windows = $paperActiveWindows
             rolling_nonnegative_active_window_ratio = $paperNonnegativeWindowRatio
             rolling_max_fill_concentration_ratio = $paperFillConcentrationRatio
+            history_completed_runs = $paperHistoryCompletedRuns
+            history_sufficient = $paperHistorySufficient
+            history_nonnegative_run_ratio = $paperHistoryNonnegativeRunRatio
+            history_positive_run_ratio = $paperHistoryPositiveRunRatio
+            history_median_micro_quality_score_mean = $paperHistoryMedianMicroQualityScore
+            history_median_fallback_ratio = $paperHistoryMedianFallbackRatio
+            history_reports = @((Get-PropValue -ObjectValue $paperHistoryEvidence -Name "reports" -DefaultValue @()))
             replace_cancel_timeout_total = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "replace_cancel_timeout_total" -DefaultValue 0) 0)
             t15_gate_pass = $paperT15GatePass
             learned_runtime = [bool]$PaperUseLearnedRuntime
@@ -1377,9 +1578,22 @@ try {
             final_gate_mode = if ($promotionPolicyConfig.paper_final_gate) { "paper_final" } else { "operational" }
             min_orders_filled_pass = $paperOrdersFilledPass
             min_realized_pnl_pass = $paperRealizedPnlPass
+            min_micro_quality_score_mean_pass = $paperMicroQualityPass
+            min_micro_quality_score_mean = [double]$PaperMinMicroQualityScoreMean
+            micro_quality_score_mean = $paperMicroQualityScoreMean
             min_active_windows_pass = $paperActiveWindowsPass
             min_nonnegative_window_ratio_pass = $paperNonnegativeWindowPass
             max_fill_concentration_pass = $paperFillConcentrationPass
+            history_completed_runs = $paperHistoryCompletedRuns
+            history_sufficient = $paperHistorySufficient
+            history_min_completed_runs = [int]$PaperHistoryMinCompletedRuns
+            history_nonnegative_run_ratio = $paperHistoryNonnegativeRunRatio
+            history_positive_run_ratio = $paperHistoryPositiveRunRatio
+            history_median_micro_quality_score_mean = $paperHistoryMedianMicroQualityScore
+            history_median_fallback_ratio = $paperHistoryMedianFallbackRatio
+            history_min_nonnegative_run_ratio_pass = $paperHistoryNonnegativePass
+            history_min_positive_run_ratio_pass = $paperHistoryPositivePass
+            history_min_median_micro_quality_score_pass = $paperHistoryMicroQualityPass
             smoke_connectivity_pass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "smoke_connectivity_pass" -DefaultValue $false) $false
             t15_gate_pass = $paperT15GatePass
         }

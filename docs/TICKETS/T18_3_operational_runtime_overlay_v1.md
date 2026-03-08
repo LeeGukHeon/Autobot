@@ -60,10 +60,13 @@
 
 4. `execution aggressiveness`
 - runtime now adjusts `price_mode` conservatively/aggressively from micro quality and session state
-- v1 intentionally leaves `timeout_ms`, `replace_interval_ms`, and `max_replaces` unchanged
-- rationale:
-  - keep execution life-cycle comparable
-  - isolate runtime adaptation to posture first
+- current implementation also scales:
+  - `timeout_ms`
+  - `replace_interval_ms`
+  - `max_replaces`
+  - `max_chase_bps`
+- conservative mode slows execution recycling and reduces chase budget
+- aggressive mode tightens execution timing and slightly expands chase budget
 
 5. `micro quality composite score`
 - built from:
@@ -83,9 +86,12 @@
   - fixed compare profile for backtest sanity gate
   - learned runtime for paper final gate
   - rolling evidence included in paper final gate
+  - direct `micro_quality_score_mean` floor included in paper final gate
+  - short-history median run quality / pnl evidence included in paper final gate
+  - backtest sanity gate now also records a lightweight `deflated_sharpe_ratio_est`
 
 ## Remaining Work
-- calibrate paper rolling thresholds with longer evidence
+- calibrate paper rolling and history thresholds with longer live evidence
 - add a regime-aware `execution cap` that respects venue-specific liquidity ceilings
-- turn the current heuristic micro quality score into a more explicitly documented composite acceptance metric
-- after evidence accumulates, consider widening paper final gate from 3h soak to rolling multi-run paper evidence
+- turn the current heuristic micro quality score into a fully first-class acceptance metric rather than a companion gate
+- wire stronger multiple-testing correction such as `Reality Check / SPA` in addition to the current lightweight DSR-style sanity check

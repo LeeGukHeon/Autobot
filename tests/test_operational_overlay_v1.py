@@ -174,7 +174,10 @@ def test_compute_micro_quality_composite_and_overlay_modes() -> None:
     )
     assert conservative_decision.abort_reason is None
     assert conservative_decision.exec_profile.price_mode == "PASSIVE_MAKER"
-    assert conservative_decision.exec_profile.timeout_ms == 900_000
+    assert conservative_decision.exec_profile.timeout_ms == 1_125_000
+    assert conservative_decision.exec_profile.replace_interval_ms == 1_350_000
+    assert conservative_decision.exec_profile.max_replaces == 2
+    assert conservative_decision.exec_profile.max_chase_bps == 11
 
     aggressive_decision = resolve_operational_execution_overlay(
         base_profile=base,
@@ -184,4 +187,7 @@ def test_compute_micro_quality_composite_and_overlay_modes() -> None:
     )
     assert aggressive_decision.abort_reason is None
     assert aggressive_decision.exec_profile.price_mode == "CROSS_1T"
-    assert aggressive_decision.exec_profile.timeout_ms == 900_000
+    assert aggressive_decision.exec_profile.timeout_ms == 675_000
+    assert aggressive_decision.exec_profile.replace_interval_ms == 450_000
+    assert aggressive_decision.exec_profile.max_replaces == 5
+    assert aggressive_decision.exec_profile.max_chase_bps == 20

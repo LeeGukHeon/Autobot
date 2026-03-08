@@ -115,3 +115,13 @@
       max_execution_spread_bps_for_cross: 6.0
       min_execution_depth_krw_for_cross: 1500000.0
       snapshot_stale_ms: 15000
+      conservative_timeout_scale: 1.25
+      aggressive_timeout_scale: 0.75
+      conservative_replace_interval_scale: 1.50
+      aggressive_replace_interval_scale: 0.50
+      conservative_max_replaces_scale: 0.50
+      aggressive_max_replaces_bonus: 1
+      conservative_max_chase_bps_scale: 0.75
+      aggressive_max_chase_bps_bonus: 5
+      runtime_timeout_ms_floor: 5000
+      runtime_replace_interval_ms_floor: 1500

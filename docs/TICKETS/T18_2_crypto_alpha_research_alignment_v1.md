@@ -414,10 +414,12 @@ Current implementation checkpoint:
 - Current-market adaptation is intentionally not solved by daily selection retuning.
 - That responsibility moves to `T18.3 Operational Runtime Overlay v1`:
   - rolling paper evidence
+  - recent-run paper history evidence
   - risk multiplier
   - dynamic `max_positions`
-  - `price_mode` aggressiveness overlay
+  - execution aggressiveness overlay
   - micro quality composite
+  - lightweight DSR-style sanity metric on backtest artifacts
 - This split is intentional:
   - T18.2 = learned alpha contract
   - T18.3 = runtime operational adaptation
@@ -477,6 +479,11 @@ Current implementation checkpoint:
     - `candidate_acceptance.ps1` does the same for `paper_micro_smoke` output so same-lane manual runs do not silently poison paper soak status
     - `paper_micro_smoke.ps1` separates `min_orders_submitted` failure from true fallback-ratio failure instead of treating all zero-order windows as `fallback_ratio=1.0`
     - ad-hoc `paper alpha --preset live_v4` is now safe on a fresh registry: if `champion_v4` is missing, runtime falls back to `latest_candidate_v4`, then `latest_v4`
+    - paper final gate now also reads:
+      - direct `micro_quality_score_mean`
+      - recent-run nonnegative/positive ratios
+      - recent-run median micro quality
+    - backtest sanity gate now records `deflated_sharpe_ratio_est` from the generated `equity.csv`
 - `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
   - current target timer remains:
     - `autobot-daily-micro.timer`
