@@ -325,3 +325,24 @@ Reason:
 ## Immediate Next Task
 - Start with `Phase 1: Correlation-Adjusted DSR`
 - only then proceed to finer RC/SPA panel construction
+
+## Progress Notes
+
+### Phase 1 Completed
+- `autobot/models/stat_validation.py`
+  - now reports both `raw_trial_count` and correlation-adjusted `effective_trials`
+  - accepts optional `model_run_dir` so DSR can read persisted sweep artifacts
+- `autobot/models/trial_dependence.py`
+  - added trial-outcome dependence estimation from persisted booster sweep records
+- `scripts/candidate_acceptance.ps1`
+  - now passes candidate/champion model artifact directories into `stat_validation`
+- tests:
+  - `tests/test_stat_validation.py`
+  - `tests/test_trial_dependence.py`
+
+Current behavior:
+- if persisted sweep records are available, DSR uses `effective_trials` estimated from pairwise outcome correlation
+- if only raw trial count is available, behavior remains backward-compatible
+
+Next task:
+- `Phase 2: Finer OOS Differential Panel For RC/SPA`

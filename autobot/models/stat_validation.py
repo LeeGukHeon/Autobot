@@ -15,6 +15,9 @@ from pathlib import Path
 from statistics import NormalDist
 from typing import Sequence
 
+from .registry import load_json
+from .trial_dependence import estimate_effective_trials_from_trial_records
+
 
 _STANDARD_NORMAL = NormalDist()
 _EULER_GAMMA = 0.5772156649015329
@@ -24,6 +27,7 @@ _EULER_GAMMA = 0.5772156649015329
 class BacktestStatValidation:
     run_dir: str
     equity_csv: str
+    model_run_dir: str
     returns_count: int
     mean_return: float
     std_return: float
@@ -33,18 +37,33 @@ class BacktestStatValidation:
     probabilistic_sharpe_ratio: float
     deflated_sharpe_ratio_est: float
     benchmark_sharpe: float
+    raw_trial_count: int
     effective_trials: int
+    effective_trials_estimate: float
+    effective_trials_source: str
+    trial_dependence_avg_correlation: float | None
+    trial_dependence_metric_count: int
     comparable: bool
     reasons: list[str]
 
 
-def build_backtest_stat_validation(*, run_dir: Path, trial_count: int = 1) -> BacktestStatValidation:
+def build_backtest_stat_validation(
+    *,
+    run_dir: Path,
+    trial_count: int = 1,
+    model_run_dir: Path | None = None,
+) -> BacktestStatValidation:
     run_root = Path(run_dir)
     equity_csv = run_root / "equity.csv"
+    trial_dependence = _resolve_trial_dependence(
+        trial_count=max(int(trial_count), 1),
+        model_run_dir=model_run_dir,
+    )
     if not equity_csv.exists():
         return BacktestStatValidation(
             run_dir=str(run_root),
             equity_csv=str(equity_csv),
+            model_run_dir=str(model_run_dir or ""),
             returns_count=0,
             mean_return=0.0,
             std_return=0.0,
@@ -54,7 +73,12 @@ def build_backtest_stat_validation(*, run_dir: Path, trial_count: int = 1) -> Ba
             probabilistic_sharpe_ratio=0.0,
             deflated_sharpe_ratio_est=0.0,
             benchmark_sharpe=0.0,
-            effective_trials=max(int(trial_count), 1),
+            raw_trial_count=int(trial_dependence["raw_trial_count"]),
+            effective_trials=int(trial_dependence["effective_trials"]),
+            effective_trials_estimate=float(trial_dependence["effective_trials_estimate"]),
+            effective_trials_source=str(trial_dependence["source"]),
+            trial_dependence_avg_correlation=_nullable_float(trial_dependence.get("avg_pairwise_correlation")),
+            trial_dependence_metric_count=int(trial_dependence.get("metric_count", 0) or 0),
             comparable=False,
             reasons=["MISSING_EQUITY_CSV"],
         )
@@ -65,6 +89,7 @@ def build_backtest_stat_validation(*, run_dir: Path, trial_count: int = 1) -> Ba
         return BacktestStatValidation(
             run_dir=str(run_root),
             equity_csv=str(equity_csv),
+            model_run_dir=str(model_run_dir or ""),
             returns_count=len(returns),
             mean_return=0.0,
             std_return=0.0,
@@ -74,7 +99,12 @@ def build_backtest_stat_validation(*, run_dir: Path, trial_count: int = 1) -> Ba
             probabilistic_sharpe_ratio=0.0,
             deflated_sharpe_ratio_est=0.0,
             benchmark_sharpe=0.0,
-            effective_trials=max(int(trial_count), 1),
+            raw_trial_count=int(trial_dependence["raw_trial_count"]),
+            effective_trials=int(trial_dependence["effective_trials"]),
+            effective_trials_estimate=float(trial_dependence["effective_trials_estimate"]),
+            effective_trials_source=str(trial_dependence["source"]),
+            trial_dependence_avg_correlation=_nullable_float(trial_dependence.get("avg_pairwise_correlation")),
+            trial_dependence_metric_count=int(trial_dependence.get("metric_count", 0) or 0),
             comparable=False,
             reasons=["INSUFFICIENT_RETURNS"],
         )
@@ -105,18 +135,19 @@ def build_backtest_stat_validation(*, run_dir: Path, trial_count: int = 1) -> Ba
             observations=len(returns),
             skewness=skewness,
             kurtosis=kurtosis,
-            trial_count=max(int(trial_count), 1),
+            trial_count=int(trial_dependence["effective_trials"]),
         )
     else:
         psr = 0.0
         dsr_report = {
             "deflated_sharpe_ratio_est": 0.0,
             "benchmark_sharpe": 0.0,
-            "effective_trials": float(max(int(trial_count), 1)),
+            "effective_trials": float(int(trial_dependence["effective_trials"])),
         }
     return BacktestStatValidation(
         run_dir=str(run_root),
         equity_csv=str(equity_csv),
+        model_run_dir=str(model_run_dir or ""),
         returns_count=len(returns),
         mean_return=float(mean_return),
         std_return=float(std_return),
@@ -126,7 +157,12 @@ def build_backtest_stat_validation(*, run_dir: Path, trial_count: int = 1) -> Ba
         probabilistic_sharpe_ratio=float(psr),
         deflated_sharpe_ratio_est=float(dsr_report["deflated_sharpe_ratio_est"]),
         benchmark_sharpe=float(dsr_report["benchmark_sharpe"]),
-        effective_trials=max(int(trial_count), 1),
+        raw_trial_count=int(trial_dependence["raw_trial_count"]),
+        effective_trials=int(trial_dependence["effective_trials"]),
+        effective_trials_estimate=float(trial_dependence["effective_trials_estimate"]),
+        effective_trials_source=str(trial_dependence["source"]),
+        trial_dependence_avg_correlation=_nullable_float(trial_dependence.get("avg_pairwise_correlation")),
+        trial_dependence_metric_count=int(trial_dependence.get("metric_count", 0) or 0),
         comparable=bool(comparable),
         reasons=reasons,
     )
@@ -259,14 +295,54 @@ def _sample_kurtosis(values: Sequence[float]) -> float:
     return float(sum(value ** 4 for value in centered) / float(n))
 
 
+def _resolve_trial_dependence(*, trial_count: int, model_run_dir: Path | None) -> dict[str, object]:
+    raw_count = max(int(trial_count), 1)
+    if model_run_dir is None:
+        return {
+            "raw_trial_count": raw_count,
+            "effective_trials": raw_count,
+            "effective_trials_estimate": float(raw_count),
+            "source": "raw_trial_count_fallback",
+            "avg_pairwise_correlation": None,
+            "metric_count": 0,
+        }
+    metrics = load_json(Path(model_run_dir) / "metrics.json")
+    booster = metrics.get("booster_sweep", {}) if isinstance(metrics, dict) else {}
+    records = booster.get("records", []) if isinstance(booster, dict) else []
+    dependence = estimate_effective_trials_from_trial_records(
+        records if isinstance(records, list) else [],
+        fallback_trial_count=raw_count,
+    )
+    return {
+        "raw_trial_count": int(dependence.get("raw_trial_count", raw_count) or raw_count),
+        "effective_trials": int(dependence.get("effective_trials", raw_count) or raw_count),
+        "effective_trials_estimate": float(dependence.get("effective_trials_estimate", float(raw_count)) or float(raw_count)),
+        "source": str(dependence.get("source", "raw_trial_count_fallback")),
+        "avg_pairwise_correlation": dependence.get("avg_pairwise_correlation"),
+        "metric_count": int(dependence.get("metric_count", 0) or 0),
+    }
+
+
+def _nullable_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _main() -> int:
     parser = argparse.ArgumentParser(description="Compute statistical validation from a backtest run directory.")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--trial-count", type=int, default=1)
+    parser.add_argument("--model-run-dir", default="")
     args = parser.parse_args()
     report = build_backtest_stat_validation(
         run_dir=Path(str(args.run_dir)),
         trial_count=max(int(args.trial_count), 1),
+        model_run_dir=(Path(str(args.model_run_dir)) if str(args.model_run_dir).strip() else None),
     )
     print(json.dumps(asdict(report), ensure_ascii=False))
     return 0

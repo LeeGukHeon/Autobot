@@ -562,7 +562,8 @@ function Invoke-BacktestStatValidation {
         [string]$PythonPath,
         [string]$Root,
         [string]$RunDir,
-        [int]$TrialCount
+        [int]$TrialCount,
+        [string]$ModelRunDir = ""
     )
     if ([string]::IsNullOrWhiteSpace($RunDir)) {
         return @{}
@@ -572,6 +573,9 @@ function Invoke-BacktestStatValidation {
         "--run-dir", $RunDir,
         "--trial-count", ([string]([Math]::Max([int]$TrialCount, 1)))
     )
+    if (-not [string]::IsNullOrWhiteSpace($ModelRunDir)) {
+        $args += @("--model-run-dir", $ModelRunDir)
+    }
     $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
     if ($exec.ExitCode -ne 0) {
         return @{
@@ -1260,7 +1264,8 @@ try {
         -PythonPath $resolvedPythonExe `
         -Root $resolvedProjectRoot `
         -RunDir $candidateBacktest.RunDir `
-        -TrialCount $BoosterSweepTrials
+        -TrialCount $BoosterSweepTrials `
+        -ModelRunDir $candidateRunDir
     $candidateDeflatedSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0) 0.0
     $candidateProbabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
     $candidateStatComparable = To-Bool (Get-PropValue -ObjectValue $candidateStatValidation -Name "comparable" -DefaultValue $false) $false
@@ -1277,6 +1282,7 @@ try {
     $championStatValidation = @{}
     $championDeflatedSharpeRatio = $null
     $championProbabilisticSharpeRatio = $null
+    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $championRunId }
     if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
         $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $ChampionModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary
@@ -1289,7 +1295,8 @@ try {
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
             -RunDir $championBacktest.RunDir `
-            -TrialCount $BoosterSweepTrials
+            -TrialCount $BoosterSweepTrials `
+            -ModelRunDir $championModelRunDir
         $championDeflatedSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $championStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue $null)
         $championProbabilisticSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $championStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue $null)
         $championCompareEvaluated = $true
