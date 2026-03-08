@@ -569,8 +569,11 @@
         - `paper_history_min_positive_run_ratio`
         - `paper_history_min_median_micro_quality_score`
     - backtest sanity gate also records a lightweight `deflated_sharpe_ratio_est` from the generated `equity.csv`
-    - `v4` trainer evidence also records a `SPA-like` paired walk-forward window test
-      - full `White Reality Check / SPA` is still future because current trainer sweep does not persist aligned per-trial return panels
+    - `v4` trainer evidence now records:
+      - a `SPA-like` paired walk-forward window test
+      - a walk-forward trial panel with aligned per-trial window differentials
+      - `White Reality Check` and `Hansen SPA` style multiple-testing checks on that panel
+      - this richer multiple-testing path is currently `v4`-only because `v3` does not persist the same walk-forward trial panel
   - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass

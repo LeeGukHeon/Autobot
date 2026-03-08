@@ -24,6 +24,11 @@ from .dataset_loader import (
     load_feature_spec,
     load_label_spec,
 )
+from .multiple_testing import (
+    build_trial_window_differential_matrix,
+    run_hansen_spa,
+    run_white_reality_check,
+)
 from .execution_acceptance import ExecutionAcceptanceOptions, run_execution_acceptance
 from .model_card import render_model_card
 from .research_acceptance import (
@@ -91,6 +96,8 @@ class TrainV4CryptoCsOptions:
     walk_forward_sweep_trials: int = 3
     walk_forward_min_train_rows: int = 1_000
     walk_forward_min_test_rows: int = 200
+    multiple_testing_alpha: float = 0.20
+    multiple_testing_bootstrap_iters: int = 500
     execution_acceptance_enabled: bool = False
     execution_acceptance_dataset_name: str = "candles_v1"
     execution_acceptance_parquet_root: Path = Path("data/parquet")
@@ -462,7 +469,7 @@ def _run_walk_forward_v4(
             )
             continue
 
-        bundle = _fit_walk_forward_window_model(
+        fitted = _fit_walk_forward_window_model(
             task=task,
             options=options,
             sweep_trials=sweep_trials,
@@ -474,8 +481,12 @@ def _run_walk_forward_v4(
             y_valid_cls=dataset.y_cls[valid_mask],
             y_valid_reg=dataset.y_reg[valid_mask],
             w_valid=dataset.sample_weight[valid_mask],
+            x_test=dataset.X[test_mask],
+            y_test_cls=dataset.y_cls[test_mask],
+            y_test_reg=dataset.y_reg[test_mask],
+            market_test=dataset.markets[test_mask],
         )
-        scores = _predict_scores(bundle, dataset.X[test_mask])
+        scores = _predict_scores(fitted["bundle"], dataset.X[test_mask])
         metrics = _evaluate_split(
             y_cls=dataset.y_cls[test_mask],
             y_reg=dataset.y_reg[test_mask],
@@ -494,10 +505,12 @@ def _run_walk_forward_v4(
                 },
                 "counts": row_counts,
                 "metrics": _compact_eval_metrics(metrics),
+                "trial_records": list(fitted.get("trial_records", [])),
             }
         )
 
     report["windows"] = windows
+    report["trial_panel"] = _summarize_walk_forward_trial_panel(windows)
     report["skipped_windows"] = skipped
     report["windows_generated"] = len(window_specs)
     report["summary"] = summarize_walk_forward_windows(windows)
@@ -507,6 +520,22 @@ def _run_walk_forward_v4(
     report["spa_like_window_test"] = compare_spa_like_window_test(
         report.get("windows", []),
         champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
+    )
+    rc_matrix = build_trial_window_differential_matrix(
+        report.get("trial_panel", []),
+        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
+    )
+    report["white_reality_check"] = run_white_reality_check(
+        rc_matrix,
+        alpha=float(options.multiple_testing_alpha),
+        bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
+        seed=int(options.seed),
+    )
+    report["hansen_spa"] = run_hansen_spa(
+        rc_matrix,
+        alpha=float(options.multiple_testing_alpha),
+        bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
+        seed=int(options.seed),
     )
     if champion_summary:
         report["champion_summary"] = champion_summary
@@ -526,24 +555,30 @@ def _fit_walk_forward_window_model(
     y_valid_cls: np.ndarray,
     y_valid_reg: np.ndarray,
     w_valid: np.ndarray,
+    x_test: np.ndarray,
+    y_test_cls: np.ndarray,
+    y_test_reg: np.ndarray,
+    market_test: np.ndarray,
 ) -> dict[str, Any]:
     if task == "cls":
-        booster = _fit_booster_sweep_weighted(
+        return _fit_walk_forward_weighted_trials(
+            options=options,
+            sweep_trials=sweep_trials,
             x_train=x_train,
             y_train=y_cls_train,
             w_train=w_train,
             x_valid=x_valid,
-            y_valid=y_valid_cls,
+            y_valid_cls=y_valid_cls,
+            y_valid_reg=y_valid_reg,
             w_valid=w_valid,
-            y_reg_valid=y_valid_reg,
-            fee_bps_est=options.fee_bps_est,
-            safety_bps=options.safety_bps,
-            seed=options.seed,
-            nthread=options.nthread,
-            trials=sweep_trials,
+            x_test=x_test,
+            y_test_cls=y_test_cls,
+            y_test_reg=y_test_reg,
+            market_test=market_test,
         )
-        return dict(booster.get("bundle", {}))
-    booster = _fit_booster_sweep_regression(
+    return _fit_walk_forward_regression_trials(
+        options=options,
+        sweep_trials=sweep_trials,
         x_train=x_train,
         y_train=y_reg_train,
         w_train=w_train,
@@ -551,13 +586,262 @@ def _fit_walk_forward_window_model(
         y_valid_cls=y_valid_cls,
         y_valid_reg=y_valid_reg,
         w_valid=w_valid,
-        fee_bps_est=options.fee_bps_est,
-        safety_bps=options.safety_bps,
-        seed=options.seed,
-        nthread=options.nthread,
-        trials=sweep_trials,
+        x_test=x_test,
+        y_test_cls=y_test_cls,
+        y_test_reg=y_test_reg,
+        market_test=market_test,
     )
-    return dict(booster.get("bundle", {}))
+
+
+def _summarize_walk_forward_trial_panel(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_trial: dict[int, dict[str, Any]] = {}
+    for window in windows:
+        window_index = int(window.get("window_index", -1))
+        time_window = dict(window.get("time_window", {}))
+        for record in window.get("trial_records", []) or []:
+            trial_id = int(record.get("trial", -1))
+            if trial_id < 0:
+                continue
+            node = by_trial.setdefault(
+                trial_id,
+                {
+                    "trial": trial_id,
+                    "params": dict(record.get("params", {})),
+                    "windows": [],
+                },
+            )
+            node["windows"].append(
+                {
+                    "window_index": window_index,
+                    "time_window": time_window,
+                    "metrics": dict(record.get("test_metrics", {})),
+                }
+            )
+    trial_panel: list[dict[str, Any]] = []
+    for trial_id in sorted(by_trial):
+        node = by_trial[trial_id]
+        windows_for_trial = list(node.get("windows", []))
+        summary = summarize_walk_forward_windows(windows_for_trial)
+        node["summary"] = summary
+        node["windows_run"] = int(summary.get("windows_run", 0) or 0)
+        trial_panel.append(node)
+    return trial_panel
+
+
+def _fit_walk_forward_weighted_trials(
+    *,
+    options: TrainV4CryptoCsOptions,
+    sweep_trials: int,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    w_valid: np.ndarray,
+    x_test: np.ndarray,
+    y_test_cls: np.ndarray,
+    y_test_reg: np.ndarray,
+    market_test: np.ndarray,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+
+    rng = np.random.default_rng(int(options.seed))
+    w_train_safe = np.asarray(w_train, dtype=np.float64)
+    w_valid_safe = np.asarray(w_valid, dtype=np.float64)
+    if w_train_safe.size != y_train.size:
+        w_train_safe = np.ones(y_train.size, dtype=np.float64)
+    if w_valid_safe.size != y_valid_cls.size:
+        w_valid_safe = np.ones(y_valid_cls.size, dtype=np.float64)
+    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+    w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
+
+    best_key: tuple[float, float, float] | None = None
+    best_bundle: dict[str, Any] | None = None
+    trial_records: list[dict[str, Any]] = []
+    for trial in range(max(int(sweep_trials), 1)):
+        params = _sample_xgb_params(rng)
+        estimator = xgb.XGBClassifier(
+            objective="binary:logistic",
+            tree_method="hist",
+            n_estimators=1200,
+            learning_rate=params["learning_rate"],
+            max_depth=params["max_depth"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            min_child_weight=params["min_child_weight"],
+            reg_lambda=params["reg_lambda"],
+            reg_alpha=params["reg_alpha"],
+            max_bin=params["max_bin"],
+            random_state=int(options.seed + trial),
+            nthread=max(int(options.nthread), 1),
+            eval_metric="logloss",
+        )
+        fit_kwargs = {
+            "sample_weight": w_train_safe,
+            "eval_set": [(x_valid, y_valid_cls)],
+            "sample_weight_eval_set": [w_valid_safe],
+            "verbose": False,
+        }
+        try:
+            estimator.fit(x_train, y_train, early_stopping_rounds=50, **fit_kwargs)
+        except TypeError:
+            estimator.fit(x_train, y_train, sample_weight=w_train_safe, eval_set=[(x_valid, y_valid_cls)], verbose=False)
+
+        valid_scores = estimator.predict_proba(x_valid)[:, 1]
+        valid_metrics = _evaluate_split(
+            y_cls=y_valid_cls,
+            y_reg=y_valid_reg,
+            scores=valid_scores,
+            markets=np.array(["_ALL_"] * int(y_valid_cls.size), dtype=object),
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        valid_cls = valid_metrics.get("classification", {}) if isinstance(valid_metrics, dict) else {}
+        valid_top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
+        key = (
+            float(valid_top5.get("precision", 0.0)),
+            float(valid_cls.get("pr_auc") or 0.0),
+            float(valid_cls.get("roc_auc") or 0.0),
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_bundle = {"model_type": "xgboost", "scaler": None, "estimator": estimator}
+
+        test_scores = estimator.predict_proba(x_test)[:, 1]
+        test_metrics = _evaluate_split(
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        trial_records.append(
+            {
+                "trial": int(trial),
+                "params": params,
+                "valid_selection_key": {
+                    "precision_top5": key[0],
+                    "pr_auc": key[1],
+                    "roc_auc": key[2],
+                },
+                "test_metrics": _compact_eval_metrics(test_metrics),
+            }
+        )
+    if best_bundle is None:
+        raise RuntimeError("walk-forward weighted sweep failed to produce a model")
+    return {"bundle": best_bundle, "trial_records": trial_records}
+
+
+def _fit_walk_forward_regression_trials(
+    *,
+    options: TrainV4CryptoCsOptions,
+    sweep_trials: int,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    w_valid: np.ndarray,
+    x_test: np.ndarray,
+    y_test_cls: np.ndarray,
+    y_test_reg: np.ndarray,
+    market_test: np.ndarray,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+
+    rng = np.random.default_rng(int(options.seed))
+    w_train_safe = np.asarray(w_train, dtype=np.float64)
+    w_valid_safe = np.asarray(w_valid, dtype=np.float64)
+    if w_train_safe.size != y_train.size:
+        w_train_safe = np.ones(y_train.size, dtype=np.float64)
+    if w_valid_safe.size != y_valid_reg.size:
+        w_valid_safe = np.ones(y_valid_reg.size, dtype=np.float64)
+    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+    w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
+
+    best_key: tuple[float, float, float] | None = None
+    best_bundle: dict[str, Any] | None = None
+    trial_records: list[dict[str, Any]] = []
+    for trial in range(max(int(sweep_trials), 1)):
+        params = _sample_xgb_params(rng)
+        estimator = xgb.XGBRegressor(
+            objective="reg:squarederror",
+            tree_method="hist",
+            n_estimators=1200,
+            learning_rate=params["learning_rate"],
+            max_depth=params["max_depth"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            min_child_weight=params["min_child_weight"],
+            reg_lambda=params["reg_lambda"],
+            reg_alpha=params["reg_alpha"],
+            max_bin=params["max_bin"],
+            random_state=int(options.seed + trial),
+            nthread=max(int(options.nthread), 1),
+            eval_metric="rmse",
+        )
+        fit_kwargs = {
+            "sample_weight": w_train_safe,
+            "eval_set": [(x_valid, y_valid_reg)],
+            "sample_weight_eval_set": [w_valid_safe],
+            "verbose": False,
+        }
+        try:
+            estimator.fit(x_train, y_train, early_stopping_rounds=50, **fit_kwargs)
+        except TypeError:
+            estimator.fit(x_train, y_train, sample_weight=w_train_safe, eval_set=[(x_valid, y_valid_reg)], verbose=False)
+
+        valid_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_valid), dtype=np.float64)))
+        valid_metrics = _evaluate_split(
+            y_cls=y_valid_cls,
+            y_reg=y_valid_reg,
+            scores=valid_scores,
+            markets=np.array(["_ALL_"] * int(y_valid_cls.size), dtype=object),
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        valid_cls = valid_metrics.get("classification", {}) if isinstance(valid_metrics, dict) else {}
+        valid_top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
+        key = (
+            float(valid_top5.get("precision", 0.0)),
+            float(valid_top5.get("ev_net", 0.0)),
+            float(valid_cls.get("pr_auc") or 0.0),
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_bundle = {"model_type": "xgboost_regressor", "scaler": None, "estimator": estimator}
+
+        test_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_test), dtype=np.float64)))
+        test_metrics = _evaluate_split(
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        trial_records.append(
+            {
+                "trial": int(trial),
+                "params": params,
+                "valid_selection_key": {
+                    "precision_top5": key[0],
+                    "ev_net_top5": key[1],
+                    "pr_auc": key[2],
+                },
+                "test_metrics": _compact_eval_metrics(test_metrics),
+            }
+        )
+    if best_bundle is None:
+        raise RuntimeError("walk-forward regression sweep failed to produce a model")
+    return {"bundle": best_bundle, "trial_records": trial_records}
 
 
 def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -919,6 +1203,8 @@ def _manual_promotion_decision_v4(
     reasons = ["MANUAL_PROMOTION_REQUIRED"]
     compare_doc = walk_forward.get("compare_to_champion", {}) if isinstance(walk_forward, dict) else {}
     spa_like_doc = walk_forward.get("spa_like_window_test", {}) if isinstance(walk_forward, dict) else {}
+    white_rc_doc = walk_forward.get("white_reality_check", {}) if isinstance(walk_forward, dict) else {}
+    hansen_spa_doc = walk_forward.get("hansen_spa", {}) if isinstance(walk_forward, dict) else {}
     walk_summary = walk_forward.get("summary", {}) if isinstance(walk_forward, dict) else {}
     windows_run = int(walk_summary.get("windows_run", 0) or 0)
     execution_status = str(execution_acceptance.get("status", "")).strip().lower()
@@ -946,6 +1232,16 @@ def _manual_promotion_decision_v4(
             reasons.append("SPA_LIKE_WINDOW_FAIL")
         elif spa_decision:
             reasons.append("SPA_LIKE_WINDOW_HOLD")
+        white_rc_decision = str(white_rc_doc.get("decision", "")).strip().lower()
+        if white_rc_decision == "candidate_edge":
+            reasons.append("WHITE_RC_PASS")
+        elif white_rc_decision:
+            reasons.append("WHITE_RC_HOLD")
+        hansen_spa_decision = str(hansen_spa_doc.get("decision", "")).strip().lower()
+        if hansen_spa_decision == "candidate_edge":
+            reasons.append("HANSEN_SPA_PASS")
+        elif hansen_spa_decision:
+            reasons.append("HANSEN_SPA_HOLD")
     if bool(options.execution_acceptance_enabled):
         execution_decision = str(execution_compare.get("decision", "")).strip().lower()
         if execution_status == "skipped":
@@ -972,6 +1268,12 @@ def _manual_promotion_decision_v4(
             "spa_like_present": bool(spa_like_doc),
             "spa_like_comparable": bool(spa_like_doc.get("comparable", False)),
             "spa_like_candidate_edge": str(spa_like_doc.get("decision", "")) == "candidate_edge",
+            "white_rc_present": bool(white_rc_doc),
+            "white_rc_comparable": bool(white_rc_doc.get("comparable", False)),
+            "white_rc_candidate_edge": bool(white_rc_doc.get("candidate_edge", False)),
+            "hansen_spa_present": bool(hansen_spa_doc),
+            "hansen_spa_comparable": bool(hansen_spa_doc.get("comparable", False)),
+            "hansen_spa_candidate_edge": bool(hansen_spa_doc.get("candidate_edge", False)),
             "execution_acceptance_enabled": bool(options.execution_acceptance_enabled),
             "execution_acceptance_present": execution_status in {"candidate_only", "compared"},
             "execution_balanced_pareto_comparable": bool(execution_compare.get("comparable", False)),
@@ -982,6 +1284,8 @@ def _manual_promotion_decision_v4(
             "walk_forward_summary": walk_summary,
             "compare_to_champion": compare_doc,
             "spa_like_window_test": spa_like_doc,
+            "white_reality_check": white_rc_doc,
+            "hansen_spa": hansen_spa_doc,
         },
         "execution_acceptance": execution_acceptance,
         "candidate_ref": {

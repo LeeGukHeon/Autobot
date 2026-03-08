@@ -89,15 +89,19 @@
   - direct `micro_quality_score_mean` floor included in paper final gate
   - short-history median run quality / pnl evidence included in paper final gate
   - backtest sanity gate now also records a lightweight `deflated_sharpe_ratio_est`
-  - `v4` trainer evidence now also includes a `SPA-like` paired window test on walk-forward `ev_net`
+  - `v4` trainer evidence now includes:
+    - a `SPA-like` paired window test on walk-forward `ev_net`
+    - a persisted `trial_panel` of aligned trial-by-window `ev_net` outcomes
+    - `White Reality Check` and `Hansen SPA` style multiple-testing checks over that panel
 
 ## Remaining Work
 - calibrate paper rolling and history thresholds with longer live evidence
 - add a regime-aware `execution cap` that respects venue-specific liquidity ceilings
 - turn the current heuristic micro quality score into a fully first-class acceptance metric rather than a companion gate
-- a full `White Reality Check / SPA` still needs richer stored data:
-  - aligned per-trial return differentials on common windows
-  - or per-trial backtest return panels, not only summary sweep scores
-- until then, the current implementation uses:
+- the current `White Reality Check / Hansen SPA` implementation is limited to the persisted `v4` walk-forward trial panel
+  - it is not yet a general multi-strategy / multi-backtest panel test across every trainer family
+  - `v3` still lacks the richer trial panel needed for the same check
+- the current stack therefore uses:
   - `DSR-style` backtest sanity validation
-  - `SPA-like` paired walk-forward window testing for `v4`
+  - `SPA-like` paired walk-forward window testing for readability
+  - `White Reality Check / Hansen SPA` style multiple-testing checks for `v4`

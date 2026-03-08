@@ -268,7 +268,7 @@ D:\MyApps\Autobot
 
 ### 즉시 다음 개선 항목
 
-- 현재 `DSR-style` sanity check와 `v4 SPA-like walk-forward window test`를 유지하고, 다음 단계로 richer trial data를 저장한 뒤 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
+- 현재는 `DSR-style` sanity check를 유지하고, `v4`에는 persisted walk-forward `trial_panel`을 바탕으로 `SPA-like`, `White Reality Check`, `Hansen SPA` style evidence까지 승급 게이트에 반영한다.
 - 단일 backtest window 대신 rolling walk-forward acceptance를 도입한다.
 - paper soak 리포트를 운영 검증용과 성능 해석용으로 분리한다.
 - promote 후 활성 `paper/live` 서비스 자동 재시작을 기본 운영 루프로 유지한다.
@@ -300,7 +300,9 @@ D:\MyApps\Autobot
   - backtest sanity gate는 `equity.csv` 기반의 lightweight `deflated_sharpe_ratio_est`를 기록하고 최소 하한을 확인한다.
 - `SPA-like walk-forward test` 반영
   - `v4` trainer evidence는 candidate/champion walk-forward window의 `ev_net` 차이를 paired sign-flip 방식으로 검정한다.
-  - full `White Reality Check`는 아직 future다. 현재 trainer sweep에는 per-trial aligned return panel이 저장되지 않기 때문이다.
+- `White Reality Check / Hansen SPA` style test 반영
+  - `v4` trainer sweep은 이제 walk-forward `trial_panel`을 저장하고, aligned trial-by-window `ev_net` 차이를 기반으로 multiple-testing evidence를 계산한다.
+  - 이 경로는 아직 `v4` 전용이다. `v3`는 같은 trial panel을 저장하지 않는다.
 
 ### 설계 문서
 

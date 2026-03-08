@@ -308,6 +308,12 @@ function Resolve-TrainerEvidence {
             spa_like_present = $false
             spa_like_comparable = $false
             spa_like_candidate_edge = $false
+            white_rc_present = $false
+            white_rc_comparable = $false
+            white_rc_candidate_edge = $false
+            hansen_spa_present = $false
+            hansen_spa_comparable = $false
+            hansen_spa_candidate_edge = $false
             execution_acceptance_enabled = $false
             execution_acceptance_present = $false
             execution_comparable = $false
@@ -319,6 +325,16 @@ function Resolve-TrainerEvidence {
             comparable = $false
         }
         spa_like = [ordered]@{
+            policy = ""
+            decision = ""
+            comparable = $false
+        }
+        white_rc = [ordered]@{
+            policy = ""
+            decision = ""
+            comparable = $false
+        }
+        hansen_spa = [ordered]@{
             policy = ""
             decision = ""
             comparable = $false
@@ -344,6 +360,8 @@ function Resolve-TrainerEvidence {
     $research = Get-PropValue -ObjectValue $PromotionDecision -Name "research_acceptance" -DefaultValue @{}
     $offlineCompare = Get-PropValue -ObjectValue $research -Name "compare_to_champion" -DefaultValue @{}
     $spaLikeDoc = Get-PropValue -ObjectValue $research -Name "spa_like_window_test" -DefaultValue @{}
+    $whiteRcDoc = Get-PropValue -ObjectValue $research -Name "white_reality_check" -DefaultValue @{}
+    $hansenSpaDoc = Get-PropValue -ObjectValue $research -Name "hansen_spa" -DefaultValue @{}
     $walkSummary = Get-PropValue -ObjectValue $research -Name "walk_forward_summary" -DefaultValue @{}
     $executionDoc = Get-PropValue -ObjectValue $PromotionDecision -Name "execution_acceptance" -DefaultValue @{}
     $executionCompare = Get-PropValue -ObjectValue $executionDoc -Name "compare_to_champion" -DefaultValue @{}
@@ -356,6 +374,12 @@ function Resolve-TrainerEvidence {
     $spaLikePresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "spa_like_present" -DefaultValue $false) $false
     $spaLikeComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "spa_like_comparable" -DefaultValue $false) $false
     $spaLikeCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "spa_like_candidate_edge" -DefaultValue $false) $false
+    $whiteRcPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "white_rc_present" -DefaultValue $false) $false
+    $whiteRcComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "white_rc_comparable" -DefaultValue $false) $false
+    $whiteRcCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "white_rc_candidate_edge" -DefaultValue $false) $false
+    $hansenSpaPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "hansen_spa_present" -DefaultValue $false) $false
+    $hansenSpaComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "hansen_spa_comparable" -DefaultValue $false) $false
+    $hansenSpaCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "hansen_spa_candidate_edge" -DefaultValue $false) $false
     $executionEnabled = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_acceptance_enabled" -DefaultValue $false) $false
     $executionPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_acceptance_present" -DefaultValue $false) $false
     $executionComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_balanced_pareto_comparable" -DefaultValue $false) $false
@@ -365,6 +389,10 @@ function Resolve-TrainerEvidence {
     $offlinePolicy = [string](Get-PropValue -ObjectValue $research -Name "policy" -DefaultValue "")
     $spaLikeDecision = [string](Get-PropValue -ObjectValue $spaLikeDoc -Name "decision" -DefaultValue "")
     $spaLikePolicy = [string](Get-PropValue -ObjectValue $spaLikeDoc -Name "policy" -DefaultValue "")
+    $whiteRcDecision = [string](Get-PropValue -ObjectValue $whiteRcDoc -Name "decision" -DefaultValue "")
+    $whiteRcPolicy = [string](Get-PropValue -ObjectValue $whiteRcDoc -Name "policy" -DefaultValue "")
+    $hansenSpaDecision = [string](Get-PropValue -ObjectValue $hansenSpaDoc -Name "decision" -DefaultValue "")
+    $hansenSpaPolicy = [string](Get-PropValue -ObjectValue $hansenSpaDoc -Name "policy" -DefaultValue "")
     $executionStatus = [string](Get-PropValue -ObjectValue $executionDoc -Name "status" -DefaultValue "")
     $executionDecision = [string](Get-PropValue -ObjectValue $executionCompare -Name "decision" -DefaultValue "")
     $executionPolicy = [string](Get-PropValue -ObjectValue $executionCompare -Name "policy" -DefaultValue "")
@@ -378,6 +406,12 @@ function Resolve-TrainerEvidence {
     $resolved.checks.spa_like_present = $spaLikePresent
     $resolved.checks.spa_like_comparable = $spaLikeComparable
     $resolved.checks.spa_like_candidate_edge = $spaLikeCandidateEdge
+    $resolved.checks.white_rc_present = $whiteRcPresent
+    $resolved.checks.white_rc_comparable = $whiteRcComparable
+    $resolved.checks.white_rc_candidate_edge = $whiteRcCandidateEdge
+    $resolved.checks.hansen_spa_present = $hansenSpaPresent
+    $resolved.checks.hansen_spa_comparable = $hansenSpaComparable
+    $resolved.checks.hansen_spa_candidate_edge = $hansenSpaCandidateEdge
     $resolved.checks.execution_acceptance_enabled = $executionEnabled
     $resolved.checks.execution_acceptance_present = $executionPresent
     $resolved.checks.execution_comparable = $executionComparable
@@ -388,6 +422,12 @@ function Resolve-TrainerEvidence {
     $resolved.spa_like.policy = $spaLikePolicy
     $resolved.spa_like.decision = $spaLikeDecision
     $resolved.spa_like.comparable = $spaLikeComparable
+    $resolved.white_rc.policy = $whiteRcPolicy
+    $resolved.white_rc.decision = $whiteRcDecision
+    $resolved.white_rc.comparable = $whiteRcComparable
+    $resolved.hansen_spa.policy = $hansenSpaPolicy
+    $resolved.hansen_spa.decision = $hansenSpaDecision
+    $resolved.hansen_spa.comparable = $hansenSpaComparable
     $resolved.execution.status = $executionStatus
     $resolved.execution.policy = $executionPolicy
     $resolved.execution.decision = $executionDecision
@@ -408,9 +448,31 @@ function Resolve-TrainerEvidence {
                 $resolved.reasons += "SPA_LIKE_NOT_CANDIDATE_EDGE"
             }
         }
+        if ($whiteRcPresent) {
+            if (-not $whiteRcComparable) {
+                $resolved.reasons += "WHITE_RC_NOT_COMPARABLE"
+            } elseif (-not $whiteRcCandidateEdge) {
+                $resolved.reasons += "WHITE_RC_NOT_CANDIDATE_EDGE"
+            }
+        }
+        if ($hansenSpaPresent) {
+            if (-not $hansenSpaComparable) {
+                $resolved.reasons += "HANSEN_SPA_NOT_COMPARABLE"
+            } elseif (-not $hansenSpaCandidateEdge) {
+                $resolved.reasons += "HANSEN_SPA_NOT_CANDIDATE_EDGE"
+            }
+        }
     }
 
-    $offlinePass = $walkForwardPresent -and ((-not $existingChampionPresent) -or ($offlineComparable -and $offlineCandidateEdge -and ((-not $spaLikePresent) -or ($spaLikeComparable -and $spaLikeCandidateEdge))))
+    $offlinePass = $walkForwardPresent -and (
+        (-not $existingChampionPresent) -or (
+            $offlineComparable -and
+            $offlineCandidateEdge -and
+            ((-not $spaLikePresent) -or ($spaLikeComparable -and $spaLikeCandidateEdge)) -and
+            ((-not $whiteRcPresent) -or ($whiteRcComparable -and $whiteRcCandidateEdge)) -and
+            ((-not $hansenSpaPresent) -or ($hansenSpaComparable -and $hansenSpaCandidateEdge))
+        )
+    )
     $executionPass = $true
     if ($executionEnabled) {
         if (-not $executionPresent) {
