@@ -840,37 +840,6 @@ function Get-PowerShellExe {
     return "pwsh"
 }
 
-function Get-DirectorySnapshot {
-    param([string]$PathValue)
-    $snapshot = @{}
-    if (Test-Path $PathValue) {
-        Get-ChildItem -Path $PathValue -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $snapshot[$_.Name] = $true
-        }
-    }
-    return $snapshot
-}
-
-function Resolve-NewRunDirectory {
-    param(
-        [string]$RunsDir,
-        [hashtable]$BeforeSnapshot
-    )
-    if (-not (Test-Path $RunsDir)) {
-        return $null
-    }
-    $directories = @(Get-ChildItem -Path $RunsDir -Directory | Sort-Object LastWriteTime -Descending)
-    foreach ($item in $directories) {
-        if (-not $BeforeSnapshot.ContainsKey($item.Name)) {
-            return $item.FullName
-        }
-    }
-    if ($directories.Count -gt 0) {
-        return $directories[0].FullName
-    }
-    return $null
-}
-
 function Resolve-RegistryPointerPath {
     param(
         [string]$RegistryRoot,
@@ -888,8 +857,6 @@ function Invoke-BacktestAndLoadSummary {
         [string]$StartDate,
         [string]$EndDate
     )
-    $runsDir = Join-Path $Root "data/backtest/runs"
-    $before = Get-DirectorySnapshot -PathValue $runsDir
     $args = @(
         "-m", "autobot.cli",
         "backtest", "alpha",
@@ -909,8 +876,17 @@ function Invoke-BacktestAndLoadSummary {
         "--hold-bars", $HoldBars
     )
     $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
-    $runDir = if ($DryRun) { "" } else { Resolve-NewRunDirectory -RunsDir $runsDir -BeforeSnapshot $before }
+    $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$exec.Output) }
+    if ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($runDir)) {
+        throw "backtest run completed but run_dir was not reported by CLI stdout"
+    }
+    if ((-not $DryRun) -and (-not (Test-Path $runDir))) {
+        throw "backtest run_dir does not exist: $runDir"
+    }
     $summaryPath = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Join-Path $runDir "summary.json" }
+    if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($summaryPath)) -and (-not (Test-Path $summaryPath))) {
+        throw "backtest summary.json does not exist: $summaryPath"
+    }
     $summary = if ([string]::IsNullOrWhiteSpace($summaryPath)) { @{} } else { Load-JsonOrEmpty -PathValue $summaryPath }
     return [PSCustomObject]@{
         Exec = $exec
@@ -1032,6 +1008,11 @@ function Build-ReportMarkdown {
     $lines.Add("- candidate_run_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'run_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_before_run_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_before_run_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_after_run_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_after_run_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_model_ref_requested: $([string](Get-PropValue -ObjectValue $candidate -Name 'candidate_model_ref_requested' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'candidate_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_run_id_used_for_paper: $([string](Get-PropValue -ObjectValue $candidate -Name 'candidate_run_id_used_for_paper' -DefaultValue ''))") | Out-Null
+    $lines.Add("- champion_model_ref_requested: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_model_ref_requested' -DefaultValue ''))") | Out-Null
+    $lines.Add("- champion_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
 
     $lines.Add("## Gates") | Out-Null
@@ -1304,22 +1285,31 @@ function Resolve-ReportedJsonPathFromText {
     return $reportedPath.Trim()
 }
 
-function Resolve-FreshLatestJsonPath {
-    param(
-        [string]$LatestPath,
-        [DateTime]$StartedAtUtc
-    )
-    if ([string]::IsNullOrWhiteSpace($LatestPath) -or (-not (Test-Path $LatestPath))) {
+function Resolve-RunDirFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
         return ""
     }
-    $item = Get-Item -Path $LatestPath -ErrorAction SilentlyContinue
-    if ($null -eq $item) {
-        return ""
+
+    $jsonMatch = [Regex]::Match($TextValue, '(?ms)"run_dir"\s*:\s*"((?:\\.|[^"])*)"')
+    if ($jsonMatch.Success) {
+        $encodedPath = [string]$jsonMatch.Groups[1].Value
+        try {
+            return [string](('"' + $encodedPath + '"') | ConvertFrom-Json)
+        } catch {
+        }
     }
-    if ($item.LastWriteTimeUtc -lt $StartedAtUtc.AddSeconds(-2)) {
-        return ""
+
+    $lineMatch = [Regex]::Match($TextValue, '(?m)^\[[^\]]+\]\s+run_dir=(.+)$')
+    if ($lineMatch.Success) {
+        return ([string]$lineMatch.Groups[1].Value).Trim()
     }
-    return $item.FullName
+
+    $plainMatch = [Regex]::Match($TextValue, '(?m)^run_dir=(.+)$')
+    if ($plainMatch.Success) {
+        return ([string]$plainMatch.Groups[1].Value).Trim()
+    }
+    return ""
 }
 
 try {
@@ -1396,15 +1386,24 @@ try {
         Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
         exit 2
     }
+    $candidateBacktestModelRef = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { $CandidateModelRef } else { $candidateRunId }
+    $candidatePaperModelRef = $candidateBacktestModelRef
+    $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
+    $championBacktestModelRef = if ([string]::IsNullOrWhiteSpace($championRunId)) { $ChampionModelRef } else { $championRunId }
     $report.candidate = [ordered]@{
         run_id = $candidateRunId
         run_dir = $candidateRunDir
         promotion_decision_path = $promotionDecisionPath
         promotion_decision = $promotionDecision
+        candidate_model_ref_requested = $CandidateModelRef
+        candidate_run_id_used_for_backtest = $candidateBacktestModelRef
+        candidate_run_id_used_for_paper = $candidatePaperModelRef
+        champion_model_ref_requested = $ChampionModelRef
+        champion_run_id_used_for_backtest = $championBacktestModelRef
         champion_before_run_id = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
     }
 
-    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $CandidateModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
+    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
     $candidateSummary = $candidateBacktest.Summary
     $candidateOrdersFilled = To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_filled" -DefaultValue 0) 0
     $candidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
@@ -1422,7 +1421,6 @@ try {
     $candidateProbabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
     $candidateStatComparable = To-Bool (Get-PropValue -ObjectValue $candidateStatValidation -Name "comparable" -DefaultValue $false) $false
 
-    $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
     $championBacktest = $null
     $championSummary = @{}
     $championRealizedPnl = 0.0
@@ -1436,7 +1434,7 @@ try {
     $championProbabilisticSharpeRatio = $null
     $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $championRunId }
     if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
-        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $ChampionModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
+        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary
         $championRealizedPnl = To-Double (Get-PropValue -ObjectValue $championSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
         $championFillRate = To-Double (Get-PropValue -ObjectValue $championSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
@@ -1622,6 +1620,8 @@ try {
         exit_code = [int]$candidateBacktest.Exec.ExitCode
         command = $candidateBacktest.Exec.Command
         output_preview = (Get-OutputPreview -Text ([string]$candidateBacktest.Exec.Output))
+        model_ref_requested = $CandidateModelRef
+        model_ref_used = $candidateBacktestModelRef
         run_dir = $candidateBacktest.RunDir
         summary_path = $candidateBacktest.SummaryPath
         orders_filled = [int64]$candidateOrdersFilled
@@ -1639,6 +1639,8 @@ try {
             exit_code = [int]$championBacktest.Exec.ExitCode
             command = $championBacktest.Exec.Command
             output_preview = (Get-OutputPreview -Text ([string]$championBacktest.Exec.Output))
+            model_ref_requested = $ChampionModelRef
+            model_ref_used = $championBacktestModelRef
             run_dir = $championBacktest.RunDir
             summary_path = $championBacktest.SummaryPath
             realized_pnl_quote = [double]$championRealizedPnl
@@ -1706,7 +1708,6 @@ try {
             pass = $null
         }
     } else {
-        $paperExecStartedAtUtc = [DateTime]::UtcNow
         $paperSmokeArgs = @(
             "-NoProfile",
             "-File", $resolvedPaperSmokeScript,
@@ -1724,7 +1725,7 @@ try {
             "-WarmupMinTradeEventsPerMarket", $PaperWarmupMinTradeEventsPerMarket,
             "-Strategy", $StrategyName,
             "-Tf", $Tf,
-            "-ModelRef", $CandidateModelRef,
+            "-ModelRef", $candidatePaperModelRef,
             "-ModelFamily", $ModelFamily,
             "-FeatureSet", $FeatureSet,
             "-PaperFeatureProvider", $PaperFeatureProvider,
@@ -1742,10 +1743,12 @@ try {
         $paperExec = Invoke-CommandCapture -Exe $psExe -ArgList $paperSmokeArgs
         $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"
         $paperSmokeRunPath = if ($DryRun) { "" } else { Resolve-ReportedJsonPathFromText -TextValue ([string]$paperExec.Output) -LogTag "paper-smoke" }
-        $paperSmokeEffectivePath = if (-not [string]::IsNullOrWhiteSpace($paperSmokeRunPath) -and (Test-Path $paperSmokeRunPath)) {
+        $paperSmokeEffectivePath = if ($DryRun) {
+            ""
+        } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeRunPath) -and (Test-Path $paperSmokeRunPath)) {
             $paperSmokeRunPath
         } else {
-            Resolve-FreshLatestJsonPath -LatestPath $paperSmokeLatestPath -StartedAtUtc $paperExecStartedAtUtc
+            throw "paper smoke run completed but report path was not reported by stdout or does not exist"
         }
         $paperSmoke = if ($DryRun) { @{} } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { Load-JsonOrEmpty -PathValue $paperSmokeEffectivePath } else { @{} }
         $paperT15GatePass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "t15_gate_pass" -DefaultValue $false) $false
@@ -1807,10 +1810,12 @@ try {
             exit_code = [int]$paperExec.ExitCode
             command = $paperExec.Command
             output_preview = (Get-OutputPreview -Text ([string]$paperExec.Output))
+            model_ref_requested = $CandidateModelRef
+            model_ref_used = $candidatePaperModelRef
             smoke_report_path = $paperSmokeEffectivePath
             smoke_report_run_path = $paperSmokeRunPath
             smoke_report_latest_path = $paperSmokeLatestPath
-            smoke_report_source = if ($paperSmokeEffectivePath -eq $paperSmokeRunPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { "latest_fresh_fallback" } else { "missing" }
+            smoke_report_source = if ($paperSmokeEffectivePath -eq $paperSmokeRunPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { "unexpected" } else { "missing" }
             run_id = [string](Get-PropValue -ObjectValue $paperSmoke -Name "run_id" -DefaultValue "")
             orders_submitted = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_submitted" -DefaultValue 0) 0)
             orders_filled = $paperOrdersFilled

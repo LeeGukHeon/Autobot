@@ -2467,15 +2467,16 @@ class PaperRunEngine:
             )
             decision["auto_ws_public_running"] = bool(auto_live_ws)
 
+        live_ws_consumer_enabled = bool(policy_enabled or gate_enabled)
         use_live_ws = False
         if requested_provider == "LIVE_WS":
-            if policy_enabled:
+            if live_ws_consumer_enabled:
                 use_live_ws = True
                 decision["provider_decision"] = "LIVE_WS_FORCED"
             else:
-                decision["provider_decision"] = "LIVE_WS_REJECTED_POLICY_OFF"
+                decision["provider_decision"] = "LIVE_WS_REJECTED_MICRO_DISABLED"
         elif requested_provider == "AUTO":
-            if policy_enabled and auto_live_ws:
+            if live_ws_consumer_enabled and auto_live_ws:
                 use_live_ws = True
                 decision["provider_decision"] = "LIVE_WS_AUTO"
             else:

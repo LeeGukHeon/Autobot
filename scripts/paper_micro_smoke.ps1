@@ -198,16 +198,35 @@ function Load-RunStartedPayload {
     }
 }
 
+function Resolve-RunDirFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+
+    $jsonMatch = [Regex]::Match($TextValue, '(?ms)"run_dir"\s*:\s*"((?:\\.|[^"])*)"')
+    if ($jsonMatch.Success) {
+        $encodedPath = [string]$jsonMatch.Groups[1].Value
+        try {
+            return [string](('"' + $encodedPath + '"') | ConvertFrom-Json)
+        } catch {
+        }
+    }
+
+    $lineMatch = [Regex]::Match($TextValue, '(?m)^\[[^\]]+\]\s+run_dir=(.+)$')
+    if ($lineMatch.Success) {
+        return ([string]$lineMatch.Groups[1].Value).Trim()
+    }
+
+    $plainMatch = [Regex]::Match($TextValue, '(?m)^run_dir=(.+)$')
+    if ($plainMatch.Success) {
+        return ([string]$plainMatch.Groups[1].Value).Trim()
+    }
+    return ""
+}
+
 $outputDir = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $ProjectRoot $OutDir }
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-
-$runsDir = Join-Path $ProjectRoot "data\paper\runs"
-$before = @{}
-if (Test-Path $runsDir) {
-    Get-ChildItem -Path $runsDir -Directory | ForEach-Object {
-        $before[$_.Name] = $true
-    }
-}
 
 $args = @(
     "-m", "autobot.cli",
@@ -273,26 +292,21 @@ if ($exec.ExitCode -ne 0) {
     throw "paper smoke run failed (exit=$($exec.ExitCode)): $($exec.Output)"
 }
 
-$newRunDir = $null
-if (Test-Path $runsDir) {
-    $after = Get-ChildItem -Path $runsDir -Directory | Sort-Object LastWriteTime -Descending
-    foreach ($item in $after) {
-        if (-not $before.ContainsKey($item.Name)) {
-            $newRunDir = $item.FullName
-            break
-        }
-    }
-    if ($null -eq $newRunDir -and $after.Count -gt 0) {
-        $newRunDir = $after[0].FullName
-    }
+$runDir = Resolve-RunDirFromText -TextValue ([string]$exec.Output)
+if ([string]::IsNullOrWhiteSpace($runDir)) {
+    throw "paper smoke run completed but run_dir was not reported by CLI stdout"
 }
-if ([string]::IsNullOrWhiteSpace($newRunDir)) {
-    throw "paper smoke run completed but run_dir was not found"
+if (-not (Test-Path $runDir)) {
+    throw "paper smoke run_dir does not exist: $runDir"
 }
 
-$summary = Load-JsonOrEmpty -PathValue (Join-Path $newRunDir "summary.json")
-$policy = Load-JsonOrEmpty -PathValue (Join-Path $newRunDir "micro_order_policy_report.json")
-$runStartedPayload = Load-RunStartedPayload -RunDir $newRunDir
+$summaryPath = Join-Path $runDir "summary.json"
+if (-not (Test-Path $summaryPath)) {
+    throw "paper smoke summary.json does not exist: $summaryPath"
+}
+$summary = Load-JsonOrEmpty -PathValue $summaryPath
+$policy = Load-JsonOrEmpty -PathValue (Join-Path $runDir "micro_order_policy_report.json")
+$runStartedPayload = Load-RunStartedPayload -RunDir $runDir
 
 $microProvider = [string](Get-PropValue -ObjectValue $runStartedPayload -Name "micro_provider" -DefaultValue "")
 $microProviderInfo = Get-PropValue -ObjectValue $runStartedPayload -Name "micro_provider_info" -DefaultValue @{}
@@ -423,12 +437,12 @@ if (-not $gatePolicyEventsPass) {
     $gateFailures += "MIN_POLICY_EVENTS"
 }
 
-$runId = [System.IO.Path]::GetFileName($newRunDir)
+$runId = [System.IO.Path]::GetFileName($runDir)
 $generatedAt = (Get-Date).ToString("o")
 $payload = [ordered]@{
     generated_at = $generatedAt
     run_id = $runId
-    run_dir = $newRunDir
+    run_dir = $runDir
     duration_sec = [int]$DurationSec
     quote = $Quote
     top_n = [int]$TopN

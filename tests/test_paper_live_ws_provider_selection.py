@@ -6,6 +6,8 @@ from pathlib import Path
 
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.sim_exchange import MarketRules
+from autobot.strategy.micro_gate_v1 import MicroGateSettings
+from autobot.strategy.micro_snapshot import LiveWsMicroSnapshotProvider, LiveWsProviderSettings
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.upbit.config import (
     UpbitAuthSettings,
@@ -42,13 +44,8 @@ class _StaticRulesProvider:
         )
 
 
-def test_paper_live_ws_provider_selection_and_warmup_metrics(tmp_path: Path) -> None:
-    events = [
-        TickerEvent(market="KRW-BTC", ts_ms=1_000, trade_price=100.0, acc_trade_price_24h=1_000_000_000.0),
-        TickerEvent(market="KRW-BTC", ts_ms=2_000, trade_price=101.0, acc_trade_price_24h=1_001_000_000.0),
-        TickerEvent(market="KRW-BTC", ts_ms=3_000, trade_price=102.0, acc_trade_price_24h=1_002_000_000.0),
-    ]
-    settings = UpbitSettings(
+def _make_settings() -> UpbitSettings:
+    return UpbitSettings(
         base_url="https://api.upbit.com",
         timeout=UpbitTimeoutSettings(),
         auth=UpbitAuthSettings(),
@@ -56,6 +53,15 @@ def test_paper_live_ws_provider_selection_and_warmup_metrics(tmp_path: Path) -> 
         retry=UpbitRetrySettings(),
         websocket=UpbitWebSocketSettings(),
     )
+
+
+def test_paper_live_ws_provider_selection_and_warmup_metrics(tmp_path: Path) -> None:
+    events = [
+        TickerEvent(market="KRW-BTC", ts_ms=1_000, trade_price=100.0, acc_trade_price_24h=1_000_000_000.0),
+        TickerEvent(market="KRW-BTC", ts_ms=2_000, trade_price=101.0, acc_trade_price_24h=1_001_000_000.0),
+        TickerEvent(market="KRW-BTC", ts_ms=3_000, trade_price=102.0, acc_trade_price_24h=1_002_000_000.0),
+    ]
+    settings = _make_settings()
     run_settings = PaperRunSettings(
         duration_sec=2,
         quote="KRW",
@@ -100,3 +106,25 @@ def test_paper_live_ws_provider_selection_and_warmup_metrics(tmp_path: Path) -> 
     assert summary_payload["warmup_trade_events_total"] >= 1
     assert summary_payload["micro_cache_markets_with_samples"] >= 1
 
+
+def test_paper_live_ws_provider_selection_allows_micro_gate_only_runtime(tmp_path: Path) -> None:
+    engine = PaperRunEngine(
+        upbit_settings=_make_settings(),
+        run_settings=PaperRunSettings(
+            out_root_dir=str(tmp_path),
+            paper_micro_provider="live_ws",
+            micro_gate=MicroGateSettings(
+                enabled=True,
+                live_ws=LiveWsProviderSettings(enabled=True),
+            ),
+            micro_order_policy=MicroOrderPolicySettings(enabled=False),
+        ),
+        market_loader=lambda quote: ["KRW-BTC"] if quote == "KRW" else [],
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    )
+
+    provider = engine._resolve_micro_snapshot_provider(markets=["KRW-BTC"])
+
+    assert isinstance(provider, LiveWsMicroSnapshotProvider)
+    assert engine._runtime_state["micro_provider_decision"]["effective_provider"] == "LIVE_WS"
+    assert engine._runtime_state["micro_provider_decision"]["provider_decision"] == "LIVE_WS_FORCED"
