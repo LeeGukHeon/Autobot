@@ -456,6 +456,10 @@ def test_summarize_walk_forward_trial_panel_flattens_oos_slices() -> None:
                     "trial": 0,
                     "params": {"max_depth": 4},
                     "test_metrics": {"trading": {"top_5pct": {"ev_net": 0.01}}},
+                    "test_oos_periods": [
+                        {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.004}}}},
+                        {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.006}}}},
+                    ],
                     "test_oos_slices": [
                         {"slice_index": 0, "slice_key": "0:1000:1500", "metrics": {"trading": {"top_5pct": {"ev_net": 0.004}}}},
                         {"slice_index": 1, "slice_key": "1:1501:2000", "metrics": {"trading": {"top_5pct": {"ev_net": 0.006}}}},
@@ -469,6 +473,9 @@ def test_summarize_walk_forward_trial_panel_flattens_oos_slices() -> None:
 
     assert len(panel) == 1
     assert panel[0]["trial"] == 0
+    assert panel[0]["oos_period_count"] == 2
     assert panel[0]["oos_slice_count"] == 2
+    assert panel[0]["oos_periods"][0]["window_index"] == 0
+    assert panel[0]["oos_periods"][1]["ts_ms"] == 2000
     assert panel[0]["oos_slices"][0]["window_index"] == 0
     assert panel[0]["oos_slices"][1]["slice_index"] == 1

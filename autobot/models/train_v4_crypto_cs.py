@@ -534,6 +534,15 @@ def _run_walk_forward_v4(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
+        oos_periods = _build_oos_period_metrics(
+            ts_ms=dataset.ts_ms[test_mask],
+            y_cls=dataset.y_cls[test_mask],
+            y_reg=dataset.y_reg[test_mask],
+            scores=scores,
+            markets=dataset.markets[test_mask],
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
         oos_slices = _build_oos_slice_metrics(
             ts_ms=dataset.ts_ms[test_mask],
             y_cls=dataset.y_cls[test_mask],
@@ -553,6 +562,7 @@ def _run_walk_forward_v4(
                 },
                 "counts": row_counts,
                 "metrics": _compact_eval_metrics(metrics),
+                "oos_periods": oos_periods,
                 "oos_slices": oos_slices,
                 "selection_optimization": build_window_selection_objectives(
                     scores=scores,
@@ -654,9 +664,22 @@ def _summarize_walk_forward_trial_panel(
                     "window_index": window_index,
                     "time_window": time_window,
                     "metrics": dict(record.get("test_metrics", {})),
+                    "oos_periods": list(record.get("test_oos_periods", []) or []),
                     "oos_slices": list(record.get("test_oos_slices", []) or []),
                 }
             )
+            period_rows = node.setdefault("oos_periods", [])
+            for period_doc in record.get("test_oos_periods", []) or []:
+                if not isinstance(period_doc, dict):
+                    continue
+                period_rows.append(
+                    {
+                        "window_index": window_index,
+                        "period_index": int(period_doc.get("period_index", -1)),
+                        "ts_ms": int(period_doc.get("ts_ms", -1)),
+                        "metrics": dict(period_doc.get("metrics", {})),
+                    }
+                )
             slice_rows = node.setdefault("oos_slices", [])
             for slice_doc in record.get("test_oos_slices", []) or []:
                 if not isinstance(slice_doc, dict):
@@ -677,6 +700,7 @@ def _summarize_walk_forward_trial_panel(
         node["summary"] = summary
         node["selected_threshold_key"] = str(threshold_key).strip() or "top_5pct"
         node["windows_run"] = int(summary.get("windows_run", 0) or 0)
+        node["oos_period_count"] = len(node.get("oos_periods", []) or [])
         node["oos_slice_count"] = len(node.get("oos_slices", []) or [])
         trial_panel.append(node)
     return trial_panel
@@ -774,6 +798,15 @@ def _fit_walk_forward_weighted_trials(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
+        test_oos_periods = _build_oos_period_metrics(
+            ts_ms=ts_test_ms,
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
         test_oos_slices = _build_oos_slice_metrics(
             ts_ms=ts_test_ms,
             y_cls=y_test_cls,
@@ -789,6 +822,7 @@ def _fit_walk_forward_weighted_trials(
                 "params": params,
                 "valid_selection_key": _build_trial_selection_key(valid_metrics),
                 "test_metrics": _compact_eval_metrics(test_metrics),
+                "test_oos_periods": test_oos_periods,
                 "test_oos_slices": test_oos_slices,
             }
         )
@@ -889,6 +923,15 @@ def _fit_walk_forward_regression_trials(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
+        test_oos_periods = _build_oos_period_metrics(
+            ts_ms=ts_test_ms,
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
         test_oos_slices = _build_oos_slice_metrics(
             ts_ms=ts_test_ms,
             y_cls=y_test_cls,
@@ -904,6 +947,7 @@ def _fit_walk_forward_regression_trials(
                 "params": params,
                 "valid_selection_key": _build_trial_selection_key(valid_metrics),
                 "test_metrics": _compact_eval_metrics(test_metrics),
+                "test_oos_periods": test_oos_periods,
                 "test_oos_slices": test_oos_slices,
             }
         )
@@ -979,6 +1023,44 @@ def _build_oos_slice_metrics(
             }
         )
     return slices
+
+
+def _build_oos_period_metrics(
+    *,
+    ts_ms: np.ndarray,
+    y_cls: np.ndarray,
+    y_reg: np.ndarray,
+    scores: np.ndarray,
+    markets: np.ndarray,
+    fee_bps_est: float,
+    safety_bps: float,
+) -> list[dict[str, Any]]:
+    ts_values = np.asarray(ts_ms, dtype=np.int64)
+    if ts_values.size <= 0:
+        return []
+    unique_ts = np.unique(ts_values)
+    periods: list[dict[str, Any]] = []
+    for period_index, ts_value in enumerate(unique_ts):
+        mask = ts_values == int(ts_value)
+        if not np.any(mask):
+            continue
+        period_metrics = _evaluate_split(
+            y_cls=y_cls[mask],
+            y_reg=y_reg[mask],
+            scores=scores[mask],
+            markets=markets[mask],
+            fee_bps_est=fee_bps_est,
+            safety_bps=safety_bps,
+        )
+        periods.append(
+            {
+                "period_index": int(period_index),
+                "ts_ms": int(ts_value),
+                "rows": int(np.sum(mask)),
+                "metrics": _compact_eval_metrics(period_metrics),
+            }
+        )
+    return periods
 
 
 def _load_champion_walk_forward_report(*, options: TrainV4CryptoCsOptions) -> dict[str, Any] | None:
@@ -1159,6 +1241,23 @@ def _build_selection_search_trial_panel(
                     }
                     for slice_doc in ((row.get("window", {}) or {}).get("oos_slices") or [])
                     if isinstance(slice_doc, dict) and int(slice_doc.get("slice_index", -1)) >= 0
+                ],
+                "oos_periods": [
+                    {
+                        "period_index": int(period_doc.get("period_index", -1)),
+                        "ts_ms": int(period_doc.get("ts_ms", -1)),
+                        "metrics": {
+                            "trading": {
+                                str(threshold_key): {
+                                    "ev_net": _safe_float(period_doc.get("ev_net")),
+                                    "selected_rows": int(period_doc.get("selected_rows", 0) or 0),
+                                    "precision": 0.0,
+                                }
+                            }
+                        },
+                    }
+                    for period_doc in (row.get("period_results") or [])
+                    if isinstance(period_doc, dict) and int(period_doc.get("period_index", -1)) >= 0
                 ],
             }
             for row in rows

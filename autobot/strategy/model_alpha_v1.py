@@ -240,6 +240,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             operational_risk_multiplier = resolve_operational_risk_multiplier(
                 settings=self._operational_settings,
                 regime_score=regime.regime_score,
+                breadth_ratio=regime.breadth_ratio,
                 micro_quality_score=regime.micro_feature_quality_score,
             )
             operational_max_positions = resolve_operational_max_positions(
@@ -247,6 +248,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 settings=self._operational_settings,
                 regime_score=regime.regime_score,
                 breadth_ratio=regime.breadth_ratio,
+                micro_quality_score=regime.micro_feature_quality_score,
             )
             operational_state = {
                 "runtime_recommendation_state": dict(self._runtime_recommendation_state),

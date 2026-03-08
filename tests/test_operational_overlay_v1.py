@@ -40,6 +40,34 @@ def test_resolve_operational_risk_multiplier_is_monotonic() -> None:
     assert 0.8 <= low < high <= 1.2
 
 
+def test_resolve_operational_risk_multiplier_uses_empirical_model_when_enabled() -> None:
+    settings = ModelAlphaOperationalSettings(
+        risk_multiplier_min=0.8,
+        risk_multiplier_max=1.2,
+        empirical_state_score_model_enabled=True,
+        empirical_state_score_intercept=-1.0,
+        empirical_state_score_regime_coef=2.0,
+        empirical_state_score_breadth_coef=1.5,
+        empirical_state_score_micro_coef=2.0,
+        empirical_state_score_output_scale=1.0,
+    )
+
+    low = resolve_operational_risk_multiplier(
+        settings=settings,
+        regime_score=0.2,
+        breadth_ratio=0.2,
+        micro_quality_score=0.2,
+    )
+    high = resolve_operational_risk_multiplier(
+        settings=settings,
+        regime_score=0.9,
+        breadth_ratio=0.9,
+        micro_quality_score=0.9,
+    )
+
+    assert 0.8 <= low < high <= 1.2
+
+
 def test_resolve_operational_max_positions_scales_with_regime() -> None:
     settings = ModelAlphaOperationalSettings(max_positions_scale_min=0.5, max_positions_scale_max=1.5)
 
@@ -55,6 +83,36 @@ def test_resolve_operational_max_positions_scales_with_regime() -> None:
         regime_score=0.9,
         breadth_ratio=0.8,
     ) >= 4
+
+
+def test_resolve_operational_max_positions_uses_empirical_model_when_enabled() -> None:
+    settings = ModelAlphaOperationalSettings(
+        max_positions_scale_min=0.5,
+        max_positions_scale_max=1.5,
+        empirical_state_score_model_enabled=True,
+        empirical_state_score_intercept=-1.0,
+        empirical_state_score_regime_coef=2.0,
+        empirical_state_score_breadth_coef=1.5,
+        empirical_state_score_micro_coef=1.0,
+        empirical_state_score_output_scale=1.0,
+    )
+
+    low = resolve_operational_max_positions(
+        base_max_positions=4,
+        settings=settings,
+        regime_score=0.3,
+        breadth_ratio=0.3,
+        micro_quality_score=0.3,
+    )
+    high = resolve_operational_max_positions(
+        base_max_positions=4,
+        settings=settings,
+        regime_score=0.9,
+        breadth_ratio=0.9,
+        micro_quality_score=0.9,
+    )
+
+    assert 1 <= low <= high
 
 
 def test_build_regime_snapshot_from_scored_frame_reads_market_state_columns() -> None:
@@ -201,7 +259,13 @@ def test_load_calibrated_operational_settings_reads_artifact(tmp_path: Path) -> 
   "calibrated_settings": {
     "risk_multiplier_min": 0.72,
     "risk_multiplier_max": 1.28,
-    "max_positions_scale_max": 1.65
+    "max_positions_scale_max": 1.65,
+    "empirical_state_score_model_enabled": true,
+    "empirical_state_score_intercept": -0.5,
+    "empirical_state_score_regime_coef": 1.2,
+    "empirical_state_score_breadth_coef": 0.8,
+    "empirical_state_score_micro_coef": 1.1,
+    "empirical_state_score_output_scale": 0.9
   }
 }""",
         encoding="utf-8",
@@ -218,3 +282,5 @@ def test_load_calibrated_operational_settings_reads_artifact(tmp_path: Path) -> 
     assert calibrated.risk_multiplier_min == 0.72
     assert calibrated.risk_multiplier_max == 1.28
     assert calibrated.max_positions_scale_max == 1.65
+    assert calibrated.empirical_state_score_model_enabled is True
+    assert calibrated.empirical_state_score_regime_coef == 1.2

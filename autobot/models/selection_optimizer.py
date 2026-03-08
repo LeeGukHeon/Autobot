@@ -298,6 +298,7 @@ def _evaluate_grid_for_threshold(
                     "mean_y_reg_selected": float(stats["mean_y_reg_selected"]),
                     "ev_net": float(stats["ev_net"]),
                     "positive_active_ts_ratio": float(stats["positive_active_ts_ratio"]),
+                    "period_results": list(stats["period_results"]),
                     "feasible": bool(feasible),
                     "constraint_reasons": reasons,
                 }
@@ -319,15 +320,38 @@ def _simulate_selection_runtime(
     per_ts_ev: list[float] = []
     active_ts_count = 0
     selected_rows = 0
+    period_results: list[dict[str, Any]] = []
 
-    for _, indices in by_ts:
+    for period_index, (ts_value, indices) in enumerate(by_ts):
         window_scores = scores[indices]
         eligible_local = np.flatnonzero(window_scores >= threshold)
         eligible_count = int(eligible_local.size)
         if eligible_count < int(min_candidates):
+            period_results.append(
+                {
+                    "period_index": int(period_index),
+                    "ts_ms": int(ts_value),
+                    "eligible_rows": int(eligible_count),
+                    "selected_rows": 0,
+                    "mean_y_reg_selected": 0.0,
+                    "ev_net": 0.0,
+                    "active": False,
+                }
+            )
             continue
         select_count = int(np.floor(float(eligible_count) * float(top_pct)))
         if select_count <= 0:
+            period_results.append(
+                {
+                    "period_index": int(period_index),
+                    "ts_ms": int(ts_value),
+                    "eligible_rows": int(eligible_count),
+                    "selected_rows": 0,
+                    "mean_y_reg_selected": 0.0,
+                    "ev_net": 0.0,
+                    "active": False,
+                }
+            )
             continue
         select_count = min(select_count, eligible_count)
         if select_count >= eligible_count:
@@ -342,7 +366,20 @@ def _simulate_selection_runtime(
         active_ts_count += 1
         selected_rows += int(selected_reg.size)
         selected_values.extend(float(value) for value in selected_reg.tolist())
-        per_ts_ev.append(float(np.mean(selected_reg)) - float(fee_frac))
+        period_mean = float(np.mean(selected_reg))
+        period_ev = period_mean - float(fee_frac)
+        per_ts_ev.append(period_ev)
+        period_results.append(
+            {
+                "period_index": int(period_index),
+                "ts_ms": int(ts_value),
+                "eligible_rows": int(eligible_count),
+                "selected_rows": int(selected_reg.size),
+                "mean_y_reg_selected": float(period_mean),
+                "ev_net": float(period_ev),
+                "active": True,
+            }
+        )
 
     total_ts_count = max(len(by_ts), 1)
     mean_y_reg_selected = float(np.mean(selected_values)) if selected_values else 0.0
@@ -355,6 +392,7 @@ def _simulate_selection_runtime(
         "mean_y_reg_selected": float(mean_y_reg_selected),
         "ev_net": float(ev_net),
         "positive_active_ts_ratio": float(positive_active_ts_ratio),
+        "period_results": period_results,
     }
 
 

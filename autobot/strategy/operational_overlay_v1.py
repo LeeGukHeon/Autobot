@@ -54,6 +54,12 @@ class ModelAlphaOperationalSettings:
     aggressive_max_chase_bps_bonus: int = 5
     runtime_timeout_ms_floor: int = 5_000
     runtime_replace_interval_ms_floor: int = 1_500
+    empirical_state_score_model_enabled: bool = False
+    empirical_state_score_intercept: float = 0.0
+    empirical_state_score_regime_coef: float = 0.0
+    empirical_state_score_breadth_coef: float = 0.0
+    empirical_state_score_micro_coef: float = 0.0
+    empirical_state_score_output_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -188,11 +194,20 @@ def resolve_operational_risk_multiplier(
     *,
     settings: ModelAlphaOperationalSettings,
     regime_score: float,
+    breadth_ratio: float | None = None,
     micro_quality_score: float | None = None,
 ) -> float:
-    base_score = _clamp01(regime_score)
-    if micro_quality_score is not None:
-        base_score = _clamp01((base_score * 0.70) + (_clamp01(micro_quality_score) * 0.30))
+    if bool(settings.empirical_state_score_model_enabled):
+        base_score = _resolve_empirical_state_score(
+            settings=settings,
+            regime_score=regime_score,
+            breadth_ratio=breadth_ratio,
+            micro_quality_score=micro_quality_score,
+        )
+    else:
+        base_score = _clamp01(regime_score)
+        if micro_quality_score is not None:
+            base_score = _clamp01((base_score * 0.70) + (_clamp01(micro_quality_score) * 0.30))
     lower = max(float(settings.risk_multiplier_min), 0.0)
     upper = max(float(settings.risk_multiplier_max), lower)
     return lower + (base_score * (upper - lower))
@@ -204,13 +219,23 @@ def resolve_operational_max_positions(
     settings: ModelAlphaOperationalSettings,
     regime_score: float,
     breadth_ratio: float,
+    micro_quality_score: float | None = None,
 ) -> int:
     base_value = max(int(base_max_positions), 1)
     if breadth_ratio <= 0.10:
         return 1
     scale_min = max(float(settings.max_positions_scale_min), 0.10)
     scale_max = max(float(settings.max_positions_scale_max), scale_min)
-    scaled = float(base_value) * (scale_min + (_clamp01(regime_score) * (scale_max - scale_min)))
+    if bool(settings.empirical_state_score_model_enabled):
+        state_score = _resolve_empirical_state_score(
+            settings=settings,
+            regime_score=regime_score,
+            breadth_ratio=breadth_ratio,
+            micro_quality_score=micro_quality_score,
+        )
+    else:
+        state_score = _clamp01(regime_score)
+    scaled = float(base_value) * (scale_min + (state_score * (scale_max - scale_min)))
     ceiling = max(int(math.ceil(float(base_value) * scale_max)), 1)
     return max(1, min(int(round(scaled)), ceiling))
 
@@ -473,6 +498,26 @@ def _mean_scores(values: list[float], *, weighted: bool = False) -> float:
 
 def _clamp01(value: float) -> float:
     return max(min(float(value), 1.0), 0.0)
+
+
+def _resolve_empirical_state_score(
+    *,
+    settings: ModelAlphaOperationalSettings,
+    regime_score: float,
+    breadth_ratio: float | None,
+    micro_quality_score: float | None,
+) -> float:
+    linear = float(settings.empirical_state_score_intercept)
+    linear += float(settings.empirical_state_score_regime_coef) * _clamp01(regime_score)
+    linear += float(settings.empirical_state_score_breadth_coef) * _clamp01(breadth_ratio or 0.0)
+    linear += float(settings.empirical_state_score_micro_coef) * _clamp01(micro_quality_score or 0.0)
+    scale = max(float(settings.empirical_state_score_output_scale), 1e-6)
+    return _sigmoid(linear / scale)
+
+
+def _sigmoid(value: float) -> float:
+    clipped = max(min(float(value), 30.0), -30.0)
+    return 1.0 / (1.0 + math.exp(-clipped))
 
 
 def _coerce_like(*, current_value: Any, new_value: Any) -> Any:

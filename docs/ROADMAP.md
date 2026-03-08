@@ -331,6 +331,14 @@ D:\MyApps\Autobot
   - `exit.mode=risk`: learned `volatility estimator + tp/sl/trailing multiplier`
 - 실행 계획과 계약은 `docs/TICKETS/T18_5_volatility_scaled_exit_v1.md`를 따른다.
 
+## 17.6) Period Panel + Empirical Overlay (T18.6)
+
+- `v4`에서 남아 있던 두 개의 고가치 방법론 갭을 다룬다.
+  - `White RC / Hansen SPA` 입력을 `per-period` OOS panel까지 세분화
+  - runtime operational overlay calibration을 paper-history 기반 계수 모델로 전환
+- 이 작업은 `v4` 단일 lane을 전제로 한다.
+- 실행 계획은 `docs/TICKETS/T18_6_period_panel_and_empirical_overlay_v1.md`를 따른다.
+
 ## 17.2) 코인 연구 정렬 알파 vNext (T18.2)
 
 ### 왜 지금 이 작업을 하는가

@@ -91,6 +91,60 @@ def test_build_trial_window_differential_matrix_prefers_oos_slices_when_availabl
     assert matrix.differential_matrix[0, 1] == 0.004
 
 
+def test_build_trial_window_differential_matrix_prefers_oos_periods_when_available() -> None:
+    candidate_trial_panel = [
+        {
+            "trial": 0,
+            "windows": [
+                {
+                    "window_index": 0,
+                    "oos_periods": [
+                        {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.004}}}},
+                        {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.006}}}},
+                    ],
+                    "oos_slices": [
+                        {"slice_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.009}}}},
+                    ],
+                }
+            ],
+        },
+        {
+            "trial": 1,
+            "windows": [
+                {
+                    "window_index": 0,
+                    "oos_periods": [
+                        {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.005}}}},
+                        {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.007}}}},
+                    ],
+                    "oos_slices": [
+                        {"slice_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.010}}}},
+                    ],
+                }
+            ],
+        },
+    ]
+    champion_windows = [
+        {
+            "window_index": 0,
+            "oos_periods": [
+                {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}},
+                {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.002}}}},
+            ],
+            "oos_slices": [
+                {"slice_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.000}}}},
+            ],
+        }
+    ]
+
+    matrix = build_trial_window_differential_matrix(candidate_trial_panel, champion_windows)
+
+    assert matrix is not None
+    assert matrix.panel_keys == ["0:ts:1000", "0:ts:2000"]
+    assert matrix.differential_matrix.shape == (2, 2)
+    assert matrix.differential_matrix[0, 0] == 0.003
+
+
 def test_build_trial_window_differential_matrix_uses_record_threshold_key() -> None:
     candidate_trial_panel = [
         {

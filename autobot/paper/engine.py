@@ -163,6 +163,9 @@ class PaperRunSummary:
     micro_quality_score_mean: float
     micro_quality_score_p50: float
     runtime_risk_multiplier_mean: float
+    operational_regime_score_mean: float
+    operational_breadth_ratio_mean: float
+    operational_max_positions_mean: float
     rolling_window_minutes: int
     rolling_windows_total: int
     rolling_active_windows: int
@@ -859,6 +862,9 @@ class PaperRunEngine:
             "policy_tick_bps_values": [],
             "operational_micro_quality_scores": [],
             "operational_runtime_risk_multipliers": [],
+            "operational_regime_scores": [],
+            "operational_breadth_ratios": [],
+            "operational_max_positions_values": [],
             "fill_records": [],
             "equity_samples": [],
             "order_exec_profile_by_order_id": {},
@@ -1311,6 +1317,15 @@ class PaperRunEngine:
         operational_risk_values = [
             float(value) for value in self._runtime_state.get("operational_runtime_risk_multipliers", [])
         ]
+        operational_regime_scores = [
+            float(value) for value in self._runtime_state.get("operational_regime_scores", [])
+        ]
+        operational_breadth_ratios = [
+            float(value) for value in self._runtime_state.get("operational_breadth_ratios", [])
+        ]
+        operational_max_positions_values = [
+            float(value) for value in self._runtime_state.get("operational_max_positions_values", [])
+        ]
         rolling_evidence = compute_rolling_paper_evidence(
             equity_samples=self._runtime_state.get("equity_samples", []),
             fill_records=self._runtime_state.get("fill_records", []),
@@ -1354,6 +1369,9 @@ class PaperRunEngine:
             micro_quality_score_mean=mean(operational_quality_scores),
             micro_quality_score_p50=percentile(operational_quality_scores, 0.50),
             runtime_risk_multiplier_mean=mean(operational_risk_values),
+            operational_regime_score_mean=mean(operational_regime_scores),
+            operational_breadth_ratio_mean=mean(operational_breadth_ratios),
+            operational_max_positions_mean=mean(operational_max_positions_values),
             rolling_window_minutes=int(rolling_evidence.get("window_minutes", 60)),
             rolling_windows_total=int(rolling_evidence.get("windows_total", 0)),
             rolling_active_windows=int(rolling_evidence.get("active_windows", 0)),
@@ -1535,6 +1553,19 @@ class PaperRunEngine:
         self._runtime_state["model_alpha_operational_regime_score"] = float(result.operational_regime_score)
         self._runtime_state["model_alpha_operational_risk_multiplier"] = float(result.operational_risk_multiplier)
         self._runtime_state["model_alpha_operational_max_positions"] = int(result.operational_max_positions)
+        regime_scores = self._runtime_state.setdefault("operational_regime_scores", [])
+        if isinstance(regime_scores, list):
+            regime_scores.append(float(result.operational_regime_score))
+        operational_state = dict(result.operational_state)
+        breadth_ratios = self._runtime_state.setdefault("operational_breadth_ratios", [])
+        if isinstance(breadth_ratios, list):
+            try:
+                breadth_ratios.append(float(operational_state.get("breadth_ratio", 0.0)))
+            except (TypeError, ValueError):
+                pass
+        max_positions_values = self._runtime_state.setdefault("operational_max_positions_values", [])
+        if isinstance(max_positions_values, list):
+            max_positions_values.append(float(result.operational_max_positions))
         selection_payload = {
             "scored_rows": int(result.scored_rows),
             "eligible_rows": int(result.eligible_rows),
@@ -1553,7 +1584,7 @@ class PaperRunEngine:
             "operational_regime_score": float(result.operational_regime_score),
             "operational_risk_multiplier": float(result.operational_risk_multiplier),
             "operational_max_positions": int(result.operational_max_positions),
-            "operational_state": dict(result.operational_state),
+            "operational_state": operational_state,
             "reasons": dict(result.skipped_reasons),
         }
         if _is_live_feature_provider(live_feature_provider):

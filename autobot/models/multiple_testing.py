@@ -31,11 +31,11 @@ def build_trial_window_differential_matrix(
     champion_threshold_key: str = "top_5pct",
 ) -> TrialWindowMatrix | None:
     candidate_rows = list(candidate_trial_panel or [])
-    champion_slice_map = _extract_champion_slice_map(
+    champion_panel_map = _extract_champion_panel_map(
         champion_windows or [],
         threshold_key=str(champion_threshold_key).strip() or "top_5pct",
     )
-    if not candidate_rows or not champion_slice_map:
+    if not candidate_rows or not champion_panel_map:
         return None
 
     trial_panel_maps: list[tuple[int, dict[str, float]]] = []
@@ -44,15 +44,15 @@ def build_trial_window_differential_matrix(
         trial_id = int(record.get("trial", -1))
         if trial_id < 0:
             continue
-        slices = _extract_trial_slice_map(record)
-        shared = sorted(set(slices).intersection(champion_slice_map))
+        panels = _extract_trial_panel_map(record)
+        shared = sorted(set(panels).intersection(champion_panel_map))
         if not shared:
             continue
         if common_keys is None:
             common_keys = set(shared)
         else:
             common_keys &= set(shared)
-        trial_panel_maps.append((trial_id, slices))
+        trial_panel_maps.append((trial_id, panels))
 
     if not trial_panel_maps or not common_keys:
         return None
@@ -67,7 +67,7 @@ def build_trial_window_differential_matrix(
         if not all(key in record_map for key in panel_keys):
             continue
         trial_ids.append(trial_id)
-        matrix_rows.append([record_map[key] - champion_slice_map[key] for key in panel_keys])
+        matrix_rows.append([record_map[key] - champion_panel_map[key] for key in panel_keys])
 
     if len(trial_ids) < 2 or not matrix_rows:
         return None
@@ -199,6 +199,41 @@ def _insufficient(policy: str) -> dict[str, Any]:
 
 
 def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
+    period_map = _extract_trial_period_map(record)
+    if period_map:
+        return period_map
+    return _extract_trial_slice_fallback_map(record)
+
+
+def _extract_trial_panel_map(record: dict[str, Any]) -> dict[str, float]:
+    return _extract_trial_slice_map(record)
+
+
+def _extract_trial_period_map(record: dict[str, Any]) -> dict[str, float]:
+    threshold_key = _resolve_trial_threshold_key(record)
+    windows = record.get("windows") or []
+    candidate_period_map: dict[str, float] = {}
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        window_index = int(window.get("window_index", -1))
+        if window_index < 0:
+            continue
+        oos_periods = window.get("oos_periods") or []
+        for period_doc in oos_periods:
+            if not isinstance(period_doc, dict):
+                continue
+            ts_value = int(period_doc.get("ts_ms", -1))
+            if ts_value < 0:
+                continue
+            period_key = _compose_period_panel_key(window_index, ts_value)
+            candidate_period_map[period_key] = _safe_float(
+                _extract_trading_ev_net(period_doc.get("metrics"), threshold_key)
+            )
+    return candidate_period_map
+
+
+def _extract_trial_slice_fallback_map(record: dict[str, Any]) -> dict[str, float]:
     threshold_key = _resolve_trial_threshold_key(record)
     windows = record.get("windows") or []
     candidate_slice_map: dict[str, float] = {}
@@ -215,7 +250,9 @@ def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
                 if window_index < 0 or slice_index < 0:
                     continue
                 slice_key = _compose_panel_key(window_index, slice_index)
-                candidate_slice_map[slice_key] = _safe_float(_extract_trading_ev_net(slice_doc.get("metrics"), threshold_key))
+                candidate_slice_map[slice_key] = _safe_float(
+                    _extract_trading_ev_net(slice_doc.get("metrics"), threshold_key)
+                )
         elif window_index >= 0:
             candidate_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
                 _extract_trading_ev_net(window.get("metrics"), threshold_key)
@@ -224,6 +261,38 @@ def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
 
 
 def _extract_champion_slice_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
+    period_map = _extract_champion_period_map(windows, threshold_key=threshold_key)
+    if period_map:
+        return period_map
+    return _extract_champion_slice_fallback_map(windows, threshold_key=threshold_key)
+
+
+def _extract_champion_panel_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
+    return _extract_champion_slice_map(windows, threshold_key=threshold_key)
+
+
+def _extract_champion_period_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
+    champion_period_map: dict[str, float] = {}
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        window_index = int(window.get("window_index", -1))
+        if window_index < 0:
+            continue
+        oos_periods = window.get("oos_periods") or []
+        for period_doc in oos_periods:
+            if not isinstance(period_doc, dict):
+                continue
+            ts_value = int(period_doc.get("ts_ms", -1))
+            if ts_value < 0:
+                continue
+            champion_period_map[_compose_period_panel_key(window_index, ts_value)] = _safe_float(
+                _extract_trading_ev_net(period_doc.get("metrics"), threshold_key)
+            )
+    return champion_period_map
+
+
+def _extract_champion_slice_fallback_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
     champion_slice_map: dict[str, float] = {}
     for window in windows:
         if not isinstance(window, dict):
@@ -278,6 +347,10 @@ def _extract_trading_ev_net(metrics: Any, threshold_key: str) -> Any:
 
 def _compose_panel_key(window_index: int, slice_index: int) -> str:
     return f"{int(window_index)}:{int(slice_index)}"
+
+
+def _compose_period_panel_key(window_index: int, ts_ms: int) -> str:
+    return f"{int(window_index)}:ts:{int(ts_ms)}"
 
 
 def _parse_window_index_from_panel_key(panel_key: str) -> int:

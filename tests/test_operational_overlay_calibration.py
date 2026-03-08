@@ -13,8 +13,12 @@ from autobot.common.operational_overlay_calibration import (
 def _report(*, pnl: float, micro_quality: float, risk: float, fill_conc: float, slippage: float) -> dict[str, float]:
     return {
         "realized_pnl_quote": pnl,
+        "orders_filled": 5,
         "micro_quality_score_mean": micro_quality,
         "runtime_risk_multiplier_mean": risk,
+        "operational_regime_score_mean": micro_quality,
+        "operational_breadth_ratio_mean": 0.5 + ((micro_quality - 0.6) * 0.5),
+        "operational_max_positions_mean": 2.0 + micro_quality,
         "rolling_max_fill_concentration_ratio": fill_conc,
         "slippage_bps_mean": slippage,
         "rolling_nonnegative_active_window_ratio": 0.75,
@@ -37,9 +41,11 @@ def test_build_operational_overlay_calibration_reestimates_coefficients() -> Non
     )
 
     assert artifact["sufficient_reports"] is True
-    assert "risk_multiplier_min" in artifact["calibrated_settings"]
-    assert "max_positions_scale_max" in artifact["calibrated_settings"]
-    assert "micro_quality_block_threshold" in artifact["calibrated_settings"]
+    assert artifact["calibration_method"] == "paper_run_empirical_state_score_v2"
+    assert artifact["calibrated_settings"]["empirical_state_score_model_enabled"] is True
+    assert "empirical_state_score_intercept" in artifact["calibrated_settings"]
+    assert "empirical_state_score_regime_coef" in artifact["calibrated_settings"]
+    assert "empirical_state_score_model" in artifact["stats"]
     assert artifact["applied_fields"]
 
 
