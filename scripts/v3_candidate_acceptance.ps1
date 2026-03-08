@@ -1,6 +1,7 @@
 # Acceptance intentionally uses the same fixed compare profile as v4.
 # Runtime/live_v3 paper continues to use learned registry thresholds, while acceptance stays
 # on a shared apples-to-apples test profile for champion promotion decisions.
+$knownRuntimeUnits = @("autobot-paper-alpha.service", "autobot-live-alpha.service")
 & (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `
     -ModelFamily "train_v3_mtf_micro" `
     -Trainer "v3_mtf_micro" `
@@ -24,7 +25,7 @@
     -PaperMinRealizedPnlQuote 0.0 `
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `
-    -KnownRuntimeUnits @("autobot-paper-alpha.service", "autobot-live-alpha.service") `
+    -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v3_acceptance" `
     -ReportPrefix "v3_candidate_acceptance" `
     -ReportTitle "V3 Candidate Acceptance" `
