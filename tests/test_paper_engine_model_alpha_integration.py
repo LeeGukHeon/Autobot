@@ -304,6 +304,10 @@ def test_paper_engine_model_alpha_micro_policy_guards_strategy_exec_profile(tmp_
     )
 
     summary = asyncio.run(engine.run())
+    assert summary.micro_quality_score_mean > 0.0
+    assert summary.runtime_risk_multiplier_mean > 0.0
+    assert summary.rolling_windows_total >= 1
+    assert summary.rolling_active_windows >= 0
     run_dir = Path(summary.run_dir)
     payloads = [
         json.loads(line)

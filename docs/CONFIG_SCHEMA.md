@@ -141,6 +141,23 @@
 - `strategy.model_alpha_v1.execution.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `JOIN`)
 - `strategy.model_alpha_v1.execution.timeout_bars`: integer (default: `2`)
 - `strategy.model_alpha_v1.execution.replace_max`: integer (default: `2`)
+- `strategy.model_alpha_v1.operational.enabled`: bool (default: `true`)
+- `strategy.model_alpha_v1.operational.risk_multiplier_min`: number (default: `0.80`)
+- `strategy.model_alpha_v1.operational.risk_multiplier_max`: number (default: `1.20`)
+- `strategy.model_alpha_v1.operational.max_positions_scale_min`: number (default: `0.50`)
+- `strategy.model_alpha_v1.operational.max_positions_scale_max`: number (default: `1.50`)
+- `strategy.model_alpha_v1.operational.session_overlap_boost`: number (default: `0.10`)
+- `strategy.model_alpha_v1.operational.session_offpeak_penalty`: number (default: `0.05`)
+- `strategy.model_alpha_v1.operational.micro_quality_block_threshold`: number (default: `0.15`)
+- `strategy.model_alpha_v1.operational.micro_quality_conservative_threshold`: number (default: `0.35`)
+- `strategy.model_alpha_v1.operational.micro_quality_aggressive_threshold`: number (default: `0.75`)
+- `strategy.model_alpha_v1.operational.max_execution_spread_bps_for_join`: number (default: `20.0`)
+- `strategy.model_alpha_v1.operational.max_execution_spread_bps_for_cross`: number (default: `6.0`)
+- `strategy.model_alpha_v1.operational.min_execution_depth_krw_for_cross`: number (default: `1500000.0`)
+- `strategy.model_alpha_v1.operational.snapshot_stale_ms`: integer (default: `15000`)
+- operational overlay note:
+  - this layer is enabled only for paper/live-style runtime
+  - backtest compare remains fixed-profile and does not use online operational adaptation
 
 ## Risk (Paper Runtime)
 - `risk.starting_krw`: number (default: `50000`)
@@ -527,6 +544,12 @@
   - promote policy is now `paper_final_balanced`
     - backtest acts as a sanity gate
     - paper soak is the final promote gate
+    - paper final gate now evaluates learned runtime behavior plus rolling evidence:
+      - `paper_min_orders_filled`
+      - `paper_min_realized_pnl_quote`
+      - `paper_min_active_windows`
+      - `paper_min_nonnegative_window_ratio`
+      - `paper_max_fill_concentration_ratio`
   - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass

@@ -34,6 +34,10 @@ class StrategyStepResult:
     top_pct_source: str = "manual"
     min_candidates_used: int = 0
     min_candidates_source: str = "manual"
+    operational_regime_score: float = 0.0
+    operational_risk_multiplier: float = 1.0
+    operational_max_positions: int = 0
+    operational_state: dict[str, Any] = field(default_factory=dict)
     skipped_reasons: dict[str, int] = field(default_factory=dict)
 
 

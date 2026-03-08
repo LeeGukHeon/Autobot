@@ -100,3 +100,18 @@
       price_mode: JOIN
       timeout_bars: 2
       replace_max: 2
+    operational:
+      enabled: true
+      risk_multiplier_min: 0.80
+      risk_multiplier_max: 1.20
+      max_positions_scale_min: 0.50
+      max_positions_scale_max: 1.50
+      session_overlap_boost: 0.10
+      session_offpeak_penalty: 0.05
+      micro_quality_block_threshold: 0.15
+      micro_quality_conservative_threshold: 0.35
+      micro_quality_aggressive_threshold: 0.75
+      max_execution_spread_bps_for_join: 20.0
+      max_execution_spread_bps_for_cross: 6.0
+      min_execution_depth_krw_for_cross: 1500000.0
+      snapshot_stale_ms: 15000

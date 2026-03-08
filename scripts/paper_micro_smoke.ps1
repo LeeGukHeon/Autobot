@@ -348,6 +348,43 @@ $fillRate = To-Double (Get-PropValue -ObjectValue $summary -Name "fill_rate" -De
 $realizedPnlQuote = To-Double (Get-PropValue -ObjectValue $summary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
 $maxDrawdownPct = To-Double (Get-PropValue -ObjectValue $summary -Name "max_drawdown_pct" -DefaultValue 0.0) 0.0
 $slippageBpsMean = To-Double (Get-PropValue -ObjectValue $summary -Name "slippage_bps_mean" -DefaultValue 0.0) 0.0
+$microQualityScoreMean = To-Double (Get-PropValue -ObjectValue $summary -Name "micro_quality_score_mean" -DefaultValue 0.0) 0.0
+$runtimeRiskMultiplierMean = To-Double (Get-PropValue -ObjectValue $summary -Name "runtime_risk_multiplier_mean" -DefaultValue 1.0) 1.0
+$rollingEvidence = Get-PropValue -ObjectValue $summary -Name "rolling_evidence" -DefaultValue @{}
+$rollingWindowMinutes = To-Int64 (Get-PropValue -ObjectValue $summary -Name "rolling_window_minutes" -DefaultValue 0) 0
+if ($rollingWindowMinutes -le 0) {
+    $rollingWindowMinutes = To-Int64 (Get-PropValue -ObjectValue $rollingEvidence -Name "window_minutes" -DefaultValue 0) 0
+}
+$rollingActiveWindows = To-Int64 (Get-PropValue -ObjectValue $summary -Name "rolling_active_windows" -DefaultValue 0) 0
+if ($rollingActiveWindows -le 0) {
+    $rollingActiveWindows = To-Int64 (Get-PropValue -ObjectValue $rollingEvidence -Name "active_windows" -DefaultValue 0) 0
+}
+$rollingWindowsTotal = To-Int64 (Get-PropValue -ObjectValue $summary -Name "rolling_windows_total" -DefaultValue 0) 0
+if ($rollingWindowsTotal -le 0) {
+    $rollingWindowsTotal = To-Int64 (Get-PropValue -ObjectValue $rollingEvidence -Name "windows_total" -DefaultValue 0) 0
+}
+$rollingNonnegativeWindowRatio = To-Double (Get-PropValue -ObjectValue $summary -Name "rolling_nonnegative_active_window_ratio" -DefaultValue -1.0) -1.0
+if ($rollingNonnegativeWindowRatio -lt 0.0) {
+    $rollingNonnegativeWindowRatio = To-Double (Get-PropValue -ObjectValue $rollingEvidence -Name "nonnegative_active_window_ratio" -DefaultValue 0.0) 0.0
+}
+$rollingFillConcentrationRatio = To-Double (Get-PropValue -ObjectValue $summary -Name "rolling_max_fill_concentration_ratio" -DefaultValue -1.0) -1.0
+if ($rollingFillConcentrationRatio -lt 0.0) {
+    $rollingFillConcentrationRatio = To-Double (Get-PropValue -ObjectValue $rollingEvidence -Name "max_fill_concentration_ratio" -DefaultValue 0.0) 0.0
+}
+$rollingMaxWindowDrawdownPct = To-Double (Get-PropValue -ObjectValue $summary -Name "rolling_max_window_drawdown_pct" -DefaultValue -1.0) -1.0
+if ($rollingMaxWindowDrawdownPct -lt 0.0) {
+    $rollingMaxWindowDrawdownPct = To-Double (Get-PropValue -ObjectValue $rollingEvidence -Name "max_window_drawdown_pct" -DefaultValue 0.0) 0.0
+}
+$rollingWorstWindowRealizedPnlQuote = To-Double (Get-PropValue -ObjectValue $summary -Name "rolling_worst_window_realized_pnl_quote" -DefaultValue 0.0) 0.0
+if ($rollingWorstWindowRealizedPnlQuote -eq 0.0) {
+    $rollingWorstWindowRealizedPnlQuote = To-Double (Get-PropValue -ObjectValue $rollingEvidence -Name "worst_window_realized_pnl_quote" -DefaultValue 0.0) 0.0
+}
+$runtimeMinProbUsed = To-Double (Get-PropValue -ObjectValue $summary -Name "model_alpha_min_prob_used" -DefaultValue $MinProb) $MinProb
+$runtimeMinProbSource = [string](Get-PropValue -ObjectValue $summary -Name "model_alpha_min_prob_source" -DefaultValue ($(if ($MinProb -ge 0.0) { "manual" } else { "runtime_default" })))
+$runtimeTopPctUsed = To-Double (Get-PropValue -ObjectValue $summary -Name "model_alpha_top_pct_used" -DefaultValue $TopPct) $TopPct
+$runtimeTopPctSource = [string](Get-PropValue -ObjectValue $summary -Name "model_alpha_top_pct_source" -DefaultValue ($(if ($TopPct -ge 0.0) { "manual" } else { "runtime_default" })))
+$runtimeMinCandsUsed = To-Int64 (Get-PropValue -ObjectValue $summary -Name "model_alpha_min_candidates_used" -DefaultValue $MinCandsPerTs) $MinCandsPerTs
+$runtimeMinCandsSource = [string](Get-PropValue -ObjectValue $summary -Name "model_alpha_min_candidates_source" -DefaultValue ($(if ($MinCandsPerTs -ge 0) { "manual" } else { "runtime_default" })))
 $fallbackReasons = Get-PropValue -ObjectValue $policy -Name "fallback_reasons" -DefaultValue @{}
 $microMissingFallbackCount = To-Int64 (Get-PropValue -ObjectValue $fallbackReasons -Name "MICRO_MISSING_FALLBACK" -DefaultValue 0) 0
 $fallbackTotalCount = Get-MapSum -MapValue $fallbackReasons
@@ -397,9 +434,15 @@ $payload = [ordered]@{
     model_ref = $ModelRef
     model_family = $ModelFamily
     feature_set = $FeatureSet
-    top_pct = [double]$TopPct
-    min_prob = [double]$MinProb
-    min_cands_per_ts = [int]$MinCandsPerTs
+    top_pct = [double]$runtimeTopPctUsed
+    top_pct_source = $runtimeTopPctSource
+    min_prob = [double]$runtimeMinProbUsed
+    min_prob_source = $runtimeMinProbSource
+    min_cands_per_ts = [int]$runtimeMinCandsUsed
+    min_cands_per_ts_source = $runtimeMinCandsSource
+    requested_top_pct = [double]$TopPct
+    requested_min_prob = [double]$MinProb
+    requested_min_cands_per_ts = [int]$MinCandsPerTs
     max_positions_total = [int]$MaxPositionsTotal
     exit_mode = $ExitMode
     hold_bars = [int]$HoldBars
@@ -419,6 +462,15 @@ $payload = [ordered]@{
     realized_pnl_quote = [double]$realizedPnlQuote
     max_drawdown_pct = [double]$maxDrawdownPct
     slippage_bps_mean = [double]$slippageBpsMean
+    micro_quality_score_mean = [double]$microQualityScoreMean
+    runtime_risk_multiplier_mean = [double]$runtimeRiskMultiplierMean
+    rolling_window_minutes = [int64]$rollingWindowMinutes
+    rolling_windows_total = [int64]$rollingWindowsTotal
+    rolling_active_windows = [int64]$rollingActiveWindows
+    rolling_nonnegative_active_window_ratio = [double]$rollingNonnegativeWindowRatio
+    rolling_max_fill_concentration_ratio = [double]$rollingFillConcentrationRatio
+    rolling_max_window_drawdown_pct = [double]$rollingMaxWindowDrawdownPct
+    rolling_worst_window_realized_pnl_quote = [double]$rollingWorstWindowRealizedPnlQuote
     micro_missing_fallback_count = [int64]$microMissingFallbackCount
     fallback_total_count = [int64]$fallbackTotalCount
     micro_missing_fallback_ratio = [double]$microMissingFallbackRatio
@@ -484,6 +536,12 @@ Write-Host ("[paper-smoke] fill_rate={0:N6}" -f $fillRate)
 Write-Host ("[paper-smoke] realized_pnl_quote={0:N6}" -f $realizedPnlQuote)
 Write-Host ("[paper-smoke] max_drawdown_pct={0:N6}" -f $maxDrawdownPct)
 Write-Host ("[paper-smoke] slippage_bps_mean={0:N6}" -f $slippageBpsMean)
+Write-Host ("[paper-smoke] micro_quality_score_mean={0:N6}" -f $microQualityScoreMean)
+Write-Host ("[paper-smoke] runtime_risk_multiplier_mean={0:N6}" -f $runtimeRiskMultiplierMean)
+Write-Host ("[paper-smoke] rolling_active_windows={0}/{1} window_minutes={2}" -f $rollingActiveWindows, $rollingWindowsTotal, $rollingWindowMinutes)
+Write-Host ("[paper-smoke] rolling_nonnegative_active_window_ratio={0:N6}" -f $rollingNonnegativeWindowRatio)
+Write-Host ("[paper-smoke] rolling_max_fill_concentration_ratio={0:N6}" -f $rollingFillConcentrationRatio)
+Write-Host ("[paper-smoke] rolling_max_window_drawdown_pct={0:N6}" -f $rollingMaxWindowDrawdownPct)
 if ($microProvider -eq "LIVE_WS") {
     Write-Host ("[paper-smoke] live_ws_connected={0}" -f $wsConnected)
     Write-Host ("[paper-smoke] live_ws_subscribed_markets={0}" -f $wsSubscribedMarketsCount)

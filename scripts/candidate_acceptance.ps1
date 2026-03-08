@@ -32,12 +32,16 @@ param(
     [int]$PaperSoakDurationSec = 10800,
     [string]$PaperMicroProvider = "live_ws",
     [string]$PaperFeatureProvider = "live_v3",
+    [bool]$PaperUseLearnedRuntime = $true,
     [int]$PaperWarmupSec = 60,
     [int]$PaperWarmupMinTradeEventsPerMarket = 1,
     [double]$PaperMaxFallbackRatio = 0.20,
     [int]$PaperMinOrdersSubmitted = 1,
     [int]$PaperMinOrdersFilled = 2,
     [double]$PaperMinRealizedPnlQuote = 0.0,
+    [int]$PaperMinActiveWindows = 1,
+    [double]$PaperMinNonnegativeWindowRatio = 0.34,
+    [double]$PaperMaxFillConcentrationRatio = 0.85,
     [int]$PaperMinTierCount = 1,
     [int]$PaperMinPolicyEvents = 0,
     [int]$BacktestMinOrdersFilled = 30,
@@ -811,6 +815,10 @@ $report = [ordered]@{
         paper_soak_duration_sec = [int]$PaperSoakDurationSec
         paper_micro_provider = $PaperMicroProvider
         paper_feature_provider = $PaperFeatureProvider
+        paper_use_learned_runtime = [bool]$PaperUseLearnedRuntime
+        paper_min_active_windows = [int]$PaperMinActiveWindows
+        paper_min_nonnegative_window_ratio = [double]$PaperMinNonnegativeWindowRatio
+        paper_max_fill_concentration_ratio = [double]$PaperMaxFillConcentrationRatio
         backtest_min_orders_filled = [int]$BacktestMinOrdersFilled
         backtest_min_realized_pnl_quote = [double]$BacktestMinRealizedPnlQuote
         backtest_min_pnl_delta_vs_champion = [double]$BacktestMinPnlDeltaVsChampion
@@ -1301,14 +1309,18 @@ try {
             "-ModelRef", $CandidateModelRef,
             "-ModelFamily", $ModelFamily,
             "-FeatureSet", $FeatureSet,
-            "-TopPct", $BacktestTopPct,
-            "-MinProb", $BacktestMinProb,
-            "-MinCandsPerTs", $BacktestMinCandidatesPerTs,
-            "-ExitMode", "hold",
-            "-HoldBars", $HoldBars,
             "-PaperFeatureProvider", $PaperFeatureProvider,
             "-OutDir", $resolvedPaperSmokeOutDir
         )
+        if (-not $PaperUseLearnedRuntime) {
+            $paperSmokeArgs += @(
+                "-TopPct", $BacktestTopPct,
+                "-MinProb", $BacktestMinProb,
+                "-MinCandsPerTs", $BacktestMinCandidatesPerTs,
+                "-ExitMode", "hold",
+                "-HoldBars", $HoldBars
+            )
+        }
         $paperExec = Invoke-CommandCapture -Exe $psExe -ArgList $paperSmokeArgs
         $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"
         $paperSmokeRunPath = if ($DryRun) { "" } else { Resolve-ReportedJsonPathFromText -TextValue ([string]$paperExec.Output) -LogTag "paper-smoke" }
@@ -1321,9 +1333,19 @@ try {
         $paperT15GatePass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "t15_gate_pass" -DefaultValue $false) $false
         $paperOrdersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_filled" -DefaultValue 0) 0)
         $paperRealizedPnl = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0)
+        $paperActiveWindows = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_active_windows" -DefaultValue 0) 0)
+        $paperNonnegativeWindowRatio = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_nonnegative_active_window_ratio" -DefaultValue 0.0) 0.0)
+        $paperFillConcentrationRatio = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_max_fill_concentration_ratio" -DefaultValue 0.0) 0.0)
         $paperOrdersFilledPass = $paperOrdersFilled -ge $PaperMinOrdersFilled
         $paperRealizedPnlPass = $paperRealizedPnl -ge $PaperMinRealizedPnlQuote
-        $paperPass = if ($promotionPolicyConfig.paper_final_gate) { $paperT15GatePass -and $paperOrdersFilledPass -and $paperRealizedPnlPass } else { $paperT15GatePass }
+        $paperActiveWindowsPass = $paperActiveWindows -ge $PaperMinActiveWindows
+        $paperNonnegativeWindowPass = $paperNonnegativeWindowRatio -ge $PaperMinNonnegativeWindowRatio
+        $paperFillConcentrationPass = $paperFillConcentrationRatio -le $PaperMaxFillConcentrationRatio
+        $paperPass = if ($promotionPolicyConfig.paper_final_gate) {
+            $paperT15GatePass -and $paperOrdersFilledPass -and $paperRealizedPnlPass -and $paperActiveWindowsPass -and $paperNonnegativeWindowPass -and $paperFillConcentrationPass
+        } else {
+            $paperT15GatePass
+        }
         $report.steps.paper_candidate = [ordered]@{
             exit_code = [int]$paperExec.ExitCode
             command = $paperExec.Command
@@ -1339,8 +1361,14 @@ try {
             realized_pnl_quote = $paperRealizedPnl
             max_drawdown_pct = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "max_drawdown_pct" -DefaultValue 0.0) 0.0)
             slippage_bps_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "slippage_bps_mean" -DefaultValue 0.0) 0.0)
+            micro_quality_score_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "micro_quality_score_mean" -DefaultValue 0.0) 0.0)
+            runtime_risk_multiplier_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "runtime_risk_multiplier_mean" -DefaultValue 1.0) 1.0)
+            rolling_active_windows = $paperActiveWindows
+            rolling_nonnegative_active_window_ratio = $paperNonnegativeWindowRatio
+            rolling_max_fill_concentration_ratio = $paperFillConcentrationRatio
             replace_cancel_timeout_total = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "replace_cancel_timeout_total" -DefaultValue 0) 0)
             t15_gate_pass = $paperT15GatePass
+            learned_runtime = [bool]$PaperUseLearnedRuntime
         }
         $report.gates.paper = [ordered]@{
             evaluated = $true
@@ -1349,6 +1377,9 @@ try {
             final_gate_mode = if ($promotionPolicyConfig.paper_final_gate) { "paper_final" } else { "operational" }
             min_orders_filled_pass = $paperOrdersFilledPass
             min_realized_pnl_pass = $paperRealizedPnlPass
+            min_active_windows_pass = $paperActiveWindowsPass
+            min_nonnegative_window_ratio_pass = $paperNonnegativeWindowPass
+            max_fill_concentration_pass = $paperFillConcentrationPass
             smoke_connectivity_pass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "smoke_connectivity_pass" -DefaultValue $false) $false
             t15_gate_pass = $paperT15GatePass
         }

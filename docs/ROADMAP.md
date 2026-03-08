@@ -241,6 +241,30 @@ D:\MyApps\Autobot
 - paper soak 리포트를 운영 검증용과 성능 해석용으로 분리한다.
 - promote 후 활성 `paper/live` 서비스 자동 재시작을 기본 운영 루프로 유지한다.
 
+## 17.3) 운영 레이어 v1 (T18.3)
+
+### 원칙
+- 알파 selection은 learned output을 유지한다.
+- backtest는 하나의 fixed compare profile로 candidate-vs-champion sanity gate만 수행한다.
+- paper/live current-market adaptation은 운영 레이어에서 처리한다.
+
+### 구현 상태
+- `rolling paper evidence` 반영
+  - paper final gate는 단순 end-of-run pnl만이 아니라 rolling window evidence도 본다.
+- `risk multiplier` 반영
+  - regime score와 micro feature quality를 바탕으로 sizing을 보정한다.
+- `dynamic max_positions` 반영
+  - breadth/regime quality에 따라 effective slot count를 조정한다.
+- `execution aggressiveness` v1 반영
+  - runtime은 micro quality와 session 상태에 따라 `price_mode`를 보수적/공격적으로 조정한다.
+  - v1은 의도적으로 `timeout/replace`는 건드리지 않는다.
+- `micro quality composite` 반영
+  - spread, depth, coverage, snapshot age를 합성 점수화한다.
+  - 품질이 극단적으로 낮으면 runtime에서 진입을 차단한다.
+
+### 설계 문서
+- 상세 내용은 `docs/TICKETS/T18_3_operational_runtime_overlay_v1.md`를 따른다.
+
 ## 17.2) 코인 연구 정렬 알파 vNext (T18.2)
 
 ### 왜 지금 이 작업을 하는가

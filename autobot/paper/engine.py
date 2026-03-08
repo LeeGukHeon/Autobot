@@ -49,6 +49,10 @@ from autobot.strategy.micro_snapshot import (
     OfflineMicroSnapshotProvider,
 )
 from autobot.strategy.model_alpha_v1 import ModelAlphaSettings, ModelAlphaStrategyV1
+from autobot.strategy.operational_overlay_v1 import (
+    compute_micro_quality_composite,
+    resolve_operational_execution_overlay,
+)
 from autobot.strategy.top20_scanner import TopTradeValueScanner
 from autobot.strategy.trade_gate_v1 import GateSettings, TradeGateV1
 from autobot.upbit import (
@@ -65,6 +69,7 @@ from autobot.upbit.ws.models import TickerEvent
 
 from .live_features_v3 import LiveFeatureProviderV3
 from .live_features_v4 import LiveFeatureProviderV4
+from .rolling_evidence import compute_rolling_paper_evidence
 from .run_id import build_paper_run_id
 from .sim_exchange import (
     FillEvent,
@@ -151,6 +156,17 @@ class PaperRunSummary:
     unrealized_pnl_quote: float
     max_drawdown_pct: float
     win_rate: float
+    micro_quality_score_mean: float
+    micro_quality_score_p50: float
+    runtime_risk_multiplier_mean: float
+    rolling_window_minutes: int
+    rolling_windows_total: int
+    rolling_active_windows: int
+    rolling_nonnegative_active_window_ratio: float
+    rolling_positive_active_window_ratio: float
+    rolling_max_fill_concentration_ratio: float
+    rolling_max_window_drawdown_pct: float
+    rolling_worst_window_realized_pnl_quote: float
 
 
 @dataclass(frozen=True)
@@ -837,7 +853,10 @@ class PaperRunEngine:
             "time_to_fill_ms": [],
             "slippage_bps": [],
             "policy_tick_bps_values": [],
+            "operational_micro_quality_scores": [],
+            "operational_runtime_risk_multipliers": [],
             "fill_records": [],
+            "equity_samples": [],
             "order_exec_profile_by_order_id": {},
             "order_policy_diag_by_order_id": {},
             "live_ws_trade_events_by_market": {},
@@ -1188,6 +1207,15 @@ class PaperRunEngine:
                     snapshot = exchange.portfolio_snapshot(ts_ms=ticker.ts_ms, latest_prices=market_data.latest_prices())
                     store.append_equity(snapshot)
                     append_event("PORTFOLIO_SNAPSHOT", ts_ms=ticker.ts_ms, payload=asdict(snapshot))
+                    equity_samples = self._runtime_state.setdefault("equity_samples", [])
+                    if isinstance(equity_samples, list):
+                        equity_samples.append(
+                            {
+                                "ts_ms": int(snapshot.ts_ms),
+                                "equity_quote": float(snapshot.equity_quote),
+                                "realized_pnl_quote": float(snapshot.realized_pnl_quote),
+                            }
+                        )
                     equity_curve.append(snapshot.equity_quote)
                     print(
                         "[paper][status] "
@@ -1227,6 +1255,15 @@ class PaperRunEngine:
             final_snapshot = exchange.portfolio_snapshot(ts_ms=final_ts_ms, latest_prices=market_data.latest_prices())
             store.append_equity(final_snapshot)
             append_event("PORTFOLIO_SNAPSHOT", ts_ms=final_ts_ms, payload=asdict(final_snapshot))
+            equity_samples = self._runtime_state.setdefault("equity_samples", [])
+            if isinstance(equity_samples, list):
+                equity_samples.append(
+                    {
+                        "ts_ms": int(final_snapshot.ts_ms),
+                        "equity_quote": float(final_snapshot.equity_quote),
+                        "realized_pnl_quote": float(final_snapshot.realized_pnl_quote),
+                    }
+                )
             append_event(
                 "RUN_COMPLETED",
                 ts_ms=final_ts_ms,
@@ -1264,6 +1301,16 @@ class PaperRunEngine:
         ttf_values = [float(value) for value in self._runtime_state.get("time_to_fill_ms", [])]
         slippage_values = [float(value) for value in self._runtime_state.get("slippage_bps", [])]
         policy_tick_bps_values = [float(value) for value in self._runtime_state.get("policy_tick_bps_values", [])]
+        operational_quality_scores = [
+            float(value) for value in self._runtime_state.get("operational_micro_quality_scores", [])
+        ]
+        operational_risk_values = [
+            float(value) for value in self._runtime_state.get("operational_runtime_risk_multipliers", [])
+        ]
+        rolling_evidence = compute_rolling_paper_evidence(
+            equity_samples=self._runtime_state.get("equity_samples", []),
+            fill_records=self._runtime_state.get("fill_records", []),
+        )
         replaces_total = int(self._runtime_counters.get("replaces_total", 0))
         cancels_total = int(self._runtime_counters.get("cancels_total", 0))
         aborted_timeout_total = int(self._runtime_counters.get("aborted_timeout_total", 0))
@@ -1300,8 +1347,45 @@ class PaperRunEngine:
             unrealized_pnl_quote=final_snapshot.unrealized_pnl_quote,
             max_drawdown_pct=max_drawdown_pct,
             win_rate=win_rate,
+            micro_quality_score_mean=mean(operational_quality_scores),
+            micro_quality_score_p50=percentile(operational_quality_scores, 0.50),
+            runtime_risk_multiplier_mean=mean(operational_risk_values),
+            rolling_window_minutes=int(rolling_evidence.get("window_minutes", 60)),
+            rolling_windows_total=int(rolling_evidence.get("windows_total", 0)),
+            rolling_active_windows=int(rolling_evidence.get("active_windows", 0)),
+            rolling_nonnegative_active_window_ratio=float(
+                rolling_evidence.get("nonnegative_active_window_ratio", 0.0)
+            ),
+            rolling_positive_active_window_ratio=float(
+                rolling_evidence.get("positive_active_window_ratio", 0.0)
+            ),
+            rolling_max_fill_concentration_ratio=float(
+                rolling_evidence.get("max_fill_concentration_ratio", 0.0)
+            ),
+            rolling_max_window_drawdown_pct=float(rolling_evidence.get("max_window_drawdown_pct", 0.0)),
+            rolling_worst_window_realized_pnl_quote=float(
+                rolling_evidence.get("worst_window_realized_pnl_quote", 0.0)
+            ),
         )
         summary_payload = asdict(summary)
+        summary_payload["rolling_evidence"] = dict(rolling_evidence)
+        summary_payload["model_alpha_min_prob_used"] = float(self._runtime_state.get("model_alpha_min_prob_used", 0.0))
+        summary_payload["model_alpha_min_prob_source"] = str(self._runtime_state.get("model_alpha_min_prob_source", "manual"))
+        summary_payload["model_alpha_top_pct_used"] = float(self._runtime_state.get("model_alpha_top_pct_used", 0.0))
+        summary_payload["model_alpha_top_pct_source"] = str(self._runtime_state.get("model_alpha_top_pct_source", "manual"))
+        summary_payload["model_alpha_min_candidates_used"] = int(self._runtime_state.get("model_alpha_min_candidates_used", 0))
+        summary_payload["model_alpha_min_candidates_source"] = str(
+            self._runtime_state.get("model_alpha_min_candidates_source", "manual")
+        )
+        summary_payload["model_alpha_operational_regime_score"] = float(
+            self._runtime_state.get("model_alpha_operational_regime_score", 0.0)
+        )
+        summary_payload["model_alpha_operational_risk_multiplier"] = float(
+            self._runtime_state.get("model_alpha_operational_risk_multiplier", 1.0)
+        )
+        summary_payload["model_alpha_operational_max_positions"] = int(
+            self._runtime_state.get("model_alpha_operational_max_positions", 0)
+        )
         summary_payload["micro_provider"] = str(micro_provider_info.get("provider") or "NONE")
         summary_payload["micro_provider_info"] = dict(micro_provider_info)
         summary_payload["feature_provider"] = _normalize_paper_feature_provider(self._run_settings.paper_feature_provider)
@@ -1404,6 +1488,10 @@ class PaperRunEngine:
             live_payload["model_selection_top_pct_source"] = str(result.top_pct_source)
             live_payload["model_selection_min_candidates_used"] = int(result.min_candidates_used)
             live_payload["model_selection_min_candidates_source"] = str(result.min_candidates_source)
+            live_payload["operational_regime_score"] = float(result.operational_regime_score)
+            live_payload["operational_risk_multiplier"] = float(result.operational_risk_multiplier)
+            live_payload["operational_max_positions"] = int(result.operational_max_positions)
+            live_payload["operational_state"] = dict(result.operational_state)
             append_event(
                 "LIVE_FEATURES_BUILT",
                 ts_ms=ts_ms,
@@ -1440,6 +1528,9 @@ class PaperRunEngine:
         self._runtime_state["model_alpha_top_pct_source"] = str(result.top_pct_source)
         self._runtime_state["model_alpha_min_candidates_used"] = int(result.min_candidates_used)
         self._runtime_state["model_alpha_min_candidates_source"] = str(result.min_candidates_source)
+        self._runtime_state["model_alpha_operational_regime_score"] = float(result.operational_regime_score)
+        self._runtime_state["model_alpha_operational_risk_multiplier"] = float(result.operational_risk_multiplier)
+        self._runtime_state["model_alpha_operational_max_positions"] = int(result.operational_max_positions)
         selection_payload = {
             "scored_rows": int(result.scored_rows),
             "eligible_rows": int(result.eligible_rows),
@@ -1455,6 +1546,10 @@ class PaperRunEngine:
             "top_pct_source": str(result.top_pct_source),
             "min_candidates_used": int(result.min_candidates_used),
             "min_candidates_source": str(result.min_candidates_source),
+            "operational_regime_score": float(result.operational_regime_score),
+            "operational_risk_multiplier": float(result.operational_risk_multiplier),
+            "operational_max_positions": int(result.operational_max_positions),
+            "operational_state": dict(result.operational_state),
             "reasons": dict(result.skipped_reasons),
         }
         if _is_live_feature_provider(live_feature_provider):
@@ -1524,6 +1619,7 @@ class PaperRunEngine:
                 feature_groups=(),
                 settings=settings.model_alpha,
                 interval_ms=interval_ms,
+                enable_operational_overlay=True,
                 live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
                     ts_ms=int(ts_ms),
                     markets=markets,
@@ -1550,6 +1646,7 @@ class PaperRunEngine:
                 feature_groups=(),
                 settings=settings.model_alpha,
                 interval_ms=interval_ms,
+                enable_operational_overlay=True,
                 live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
                     ts_ms=int(ts_ms),
                     markets=markets,
@@ -1587,6 +1684,7 @@ class PaperRunEngine:
             feature_groups=groups,
             settings=settings.model_alpha,
             interval_ms=interval_ms,
+            enable_operational_overlay=True,
         )
 
     def _run_candidate_cycle(
@@ -1690,12 +1788,50 @@ class PaperRunEngine:
             ts_ms=ts_ms,
         )
         side_value = str(candidate.proposed_side).strip().lower()
+        strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
+        ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
+        model_prob = (
+            _safe_optional_float(candidate.meta.get("model_prob"))
+            if isinstance(candidate.meta, dict)
+            else None
+        )
+        snapshot = (
+            micro_snapshot_provider.get(candidate.market, int(ts_ms))
+            if micro_snapshot_provider is not None
+            else None
+        )
+        exec_profile = _strategy_paper_exec_profile(self._run_settings)
+        operational_decision = None
+        if strategy_mode == "model_alpha_v1" and bool(self._run_settings.model_alpha.operational.enabled):
+            operational_decision = resolve_operational_execution_overlay(
+                base_profile=exec_profile,
+                settings=self._run_settings.model_alpha.operational,
+                micro_quality=compute_micro_quality_composite(
+                    micro_snapshot=snapshot,
+                    now_ts_ms=ts_ms,
+                    settings=self._run_settings.model_alpha.operational,
+                ),
+                ts_ms=ts_ms,
+            )
+            if operational_decision.abort_reason is not None:
+                append_event(
+                    "OPERATIONAL_MICRO_QUALITY_ABORT",
+                    ts_ms=ts_ms,
+                    payload={
+                        "market": candidate.market,
+                        "side": side_value,
+                        "reason_code": str(operational_decision.abort_reason),
+                        "diagnostics": dict(operational_decision.diagnostics),
+                    },
+                )
+                return False
+            exec_profile = operational_decision.exec_profile
         forced_volume = None
         if isinstance(candidate.meta, dict):
             forced_volume = _safe_optional_float(candidate.meta.get("force_volume"))
         entry_notional_quote = (
             _entry_notional_quote_for_strategy(
-                strategy_mode=str(self._run_settings.strategy).strip().lower() or "candidates_v1",
+                strategy_mode=strategy_mode,
                 per_trade_krw=float(self._run_settings.per_trade_krw),
                 min_total_krw=max(float(rules.min_total), float(self._run_settings.min_order_krw)),
                 model_alpha_settings=self._run_settings.model_alpha,
@@ -1704,6 +1840,8 @@ class PaperRunEngine:
             if side_value == "bid" and (forced_volume is None or forced_volume <= 0)
             else None
         )
+        if entry_notional_quote is not None and operational_decision is not None:
+            entry_notional_quote *= max(float(operational_decision.risk_multiplier), 0.0)
         if side_value == "ask" and (forced_volume is None or forced_volume <= 0):
             base_currency = _base_currency(candidate.market)
             if base_currency:
@@ -1801,22 +1939,9 @@ class PaperRunEngine:
                 },
             )
 
-        ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
-        model_prob = (
-            _safe_optional_float(candidate.meta.get("model_prob"))
-            if isinstance(candidate.meta, dict)
-            else None
-        )
-        strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
         policy_decision = None
-        exec_profile = _strategy_paper_exec_profile(self._run_settings)
         policy_diagnostics: dict[str, Any] = {}
         if micro_order_policy is not None:
-            snapshot = (
-                micro_snapshot_provider.get(candidate.market, int(ts_ms))
-                if micro_snapshot_provider is not None
-                else None
-            )
             policy_decision = micro_order_policy.evaluate(
                 micro_snapshot=snapshot,
                 base_profile=(exec_profile if strategy_mode == "model_alpha_v1" else None),
@@ -1891,6 +2016,24 @@ class PaperRunEngine:
                 else "POLICY_DISABLED"
             ),
         }
+        operational_payload = {}
+        if operational_decision is not None:
+            operational_payload = {
+                "runtime_risk_multiplier": float(operational_decision.risk_multiplier),
+                "exec_overlay_mode": str(operational_decision.diagnostics.get("mode", "neutral")),
+                "micro_quality_score": (
+                    float(operational_decision.micro_quality.score)
+                    if operational_decision.micro_quality is not None
+                    else None
+                ),
+                "diagnostics": dict(operational_decision.diagnostics),
+            }
+            quality_scores = self._runtime_state.setdefault("operational_micro_quality_scores", [])
+            if isinstance(quality_scores, list) and operational_payload.get("micro_quality_score") is not None:
+                quality_scores.append(float(operational_payload["micro_quality_score"]))
+            runtime_risk_values = self._runtime_state.setdefault("operational_runtime_risk_multipliers", [])
+            if isinstance(runtime_risk_values, list):
+                runtime_risk_values.append(float(operational_decision.risk_multiplier))
         reason_code_value = "CANDIDATE_V1"
         if isinstance(candidate.meta, dict):
             raw_reason_code = candidate.meta.get("reason_code")
@@ -1917,6 +2060,7 @@ class PaperRunEngine:
                 "initial_ref_price": ref_price,
                 "micro_order_policy": policy_payload,
                 "micro_diagnostics": policy_diagnostics,
+                "operational_overlay": operational_payload,
             },
             ts_ms=ts_ms,
         )
@@ -1930,6 +2074,7 @@ class PaperRunEngine:
                 "exec_profile": profile_payload,
                 "micro_diagnostics": policy_diagnostics,
                 "micro_order_policy": policy_payload,
+                "operational_overlay": operational_payload,
             }
         append_event("INTENT_CREATED", ts_ms=ts_ms, payload=asdict(intent))
 

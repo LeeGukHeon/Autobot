@@ -409,6 +409,19 @@ Current implementation checkpoint:
       - fan out `v3` and `v4` acceptance in parallel after feature refresh
     - a later `v4`-only timer remains only as a fallback path, not the preferred rollout
 
+## Handoff To T18.3
+- T18.2 keeps the alpha / feature / trainer / promotion contracts aligned with recent crypto cross-sectional research.
+- Current-market adaptation is intentionally not solved by daily selection retuning.
+- That responsibility moves to `T18.3 Operational Runtime Overlay v1`:
+  - rolling paper evidence
+  - risk multiplier
+  - dynamic `max_positions`
+  - `price_mode` aggressiveness overlay
+  - micro quality composite
+- This split is intentional:
+  - T18.2 = learned alpha contract
+  - T18.3 = runtime operational adaptation
+
 ### Ops Hardening Notes
 - `install_server_runtime_services.ps1` now exposes:
   - `live_v3`

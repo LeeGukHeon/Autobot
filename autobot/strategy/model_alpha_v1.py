@@ -12,6 +12,12 @@ import polars as pl
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.predictor import ModelPredictor
+from autobot.strategy.operational_overlay_v1 import (
+    ModelAlphaOperationalSettings,
+    build_regime_snapshot_from_scored_frame,
+    resolve_operational_max_positions,
+    resolve_operational_risk_multiplier,
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,7 @@ class ModelAlphaSettings:
     position: ModelAlphaPositionSettings = field(default_factory=ModelAlphaPositionSettings)
     exit: ModelAlphaExitSettings = field(default_factory=ModelAlphaExitSettings)
     execution: ModelAlphaExecutionSettings = field(default_factory=ModelAlphaExecutionSettings)
+    operational: ModelAlphaOperationalSettings = field(default_factory=ModelAlphaOperationalSettings)
 
 
 @dataclass
@@ -79,6 +86,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         settings: ModelAlphaSettings,
         interval_ms: int,
         live_frame_provider: Callable[[int, Sequence[str]], pl.DataFrame | None] | None = None,
+        enable_operational_overlay: bool = False,
     ) -> None:
         self._predictor = predictor
         self._feature_iter = iter(feature_groups or ())
@@ -88,6 +96,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         self._positions: dict[str, _PositionState] = {}
         self._cooldown_until_ts_ms: dict[str, int] = {}
         self._live_frame_provider = live_frame_provider
+        self._enable_operational_overlay = bool(enable_operational_overlay)
 
     def on_ts(
         self,
@@ -196,6 +205,48 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         eligible = scored.filter(pl.col("model_prob") >= float(min_prob_used))
         eligible_rows = int(eligible.height)
         dropped_min_prob_rows = max(scored_rows - eligible_rows, 0)
+        operational_state: dict[str, Any] = {}
+        operational_regime_score = 0.0
+        operational_risk_multiplier = 1.0
+        base_max_positions = max(int(self._settings.position.max_positions_total), 1)
+        operational_max_positions = base_max_positions
+
+        if self._enable_operational_overlay and bool(self._settings.operational.enabled):
+            regime = build_regime_snapshot_from_scored_frame(
+                scored=scored,
+                eligible_rows=eligible_rows,
+                scored_rows=scored_rows,
+                ts_ms=ts_value,
+            )
+            operational_regime_score = float(regime.regime_score)
+            operational_risk_multiplier = resolve_operational_risk_multiplier(
+                settings=self._settings.operational,
+                regime_score=regime.regime_score,
+                micro_quality_score=regime.micro_feature_quality_score,
+            )
+            operational_max_positions = resolve_operational_max_positions(
+                base_max_positions=base_max_positions,
+                settings=self._settings.operational,
+                regime_score=regime.regime_score,
+                breadth_ratio=regime.breadth_ratio,
+            )
+            operational_state = {
+                "enabled": True,
+                "regime_score": float(regime.regime_score),
+                "breadth_score": float(regime.breadth_score),
+                "breadth_ratio": float(regime.breadth_ratio),
+                "dispersion_score": float(regime.dispersion_score),
+                "dispersion_value": float(regime.dispersion_value),
+                "micro_feature_quality_score": float(regime.micro_feature_quality_score),
+                "trade_coverage_ms": float(regime.trade_coverage_ms),
+                "book_coverage_ms": float(regime.book_coverage_ms),
+                "spread_bps": float(regime.spread_bps),
+                "depth_krw": float(regime.depth_krw),
+                "session_score": float(regime.session_score),
+                "session_bucket": str(regime.session_bucket),
+                "risk_multiplier": float(operational_risk_multiplier),
+                "max_positions_used": int(operational_max_positions),
+            }
 
         min_candidates = max(int(min_candidates_used), 0)
         if eligible_rows < min_candidates:
@@ -215,6 +266,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 top_pct_source=top_pct_source,
                 min_candidates_used=min_candidates_used,
                 min_candidates_source=min_candidates_source,
+                operational_regime_score=operational_regime_score,
+                operational_risk_multiplier=operational_risk_multiplier,
+                operational_max_positions=operational_max_positions,
+                operational_state=operational_state,
                 skipped_reasons=skipped_reasons,
             )
 
@@ -227,7 +282,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         dropped_top_pct_rows = max(eligible_rows - selected_rows, 0)
 
         active_positions = len(open_markets)
-        max_positions = max(int(self._settings.position.max_positions_total), 1)
+        max_positions = max(int(operational_max_positions), 1)
         can_open = max(max_positions - active_positions, 0)
         if can_open <= 0:
             _inc_reason(skipped_reasons, "MAX_POSITIONS_TOTAL")
@@ -271,7 +326,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                             prob=float(row.get("model_prob", 0.0)),
                             threshold=float(min_prob_used),
                             settings=self._settings.position,
-                        ),
+                        ) * float(operational_risk_multiplier),
+                        "operational_overlay": dict(operational_state),
                     },
                 )
             )
@@ -292,6 +348,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             top_pct_source=top_pct_source,
             min_candidates_used=min_candidates_used,
             min_candidates_source=min_candidates_source,
+            operational_regime_score=operational_regime_score,
+            operational_risk_multiplier=operational_risk_multiplier,
+            operational_max_positions=operational_max_positions,
+            operational_state=operational_state,
             skipped_reasons=skipped_reasons,
         )
 

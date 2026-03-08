@@ -117,6 +117,7 @@ from .strategy import TopTradeValueScanner
 from .strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
+    ModelAlphaOperationalSettings,
     ModelAlphaPositionSettings,
     ModelAlphaSelectionSettings,
     ModelAlphaSettings,
@@ -2333,6 +2334,11 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     if isinstance(model_alpha_backtest_defaults.get("execution"), dict)
                     else {}
                 )
+                model_alpha_operational_defaults = (
+                    model_alpha_backtest_defaults.get("operational", {})
+                    if isinstance(model_alpha_backtest_defaults.get("operational"), dict)
+                    else {}
+                )
                 exec_acceptance_top_n = max(
                     int(getattr(args, "execution_acceptance_top_n", None))
                     if getattr(args, "execution_acceptance_top_n", None) is not None
@@ -2468,6 +2474,61 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                             ),
                             timeout_bars=max(int(model_alpha_execution_defaults.get("timeout_bars", 2)), 1),
                             replace_max=max(int(model_alpha_execution_defaults.get("replace_max", 2)), 0),
+                        ),
+                        operational=ModelAlphaOperationalSettings(
+                            enabled=bool(model_alpha_operational_defaults.get("enabled", True)),
+                            risk_multiplier_min=max(
+                                float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)),
+                                0.0,
+                            ),
+                            risk_multiplier_max=max(
+                                float(model_alpha_operational_defaults.get("risk_multiplier_max", 1.20)),
+                                max(float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)), 0.0),
+                            ),
+                            max_positions_scale_min=max(
+                                float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)),
+                                0.10,
+                            ),
+                            max_positions_scale_max=max(
+                                float(model_alpha_operational_defaults.get("max_positions_scale_max", 1.50)),
+                                max(float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)), 0.10),
+                            ),
+                            session_overlap_boost=max(
+                                float(model_alpha_operational_defaults.get("session_overlap_boost", 0.10)),
+                                0.0,
+                            ),
+                            session_offpeak_penalty=max(
+                                float(model_alpha_operational_defaults.get("session_offpeak_penalty", 0.05)),
+                                0.0,
+                            ),
+                            micro_quality_block_threshold=max(
+                                float(model_alpha_operational_defaults.get("micro_quality_block_threshold", 0.15)),
+                                0.0,
+                            ),
+                            micro_quality_conservative_threshold=max(
+                                float(model_alpha_operational_defaults.get("micro_quality_conservative_threshold", 0.35)),
+                                0.0,
+                            ),
+                            micro_quality_aggressive_threshold=max(
+                                float(model_alpha_operational_defaults.get("micro_quality_aggressive_threshold", 0.75)),
+                                0.0,
+                            ),
+                            max_execution_spread_bps_for_join=max(
+                                float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_join", 20.0)),
+                                0.0,
+                            ),
+                            max_execution_spread_bps_for_cross=max(
+                                float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_cross", 6.0)),
+                                0.0,
+                            ),
+                            min_execution_depth_krw_for_cross=max(
+                                float(model_alpha_operational_defaults.get("min_execution_depth_krw_for_cross", 1_500_000.0)),
+                                0.0,
+                            ),
+                            snapshot_stale_ms=max(
+                                int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
+                                0,
+                            ),
                         ),
                     ),
                 )
@@ -2886,6 +2947,11 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         model_alpha_execution_defaults = (
             model_alpha_defaults.get("execution", {}) if isinstance(model_alpha_defaults.get("execution"), dict) else {}
         )
+        model_alpha_operational_defaults = (
+            model_alpha_defaults.get("operational", {})
+            if isinstance(model_alpha_defaults.get("operational"), dict)
+            else {}
+        )
         model_ref_value = str(
             getattr(args, "model_ref", None)
             or defaults.get("model_ref")
@@ -3098,6 +3164,61 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                     timeout_bars=max(exec_timeout_bars, 1),
                     replace_max=max(exec_replace_max, 0),
                 ),
+                operational=ModelAlphaOperationalSettings(
+                    enabled=bool(model_alpha_operational_defaults.get("enabled", True)),
+                    risk_multiplier_min=max(
+                        float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)),
+                        0.0,
+                    ),
+                    risk_multiplier_max=max(
+                        float(model_alpha_operational_defaults.get("risk_multiplier_max", 1.20)),
+                        max(float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)), 0.0),
+                    ),
+                    max_positions_scale_min=max(
+                        float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)),
+                        0.10,
+                    ),
+                    max_positions_scale_max=max(
+                        float(model_alpha_operational_defaults.get("max_positions_scale_max", 1.50)),
+                        max(float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)), 0.10),
+                    ),
+                    session_overlap_boost=max(
+                        float(model_alpha_operational_defaults.get("session_overlap_boost", 0.10)),
+                        0.0,
+                    ),
+                    session_offpeak_penalty=max(
+                        float(model_alpha_operational_defaults.get("session_offpeak_penalty", 0.05)),
+                        0.0,
+                    ),
+                    micro_quality_block_threshold=max(
+                        float(model_alpha_operational_defaults.get("micro_quality_block_threshold", 0.15)),
+                        0.0,
+                    ),
+                    micro_quality_conservative_threshold=max(
+                        float(model_alpha_operational_defaults.get("micro_quality_conservative_threshold", 0.35)),
+                        0.0,
+                    ),
+                    micro_quality_aggressive_threshold=max(
+                        float(model_alpha_operational_defaults.get("micro_quality_aggressive_threshold", 0.75)),
+                        0.0,
+                    ),
+                    max_execution_spread_bps_for_join=max(
+                        float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_join", 20.0)),
+                        0.0,
+                    ),
+                    max_execution_spread_bps_for_cross=max(
+                        float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_cross", 6.0)),
+                        0.0,
+                    ),
+                    min_execution_depth_krw_for_cross=max(
+                        float(model_alpha_operational_defaults.get("min_execution_depth_krw_for_cross", 1_500_000.0)),
+                        0.0,
+                    ),
+                    snapshot_stale_ms=max(
+                        int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
+                        0,
+                    ),
+                ),
             ),
             micro_gate=_build_micro_gate_settings(
                 defaults=defaults["micro_gate"],
@@ -3190,6 +3311,9 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
         )
         model_alpha_execution_defaults = (
             model_alpha_defaults.get("execution", {}) if isinstance(model_alpha_defaults.get("execution"), dict) else {}
+        )
+        model_alpha_operational_defaults = (
+            model_alpha_defaults.get("operational", {}) if isinstance(model_alpha_defaults.get("operational"), dict) else {}
         )
         model_ref_value = str(
             getattr(args, "model_ref", None)
@@ -3435,6 +3559,61 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     price_mode=exec_price_mode,
                     timeout_bars=max(exec_timeout_bars, 1),
                     replace_max=max(exec_replace_max, 0),
+                ),
+                operational=ModelAlphaOperationalSettings(
+                    enabled=bool(model_alpha_operational_defaults.get("enabled", True)),
+                    risk_multiplier_min=max(
+                        float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)),
+                        0.0,
+                    ),
+                    risk_multiplier_max=max(
+                        float(model_alpha_operational_defaults.get("risk_multiplier_max", 1.20)),
+                        max(float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)), 0.0),
+                    ),
+                    max_positions_scale_min=max(
+                        float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)),
+                        0.10,
+                    ),
+                    max_positions_scale_max=max(
+                        float(model_alpha_operational_defaults.get("max_positions_scale_max", 1.50)),
+                        max(float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)), 0.10),
+                    ),
+                    session_overlap_boost=max(
+                        float(model_alpha_operational_defaults.get("session_overlap_boost", 0.10)),
+                        0.0,
+                    ),
+                    session_offpeak_penalty=max(
+                        float(model_alpha_operational_defaults.get("session_offpeak_penalty", 0.05)),
+                        0.0,
+                    ),
+                    micro_quality_block_threshold=max(
+                        float(model_alpha_operational_defaults.get("micro_quality_block_threshold", 0.15)),
+                        0.0,
+                    ),
+                    micro_quality_conservative_threshold=max(
+                        float(model_alpha_operational_defaults.get("micro_quality_conservative_threshold", 0.35)),
+                        0.0,
+                    ),
+                    micro_quality_aggressive_threshold=max(
+                        float(model_alpha_operational_defaults.get("micro_quality_aggressive_threshold", 0.75)),
+                        0.0,
+                    ),
+                    max_execution_spread_bps_for_join=max(
+                        float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_join", 20.0)),
+                        0.0,
+                    ),
+                    max_execution_spread_bps_for_cross=max(
+                        float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_cross", 6.0)),
+                        0.0,
+                    ),
+                    min_execution_depth_krw_for_cross=max(
+                        float(model_alpha_operational_defaults.get("min_execution_depth_krw_for_cross", 1_500_000.0)),
+                        0.0,
+                    ),
+                    snapshot_stale_ms=max(
+                        int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
+                        1,
+                    ),
                 ),
             ),
             output_root_dir=str(defaults["backtest_out_dir"]),
