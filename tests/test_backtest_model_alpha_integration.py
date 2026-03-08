@@ -533,6 +533,122 @@ def test_model_alpha_risk_exit_respects_expected_exit_cost_overrides() -> None:
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in enough.intents)
 
 
+def test_model_alpha_risk_exit_uses_volatility_scaled_thresholds() -> None:
+    frame1 = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [103.0],
+            "rv_12": [0.01],
+        }
+    )
+    frame2 = pl.DataFrame(
+        {
+            "ts_ms": [601_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [105.0],
+            "rv_12": [0.01],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(301_000, frame1), (601_000, frame2)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(
+                mode="risk",
+                hold_bars=4,
+                risk_scaling_mode="volatility_scaled",
+                risk_vol_feature="rv_12",
+                tp_vol_multiplier=2.0,
+                sl_vol_multiplier=1.0,
+                trailing_vol_multiplier=0.0,
+                tp_pct=0.01,
+                sl_pct=0.01,
+                trailing_pct=0.0,
+            ),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(StrategyFillEvent(ts_ms=1_000, market="KRW-BTC", side="bid", price=100.0, volume=1.0))
+
+    blocked = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 103.0},
+        open_markets={"KRW-BTC"},
+    )
+    assert not any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in blocked.intents)
+
+    enough = strategy.on_ts(
+        ts_ms=601_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 105.0},
+        open_markets={"KRW-BTC"},
+    )
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in enough.intents)
+
+
+def test_model_alpha_risk_exit_supports_atr_pct_volatility_feature() -> None:
+    frame1 = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [97.0],
+            "atr_14": [4.0],
+        }
+    )
+    frame2 = pl.DataFrame(
+        {
+            "ts_ms": [601_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [95.0],
+            "atr_14": [4.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(301_000, frame1), (601_000, frame2)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(
+                mode="risk",
+                hold_bars=1,
+                risk_scaling_mode="volatility_scaled",
+                risk_vol_feature="atr_pct_14",
+                tp_vol_multiplier=3.0,
+                sl_vol_multiplier=1.0,
+                trailing_vol_multiplier=0.0,
+                tp_pct=0.01,
+                sl_pct=0.01,
+                trailing_pct=0.0,
+            ),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(StrategyFillEvent(ts_ms=1_000, market="KRW-BTC", side="bid", price=100.0, volume=1.0))
+
+    blocked = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 97.0},
+        open_markets={"KRW-BTC"},
+    )
+    assert not any(intent.reason_code == "MODEL_ALPHA_EXIT_SL" for intent in blocked.intents)
+
+    enough = strategy.on_ts(
+        ts_ms=601_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 95.0},
+        open_markets={"KRW-BTC"},
+    )
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_SL" for intent in enough.intents)
+
+
 def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     dataset_root = tmp_path / "features_v3"

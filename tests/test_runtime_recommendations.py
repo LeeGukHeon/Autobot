@@ -32,6 +32,11 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_hold_and_execution
             "exit": {
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
+                "recommended_risk_scaling_mode": "volatility_scaled",
+                "recommended_risk_vol_feature": "rv_36",
+                "recommended_tp_vol_multiplier": 2.5,
+                "recommended_sl_vol_multiplier": 1.5,
+                "recommended_trailing_vol_multiplier": 0.75,
             },
             "execution": {
                 "recommended_price_mode": "CROSS_1T",
@@ -54,6 +59,11 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_hold_and_execution
     resolved, state = resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
 
     assert resolved.exit.hold_bars == 12
+    assert resolved.exit.risk_scaling_mode == "volatility_scaled"
+    assert resolved.exit.risk_vol_feature == "rv_36"
+    assert resolved.exit.tp_vol_multiplier == 2.5
+    assert resolved.exit.sl_vol_multiplier == 1.5
+    assert resolved.exit.trailing_vol_multiplier == 0.75
     assert resolved.execution.price_mode == "CROSS_1T"
     assert resolved.execution.timeout_bars == 4
     assert resolved.execution.replace_max == 1

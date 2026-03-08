@@ -322,6 +322,15 @@ D:\MyApps\Autobot
 - 이 작업은 `v4` 단일 lane을 전제로 진행한다.
 - 실행 계획은 `docs/TICKETS/T18_4_methodology_gap_closure_v1.md`를 따른다.
 
+## 17.5) 변동성 스케일 Exit (T18.5)
+
+- `hold_bars` learned recommendation은 이미 runtime에 반영됐다.
+- 남아 있던 고정 `%` 기반 `tp/sl/trailing`은 `v4`에서 learned volatility-scaled exit로 확장했다.
+- 현재 구조:
+  - `exit.mode=hold`: learned `recommended_hold_bars`
+  - `exit.mode=risk`: learned `volatility estimator + tp/sl/trailing multiplier`
+- 실행 계획과 계약은 `docs/TICKETS/T18_5_volatility_scaled_exit_v1.md`를 따른다.
+
 ## 17.2) 코인 연구 정렬 알파 vNext (T18.2)
 
 ### 왜 지금 이 작업을 하는가

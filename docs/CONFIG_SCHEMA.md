@@ -137,6 +137,22 @@
   - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.recommended_hold_bars`
   - applied only when `exit.mode=hold`
   - if the loaded model has no runtime recommendation artifact, runtime falls back to config/preset `hold_bars`
+- `strategy.model_alpha_v1.exit.use_learned_risk_recommendations`: bool (default: `true`)
+  - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.*risk*`
+  - applied only when `exit.mode=risk`
+- `strategy.model_alpha_v1.exit.risk_scaling_mode`: `fixed | volatility_scaled` (default: `fixed`)
+- `strategy.model_alpha_v1.exit.risk_vol_feature`: string (default: `rv_12`)
+  - supported built-ins:
+    - `rv_12`
+    - `rv_36`
+    - `atr_pct_14` (`atr_14 / close`)
+- `strategy.model_alpha_v1.exit.tp_vol_multiplier`: number nullable (default: `null`)
+- `strategy.model_alpha_v1.exit.sl_vol_multiplier`: number nullable (default: `null`)
+- `strategy.model_alpha_v1.exit.trailing_vol_multiplier`: number nullable (default: `null`)
+  - when `risk_scaling_mode=volatility_scaled`, runtime computes:
+    - `effective_threshold = multiplier * sigma_bar * sqrt(horizon_bars)`
+  - `horizon_bars` uses `hold_bars` when positive, else `1`
+  - when the selected volatility feature is missing, runtime falls back to fixed `%` thresholds
 - `strategy.model_alpha_v1.exit.tp_pct`: number (default: `0.02`)
 - `strategy.model_alpha_v1.exit.sl_pct`: number (default: `0.01`)
 - `strategy.model_alpha_v1.exit.trailing_pct`: number (default: `0.0`)

@@ -92,6 +92,12 @@
       mode: hold
       hold_bars: 6
       use_learned_hold_bars: true
+      use_learned_risk_recommendations: true
+      risk_scaling_mode: fixed
+      risk_vol_feature: rv_12
+      tp_vol_multiplier: null
+      sl_vol_multiplier: null
+      trailing_vol_multiplier: null
       tp_pct: 0.02
       sl_pct: 0.01
       trailing_pct: 0.0

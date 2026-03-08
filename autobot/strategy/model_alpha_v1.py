@@ -45,6 +45,12 @@ class ModelAlphaExitSettings:
     mode: str = "hold"  # hold | risk
     hold_bars: int = 6
     use_learned_hold_bars: bool = True
+    use_learned_risk_recommendations: bool = True
+    risk_scaling_mode: str = "fixed"  # fixed | volatility_scaled
+    risk_vol_feature: str = "rv_12"
+    tp_vol_multiplier: float | None = None
+    sl_vol_multiplier: float | None = None
+    trailing_vol_multiplier: float | None = None
     tp_pct: float = 0.02
     sl_pct: float = 0.01
     trailing_pct: float = 0.0
@@ -166,6 +172,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 market=market,
                 state=state,
                 ref_price=ref_price,
+                row=row,
             )
             if reason_code is None:
                 continue
@@ -392,7 +399,15 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             if cooldown_bars > 0:
                 self._cooldown_until_ts_ms[market] = int(event.ts_ms) + cooldown_bars * self._interval_ms
 
-    def _resolve_exit_reason(self, *, ts_ms: int, market: str, state: _PositionState, ref_price: float) -> str | None:
+    def _resolve_exit_reason(
+        self,
+        *,
+        ts_ms: int,
+        market: str,
+        state: _PositionState,
+        ref_price: float,
+        row: dict[str, Any] | None,
+    ) -> str | None:
         mode = str(self._settings.exit.mode).strip().lower() or "hold"
         hold_ms = max(int(self._settings.exit.hold_bars), 0) * self._interval_ms
         if mode == "hold":
@@ -403,9 +418,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         # risk mode
         state.peak_price = max(float(state.peak_price), float(ref_price))
         entry_price = max(float(state.entry_price), 1e-12)
-        tp_pct = max(float(self._settings.exit.tp_pct), 0.0)
-        sl_pct = max(float(self._settings.exit.sl_pct), 0.0)
-        trailing_pct = max(float(self._settings.exit.trailing_pct), 0.0)
+        tp_pct, sl_pct, trailing_pct = _resolve_runtime_risk_exit_thresholds(
+            settings=self._settings,
+            row=row,
+        )
         exit_fee_rate, exit_slippage_bps = _resolve_expected_exit_costs(
             settings=self._settings,
             observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
@@ -633,6 +649,47 @@ def resolve_runtime_model_alpha_settings(
         except (TypeError, ValueError):
             pass
 
+    if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_risk_recommendations):
+        try:
+            recommended_scaling_mode = str(
+                exit_doc.get("recommended_risk_scaling_mode", resolved.exit.risk_scaling_mode)
+            ).strip().lower() or str(resolved.exit.risk_scaling_mode)
+            recommended_vol_feature = str(
+                exit_doc.get("recommended_risk_vol_feature", resolved.exit.risk_vol_feature)
+            ).strip() or str(resolved.exit.risk_vol_feature)
+            recommended_tp_mult = _safe_optional_float(
+                exit_doc.get("recommended_tp_vol_multiplier", resolved.exit.tp_vol_multiplier)
+            )
+            recommended_sl_mult = _safe_optional_float(
+                exit_doc.get("recommended_sl_vol_multiplier", resolved.exit.sl_vol_multiplier)
+            )
+            recommended_trailing_mult = _safe_optional_float(
+                exit_doc.get("recommended_trailing_vol_multiplier", resolved.exit.trailing_vol_multiplier)
+            )
+            resolved = replace(
+                resolved,
+                exit=replace(
+                    resolved.exit,
+                    risk_scaling_mode=recommended_scaling_mode,
+                    risk_vol_feature=recommended_vol_feature,
+                    tp_vol_multiplier=recommended_tp_mult,
+                    sl_vol_multiplier=recommended_sl_mult,
+                    trailing_vol_multiplier=recommended_trailing_mult,
+                ),
+            )
+            state["exit_risk_source"] = str(
+                exit_doc.get("recommendation_source", "runtime_recommendation")
+            )
+            state["exit_risk_recommendation"] = {
+                "recommended_risk_scaling_mode": recommended_scaling_mode,
+                "recommended_risk_vol_feature": recommended_vol_feature,
+                "recommended_tp_vol_multiplier": recommended_tp_mult,
+                "recommended_sl_vol_multiplier": recommended_sl_mult,
+                "recommended_trailing_vol_multiplier": recommended_trailing_mult,
+            }
+        except (TypeError, ValueError):
+            pass
+
     execution_doc = runtime_recommendations.get("execution")
     if isinstance(execution_doc, dict) and bool(settings.execution.use_learned_recommendations):
         try:
@@ -700,6 +757,55 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_runtime_risk_exit_thresholds(
+    *,
+    settings: ModelAlphaSettings,
+    row: dict[str, Any] | None,
+) -> tuple[float, float, float]:
+    base_tp = max(float(settings.exit.tp_pct), 0.0)
+    base_sl = max(float(settings.exit.sl_pct), 0.0)
+    base_trailing = max(float(settings.exit.trailing_pct), 0.0)
+    scaling_mode = str(settings.exit.risk_scaling_mode).strip().lower() or "fixed"
+    if scaling_mode != "volatility_scaled":
+        return base_tp, base_sl, base_trailing
+
+    sigma_bar = _resolve_row_risk_volatility(row=row, feature_name=settings.exit.risk_vol_feature)
+    if sigma_bar is None or sigma_bar <= 0:
+        return base_tp, base_sl, base_trailing
+
+    horizon_bars = max(int(settings.exit.hold_bars), 1)
+    sigma_horizon = float(sigma_bar) * math.sqrt(float(horizon_bars))
+    if not math.isfinite(sigma_horizon) or sigma_horizon <= 0:
+        return base_tp, base_sl, base_trailing
+
+    tp_mult = _safe_optional_float(settings.exit.tp_vol_multiplier)
+    sl_mult = _safe_optional_float(settings.exit.sl_vol_multiplier)
+    trailing_mult = _safe_optional_float(settings.exit.trailing_vol_multiplier)
+
+    tp_pct = max(float(tp_mult) * sigma_horizon, 0.0) if tp_mult is not None else base_tp
+    sl_pct = max(float(sl_mult) * sigma_horizon, 0.0) if sl_mult is not None else base_sl
+    trailing_pct = max(float(trailing_mult) * sigma_horizon, 0.0) if trailing_mult is not None else base_trailing
+    return tp_pct, sl_pct, trailing_pct
+
+
+def _resolve_row_risk_volatility(*, row: dict[str, Any] | None, feature_name: str) -> float | None:
+    if not isinstance(row, dict):
+        return None
+    feature = str(feature_name).strip()
+    if not feature:
+        return None
+    if feature == "atr_pct_14":
+        atr = _safe_optional_float(row.get("atr_14"))
+        close = _safe_optional_float(row.get("close"))
+        if atr is None or close is None or close <= 0:
+            return None
+        return max(float(atr) / float(close), 0.0)
+    value = _safe_optional_float(row.get(feature))
+    if value is None:
+        return None
+    return max(float(value), 0.0)
 
 
 def _resolve_expected_exit_costs(

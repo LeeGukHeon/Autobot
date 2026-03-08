@@ -367,7 +367,15 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
         lambda **kwargs: {
             "version": 1,
             "status": "ready",
-            "exit": {"recommended_hold_bars": 12, "recommendation_source": "execution_backtest_grid_search"},
+            "exit": {
+                "recommended_hold_bars": 12,
+                "recommendation_source": "execution_backtest_grid_search",
+                "recommended_risk_scaling_mode": "volatility_scaled",
+                "recommended_risk_vol_feature": "rv_36",
+                "recommended_tp_vol_multiplier": 2.5,
+                "recommended_sl_vol_multiplier": 1.5,
+                "recommended_trailing_vol_multiplier": 0.75,
+            },
             "execution": {
                 "recommended_price_mode": "JOIN",
                 "recommended_timeout_bars": 2,
@@ -422,6 +430,11 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert result.runtime_recommendations_path.exists()
     assert execution_doc["status"] == "compared"
     assert runtime_doc["exit"]["recommended_hold_bars"] == 12
+    assert runtime_doc["exit"]["recommended_risk_scaling_mode"] == "volatility_scaled"
+    assert runtime_doc["exit"]["recommended_risk_vol_feature"] == "rv_36"
+    assert runtime_doc["exit"]["recommended_tp_vol_multiplier"] == 2.5
+    assert runtime_doc["exit"]["recommended_sl_vol_multiplier"] == 1.5
+    assert runtime_doc["exit"]["recommended_trailing_vol_multiplier"] == 0.75
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
     execution_options = captured["options"]

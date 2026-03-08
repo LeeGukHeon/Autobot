@@ -2461,6 +2461,13 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                             mode=str(model_alpha_exit_defaults.get("mode", "hold")).strip().lower() or "hold",
                             hold_bars=exec_acceptance_hold_bars,
                             use_learned_hold_bars=False,
+                            use_learned_risk_recommendations=False,
+                            risk_scaling_mode="fixed",
+                            risk_vol_feature=str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip()
+                            or "rv_12",
+                            tp_vol_multiplier=None,
+                            sl_vol_multiplier=None,
+                            trailing_vol_multiplier=None,
                             tp_pct=max(float(model_alpha_exit_defaults.get("tp_pct", 0.02)), 0.0),
                             sl_pct=max(float(model_alpha_exit_defaults.get("sl_pct", 0.01)), 0.0),
                             trailing_pct=max(float(model_alpha_exit_defaults.get("trailing_pct", 0.0)), 0.0),
@@ -3098,6 +3105,14 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
         exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
+        exit_use_learned_risk_recommendations = bool(
+            model_alpha_exit_defaults.get("use_learned_risk_recommendations", True)
+        )
+        exit_risk_scaling_mode = str(model_alpha_exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed"
+        exit_risk_vol_feature = str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip() or "rv_12"
+        exit_tp_vol_multiplier = _optional_float_value(model_alpha_exit_defaults.get("tp_vol_multiplier"))
+        exit_sl_vol_multiplier = _optional_float_value(model_alpha_exit_defaults.get("sl_vol_multiplier"))
+        exit_trailing_vol_multiplier = _optional_float_value(model_alpha_exit_defaults.get("trailing_vol_multiplier"))
         exec_timeout_bars = int(
             getattr(args, "execution_timeout_bars", None)
             if getattr(args, "execution_timeout_bars", None) is not None
@@ -3195,6 +3210,12 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                     mode=exit_mode,
                     hold_bars=max(hold_bars_value, 0),
                     use_learned_hold_bars=exit_use_learned_hold_bars,
+                    use_learned_risk_recommendations=exit_use_learned_risk_recommendations,
+                    risk_scaling_mode=exit_risk_scaling_mode,
+                    risk_vol_feature=exit_risk_vol_feature,
+                    tp_vol_multiplier=exit_tp_vol_multiplier,
+                    sl_vol_multiplier=exit_sl_vol_multiplier,
+                    trailing_vol_multiplier=exit_trailing_vol_multiplier,
                     tp_pct=max(tp_pct_value, 0.0),
                     sl_pct=max(sl_pct_value, 0.0),
                     trailing_pct=max(trailing_pct_value, 0.0),
@@ -3497,6 +3518,14 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
         exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
+        exit_use_learned_risk_recommendations = bool(
+            model_alpha_exit_defaults.get("use_learned_risk_recommendations", True)
+        )
+        exit_risk_scaling_mode = str(model_alpha_exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed"
+        exit_risk_vol_feature = str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip() or "rv_12"
+        exit_tp_vol_multiplier = _optional_float_value(model_alpha_exit_defaults.get("tp_vol_multiplier"))
+        exit_sl_vol_multiplier = _optional_float_value(model_alpha_exit_defaults.get("sl_vol_multiplier"))
+        exit_trailing_vol_multiplier = _optional_float_value(model_alpha_exit_defaults.get("trailing_vol_multiplier"))
         exec_timeout_bars = int(
             getattr(args, "execution_timeout_bars", None)
             if getattr(args, "execution_timeout_bars", None) is not None
@@ -3637,6 +3666,12 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     mode=exit_mode,
                     hold_bars=max(hold_bars_value, 0),
                     use_learned_hold_bars=exit_use_learned_hold_bars,
+                    use_learned_risk_recommendations=exit_use_learned_risk_recommendations,
+                    risk_scaling_mode=exit_risk_scaling_mode,
+                    risk_vol_feature=exit_risk_vol_feature,
+                    tp_vol_multiplier=exit_tp_vol_multiplier,
+                    sl_vol_multiplier=exit_sl_vol_multiplier,
+                    trailing_vol_multiplier=exit_trailing_vol_multiplier,
                     tp_pct=max(tp_pct_value, 0.0),
                     sl_pct=max(sl_pct_value, 0.0),
                     trailing_pct=max(trailing_pct_value, 0.0),
