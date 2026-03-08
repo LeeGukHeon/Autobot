@@ -367,12 +367,13 @@ def _systemd_unit_active(unit_name: str) -> bool:
     if not unit_name or not systemctl_path:
         return False
     completed = subprocess.run(
-        [systemctl_path, "is-active", "--quiet", unit_name],
+        [systemctl_path, "is-active", unit_name],
         capture_output=True,
         text=True,
         check=False,
     )
-    return completed.returncode == 0
+    state = str(completed.stdout or "").strip().lower()
+    return state in {"active", "activating", "reloading"}
 
 
 def compact_ts_parquet_dataset(

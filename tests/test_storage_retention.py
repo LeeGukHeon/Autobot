@@ -139,7 +139,7 @@ def test_systemd_unit_active_uses_fallback_path(monkeypatch) -> None:
         "autobot.ops.storage_retention.Path.exists",
         lambda self: str(self).replace("\\", "/").endswith("/usr/bin/systemctl"),
     )
-    run_mock = Mock(return_value=Mock(returncode=0))
+    run_mock = Mock(return_value=Mock(returncode=0, stdout="activating\n"))
     monkeypatch.setattr("autobot.ops.storage_retention.subprocess.run", run_mock)
 
     assert _systemd_unit_active("autobot-v4-challenger-spawn.service") is True
