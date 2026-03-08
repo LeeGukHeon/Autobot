@@ -352,11 +352,22 @@ def prune_registry_family(
     }
 
 
+def _resolve_systemctl_path() -> str:
+    resolved = shutil.which("systemctl")
+    if resolved:
+        return resolved
+    for candidate in ("/usr/bin/systemctl", "/bin/systemctl"):
+        if Path(candidate).exists():
+            return candidate
+    return ""
+
+
 def _systemd_unit_active(unit_name: str) -> bool:
-    if not unit_name or shutil.which("systemctl") is None:
+    systemctl_path = _resolve_systemctl_path()
+    if not unit_name or not systemctl_path:
         return False
     completed = subprocess.run(
-        ["systemctl", "is-active", "--quiet", unit_name],
+        [systemctl_path, "is-active", "--quiet", unit_name],
         capture_output=True,
         text=True,
         check=False,

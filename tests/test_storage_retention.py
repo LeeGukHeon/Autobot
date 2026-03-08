@@ -4,8 +4,14 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
-from autobot.ops.storage_retention import EmergencyRetentionPolicy, StorageRetentionPolicy, run_storage_retention
+from autobot.ops.storage_retention import (
+    EmergencyRetentionPolicy,
+    StorageRetentionPolicy,
+    _systemd_unit_active,
+    run_storage_retention,
+)
 
 
 def _write_file(path: Path, content: str = "x") -> None:
@@ -125,3 +131,16 @@ def test_run_storage_retention_dry_run_keeps_files(tmp_path: Path) -> None:
     assert ws_section["removed_count"] == 1
     assert payload["report_path"].endswith(".json")
     assert not (project_root / "logs" / "storage_retention" / "latest.json").exists()
+
+
+def test_systemd_unit_active_uses_fallback_path(monkeypatch) -> None:
+    monkeypatch.setattr("autobot.ops.storage_retention.shutil.which", lambda _name: None)
+    monkeypatch.setattr(
+        "autobot.ops.storage_retention.Path.exists",
+        lambda self: str(self).replace("\\", "/").endswith("/usr/bin/systemctl"),
+    )
+    run_mock = Mock(return_value=Mock(returncode=0))
+    monkeypatch.setattr("autobot.ops.storage_retention.subprocess.run", run_mock)
+
+    assert _systemd_unit_active("autobot-v4-challenger-spawn.service") is True
+    run_mock.assert_called_once()
