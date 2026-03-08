@@ -208,6 +208,19 @@ Acceptance:
   - `average_block_length`
   - `block_length_source`
 
+Status:
+- completed
+- `multiple_testing.py` now supports:
+  - manual override block length
+  - explicit `"auto"` mode
+  - data-driven dependence-aware selection from the aligned differential panel
+- RC/SPA reports now persist:
+  - `block_length_source`
+  - `block_length_threshold`
+  - `block_length_cutoff_lag`
+  - `block_length_dependence_strength`
+- fallback remains bounded and reproducible for short or weak-dependence panels
+
 ### Phase 4. Optimizer-Based `selection_recommendations`
 Priority: high
 
@@ -298,6 +311,7 @@ Acceptance:
 Implement in this order:
 1. Phase 1
 2. Phase 2
+3. Phase 3
 3. Phase 3
 4. Phase 4
 5. Phase 5

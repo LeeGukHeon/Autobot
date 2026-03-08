@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import numpy as np
+
 from autobot.models.multiple_testing import (
+    TrialWindowMatrix,
     build_trial_window_differential_matrix,
     run_hansen_spa,
     run_white_reality_check,
@@ -134,6 +137,7 @@ def test_run_white_reality_check_detects_candidate_edge() -> None:
     assert 0.0 <= result["p_value"] <= 1.0
     assert result["bootstrap_method"] == "stationary"
     assert result["average_block_length"] >= 2
+    assert result["block_length_source"].startswith("auto_")
 
 
 def test_run_hansen_spa_detects_candidate_edge() -> None:
@@ -190,6 +194,149 @@ def test_run_hansen_spa_detects_candidate_edge() -> None:
     assert 0.0 <= result["p_value"] <= 1.0
     assert result["bootstrap_method"] == "stationary"
     assert result["average_block_length"] >= 2
+    assert result["block_length_source"].startswith("auto_")
+
+
+def test_multiple_testing_respects_manual_block_length_override() -> None:
+    matrix = TrialWindowMatrix(
+        trial_ids=[0, 1],
+        window_indices=[0, 1, 2, 3, 4, 5],
+        panel_keys=["0:0", "1:0", "2:0", "3:0", "4:0", "5:0"],
+        differential_matrix=np.asarray(
+            [
+                [0.0040, 0.0044, 0.0042, 0.0046, 0.0045, 0.0047],
+                [0.0038, 0.0040, 0.0041, 0.0043, 0.0042, 0.0044],
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    white = run_white_reality_check(matrix, bootstrap_iters=100, average_block_length=5, seed=11)
+    hansen = run_hansen_spa(matrix, bootstrap_iters=100, average_block_length=4, seed=11)
+
+    assert white["average_block_length"] == 5
+    assert white["block_length_source"] == "manual_override"
+    assert hansen["average_block_length"] == 4
+    assert hansen["block_length_source"] == "manual_override"
+
+
+def test_auto_block_length_grows_with_dependence_strength() -> None:
+    strong_series_a = np.asarray(
+        [
+            0.0010,
+            0.0013,
+            0.0016,
+            0.0019,
+            0.0021,
+            0.0024,
+            0.0027,
+            0.0030,
+            0.0032,
+            0.0035,
+            0.0038,
+            0.0040,
+            0.0043,
+            0.0046,
+            0.0048,
+            0.0051,
+        ],
+        dtype=np.float64,
+    )
+    strong_series_b = np.asarray(
+        [
+            0.0009,
+            0.0012,
+            0.0015,
+            0.0018,
+            0.0020,
+            0.0023,
+            0.0026,
+            0.0028,
+            0.0031,
+            0.0034,
+            0.0036,
+            0.0039,
+            0.0042,
+            0.0044,
+            0.0047,
+            0.0050,
+        ],
+        dtype=np.float64,
+    )
+    weak_series_a = np.asarray(
+        [
+            0.0030,
+            -0.0012,
+            0.0018,
+            -0.0004,
+            0.0023,
+            -0.0019,
+            0.0007,
+            0.0012,
+            -0.0024,
+            0.0020,
+            -0.0009,
+            0.0005,
+            0.0016,
+            -0.0015,
+            0.0003,
+            -0.0007,
+        ],
+        dtype=np.float64,
+    )
+    weak_series_b = np.asarray(
+        [
+            -0.0010,
+            0.0014,
+            -0.0006,
+            0.0021,
+            -0.0013,
+            0.0008,
+            0.0011,
+            -0.0022,
+            0.0017,
+            -0.0003,
+            0.0004,
+            -0.0018,
+            0.0013,
+            -0.0005,
+            0.0020,
+            -0.0011,
+        ],
+        dtype=np.float64,
+    )
+    strongly_dependent = TrialWindowMatrix(
+        trial_ids=[0, 1],
+        window_indices=list(range(int(strong_series_a.size))),
+        panel_keys=[f"{idx}:0" for idx in range(int(strong_series_a.size))],
+        differential_matrix=np.asarray(
+            [
+                strong_series_a,
+                strong_series_b,
+            ],
+            dtype=np.float64,
+        ),
+    )
+    weakly_dependent = TrialWindowMatrix(
+        trial_ids=[0, 1],
+        window_indices=list(range(int(weak_series_a.size))),
+        panel_keys=[f"{idx}:0" for idx in range(int(weak_series_a.size))],
+        differential_matrix=np.asarray(
+            [
+                weak_series_a,
+                weak_series_b,
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    strong = run_white_reality_check(strongly_dependent, bootstrap_iters=100, average_block_length="auto", seed=5)
+    weak = run_white_reality_check(weakly_dependent, bootstrap_iters=100, average_block_length="auto", seed=5)
+
+    assert strong["block_length_source"].startswith("auto_")
+    assert weak["block_length_source"].startswith("auto_")
+    assert strong["average_block_length"] >= weak["average_block_length"]
+    assert strong["block_length_dependence_strength"] >= weak["block_length_dependence_strength"]
 
 
 def test_multiple_testing_returns_insufficient_when_windows_do_not_overlap() -> None:

@@ -15,6 +15,15 @@ class TrialWindowMatrix:
     differential_matrix: np.ndarray
 
 
+@dataclass(frozen=True)
+class BlockLengthSelection:
+    average_block_length: int
+    source: str
+    threshold: float | None = None
+    cutoff_lag: int | None = None
+    dependence_strength: float | None = None
+
+
 def build_trial_window_differential_matrix(
     candidate_trial_panel: list[dict[str, Any]] | None,
     champion_windows: list[dict[str, Any]] | None,
@@ -71,7 +80,7 @@ def run_white_reality_check(
     bootstrap_iters: int = 500,
     alpha: float = 0.20,
     seed: int = 42,
-    average_block_length: int | None = None,
+    average_block_length: int | str | None = None,
 ) -> dict[str, Any]:
     if matrix is None:
         return _insufficient("white_reality_check")
@@ -85,10 +94,10 @@ def run_white_reality_check(
     rng = np.random.default_rng(int(seed))
     centered = diffs - means[:, None]
     bootstrap_iters_eff = max(int(bootstrap_iters), 100)
-    block_length = _resolve_average_block_length(window_count, average_block_length)
+    block_length = _resolve_average_block_length(matrix, average_block_length)
     exceed = 0
     for _ in range(bootstrap_iters_eff):
-        sample = _stationary_bootstrap_indices(window_count, block_length, rng)
+        sample = _stationary_bootstrap_indices(window_count, block_length.average_block_length, rng)
         boot = centered[:, sample]
         stat = math.sqrt(window_count) * max(float(np.max(boot.mean(axis=1))), 0.0)
         if stat >= observed - 1e-12:
@@ -104,7 +113,11 @@ def run_white_reality_check(
         "alpha": float(alpha),
         "bootstrap_iters": int(bootstrap_iters_eff),
         "bootstrap_method": "stationary",
-        "average_block_length": int(block_length),
+        "average_block_length": int(block_length.average_block_length),
+        "block_length_source": str(block_length.source),
+        "block_length_threshold": _float_or_none(block_length.threshold),
+        "block_length_cutoff_lag": _int_or_none(block_length.cutoff_lag),
+        "block_length_dependence_strength": _float_or_none(block_length.dependence_strength),
         "trial_count": int(trial_count),
         "window_count": int(window_count),
         "best_trial": int(matrix.trial_ids[best_idx]),
@@ -120,7 +133,7 @@ def run_hansen_spa(
     bootstrap_iters: int = 500,
     alpha: float = 0.20,
     seed: int = 42,
-    average_block_length: int | None = None,
+    average_block_length: int | str | None = None,
 ) -> dict[str, Any]:
     if matrix is None:
         return _insufficient("hansen_spa")
@@ -136,11 +149,11 @@ def run_hansen_spa(
     observed = max(float(np.max(observed_stats)), 0.0)
     rng = np.random.default_rng(int(seed))
     bootstrap_iters_eff = max(int(bootstrap_iters), 100)
-    block_length = _resolve_average_block_length(window_count, average_block_length)
+    block_length = _resolve_average_block_length(matrix, average_block_length)
     exceed = 0
     mu_c = _hansen_sample_dependent_null(means=means, stds=stds, observations=window_count)
     for _ in range(bootstrap_iters_eff):
-        sample = _stationary_bootstrap_indices(window_count, block_length, rng)
+        sample = _stationary_bootstrap_indices(window_count, block_length.average_block_length, rng)
         boot = diffs[:, sample] - mu_c[:, None]
         stat = max(float(np.max(np.sqrt(window_count) * boot.mean(axis=1) / stds)), 0.0)
         if stat >= observed - 1e-12:
@@ -156,7 +169,11 @@ def run_hansen_spa(
         "alpha": float(alpha),
         "bootstrap_iters": int(bootstrap_iters_eff),
         "bootstrap_method": "stationary",
-        "average_block_length": int(block_length),
+        "average_block_length": int(block_length.average_block_length),
+        "block_length_source": str(block_length.source),
+        "block_length_threshold": _float_or_none(block_length.threshold),
+        "block_length_cutoff_lag": _int_or_none(block_length.cutoff_lag),
+        "block_length_dependence_strength": _float_or_none(block_length.dependence_strength),
         "trial_count": int(trial_count),
         "window_count": int(window_count),
         "best_trial": int(matrix.trial_ids[best_idx]),
@@ -239,11 +256,141 @@ def _parse_window_index_from_panel_key(panel_key: str) -> int:
         return -1
 
 
-def _resolve_average_block_length(window_count: int, requested: int | None) -> int:
-    count = max(int(window_count), 1)
-    if requested is not None and int(requested) > 0:
-        return max(1, min(int(requested), count))
-    return max(2, min(count, int(round(math.sqrt(count)))))
+def _resolve_average_block_length(
+    matrix: TrialWindowMatrix,
+    requested: int | str | None,
+) -> BlockLengthSelection:
+    count = max(int(matrix.differential_matrix.shape[1]), 1)
+    if requested is not None and str(requested).strip().lower() != "auto":
+        try:
+            manual = int(requested)
+        except Exception:
+            manual = 0
+        if manual > 0:
+            return BlockLengthSelection(
+                average_block_length=max(1, min(manual, count)),
+                source="manual_override",
+            )
+    return _auto_select_average_block_length(matrix)
+
+
+def _auto_select_average_block_length(matrix: TrialWindowMatrix) -> BlockLengthSelection:
+    diffs = np.asarray(matrix.differential_matrix, dtype=np.float64)
+    trial_count, window_count = diffs.shape
+    if trial_count < 1 or window_count < 2:
+        return BlockLengthSelection(
+            average_block_length=max(1, min(window_count, 2)),
+            source="auto_fallback_short_panel",
+        )
+
+    max_lag = min(window_count - 1, max(3, int(round(math.sqrt(window_count) * 2.0))))
+    lag_count = min(window_count - 1, max_lag)
+    if lag_count < 1:
+        return BlockLengthSelection(
+            average_block_length=max(1, min(window_count, 2)),
+            source="auto_fallback_short_panel",
+        )
+
+    _, avg_autocorr = _estimate_average_autocovariance_profile(diffs, lag_count)
+    if avg_autocorr.size == 0:
+        return BlockLengthSelection(
+            average_block_length=max(1, min(window_count, 2)),
+            source="auto_fallback_no_dependence_signal",
+        )
+
+    threshold = 2.0 * math.sqrt(max(math.log10(float(max(window_count, 10))), 1e-12) / float(window_count))
+    consecutive_lags = max(2, int(math.ceil(math.sqrt(max(math.log(float(window_count)), 1.0)))))
+    cutoff_lag = _find_dependence_cutoff_lag(avg_autocorr, threshold, consecutive_lags)
+    dependence_strength = (
+        float(np.mean(np.clip(avg_autocorr[:cutoff_lag], a_min=0.0, a_max=None))) if cutoff_lag > 0 else 0.0
+    )
+
+    taper_lag = max(1, min(cutoff_lag, lag_count))
+    positive_corr_mass = 0.0
+    for lag in range(1, taper_lag + 1):
+        weight = _flat_top_weight(lag, taper_lag)
+        positive_corr_mass += float(weight) * max(float(avg_autocorr[lag - 1]), 0.0)
+
+    if not np.isfinite(positive_corr_mass) or positive_corr_mass <= 1e-12:
+        auto_length = max(2, min(window_count, 2))
+        source = "auto_fallback_weak_dependence"
+    else:
+        auto_length = int(round(1.0 + 2.0 * positive_corr_mass))
+        auto_length = max(2, min(window_count, auto_length))
+        source = "auto_dependence_selector"
+
+    return BlockLengthSelection(
+        average_block_length=auto_length,
+        source=source,
+        threshold=threshold,
+        cutoff_lag=cutoff_lag,
+        dependence_strength=dependence_strength,
+    )
+
+
+def _estimate_average_autocovariance_profile(
+    diffs: np.ndarray,
+    max_lag: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    rows, observations = diffs.shape
+    lag_limit = min(max_lag, observations - 1)
+    if rows < 1 or lag_limit < 1:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+
+    autocovariances: list[float] = []
+    autocorrelations: list[float] = []
+    for lag in range(1, lag_limit + 1):
+        covs: list[float] = []
+        corrs: list[float] = []
+        for row in diffs:
+            series = np.asarray(row, dtype=np.float64)
+            if series.size <= lag:
+                continue
+            centered = series - float(np.mean(series))
+            variance = float(np.var(centered, ddof=1))
+            if not np.isfinite(variance) or variance <= 1e-12:
+                continue
+            left = centered[:-lag]
+            right = centered[lag:]
+            if left.size < 2 or right.size < 2:
+                continue
+            cov = float(np.dot(left, right) / float(left.size))
+            covs.append(cov)
+            corrs.append(cov / variance)
+        if covs:
+            autocovariances.append(float(np.mean(covs)))
+            autocorrelations.append(float(np.mean(corrs)))
+        else:
+            autocovariances.append(0.0)
+            autocorrelations.append(0.0)
+    return np.asarray(autocovariances, dtype=np.float64), np.asarray(autocorrelations, dtype=np.float64)
+
+
+def _find_dependence_cutoff_lag(
+    avg_autocorr: np.ndarray,
+    threshold: float,
+    consecutive_lags: int,
+) -> int:
+    lag_count = int(avg_autocorr.size)
+    if lag_count < 1:
+        return 0
+    consec = max(1, min(int(consecutive_lags), lag_count))
+    for start in range(0, lag_count - consec + 1):
+        window = np.abs(avg_autocorr[start : start + consec])
+        if np.all(window < float(threshold)):
+            return max(1, start)
+    return lag_count
+
+
+def _flat_top_weight(lag: int, bandwidth: int) -> float:
+    if bandwidth <= 1:
+        return 1.0
+    scaled = float(lag) / float(max(bandwidth, 1))
+    if scaled <= 0.5:
+        return 1.0
+    if scaled <= 1.0:
+        return 2.0 * (1.0 - scaled)
+    return 0.0
 
 
 def _stationary_bootstrap_indices(
@@ -285,3 +432,15 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except Exception:
         return 0.0
+
+
+def _float_or_none(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _int_or_none(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return int(value)
