@@ -3,7 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$AcceptanceScript = "",
     [string]$BatchDate = "",
-    [string[]]$BlockOnActiveUnits = @("autobot-daily-micro.service"),
+    [string[]]$BlockOnActiveUnits = @(),
     [string[]]$AcceptanceArgs = @(),
     [switch]$SkipDailyPipeline,
     [switch]$SkipReportRefresh,

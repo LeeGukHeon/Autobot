@@ -247,7 +247,7 @@ D:\MyApps\Autobot
 ### 모델 승급 운영
 
 - `train_v3_mtf_micro`는 새 학습 결과를 즉시 champion으로 승급하지 않고 `candidate`로 등록한다.
-- 기본 운영 모델은 `champion_v3`, 최신 실험 결과는 `latest_candidate_v3`로 분리한다.
+- 기본 자동 운영 모델은 `champion_v4`, 최신 실험 결과는 `latest_candidate_v4`로 분리한다.
 - 매일 `00:10` 데이터 수집 이후 `candidate acceptance`를 실행한다.
 - acceptance 기본 흐름은 `daily pipeline -> candidate train -> backtest sanity gate -> 3h paper final gate -> pass 시 promote -> 활성 runtime restart`다.
 

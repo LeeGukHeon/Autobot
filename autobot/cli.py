@@ -148,7 +148,7 @@ from .upbit.ws import UpbitWebSocketPublicClient
 from .upbit.ws import UpbitWebSocketPrivateClient
 
 
-DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v3"
+DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v4"
 DEFAULT_V3_CANDIDATE_REF = "latest_candidate_v3"
 DEFAULT_V4_RUNTIME_REF = "champion_v4"
 DEFAULT_V4_CANDIDATE_REF = "latest_candidate_v4"
@@ -159,14 +159,15 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     name = str(preset).strip().lower() or DEFAULT_PAPER_ALPHA_PRESET
     overrides: dict[str, Any] = {
         "strategy": "model_alpha_v1",
-        "feature_set": "v3",
+        "feature_set": "v4",
     }
     if name in {"default", "config"}:
         return overrides
     if name in {"live_v3", "live"}:
         overrides.update(
             {
-                "model_ref": DEFAULT_MODEL_ALPHA_RUNTIME_REF,
+                "feature_set": "v3",
+                "model_ref": "champion_v3",
                 "model_family": "train_v3_mtf_micro",
                 "top_pct": 0.10,
                 "min_cands_per_ts": 3,
@@ -219,7 +220,8 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     if name in {"offline", "offline_v3"}:
         overrides.update(
             {
-                "model_ref": DEFAULT_MODEL_ALPHA_RUNTIME_REF,
+                "feature_set": "v3",
+                "model_ref": "champion_v3",
                 "model_family": "train_v3_mtf_micro",
                 "top_pct": 0.10,
                 "min_cands_per_ts": 3,

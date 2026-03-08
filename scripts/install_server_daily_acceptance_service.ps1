@@ -7,7 +7,7 @@ param(
     [string]$TimerUnitName = "autobot-daily-v4-accept.timer",
     [string]$OnCalendar = "*-*-* 04:20:00",
     [string]$Description = "Autobot Daily V4 Candidate Acceptance",
-    [string[]]$BlockOnActiveUnits = @("autobot-daily-micro.service"),
+    [string[]]$BlockOnActiveUnits = @(),
     [string[]]$AcceptanceArgs = @(),
     [bool]$SkipDailyPipeline = $true,
     [bool]$SkipReportRefresh = $true,

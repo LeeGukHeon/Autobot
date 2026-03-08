@@ -1,7 +1,7 @@
 backtest:
   dataset_name: "candles_v1"
   parquet_root: "data/parquet"
-  tf: "1m"
+  tf: "5m"
   from_ts_ms: null
   to_ts_ms: null
   duration_days: null
@@ -22,10 +22,10 @@ backtest:
     rules_ttl_sec: 86400
 
   strategy:
-    name: "candidates_v1"   # candidates_v1 | model_alpha_v1
-    model_ref: "champion_v3"
-    model_family: "train_v3_mtf_micro"
-    feature_set: "v3"
+    name: "model_alpha_v1"   # candidates_v1 | model_alpha_v1
+    model_ref: "champion_v4"
+    model_family: "train_v4_crypto_cs"
+    feature_set: "v4"
     model_registry_root: "models/registry"
     model_feature_dataset_root: null
 

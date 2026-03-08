@@ -111,12 +111,12 @@
 - `strategy.micro_order_policy.safety.max_replaces_per_min_per_market`: integer (default: `10`)
 - `strategy.micro_order_policy.safety.forbid_post_only_with_cross`: bool (default: `true`)
 - precedence note: when `strategy=model_alpha_v1` and `strategy.micro_order_policy.enabled=true`, policy acts as a conservative overlay on `strategy.model_alpha_v1.execution`; it may make orders more conservative or block/escalate them, but it does not make initial orders more aggressive than the strategy base profile.
-- `strategy.model_alpha_v1.model_ref`: string (default: `latest_v3`)
-- `strategy.model_alpha_v1.model_family`: string (default: `train_v3_mtf_micro`)
-- `strategy.model_alpha_v1.feature_set`: string (default: `v3`)
-- `strategy.model_alpha_v1.selection.top_pct`: number (default: `0.05`)
+- `strategy.model_alpha_v1.model_ref`: string (default: `champion_v4`)
+- `strategy.model_alpha_v1.model_family`: string (default: `train_v4_crypto_cs`)
+  - `strategy.model_alpha_v1.feature_set`: string (default: `v4`)
+  - `strategy.model_alpha_v1.selection.top_pct`: number (default: `0.50`)
 - `strategy.model_alpha_v1.selection.min_prob`: number nullable (default: `null`, uses registry threshold when null)
-- `strategy.model_alpha_v1.selection.min_candidates_per_ts`: integer (default: `10`)
+- `strategy.model_alpha_v1.selection.min_candidates_per_ts`: integer (default: `1`)
 - `strategy.model_alpha_v1.selection.registry_threshold_key`: `top_1pct | top_5pct | top_10pct | ev_opt` (default: `top_5pct`)
 - `strategy.model_alpha_v1.selection.use_learned_recommendations`: bool (default: `true`)
   - when `true`, runtime first reads model-run `selection_recommendations.json` for the active `registry_threshold_key`
@@ -186,15 +186,15 @@
 ## Backtest
 - `backtest.dataset_name`: string (default: `candles_v1`)
 - `backtest.parquet_root`: path (default: `data/parquet`)
-- `backtest.tf`: timeframe string (default: `1m`)
+- `backtest.tf`: timeframe string (default: `5m`)
 - `backtest.from_ts_ms`: int64 nullable
 - `backtest.to_ts_ms`: int64 nullable
 - `backtest.duration_days`: integer nullable
 - `backtest.seed`: integer (default: `0`)
-- `backtest.strategy.name`: `candidates_v1 | model_alpha_v1` (default: `candidates_v1`)
-- `backtest.strategy.model_ref`: string (default: `latest_v3`)
-- `backtest.strategy.model_family`: string (default: `train_v3_mtf_micro`)
-- `backtest.strategy.feature_set`: string (default: `v3`)
+- `backtest.strategy.name`: `candidates_v1 | model_alpha_v1` (default: `model_alpha_v1`)
+- `backtest.strategy.model_ref`: string (default: `champion_v4`)
+- `backtest.strategy.model_family`: string (default: `train_v4_crypto_cs`)
+  - `backtest.strategy.feature_set`: string (default: `v4`)
 - `backtest.strategy.model_registry_root`: path (default: `models/registry`)
 - `backtest.strategy.model_feature_dataset_root`: path nullable (default: `null`)
 
@@ -586,7 +586,7 @@
 - `scripts/daily_candidate_acceptance_for_server.ps1`: server wrapper for delayed acceptance runs that reuse already-collected data
   - default batch date when omitted: previous local day (`yyyy-MM-dd`)
   - supports `-SkipDailyPipeline` and `-SkipReportRefresh`
-  - can soft-skip when `-BlockOnActiveUnits` contains currently active systemd units
+  - default `-BlockOnActiveUnits` is empty in the single-lane `v4` rollout; use it only for explicit external blockers
 - `scripts/install_server_daily_acceptance_service.ps1`: installs a timer/service pair for delayed post-collection acceptance
   - default units:
     - `autobot-daily-v4-accept.service`

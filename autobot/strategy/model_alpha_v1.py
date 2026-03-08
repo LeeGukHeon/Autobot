@@ -23,9 +23,9 @@ from autobot.strategy.operational_overlay_v1 import (
 
 @dataclass(frozen=True)
 class ModelAlphaSelectionSettings:
-    top_pct: float = 0.05
+    top_pct: float = 0.50
     min_prob: float | None = None
-    min_candidates_per_ts: int = 10
+    min_candidates_per_ts: int = 1
     registry_threshold_key: str = "top_5pct"
     use_learned_recommendations: bool = True
 
@@ -60,9 +60,9 @@ class ModelAlphaExecutionSettings:
 
 @dataclass(frozen=True)
 class ModelAlphaSettings:
-    model_ref: str = "champion_v3"
-    model_family: str | None = None
-    feature_set: str = "v3"
+    model_ref: str = "champion_v4"
+    model_family: str | None = "train_v4_crypto_cs"
+    feature_set: str = "v4"
     selection: ModelAlphaSelectionSettings = field(default_factory=ModelAlphaSelectionSettings)
     position: ModelAlphaPositionSettings = field(default_factory=ModelAlphaPositionSettings)
     exit: ModelAlphaExitSettings = field(default_factory=ModelAlphaExitSettings)

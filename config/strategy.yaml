@@ -72,13 +72,13 @@
       max_replaces_per_min_per_market: 10
       forbid_post_only_with_cross: true
   model_alpha_v1:
-    model_ref: champion_v3
-    model_family: train_v3_mtf_micro
-    feature_set: v3
+    model_ref: champion_v4
+    model_family: train_v4_crypto_cs
+    feature_set: v4
     selection:
-      top_pct: 0.05
+      top_pct: 0.50
       min_prob: null
-      min_candidates_per_ts: 10
+      min_candidates_per_ts: 1
       registry_threshold_key: top_5pct
       use_learned_recommendations: true
     position:
