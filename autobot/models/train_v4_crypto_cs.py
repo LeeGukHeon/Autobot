@@ -486,9 +486,19 @@ def _run_walk_forward_v4(
             y_test_cls=dataset.y_cls[test_mask],
             y_test_reg=dataset.y_reg[test_mask],
             market_test=dataset.markets[test_mask],
+            ts_test_ms=dataset.ts_ms[test_mask],
         )
         scores = _predict_scores(fitted["bundle"], dataset.X[test_mask])
         metrics = _evaluate_split(
+            y_cls=dataset.y_cls[test_mask],
+            y_reg=dataset.y_reg[test_mask],
+            scores=scores,
+            markets=dataset.markets[test_mask],
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        oos_slices = _build_oos_slice_metrics(
+            ts_ms=dataset.ts_ms[test_mask],
             y_cls=dataset.y_cls[test_mask],
             y_reg=dataset.y_reg[test_mask],
             scores=scores,
@@ -506,6 +516,7 @@ def _run_walk_forward_v4(
                 },
                 "counts": row_counts,
                 "metrics": _compact_eval_metrics(metrics),
+                "oos_slices": oos_slices,
                 "trial_records": list(fitted.get("trial_records", [])),
             }
         )
@@ -562,6 +573,7 @@ def _fit_walk_forward_window_model(
     y_test_cls: np.ndarray,
     y_test_reg: np.ndarray,
     market_test: np.ndarray,
+    ts_test_ms: np.ndarray,
 ) -> dict[str, Any]:
     if task == "cls":
         return _fit_walk_forward_weighted_trials(
@@ -578,6 +590,7 @@ def _fit_walk_forward_window_model(
             y_test_cls=y_test_cls,
             y_test_reg=y_test_reg,
             market_test=market_test,
+            ts_test_ms=ts_test_ms,
         )
     return _fit_walk_forward_regression_trials(
         options=options,
@@ -593,6 +606,7 @@ def _fit_walk_forward_window_model(
         y_test_cls=y_test_cls,
         y_test_reg=y_test_reg,
         market_test=market_test,
+        ts_test_ms=ts_test_ms,
     )
 
 
@@ -618,8 +632,21 @@ def _summarize_walk_forward_trial_panel(windows: list[dict[str, Any]]) -> list[d
                     "window_index": window_index,
                     "time_window": time_window,
                     "metrics": dict(record.get("test_metrics", {})),
+                    "oos_slices": list(record.get("test_oos_slices", []) or []),
                 }
             )
+            slice_rows = node.setdefault("oos_slices", [])
+            for slice_doc in record.get("test_oos_slices", []) or []:
+                if not isinstance(slice_doc, dict):
+                    continue
+                slice_rows.append(
+                    {
+                        "window_index": window_index,
+                        "slice_index": int(slice_doc.get("slice_index", -1)),
+                        "slice_key": str(slice_doc.get("slice_key", "")),
+                        "metrics": dict(slice_doc.get("metrics", {})),
+                    }
+                )
     trial_panel: list[dict[str, Any]] = []
     for trial_id in sorted(by_trial):
         node = by_trial[trial_id]
@@ -627,6 +654,7 @@ def _summarize_walk_forward_trial_panel(windows: list[dict[str, Any]]) -> list[d
         summary = summarize_walk_forward_windows(windows_for_trial)
         node["summary"] = summary
         node["windows_run"] = int(summary.get("windows_run", 0) or 0)
+        node["oos_slice_count"] = len(node.get("oos_slices", []) or [])
         trial_panel.append(node)
     return trial_panel
 
@@ -646,6 +674,7 @@ def _fit_walk_forward_weighted_trials(
     y_test_cls: np.ndarray,
     y_test_reg: np.ndarray,
     market_test: np.ndarray,
+    ts_test_ms: np.ndarray,
 ) -> dict[str, Any]:
     xgb = _try_import_xgboost()
     if xgb is None:
@@ -722,6 +751,15 @@ def _fit_walk_forward_weighted_trials(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
+        test_oos_slices = _build_oos_slice_metrics(
+            ts_ms=ts_test_ms,
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
         trial_records.append(
             {
                 "trial": int(trial),
@@ -732,6 +770,7 @@ def _fit_walk_forward_weighted_trials(
                     "roc_auc": key[2],
                 },
                 "test_metrics": _compact_eval_metrics(test_metrics),
+                "test_oos_slices": test_oos_slices,
             }
         )
     if best_bundle is None:
@@ -754,6 +793,7 @@ def _fit_walk_forward_regression_trials(
     y_test_cls: np.ndarray,
     y_test_reg: np.ndarray,
     market_test: np.ndarray,
+    ts_test_ms: np.ndarray,
 ) -> dict[str, Any]:
     xgb = _try_import_xgboost()
     if xgb is None:
@@ -830,6 +870,15 @@ def _fit_walk_forward_regression_trials(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
+        test_oos_slices = _build_oos_slice_metrics(
+            ts_ms=ts_test_ms,
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
         trial_records.append(
             {
                 "trial": int(trial),
@@ -840,6 +889,7 @@ def _fit_walk_forward_regression_trials(
                     "pr_auc": key[2],
                 },
                 "test_metrics": _compact_eval_metrics(test_metrics),
+                "test_oos_slices": test_oos_slices,
             }
         )
     if best_bundle is None:
@@ -871,6 +921,56 @@ def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
             "positive_markets": int(summary.get("positive_markets", 0) or 0),
         },
     }
+
+
+def _build_oos_slice_metrics(
+    *,
+    ts_ms: np.ndarray,
+    y_cls: np.ndarray,
+    y_reg: np.ndarray,
+    scores: np.ndarray,
+    markets: np.ndarray,
+    fee_bps_est: float,
+    safety_bps: float,
+    max_slices: int = 8,
+) -> list[dict[str, Any]]:
+    ts_values = np.asarray(ts_ms, dtype=np.int64)
+    if ts_values.size <= 0:
+        return []
+    unique_ts = np.unique(ts_values)
+    if unique_ts.size <= 0:
+        return []
+    slice_count = max(1, min(int(max_slices), int(unique_ts.size)))
+    ts_groups = np.array_split(unique_ts, slice_count)
+    slices: list[dict[str, Any]] = []
+    for slice_index, ts_group in enumerate(ts_groups):
+        if ts_group.size <= 0:
+            continue
+        mask = np.isin(ts_values, ts_group)
+        if not np.any(mask):
+            continue
+        slice_metrics = _evaluate_split(
+            y_cls=y_cls[mask],
+            y_reg=y_reg[mask],
+            scores=scores[mask],
+            markets=markets[mask],
+            fee_bps_est=fee_bps_est,
+            safety_bps=safety_bps,
+        )
+        start_ts = int(ts_group[0])
+        end_ts = int(ts_group[-1])
+        slices.append(
+            {
+                "slice_index": int(slice_index),
+                "slice_key": f"{slice_index}:{start_ts}:{end_ts}",
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "rows": int(np.sum(mask)),
+                "ts_count": int(ts_group.size),
+                "metrics": _compact_eval_metrics(slice_metrics),
+            }
+        )
+    return slices
 
 
 def _load_champion_walk_forward_report(*, options: TrainV4CryptoCsOptions) -> dict[str, Any] | None:

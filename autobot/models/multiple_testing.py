@@ -11,6 +11,7 @@ import numpy as np
 class TrialWindowMatrix:
     trial_ids: list[int]
     window_indices: list[int]
+    panel_keys: list[str]
     differential_matrix: np.ndarray
 
 
@@ -19,58 +20,47 @@ def build_trial_window_differential_matrix(
     champion_windows: list[dict[str, Any]] | None,
 ) -> TrialWindowMatrix | None:
     candidate_rows = list(candidate_trial_panel or [])
-    champion_map = {
-        int(window.get("window_index", -1)): _safe_float(
-            (((window.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
-        )
-        for window in (champion_windows or [])
-        if isinstance(window, dict) and int(window.get("window_index", -1)) >= 0
-    }
-    if not candidate_rows or not champion_map:
+    champion_slice_map = _extract_champion_slice_map(champion_windows or [])
+    if not candidate_rows or not champion_slice_map:
         return None
 
-    trial_window_maps: list[tuple[int, dict[int, float]]] = []
-    common_windows: set[int] | None = None
+    trial_panel_maps: list[tuple[int, dict[str, float]]] = []
+    common_keys: set[str] | None = None
     for record in candidate_rows:
         trial_id = int(record.get("trial", -1))
         if trial_id < 0:
             continue
-        windows = {
-            int(window.get("window_index", -1)): _safe_float(
-                (((window.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
-            )
-            for window in (record.get("windows") or [])
-            if isinstance(window, dict) and int(window.get("window_index", -1)) >= 0
-        }
-        shared = sorted(set(windows).intersection(champion_map))
+        slices = _extract_trial_slice_map(record)
+        shared = sorted(set(slices).intersection(champion_slice_map))
         if not shared:
             continue
-        if common_windows is None:
-            common_windows = set(shared)
+        if common_keys is None:
+            common_keys = set(shared)
         else:
-            common_windows &= set(shared)
-        trial_window_maps.append((trial_id, windows))
+            common_keys &= set(shared)
+        trial_panel_maps.append((trial_id, slices))
 
-    if not trial_window_maps or not common_windows:
+    if not trial_panel_maps or not common_keys:
         return None
 
-    window_indices = sorted(common_windows)
-    if len(window_indices) < 2:
+    panel_keys = sorted(common_keys)
+    if len(panel_keys) < 2:
         return None
 
     matrix_rows: list[list[float]] = []
     trial_ids: list[int] = []
-    for trial_id, record_map in trial_window_maps:
-        if not all(index in record_map for index in window_indices):
+    for trial_id, record_map in trial_panel_maps:
+        if not all(key in record_map for key in panel_keys):
             continue
         trial_ids.append(trial_id)
-        matrix_rows.append([record_map[index] - champion_map[index] for index in window_indices])
+        matrix_rows.append([record_map[key] - champion_slice_map[key] for key in panel_keys])
 
     if len(trial_ids) < 2 or not matrix_rows:
         return None
     return TrialWindowMatrix(
         trial_ids=trial_ids,
-        window_indices=window_indices,
+        window_indices=[_parse_window_index_from_panel_key(key) for key in panel_keys],
+        panel_keys=panel_keys,
         differential_matrix=np.asarray(matrix_rows, dtype=np.float64),
     )
 
@@ -184,6 +174,69 @@ def _insufficient(policy: str) -> dict[str, Any]:
         "candidate_edge": False,
         "reasons": ["INSUFFICIENT_COMMON_TRIAL_WINDOWS"],
     }
+
+
+def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
+    windows = record.get("windows") or []
+    candidate_slice_map: dict[str, float] = {}
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        window_index = int(window.get("window_index", -1))
+        oos_slices = window.get("oos_slices") or []
+        if oos_slices:
+            for slice_doc in oos_slices:
+                if not isinstance(slice_doc, dict):
+                    continue
+                slice_index = int(slice_doc.get("slice_index", -1))
+                if window_index < 0 or slice_index < 0:
+                    continue
+                slice_key = _compose_panel_key(window_index, slice_index)
+                candidate_slice_map[slice_key] = _safe_float(
+                    (((slice_doc.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+                )
+        elif window_index >= 0:
+            candidate_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
+                (((window.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+            )
+    return candidate_slice_map
+
+
+def _extract_champion_slice_map(windows: list[dict[str, Any]]) -> dict[str, float]:
+    champion_slice_map: dict[str, float] = {}
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        window_index = int(window.get("window_index", -1))
+        if window_index < 0:
+            continue
+        oos_slices = window.get("oos_slices") or []
+        if oos_slices:
+            for slice_doc in oos_slices:
+                if not isinstance(slice_doc, dict):
+                    continue
+                slice_index = int(slice_doc.get("slice_index", -1))
+                if slice_index < 0:
+                    continue
+                champion_slice_map[_compose_panel_key(window_index, slice_index)] = _safe_float(
+                    (((slice_doc.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+                )
+        else:
+            champion_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
+                (((window.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+            )
+    return champion_slice_map
+
+
+def _compose_panel_key(window_index: int, slice_index: int) -> str:
+    return f"{int(window_index)}:{int(slice_index)}"
+
+
+def _parse_window_index_from_panel_key(panel_key: str) -> int:
+    try:
+        return int(str(panel_key).split(":", 1)[0])
+    except Exception:
+        return -1
 
 
 def _resolve_average_block_length(window_count: int, requested: int | None) -> int:

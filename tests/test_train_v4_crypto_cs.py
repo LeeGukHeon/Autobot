@@ -6,7 +6,11 @@ import numpy as np
 
 from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
-from autobot.models.train_v4_crypto_cs import TrainV4CryptoCsOptions, train_and_register_v4_crypto_cs
+from autobot.models.train_v4_crypto_cs import (
+    TrainV4CryptoCsOptions,
+    _summarize_walk_forward_trial_panel,
+    train_and_register_v4_crypto_cs,
+)
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExitSettings,
     ModelAlphaSelectionSettings,
@@ -403,3 +407,31 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert execution_options.model_alpha_settings.selection.min_candidates_per_ts == 1
     assert execution_options.model_alpha_settings.selection.use_learned_recommendations is False
     assert execution_options.model_alpha_settings.exit.hold_bars == 9
+
+
+def test_summarize_walk_forward_trial_panel_flattens_oos_slices() -> None:
+    windows = [
+        {
+            "window_index": 0,
+            "time_window": {"test_start_ts": 1000, "test_end_ts": 2000},
+            "trial_records": [
+                {
+                    "trial": 0,
+                    "params": {"max_depth": 4},
+                    "test_metrics": {"trading": {"top_5pct": {"ev_net": 0.01}}},
+                    "test_oos_slices": [
+                        {"slice_index": 0, "slice_key": "0:1000:1500", "metrics": {"trading": {"top_5pct": {"ev_net": 0.004}}}},
+                        {"slice_index": 1, "slice_key": "1:1501:2000", "metrics": {"trading": {"top_5pct": {"ev_net": 0.006}}}},
+                    ],
+                }
+            ],
+        }
+    ]
+
+    panel = _summarize_walk_forward_trial_panel(windows)
+
+    assert len(panel) == 1
+    assert panel[0]["trial"] == 0
+    assert panel[0]["oos_slice_count"] == 2
+    assert panel[0]["oos_slices"][0]["window_index"] == 0
+    assert panel[0]["oos_slices"][1]["slice_index"] == 1

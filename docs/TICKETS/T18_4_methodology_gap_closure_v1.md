@@ -346,3 +346,23 @@ Current behavior:
 
 Next task:
 - `Phase 2: Finer OOS Differential Panel For RC/SPA`
+
+### Phase 2 Completed
+- `autobot/models/train_v4_crypto_cs.py`
+  - walk-forward windows now persist deterministic aligned `oos_slices`
+  - trial records now persist `test_oos_slices`
+  - `trial_panel` now includes flattened `oos_slices`
+- `autobot/models/multiple_testing.py`
+  - RC/SPA now prefers aligned `window_index + slice_index` OOS panels
+  - window-level `ev_net` remains as backward-compatible fallback
+- tests:
+  - `tests/test_multiple_testing.py`
+  - `tests/test_train_v4_crypto_cs.py`
+
+Current behavior:
+- RC/SPA input is no longer limited to one `ev_net` number per walk-forward window
+- aligned OOS slices are used when available
+- older artifacts still fall back to window-level differentials
+
+Next task:
+- `Phase 3: Data-Driven Block Length Selection`

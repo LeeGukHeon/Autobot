@@ -37,8 +37,55 @@ def test_build_trial_window_differential_matrix_aligns_common_windows() -> None:
     assert matrix is not None
     assert matrix.trial_ids == [0, 1]
     assert matrix.window_indices == [0, 1, 2]
+    assert matrix.panel_keys == ["0:0", "1:0", "2:0"]
     assert matrix.differential_matrix.shape == (2, 3)
     assert matrix.differential_matrix[0, 0] == 0.003
+
+
+def test_build_trial_window_differential_matrix_prefers_oos_slices_when_available() -> None:
+    candidate_trial_panel = [
+        {
+            "trial": 0,
+            "windows": [
+                {
+                    "window_index": 0,
+                    "oos_slices": [
+                        {"slice_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.004}}}},
+                        {"slice_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.006}}}},
+                    ],
+                }
+            ],
+        },
+        {
+            "trial": 1,
+            "windows": [
+                {
+                    "window_index": 0,
+                    "oos_slices": [
+                        {"slice_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.005}}}},
+                        {"slice_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.007}}}},
+                    ],
+                }
+            ],
+        },
+    ]
+    champion_windows = [
+        {
+            "window_index": 0,
+            "oos_slices": [
+                {"slice_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}},
+                {"slice_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.002}}}},
+            ],
+        }
+    ]
+
+    matrix = build_trial_window_differential_matrix(candidate_trial_panel, champion_windows)
+
+    assert matrix is not None
+    assert matrix.panel_keys == ["0:0", "0:1"]
+    assert matrix.window_indices == [0, 0]
+    assert matrix.differential_matrix.shape == (2, 2)
+    assert matrix.differential_matrix[0, 1] == 0.004
 
 
 def test_run_white_reality_check_detects_candidate_edge() -> None:
