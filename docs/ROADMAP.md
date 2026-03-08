@@ -10,28 +10,34 @@
 ## 0) 핵심 원칙 (절대 규칙)
 
 ### API 규칙 절대 준수
+
 - 업비트 REST API Rate Limit 그룹별 제한을 준수한다.
 - `Remaining-Req` 헤더로 잔여 호출량을 추적하고 스로틀링/백오프를 자동 적용한다.
 
 ### 하드코딩 최소화
+
 - 최소 주문금액, 수수료율, 주문 가능 타입, 호가단위(틱)는 API 조회 후 캐시해서 사용한다.
 - `GET /v1/orders/chance`를 주문 검증의 SSOT로 사용한다.
 - `GET /v1/orderbook/instruments`의 `tick_size`를 가격 라운딩에 사용한다.
 
 ### 시장가 ord_type 금지
+
 - 실거래는 기본 `limit`만 사용.
 - 긴급 실행은 `limit + IOC` 또는 `best + IOC/FOK` 설계.
 
 ### 전략/학습/실행/리스크 분리
+
 - 전략이 바뀌어도 실행엔진/리스크/데이터 파이프라인은 재사용.
 - Backtest/Paper/Live는 동일 인터페이스, `ExecutionGateway`만 교체.
 
 ### 소액(5만원)에서도 동작
+
 - KRW 최소 주문 5,000원과 수수료/틱/체결실패를 반영해 주문 성립 가능한 수량/금액만 거래.
 
 ## 1) 목표/범위
 
 ### 1.1 목표
+
 - (A) 데이터 학습 파이프라인 자동화
 - (B) 백테스트 엔진(수수료/틱/지정가 체결모델/부분체결/미체결)
 - (C) 라이브 페이퍼런(실시간 신호 + 가상 체결)
@@ -39,6 +45,7 @@
 - (E) 리스크 관리(TP/SL/트레일링/일일손실제한/킬스위치)
 
 ### 1.2 비목표
+
 - 초단타 HFT 최적화
 - 타 거래소 멀티연동
 - 레버리지/선물
@@ -46,6 +53,7 @@
 ## 2) 업비트 제약/정책
 
 ### 2.1 Rate Limit
+
 - Quotation REST: 그룹별 초당 최대 10회 (IP)
 - Exchange default: 초당 최대 30회 (계정)
 - order 그룹: 초당 최대 8회 (계정)
@@ -53,32 +61,39 @@
 - 초과 시 429, 지속 시 418
 
 ### 2.2 최소 주문/틱
+
 - KRW 최소 주문 5,000 KRW
 - 틱 정책은 변경 가능하므로 `orderbook/instruments`로 확인
 
 ### 2.3 주문 타입
+
 - 지정가: `ord_type=limit`, `time_in_force=ioc|fok|post_only`
 - 최유리 지정가: `ord_type=best`, `time_in_force=ioc|fok`
 - SMP 옵션: `smp_type`
 
 ### 2.4 수수료/주문가능정보
+
 - `orders/chance`의 `bid_fee`, `ask_fee`, `market.*.min_total`, `market.max_total`, 지원 타입을 참조
 
 ## 3) 사용 데이터
 
 ### 3.1 보유
+
 - 전 기간: 273개 코인 5m/15m/60m/240m CSV
 - 최근 2년: 123개 코인 1m CSV
 
 ### 3.2 초기 활용
+
 - 멀티타임프레임 시그널 학습/백테스트
 - 1분봉은 체결모델 고도화/실행 보조지표
 
 ### 3.3 선택 데이터
+
 - 실시간 orderbook/trade WS
 - 마켓 상태 히스토리
 
 ### 3.4 PC 제약(6C/12T, 16GB)
+
 - 전체 CSV 일괄 pandas 로드 금지
 - CSV -> Parquet
 - 코인x타임프레임 배치 처리
@@ -87,6 +102,7 @@
 ## 4) 전체 아키텍처
 
 ### 4.1 모듈 분리
+
 - Data Layer
 - Feature & Label Layer
 - Model Layer
@@ -149,66 +165,79 @@ D:\MyApps\Autobot
 ```
 
 패키지 SSOT 정책:
+
 - 메인 개발/실행 패키지는 루트 `autobot/`를 사용한다.
 - `python/autobot/`는 기본 실행 경로가 아니며, 필요 시 동기화 스크립트로만 갱신한다.
 
 ## 6) 기술 스택/설치
+
 - Python 3.11, VS Build Tools, CMake/Ninja
 - 필수 라이브러리: pydantic, pyyaml, numpy/pandas, polars/pyarrow, duckdb, httpx, websockets, tenacity, loguru, orjson
 - ML: scikit-learn, lightgbm
 - C++ 확장(선택): pybind11
 
 ## 7) 설정 중심 설계
+
 - 모든 환경/파라미터는 `config/*.yaml`
 - 민감정보는 `.env`
 - `mode`, `universe`, `execution`, `risk`, `upbit` 섹션 표준화
 
 ## 8) 업비트 연동 설계
+
 - JWT 인증(access_key, nonce, query_hash)
 - POST는 JSON body
 - 주문 전 검증: orders/chance + orderbook/instruments + 최소주문 + 잔고/locked + 수수료
 - 그룹별 RateLimitManager 필수
 
 ## 9) 거래대금 상위 20 스캔
+
 - KRW 마켓 ticker `acc_trade_price_24h` 기준 Top20
 - 초저가/거래정지/유의 종목 필터
 
 ## 10) 리스크 관리
+
 - min_order_krw = max(5000, config.min_order_krw, orders/chance.min_total)
 - TP/SL/Trailing
 - 긴급청산은 `best + ioc`
 - 연속 실패/일일손실 초과 시 거래중단
 
 ## 11) 주문 실패 대응
+
 - 상태머신: CREATED -> SUBMITTED -> OPEN -> PARTIAL -> FILLED
 - 재호가 정책(타임아웃/틱 조정/횟수 제한)
 
 ## 12) 백테스트 설계
+
 - 룩어헤드/누수 방지
 - Walk-forward
 - 지정가 체결모델, 보수적 fill 옵션, 수수료/틱 반영
 - 산출: 트레이드 로그 + 성과 지표 + 리포트
 
 ## 13) 라이브 페이퍼런 설계
+
 - 실시간 신호는 라이브와 동일
 - 주문만 가상체결
 - WS 기반 권장
 
 ## 14) 자가판단(메타)
+
 - 레짐/유동성/신뢰도/최근성능/드리프트를 입력으로 risk-on/off 결정
 - 출력: `risk_multiplier`, `allowed_strategies`, `max_positions_override`
 
 ## 15) ML 파이프라인
+
 - LightGBM 기반 v1
 - 워크포워드 검증
 - 모델 레지스트리 버전 관리
 - 승인된 모델만 실거래 반영
 
 ## 16) 레거시 삭제/신규 삽입 정책
+
 - 티켓에 `[DELETE]`와 `[ADD]`를 필수 포함
 - 코드 삭제는 가능하되 변경이력은 ADR에 보존
 
 ## 17) 개발/테스트/운영
+
 - Unit/Integration/Paper 계층 테스트
 - 의사결정 이벤트 로깅 + SQLite 복구 가능성 확보
 - API 키 보안(출금권한 비활성/IP 제한)
@@ -216,12 +245,14 @@ D:\MyApps\Autobot
 ## 17.1) 현재 운영 로드맵 (2026-03 기준)
 
 ### 모델 승급 운영
+
 - `train_v3_mtf_micro`는 새 학습 결과를 즉시 champion으로 승급하지 않고 `candidate`로 등록한다.
 - 기본 운영 모델은 `champion_v3`, 최신 실험 결과는 `latest_candidate_v3`로 분리한다.
 - 매일 `00:10` 데이터 수집 이후 `candidate acceptance`를 실행한다.
 - acceptance 기본 흐름은 `daily pipeline -> candidate train -> backtest sanity gate -> 3h paper final gate -> pass 시 promote -> 활성 runtime restart`다.
 
 ### 승급 판단 정책
+
 - 승급 판단은 `backtest = sanity gate`, `paper = final gate` 원칙으로 운영한다.
 - 기본 정책은 `paper_final_balanced`다.
 - backtest는 후보 모델의 최소 거래 가능성과 학습/실행 증빙을 확인하는 sanity filter 역할만 한다.
@@ -236,7 +267,8 @@ D:\MyApps\Autobot
 - 후보-챔피언의 offline compare 지표는 계속 리포트에 남기지만, promote의 직접 결정권은 paper 쪽에 둔다.
 
 ### 즉시 다음 개선 항목
-- 현재 `DSR-style` sanity check를 유지하고, 다음 단계로 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
+
+- 현재 `DSR-style` sanity check와 `v4 SPA-like walk-forward window test`를 유지하고, 다음 단계로 richer trial data를 저장한 뒤 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
 - 단일 backtest window 대신 rolling walk-forward acceptance를 도입한다.
 - paper soak 리포트를 운영 검증용과 성능 해석용으로 분리한다.
 - promote 후 활성 `paper/live` 서비스 자동 재시작을 기본 운영 루프로 유지한다.
@@ -244,11 +276,13 @@ D:\MyApps\Autobot
 ## 17.3) 운영 레이어 v1 (T18.3)
 
 ### 원칙
+
 - 알파 selection은 learned output을 유지한다.
 - backtest는 하나의 fixed compare profile로 candidate-vs-champion sanity gate만 수행한다.
 - paper/live current-market adaptation은 운영 레이어에서 처리한다.
 
 ### 구현 상태
+
 - `rolling paper evidence` 반영
   - paper final gate는 단순 end-of-run pnl만이 아니라 rolling window evidence도 본다.
 - `paper history evidence` 반영
@@ -264,18 +298,24 @@ D:\MyApps\Autobot
   - 품질이 극단적으로 낮으면 runtime에서 진입을 차단하고, paper final gate는 평균 quality 하한도 본다.
 - `DSR-style sanity check` 반영
   - backtest sanity gate는 `equity.csv` 기반의 lightweight `deflated_sharpe_ratio_est`를 기록하고 최소 하한을 확인한다.
+- `SPA-like walk-forward test` 반영
+  - `v4` trainer evidence는 candidate/champion walk-forward window의 `ev_net` 차이를 paired sign-flip 방식으로 검정한다.
+  - full `White Reality Check`는 아직 future다. 현재 trainer sweep에는 per-trial aligned return panel이 저장되지 않기 때문이다.
 
 ### 설계 문서
+
 - 상세 내용은 `docs/TICKETS/T18_3_operational_runtime_overlay_v1.md`를 따른다.
 
 ## 17.2) 코인 연구 정렬 알파 vNext (T18.2)
 
 ### 왜 지금 이 작업을 하는가
+
 - 현재 운영 baseline은 `feature_set=v3`, `label_set=v1`, `trainer=train_v3_mtf_micro`, `strategy=model_alpha_v1`로 안정화되어 있다.
 - 하지만 현재 학습 목표는 `12 x 5m` 이후 종가 기반 이진분류이고, 실제 운용은 cross-sectional selection + execution overlay 구조다.
 - 즉 데이터가 부족하다기보다 `학습 목표`, `피처 계약`, `실제 선택 로직` 사이의 미스매치가 다음 병목이다.
 
 ### 방향성
+
 - 최근 코인 단면 연구와 가장 잘 맞는 방향은 다음 5개다.
 - `label`을 절대 방향 이진분류 중심에서 `순이익/상대순위` 중심으로 재설계한다.
 - `cross-coin spillover`와 `market breadth`를 feature contract에 추가한다.
@@ -284,6 +324,7 @@ D:\MyApps\Autobot
 - `liquidity x risk x momentum` 상호작용을 소수의 명시적 피처로 추가한다.
 
 ### 레거시 정리 원칙
+
 - 운영 baseline인 `v3/v1/train_v3_mtf_micro/model_alpha_v1`은 freeze한다.
 - 기존 `v3`나 `label_v1` 의미를 in-place로 바꾸지 않는다.
 - 연구용 새 계약은 새 버전(`v4`, `label_v2`, 새 trainer wrapper`)으로 추가한다.
@@ -291,6 +332,7 @@ D:\MyApps\Autobot
 - `model_alpha_v1`은 점수 기반 selection/portfolio/runtime handoff 계약이 유지되는 한 그대로 재사용한다.
 
 ### 실행 순서
+
 - 1단계: `label_v2` 설계 및 offline dataset contract 확정 `완료`
 - 2단계: `feature_set_v4`에 spillover/trend/periodicity/interaction pack 추가 `사실상 완료`
   - 현재는 `spillover + breadth + periodicity + trend-volume + interaction` pack까지 반영됨
@@ -356,9 +398,11 @@ D:\MyApps\Autobot
   - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
 
 ### 설계 문서
+
 - 상세 설계와 구현/삭제 기준은 `docs/TICKETS/T18_2_crypto_alpha_research_alignment_v1.md`를 따른다.
 
 ## 18) 단계별 티켓 로드맵
+
 - T00: Repo Bootstrap
 - T01: CSV -> Parquet + Schema
 - T02: Upbit REST + JWT + RateLimiter
@@ -374,6 +418,7 @@ D:\MyApps\Autobot
 - T18.2: Crypto alpha vNext (`label_v2`, `feature_set_v4`, rolling acceptance, legacy freeze/cleanup)
 
 ## 19) 첫 작업 지시문 요약
+
 - 디렉터리 구조 생성
 - `docs/ROADMAP.md` 저장
 - `docs/ADR/0001-initial-architecture.md` 작성
@@ -384,6 +429,7 @@ D:\MyApps\Autobot
 - 하드코딩 금지, 인터페이스 기반 설계
 
 ## 체크리스트
+
 - 체결(Execution)과 신호(Alpha) 분리
 - 틱/최소주문/지원타입 사전 검증
 - 과최적화보다 현실 체결 모델 우선

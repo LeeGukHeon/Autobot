@@ -484,6 +484,9 @@ Current implementation checkpoint:
       - recent-run nonnegative/positive ratios
       - recent-run median micro quality
     - backtest sanity gate now records `deflated_sharpe_ratio_est` from the generated `equity.csv`
+    - `v4` trainer evidence now also records a `SPA-like` walk-forward paired window test
+      - this is the strongest correction currently supported by stored data
+      - a full `White Reality Check / SPA` still needs per-trial aligned return panels that the current trainer sweep does not persist
 - `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
   - current target timer remains:
     - `autobot-daily-micro.timer`

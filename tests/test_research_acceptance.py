@@ -3,6 +3,7 @@ from __future__ import annotations
 from autobot.models.research_acceptance import (
     compare_balanced_pareto,
     compare_execution_balanced_pareto,
+    compare_spa_like_window_test,
     summarize_walk_forward_windows,
 )
 
@@ -80,3 +81,33 @@ def test_compare_execution_balanced_pareto_prefers_candidate_on_utility_tie_brea
     assert compare["champion_dominates"] is False
     assert compare["decision"] == "candidate_edge"
     assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]
+
+
+def test_compare_spa_like_window_test_prefers_candidate_when_all_window_edges_are_positive() -> None:
+    candidate_windows = [
+        {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0040}}}},
+        {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0035}}}},
+        {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0020}}}},
+    ]
+    champion_windows = [
+        {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0010}}}},
+        {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0015}}}},
+        {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": -0.0005}}}},
+    ]
+
+    compare = compare_spa_like_window_test(candidate_windows, champion_windows, alpha=0.20)
+
+    assert compare["comparable"] is True
+    assert compare["decision"] == "candidate_edge"
+    assert compare["window_count"] == 3
+    assert "SPA_LIKE_PASS" in compare["reasons"]
+
+
+def test_compare_spa_like_window_test_requires_common_windows() -> None:
+    compare = compare_spa_like_window_test(
+        candidate_windows=[{"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}}],
+        champion_windows=[],
+    )
+
+    assert compare["comparable"] is False
+    assert compare["decision"] == "insufficient_evidence"

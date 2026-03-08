@@ -305,12 +305,20 @@ function Resolve-TrainerEvidence {
             walk_forward_windows_run = 0
             offline_comparable = $false
             offline_candidate_edge = $false
+            spa_like_present = $false
+            spa_like_comparable = $false
+            spa_like_candidate_edge = $false
             execution_acceptance_enabled = $false
             execution_acceptance_present = $false
             execution_comparable = $false
             execution_candidate_edge = $false
         }
         offline = [ordered]@{
+            policy = ""
+            decision = ""
+            comparable = $false
+        }
+        spa_like = [ordered]@{
             policy = ""
             decision = ""
             comparable = $false
@@ -335,6 +343,7 @@ function Resolve-TrainerEvidence {
     $checks = Get-PropValue -ObjectValue $PromotionDecision -Name "checks" -DefaultValue @{}
     $research = Get-PropValue -ObjectValue $PromotionDecision -Name "research_acceptance" -DefaultValue @{}
     $offlineCompare = Get-PropValue -ObjectValue $research -Name "compare_to_champion" -DefaultValue @{}
+    $spaLikeDoc = Get-PropValue -ObjectValue $research -Name "spa_like_window_test" -DefaultValue @{}
     $walkSummary = Get-PropValue -ObjectValue $research -Name "walk_forward_summary" -DefaultValue @{}
     $executionDoc = Get-PropValue -ObjectValue $PromotionDecision -Name "execution_acceptance" -DefaultValue @{}
     $executionCompare = Get-PropValue -ObjectValue $executionDoc -Name "compare_to_champion" -DefaultValue @{}
@@ -344,6 +353,9 @@ function Resolve-TrainerEvidence {
     $walkForwardWindowsRun = [int](To-Int64 (Get-PropValue -ObjectValue $checks -Name "walk_forward_windows_run" -DefaultValue 0) 0)
     $offlineComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "balanced_pareto_comparable" -DefaultValue $false) $false
     $offlineCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "balanced_pareto_candidate_edge" -DefaultValue $false) $false
+    $spaLikePresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "spa_like_present" -DefaultValue $false) $false
+    $spaLikeComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "spa_like_comparable" -DefaultValue $false) $false
+    $spaLikeCandidateEdge = To-Bool (Get-PropValue -ObjectValue $checks -Name "spa_like_candidate_edge" -DefaultValue $false) $false
     $executionEnabled = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_acceptance_enabled" -DefaultValue $false) $false
     $executionPresent = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_acceptance_present" -DefaultValue $false) $false
     $executionComparable = To-Bool (Get-PropValue -ObjectValue $checks -Name "execution_balanced_pareto_comparable" -DefaultValue $false) $false
@@ -351,6 +363,8 @@ function Resolve-TrainerEvidence {
 
     $offlineDecision = [string](Get-PropValue -ObjectValue $offlineCompare -Name "decision" -DefaultValue "")
     $offlinePolicy = [string](Get-PropValue -ObjectValue $research -Name "policy" -DefaultValue "")
+    $spaLikeDecision = [string](Get-PropValue -ObjectValue $spaLikeDoc -Name "decision" -DefaultValue "")
+    $spaLikePolicy = [string](Get-PropValue -ObjectValue $spaLikeDoc -Name "policy" -DefaultValue "")
     $executionStatus = [string](Get-PropValue -ObjectValue $executionDoc -Name "status" -DefaultValue "")
     $executionDecision = [string](Get-PropValue -ObjectValue $executionCompare -Name "decision" -DefaultValue "")
     $executionPolicy = [string](Get-PropValue -ObjectValue $executionCompare -Name "policy" -DefaultValue "")
@@ -361,6 +375,9 @@ function Resolve-TrainerEvidence {
     $resolved.checks.walk_forward_windows_run = $walkForwardWindowsRun
     $resolved.checks.offline_comparable = $offlineComparable
     $resolved.checks.offline_candidate_edge = $offlineCandidateEdge
+    $resolved.checks.spa_like_present = $spaLikePresent
+    $resolved.checks.spa_like_comparable = $spaLikeComparable
+    $resolved.checks.spa_like_candidate_edge = $spaLikeCandidateEdge
     $resolved.checks.execution_acceptance_enabled = $executionEnabled
     $resolved.checks.execution_acceptance_present = $executionPresent
     $resolved.checks.execution_comparable = $executionComparable
@@ -368,6 +385,9 @@ function Resolve-TrainerEvidence {
     $resolved.offline.policy = $offlinePolicy
     $resolved.offline.decision = $offlineDecision
     $resolved.offline.comparable = $offlineComparable
+    $resolved.spa_like.policy = $spaLikePolicy
+    $resolved.spa_like.decision = $spaLikeDecision
+    $resolved.spa_like.comparable = $spaLikeComparable
     $resolved.execution.status = $executionStatus
     $resolved.execution.policy = $executionPolicy
     $resolved.execution.decision = $executionDecision
@@ -381,9 +401,16 @@ function Resolve-TrainerEvidence {
         } elseif (-not $offlineCandidateEdge) {
             $resolved.reasons += "OFFLINE_NOT_CANDIDATE_EDGE"
         }
+        if ($spaLikePresent) {
+            if (-not $spaLikeComparable) {
+                $resolved.reasons += "SPA_LIKE_NOT_COMPARABLE"
+            } elseif (-not $spaLikeCandidateEdge) {
+                $resolved.reasons += "SPA_LIKE_NOT_CANDIDATE_EDGE"
+            }
+        }
     }
 
-    $offlinePass = $walkForwardPresent -and ((-not $existingChampionPresent) -or ($offlineComparable -and $offlineCandidateEdge))
+    $offlinePass = $walkForwardPresent -and ((-not $existingChampionPresent) -or ($offlineComparable -and $offlineCandidateEdge -and ((-not $spaLikePresent) -or ($spaLikeComparable -and $spaLikeCandidateEdge))))
     $executionPass = $true
     if ($executionEnabled) {
         if (-not $executionPresent) {

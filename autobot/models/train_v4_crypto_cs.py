@@ -26,7 +26,11 @@ from .dataset_loader import (
 )
 from .execution_acceptance import ExecutionAcceptanceOptions, run_execution_acceptance
 from .model_card import render_model_card
-from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
+from .research_acceptance import (
+    compare_balanced_pareto,
+    compare_spa_like_window_test,
+    summarize_walk_forward_windows,
+)
 from .registry import (
     RegistrySavePayload,
     load_json,
@@ -497,8 +501,13 @@ def _run_walk_forward_v4(
     report["skipped_windows"] = skipped
     report["windows_generated"] = len(window_specs)
     report["summary"] = summarize_walk_forward_windows(windows)
-    champion_summary = _load_champion_walk_forward_summary(options=options)
+    champion_report = _load_champion_walk_forward_report(options=options)
+    champion_summary = champion_report.get("summary", {}) if isinstance(champion_report, dict) else {}
     report["compare_to_champion"] = compare_balanced_pareto(report["summary"], champion_summary or {})
+    report["spa_like_window_test"] = compare_spa_like_window_test(
+        report.get("windows", []),
+        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
+    )
     if champion_summary:
         report["champion_summary"] = champion_summary
     return report
@@ -577,7 +586,7 @@ def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _load_champion_walk_forward_summary(*, options: TrainV4CryptoCsOptions) -> dict[str, Any] | None:
+def _load_champion_walk_forward_report(*, options: TrainV4CryptoCsOptions) -> dict[str, Any] | None:
     champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
     champion_run_id = str(champion_doc.get("run_id", "")).strip()
     if not champion_run_id:
@@ -585,10 +594,17 @@ def _load_champion_walk_forward_summary(*, options: TrainV4CryptoCsOptions) -> d
     run_dir = options.registry_root / options.model_family / champion_run_id
     walk_forward = load_json(run_dir / "walk_forward_report.json")
     if isinstance(walk_forward.get("summary"), dict) and walk_forward.get("summary"):
-        return dict(walk_forward["summary"])
+        return dict(walk_forward)
     metrics = load_json(run_dir / "metrics.json")
     summary = metrics.get("walk_forward") if isinstance(metrics, dict) else None
-    return dict(summary) if isinstance(summary, dict) and summary else None
+    if isinstance(summary, dict) and summary:
+        return {
+            "summary": dict(summary),
+            "windows": [],
+            "compare_to_champion": {},
+            "spa_like_window_test": {},
+        }
+    return None
 
 
 def _fit_booster_sweep_regression(
@@ -902,6 +918,7 @@ def _manual_promotion_decision_v4(
     champion_run_id = str(champion_doc.get("run_id", "")).strip()
     reasons = ["MANUAL_PROMOTION_REQUIRED"]
     compare_doc = walk_forward.get("compare_to_champion", {}) if isinstance(walk_forward, dict) else {}
+    spa_like_doc = walk_forward.get("spa_like_window_test", {}) if isinstance(walk_forward, dict) else {}
     walk_summary = walk_forward.get("summary", {}) if isinstance(walk_forward, dict) else {}
     windows_run = int(walk_summary.get("windows_run", 0) or 0)
     execution_status = str(execution_acceptance.get("status", "")).strip().lower()
@@ -922,6 +939,13 @@ def _manual_promotion_decision_v4(
             reasons.append("OFFLINE_BALANCED_PARETO_FAIL")
         elif decision:
             reasons.append("OFFLINE_BALANCED_PARETO_HOLD")
+        spa_decision = str(spa_like_doc.get("decision", "")).strip().lower()
+        if spa_decision == "candidate_edge":
+            reasons.append("SPA_LIKE_WINDOW_PASS")
+        elif spa_decision == "champion_edge":
+            reasons.append("SPA_LIKE_WINDOW_FAIL")
+        elif spa_decision:
+            reasons.append("SPA_LIKE_WINDOW_HOLD")
     if bool(options.execution_acceptance_enabled):
         execution_decision = str(execution_compare.get("decision", "")).strip().lower()
         if execution_status == "skipped":
@@ -945,6 +969,9 @@ def _manual_promotion_decision_v4(
             "walk_forward_windows_run": windows_run,
             "balanced_pareto_comparable": bool(compare_doc.get("comparable", False)),
             "balanced_pareto_candidate_edge": str(compare_doc.get("decision", "")) == "candidate_edge",
+            "spa_like_present": bool(spa_like_doc),
+            "spa_like_comparable": bool(spa_like_doc.get("comparable", False)),
+            "spa_like_candidate_edge": str(spa_like_doc.get("decision", "")) == "candidate_edge",
             "execution_acceptance_enabled": bool(options.execution_acceptance_enabled),
             "execution_acceptance_present": execution_status in {"candidate_only", "compared"},
             "execution_balanced_pareto_comparable": bool(execution_compare.get("comparable", False)),
@@ -954,6 +981,7 @@ def _manual_promotion_decision_v4(
             "policy": str(compare_doc.get("policy", "balanced_pareto_offline")),
             "walk_forward_summary": walk_summary,
             "compare_to_champion": compare_doc,
+            "spa_like_window_test": spa_like_doc,
         },
         "execution_acceptance": execution_acceptance,
         "candidate_ref": {
