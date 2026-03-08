@@ -309,6 +309,18 @@ D:\MyApps\Autobot
 
 - 상세 내용은 `docs/TICKETS/T18_3_operational_runtime_overlay_v1.md`를 따른다.
 
+## 17.4) 방법론 정합성 마무리 (T18.4)
+
+- 현재 `v4`는 논문 방향성에 상당히 근접했지만, 아직 다음 항목은 원형보다 단순화되어 있다.
+  - correlation-adjusted `effective_trials`
+  - finer OOS differential panel 기반 `White RC / Hansen SPA`
+  - data-driven stationary bootstrap block-length selection
+  - optimizer-based `selection_recommendations`
+  - overlay coefficient calibration
+  - statistical paper final gate
+- 이 작업은 `v4` 단일 lane을 전제로 진행한다.
+- 실행 계획은 `docs/TICKETS/T18_4_methodology_gap_closure_v1.md`를 따른다.
+
 ## 17.2) 코인 연구 정렬 알파 vNext (T18.2)
 
 ### 왜 지금 이 작업을 하는가
