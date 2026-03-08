@@ -7,6 +7,7 @@ from collections import deque
 import csv
 from dataclasses import asdict, dataclass, field
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any, Callable, Sequence
@@ -1022,6 +1023,7 @@ class PaperRunEngine:
         )
 
         with JsonlEventStore(run_root) as store:
+            runtime_metadata = _resolve_paper_runtime_metadata(self._run_settings)
 
             def append_event(event_type: str, ts_ms: int, payload: dict[str, Any] | None = None) -> None:
                 nonlocal events_count
@@ -1046,6 +1048,7 @@ class PaperRunEngine:
                     "feature_provider": _normalize_paper_feature_provider(self._run_settings.paper_feature_provider),
                     "warmup_sec": int(warmup_sec),
                     "warmup_min_trade_events_per_market": int(warmup_min_trade_events),
+                    **runtime_metadata,
                 },
             )
 
@@ -1390,6 +1393,8 @@ class PaperRunEngine:
             ),
         )
         summary_payload = asdict(summary)
+        summary_payload.update(runtime_metadata)
+        summary_payload["run_completed_ts_ms"] = int(final_ts_ms)
         summary_payload["rolling_evidence"] = dict(rolling_evidence)
         summary_payload["model_alpha_min_prob_used"] = float(self._runtime_state.get("model_alpha_min_prob_used", 0.0))
         summary_payload["model_alpha_min_prob_source"] = str(self._runtime_state.get("model_alpha_min_prob_source", "manual"))
@@ -3003,6 +3008,26 @@ def _write_json(*, path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _resolve_paper_runtime_metadata(settings: PaperRunSettings) -> dict[str, Any]:
+    unit_name = str(os.getenv("AUTOBOT_PAPER_UNIT_NAME", "")).strip()
+    runtime_role = str(os.getenv("AUTOBOT_PAPER_RUNTIME_ROLE", "")).strip().lower() or "unspecified"
+    paper_lane = str(os.getenv("AUTOBOT_PAPER_LANE", "")).strip().lower()
+    pinned_model_ref = str(os.getenv("AUTOBOT_PAPER_MODEL_REF_PINNED", "")).strip()
+    effective_model_ref = str(settings.model_ref or settings.model_alpha.model_ref or "").strip()
+    effective_model_family = str(settings.model_family or settings.model_alpha.model_family or "").strip()
+    effective_feature_set = str(settings.feature_set or settings.model_alpha.feature_set or "").strip().lower()
+    return {
+        "paper_unit_name": unit_name,
+        "paper_runtime_role": runtime_role,
+        "paper_lane": paper_lane,
+        "paper_runtime_model_ref": effective_model_ref,
+        "paper_runtime_model_family": effective_model_family,
+        "paper_runtime_feature_set": effective_feature_set,
+        "paper_runtime_model_ref_pinned": pinned_model_ref,
+        "run_started_ts_ms": int(time.time() * 1000),
+    }
 
 
 def _find_baseline(points: deque[TickerSnapshot], *, target_ts_ms: int) -> TickerSnapshot | None:

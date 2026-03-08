@@ -6,6 +6,9 @@ param(
     [ValidateSet("live_v3", "live_v4", "candidate_v4", "offline_v4")]
     [string]$PaperPreset = "live_v4",
     [string[]]$PaperCliArgs = @(),
+    [string]$PaperRuntimeRole = "",
+    [string]$PaperLaneName = "v4",
+    [string]$PaperModelRefPinned = "",
     [switch]$NoBootstrapChampion,
     [switch]$NoStart,
     [switch]$NoEnable,
@@ -28,6 +31,7 @@ function Get-PaperRuntimeSpec {
                 RuntimeModelRef = "champion_v3"
                 BootstrapRefs = @("latest_candidate_v3", "latest_v3")
                 ModelFamily = "train_v3_mtf_micro"
+                RuntimeRole = "champion"
             }
         }
         "live_v4" {
@@ -37,6 +41,7 @@ function Get-PaperRuntimeSpec {
                 RuntimeModelRef = "champion_v4"
                 BootstrapRefs = @("latest_candidate_v4", "latest_v4")
                 ModelFamily = "train_v4_crypto_cs"
+                RuntimeRole = "champion"
             }
         }
         "offline_v4" {
@@ -46,6 +51,7 @@ function Get-PaperRuntimeSpec {
                 RuntimeModelRef = "champion_v4"
                 BootstrapRefs = @("latest_candidate_v4", "latest_v4")
                 ModelFamily = "train_v4_crypto_cs"
+                RuntimeRole = "champion"
             }
         }
         "candidate_v4" {
@@ -55,6 +61,7 @@ function Get-PaperRuntimeSpec {
                 RuntimeModelRef = "latest_candidate_v4"
                 BootstrapRefs = @()
                 ModelFamily = "train_v4_crypto_cs"
+                RuntimeRole = "challenger"
             }
         }
         default {
@@ -64,6 +71,7 @@ function Get-PaperRuntimeSpec {
                 RuntimeModelRef = ""
                 BootstrapRefs = @()
                 ModelFamily = ""
+                RuntimeRole = "unspecified"
             }
         }
     }
@@ -98,6 +106,7 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $runtimeSpec = Get-PaperRuntimeSpec -Preset $PaperPreset -UnitName $PaperUnitName
+$effectiveRuntimeRole = if ([string]::IsNullOrWhiteSpace($PaperRuntimeRole)) { [string]$runtimeSpec.RuntimeRole } else { [string]$PaperRuntimeRole }
 
 if (
     -not $DryRun `
@@ -155,6 +164,9 @@ WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 Environment=AUTOBOT_PAPER_PRESET=$PaperPreset
 Environment=AUTOBOT_PAPER_UNIT_NAME=$PaperUnitName
+Environment=AUTOBOT_PAPER_RUNTIME_ROLE=$effectiveRuntimeRole
+Environment=AUTOBOT_PAPER_LANE=$PaperLaneName
+Environment=AUTOBOT_PAPER_MODEL_REF_PINNED=$PaperModelRefPinned
 SyslogIdentifier=$($runtimeSpec.SyslogIdentifier)
 ExecStart=$execStart
 Restart=always

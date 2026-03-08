@@ -5,6 +5,9 @@ param(
     [string]$TargetServiceName = "autobot-daily-micro.service",
     [string]$TargetTimerName = "autobot-daily-micro.timer",
     [string]$DisableTimerName = "autobot-daily-v4-accept.timer",
+    [string]$ChampionUnitName = "autobot-paper-v4.service",
+    [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
+    [string[]]$PromotionTargetUnits = @(),
     [switch]$NoRestartTimer,
     [switch]$DryRun
 )
@@ -16,7 +19,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultWrapperScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/daily_candidate_acceptance_for_server.ps1")
+    return (Join-Path $Root "scripts/daily_champion_challenger_v4_for_server.ps1")
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -30,8 +33,14 @@ $wrapperArgList = @(
     "-ExecutionPolicy", "Bypass",
     "-File", $resolvedWrapperScript,
     "-ProjectRoot", $resolvedProjectRoot,
-    "-PythonExe", $resolvedPythonExe
+    "-PythonExe", $resolvedPythonExe,
+    "-ChampionUnitName", $ChampionUnitName,
+    "-ChallengerUnitName", $ChallengerUnitName
 )
+if (@($PromotionTargetUnits).Count -gt 0) {
+    $wrapperArgList += "-PromotionTargetUnits"
+    $wrapperArgList += @($PromotionTargetUnits)
+}
 $execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 
 $overrideContent = @"

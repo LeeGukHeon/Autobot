@@ -416,10 +416,16 @@ D:\MyApps\Autobot
   - 현재 운영 기본은 `v4` single-lane rollout이다
     - `autobot-paper-v4.service` -> `paper alpha --preset live_v4`
     - `autobot-paper-alpha.service`는 optional benchmark/manual lane으로만 남긴다
-    - `autobot-daily-micro.service`는 `daily_candidate_acceptance_for_server.ps1`를 통해 `v4_candidate_acceptance.ps1`만 실행한다
-    - `daily_micro_pipeline_for_server.ps1`는 하루 한 번만 돌고, 같은 batch date로 `features_v4 -> train_v4 -> backtest sanity -> paper final gate -> promote`를 닫는다
-    - `v4` 승급 시 `autobot-paper-v4.service`만 자동 재기동한다
+    - `autobot-daily-micro.service`는 `daily_champion_challenger_v4_for_server.ps1`를 통해 single-lane `champion/challenger` 루프를 실행한다
+    - 일일 루프는:
+      - 전일 challenger day-long paper evidence 비교
+      - promote 시 `champion_v4` 교체
+      - champion runtime 재기동
+      - 같은 batch date로 `train_v4 -> fixed-profile backtest sanity`
+      - 통과 candidate만 `autobot-paper-v4-challenger.service`로 day-long paper 실행
+    - `v4` 승급 시 `autobot-paper-v4.service`와 optional promotion target units만 자동 재기동한다
     - `live_v4` lane은 fresh install에서 `champion_v4`가 비어 있으면 최신 candidate/latest run으로 bootstrap promote를 한 번 수행한 뒤 기동한다
+    - 이후 live runtime이 추가되면 같은 `champion_v4` 포인터와 `PromotionTargetUnits` 재기동 훅을 재사용한다
     - acceptance는 실행별 고유 `report=` 경로를 우선 읽고, lane-global `latest.json`은 신선한 경우에만 fallback으로 사용한다
     - `paper_micro_smoke`는 주문 0건 구간을 `fallback_ratio=1.0`로 오해하지 않고 `min_orders_submitted` 실패와 분리해서 기록한다
     - 수동 `paper alpha --preset live_v4` 실행 시 `champion_v4` 포인터가 없으면 `latest_candidate_v4`, 그다음 `latest_v4`로 안전 fallback 한다
@@ -444,6 +450,7 @@ D:\MyApps\Autobot
 - T09: ML pipeline v1
 - T10: Meta risk-on/off
 - T18.2: Crypto alpha vNext (`label_v2`, `feature_set_v4`, rolling acceptance, legacy freeze/cleanup)
+- T18.7: Daily champion-challenger loop (`v4` single-lane production paper rollout)
 
 ## 19) 첫 작업 지시문 요약
 

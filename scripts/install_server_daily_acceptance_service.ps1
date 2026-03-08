@@ -7,6 +7,9 @@ param(
     [string]$TimerUnitName = "autobot-daily-v4-accept.timer",
     [string]$OnCalendar = "*-*-* 04:20:00",
     [string]$Description = "Autobot Daily V4 Candidate Acceptance",
+    [string]$ChampionUnitName = "autobot-paper-v4.service",
+    [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
+    [string[]]$PromotionTargetUnits = @(),
     [string[]]$BlockOnActiveUnits = @(),
     [string[]]$AcceptanceArgs = @(),
     [bool]$SkipDailyPipeline = $true,
@@ -23,7 +26,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultWrapperScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/daily_candidate_acceptance_for_server.ps1")
+    return (Join-Path $Root "scripts/daily_champion_challenger_v4_for_server.ps1")
 }
 
 function Resolve-DefaultAcceptanceScript {
@@ -44,8 +47,14 @@ $wrapperArgList = @(
     "-File", $resolvedWrapperScript,
     "-ProjectRoot", $resolvedProjectRoot,
     "-PythonExe", $resolvedPythonExe,
-    "-AcceptanceScript", $resolvedAcceptanceScript
+    "-AcceptanceScript", $resolvedAcceptanceScript,
+    "-ChampionUnitName", $ChampionUnitName,
+    "-ChallengerUnitName", $ChallengerUnitName
 )
+if (@($PromotionTargetUnits).Count -gt 0) {
+    $wrapperArgList += "-PromotionTargetUnits"
+    $wrapperArgList += @($PromotionTargetUnits)
+}
 if ($SkipDailyPipeline) {
     $wrapperArgList += "-SkipDailyPipeline"
 }

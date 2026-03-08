@@ -441,13 +441,13 @@ Current implementation checkpoint:
   - `trainer=v4_crypto_cs`
   - `features build --feature-set v4 --label-set v2`
   from the train wizard path
-- `daily_candidate_acceptance_for_server.ps1` is the server wrapper for delayed post-collection acceptance runs
-  - intended default for the v4 lane:
-    - `SkipDailyPipeline=true`
-    - `SkipReportRefresh=true`
-    - `BlockOnActiveUnits=autobot-daily-micro.service`
-  - reason:
-    - reuse the same `00:10` collection outputs without re-running collection or rewriting the shared daily report
+- `daily_candidate_acceptance_for_server.ps1` is now a lower-level reusable wrapper for one-shot post-collection acceptance runs
+  - it remains useful for manual partial acceptance, but it is no longer the primary production `00:10` entrypoint
+- `daily_champion_challenger_v4_for_server.ps1` is the current production `v4` day-cutoff loop
+  - it compares the previous day-long challenger against the current champion
+  - promotes only at cutoff
+  - restarts the champion runtime after promote
+  - launches a fresh challenger only after a partial `train + backtest sanity` pass
 - `install_server_daily_acceptance_service.ps1` installs a dedicated timer/service pair for the v4 parallel lane
   - intended default units:
     - `autobot-daily-v4-accept.service`
@@ -460,10 +460,13 @@ Current implementation checkpoint:
 - `daily_parallel_acceptance_for_server.ps1` is retained as an optional benchmark orchestrator for `v3+v4` same-time fan-out
 - current production rollout is single-lane `v4`
   - `autobot-paper-v4.service` is the always-on primary runtime
+  - `autobot-paper-v4-challenger.service` is the temporary day-long challenger runtime
   - `autobot-paper-alpha.service` is retained only as optional benchmark/manual tooling
-  - `autobot-daily-micro.service` now targets `daily_candidate_acceptance_for_server.ps1`
-    - shared `daily_micro_pipeline_for_server.ps1`
-    - `v4_candidate_acceptance.ps1`
+  - `autobot-daily-micro.service` now targets `daily_champion_challenger_v4_for_server.ps1`
+    - previous challenger paper evidence compare
+    - optional promote
+    - `v4_candidate_acceptance.ps1 -SkipPaperSoak -SkipPromote`
+    - challenger runtime start on `backtest sanity` pass
   - runtime and acceptance hardening includes:
     - `candidate_acceptance.ps1` prefers run-specific `report=` files over lane-global `latest.json`
     - `paper_micro_smoke.ps1` separates zero-order windows from true fallback-ratio failure

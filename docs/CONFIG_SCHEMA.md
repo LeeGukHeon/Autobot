@@ -610,10 +610,20 @@
   - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass
-- `scripts/daily_candidate_acceptance_for_server.ps1`: server wrapper for delayed acceptance runs that reuse already-collected data
+- `scripts/daily_candidate_acceptance_for_server.ps1`: lower-level server wrapper for one-shot single acceptance runs that reuse already-collected data
   - default batch date when omitted: previous local day (`yyyy-MM-dd`)
   - supports `-SkipDailyPipeline` and `-SkipReportRefresh`
-  - default `-BlockOnActiveUnits` is empty in the single-lane `v4` rollout; use it only for explicit external blockers
+  - in the current production rollout it is no longer the primary `00:10` entrypoint; it remains as a reusable utility wrapper
+- `scripts/daily_champion_challenger_v4_for_server.ps1`: primary single-lane `v4` day-cutoff loop
+  - compares the previous `challenger` day-long paper history against the current `champion`
+  - promotes only at cutoff
+  - restarts the `champion` runtime after promote
+  - trains a new candidate with `-SkipPaperSoak -SkipPromote`
+  - starts `autobot-paper-v4-challenger.service` only when `backtest sanity` passes
+  - writes:
+    - `logs/model_v4_challenger/current_state.json`
+    - `logs/model_v4_challenger/latest.json`
+    - archived daily loop reports under `logs/model_v4_challenger/archive`
 - `scripts/install_server_daily_acceptance_service.ps1`: installs a timer/service pair for delayed post-collection acceptance
   - default units:
     - `autobot-daily-v4-accept.service`
@@ -633,10 +643,11 @@
     - `v4` lane -> `autobot-paper-v4.service`
   - each lane reuses the same batch date and only restarts its own runtime unit on promote
 - `scripts/install_server_daily_parallel_acceptance_service.ps1`: rewires `autobot-daily-micro.service` to the shared orchestrator
-  - current single-lane rollout rewires `autobot-daily-micro.service` to `daily_candidate_acceptance_for_server.ps1`
+  - current single-lane rollout rewires `autobot-daily-micro.service` to `daily_champion_challenger_v4_for_server.ps1`
   - `autobot-daily-micro.timer` stays at `00:10`
   - the separate delayed `autobot-daily-v4-accept.timer` is disabled
   - `v3` stays available only as manual benchmark / fallback tooling
+  - optional `PromotionTargetUnits` can be passed so future live runtimes restart from the same `champion_v4` promote event
 
 ## CLI: Live State
 - `python -m autobot.cli live status`
