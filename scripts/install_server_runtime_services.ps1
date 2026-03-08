@@ -1,14 +1,15 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
-    [string]$PaperUnitName = "autobot-paper-alpha.service",
+    [string]$PaperUnitName = "autobot-paper-v4.service",
     [int]$PaperDurationSec = 0,
     [ValidateSet("live_v3", "live_v4", "candidate_v4", "offline_v4")]
-    [string]$PaperPreset = "live_v3",
+    [string]$PaperPreset = "live_v4",
     [string[]]$PaperCliArgs = @(),
     [switch]$NoBootstrapChampion,
     [switch]$NoStart,
-    [switch]$NoEnable
+    [switch]$NoEnable,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,6 +100,8 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $runtimeSpec = Get-PaperRuntimeSpec -Preset $PaperPreset -UnitName $PaperUnitName
 
 if (
+    -not $DryRun `
+    -and `
     -not $NoBootstrapChampion `
     -and -not $NoStart `
     -and -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
@@ -163,6 +166,12 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 "@
+
+if ($DryRun) {
+    Write-Host ("[paper-install][dry-run] unit={0}" -f $PaperUnitName)
+    Write-Host $paperUnitContent
+    exit 0
+}
 
 Install-UnitFile -UnitName $PaperUnitName -Content $paperUnitContent
 & sudo systemctl daemon-reload

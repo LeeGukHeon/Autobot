@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultWrapperScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/daily_parallel_acceptance_for_server.ps1")
+    return (Join-Path $Root "scripts/daily_candidate_acceptance_for_server.ps1")
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }

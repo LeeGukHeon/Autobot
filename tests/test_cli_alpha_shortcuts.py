@@ -23,7 +23,46 @@ def test_build_parser_supports_paper_alpha_shortcut() -> None:
     assert args.paper_command == "alpha"
     assert args.duration_sec == 900
     assert args.model_ref == "champion_v3"
-    assert args.preset == "live_v3"
+    assert args.preset == "live_v4"
+
+
+def test_normalize_paper_alpha_args_defaults_to_live_v4() -> None:
+    args = argparse.Namespace(
+        paper_command="alpha",
+        preset="live_v4",
+        duration_sec=600,
+        quote=None,
+        top_n=None,
+        tf=None,
+        model_ref=None,
+        model_family=None,
+        feature_set=None,
+        top_pct=None,
+        min_prob=None,
+        min_cands_per_ts=None,
+        max_positions_total=None,
+        cooldown_bars=None,
+        exit_mode=None,
+        hold_bars=None,
+        tp_pct=None,
+        sl_pct=None,
+        trailing_pct=None,
+        execution_price_mode=None,
+        execution_timeout_bars=None,
+        execution_replace_max=None,
+        print_every_sec=None,
+        starting_krw=None,
+        per_trade_krw=None,
+        max_positions=None,
+        paper_micro_provider=None,
+        paper_micro_warmup_sec=None,
+        paper_micro_warmup_min_trade_events_per_market=None,
+        paper_feature_provider=None,
+    )
+    normalized = _normalize_paper_alpha_args(args)
+    assert normalized.model_ref == "champion_v4"
+    assert normalized.model_family == "train_v4_crypto_cs"
+    assert normalized.feature_set == "v4"
 
 
 def test_normalize_paper_alpha_args_uses_live_v3_preset_defaults() -> None:

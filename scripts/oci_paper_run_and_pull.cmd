@@ -11,12 +11,12 @@ set "LOCAL_RUNS_DIR=D:\MyApps\Autobot\data\paper\runs"
 set "DIGEST_PS1=%~dp0paper_run_digest.ps1"
 
 rem runtime knobs
-set "UNIT_PREFIX=autobot-paper-alpha"
+set "UNIT_PREFIX=autobot-paper-v4"
 set "DURATION_MIN_DEFAULT=10"
 set "DURATION_SEC=600"
 set "DURATION_LABEL=10m"
-set "PAPER_PRESET=live_v3"
-set "MODEL_REF=champion_v3"
+set "PAPER_PRESET=live_v4"
+set "MODEL_REF=champion_v4"
 set "TOP_N=50"
 set "TF=5m"
 rem =======================

@@ -7,6 +7,9 @@ function Resolve-DefaultProjectRoot {
 
 function Resolve-DefaultPythonExe {
     param([string]$Root)
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        return (Join-Path $Root ".venv\\Scripts\\python.exe")
+    }
     return (Join-Path $Root ".venv/bin/python")
 }
 

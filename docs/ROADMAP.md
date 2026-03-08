@@ -354,6 +354,7 @@ D:\MyApps\Autobot
   - runtime preset의 lane 숫자는 이제 fallback 값이다:
     - `live_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`, `min_prob -> registry`
     - `live_v4/candidate_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob -> registry`
+    - current primary runtime default is `live_v4`
   - acceptance stays on one shared fixed compare profile across `v3` and `v4`:
     - `top_pct=0.50`
     - `min_prob=0.00`
@@ -382,23 +383,17 @@ D:\MyApps\Autobot
   - `v4`의 완화 기준은 임시 bootstrap 설정으로 취급한다
     - 되돌림 트리거: `v4` usable history가 대략 `14일+` 확보되고, 최근 rolling paper fallback ratio가 안정적으로 `0.10` 아래에 머무를 때
     - 그 시점에는 fallback runtime breadth(`top_pct/min_candidates`)와 `paper_max_fallback_ratio`를 다시 조이는 작업을 우선순위로 둔다
-  - 운영 스크립트는 `v4` 선택지를 노출하지만 기본 rollout preset은 아직 `v3`에 둠
-  - 현재 운영 기본은 `00:10` shared orchestrator다
-    - `daily_micro_pipeline_for_server.ps1`를 한 번만 돌려 raw/micro/report를 갱신한다
-    - 그 다음 `features_v3`와 `features_v4`를 같은 batch date로 갱신한다
-    - 마지막에 `v3`와 `v4` acceptance를 병렬 fan-out 한다
-    - 상시 paper는 `v3`와 `v4`를 lane별 systemd unit으로 동시에 유지할 수 있다
-      - `v3`: `autobot-paper-alpha.service` -> `paper alpha --preset live_v3`
-      - `v4`: `autobot-paper-v4.service` -> `paper alpha --preset live_v4`
-    - 승급 시에는 각 lane이 자기 runtime unit만 자동 재기동한다
-      - `v3` acceptance -> `autobot-paper-alpha.service`
-      - `v4` acceptance -> `autobot-paper-v4.service`
+  - 현재 운영 기본은 `v4` single-lane rollout이다
+    - `autobot-paper-v4.service` -> `paper alpha --preset live_v4`
+    - `autobot-paper-alpha.service`는 optional benchmark/manual lane으로만 남긴다
+    - `autobot-daily-micro.service`는 `daily_candidate_acceptance_for_server.ps1`를 통해 `v4_candidate_acceptance.ps1`만 실행한다
+    - `daily_micro_pipeline_for_server.ps1`는 하루 한 번만 돌고, 같은 batch date로 `features_v4 -> train_v4 -> backtest sanity -> paper final gate -> promote`를 닫는다
+    - `v4` 승급 시 `autobot-paper-v4.service`만 자동 재기동한다
     - `live_v4` lane은 fresh install에서 `champion_v4`가 비어 있으면 최신 candidate/latest run으로 bootstrap promote를 한 번 수행한 뒤 기동한다
-    - orchestrator는 각 child lane stdout의 고유 `report=` 경로를 우선 읽고, lane-global `latest.json`은 신선한 경우에만 fallback으로 사용한다
+    - acceptance는 실행별 고유 `report=` 경로를 우선 읽고, lane-global `latest.json`은 신선한 경우에만 fallback으로 사용한다
     - `paper_micro_smoke`는 주문 0건 구간을 `fallback_ratio=1.0`로 오해하지 않고 `min_orders_submitted` 실패와 분리해서 기록한다
     - 수동 `paper alpha --preset live_v4` 실행 시 `champion_v4` 포인터가 없으면 `latest_candidate_v4`, 그다음 `latest_v4`로 안전 fallback 한다
-  - 별도 지연 실행용 `autobot-daily-v4-accept.timer`는 fallback 운영 경로로만 남긴다
-  - 단, 실제 `v4` champion promote와 runtime rollout은 아직 운영 적용 전
+  - `v3`는 코드/benchmark lane으로 유지하지만 자동 승급 및 상시 운영 기본 레인에서는 제외한다
 
 ### 설계 문서
 

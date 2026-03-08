@@ -430,7 +430,7 @@ Current implementation checkpoint:
   - `live_v4`
   - `candidate_v4`
   - `offline_v4`
-  as valid paper runtime presets, while keeping the default rollout on `live_v3`
+  as valid paper runtime presets, while using `live_v4` as the current primary default rollout
   - when `live_v4` or `offline_v4` is started on a fresh server with no `champion_v4` pointer yet, the installer bootstraps `champion_v4` from `latest_candidate_v4` (or `latest_v4`) before starting the service
 - `oci_paper_run_and_pull.cmd` now externalizes:
   - `PAPER_PRESET`
@@ -457,44 +457,30 @@ Current implementation checkpoint:
   - rationale:
     - the current `autobot-daily-micro.service` can run until roughly `03:xx`
     - a later timer lowers overlap risk while keeping the same batch date
-- `daily_parallel_acceptance_for_server.ps1` is the preferred same-time orchestrator
-  - current intended order:
+- `daily_parallel_acceptance_for_server.ps1` is retained as an optional benchmark orchestrator for `v3+v4` same-time fan-out
+- current production rollout is single-lane `v4`
+  - `autobot-paper-v4.service` is the always-on primary runtime
+  - `autobot-paper-alpha.service` is retained only as optional benchmark/manual tooling
+  - `autobot-daily-micro.service` now targets `daily_candidate_acceptance_for_server.ps1`
     - shared `daily_micro_pipeline_for_server.ps1`
-    - `features build --feature-set v3`
-    - `features build --feature-set v4 --label-set v2`
-    - parallel launch of `v3_candidate_acceptance.ps1` and `v4_candidate_acceptance.ps1`
-  - both acceptance wrappers run with:
-    - `SkipDailyPipeline`
-    - `SkipReportRefresh`
-  - runtime pairing:
-    - `v3` lane owns `autobot-paper-alpha.service`
-    - `v4` lane owns `autobot-paper-v4.service`
-  - reason:
-    - same batch date
-    - same paper window
-    - no duplicated collection/report mutation
-    - each lane can promote/restart independently without touching the other lane's always-on paper
-  - operational hardening now also includes:
-    - the orchestrator reads each child lane's unique `report=` path from stdout before falling back to lane-global `latest.json`
-    - `candidate_acceptance.ps1` does the same for `paper_micro_smoke` output so same-lane manual runs do not silently poison paper soak status
-    - `paper_micro_smoke.ps1` separates `min_orders_submitted` failure from true fallback-ratio failure instead of treating all zero-order windows as `fallback_ratio=1.0`
-    - ad-hoc `paper alpha --preset live_v4` is now safe on a fresh registry: if `champion_v4` is missing, runtime falls back to `latest_candidate_v4`, then `latest_v4`
-    - paper final gate now also reads:
+    - `v4_candidate_acceptance.ps1`
+  - runtime and acceptance hardening includes:
+    - `candidate_acceptance.ps1` prefers run-specific `report=` files over lane-global `latest.json`
+    - `paper_micro_smoke.ps1` separates zero-order windows from true fallback-ratio failure
+    - ad-hoc `paper alpha --preset live_v4` is safe on a fresh registry: if `champion_v4` is missing, runtime falls back to `latest_candidate_v4`, then `latest_v4`
+    - paper final gate reads:
       - direct `micro_quality_score_mean`
       - recent-run nonnegative/positive ratios
       - recent-run median micro quality
-    - backtest sanity gate now records `deflated_sharpe_ratio_est` from the generated `equity.csv`
-    - `v4` trainer evidence now records:
+    - backtest sanity gate records `deflated_sharpe_ratio_est` from `equity.csv`
+    - `v4` trainer evidence records:
       - a `SPA-like` walk-forward paired window test
       - `trial_panel` data with aligned per-trial window outcomes
       - `White Reality Check` and `Hansen SPA` style multiple-testing checks on that panel
       - bootstrap is `stationary bootstrap`, and `Hansen SPA` uses sample-dependent null recentering
-    - this richer multiple-testing evidence is currently `v4`-only because `v3` does not persist the same walk-forward trial panel
-- `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
-  - current target timer remains:
-    - `autobot-daily-micro.timer`
-    - `OnCalendar=*-*-* 00:10:00`
-  - also disables `autobot-daily-v4-accept.timer` when the same-time rollout is selected
+  - `autobot-daily-micro.timer` remains `00:10`
+  - `autobot-daily-v4-accept.timer` stays disabled in the primary rollout
+  - `v3` remains available only for manual benchmark / fallback use because it still lacks the richer walk-forward trial panel used by the `v4` multiple-testing path
 
 ### Phase 0: Refactor For Clean Extension
 - Extract shared feature-building blocks from `feature_set_v3.py`

@@ -529,11 +529,13 @@
 
 ## Runtime Presets And Acceptance Scripts
 - `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+- current primary default rollout is `live_v4`
 - runtime presets keep `min_prob` unset so runtime uses the learned registry threshold, and their lane-specific breadth knobs are fallback values only:
   - `live_v3/offline_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`, `min_prob=null -> registry threshold`
   - `live_v4/candidate_v4/offline_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
   - when the loaded model run contains `selection_recommendations.json`, runtime uses the learned recommendation entry for the active `registry_threshold_key` instead of these fallback breadth values
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+  - current default install target is `autobot-paper-v4.service` + `live_v4`
   - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
   - direct invocation defaults now match the shared fixed compare profile:
@@ -588,12 +590,7 @@
     - `autobot-daily-v4-accept.timer`
 - `scripts/oci_paper_run_and_pull.cmd`
   - ad-hoc OCI paper runs now defer to `paper alpha --preset` defaults instead of hardcoding `min_prob/top_pct/min_candidates`
-  - default schedule:
-    - `OnCalendar=*-*-* 04:20:00`
-  - intended default v4 semantics:
-    - reuse `00:10` collection outputs
-    - `SkipDailyPipeline=true`
-    - `SkipReportRefresh=true`
+  - default ad-hoc preset is now `live_v4`
 - `scripts/daily_parallel_acceptance_for_server.ps1`: shared same-time orchestrator for `v3` and `v4`
   - runs shared daily collection once, then rebuilds both feature datasets, then launches `v3` and `v4` acceptance in parallel
   - current defaults:
@@ -606,9 +603,10 @@
     - `v4` lane -> `autobot-paper-v4.service`
   - each lane reuses the same batch date and only restarts its own runtime unit on promote
 - `scripts/install_server_daily_parallel_acceptance_service.ps1`: rewires `autobot-daily-micro.service` to the shared orchestrator
-  - current intended rollout:
-    - `autobot-daily-micro.timer` stays at `00:10`
-    - the separate delayed `autobot-daily-v4-accept.timer` is disabled
+  - current single-lane rollout rewires `autobot-daily-micro.service` to `daily_candidate_acceptance_for_server.ps1`
+  - `autobot-daily-micro.timer` stays at `00:10`
+  - the separate delayed `autobot-daily-v4-accept.timer` is disabled
+  - `v3` stays available only as manual benchmark / fallback tooling
 
 ## CLI: Live State
 - `python -m autobot.cli live status`

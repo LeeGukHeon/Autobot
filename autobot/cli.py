@@ -152,10 +152,11 @@ DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v3"
 DEFAULT_V3_CANDIDATE_REF = "latest_candidate_v3"
 DEFAULT_V4_RUNTIME_REF = "champion_v4"
 DEFAULT_V4_CANDIDATE_REF = "latest_candidate_v4"
+DEFAULT_PAPER_ALPHA_PRESET = "live_v4"
 
 
 def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
-    name = str(preset).strip().lower() or "live_v3"
+    name = str(preset).strip().lower() or DEFAULT_PAPER_ALPHA_PRESET
     overrides: dict[str, Any] = {
         "strategy": "model_alpha_v1",
         "feature_set": "v3",
@@ -246,7 +247,7 @@ def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
 
 
 def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
-    preset = str(getattr(args, "preset", None) or "live_v3").strip().lower() or "live_v3"
+    preset = str(getattr(args, "preset", None) or DEFAULT_PAPER_ALPHA_PRESET).strip().lower() or DEFAULT_PAPER_ALPHA_PRESET
     overrides = _paper_alpha_preset_overrides(preset)
     payload = {
         "paper_command": "run",
@@ -1066,8 +1067,8 @@ def build_parser() -> argparse.ArgumentParser:
     paper_alpha_parser.add_argument(
         "--preset",
         choices=("live_v3", "live_v4", "candidate_v4", "offline", "offline_v4", "default"),
-        default="live_v3",
-        help="Shortcut preset. default=config-driven, live_v3/live_v4 use live providers, offline variants use parquet providers.",
+        default=DEFAULT_PAPER_ALPHA_PRESET,
+        help="Shortcut preset. default=config-driven, live_v3/live_v4 use live providers, offline variants use parquet providers. Current default rollout is live_v4.",
     )
     paper_alpha_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
     paper_alpha_parser.add_argument("--quote", help="Quote currency, ex: KRW")
@@ -2959,7 +2960,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             shortcut_args = _normalize_paper_alpha_args(args)
             print(
                 "[paper][alpha] "
-                f"preset={getattr(shortcut_args, 'preset', 'live_v3')} "
+                f"preset={getattr(shortcut_args, 'preset', DEFAULT_PAPER_ALPHA_PRESET)} "
                 f"feature_provider={getattr(shortcut_args, 'paper_feature_provider', None) or 'config'} "
                 f"micro_provider={getattr(shortcut_args, 'paper_micro_provider', None) or 'config'}"
             )
