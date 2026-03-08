@@ -573,6 +573,7 @@
       - a `SPA-like` paired walk-forward window test
       - a walk-forward trial panel with aligned per-trial window differentials
       - `White Reality Check` and `Hansen SPA` style multiple-testing checks on that panel
+      - bootstrap uses `stationary bootstrap`; the SPA branch uses sample-dependent null recentering
       - this richer multiple-testing path is currently `v4`-only because `v3` does not persist the same walk-forward trial panel
   - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`

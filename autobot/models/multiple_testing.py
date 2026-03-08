@@ -81,6 +81,7 @@ def run_white_reality_check(
     bootstrap_iters: int = 500,
     alpha: float = 0.20,
     seed: int = 42,
+    average_block_length: int | None = None,
 ) -> dict[str, Any]:
     if matrix is None:
         return _insufficient("white_reality_check")
@@ -93,14 +94,16 @@ def run_white_reality_check(
     observed = math.sqrt(window_count) * max(float(np.max(means)), 0.0)
     rng = np.random.default_rng(int(seed))
     centered = diffs - means[:, None]
+    bootstrap_iters_eff = max(int(bootstrap_iters), 100)
+    block_length = _resolve_average_block_length(window_count, average_block_length)
     exceed = 0
-    for _ in range(max(int(bootstrap_iters), 100)):
-        sample = rng.integers(0, window_count, size=window_count)
+    for _ in range(bootstrap_iters_eff):
+        sample = _stationary_bootstrap_indices(window_count, block_length, rng)
         boot = centered[:, sample]
         stat = math.sqrt(window_count) * max(float(np.max(boot.mean(axis=1))), 0.0)
         if stat >= observed - 1e-12:
             exceed += 1
-    p_value = float(exceed + 1) / float(max(int(bootstrap_iters), 100) + 1)
+    p_value = float(exceed + 1) / float(bootstrap_iters_eff + 1)
     best_idx = int(np.argmax(means))
     decision = "candidate_edge" if means[best_idx] > 0.0 and p_value <= float(alpha) else "indeterminate"
     return {
@@ -109,7 +112,9 @@ def run_white_reality_check(
         "decision": decision,
         "candidate_edge": decision == "candidate_edge",
         "alpha": float(alpha),
-        "bootstrap_iters": int(max(int(bootstrap_iters), 100)),
+        "bootstrap_iters": int(bootstrap_iters_eff),
+        "bootstrap_method": "stationary",
+        "average_block_length": int(block_length),
         "trial_count": int(trial_count),
         "window_count": int(window_count),
         "best_trial": int(matrix.trial_ids[best_idx]),
@@ -125,6 +130,7 @@ def run_hansen_spa(
     bootstrap_iters: int = 500,
     alpha: float = 0.20,
     seed: int = 42,
+    average_block_length: int | None = None,
 ) -> dict[str, Any]:
     if matrix is None:
         return _insufficient("hansen_spa")
@@ -139,15 +145,17 @@ def run_hansen_spa(
     observed_stats = np.sqrt(window_count) * means / stds
     observed = max(float(np.max(observed_stats)), 0.0)
     rng = np.random.default_rng(int(seed))
+    bootstrap_iters_eff = max(int(bootstrap_iters), 100)
+    block_length = _resolve_average_block_length(window_count, average_block_length)
     exceed = 0
-    mu_plus = np.maximum(means, 0.0)
-    for _ in range(max(int(bootstrap_iters), 100)):
-        sample = rng.integers(0, window_count, size=window_count)
-        boot = diffs[:, sample] - mu_plus[:, None]
+    mu_c = _hansen_sample_dependent_null(means=means, stds=stds, observations=window_count)
+    for _ in range(bootstrap_iters_eff):
+        sample = _stationary_bootstrap_indices(window_count, block_length, rng)
+        boot = diffs[:, sample] - mu_c[:, None]
         stat = max(float(np.max(np.sqrt(window_count) * boot.mean(axis=1) / stds)), 0.0)
         if stat >= observed - 1e-12:
             exceed += 1
-    p_value = float(exceed + 1) / float(max(int(bootstrap_iters), 100) + 1)
+    p_value = float(exceed + 1) / float(bootstrap_iters_eff + 1)
     best_idx = int(np.argmax(observed_stats))
     decision = "candidate_edge" if means[best_idx] > 0.0 and p_value <= float(alpha) else "indeterminate"
     return {
@@ -156,7 +164,9 @@ def run_hansen_spa(
         "decision": decision,
         "candidate_edge": decision == "candidate_edge",
         "alpha": float(alpha),
-        "bootstrap_iters": int(max(int(bootstrap_iters), 100)),
+        "bootstrap_iters": int(bootstrap_iters_eff),
+        "bootstrap_method": "stationary",
+        "average_block_length": int(block_length),
         "trial_count": int(trial_count),
         "window_count": int(window_count),
         "best_trial": int(matrix.trial_ids[best_idx]),
@@ -174,6 +184,45 @@ def _insufficient(policy: str) -> dict[str, Any]:
         "candidate_edge": False,
         "reasons": ["INSUFFICIENT_COMMON_TRIAL_WINDOWS"],
     }
+
+
+def _resolve_average_block_length(window_count: int, requested: int | None) -> int:
+    count = max(int(window_count), 1)
+    if requested is not None and int(requested) > 0:
+        return max(1, min(int(requested), count))
+    return max(2, min(count, int(round(math.sqrt(count)))))
+
+
+def _stationary_bootstrap_indices(
+    observations: int,
+    average_block_length: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    n = max(int(observations), 1)
+    block_length = max(int(average_block_length), 1)
+    restart_prob = 1.0 / float(block_length)
+    sample = np.empty(n, dtype=np.int64)
+    sample[0] = int(rng.integers(0, n))
+    for idx in range(1, n):
+        if float(rng.random()) < restart_prob:
+            sample[idx] = int(rng.integers(0, n))
+        else:
+            sample[idx] = (int(sample[idx - 1]) + 1) % n
+    return sample
+
+
+def _hansen_sample_dependent_null(
+    *,
+    means: np.ndarray,
+    stds: np.ndarray,
+    observations: int,
+) -> np.ndarray:
+    n = max(int(observations), 2)
+    if n <= math.e:
+        return np.zeros_like(means)
+    threshold = -math.sqrt(2.0 * math.log(math.log(float(n))))
+    t_stats = np.sqrt(float(n)) * means / stds
+    return np.where(t_stats <= threshold, means, 0.0)
 
 
 def _safe_float(value: Any) -> float:

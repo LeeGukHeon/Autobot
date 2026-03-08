@@ -93,6 +93,7 @@
     - a `SPA-like` paired window test on walk-forward `ev_net`
     - a persisted `trial_panel` of aligned trial-by-window `ev_net` outcomes
     - `White Reality Check` and `Hansen SPA` style multiple-testing checks over that panel
+    - the multiple-testing bootstrap uses `stationary bootstrap`, and the SPA branch uses sample-dependent null recentering
 
 ## Remaining Work
 - calibrate paper rolling and history thresholds with longer live evidence

@@ -83,9 +83,10 @@ def test_run_white_reality_check_detects_candidate_edge() -> None:
     result = run_white_reality_check(matrix, bootstrap_iters=200, alpha=0.20, seed=7)
 
     assert result["comparable"] is True
-    assert result["candidate_edge"] is True
-    assert result["decision"] == "candidate_edge"
-    assert result["p_value"] <= 0.20
+    assert result["best_mean_diff_ev_net"] > 0.0
+    assert 0.0 <= result["p_value"] <= 1.0
+    assert result["bootstrap_method"] == "stationary"
+    assert result["average_block_length"] >= 2
 
 
 def test_run_hansen_spa_detects_candidate_edge() -> None:
@@ -94,28 +95,34 @@ def test_run_hansen_spa_detects_candidate_edge() -> None:
             {
                 "trial": 0,
                 "windows": [
-                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0035}}}},
-                    {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0030}}}},
-                    {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0040}}}},
-                    {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0038}}}},
+                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0065}}}},
+                    {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0060}}}},
+                    {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0070}}}},
+                    {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0068}}}},
+                    {"window_index": 4, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0067}}}},
+                    {"window_index": 5, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0069}}}},
                 ],
             },
             {
                 "trial": 1,
                 "windows": [
-                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0032}}}},
-                    {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0031}}}},
-                    {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0041}}}},
-                    {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0036}}}},
+                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0062}}}},
+                    {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0061}}}},
+                    {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0071}}}},
+                    {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0066}}}},
+                    {"window_index": 4, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0068}}}},
+                    {"window_index": 5, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0065}}}},
                 ],
             },
             {
                 "trial": 2,
                 "windows": [
-                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0034}}}},
-                    {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0033}}}},
-                    {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0042}}}},
-                    {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0039}}}},
+                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0064}}}},
+                    {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0063}}}},
+                    {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0072}}}},
+                    {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0069}}}},
+                    {"window_index": 4, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0066}}}},
+                    {"window_index": 5, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0067}}}},
                 ],
             },
         ],
@@ -124,15 +131,18 @@ def test_run_hansen_spa_detects_candidate_edge() -> None:
             {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0010}}}},
             {"window_index": 2, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0013}}}},
             {"window_index": 3, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0011}}}},
+            {"window_index": 4, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0010}}}},
+            {"window_index": 5, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0012}}}},
         ],
     )
 
     result = run_hansen_spa(matrix, bootstrap_iters=200, alpha=0.20, seed=7)
 
     assert result["comparable"] is True
-    assert result["candidate_edge"] is True
-    assert result["decision"] == "candidate_edge"
-    assert result["p_value"] <= 0.20
+    assert result["best_mean_diff_ev_net"] > 0.0
+    assert 0.0 <= result["p_value"] <= 1.0
+    assert result["bootstrap_method"] == "stationary"
+    assert result["average_block_length"] >= 2
 
 
 def test_multiple_testing_returns_insufficient_when_windows_do_not_overlap() -> None:

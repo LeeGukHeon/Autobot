@@ -98,6 +98,7 @@ class TrainV4CryptoCsOptions:
     walk_forward_min_test_rows: int = 200
     multiple_testing_alpha: float = 0.20
     multiple_testing_bootstrap_iters: int = 500
+    multiple_testing_block_length: int = 0
     execution_acceptance_enabled: bool = False
     execution_acceptance_dataset_name: str = "candles_v1"
     execution_acceptance_parquet_root: Path = Path("data/parquet")
@@ -530,12 +531,14 @@ def _run_walk_forward_v4(
         alpha=float(options.multiple_testing_alpha),
         bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
         seed=int(options.seed),
+        average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
     )
     report["hansen_spa"] = run_hansen_spa(
         rc_matrix,
         alpha=float(options.multiple_testing_alpha),
         bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
         seed=int(options.seed),
+        average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
     )
     if champion_summary:
         report["champion_summary"] = champion_summary

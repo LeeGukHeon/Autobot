@@ -302,6 +302,7 @@ D:\MyApps\Autobot
   - `v4` trainer evidence는 candidate/champion walk-forward window의 `ev_net` 차이를 paired sign-flip 방식으로 검정한다.
 - `White Reality Check / Hansen SPA` style test 반영
   - `v4` trainer sweep은 이제 walk-forward `trial_panel`을 저장하고, aligned trial-by-window `ev_net` 차이를 기반으로 multiple-testing evidence를 계산한다.
+  - bootstrap은 `stationary bootstrap`을 사용하고, `Hansen SPA`는 sample-dependent null recentering을 적용한다.
   - 이 경로는 아직 `v4` 전용이다. `v3`는 같은 trial panel을 저장하지 않는다.
 
 ### 설계 문서

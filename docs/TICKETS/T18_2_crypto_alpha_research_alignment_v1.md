@@ -488,6 +488,7 @@ Current implementation checkpoint:
       - a `SPA-like` walk-forward paired window test
       - `trial_panel` data with aligned per-trial window outcomes
       - `White Reality Check` and `Hansen SPA` style multiple-testing checks on that panel
+      - bootstrap is `stationary bootstrap`, and `Hansen SPA` uses sample-dependent null recentering
     - this richer multiple-testing evidence is currently `v4`-only because `v3` does not persist the same walk-forward trial panel
 - `install_server_daily_parallel_acceptance_service.ps1` rewires the existing `autobot-daily-micro.service` override to the shared orchestrator
   - current target timer remains:
