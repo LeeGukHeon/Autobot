@@ -35,6 +35,13 @@ function Resolve-DefaultRuntimeInstallScript {
     return (Join-Path $Root "scripts/install_server_runtime_services.ps1")
 }
 
+function Resolve-ChampionRunId {
+    param([string]$Root)
+    $pointerPath = Join-Path $Root "models/registry/train_v4_crypto_cs/champion.json"
+    $pointer = Load-JsonOrEmpty -PathValue $pointerPath
+    return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
+}
+
 function Resolve-BatchDateValue {
     param([string]$DateText)
     if (-not [string]::IsNullOrWhiteSpace($DateText)) {
@@ -225,6 +232,7 @@ $previousState = Load-JsonOrEmpty -PathValue $statePath
 $promotionDecision = @{}
 if (@($previousState.PSObject.Properties).Count -gt 0) {
     $candidateRunId = [string](Get-PropValue -ObjectValue $previousState -Name "candidate_run_id" -DefaultValue "")
+    $championRunIdAtStart = [string](Get-PropValue -ObjectValue $previousState -Name "champion_run_id_at_start" -DefaultValue "")
     $startedTsMs = [int64](Get-PropValue -ObjectValue $previousState -Name "started_ts_ms" -DefaultValue 0)
     if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0)) {
         $compareArgs = @(
@@ -232,6 +240,7 @@ if (@($previousState.PSObject.Properties).Count -gt 0) {
             "--paper-root", (Join-Path $resolvedProjectRoot "data/paper"),
             "--lane", "v4",
             "--challenger-model-ref", $candidateRunId,
+            "--champion-model-run-id", $championRunIdAtStart,
             "--since-ts-ms", [string]$startedTsMs,
             "--min-challenger-hours", [string]$ChallengerMinHours,
             "--min-orders-filled", [string]$ChallengerMinOrdersFilled,
@@ -342,10 +351,12 @@ if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and $backtestPass) {
         output_preview = $challengerInstallExec.Output
         candidate_run_id = $candidateRunId
     }
+    $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
     $nextState = [ordered]@{
         batch_date = $resolvedBatchDate
         candidate_run_id = $candidateRunId
         champion_ref_at_start = "champion_v4"
+        champion_run_id_at_start = $championRunIdAtStart
         started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
         started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
         champion_unit = $ChampionUnitName

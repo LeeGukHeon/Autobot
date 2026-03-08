@@ -52,10 +52,12 @@ def load_paper_lane_runs(
     since_ts_ms: int = 0,
     until_ts_ms: int | None = None,
     model_ref: str | None = None,
+    model_run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     lane_value = str(lane).strip().lower()
     role_value = str(runtime_role).strip().lower()
     model_ref_value = str(model_ref).strip() if model_ref else ""
+    model_run_id_value = str(model_run_id).strip() if model_run_id else ""
     results: list[dict[str, Any]] = []
     runs_root = paper_root / "runs"
     if not runs_root.exists():
@@ -77,6 +79,10 @@ def load_paper_lane_runs(
         if model_ref_value:
             run_model_ref = str(summary.get("paper_runtime_model_ref_pinned") or summary.get("paper_runtime_model_ref") or "").strip()
             if run_model_ref != model_ref_value:
+                continue
+        if model_run_id_value:
+            run_model_run_id = str(summary.get("paper_runtime_model_run_id") or "").strip()
+            if run_model_run_id != model_run_id_value:
                 continue
         summary["summary_path"] = str(summary_path)
         summary["run_dir"] = str(summary_path.parent)
@@ -232,6 +238,7 @@ def build_lane_comparison_report(
     challenger_model_ref: str,
     since_ts_ms: int,
     until_ts_ms: int | None,
+    champion_model_run_id: str | None,
     min_challenger_hours: float,
     min_orders_filled: int,
     min_realized_pnl_quote: float,
@@ -247,6 +254,7 @@ def build_lane_comparison_report(
         runtime_role="champion",
         since_ts_ms=since_ts_ms,
         until_ts_ms=until_ts_ms,
+        model_run_id=champion_model_run_id,
     )
     challenger_runs = load_paper_lane_runs(
         paper_root=paper_root,
@@ -273,6 +281,7 @@ def build_lane_comparison_report(
     return {
         "lane": lane,
         "challenger_model_ref": challenger_model_ref,
+        "champion_model_run_id": str(champion_model_run_id or "").strip(),
         "since_ts_ms": int(since_ts_ms),
         "until_ts_ms": int(until_ts_ms) if until_ts_ms is not None else None,
         "champion": champion_agg,
@@ -286,6 +295,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paper-root", default="data/paper")
     parser.add_argument("--lane", default="v4")
     parser.add_argument("--challenger-model-ref", required=True)
+    parser.add_argument("--champion-model-run-id", default="")
     parser.add_argument("--since-ts-ms", type=int, required=True)
     parser.add_argument("--until-ts-ms", type=int, default=None)
     parser.add_argument("--min-challenger-hours", type=float, default=12.0)
@@ -306,6 +316,7 @@ def main() -> int:
         paper_root=Path(args.paper_root),
         lane=str(args.lane).strip().lower(),
         challenger_model_ref=str(args.challenger_model_ref).strip(),
+        champion_model_run_id=str(args.champion_model_run_id).strip() or None,
         since_ts_ms=int(args.since_ts_ms),
         until_ts_ms=args.until_ts_ms,
         min_challenger_hours=float(args.min_challenger_hours),

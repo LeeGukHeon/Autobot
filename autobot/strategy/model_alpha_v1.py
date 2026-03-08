@@ -115,6 +115,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             else settings.operational
         )
 
+    @property
+    def predictor_run_id(self) -> str:
+        return str(self._predictor.run_dir.name).strip()
+
     def on_ts(
         self,
         *,

@@ -1024,6 +1024,10 @@ class PaperRunEngine:
 
         with JsonlEventStore(run_root) as store:
             runtime_metadata = _resolve_paper_runtime_metadata(self._run_settings)
+            if strategy_mode == "model_alpha_v1" and model_strategy is not None:
+                predictor_run_id = str(getattr(model_strategy, "predictor_run_id", "")).strip()
+                if predictor_run_id:
+                    runtime_metadata["paper_runtime_model_run_id"] = predictor_run_id
 
             def append_event(event_type: str, ts_ms: int, payload: dict[str, Any] | None = None) -> None:
                 nonlocal events_count
@@ -3026,6 +3030,7 @@ def _resolve_paper_runtime_metadata(settings: PaperRunSettings) -> dict[str, Any
         "paper_runtime_model_family": effective_model_family,
         "paper_runtime_feature_set": effective_feature_set,
         "paper_runtime_model_ref_pinned": pinned_model_ref,
+        "paper_runtime_model_run_id": "",
         "run_started_ts_ms": int(time.time() * 1000),
     }
 
