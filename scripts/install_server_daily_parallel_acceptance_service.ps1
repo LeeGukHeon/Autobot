@@ -5,6 +5,7 @@ param(
     [string]$TargetServiceName = "autobot-daily-micro.service",
     [string]$TargetTimerName = "autobot-daily-micro.timer",
     [string]$DisableTimerName = "autobot-daily-v4-accept.timer",
+    [string]$ServiceUser = "ubuntu",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
@@ -42,16 +43,20 @@ if (@($PromotionTargetUnits).Count -gt 0) {
     $wrapperArgList += @($PromotionTargetUnits)
 }
 $execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
+$execStart = "/bin/bash -lc " + (Quote-ShellArg $execStartCommand)
 
 $overrideContent = @"
 [Service]
 TimeoutStartSec=0
+User=$ServiceUser
 ExecStart=
-ExecStart=$execStartCommand
+ExecStart=$execStart
 "@
 
 if ($DryRun) {
     Write-Host ("[daily-parallel-install][dry-run] target_service={0}" -f $TargetServiceName)
+    Write-Host ("[daily-parallel-install][dry-run] service_user={0}" -f $ServiceUser)
+    Write-Host ("[daily-parallel-install][dry-run] pwsh={0}" -f $resolvedPwshExe)
     Write-Host $overrideContent
     Write-Host ("[daily-parallel-install][dry-run] target_timer={0}" -f $TargetTimerName)
     if (-not [string]::IsNullOrWhiteSpace($DisableTimerName)) {
@@ -60,6 +65,7 @@ if ($DryRun) {
     exit 0
 }
 
+Enable-UserLinger -UserName $ServiceUser
 Install-DropInFile -UnitName $TargetServiceName -DropInName "override.conf" -Content $overrideContent
 
 & sudo systemctl daemon-reload

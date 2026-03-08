@@ -837,6 +837,25 @@ function Get-PowerShellExe {
     if ($script:IsWindowsPlatform) {
         return "powershell.exe"
     }
+    $cmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+        $resolved = [string]$cmd.Source
+        if (-not $resolved.StartsWith("/snap/")) {
+            return $resolved
+        }
+    }
+    foreach ($candidatePath in @(
+        "/usr/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "/opt/microsoft/powershell/7/pwsh"
+    )) {
+        if (Test-Path $candidatePath) {
+            return $candidatePath
+        }
+    }
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+        return [string]$cmd.Source
+    }
     return "pwsh"
 }
 

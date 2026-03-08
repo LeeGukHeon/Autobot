@@ -17,14 +17,47 @@ function Resolve-PwshExe {
     if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
         return "powershell.exe"
     }
-    if (Test-Path "/snap/bin/pwsh") {
-        return "/snap/bin/pwsh"
-    }
     $cmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+        $resolved = [string]$cmd.Source
+        if (-not $resolved.StartsWith("/snap/")) {
+            return $resolved
+        }
+    }
+    foreach ($candidatePath in @(
+        "/usr/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "/opt/microsoft/powershell/7/pwsh"
+    )) {
+        if (Test-Path $candidatePath) {
+            return $candidatePath
+        }
+    }
     if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
         return [string]$cmd.Source
     }
+    if (Test-Path "/snap/bin/pwsh") {
+        return "/snap/bin/pwsh"
+    }
     throw "pwsh executable not found"
+}
+
+function Enable-UserLinger {
+    param([string]$UserName)
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($UserName)) {
+        return
+    }
+    $loginctl = Get-Command loginctl -ErrorAction SilentlyContinue
+    if ($null -eq $loginctl -or [string]::IsNullOrWhiteSpace($loginctl.Source)) {
+        return
+    }
+    & sudo $loginctl.Source enable-linger $UserName
+    if ($LASTEXITCODE -ne 0) {
+        throw "loginctl enable-linger failed: $UserName"
+    }
 }
 
 function Quote-ShellArg {

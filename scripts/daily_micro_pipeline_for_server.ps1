@@ -95,6 +95,32 @@ function Invoke-CommandCapture {
     }
 }
 
+function Get-PowerShellExe {
+    if ($IsWindows) {
+        return "powershell.exe"
+    }
+    $cmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+        $resolved = [string]$cmd.Source
+        if (-not $resolved.StartsWith("/snap/")) {
+            return $resolved
+        }
+    }
+    foreach ($candidatePath in @(
+        "/usr/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "/opt/microsoft/powershell/7/pwsh"
+    )) {
+        if (Test-Path $candidatePath) {
+            return $candidatePath
+        }
+    }
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+        return [string]$cmd.Source
+    }
+    return "pwsh"
+}
+
 function Load-JsonOrEmpty {
     param([string]$PathValue)
     if (-not (Test-Path $PathValue)) {
@@ -550,6 +576,7 @@ $smokeRunExitCode = -1
 $smokeRunOutput = ""
 if (-not $SkipSmoke -and (Test-Path $smokeScriptPath)) {
     $smokeRunAttempted = $true
+    $pwshExe = Get-PowerShellExe
     $smokeRunArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -566,7 +593,7 @@ if (-not $SkipSmoke -and (Test-Path $smokeScriptPath)) {
         "-MinTierCount", $GateTierMinCount,
         "-MinPolicyEvents", $GatePolicyEventMin
     )
-    $smokeRunExec = Invoke-CommandCapture -Exe "pwsh" -ArgList $smokeRunArgs
+    $smokeRunExec = Invoke-CommandCapture -Exe $pwshExe -ArgList $smokeRunArgs
     $smokeRunExitCode = $smokeRunExec.ExitCode
     $smokeRunOutput = [string](Get-PropValue -ObjectValue $smokeRunExec -Name "Output" -DefaultValue "")
 }
@@ -603,6 +630,7 @@ $tieringRunAttempted = $false
 $tieringRunExitCode = -1
 if (-not $SkipTieringRecommend -and (Test-Path $tieringScriptPath)) {
     $tieringRunAttempted = $true
+    $pwshExe = Get-PowerShellExe
     $tieringRunArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -611,7 +639,7 @@ if (-not $SkipTieringRecommend -and (Test-Path $tieringScriptPath)) {
         "-RecentHours", $TieringRecentHours,
         "-MinSamples", $TieringMinSamples
     )
-    $tieringRunExec = Invoke-CommandCapture -Exe "pwsh" -ArgList $tieringRunArgs
+    $tieringRunExec = Invoke-CommandCapture -Exe $pwshExe -ArgList $tieringRunArgs
     $tieringRunExitCode = $tieringRunExec.ExitCode
 }
 $tieringReport = Load-JsonOrEmpty -PathValue $tieringReportPath

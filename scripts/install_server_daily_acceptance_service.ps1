@@ -7,6 +7,7 @@ param(
     [string]$TimerUnitName = "autobot-daily-v4-accept.timer",
     [string]$OnCalendar = "*-*-* 04:20:00",
     [string]$Description = "Autobot Daily V4 Candidate Acceptance",
+    [string]$ServiceUser = "ubuntu",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
@@ -81,7 +82,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=ubuntu
+User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$execStart
@@ -108,12 +109,15 @@ WantedBy=timers.target
 
 if ($DryRun) {
     Write-Host ("[daily-accept-install][dry-run] service={0}" -f $ServiceUnitName)
+    Write-Host ("[daily-accept-install][dry-run] service_user={0}" -f $ServiceUser)
+    Write-Host ("[daily-accept-install][dry-run] pwsh={0}" -f $resolvedPwshExe)
     Write-Host $serviceContent
     Write-Host ("[daily-accept-install][dry-run] timer={0}" -f $TimerUnitName)
     Write-Host $timerContent
     exit 0
 }
 
+Enable-UserLinger -UserName $ServiceUser
 Install-UnitFile -UnitName $ServiceUnitName -Content $serviceContent
 Install-UnitFile -UnitName $TimerUnitName -Content $timerContent
 
