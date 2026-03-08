@@ -181,6 +181,21 @@ function Load-JsonReportOrEmpty {
     return $raw | ConvertFrom-Json
 }
 
+function To-Bool {
+    param(
+        [Parameter(Mandatory = $false)]$Value,
+        [bool]$DefaultValue = $false
+    )
+    if ($null -eq $Value) {
+        return $DefaultValue
+    }
+    try {
+        return [bool]$Value
+    } catch {
+        return $DefaultValue
+    }
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
