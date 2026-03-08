@@ -362,6 +362,20 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
         }
 
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.run_execution_acceptance", _fake_run_execution_acceptance)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.optimize_runtime_recommendations",
+        lambda **kwargs: {
+            "version": 1,
+            "status": "ready",
+            "exit": {"recommended_hold_bars": 12, "recommendation_source": "execution_backtest_grid_search"},
+            "execution": {
+                "recommended_price_mode": "JOIN",
+                "recommended_timeout_bars": 2,
+                "recommended_replace_max": 1,
+                "recommendation_source": "execution_backtest_grid_search",
+            },
+        },
+    )
 
     options = TrainV4CryptoCsOptions(
         dataset_root=tmp_path / "features_v4",
@@ -400,10 +414,14 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     result = train_and_register_v4_crypto_cs(options)
     promotion = load_json(result.promotion_path)
     execution_doc = load_json(result.run_dir / "execution_acceptance_report.json")
+    runtime_doc = load_json(result.run_dir / "runtime_recommendations.json")
 
     assert result.execution_acceptance_report_path is not None
     assert result.execution_acceptance_report_path.exists()
+    assert result.runtime_recommendations_path is not None
+    assert result.runtime_recommendations_path.exists()
     assert execution_doc["status"] == "compared"
+    assert runtime_doc["exit"]["recommended_hold_bars"] == 12
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
     execution_options = captured["options"]

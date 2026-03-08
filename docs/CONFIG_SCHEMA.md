@@ -133,6 +133,10 @@
 - `strategy.model_alpha_v1.position.size_multiplier_max`: number (default: `1.5`)
 - `strategy.model_alpha_v1.exit.mode`: `hold | risk` (default: `hold`)
 - `strategy.model_alpha_v1.exit.hold_bars`: integer (default: `6`)
+- `strategy.model_alpha_v1.exit.use_learned_hold_bars`: bool (default: `true`)
+  - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.recommended_hold_bars`
+  - applied only when `exit.mode=hold`
+  - if the loaded model has no runtime recommendation artifact, runtime falls back to config/preset `hold_bars`
 - `strategy.model_alpha_v1.exit.tp_pct`: number (default: `0.02`)
 - `strategy.model_alpha_v1.exit.sl_pct`: number (default: `0.01`)
 - `strategy.model_alpha_v1.exit.trailing_pct`: number (default: `0.0`)
@@ -141,6 +145,13 @@
 - `strategy.model_alpha_v1.execution.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `JOIN`)
 - `strategy.model_alpha_v1.execution.timeout_bars`: integer (default: `2`)
 - `strategy.model_alpha_v1.execution.replace_max`: integer (default: `2`)
+- `strategy.model_alpha_v1.execution.use_learned_recommendations`: bool (default: `true`)
+  - when `true`, runtime first reads model-run `runtime_recommendations.json.execution`
+  - learned runtime knobs are:
+    - `recommended_price_mode`
+    - `recommended_timeout_bars`
+    - `recommended_replace_max`
+  - if the loaded model has no runtime recommendation artifact, runtime falls back to config/preset execution settings
 - `strategy.model_alpha_v1.operational.enabled`: bool (default: `true`)
 - `strategy.model_alpha_v1.operational.use_calibration_artifact`: bool (default: `true`)
 - `strategy.model_alpha_v1.operational.calibration_artifact_path`: string (default: `logs/operational_overlay/latest.json`)

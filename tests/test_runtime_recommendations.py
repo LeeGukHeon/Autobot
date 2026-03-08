@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from autobot.models.predictor import ModelPredictor
+from autobot.models.runtime_recommendations import _rank_execution_rows
+from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaExecutionSettings,
+    ModelAlphaExitSettings,
+    ModelAlphaSettings,
+    resolve_runtime_model_alpha_settings,
+)
+
+
+def _dummy_predictor(*, runtime_recommendations: dict[str, object]) -> ModelPredictor:
+    return ModelPredictor(
+        run_dir=Path("models/registry/train_v4_crypto_cs/run"),
+        model_bundle={"model_type": "dummy"},
+        model_ref="candidate_v4",
+        model_family="train_v4_crypto_cs",
+        feature_columns=(),
+        train_config={},
+        thresholds={},
+        selection_recommendations={},
+        runtime_recommendations=runtime_recommendations,
+    )
+
+
+def test_resolve_runtime_model_alpha_settings_applies_learned_hold_and_execution() -> None:
+    predictor = _dummy_predictor(
+        runtime_recommendations={
+            "exit": {
+                "recommended_hold_bars": 12,
+                "recommendation_source": "execution_backtest_grid_search",
+            },
+            "execution": {
+                "recommended_price_mode": "CROSS_1T",
+                "recommended_timeout_bars": 4,
+                "recommended_replace_max": 1,
+                "recommendation_source": "execution_backtest_grid_search",
+            },
+        }
+    )
+    settings = ModelAlphaSettings(
+        exit=ModelAlphaExitSettings(mode="hold", hold_bars=6, use_learned_hold_bars=True),
+        execution=ModelAlphaExecutionSettings(
+            price_mode="JOIN",
+            timeout_bars=2,
+            replace_max=2,
+            use_learned_recommendations=True,
+        ),
+    )
+
+    resolved, state = resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
+
+    assert resolved.exit.hold_bars == 12
+    assert resolved.execution.price_mode == "CROSS_1T"
+    assert resolved.execution.timeout_bars == 4
+    assert resolved.execution.replace_max == 1
+    assert state["exit_hold_bars_source"] == "execution_backtest_grid_search"
+    assert state["execution_source"] == "execution_backtest_grid_search"
+
+
+def test_rank_execution_rows_prefers_pairwise_winner() -> None:
+    rows = [
+        {
+            "grid_point": {"hold_bars": 3},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 100.0,
+                "fill_rate": 0.90,
+                "max_drawdown_pct": 1.5,
+                "slippage_bps_mean": 4.0,
+            },
+        },
+        {
+            "grid_point": {"hold_bars": 6},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 140.0,
+                "fill_rate": 0.94,
+                "max_drawdown_pct": 1.1,
+                "slippage_bps_mean": 3.2,
+            },
+        },
+        {
+            "grid_point": {"hold_bars": 9},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 120.0,
+                "fill_rate": 0.92,
+                "max_drawdown_pct": 1.8,
+                "slippage_bps_mean": 4.8,
+            },
+        },
+    ]
+
+    ranked = _rank_execution_rows(rows)
+
+    assert ranked
+    assert ranked[0]["grid_point"]["hold_bars"] == 6
+    assert ranked[0]["wins"] >= ranked[-1]["wins"]

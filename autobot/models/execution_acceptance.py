@@ -58,7 +58,10 @@ def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, A
     }
 
     try:
-        candidate_summary = _run_model_backtest(options=options, model_ref=str(options.candidate_ref).strip())
+        candidate_summary = _run_model_backtest(
+            options=options,
+            model_ref=str(options.candidate_ref).strip(),
+        )
     except Exception as exc:
         report["status"] = "skipped"
         report["skip_reason"] = f"{type(exc).__name__}: {exc}"
@@ -75,7 +78,10 @@ def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, A
 
     report["champion_ref"] = champion_ref
     try:
-        champion_summary = _run_model_backtest(options=options, model_ref=champion_ref)
+        champion_summary = _run_model_backtest(
+            options=options,
+            model_ref=champion_ref,
+        )
     except Exception as exc:
         report["status"] = "candidate_only"
         report["skip_reason"] = f"CHAMPION_BACKTEST_FAILED:{type(exc).__name__}: {exc}"
@@ -88,11 +94,16 @@ def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, A
     return report
 
 
-def _run_model_backtest(*, options: ExecutionAcceptanceOptions, model_ref: str) -> dict[str, Any]:
+def run_model_execution_backtest(
+    *,
+    options: ExecutionAcceptanceOptions,
+    model_ref: str,
+    model_alpha_settings: ModelAlphaSettings | None = None,
+) -> dict[str, Any]:
     from autobot.backtest.engine import BacktestRunSettings, run_backtest_sync
 
-    model_alpha_settings = replace(
-        options.model_alpha_settings,
+    effective_model_alpha_settings = replace(
+        model_alpha_settings or options.model_alpha_settings,
         model_ref=str(model_ref).strip(),
         model_family=str(options.model_family).strip() or None,
         feature_set=str(options.feature_set).strip().lower() or "v4",
@@ -122,7 +133,7 @@ def _run_model_backtest(*, options: ExecutionAcceptanceOptions, model_ref: str) 
             feature_set=str(options.feature_set).strip().lower() or "v4",
             model_registry_root=str(options.registry_root),
             model_feature_dataset_root=None,
-            model_alpha=model_alpha_settings,
+            model_alpha=effective_model_alpha_settings,
             output_root_dir=str(options.output_root_dir),
             micro_gate=options.micro_gate,
             micro_order_policy=options.micro_order_policy,
@@ -130,6 +141,10 @@ def _run_model_backtest(*, options: ExecutionAcceptanceOptions, model_ref: str) 
         upbit_settings=None,
     )
     return _summary_to_doc(summary)
+
+
+def _run_model_backtest(*, options: ExecutionAcceptanceOptions, model_ref: str) -> dict[str, Any]:
+    return run_model_execution_backtest(options=options, model_ref=model_ref)
 
 
 def _summary_to_doc(summary: BacktestRunSummary) -> dict[str, Any]:

@@ -40,7 +40,11 @@ from autobot.paper.sim_exchange import (
 )
 from autobot.models.dataset_loader import DatasetRequest, iter_feature_rows_grouped_by_ts
 from autobot.models.predictor import load_predictor_from_registry
-from autobot.strategy.model_alpha_v1 import ModelAlphaSettings, ModelAlphaStrategyV1
+from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaSettings,
+    ModelAlphaStrategyV1,
+    resolve_runtime_model_alpha_settings,
+)
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
 from autobot.strategy.micro_order_policy import (
@@ -1484,7 +1488,15 @@ class BacktestRunEngine:
         )
         strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
         policy_decision = None
-        exec_profile = _strategy_backtest_exec_profile(self._run_settings)
+        resolved_model_alpha_settings = self._runtime_state.get("resolved_model_alpha_settings")
+        exec_profile = _strategy_backtest_exec_profile(
+            self._run_settings,
+            model_alpha_settings=(
+                resolved_model_alpha_settings
+                if isinstance(resolved_model_alpha_settings, ModelAlphaSettings)
+                else None
+            ),
+        )
         policy_diagnostics: dict[str, Any] = {}
         if micro_order_policy is not None:
             snapshot = (
@@ -1883,6 +1895,12 @@ class BacktestRunEngine:
             model_ref=model_ref,
             model_family=model_family,
         )
+        resolved_model_alpha, runtime_recommendation_state = resolve_runtime_model_alpha_settings(
+            predictor=predictor,
+            settings=settings.model_alpha,
+        )
+        self._runtime_state["resolved_model_alpha_settings"] = resolved_model_alpha
+        self._runtime_state["model_alpha_runtime_recommendation_state"] = runtime_recommendation_state
         dataset_root = (
             Path(str(settings.model_feature_dataset_root))
             if settings.model_feature_dataset_root
@@ -1912,7 +1930,7 @@ class BacktestRunEngine:
         return ModelAlphaStrategyV1(
             predictor=predictor,
             feature_groups=groups,
-            settings=settings.model_alpha,
+            settings=resolved_model_alpha,
             interval_ms=interval_ms,
         )
 
@@ -2129,14 +2147,19 @@ def _legacy_backtest_exec_profile(settings: BacktestRunSettings) -> OrderExecPro
     )
 
 
-def _model_alpha_backtest_exec_profile(settings: BacktestRunSettings) -> OrderExecProfile:
+def _model_alpha_backtest_exec_profile(
+    settings: BacktestRunSettings,
+    *,
+    model_alpha_settings: ModelAlphaSettings | None = None,
+) -> OrderExecProfile:
     interval_ms = _interval_ms_from_tf(settings.tf)
-    timeout_ms = max(int(settings.model_alpha.execution.timeout_bars), 1) * interval_ms
+    effective_settings = model_alpha_settings or settings.model_alpha
+    timeout_ms = max(int(effective_settings.execution.timeout_bars), 1) * interval_ms
     return make_legacy_exec_profile(
         timeout_ms=timeout_ms,
         replace_interval_ms=timeout_ms,
-        max_replaces=max(int(settings.model_alpha.execution.replace_max), 0),
-        price_mode=str(settings.model_alpha.execution.price_mode),
+        max_replaces=max(int(effective_settings.execution.replace_max), 0),
+        price_mode=str(effective_settings.execution.price_mode),
         max_chase_bps=10_000,
         min_replace_interval_ms_global=1_500,
     )
@@ -2168,10 +2191,14 @@ def _resolve_candidate_notional_multiplier(candidate_meta: dict[str, Any] | None
     return float(value)
 
 
-def _strategy_backtest_exec_profile(settings: BacktestRunSettings) -> OrderExecProfile:
+def _strategy_backtest_exec_profile(
+    settings: BacktestRunSettings,
+    *,
+    model_alpha_settings: ModelAlphaSettings | None = None,
+) -> OrderExecProfile:
     strategy_mode = str(settings.strategy).strip().lower() or "candidates_v1"
     if strategy_mode == "model_alpha_v1":
-        return _model_alpha_backtest_exec_profile(settings)
+        return _model_alpha_backtest_exec_profile(settings, model_alpha_settings=model_alpha_settings)
     return _legacy_backtest_exec_profile(settings)
 
 

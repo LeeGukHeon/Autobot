@@ -14,7 +14,12 @@ import numpy as np
 from autobot import __version__ as autobot_version
 from autobot.data import expected_interval_ms
 from autobot.features.feature_spec import parse_date_to_ts_ms
-from autobot.strategy.model_alpha_v1 import ModelAlphaSelectionSettings, ModelAlphaSettings
+from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaExecutionSettings,
+    ModelAlphaExitSettings,
+    ModelAlphaSelectionSettings,
+    ModelAlphaSettings,
+)
 
 from .dataset_loader import (
     build_data_fingerprint,
@@ -30,6 +35,7 @@ from .multiple_testing import (
     run_white_reality_check,
 )
 from .execution_acceptance import ExecutionAcceptanceOptions, run_execution_acceptance
+from .runtime_recommendations import optimize_runtime_recommendations
 from .model_card import render_model_card
 from .research_acceptance import (
     compare_balanced_pareto,
@@ -119,7 +125,9 @@ class TrainV4CryptoCsOptions:
     execution_acceptance_reprice_tick_steps: int = 1
     execution_acceptance_rules_ttl_sec: int = 86_400
     execution_acceptance_model_alpha: ModelAlphaSettings = ModelAlphaSettings(
-        selection=ModelAlphaSelectionSettings(use_learned_recommendations=False)
+        selection=ModelAlphaSelectionSettings(use_learned_recommendations=False),
+        exit=ModelAlphaExitSettings(use_learned_hold_bars=False),
+        execution=ModelAlphaExecutionSettings(use_learned_recommendations=False),
     )
 
 
@@ -135,6 +143,7 @@ class TrainV4CryptoCsResult:
     promotion_path: Path
     walk_forward_report_path: Path | None = None
     execution_acceptance_report_path: Path | None = None
+    runtime_recommendations_path: Path | None = None
 
 
 def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4CryptoCsResult:
@@ -376,6 +385,15 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(execution_acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    runtime_recommendations = _build_runtime_recommendations_v4(
+        options=options,
+        run_id=run_id,
+    )
+    runtime_recommendations_path = run_dir / "runtime_recommendations.json"
+    runtime_recommendations_path.write_text(
+        json.dumps(runtime_recommendations, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     promotion = _manual_promotion_decision_v4(
         options=options,
         run_id=run_id,
@@ -405,6 +423,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "candidate": leaderboard_row,
             "walk_forward": walk_forward,
             "execution_acceptance": execution_acceptance,
+            "runtime_recommendations": runtime_recommendations,
             "selection_recommendations": selection_recommendations,
             "promotion": promotion,
         },
@@ -421,6 +440,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         promotion_path=promotion_path,
         walk_forward_report_path=walk_forward_report_path,
         execution_acceptance_report_path=execution_acceptance_report_path,
+        runtime_recommendations_path=runtime_recommendations_path,
     )
 
 
@@ -1495,6 +1515,76 @@ def _run_execution_acceptance_v4(
             "status": "skipped",
             "skip_reason": f"{type(exc).__name__}: {exc}",
             "compare_to_champion": {},
+        }
+
+
+def _build_runtime_recommendations_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    run_id: str,
+) -> dict[str, Any]:
+    if not bool(options.execution_acceptance_enabled):
+        return {
+            "version": 1,
+            "status": "skipped",
+            "reason": "EXECUTION_ACCEPTANCE_DISABLED",
+        }
+    try:
+        selection = replace(
+            options.execution_acceptance_model_alpha.selection,
+            use_learned_recommendations=True,
+        )
+        exit_settings = replace(
+            options.execution_acceptance_model_alpha.exit,
+            use_learned_hold_bars=False,
+        )
+        execution_settings = replace(
+            options.execution_acceptance_model_alpha.execution,
+            use_learned_recommendations=False,
+        )
+        runtime_model_alpha = replace(
+            options.execution_acceptance_model_alpha,
+            selection=selection,
+            exit=exit_settings,
+            execution=execution_settings,
+        )
+        return optimize_runtime_recommendations(
+            options=ExecutionAcceptanceOptions(
+                registry_root=options.registry_root,
+                model_family=options.model_family,
+                candidate_ref=run_id,
+                parquet_root=options.execution_acceptance_parquet_root,
+                dataset_name=str(options.execution_acceptance_dataset_name).strip() or "candles_v1",
+                output_root_dir=options.execution_acceptance_output_root,
+                tf=str(options.tf).strip().lower(),
+                quote=str(options.quote).strip().upper(),
+                top_n=max(
+                    int(options.execution_acceptance_top_n)
+                    if int(options.execution_acceptance_top_n) > 0
+                    else int(options.top_n),
+                    1,
+                ),
+                start_ts_ms=parse_date_to_ts_ms(options.start),
+                end_ts_ms=parse_date_to_ts_ms(options.end, end_of_day=True),
+                feature_set=str(options.feature_set).strip().lower() or "v4",
+                dense_grid=bool(options.execution_acceptance_dense_grid),
+                starting_krw=max(float(options.execution_acceptance_starting_krw), 0.0),
+                per_trade_krw=max(float(options.execution_acceptance_per_trade_krw), 1.0),
+                max_positions=max(int(options.execution_acceptance_max_positions), 1),
+                min_order_krw=max(float(options.execution_acceptance_min_order_krw), 0.0),
+                order_timeout_bars=max(int(options.execution_acceptance_order_timeout_bars), 1),
+                reprice_max_attempts=max(int(options.execution_acceptance_reprice_max_attempts), 0),
+                reprice_tick_steps=max(int(options.execution_acceptance_reprice_tick_steps), 1),
+                rules_ttl_sec=max(int(options.execution_acceptance_rules_ttl_sec), 1),
+                model_alpha_settings=runtime_model_alpha,
+            ),
+            candidate_ref=run_id,
+        )
+    except Exception as exc:
+        return {
+            "version": 1,
+            "status": "skipped",
+            "reason": f"{type(exc).__name__}: {exc}",
         }
 
 

@@ -27,6 +27,7 @@ class RegistrySavePayload:
     leaderboard_row: dict[str, Any]
     model_card_text: str
     selection_recommendations: dict[str, Any] | None = None
+    runtime_recommendations: dict[str, Any] | None = None
 
 
 def make_run_id(*, seed: int | None = None) -> str:
@@ -52,6 +53,8 @@ def save_run(payload: RegistrySavePayload) -> Path:
     _write_json(run_dir / "leaderboard_row.json", payload.leaderboard_row)
     if isinstance(payload.selection_recommendations, dict) and payload.selection_recommendations:
         _write_json(run_dir / "selection_recommendations.json", payload.selection_recommendations)
+    if isinstance(payload.runtime_recommendations, dict) and payload.runtime_recommendations:
+        _write_json(run_dir / "runtime_recommendations.json", payload.runtime_recommendations)
     (run_dir / "model_card.md").write_text(payload.model_card_text.rstrip() + "\n", encoding="utf-8")
 
     update_latest_pointer(payload.registry_root, payload.model_family, payload.run_id)

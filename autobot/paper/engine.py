@@ -48,7 +48,11 @@ from autobot.strategy.micro_snapshot import (
     MicroSnapshotProvider,
     OfflineMicroSnapshotProvider,
 )
-from autobot.strategy.model_alpha_v1 import ModelAlphaSettings, ModelAlphaStrategyV1
+from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaSettings,
+    ModelAlphaStrategyV1,
+    resolve_runtime_model_alpha_settings,
+)
 from autobot.strategy.operational_overlay_v1 import (
     compute_micro_quality_composite,
     resolve_operational_execution_overlay,
@@ -1599,6 +1603,12 @@ class PaperRunEngine:
             model_ref=model_ref,
             model_family=model_family,
         )
+        resolved_model_alpha, runtime_recommendation_state = resolve_runtime_model_alpha_settings(
+            predictor=predictor,
+            settings=settings.model_alpha,
+        )
+        self._runtime_state["resolved_model_alpha_settings"] = resolved_model_alpha
+        self._runtime_state["model_alpha_runtime_recommendation_state"] = runtime_recommendation_state
         feature_provider_mode = _normalize_paper_feature_provider(settings.paper_feature_provider)
         if feature_provider_mode == "LIVE_V3":
             if feature_set != "v3":
@@ -1617,7 +1627,7 @@ class PaperRunEngine:
             return ModelAlphaStrategyV1(
                 predictor=predictor,
                 feature_groups=(),
-                settings=settings.model_alpha,
+                settings=resolved_model_alpha,
                 interval_ms=interval_ms,
                 enable_operational_overlay=True,
                 live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
@@ -1644,7 +1654,7 @@ class PaperRunEngine:
             return ModelAlphaStrategyV1(
                 predictor=predictor,
                 feature_groups=(),
-                settings=settings.model_alpha,
+                settings=resolved_model_alpha,
                 interval_ms=interval_ms,
                 enable_operational_overlay=True,
                 live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
@@ -1682,7 +1692,7 @@ class PaperRunEngine:
         return ModelAlphaStrategyV1(
             predictor=predictor,
             feature_groups=groups,
-            settings=settings.model_alpha,
+            settings=resolved_model_alpha,
             interval_ms=interval_ms,
             enable_operational_overlay=True,
         )
@@ -1800,7 +1810,15 @@ class PaperRunEngine:
             if micro_snapshot_provider is not None
             else None
         )
-        exec_profile = _strategy_paper_exec_profile(self._run_settings)
+        resolved_model_alpha_settings = self._runtime_state.get("resolved_model_alpha_settings")
+        exec_profile = _strategy_paper_exec_profile(
+            self._run_settings,
+            model_alpha_settings=(
+                resolved_model_alpha_settings
+                if isinstance(resolved_model_alpha_settings, ModelAlphaSettings)
+                else None
+            ),
+        )
         operational_decision = None
         if strategy_mode == "model_alpha_v1" and bool(self._run_settings.model_alpha.operational.enabled):
             operational_decision = resolve_operational_execution_overlay(
@@ -2808,14 +2826,19 @@ def _write_trade_artifacts(*, run_root: Path, fill_records: Any) -> None:
             )
 
 
-def _model_alpha_paper_exec_profile(settings: PaperRunSettings) -> OrderExecProfile:
+def _model_alpha_paper_exec_profile(
+    settings: PaperRunSettings,
+    *,
+    model_alpha_settings: ModelAlphaSettings | None = None,
+) -> OrderExecProfile:
     interval_ms = _interval_ms_from_tf(settings.tf)
-    timeout_ms = max(int(settings.model_alpha.execution.timeout_bars), 1) * interval_ms
+    effective_settings = model_alpha_settings or settings.model_alpha
+    timeout_ms = max(int(effective_settings.execution.timeout_bars), 1) * interval_ms
     return make_legacy_exec_profile(
         timeout_ms=timeout_ms,
         replace_interval_ms=timeout_ms,
-        max_replaces=max(int(settings.model_alpha.execution.replace_max), 0),
-        price_mode=str(settings.model_alpha.execution.price_mode),
+        max_replaces=max(int(effective_settings.execution.replace_max), 0),
+        price_mode=str(effective_settings.execution.price_mode),
         max_chase_bps=10_000,
         min_replace_interval_ms_global=1_500,
     )
@@ -2847,10 +2870,14 @@ def _resolve_candidate_notional_multiplier(candidate_meta: dict[str, Any] | None
     return float(value)
 
 
-def _strategy_paper_exec_profile(settings: PaperRunSettings) -> OrderExecProfile:
+def _strategy_paper_exec_profile(
+    settings: PaperRunSettings,
+    *,
+    model_alpha_settings: ModelAlphaSettings | None = None,
+) -> OrderExecProfile:
     strategy_mode = str(settings.strategy).strip().lower() or "candidates_v1"
     if strategy_mode == "model_alpha_v1":
-        return _model_alpha_paper_exec_profile(settings)
+        return _model_alpha_paper_exec_profile(settings, model_alpha_settings=model_alpha_settings)
     return _legacy_paper_exec_profile(settings)
 
 

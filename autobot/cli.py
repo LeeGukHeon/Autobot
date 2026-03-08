@@ -2460,6 +2460,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                         exit=ModelAlphaExitSettings(
                             mode=str(model_alpha_exit_defaults.get("mode", "hold")).strip().lower() or "hold",
                             hold_bars=exec_acceptance_hold_bars,
+                            use_learned_hold_bars=False,
                             tp_pct=max(float(model_alpha_exit_defaults.get("tp_pct", 0.02)), 0.0),
                             sl_pct=max(float(model_alpha_exit_defaults.get("sl_pct", 0.01)), 0.0),
                             trailing_pct=max(float(model_alpha_exit_defaults.get("trailing_pct", 0.0)), 0.0),
@@ -2477,6 +2478,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                             ),
                             timeout_bars=max(int(model_alpha_execution_defaults.get("timeout_bars", 2)), 1),
                             replace_max=max(int(model_alpha_execution_defaults.get("replace_max", 2)), 0),
+                            use_learned_recommendations=False,
                         ),
                         operational=ModelAlphaOperationalSettings(
                             enabled=bool(model_alpha_operational_defaults.get("enabled", True)),
@@ -3095,6 +3097,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             model_alpha_exit_defaults.get("expected_exit_slippage_bps")
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
+        exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
         exec_timeout_bars = int(
             getattr(args, "execution_timeout_bars", None)
             if getattr(args, "execution_timeout_bars", None) is not None
@@ -3109,6 +3112,9 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             getattr(args, "execution_price_mode", None)
             or model_alpha_execution_defaults.get("price_mode", "JOIN")
         ).strip().upper() or "JOIN"
+        execution_use_learned_recommendations = bool(
+            model_alpha_execution_defaults.get("use_learned_recommendations", True)
+        )
         paper_tf_value = str(args.tf or defaults.get("tf", "5m")).strip().lower() or "5m"
         max_positions_value = max(
             int(args.max_positions if args.max_positions is not None else defaults["max_positions"]),
@@ -3188,6 +3194,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 exit=ModelAlphaExitSettings(
                     mode=exit_mode,
                     hold_bars=max(hold_bars_value, 0),
+                    use_learned_hold_bars=exit_use_learned_hold_bars,
                     tp_pct=max(tp_pct_value, 0.0),
                     sl_pct=max(sl_pct_value, 0.0),
                     trailing_pct=max(trailing_pct_value, 0.0),
@@ -3206,6 +3213,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                     price_mode=exec_price_mode,
                     timeout_bars=max(exec_timeout_bars, 1),
                     replace_max=max(exec_replace_max, 0),
+                    use_learned_recommendations=execution_use_learned_recommendations,
                 ),
                 operational=ModelAlphaOperationalSettings(
                     enabled=bool(model_alpha_operational_defaults.get("enabled", True)),
@@ -3488,6 +3496,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             model_alpha_exit_defaults.get("expected_exit_slippage_bps")
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
+        exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
         exec_timeout_bars = int(
             getattr(args, "execution_timeout_bars", None)
             if getattr(args, "execution_timeout_bars", None) is not None
@@ -3502,6 +3511,9 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             getattr(args, "execution_price_mode", None)
             or model_alpha_execution_defaults.get("price_mode", "JOIN")
         ).strip().upper() or "JOIN"
+        execution_use_learned_recommendations = bool(
+            model_alpha_execution_defaults.get("use_learned_recommendations", True)
+        )
 
         max_positions_value = max(
             int(args.max_positions if args.max_positions is not None else defaults["max_positions"]),
@@ -3624,6 +3636,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 exit=ModelAlphaExitSettings(
                     mode=exit_mode,
                     hold_bars=max(hold_bars_value, 0),
+                    use_learned_hold_bars=exit_use_learned_hold_bars,
                     tp_pct=max(tp_pct_value, 0.0),
                     sl_pct=max(sl_pct_value, 0.0),
                     trailing_pct=max(trailing_pct_value, 0.0),
@@ -3642,6 +3655,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     price_mode=exec_price_mode,
                     timeout_bars=max(exec_timeout_bars, 1),
                     replace_max=max(exec_replace_max, 0),
+                    use_learned_recommendations=execution_use_learned_recommendations,
                 ),
                 operational=ModelAlphaOperationalSettings(
                     enabled=bool(model_alpha_operational_defaults.get("enabled", True)),

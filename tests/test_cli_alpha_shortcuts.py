@@ -380,6 +380,8 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
     assert options.execution_acceptance_model_alpha.selection.min_candidates_per_ts == 1
     assert options.execution_acceptance_model_alpha.selection.use_learned_recommendations is False
     assert options.execution_acceptance_model_alpha.exit.hold_bars == 6
+    assert options.execution_acceptance_model_alpha.exit.use_learned_hold_bars is False
+    assert options.execution_acceptance_model_alpha.execution.use_learned_recommendations is False
 
 
 def test_handle_backtest_command_v4_resolves_base_candles_dataset(monkeypatch, tmp_path: Path) -> None:

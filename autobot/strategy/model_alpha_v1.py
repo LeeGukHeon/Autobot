@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from typing import Any, Callable, Iterable, Sequence
 
@@ -44,6 +44,7 @@ class ModelAlphaPositionSettings:
 class ModelAlphaExitSettings:
     mode: str = "hold"  # hold | risk
     hold_bars: int = 6
+    use_learned_hold_bars: bool = True
     tp_pct: float = 0.02
     sl_pct: float = 0.01
     trailing_pct: float = 0.0
@@ -56,6 +57,7 @@ class ModelAlphaExecutionSettings:
     price_mode: str = "JOIN"
     timeout_bars: int = 2
     replace_max: int = 2
+    use_learned_recommendations: bool = True
 
 
 @dataclass(frozen=True)
@@ -91,7 +93,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
     ) -> None:
         self._predictor = predictor
         self._feature_iter = iter(feature_groups or ())
-        self._settings = settings
+        self._settings, self._runtime_recommendation_state = resolve_runtime_model_alpha_settings(
+            predictor=predictor,
+            settings=settings,
+        )
         self._interval_ms = max(int(interval_ms), 1)
         self._pending_group: FeatureTsGroup | None = None
         self._positions: dict[str, _PositionState] = {}
@@ -237,6 +242,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 breadth_ratio=regime.breadth_ratio,
             )
             operational_state = {
+                "runtime_recommendation_state": dict(self._runtime_recommendation_state),
                 "enabled": True,
                 "regime_score": float(regime.regime_score),
                 "breadth_score": float(regime.breadth_score),
@@ -583,6 +589,81 @@ def _resolve_runtime_threshold_key(
     if recommended_key and isinstance(by_key, dict) and isinstance(by_key.get(recommended_key), dict):
         return recommended_key, "registry_recommendation"
     return default_key, "settings"
+
+
+def resolve_runtime_model_alpha_settings(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSettings,
+) -> tuple[ModelAlphaSettings, dict[str, Any]]:
+    runtime_recommendations = (
+        predictor.runtime_recommendations
+        if isinstance(predictor.runtime_recommendations, dict)
+        else {}
+    )
+    resolved = settings
+    state: dict[str, Any] = {
+        "runtime_recommendations_available": bool(runtime_recommendations),
+        "exit_hold_bars_source": "manual",
+        "execution_source": "manual",
+    }
+    if not runtime_recommendations:
+        return resolved, state
+
+    exit_doc = runtime_recommendations.get("exit")
+    if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_hold_bars):
+        recommended_hold_bars = exit_doc.get("recommended_hold_bars")
+        try:
+            if (
+                str(settings.exit.mode).strip().lower() == "hold"
+                and recommended_hold_bars is not None
+                and int(recommended_hold_bars) > 0
+            ):
+                resolved = replace(
+                    resolved,
+                    exit=replace(
+                        resolved.exit,
+                        hold_bars=max(int(recommended_hold_bars), 1),
+                    ),
+                )
+                state["exit_hold_bars_source"] = str(
+                    exit_doc.get("recommendation_source", "runtime_recommendation")
+                )
+                state["exit_recommendation"] = dict(exit_doc)
+        except (TypeError, ValueError):
+            pass
+
+    execution_doc = runtime_recommendations.get("execution")
+    if isinstance(execution_doc, dict) and bool(settings.execution.use_learned_recommendations):
+        try:
+            recommended_price_mode = str(
+                execution_doc.get("recommended_price_mode", resolved.execution.price_mode)
+            ).strip() or str(resolved.execution.price_mode)
+            recommended_timeout_bars = max(
+                int(execution_doc.get("recommended_timeout_bars", resolved.execution.timeout_bars)),
+                1,
+            )
+            recommended_replace_max = max(
+                int(execution_doc.get("recommended_replace_max", resolved.execution.replace_max)),
+                0,
+            )
+            resolved = replace(
+                resolved,
+                execution=replace(
+                    resolved.execution,
+                    price_mode=recommended_price_mode,
+                    timeout_bars=recommended_timeout_bars,
+                    replace_max=recommended_replace_max,
+                ),
+            )
+            state["execution_source"] = str(
+                execution_doc.get("recommendation_source", "runtime_recommendation")
+            )
+            state["execution_recommendation"] = dict(execution_doc)
+        except (TypeError, ValueError):
+            pass
+
+    return resolved, state
 
 
 def _resolve_entry_notional_multiplier(

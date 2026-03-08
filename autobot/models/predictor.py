@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ class ModelPredictor:
     train_config: dict[str, Any]
     thresholds: dict[str, Any]
     selection_recommendations: dict[str, Any]
+    runtime_recommendations: dict[str, Any] = field(default_factory=dict)
 
     @property
     def dataset_root(self) -> Path | None:
@@ -58,6 +59,11 @@ def load_predictor_from_registry(
         raw_train_recommendations = train_config.get("selection_recommendations")
         if isinstance(raw_train_recommendations, dict):
             selection_recommendations = raw_train_recommendations
+    runtime_recommendations = load_json(run_dir / "runtime_recommendations.json")
+    if not runtime_recommendations:
+        raw_runtime_recommendations = train_config.get("runtime_recommendations")
+        if isinstance(raw_runtime_recommendations, dict):
+            runtime_recommendations = raw_runtime_recommendations
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -78,4 +84,5 @@ def load_predictor_from_registry(
         train_config=train_config,
         thresholds=thresholds if isinstance(thresholds, dict) else {},
         selection_recommendations=selection_recommendations if isinstance(selection_recommendations, dict) else {},
+        runtime_recommendations=runtime_recommendations if isinstance(runtime_recommendations, dict) else {},
     )

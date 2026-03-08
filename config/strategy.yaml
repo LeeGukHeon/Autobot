@@ -91,6 +91,7 @@
     exit:
       mode: hold
       hold_bars: 6
+      use_learned_hold_bars: true
       tp_pct: 0.02
       sl_pct: 0.01
       trailing_pct: 0.0
@@ -100,6 +101,7 @@
       price_mode: JOIN
       timeout_bars: 2
       replace_max: 2
+      use_learned_recommendations: true
     operational:
       enabled: true
       use_calibration_artifact: true
