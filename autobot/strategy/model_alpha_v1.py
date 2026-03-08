@@ -15,6 +15,7 @@ from autobot.models.predictor import ModelPredictor
 from autobot.strategy.operational_overlay_v1 import (
     ModelAlphaOperationalSettings,
     build_regime_snapshot_from_scored_frame,
+    load_calibrated_operational_settings,
     resolve_operational_max_positions,
     resolve_operational_risk_multiplier,
 )
@@ -97,6 +98,11 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         self._cooldown_until_ts_ms: dict[str, int] = {}
         self._live_frame_provider = live_frame_provider
         self._enable_operational_overlay = bool(enable_operational_overlay)
+        self._operational_settings = (
+            load_calibrated_operational_settings(base_settings=settings.operational)
+            if self._enable_operational_overlay
+            else settings.operational
+        )
 
     def on_ts(
         self,
@@ -211,7 +217,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         base_max_positions = max(int(self._settings.position.max_positions_total), 1)
         operational_max_positions = base_max_positions
 
-        if self._enable_operational_overlay and bool(self._settings.operational.enabled):
+        if self._enable_operational_overlay and bool(self._operational_settings.enabled):
             regime = build_regime_snapshot_from_scored_frame(
                 scored=scored,
                 eligible_rows=eligible_rows,
@@ -220,13 +226,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             )
             operational_regime_score = float(regime.regime_score)
             operational_risk_multiplier = resolve_operational_risk_multiplier(
-                settings=self._settings.operational,
+                settings=self._operational_settings,
                 regime_score=regime.regime_score,
                 micro_quality_score=regime.micro_feature_quality_score,
             )
             operational_max_positions = resolve_operational_max_positions(
                 base_max_positions=base_max_positions,
-                settings=self._settings.operational,
+                settings=self._operational_settings,
                 regime_score=regime.regime_score,
                 breadth_ratio=regime.breadth_ratio,
             )
@@ -246,6 +252,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 "session_bucket": str(regime.session_bucket),
                 "risk_multiplier": float(operational_risk_multiplier),
                 "max_positions_used": int(operational_max_positions),
+                "calibration_artifact_enabled": bool(self._operational_settings.use_calibration_artifact),
+                "calibration_artifact_path": str(self._operational_settings.calibration_artifact_path),
             }
 
         min_candidates = max(int(min_candidates_used), 0)
@@ -474,7 +482,10 @@ def _resolve_selection_min_prob(
     if manual_min_prob is not None:
         return _clamp_prob(manual_min_prob), "manual"
 
-    threshold_key = str(settings.registry_threshold_key).strip()
+    threshold_key, _ = _resolve_runtime_threshold_key(
+        predictor=predictor,
+        settings=settings,
+    )
     thresholds = predictor.thresholds if isinstance(predictor.thresholds, dict) else {}
     registry_value = _safe_optional_float(thresholds.get(threshold_key))
     if registry_value is not None:
@@ -539,16 +550,39 @@ def _resolve_selection_recommendation_entry(
     if not isinstance(by_key, dict):
         return {}, "manual_fallback"
 
-    threshold_key = str(settings.registry_threshold_key).strip() or "top_5pct"
+    threshold_key, threshold_key_source = _resolve_runtime_threshold_key(
+        predictor=predictor,
+        settings=settings,
+    )
     entry = by_key.get(threshold_key)
     if isinstance(entry, dict):
-        return entry, f"registry_recommendation:{threshold_key}"
+        source = f"registry_recommendation:{threshold_key}"
+        if threshold_key_source == "registry_recommendation":
+            source += ":learned_threshold_key"
+        return entry, source
 
     if threshold_key != "top_5pct":
         fallback_entry = by_key.get("top_5pct")
         if isinstance(fallback_entry, dict):
             return fallback_entry, "registry_recommendation:top_5pct_fallback"
     return {}, "manual_fallback"
+
+
+def _resolve_runtime_threshold_key(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSelectionSettings,
+) -> tuple[str, str]:
+    default_key = str(settings.registry_threshold_key).strip() or "top_5pct"
+    if not bool(settings.use_learned_recommendations):
+        return default_key, "settings"
+
+    recommendations = predictor.selection_recommendations if isinstance(predictor.selection_recommendations, dict) else {}
+    recommended_key = str(recommendations.get("recommended_threshold_key", "")).strip()
+    by_key = recommendations.get("by_threshold_key") if isinstance(recommendations.get("by_threshold_key"), dict) else {}
+    if recommended_key and isinstance(by_key, dict) and isinstance(by_key.get(recommended_key), dict):
+        return recommended_key, "registry_recommendation"
+    return default_key, "settings"
 
 
 def _resolve_entry_notional_multiplier(

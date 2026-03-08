@@ -91,6 +91,40 @@ def test_build_trial_window_differential_matrix_prefers_oos_slices_when_availabl
     assert matrix.differential_matrix[0, 1] == 0.004
 
 
+def test_build_trial_window_differential_matrix_uses_record_threshold_key() -> None:
+    candidate_trial_panel = [
+        {
+            "trial": 0,
+            "selected_threshold_key": "ev_opt",
+            "windows": [
+                {"window_index": 0, "metrics": {"trading": {"ev_opt": {"ev_net": 0.008}}}},
+                {"window_index": 1, "metrics": {"trading": {"ev_opt": {"ev_net": 0.006}}}},
+            ],
+        },
+        {
+            "trial": 1,
+            "selected_threshold_key": "ev_opt",
+            "windows": [
+                {"window_index": 0, "metrics": {"trading": {"ev_opt": {"ev_net": 0.007}}}},
+                {"window_index": 1, "metrics": {"trading": {"ev_opt": {"ev_net": 0.005}}}},
+            ],
+        },
+    ]
+    champion_windows = [
+        {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}},
+        {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.002}}}},
+    ]
+
+    matrix = build_trial_window_differential_matrix(
+        candidate_trial_panel,
+        champion_windows,
+        champion_threshold_key="top_5pct",
+    )
+
+    assert matrix is not None
+    assert matrix.differential_matrix[0, 0] == 0.007
+
+
 def test_run_white_reality_check_detects_candidate_edge() -> None:
     matrix = build_trial_window_differential_matrix(
         candidate_trial_panel=[

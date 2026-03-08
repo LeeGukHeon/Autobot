@@ -309,17 +309,81 @@ def _resolve_trial_dependence(*, trial_count: int, model_run_dir: Path | None) -
     metrics = load_json(Path(model_run_dir) / "metrics.json")
     booster = metrics.get("booster_sweep", {}) if isinstance(metrics, dict) else {}
     records = booster.get("records", []) if isinstance(booster, dict) else []
-    dependence = estimate_effective_trials_from_trial_records(
-        records if isinstance(records, list) else [],
-        fallback_trial_count=raw_count,
+    selection_recommendations = load_json(Path(model_run_dir) / "selection_recommendations.json")
+    optimizer_trial_records = (
+        selection_recommendations.get("optimizer_trial_records", [])
+        if isinstance(selection_recommendations, dict)
+        else []
     )
+    booster_records = [record for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+    optimizer_records = (
+        [record for record in optimizer_trial_records if isinstance(record, dict)]
+        if isinstance(optimizer_trial_records, list)
+        else []
+    )
+    booster_dependence = (
+        estimate_effective_trials_from_trial_records(
+            booster_records,
+            fallback_trial_count=max(len(booster_records), 1),
+        )
+        if booster_records
+        else {
+            "raw_trial_count": 0,
+            "effective_trials_estimate": 0.0,
+            "source": "missing_booster_trial_records",
+            "avg_pairwise_correlation": None,
+            "metric_count": 0,
+        }
+    )
+    optimizer_dependence = (
+        estimate_effective_trials_from_trial_records(
+            optimizer_records,
+            fallback_trial_count=max(len(optimizer_records), 1),
+        )
+        if optimizer_records
+        else {
+            "raw_trial_count": 0,
+            "effective_trials_estimate": 0.0,
+            "source": "missing_optimizer_trial_records",
+            "avg_pairwise_correlation": None,
+            "metric_count": 0,
+        }
+    )
+    base_raw = int(booster_dependence.get("raw_trial_count", max(len(booster_records), 0)) or 0)
+    optimizer_raw = int(optimizer_dependence.get("raw_trial_count", max(len(optimizer_records), 0)) or 0)
+    combined_raw = max(raw_count, base_raw + optimizer_raw, 1)
+    base_effective_est = float(booster_dependence.get("effective_trials_estimate", float(max(base_raw, 0))) or float(max(base_raw, 0)))
+    optimizer_effective_est = float(optimizer_dependence.get("effective_trials_estimate", float(max(optimizer_raw, 0))) or float(max(optimizer_raw, 0)))
+    combined_effective_est = min(float(combined_raw), max(1.0, base_effective_est + optimizer_effective_est))
+    combined_effective = max(1, min(combined_raw, int(round(combined_effective_est))))
+    avg_corr_values = [
+        float(value)
+        for value in (
+            booster_dependence.get("avg_pairwise_correlation"),
+            optimizer_dependence.get("avg_pairwise_correlation"),
+        )
+        if value is not None
+    ]
+    source = "raw_trial_count_fallback"
+    if base_raw > 0 and optimizer_raw > 0:
+        source = "combined_family_effective_trials"
+    elif base_raw > 0:
+        source = str(booster_dependence.get("source", "raw_trial_count_fallback"))
+    elif optimizer_raw > 0:
+        source = str(optimizer_dependence.get("source", "raw_trial_count_fallback"))
     return {
-        "raw_trial_count": int(dependence.get("raw_trial_count", raw_count) or raw_count),
-        "effective_trials": int(dependence.get("effective_trials", raw_count) or raw_count),
-        "effective_trials_estimate": float(dependence.get("effective_trials_estimate", float(raw_count)) or float(raw_count)),
-        "source": str(dependence.get("source", "raw_trial_count_fallback")),
-        "avg_pairwise_correlation": dependence.get("avg_pairwise_correlation"),
-        "metric_count": int(dependence.get("metric_count", 0) or 0),
+        "raw_trial_count": int(combined_raw),
+        "effective_trials": int(combined_effective),
+        "effective_trials_estimate": float(combined_effective_est),
+        "source": source,
+        "avg_pairwise_correlation": (sum(avg_corr_values) / float(len(avg_corr_values))) if avg_corr_values else None,
+        "metric_count": int(
+            max(
+                int(booster_dependence.get("metric_count", 0) or 0),
+                int(optimizer_dependence.get("metric_count", 0) or 0),
+            )
+        ),
+        "optimizer_trial_count": len(optimizer_records),
     }
 
 

@@ -142,6 +142,8 @@
 - `strategy.model_alpha_v1.execution.timeout_bars`: integer (default: `2`)
 - `strategy.model_alpha_v1.execution.replace_max`: integer (default: `2`)
 - `strategy.model_alpha_v1.operational.enabled`: bool (default: `true`)
+- `strategy.model_alpha_v1.operational.use_calibration_artifact`: bool (default: `true`)
+- `strategy.model_alpha_v1.operational.calibration_artifact_path`: string (default: `logs/operational_overlay/latest.json`)
 - `strategy.model_alpha_v1.operational.risk_multiplier_min`: number (default: `0.80`)
 - `strategy.model_alpha_v1.operational.risk_multiplier_max`: number (default: `1.20`)
 - `strategy.model_alpha_v1.operational.max_positions_scale_min`: number (default: `0.50`)
@@ -169,6 +171,7 @@
   - this layer is enabled only for paper/live-style runtime
   - backtest compare remains fixed-profile and does not use online operational adaptation
   - runtime can now adjust `price_mode`, `timeout_ms`, `replace_interval_ms`, `max_replaces`, and `max_chase_bps`
+  - when a calibration artifact exists, runtime loads calibrated overlay coefficients with safe fallback to the defaults above
 
 ## Risk (Paper Runtime)
 - `risk.starting_krw`: number (default: `50000`)

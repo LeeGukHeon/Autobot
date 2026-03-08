@@ -238,6 +238,56 @@ def test_model_alpha_manual_selection_can_disable_registry_recommendations() -> 
     assert result.selected_rows == 3
 
 
+def test_model_alpha_uses_learned_threshold_key_when_recommended() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [3.0, 2.5, 0.2],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(
+                top_pct=1.0,
+                min_prob=None,
+                min_candidates_per_ts=1,
+                registry_threshold_key="top_5pct",
+                use_learned_recommendations=True,
+            ),
+        ),
+        thresholds={"top_5pct": 0.5, "ev_opt": 0.9},
+        selection_recommendations={
+            "recommended_threshold_key": "ev_opt",
+            "by_threshold_key": {
+                "ev_opt": {
+                    "recommended_top_pct": 1.0,
+                    "recommended_min_candidates_per_ts": 1,
+                },
+                "top_5pct": {
+                    "recommended_top_pct": 1.0,
+                    "recommended_min_candidates_per_ts": 1,
+                },
+            },
+        },
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+
+    assert result.min_prob_source == "registry:ev_opt"
+    assert result.min_prob_used == 0.9
+    assert result.top_pct_source == "registry_recommendation:ev_opt:learned_threshold_key"
+    assert result.min_candidates_source == "registry_recommendation:ev_opt:learned_threshold_key"
+    assert result.eligible_rows == 2
+    assert result.selected_rows == 2
+
+
 def test_model_alpha_min_candidates_blocks_on_eligible_rows() -> None:
     frame = pl.DataFrame(
         {

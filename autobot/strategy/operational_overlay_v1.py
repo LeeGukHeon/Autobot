@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import json
 import math
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import polars as pl
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class ModelAlphaOperationalSettings:
     enabled: bool = True
+    use_calibration_artifact: bool = True
+    calibration_artifact_path: str = "logs/operational_overlay/latest.json"
     risk_multiplier_min: float = 0.80
     risk_multiplier_max: float = 1.20
     max_positions_scale_min: float = 0.50
@@ -90,6 +94,40 @@ class OperationalExecutionOverlayDecision:
     micro_quality: MicroQualityComposite | None
     abort_reason: str | None
     diagnostics: dict[str, Any]
+
+
+def load_calibrated_operational_settings(
+    *,
+    base_settings: ModelAlphaOperationalSettings,
+) -> ModelAlphaOperationalSettings:
+    if not bool(base_settings.enabled) or not bool(base_settings.use_calibration_artifact):
+        return base_settings
+    raw_path = str(base_settings.calibration_artifact_path).strip()
+    if not raw_path:
+        return base_settings
+    path = Path(raw_path)
+    if not path.exists():
+        return base_settings
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return base_settings
+    if not isinstance(payload, dict):
+        return base_settings
+    calibrated = payload.get("calibrated_settings")
+    if not isinstance(calibrated, dict):
+        return base_settings
+    merged = dict(asdict(base_settings))
+    for field_name, current_value in merged.items():
+        if field_name in {"enabled", "use_calibration_artifact", "calibration_artifact_path"}:
+            continue
+        if field_name not in calibrated:
+            continue
+        merged[field_name] = _coerce_like(current_value=current_value, new_value=calibrated.get(field_name))
+    try:
+        return ModelAlphaOperationalSettings(**merged)
+    except Exception:
+        return base_settings
 
 
 def build_regime_snapshot_from_scored_frame(
@@ -435,3 +473,21 @@ def _mean_scores(values: list[float], *, weighted: bool = False) -> float:
 
 def _clamp01(value: float) -> float:
     return max(min(float(value), 1.0), 0.0)
+
+
+def _coerce_like(*, current_value: Any, new_value: Any) -> Any:
+    if isinstance(current_value, bool):
+        return bool(new_value)
+    if isinstance(current_value, int) and not isinstance(current_value, bool):
+        try:
+            return int(new_value)
+        except (TypeError, ValueError):
+            return current_value
+    if isinstance(current_value, float):
+        try:
+            return float(new_value)
+        except (TypeError, ValueError):
+            return current_value
+    if isinstance(current_value, str):
+        return str(new_value)
+    return new_value

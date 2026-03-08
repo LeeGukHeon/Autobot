@@ -121,10 +121,12 @@ def test_build_selection_recommendations_from_walk_forward_prefers_best_grid_poi
 
     entry = doc["by_threshold_key"]["top_5pct"]
     assert doc["version"] == 2
+    assert doc["recommended_threshold_key"] == "top_5pct"
     assert entry["recommended_top_pct"] == 0.5
     assert entry["recommended_min_candidates_per_ts"] == 1
     assert entry["recommendation_source"] == "walk_forward_objective_optimizer"
     assert entry["fallback_used"] is False
+    assert len(doc["optimizer_trial_records"]) >= 2
 
 
 def test_build_selection_recommendations_from_walk_forward_falls_back_without_windows() -> None:
@@ -149,3 +151,4 @@ def test_build_selection_recommendations_from_walk_forward_falls_back_without_wi
     assert entry["recommended_min_candidates_per_ts"] == 2
     assert entry["fallback_used"] is True
     assert entry["recommendation_source"] == "fallback_heuristic"
+    assert doc["recommended_threshold_key"] == "top_5pct"

@@ -272,6 +272,11 @@ Status:
   - `selected_grid_point`
   - `constraint_reasons`
   - `fallback_used`
+- follow-up hardening completed:
+  - `recommended_threshold_key` is now selected at the root recommendation document
+  - runtime uses the learned threshold key when recommendations are enabled
+  - walk-forward summaries and `SPA-like`/`White RC`/`Hansen SPA` no longer hard-code `top_5pct`
+  - selection-grid search variants are now included in multiplicity accounting
   - `recommendation_source`
   - `windows_covered`
   - `feasible_window_ratio`
@@ -301,6 +306,28 @@ Acceptance:
 - calibrated coefficients are persisted to a small JSON artifact
 - runtime can read them with a safe fallback to current hardcoded defaults
 
+Status:
+- completed
+- new helper:
+  - `autobot/common/operational_overlay_calibration.py`
+- acceptance now writes a runtime calibration artifact from recent paper smoke history:
+  - default path: `logs/operational_overlay/latest.json`
+- runtime overlay now reads the artifact with safe fallback:
+  - `autobot/strategy/operational_overlay_v1.py`
+  - `autobot/strategy/model_alpha_v1.py`
+- current calibration is intentionally conservative:
+  - re-estimates bounded coefficients from recent paper history
+  - keeps hardcoded defaults as the fallback contract when history is sparse
+
+Current behavior:
+- if enough paper smoke history exists, recent run summaries re-estimate:
+  - micro quality thresholds
+  - risk multiplier bounds
+  - max position scaling
+  - execution aggressiveness thresholds
+- if history is sparse or missing, runtime keeps the old defaults
+- runtime events now expose the calibration artifact path so applied settings are auditable
+
 ### Phase 6. Statistical Paper Final Gate
 Priority: medium
 
@@ -328,6 +355,39 @@ Acceptance:
   - `hard_failures`
   - `evidence_score`
   - `final_decision_basis`
+
+Status:
+- completed
+- `scripts/candidate_acceptance.ps1`
+  - now resolves paper final decisions through a two-layer process:
+    - hard safety failures
+    - evidence-score decision (`candidate_edge` / `statistical_hold` / `insufficient_evidence`)
+- hard failures remain:
+  - `T15_GATE_FAILED`
+  - `MIN_ORDERS_FILLED`
+  - `MIN_ACTIVE_WINDOWS`
+  - catastrophic micro quality
+  - catastrophic fill concentration
+- evidence layer now scores:
+  - current realized pnl
+  - fills
+  - micro quality
+  - nonnegative rolling windows
+  - fill concentration
+  - historical nonnegative run ratio
+  - historical positive run ratio
+  - historical median micro quality
+  - historical median fallback quality
+
+Current behavior:
+- paper gate report explicitly persists:
+  - `hard_failures`
+  - `soft_failures`
+  - `evidence_score`
+  - `evidence_components`
+  - `final_decision`
+  - `final_decision_basis`
+- promote authority remains with paper, but paper is no longer a pure threshold conjunction
 
 ## Order To Implement
 Implement in this order:

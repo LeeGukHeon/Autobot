@@ -6,10 +6,10 @@ from typing import Any
 
 
 _HIGHER_IS_BETTER = (
-    "ev_net_top5_mean",
-    "precision_top5_mean",
-    "pr_auc_mean",
-    "positive_window_ratio",
+    ("ev_net_selected_mean", "ev_net_top5_mean"),
+    ("precision_selected_mean", "precision_top5_mean"),
+    ("pr_auc_mean", None),
+    ("positive_window_ratio", None),
 )
 _LOWER_IS_BETTER = (
     "log_loss_mean",
@@ -55,9 +55,9 @@ def compare_balanced_pareto(
     utility_components: dict[str, float] = {}
     deltas: dict[str, float] = {}
 
-    for key in _HIGHER_IS_BETTER:
-        cand = _safe_float(candidate.get(key))
-        champ = _safe_float(champion.get(key))
+    for key, legacy_key in _HIGHER_IS_BETTER:
+        cand = _summary_metric(candidate, key, legacy_key)
+        champ = _summary_metric(champion, key, legacy_key)
         deltas[key] = cand - champ
         utility_components[key] = _normalized_advantage(cand, champ, higher_is_better=True)
         if cand < champ:
@@ -114,10 +114,17 @@ def compare_balanced_pareto(
     }
 
 
-def summarize_walk_forward_windows(windows: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_walk_forward_windows(
+    windows: list[dict[str, Any]],
+    *,
+    threshold_key: str = "top_5pct",
+) -> dict[str, Any]:
     if not windows:
         return {
             "windows_run": 0,
+            "selected_threshold_key": str(threshold_key).strip() or "top_5pct",
+            "precision_selected_mean": 0.0,
+            "ev_net_selected_mean": 0.0,
             "precision_top5_mean": 0.0,
             "ev_net_top5_mean": 0.0,
             "pr_auc_mean": 0.0,
@@ -127,8 +134,9 @@ def summarize_walk_forward_windows(windows: list[dict[str, Any]]) -> dict[str, A
             "positive_window_ratio": 0.0,
         }
 
-    precision_values = [_safe_float(_nested(window, "metrics", "trading", "top_5pct", "precision")) for window in windows]
-    ev_values = [_safe_float(_nested(window, "metrics", "trading", "top_5pct", "ev_net")) for window in windows]
+    resolved_threshold_key = str(threshold_key).strip() or "top_5pct"
+    precision_values = [_safe_float(_trading_metric(window, resolved_threshold_key, "precision")) for window in windows]
+    ev_values = [_safe_float(_trading_metric(window, resolved_threshold_key, "ev_net")) for window in windows]
     pr_auc_values = [_safe_float(_nested(window, "metrics", "classification", "pr_auc")) for window in windows]
     roc_auc_values = [_safe_float(_nested(window, "metrics", "classification", "roc_auc")) for window in windows]
     log_loss_values = [_safe_float(_nested(window, "metrics", "classification", "log_loss")) for window in windows]
@@ -138,6 +146,9 @@ def summarize_walk_forward_windows(windows: list[dict[str, Any]]) -> dict[str, A
     count = float(len(windows))
     return {
         "windows_run": int(len(windows)),
+        "selected_threshold_key": resolved_threshold_key,
+        "precision_selected_mean": sum(precision_values) / count,
+        "ev_net_selected_mean": sum(ev_values) / count,
         "precision_top5_mean": sum(precision_values) / count,
         "ev_net_top5_mean": sum(ev_values) / count,
         "pr_auc_mean": sum(pr_auc_values) / count,
@@ -260,6 +271,8 @@ def compare_spa_like_window_test(
     candidate_windows: list[dict[str, Any]] | None,
     champion_windows: list[dict[str, Any]] | None,
     *,
+    candidate_threshold_key: str = "top_5pct",
+    champion_threshold_key: str | None = None,
     alpha: float = 0.20,
 ) -> dict[str, Any]:
     candidate_map = {
@@ -281,12 +294,16 @@ def compare_spa_like_window_test(
             "reasons": ["INSUFFICIENT_COMMON_WINDOWS"],
             "window_count": int(len(common_indices)),
             "alpha": float(alpha),
+            "candidate_threshold_key": str(candidate_threshold_key).strip() or "top_5pct",
+            "champion_threshold_key": str(champion_threshold_key or candidate_threshold_key).strip() or "top_5pct",
         }
 
+    candidate_key = str(candidate_threshold_key).strip() or "top_5pct"
+    champion_key = str(champion_threshold_key or candidate_threshold_key).strip() or "top_5pct"
     diffs: list[float] = []
     for index in common_indices:
-        candidate_value = _safe_float(_nested(candidate_map[index], "metrics", "trading", "top_5pct", "ev_net"))
-        champion_value = _safe_float(_nested(champion_map[index], "metrics", "trading", "top_5pct", "ev_net"))
+        candidate_value = _safe_float(_trading_metric(candidate_map[index], candidate_key, "ev_net"))
+        champion_value = _safe_float(_trading_metric(champion_map[index], champion_key, "ev_net"))
         diffs.append(candidate_value - champion_value)
 
     mean_diff = sum(diffs) / float(len(diffs))
@@ -318,6 +335,8 @@ def compare_spa_like_window_test(
         "p_value_lower": float(p_value_lower),
         "studentized_mean_t": float(t_stat),
         "window_indices": common_indices,
+        "candidate_threshold_key": candidate_key,
+        "champion_threshold_key": champion_key,
     }
 
 
@@ -328,6 +347,26 @@ def _normalized_advantage(candidate: float, champion: float, *, higher_is_better
     else:
         raw = (champion - candidate) / scale
     return max(min(float(raw), 1.0), -1.0)
+
+
+def _summary_metric(payload: dict[str, Any], key: str, legacy_key: str | None) -> float:
+    if key in payload:
+        return _safe_float(payload.get(key))
+    if legacy_key and legacy_key in payload:
+        return _safe_float(payload.get(legacy_key))
+    return 0.0
+
+
+def _trading_metric(payload: dict[str, Any] | None, threshold_key: str, metric_name: str) -> Any:
+    trading = _nested(payload, "metrics", "trading")
+    if isinstance(trading, dict):
+        entry = trading.get(threshold_key)
+        if isinstance(entry, dict) and metric_name in entry:
+            return entry.get(metric_name)
+        fallback = trading.get("top_5pct")
+        if isinstance(fallback, dict):
+            return fallback.get(metric_name)
+    return None
 
 
 def _nested(payload: dict[str, Any] | None, *keys: str) -> Any:

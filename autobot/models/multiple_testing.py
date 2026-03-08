@@ -27,9 +27,14 @@ class BlockLengthSelection:
 def build_trial_window_differential_matrix(
     candidate_trial_panel: list[dict[str, Any]] | None,
     champion_windows: list[dict[str, Any]] | None,
+    *,
+    champion_threshold_key: str = "top_5pct",
 ) -> TrialWindowMatrix | None:
     candidate_rows = list(candidate_trial_panel or [])
-    champion_slice_map = _extract_champion_slice_map(champion_windows or [])
+    champion_slice_map = _extract_champion_slice_map(
+        champion_windows or [],
+        threshold_key=str(champion_threshold_key).strip() or "top_5pct",
+    )
     if not candidate_rows or not champion_slice_map:
         return None
 
@@ -194,6 +199,7 @@ def _insufficient(policy: str) -> dict[str, Any]:
 
 
 def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
+    threshold_key = _resolve_trial_threshold_key(record)
     windows = record.get("windows") or []
     candidate_slice_map: dict[str, float] = {}
     for window in windows:
@@ -209,17 +215,15 @@ def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
                 if window_index < 0 or slice_index < 0:
                     continue
                 slice_key = _compose_panel_key(window_index, slice_index)
-                candidate_slice_map[slice_key] = _safe_float(
-                    (((slice_doc.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
-                )
+                candidate_slice_map[slice_key] = _safe_float(_extract_trading_ev_net(slice_doc.get("metrics"), threshold_key))
         elif window_index >= 0:
             candidate_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
-                (((window.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+                _extract_trading_ev_net(window.get("metrics"), threshold_key)
             )
     return candidate_slice_map
 
 
-def _extract_champion_slice_map(windows: list[dict[str, Any]]) -> dict[str, float]:
+def _extract_champion_slice_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
     champion_slice_map: dict[str, float] = {}
     for window in windows:
         if not isinstance(window, dict):
@@ -236,13 +240,40 @@ def _extract_champion_slice_map(windows: list[dict[str, Any]]) -> dict[str, floa
                 if slice_index < 0:
                     continue
                 champion_slice_map[_compose_panel_key(window_index, slice_index)] = _safe_float(
-                    (((slice_doc.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+                    _extract_trading_ev_net(slice_doc.get("metrics"), threshold_key)
                 )
         else:
             champion_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
-                (((window.get("metrics") or {}).get("trading") or {}).get("top_5pct") or {}).get("ev_net")
+                _extract_trading_ev_net(window.get("metrics"), threshold_key)
             )
     return champion_slice_map
+
+
+def _resolve_trial_threshold_key(record: dict[str, Any]) -> str:
+    value = str(record.get("selected_threshold_key", "")).strip()
+    if value:
+        return value
+    value = str(record.get("threshold_key", "")).strip()
+    if value:
+        return value
+    summary = record.get("summary")
+    if isinstance(summary, dict):
+        value = str(summary.get("selected_threshold_key", "")).strip()
+        if value:
+            return value
+    return "top_5pct"
+
+
+def _extract_trading_ev_net(metrics: Any, threshold_key: str) -> Any:
+    trading = (metrics or {}).get("trading") if isinstance(metrics, dict) else None
+    if isinstance(trading, dict):
+        entry = trading.get(threshold_key)
+        if isinstance(entry, dict) and "ev_net" in entry:
+            return entry.get("ev_net")
+        fallback = trading.get("top_5pct")
+        if isinstance(fallback, dict):
+            return fallback.get("ev_net")
+    return None
 
 
 def _compose_panel_key(window_index: int, slice_index: int) -> str:

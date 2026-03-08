@@ -147,6 +147,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert "by_threshold_key" in selection_doc
     assert selection_doc["version"] == 2
     assert selection_doc["optimizer"]["method"] == "walk_forward_grid_search"
+    assert selection_doc["recommended_threshold_key"] == "top_5pct"
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
@@ -266,6 +267,7 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
     assert "by_threshold_key" in selection_doc
     assert selection_doc["version"] == 2
     assert selection_doc["optimizer"]["method"] == "walk_forward_grid_search"
+    assert selection_doc["recommended_threshold_key"] == "top_5pct"
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert result.leaderboard_row["task"] == "reg"

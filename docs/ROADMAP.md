@@ -311,13 +311,14 @@ D:\MyApps\Autobot
 
 ## 17.4) 방법론 정합성 마무리 (T18.4)
 
-- 현재 `v4`는 논문 방향성에 상당히 근접했지만, 아직 다음 항목은 원형보다 단순화되어 있다.
+- 현재 `v4`는 논문 방향성에 상당히 근접했고, `T18.4` 1차 범위는 완료됐다.
+- 이번 단계에서 닫은 항목:
   - correlation-adjusted `effective_trials`
   - finer OOS differential panel 기반 `White RC / Hansen SPA`
   - data-driven stationary bootstrap block-length selection
   - optimizer-based `selection_recommendations`
-  - overlay coefficient calibration
-  - statistical paper final gate
+  - overlay coefficient calibration artifact + runtime loading
+  - statistical paper final gate (`hard_fail / hold / edge`)
 - 이 작업은 `v4` 단일 lane을 전제로 진행한다.
 - 실행 계획은 `docs/TICKETS/T18_4_methodology_gap_closure_v1.md`를 따른다.
 

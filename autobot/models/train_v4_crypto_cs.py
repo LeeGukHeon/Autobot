@@ -283,6 +283,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         windows=walk_forward.get("windows", []),
         fallback_recommendations=fallback_selection_recommendations,
     )
+    walk_forward = _finalize_walk_forward_report(
+        walk_forward=walk_forward,
+        selection_recommendations=selection_recommendations,
+        options=options,
+    )
     metrics = _build_v4_metrics_doc(
         run_id=run_id,
         options=options,
@@ -435,6 +440,8 @@ def _run_walk_forward_v4(
         "skipped_windows": [],
         "summary": summarize_walk_forward_windows([]),
         "compare_to_champion": compare_balanced_pareto({}, {}),
+        "selected_threshold_key": "top_5pct",
+        "selected_threshold_key_source": "manual_fallback",
     }
     if not bool(options.walk_forward_enabled):
         report["skip_reason"] = "DISABLED"
@@ -541,37 +548,9 @@ def _run_walk_forward_v4(
         )
 
     report["windows"] = windows
-    report["trial_panel"] = _summarize_walk_forward_trial_panel(windows)
     report["skipped_windows"] = skipped
     report["windows_generated"] = len(window_specs)
-    report["summary"] = summarize_walk_forward_windows(windows)
-    champion_report = _load_champion_walk_forward_report(options=options)
-    champion_summary = champion_report.get("summary", {}) if isinstance(champion_report, dict) else {}
-    report["compare_to_champion"] = compare_balanced_pareto(report["summary"], champion_summary or {})
-    report["spa_like_window_test"] = compare_spa_like_window_test(
-        report.get("windows", []),
-        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
-    )
-    rc_matrix = build_trial_window_differential_matrix(
-        report.get("trial_panel", []),
-        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
-    )
-    report["white_reality_check"] = run_white_reality_check(
-        rc_matrix,
-        alpha=float(options.multiple_testing_alpha),
-        bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
-        seed=int(options.seed),
-        average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
-    )
-    report["hansen_spa"] = run_hansen_spa(
-        rc_matrix,
-        alpha=float(options.multiple_testing_alpha),
-        bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
-        seed=int(options.seed),
-        average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
-    )
-    if champion_summary:
-        report["champion_summary"] = champion_summary
+    report["trial_panel"] = _summarize_walk_forward_trial_panel(windows, threshold_key="top_5pct")
     return report
 
 
@@ -629,7 +608,11 @@ def _fit_walk_forward_window_model(
     )
 
 
-def _summarize_walk_forward_trial_panel(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _summarize_walk_forward_trial_panel(
+    windows: list[dict[str, Any]],
+    *,
+    threshold_key: str = "top_5pct",
+) -> list[dict[str, Any]]:
     by_trial: dict[int, dict[str, Any]] = {}
     for window in windows:
         window_index = int(window.get("window_index", -1))
@@ -670,8 +653,9 @@ def _summarize_walk_forward_trial_panel(windows: list[dict[str, Any]]) -> list[d
     for trial_id in sorted(by_trial):
         node = by_trial[trial_id]
         windows_for_trial = list(node.get("windows", []))
-        summary = summarize_walk_forward_windows(windows_for_trial)
+        summary = summarize_walk_forward_windows(windows_for_trial, threshold_key=threshold_key)
         node["summary"] = summary
+        node["selected_threshold_key"] = str(threshold_key).strip() or "top_5pct"
         node["windows_run"] = int(summary.get("windows_run", 0) or 0)
         node["oos_slice_count"] = len(node.get("oos_slices", []) or [])
         trial_panel.append(node)
@@ -783,11 +767,7 @@ def _fit_walk_forward_weighted_trials(
             {
                 "trial": int(trial),
                 "params": params,
-                "valid_selection_key": {
-                    "precision_top5": key[0],
-                    "pr_auc": key[1],
-                    "roc_auc": key[2],
-                },
+                "valid_selection_key": _build_trial_selection_key(valid_metrics),
                 "test_metrics": _compact_eval_metrics(test_metrics),
                 "test_oos_slices": test_oos_slices,
             }
@@ -902,11 +882,7 @@ def _fit_walk_forward_regression_trials(
             {
                 "trial": int(trial),
                 "params": params,
-                "valid_selection_key": {
-                    "precision_top5": key[0],
-                    "ev_net_top5": key[1],
-                    "pr_auc": key[2],
-                },
+                "valid_selection_key": _build_trial_selection_key(valid_metrics),
                 "test_metrics": _compact_eval_metrics(test_metrics),
                 "test_oos_slices": test_oos_slices,
             }
@@ -918,7 +894,6 @@ def _fit_walk_forward_regression_trials(
 
 def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     cls = metrics.get("classification", {}) if isinstance(metrics, dict) else {}
-    top5 = (metrics.get("trading", {}) or {}).get("top_5pct", {})
     summary = metrics.get("per_market_summary", {}) if isinstance(metrics, dict) else {}
     return {
         "rows": int(metrics.get("rows", 0)) if isinstance(metrics, dict) else 0,
@@ -928,13 +903,7 @@ def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
             "log_loss": _safe_float(cls.get("log_loss")),
             "brier_score": _safe_float(cls.get("brier_score")),
         },
-        "trading": {
-            "top_5pct": {
-                "precision": _safe_float(top5.get("precision")),
-                "ev_net": _safe_float(top5.get("ev_net")),
-                "selected_rows": int(top5.get("selected_rows", 0) or 0),
-            }
-        },
+        "trading": _compact_trading_metrics(metrics),
         "per_market_summary": {
             "market_count": int(summary.get("market_count", 0) or 0),
             "positive_markets": int(summary.get("positive_markets", 0) or 0),
@@ -1011,6 +980,222 @@ def _load_champion_walk_forward_report(*, options: TrainV4CryptoCsOptions) -> di
             "spa_like_window_test": {},
         }
     return None
+
+
+def _finalize_walk_forward_report(
+    *,
+    walk_forward: dict[str, Any],
+    selection_recommendations: dict[str, Any],
+    options: TrainV4CryptoCsOptions,
+) -> dict[str, Any]:
+    report = dict(walk_forward)
+    selected_threshold_key, threshold_key_source = _resolve_selection_recommendation_threshold_key(
+        selection_recommendations=selection_recommendations,
+    )
+    report["selected_threshold_key"] = selected_threshold_key
+    report["selected_threshold_key_source"] = threshold_key_source
+    windows = report.get("windows", []) if isinstance(report.get("windows"), list) else []
+    base_trial_panel = _summarize_walk_forward_trial_panel(windows, threshold_key=selected_threshold_key)
+    selection_trial_panel = _build_selection_search_trial_panel(
+        windows=windows,
+        start_trial_id=max([int(row.get("trial", -1)) for row in base_trial_panel] + [-1]) + 1,
+    )
+    report["trial_panel"] = base_trial_panel + selection_trial_panel
+    report["selection_search_trial_count"] = len(selection_trial_panel)
+    report["summary"] = summarize_walk_forward_windows(windows, threshold_key=selected_threshold_key)
+
+    champion_report = _load_champion_walk_forward_report(options=options)
+    champion_summary = champion_report.get("summary", {}) if isinstance(champion_report, dict) else {}
+    champion_threshold_key = _resolve_walk_forward_report_threshold_key(
+        champion_report,
+        fallback_threshold_key=selected_threshold_key,
+    )
+    report["compare_to_champion"] = compare_balanced_pareto(report["summary"], champion_summary or {})
+    report["spa_like_window_test"] = compare_spa_like_window_test(
+        report.get("windows", []),
+        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
+        candidate_threshold_key=selected_threshold_key,
+        champion_threshold_key=champion_threshold_key,
+    )
+    rc_matrix = build_trial_window_differential_matrix(
+        report.get("trial_panel", []),
+        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
+        champion_threshold_key=champion_threshold_key,
+    )
+    report["white_reality_check"] = run_white_reality_check(
+        rc_matrix,
+        alpha=float(options.multiple_testing_alpha),
+        bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
+        seed=int(options.seed),
+        average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
+    )
+    report["hansen_spa"] = run_hansen_spa(
+        rc_matrix,
+        alpha=float(options.multiple_testing_alpha),
+        bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
+        seed=int(options.seed),
+        average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
+    )
+    if champion_summary:
+        report["champion_summary"] = champion_summary
+        report["champion_selected_threshold_key"] = champion_threshold_key
+    return report
+
+
+def _resolve_selection_recommendation_threshold_key(
+    *,
+    selection_recommendations: dict[str, Any],
+) -> tuple[str, str]:
+    threshold_key = str(selection_recommendations.get("recommended_threshold_key", "")).strip()
+    if threshold_key:
+        return threshold_key, str(selection_recommendations.get("recommended_threshold_key_source", "walk_forward_objective_optimizer"))
+    return "top_5pct", "manual_fallback"
+
+
+def _resolve_walk_forward_report_threshold_key(
+    walk_forward_report: dict[str, Any] | None,
+    *,
+    fallback_threshold_key: str = "top_5pct",
+) -> str:
+    report = dict(walk_forward_report or {})
+    threshold_key = str(report.get("selected_threshold_key", "")).strip()
+    if threshold_key:
+        return threshold_key
+    summary = report.get("summary")
+    if isinstance(summary, dict):
+        threshold_key = str(summary.get("selected_threshold_key", "")).strip()
+        if threshold_key:
+            return threshold_key
+    return str(fallback_threshold_key).strip() or "top_5pct"
+
+
+def _build_selection_search_trial_panel(
+    *,
+    windows: list[dict[str, Any]],
+    start_trial_id: int,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, float, int], list[dict[str, Any]]] = {}
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        window_index = int(window.get("window_index", -1))
+        if window_index < 0:
+            continue
+        selection_optimization = window.get("selection_optimization")
+        by_key = selection_optimization.get("by_threshold_key") if isinstance(selection_optimization, dict) else None
+        if not isinstance(by_key, dict):
+            continue
+        for threshold_key, threshold_doc in by_key.items():
+            grid_results = threshold_doc.get("grid_results") if isinstance(threshold_doc, dict) else None
+            if not isinstance(grid_results, list):
+                continue
+            for row in grid_results:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    grid_key = (
+                        str(threshold_key),
+                        float(row.get("top_pct", 0.0)),
+                        int(row.get("min_candidates_per_ts", 0)),
+                    )
+                except Exception:
+                    continue
+        grouped.setdefault(grid_key, []).append(
+                    {
+                        "window": dict(window),
+                        "window_index": window_index,
+                        "ev_net": _safe_float(row.get("ev_net")),
+                        "selected_rows": int(row.get("selected_rows", 0) or 0),
+                    }
+                )
+
+    panel: list[dict[str, Any]] = []
+    trial_id = max(int(start_trial_id), 0)
+    for (threshold_key, top_pct, min_candidates), rows in sorted(grouped.items()):
+        windows_for_trial = [
+            {
+                "window_index": int(row["window_index"]),
+                "metrics": {
+                    "trading": {
+                        str(threshold_key): {
+                            "ev_net": float(row["ev_net"]),
+                            "selected_rows": int(row["selected_rows"]),
+                            "precision": 0.0,
+                        }
+                    }
+                },
+                "oos_slices": [
+                    {
+                        "slice_index": int(slice_doc.get("slice_index", -1)),
+                        "metrics": {
+                            "trading": {
+                                str(threshold_key): {
+                                    "ev_net": float(row["ev_net"]),
+                                    "selected_rows": int(row["selected_rows"]),
+                                    "precision": 0.0,
+                                }
+                            }
+                        },
+                    }
+                    for slice_doc in ((row.get("window", {}) or {}).get("oos_slices") or [])
+                    if isinstance(slice_doc, dict) and int(slice_doc.get("slice_index", -1)) >= 0
+                ],
+            }
+            for row in rows
+        ]
+        panel.append(
+            {
+                "trial": int(trial_id),
+                "trial_type": "selection_grid",
+                "selected_threshold_key": str(threshold_key),
+                "params": {
+                    "threshold_key": str(threshold_key),
+                    "top_pct": float(top_pct),
+                    "min_candidates_per_ts": int(min_candidates),
+                },
+                "windows": windows_for_trial,
+                "summary": summarize_walk_forward_windows(windows_for_trial, threshold_key=str(threshold_key)),
+                "windows_run": len(windows_for_trial),
+                "oos_slice_count": 0,
+            }
+        )
+        trial_id += 1
+    return panel
+
+
+def _compact_trading_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    trading = metrics.get("trading", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(trading, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for threshold_key, threshold_doc in trading.items():
+        if not isinstance(threshold_doc, dict):
+            continue
+        compact[str(threshold_key)] = {
+            "precision": _safe_float(threshold_doc.get("precision")),
+            "ev_net": _safe_float(threshold_doc.get("ev_net")),
+            "selected_rows": int(threshold_doc.get("selected_rows", 0) or 0),
+        }
+    return compact
+
+
+def _build_trial_selection_key(metrics: dict[str, Any]) -> dict[str, float]:
+    trading = metrics.get("trading", {}) if isinstance(metrics, dict) else {}
+    cls = metrics.get("classification", {}) if isinstance(metrics, dict) else {}
+    selection_key: dict[str, float] = {}
+    if isinstance(trading, dict):
+        for threshold_key, threshold_doc in trading.items():
+            if not isinstance(threshold_doc, dict):
+                continue
+            key_root = str(threshold_key).strip().lower()
+            selection_key[f"precision_{key_root}"] = _safe_float(threshold_doc.get("precision"))
+            selection_key[f"ev_net_{key_root}"] = _safe_float(threshold_doc.get("ev_net"))
+            selection_key[f"selected_rows_{key_root}"] = float(int(threshold_doc.get("selected_rows", 0) or 0))
+    selection_key["pr_auc"] = _safe_float(cls.get("pr_auc"))
+    selection_key["roc_auc"] = _safe_float(cls.get("roc_auc"))
+    selection_key["log_loss"] = _safe_float(cls.get("log_loss"))
+    selection_key["brier_score"] = _safe_float(cls.get("brier_score"))
+    return selection_key
 
 
 def _fit_booster_sweep_regression(

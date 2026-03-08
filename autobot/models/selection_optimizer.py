@@ -95,7 +95,10 @@ def build_selection_recommendations_from_walk_forward(
             "objective": "mean_ev_net_selected",
             "fallback_used": False,
         },
+        "recommended_threshold_key": "",
+        "recommended_threshold_key_source": "manual_fallback",
         "by_threshold_key": {},
+        "optimizer_trial_records": [],
     }
     fallback_by_key = fallback.get("by_threshold_key") if isinstance(fallback.get("by_threshold_key"), dict) else {}
     window_rows = list(windows or [])
@@ -115,6 +118,8 @@ def build_selection_recommendations_from_walk_forward(
     )
 
     used_fallback = False
+    threshold_choice_rows: list[dict[str, Any]] = []
+    optimizer_trial_records: list[dict[str, Any]] = []
     for threshold_key in threshold_keys:
         fallback_entry = dict(fallback_by_key.get(threshold_key) or {})
         aggregate = _aggregate_window_grid_results(
@@ -133,9 +138,27 @@ def build_selection_recommendations_from_walk_forward(
                 fallback_entry["fallback_used"] = True
                 fallback_entry["recommendation_source"] = "fallback_heuristic"
                 result["by_threshold_key"][threshold_key] = fallback_entry
+                threshold_choice_rows.append(
+                    {
+                        "threshold_key": threshold_key,
+                        "threshold": _safe_optional_float(fallback_entry.get("threshold")),
+                        "objective_score": _safe_optional_float(fallback_entry.get("objective_score")) or 0.0,
+                        "feasible_window_ratio": 0.0,
+                        "active_ts_ratio_mean": _safe_optional_float(fallback_entry.get("recommended_min_candidates_coverage")) or 0.0,
+                        "selected_rows_mean": 0.0,
+                        "fallback_used": True,
+                        "recommendation_source": "fallback_heuristic",
+                    }
+                )
             continue
 
         chosen = _choose_best_grid_result(aggregate)
+        optimizer_trial_records.extend(
+            _build_optimizer_trial_records(
+                threshold_key=threshold_key,
+                aggregate=aggregate,
+            )
+        )
         if not chosen:
             if fallback_entry:
                 used_fallback = True
@@ -148,6 +171,18 @@ def build_selection_recommendations_from_walk_forward(
                 fallback_entry["fallback_used"] = True
                 fallback_entry["recommendation_source"] = "fallback_heuristic"
                 result["by_threshold_key"][threshold_key] = fallback_entry
+                threshold_choice_rows.append(
+                    {
+                        "threshold_key": threshold_key,
+                        "threshold": _safe_optional_float(fallback_entry.get("threshold")),
+                        "objective_score": _safe_optional_float(fallback_entry.get("objective_score")) or 0.0,
+                        "feasible_window_ratio": 0.0,
+                        "active_ts_ratio_mean": _safe_optional_float(fallback_entry.get("recommended_min_candidates_coverage")) or 0.0,
+                        "selected_rows_mean": 0.0,
+                        "fallback_used": True,
+                        "recommendation_source": "fallback_heuristic",
+                    }
+                )
             continue
 
         entry = dict(fallback_entry)
@@ -181,8 +216,28 @@ def build_selection_recommendations_from_walk_forward(
             }
         )
         result["by_threshold_key"][threshold_key] = entry
+        threshold_choice_rows.append(
+            {
+                "threshold_key": threshold_key,
+                "threshold": _safe_optional_float(entry.get("threshold")),
+                "objective_score": float(chosen["objective_score"]),
+                "feasible_window_ratio": float(chosen["feasible_window_ratio"]),
+                "active_ts_ratio_mean": float(chosen["active_ts_ratio_mean"]),
+                "selected_rows_mean": float(chosen["selected_rows_mean"]),
+                "fallback_used": False,
+                "recommendation_source": "walk_forward_objective_optimizer",
+            }
+        )
 
     result["optimizer"]["fallback_used"] = bool(used_fallback)
+    result["optimizer"]["threshold_key_candidates_evaluated"] = int(len(threshold_choice_rows))
+    chosen_threshold = _choose_best_threshold_key(threshold_choice_rows)
+    if chosen_threshold:
+        result["recommended_threshold_key"] = str(chosen_threshold["threshold_key"])
+        result["recommended_threshold_key_source"] = str(chosen_threshold["recommendation_source"])
+        if chosen_threshold.get("threshold") is not None:
+            result["recommended_threshold"] = float(chosen_threshold["threshold"])
+    result["optimizer_trial_records"] = optimizer_trial_records
     return result
 
 
@@ -376,6 +431,61 @@ def _choose_best_grid_result(aggregate: list[dict[str, Any]]) -> dict[str, Any] 
         ),
         reverse=True,
     )[0]
+
+
+def _choose_best_threshold_key(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return sorted(
+        rows,
+        key=lambda row: (
+            float(row.get("objective_score", 0.0)),
+            float(row.get("feasible_window_ratio", 0.0)),
+            float(row.get("active_ts_ratio_mean", 0.0)),
+            float(row.get("selected_rows_mean", 0.0)),
+            0 if bool(row.get("fallback_used")) else 1,
+        ),
+        reverse=True,
+    )[0]
+
+
+def _build_optimizer_trial_records(
+    *,
+    threshold_key: str,
+    aggregate: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    supported_threshold_keys = ("top_1pct", "top_5pct", "top_10pct", "ev_opt")
+    records: list[dict[str, Any]] = []
+    for idx, row in enumerate(aggregate):
+        selection_key: dict[str, float] = {
+            "objective_score": float(row.get("objective_score", 0.0)),
+            "feasible_window_ratio": float(row.get("feasible_window_ratio", 0.0)),
+            "active_ts_ratio_mean": float(row.get("active_ts_ratio_mean", 0.0)),
+            "positive_active_ts_ratio_mean": float(row.get("positive_active_ts_ratio_mean", 0.0)),
+        }
+        for key_name in supported_threshold_keys:
+            suffix = str(key_name).strip().lower()
+            if key_name == threshold_key:
+                selection_key[f"ev_net_{suffix}"] = float(row.get("objective_score", 0.0))
+                selection_key[f"selected_rows_{suffix}"] = float(row.get("selected_rows_mean", 0.0))
+                selection_key[f"precision_{suffix}"] = 0.0
+            else:
+                selection_key[f"ev_net_{suffix}"] = 0.0
+                selection_key[f"selected_rows_{suffix}"] = 0.0
+                selection_key[f"precision_{suffix}"] = 0.0
+        records.append(
+            {
+                "trial": int(idx),
+                "trial_type": "selection_optimizer",
+                "threshold_key": str(threshold_key),
+                "selection_key": selection_key,
+                "grid_point": {
+                    "top_pct": float(row.get("top_pct", 0.0)),
+                    "min_candidates_per_ts": int(row.get("min_candidates_per_ts", 0)),
+                },
+            }
+        )
+    return records
 
 
 def _group_indices_by_ts(ts_ms: np.ndarray) -> list[tuple[int, np.ndarray]]:

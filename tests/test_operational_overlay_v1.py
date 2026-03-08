@@ -22,6 +22,7 @@ ModelAlphaOperationalSettings = _MODULE.ModelAlphaOperationalSettings
 build_regime_snapshot_from_scored_frame = _MODULE.build_regime_snapshot_from_scored_frame
 compute_micro_quality_composite = _MODULE.compute_micro_quality_composite
 resolve_operational_execution_overlay = _MODULE.resolve_operational_execution_overlay
+load_calibrated_operational_settings = _MODULE.load_calibrated_operational_settings
 resolve_operational_max_positions = _MODULE.resolve_operational_max_positions
 resolve_operational_risk_multiplier = _MODULE.resolve_operational_risk_multiplier
 
@@ -191,3 +192,29 @@ def test_compute_micro_quality_composite_and_overlay_modes() -> None:
     assert aggressive_decision.exec_profile.replace_interval_ms == 450_000
     assert aggressive_decision.exec_profile.max_replaces == 5
     assert aggressive_decision.exec_profile.max_chase_bps == 20
+
+
+def test_load_calibrated_operational_settings_reads_artifact(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "latest.json"
+    artifact_path.write_text(
+        """{
+  "calibrated_settings": {
+    "risk_multiplier_min": 0.72,
+    "risk_multiplier_max": 1.28,
+    "max_positions_scale_max": 1.65
+  }
+}""",
+        encoding="utf-8",
+    )
+    base = ModelAlphaOperationalSettings(
+        calibration_artifact_path=str(artifact_path),
+        risk_multiplier_min=0.8,
+        risk_multiplier_max=1.2,
+        max_positions_scale_max=1.5,
+    )
+
+    calibrated = load_calibrated_operational_settings(base_settings=base)
+
+    assert calibrated.risk_multiplier_min == 0.72
+    assert calibrated.risk_multiplier_max == 1.28
+    assert calibrated.max_positions_scale_max == 1.65

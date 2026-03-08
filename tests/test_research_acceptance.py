@@ -111,3 +111,26 @@ def test_compare_spa_like_window_test_requires_common_windows() -> None:
 
     assert compare["comparable"] is False
     assert compare["decision"] == "insufficient_evidence"
+
+
+def test_compare_spa_like_window_test_supports_distinct_threshold_keys() -> None:
+    candidate_windows = [
+        {"window_index": 0, "metrics": {"trading": {"ev_opt": {"ev_net": 0.0040}}}},
+        {"window_index": 1, "metrics": {"trading": {"ev_opt": {"ev_net": 0.0035}}}},
+    ]
+    champion_windows = [
+        {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0010}}}},
+        {"window_index": 1, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0015}}}},
+    ]
+
+    compare = compare_spa_like_window_test(
+        candidate_windows,
+        champion_windows,
+        candidate_threshold_key="ev_opt",
+        champion_threshold_key="top_5pct",
+        alpha=0.20,
+    )
+
+    assert compare["comparable"] is True
+    assert compare["candidate_threshold_key"] == "ev_opt"
+    assert compare["champion_threshold_key"] == "top_5pct"
