@@ -219,14 +219,21 @@ D:\MyApps\Autobot
 - `train_v3_mtf_micro`는 새 학습 결과를 즉시 champion으로 승급하지 않고 `candidate`로 등록한다.
 - 기본 운영 모델은 `champion_v3`, 최신 실험 결과는 `latest_candidate_v3`로 분리한다.
 - 매일 `00:10` 데이터 수집 이후 `candidate acceptance`를 실행한다.
-- acceptance 기본 흐름은 `daily pipeline -> candidate train -> candidate/champion backtest compare -> 3h paper soak -> pass 시 promote -> 활성 runtime restart`다.
+- acceptance 기본 흐름은 `daily pipeline -> candidate train -> backtest sanity gate -> 3h paper final gate -> pass 시 promote -> 활성 runtime restart`다.
 
 ### 승급 판단 정책
-- 승급 판단은 단일 PnL 우세가 아니라 `strict`, `balanced_pareto`, `conservative_pareto` 정책 중 하나로 수행한다.
-- 기본 정책은 `balanced_pareto`다.
-- `balanced_pareto`는 하드 탈락 조건 통과 후 `realized_pnl_quote`, `max_drawdown_pct`, `fill_rate`, `slippage_bps_mean`을 Pareto 기준으로 비교한다.
-- Pareto 상 우열이 즉시 결정되지 않으면 `Calmar-like score = realized_pnl_quote / max_drawdown_pct`를 tie-break 효용 지표로 사용한다.
-- paper soak는 승급의 주 성능 게이트가 아니라, 운영/배선 이상 여부를 확인하는 보조 게이트다.
+- 승급 판단은 `backtest = sanity gate`, `paper = final gate` 원칙으로 운영한다.
+- 기본 정책은 `paper_final_balanced`다.
+- backtest는 후보 모델의 최소 거래 가능성과 학습/실행 증빙을 확인하는 sanity filter 역할만 한다.
+- 최종 promote 여부는 3시간 paper soak가 결정한다.
+  - 운영 gate:
+    - fallback ratio
+    - tier diversity
+    - policy events
+  - 성능 gate:
+    - 최소 fills
+    - 최소 realized pnl
+- 후보-챔피언의 offline compare 지표는 계속 리포트에 남기지만, promote의 직접 결정권은 paper 쪽에 둔다.
 
 ### 즉시 다음 개선 항목
 - 다중 시도/튜닝에 대한 과최적화 보정을 위해 `Deflated Sharpe Ratio` 또는 `Reality Check / SPA` 계열 검정을 승급 게이트에 추가한다.
@@ -280,6 +287,8 @@ D:\MyApps\Autobot
     - `min_prob=0.00`
     - `min_candidates_per_ts=1`
     - `paper_max_fallback_ratio=0.20`
+    - `paper_min_orders_filled=2`
+    - `paper_min_realized_pnl_quote=0.0`
   - generic `candidate_acceptance.ps1` defaults now match that same shared compare profile, so direct invocation no longer falls back to old legacy `0.52/0.10/3` values
   - ad-hoc OCI paper helper now defers to `paper alpha --preset` runtime defaults instead of hardcoding selection cutoff values
   - `LIVE_V4`는 요청된 `v4` 컬럼이 하나라도 빠지면 zero-fill로 점수를 내지 않고 `MISSING_V4_FEATURE_COLUMNS` hard gate로 빈 frame을 반환함
@@ -294,7 +303,7 @@ D:\MyApps\Autobot
     - acceptance는 의도적으로 사용하지 않는다
   - trainer 내부 `execution_acceptance`도 이제 wrapper와 동일한 `top_n/top_pct/min_prob/min_candidates/hold_bars` compare override를 받아 같은 고정 기준으로 비교함
   - lane별 acceptance는 같은 fixed compare profile을 공유한다
-    - 공통: `balanced_pareto`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
+    - 공통: `paper_final_balanced`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`, `paper_min_orders_filled=2`, `paper_min_realized_pnl_quote=0.0`
     - 차이는 trainer evidence만 남긴다
       - `v3`: `trainer_evidence=ignore`
       - `v4`: `trainer_evidence=required`

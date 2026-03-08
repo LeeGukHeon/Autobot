@@ -11,7 +11,7 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -CandidateModelRef "latest_candidate_v4" `
     -ChampionModelRef "champion_v4" `
     -PaperFeatureProvider "live_v4" `
-    -PromotionPolicy "balanced_pareto" `
+    -PromotionPolicy "paper_final_balanced" `
     -TrainerEvidenceMode "required" `
     -BacktestTopPct 0.5 `
     -BacktestMinProb 0.0 `
@@ -21,6 +21,8 @@ $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe
     -BacktestMinPnlDeltaVsChampion 0.0 `
     -PaperMaxFallbackRatio 0.20 `
     -PaperMinOrdersSubmitted 1 `
+    -PaperMinOrdersFilled 2 `
+    -PaperMinRealizedPnlQuote 0.0 `
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `
     -KnownRuntimeUnits @("autobot-paper-v4.service", "autobot-live-alpha.service") `

@@ -383,12 +383,16 @@ Current implementation checkpoint:
       - `backtest_min_candidates_per_ts=1`
     - trainer-side execution acceptance now consumes the same fixed compare overrides instead of falling back to baseline `strategy.yaml` selection defaults
   - lane wrappers keep acceptance criteria explicit instead of inheriting generic defaults:
-    - shared compare profile for `v3` and `v4`: `balanced_pareto`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`
+    - shared compare profile for `v3` and `v4`: `paper_final_balanced`, `top_pct=0.50`, `min_prob=0.0`, `min_candidates=1`, `paper_max_fallback_ratio=0.20`, `paper_min_orders_filled=2`, `paper_min_realized_pnl_quote=0.0`
     - lane-specific difference remains only in trainer evidence:
       - `v3`: `trainer_evidence=ignore`
       - `v4`: `trainer_evidence=required`
     - generic `candidate_acceptance.ps1` defaults are aligned to the same compare profile, so direct/manual invocation does not silently fall back to older legacy constants
     - acceptance intentionally does not consume learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays constant across retrains
+    - promote semantics:
+      - backtest = sanity gate only
+      - paper soak = final promote gate
+      - offline candidate-vs-champion compare remains in the report as informational evidence
   - the `v4` relaxed runtime breadth settings are a temporary bootstrap lane, not a permanent production target:
     - runtime `live_v4/candidate_v4` keeps fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1` until `v4` has roughly `14+` effective days of usable history
   - current result:

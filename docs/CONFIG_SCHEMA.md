@@ -513,6 +513,8 @@
     - `min_prob=0.00`
     - `min_candidates_per_ts=1`
     - `paper_max_fallback_ratio=0.20`
+    - `paper_min_orders_filled=2`
+    - `paper_min_realized_pnl_quote=0.0`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
 - `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
   - v3/v4 acceptance now shares one fixed compare profile for backtest/paper soak:
@@ -520,6 +522,11 @@
     - `min_prob=0.00`
     - `min_candidates_per_ts=1`
     - `paper_max_fallback_ratio=0.20`
+    - `paper_min_orders_filled=2`
+    - `paper_min_realized_pnl_quote=0.0`
+  - promote policy is now `paper_final_balanced`
+    - backtest acts as a sanity gate
+    - paper soak is the final promote gate
   - acceptance intentionally does **not** use learned runtime selection recommendations; it keeps one fixed breadth profile so candidate vs champion comparison stays apples-to-apples
   - `trainer_evidence_mode=required`
   - trainer-side `walk_forward` and `execution_acceptance` evidence must already exist before final promote gate can pass

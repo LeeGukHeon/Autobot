@@ -36,12 +36,14 @@ param(
     [int]$PaperWarmupMinTradeEventsPerMarket = 1,
     [double]$PaperMaxFallbackRatio = 0.20,
     [int]$PaperMinOrdersSubmitted = 1,
+    [int]$PaperMinOrdersFilled = 2,
+    [double]$PaperMinRealizedPnlQuote = 0.0,
     [int]$PaperMinTierCount = 1,
     [int]$PaperMinPolicyEvents = 0,
     [int]$BacktestMinOrdersFilled = 30,
     [double]$BacktestMinRealizedPnlQuote = 0.0,
     [double]$BacktestMinPnlDeltaVsChampion = 0.0,
-    [ValidateSet("strict", "balanced_pareto", "conservative_pareto")]
+    [ValidateSet("strict", "balanced_pareto", "conservative_pareto", "paper_final_balanced")]
     [string]$PromotionPolicy = "balanced_pareto",
     [ValidateSet("ignore", "informational", "required")]
     [string]$TrainerEvidenceMode = "ignore",
@@ -220,6 +222,8 @@ function Resolve-PromotionPolicyConfig {
         backtest_champion_min_utility_edge_pct = 0.0
         use_pareto = $true
         use_utility_tie_break = $true
+        backtest_compare_required = $true
+        paper_final_gate = $false
     }
     switch ($PolicyName) {
         "strict" {
@@ -239,6 +243,17 @@ function Resolve-PromotionPolicyConfig {
             $resolved.backtest_champion_min_utility_edge_pct = 0.05
             $resolved.use_pareto = $true
             $resolved.use_utility_tie_break = $true
+        }
+        "paper_final_balanced" {
+            $resolved.backtest_allow_stability_override = $true
+            $resolved.backtest_champion_pnl_tolerance_pct = 0.05
+            $resolved.backtest_champion_max_fill_rate_degradation = 0.02
+            $resolved.backtest_champion_max_slippage_deterioration_bps = 2.5
+            $resolved.backtest_champion_min_utility_edge_pct = 0.0
+            $resolved.use_pareto = $true
+            $resolved.use_utility_tie_break = $true
+            $resolved.backtest_compare_required = $false
+            $resolved.paper_final_gate = $true
         }
     }
     if ($BoundParams.ContainsKey("BacktestAllowStabilityOverride")) {
@@ -1176,7 +1191,14 @@ try {
             }
         }
     }
-    $backtestPass = $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass
+    $backtestPass = if ($promotionPolicyConfig.backtest_compare_required) {
+        $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass
+    } else {
+        $candidateBacktestPass -and $trainerEvidenceGatePass
+    }
+    if ((-not $promotionPolicyConfig.backtest_compare_required) -and $decisionBasis -eq "PENDING_COMPARE") {
+        $decisionBasis = "SANITY_ONLY_BACKTEST"
+    }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $decisionBasis = "TRAINER_EVIDENCE_REQUIRED_FAIL"
     }
@@ -1212,6 +1234,7 @@ try {
     $report.gates.backtest = [ordered]@{
         candidate_min_orders_pass = ($candidateOrdersFilled -ge $BacktestMinOrdersFilled)
         candidate_min_realized_pnl_pass = ($candidateRealizedPnl -ge $BacktestMinRealizedPnlQuote)
+        compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
         vs_champion_evaluated = $championCompareEvaluated
         vs_champion_pass = $championDeltaPass
         vs_champion_strict_pnl_pass = $strictChampionDeltaPass
@@ -1295,7 +1318,12 @@ try {
             Resolve-FreshLatestJsonPath -LatestPath $paperSmokeLatestPath -StartedAtUtc $paperExecStartedAtUtc
         }
         $paperSmoke = if ($DryRun) { @{} } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { Load-JsonOrEmpty -PathValue $paperSmokeEffectivePath } else { @{} }
-        $paperPass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "t15_gate_pass" -DefaultValue $false) $false
+        $paperT15GatePass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "t15_gate_pass" -DefaultValue $false) $false
+        $paperOrdersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_filled" -DefaultValue 0) 0)
+        $paperRealizedPnl = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0)
+        $paperOrdersFilledPass = $paperOrdersFilled -ge $PaperMinOrdersFilled
+        $paperRealizedPnlPass = $paperRealizedPnl -ge $PaperMinRealizedPnlQuote
+        $paperPass = if ($promotionPolicyConfig.paper_final_gate) { $paperT15GatePass -and $paperOrdersFilledPass -and $paperRealizedPnlPass } else { $paperT15GatePass }
         $report.steps.paper_candidate = [ordered]@{
             exit_code = [int]$paperExec.ExitCode
             command = $paperExec.Command
@@ -1306,19 +1334,23 @@ try {
             smoke_report_source = if ($paperSmokeEffectivePath -eq $paperSmokeRunPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { "latest_fresh_fallback" } else { "missing" }
             run_id = [string](Get-PropValue -ObjectValue $paperSmoke -Name "run_id" -DefaultValue "")
             orders_submitted = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_submitted" -DefaultValue 0) 0)
-            orders_filled = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_filled" -DefaultValue 0) 0)
+            orders_filled = $paperOrdersFilled
             fill_rate = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "fill_rate" -DefaultValue 0.0) 0.0)
-            realized_pnl_quote = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0)
+            realized_pnl_quote = $paperRealizedPnl
             max_drawdown_pct = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "max_drawdown_pct" -DefaultValue 0.0) 0.0)
             slippage_bps_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "slippage_bps_mean" -DefaultValue 0.0) 0.0)
             replace_cancel_timeout_total = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "replace_cancel_timeout_total" -DefaultValue 0) 0)
-            t15_gate_pass = $paperPass
+            t15_gate_pass = $paperT15GatePass
         }
         $report.gates.paper = [ordered]@{
             evaluated = $true
             skipped = $false
             pass = $paperPass
+            final_gate_mode = if ($promotionPolicyConfig.paper_final_gate) { "paper_final" } else { "operational" }
+            min_orders_filled_pass = $paperOrdersFilledPass
+            min_realized_pnl_pass = $paperRealizedPnlPass
             smoke_connectivity_pass = To-Bool (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $paperSmoke -Name "gates" -DefaultValue @{}) -Name "smoke_connectivity_pass" -DefaultValue $false) $false
+            t15_gate_pass = $paperT15GatePass
         }
     }
 
@@ -1333,7 +1365,11 @@ try {
     if ($SkipPaperSoak) {
         $reasons += "PAPER_SOAK_SKIPPED"
     } elseif (-not $paperPass) {
-        $reasons += "PAPER_SOAK_FAILED"
+        if ($promotionPolicyConfig.paper_final_gate) {
+            $reasons += "PAPER_FINAL_GATE_FAILED"
+        } else {
+            $reasons += "PAPER_SOAK_FAILED"
+        }
     }
     $report.gates.overall_pass = $overallPass
     $report.reasons = @($reasons)
