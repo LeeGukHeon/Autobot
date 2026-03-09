@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -376,30 +377,57 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(walk_forward, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    execution_acceptance = _run_execution_acceptance_v4(
+    duplicate_artifacts = _detect_duplicate_candidate_artifacts(
         options=options,
         run_id=run_id,
+        run_dir=run_dir,
     )
+    duplicate_candidate = bool(duplicate_artifacts.get("duplicate", False))
+    if duplicate_candidate:
+        execution_acceptance = _build_duplicate_candidate_execution_acceptance(
+            run_id=run_id,
+            duplicate_artifacts=duplicate_artifacts,
+        )
+    else:
+        execution_acceptance = _run_execution_acceptance_v4(
+            options=options,
+            run_id=run_id,
+        )
     execution_acceptance_report_path = run_dir / "execution_acceptance_report.json"
     execution_acceptance_report_path.write_text(
         json.dumps(execution_acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    runtime_recommendations = _build_runtime_recommendations_v4(
-        options=options,
-        run_id=run_id,
-    )
+    if duplicate_candidate:
+        runtime_recommendations = _build_duplicate_candidate_runtime_recommendations(
+            run_id=run_id,
+            duplicate_artifacts=duplicate_artifacts,
+        )
+    else:
+        runtime_recommendations = _build_runtime_recommendations_v4(
+            options=options,
+            run_id=run_id,
+        )
     runtime_recommendations_path = run_dir / "runtime_recommendations.json"
     runtime_recommendations_path.write_text(
         json.dumps(runtime_recommendations, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    promotion = _manual_promotion_decision_v4(
-        options=options,
-        run_id=run_id,
-        walk_forward=walk_forward,
-        execution_acceptance=execution_acceptance,
-    )
+    if duplicate_candidate:
+        promotion = _build_duplicate_candidate_promotion_decision_v4(
+            options=options,
+            run_id=run_id,
+            walk_forward=walk_forward,
+            execution_acceptance=execution_acceptance,
+            duplicate_artifacts=duplicate_artifacts,
+        )
+    else:
+        promotion = _manual_promotion_decision_v4(
+            options=options,
+            run_id=run_id,
+            walk_forward=walk_forward,
+            execution_acceptance=execution_acceptance,
+        )
     promotion_path = run_dir / "promotion_decision.json"
     promotion_path.write_text(
         json.dumps(promotion, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -1084,6 +1112,70 @@ def _load_champion_walk_forward_report(*, options: TrainV4CryptoCsOptions) -> di
     return None
 
 
+def _sha256_file(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _detect_duplicate_candidate_artifacts(
+    *,
+    options: TrainV4CryptoCsOptions,
+    run_id: str,
+    run_dir: Path,
+) -> dict[str, Any]:
+    champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
+    champion_run_id = str(champion_doc.get("run_id", "")).strip()
+    candidate_model_path = run_dir / "model.bin"
+    candidate_thresholds_path = run_dir / "thresholds.json"
+    champion_run_dir = options.registry_root / options.model_family / champion_run_id if champion_run_id else Path("")
+    champion_model_path = champion_run_dir / "model.bin" if champion_run_id else Path("")
+    champion_thresholds_path = champion_run_dir / "thresholds.json" if champion_run_id else Path("")
+
+    duplicate = False
+    if champion_run_id and candidate_model_path.is_file() and candidate_thresholds_path.is_file():
+        duplicate = (
+            champion_model_path.is_file()
+            and champion_thresholds_path.is_file()
+            and _sha256_file(candidate_model_path) == _sha256_file(champion_model_path)
+            and _sha256_file(candidate_thresholds_path) == _sha256_file(champion_thresholds_path)
+        )
+
+    reasons: list[str] = []
+    if not champion_run_id:
+        reasons.append("NO_EXISTING_CHAMPION")
+    elif duplicate:
+        reasons.append("ARTIFACT_HASH_MATCH")
+    return {
+        "evaluated": bool(champion_run_id),
+        "duplicate": duplicate,
+        "basis": "model_bin_and_thresholds_sha256",
+        "candidate_ref": run_id,
+        "champion_ref": champion_run_id,
+        "candidate": {
+            "run_dir": str(run_dir),
+            "model_bin_path": str(candidate_model_path),
+            "model_bin_sha256": _sha256_file(candidate_model_path),
+            "thresholds_path": str(candidate_thresholds_path),
+            "thresholds_sha256": _sha256_file(candidate_thresholds_path),
+        },
+        "champion": {
+            "run_dir": str(champion_run_dir) if champion_run_id else "",
+            "model_bin_path": str(champion_model_path) if champion_run_id else "",
+            "model_bin_sha256": _sha256_file(champion_model_path) if champion_run_id else "",
+            "thresholds_path": str(champion_thresholds_path) if champion_run_id else "",
+            "thresholds_sha256": _sha256_file(champion_thresholds_path) if champion_run_id else "",
+        },
+        "reasons": reasons,
+    }
+
+
 def _finalize_walk_forward_report(
     *,
     walk_forward: dict[str, Any],
@@ -1152,6 +1244,37 @@ def _resolve_selection_recommendation_threshold_key(
     if threshold_key:
         return threshold_key, str(selection_recommendations.get("recommended_threshold_key_source", "walk_forward_objective_optimizer"))
     return "top_5pct", "manual_fallback"
+
+
+def _build_duplicate_candidate_execution_acceptance(
+    *,
+    run_id: str,
+    duplicate_artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "candidate_ref": run_id,
+        "champion_ref": str(duplicate_artifacts.get("champion_ref", "")),
+        "status": "skipped",
+        "policy": "duplicate_candidate_short_circuit",
+        "reason": "DUPLICATE_CANDIDATE",
+        "duplicate_candidate": True,
+        "duplicate_artifacts": duplicate_artifacts,
+    }
+
+
+def _build_duplicate_candidate_runtime_recommendations(
+    *,
+    run_id: str,
+    duplicate_artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "candidate_ref": run_id,
+        "created_at_utc": _utc_now(),
+        "status": "skipped",
+        "reason": "DUPLICATE_CANDIDATE",
+        "duplicate_candidate": True,
+        "duplicate_artifacts": duplicate_artifacts,
+    }
 
 
 def _resolve_walk_forward_report_threshold_key(
@@ -1788,6 +1911,65 @@ def _manual_promotion_decision_v4(
             "model_ref": "latest_candidate",
             "model_family": options.model_family,
         },
+    }
+
+
+def _build_duplicate_candidate_promotion_decision_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    run_id: str,
+    walk_forward: dict[str, Any],
+    execution_acceptance: dict[str, Any],
+    duplicate_artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    walk_summary = walk_forward.get("summary", {}) if isinstance(walk_forward, dict) else {}
+    research_compare = walk_forward.get("compare_to_champion", {}) if isinstance(walk_forward, dict) else {}
+    spa_like_doc = walk_forward.get("spa_like_window_test", {}) if isinstance(walk_forward, dict) else {}
+    white_rc_doc = walk_forward.get("white_reality_check", {}) if isinstance(walk_forward, dict) else {}
+    hansen_spa_doc = walk_forward.get("hansen_spa", {}) if isinstance(walk_forward, dict) else {}
+    champion_ref = str(duplicate_artifacts.get("champion_ref", "")).strip()
+    return {
+        "run_id": run_id,
+        "promote": False,
+        "status": "candidate",
+        "promotion_mode": "duplicate_candidate_short_circuit",
+        "reasons": ["DUPLICATE_CANDIDATE"],
+        "checks": {
+            "manual_review_required": False,
+            "existing_champion_present": bool(champion_ref),
+            "walk_forward_present": bool(int(walk_summary.get("windows_run", 0) or 0) > 0),
+            "walk_forward_windows_run": int(walk_summary.get("windows_run", 0) or 0),
+            "balanced_pareto_comparable": bool(research_compare.get("comparable", False)),
+            "balanced_pareto_candidate_edge": False,
+            "spa_like_present": bool(spa_like_doc),
+            "spa_like_comparable": bool(spa_like_doc.get("comparable", False)),
+            "spa_like_candidate_edge": False,
+            "white_rc_present": bool(white_rc_doc),
+            "white_rc_comparable": bool(white_rc_doc.get("comparable", False)),
+            "white_rc_candidate_edge": False,
+            "hansen_spa_present": bool(hansen_spa_doc),
+            "hansen_spa_comparable": bool(hansen_spa_doc.get("comparable", False)),
+            "hansen_spa_candidate_edge": False,
+            "execution_acceptance_enabled": bool(options.execution_acceptance_enabled),
+            "execution_acceptance_present": False,
+            "execution_balanced_pareto_comparable": False,
+            "execution_balanced_pareto_candidate_edge": False,
+            "duplicate_candidate": True,
+        },
+        "research_acceptance": {
+            "policy": str(research_compare.get("policy", "balanced_pareto_offline")),
+            "walk_forward_summary": walk_summary,
+            "compare_to_champion": research_compare,
+            "spa_like_window_test": spa_like_doc,
+            "white_reality_check": white_rc_doc,
+            "hansen_spa": hansen_spa_doc,
+        },
+        "execution_acceptance": execution_acceptance,
+        "candidate_ref": {
+            "model_ref": "latest_candidate",
+            "model_family": options.model_family,
+        },
+        "duplicate_artifacts": duplicate_artifacts,
     }
 
 
