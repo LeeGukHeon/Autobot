@@ -6,7 +6,9 @@ import math
 
 import polars as pl
 
+from .ctrend_v1 import ctrend_v1_feature_columns
 from .feature_blocks_v3 import feature_columns_v3_contract, required_feature_columns_v3
+from .order_flow_panel_v1 import attach_order_flow_panel_v1, order_flow_panel_v1_feature_columns
 
 
 def spillover_breadth_feature_columns_v4() -> tuple[str, ...]:
@@ -62,12 +64,22 @@ def interaction_feature_columns_v4() -> tuple[str, ...]:
     )
 
 
+def order_flow_feature_columns_v4() -> tuple[str, ...]:
+    return order_flow_panel_v1_feature_columns()
+
+
+def ctrend_feature_columns_v4() -> tuple[str, ...]:
+    return ctrend_v1_feature_columns()
+
+
 def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
     return tuple(
         list(feature_columns_v3_contract(high_tfs=high_tfs))
         + list(spillover_breadth_feature_columns_v4())
         + list(periodicity_feature_columns_v4())
         + list(trend_volume_feature_columns_v4())
+        + list(order_flow_feature_columns_v4())
+        + list(ctrend_feature_columns_v4())
         + list(interaction_feature_columns_v4())
     )
 
@@ -78,6 +90,8 @@ def required_feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "2
         + list(spillover_breadth_feature_columns_v4())
         + list(periodicity_feature_columns_v4())
         + list(trend_volume_feature_columns_v4())
+        + list(order_flow_feature_columns_v4())
+        + list(ctrend_feature_columns_v4())
         + list(interaction_feature_columns_v4())
     )
 

@@ -21,6 +21,7 @@ from .feature_set_v4 import (
     feature_columns_v4,
     required_feature_columns_v4,
 )
+from .ctrend_v1 import attach_ctrend_v1_features, ctrend_v1_factor_contract, ctrend_v1_history_lookback_days
 from .feature_spec import (
     FeatureSetV1Config,
     LabelV1Config,
@@ -39,6 +40,11 @@ from .labeling_v2_crypto_cs import (
     label_distribution_v2_crypto_cs,
 )
 from .micro_required_join_v1 import load_market_micro_for_base, resolve_micro_dataset_root
+from .order_flow_panel_v1 import (
+    attach_order_flow_panel_v1,
+    order_flow_panel_v1_contract,
+    order_flow_panel_v1_diagnostics,
+)
 from .pipeline_v3 import (
     _assert_micro_validate_ok,
     _cleanup_market_target_dates,
@@ -401,6 +407,8 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
     warn_markets = 0
     fail_markets = 0
     one_m_synth_ratio_values: list[float] = []
+    ctrend_history_roots = _resolve_ctrend_history_roots(parquet_root=config.parquet_root, primary_root=base_root)
+    ctrend_history_from_ts_ms = start_ts_ms - int(ctrend_v1_history_lookback_days()) * 86_400_000
 
     for market in selected_markets:
         try:
@@ -460,6 +468,20 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
                 frame = frame.drop([name for name in ("y_reg", "y_cls") if name in frame.columns]).with_columns(
                     pl.lit(market, dtype=pl.Utf8).alias("market")
                 )
+                ctrend_history = _load_market_candles_merged(
+                    dataset_roots=ctrend_history_roots,
+                    tf=tf,
+                    market=market,
+                    from_ts_ms=ctrend_history_from_ts_ms,
+                    to_ts_ms=extended_end_ts_ms,
+                )
+                if ctrend_history.height > 0:
+                    ctrend_history = ctrend_history.with_columns(pl.lit(market, dtype=pl.Utf8).alias("market"))
+                    frame = attach_ctrend_v1_features(
+                        frame,
+                        history_frame=ctrend_history,
+                        float_dtype=config.float_dtype,
+                    )
                 market_frames.append(frame)
                 if "one_m_synth_ratio" in frame.columns:
                     one_m_synth_ratio_values.extend(
@@ -499,6 +521,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             rows.append(_failure_manifest_row(config=config, tf=tf, market=market, error_message=str(exc)))
 
     combined = pl.concat(market_frames, how="vertical_relaxed") if market_frames else pl.DataFrame()
+    order_flow_diagnostics: dict[str, Any] | None = None
     if combined.height > 0:
         enriched = attach_spillover_breadth_features_v4(
             combined.sort(["ts_ms", "market"]),
@@ -513,10 +536,19 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             enriched,
             float_dtype=config.float_dtype,
         )
+        enriched = attach_order_flow_panel_v1(
+            enriched,
+            float_dtype=config.float_dtype,
+        )
+        enriched = attach_ctrend_v1_features(
+            enriched,
+            float_dtype=config.float_dtype,
+        )
         enriched = attach_interaction_features_v4(
             enriched,
             float_dtype=config.float_dtype,
         )
+        order_flow_diagnostics = order_flow_panel_v1_diagnostics(enriched)
         labeled = apply_labeling_v2_crypto_cs(
             enriched,
             config=config.label_v2,
@@ -655,6 +687,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             micro_root=micro_root,
             start_ts_ms=start_ts_ms,
             end_ts_ms=end_ts_ms,
+            order_flow_diagnostics=order_flow_diagnostics,
         ),
     )
     write_json(meta_root / "label_spec.json", _build_label_spec_payload_v4(config=config, tf=tf, label_cols=label_cols))
@@ -691,6 +724,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
         },
         "base_candles_root": str(base_root),
         "micro_root": str(micro_root),
+        "order_flow_panel_v1_diagnostics": order_flow_diagnostics,
         "details": details,
         "status": "PASS",
     }
@@ -972,6 +1006,7 @@ def _build_feature_spec_payload_v4(
     micro_root: Path,
     start_ts_ms: int,
     end_ts_ms: int,
+    order_flow_diagnostics: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "dataset_name": config.dataset_name,
@@ -992,10 +1027,15 @@ def _build_feature_spec_payload_v4(
             },
         },
         "micro_mandatory": True,
+        "active_factor_contracts": ["ctrend_v1"],
+        "factor_contracts": {"ctrend_v1": ctrend_v1_factor_contract()},
+        "active_micro_panel_contracts": ["order_flow_panel_v1"],
+        "micro_panel_contracts": {"order_flow_panel_v1": order_flow_panel_v1_contract()},
         "one_m_densify": {
             "enabled": True,
             "drop_if_real_count_zero": bool(config.build.one_m_drop_if_real_count_zero),
         },
+        "order_flow_diagnostics": order_flow_diagnostics,
         "time_range": {"from_ts_ms": int(start_ts_ms), "to_ts_ms": int(end_ts_ms)},
         "universe_selection": {
             "mode": config.universe.mode,
@@ -1016,6 +1056,52 @@ def _build_feature_spec_payload_v4(
             "config_sha256": sha256_json(_config_snapshot_v4(config)),
         },
     }
+
+
+def _resolve_ctrend_history_roots(*, parquet_root: Path, primary_root: Path) -> tuple[Path, ...]:
+    ordered: list[Path] = []
+    legacy_root = parquet_root / "candles_v1"
+    if legacy_root.exists():
+        ordered.append(legacy_root)
+    if primary_root.exists():
+        ordered.append(primary_root)
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in ordered:
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return tuple(result)
+
+
+def _load_market_candles_merged(
+    *,
+    dataset_roots: tuple[Path, ...],
+    tf: str,
+    market: str,
+    from_ts_ms: int,
+    to_ts_ms: int,
+) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    for root in dataset_roots:
+        frame = _load_market_candles(
+            dataset_root=root,
+            tf=tf,
+            market=market,
+            from_ts_ms=from_ts_ms,
+            to_ts_ms=to_ts_ms,
+        )
+        if frame.height > 0:
+            frames.append(frame)
+    if not frames:
+        return pl.DataFrame()
+    return (
+        pl.concat(frames, how="vertical_relaxed")
+        .sort("ts_ms")
+        .unique(subset=["ts_ms"], keep="last", maintain_order=True)
+    )
 
 
 def _build_label_spec_payload_v4(*, config: FeaturesV4Config, tf: str, label_cols: list[str]) -> dict[str, Any]:

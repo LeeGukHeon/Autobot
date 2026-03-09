@@ -24,6 +24,7 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     features_root = tmp_path / "features"
     _write_candles(parquet_root / "candles_api_v1")
+    _write_candles_history(parquet_root / "candles_v1")
     _write_micro(parquet_root / "micro_v1")
 
     config = FeaturesV4Config(
@@ -113,9 +114,25 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert "price_trend_short" in feature_spec["feature_columns"]
     assert "volume_trend_long" in feature_spec["feature_columns"]
     assert "trend_consensus" in feature_spec["feature_columns"]
+    assert "oflow_v1_signed_volume_imbalance_1" in feature_spec["feature_columns"]
+    assert "oflow_v1_depth_conditioned_flow_1" in feature_spec["feature_columns"]
+    assert "oflow_v1_microprice_conditioned_flow_1" in feature_spec["feature_columns"]
+    assert "ctrend_v1_rsi_14" in feature_spec["feature_columns"]
+    assert "ctrend_v1_cci_20" in feature_spec["feature_columns"]
+    assert "ctrend_v1_ma_gap_200" in feature_spec["feature_columns"]
+    assert "ctrend_v1_vol_ma_gap_200" in feature_spec["feature_columns"]
+    assert "ctrend_v1_macd_hist_12_26_9" in feature_spec["feature_columns"]
+    assert "ctrend_v1_vol_macd_hist_12_26_9" in feature_spec["feature_columns"]
+    assert "ctrend_v1_boll_width_20_2" in feature_spec["feature_columns"]
     assert "mom_x_illiq" in feature_spec["feature_columns"]
     assert "one_m_pressure_x_spread" in feature_spec["feature_columns"]
     assert "volume_z_x_trend" in feature_spec["feature_columns"]
+    assert feature_spec["active_factor_contracts"] == ["ctrend_v1"]
+    assert feature_spec["factor_contracts"]["ctrend_v1"]["version"] == "ctrend_v1"
+    assert feature_spec["factor_contracts"]["ctrend_v1"]["deployment_adaptation"]["hardcoded_factor_weights"] is False
+    assert feature_spec["active_micro_panel_contracts"] == ["order_flow_panel_v1"]
+    assert feature_spec["micro_panel_contracts"]["order_flow_panel_v1"]["version"] == "order_flow_panel_v1"
+    assert feature_spec["order_flow_diagnostics"]["rows"] > 0
 
     files = sorted((features_root / "features_v4_test").glob("tf=5m/market=*/date=*/*.parquet"))
     assert files
@@ -143,6 +160,27 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
             "volume_trend_long",
             "trend_consensus",
             "trend_vs_market",
+            "oflow_v1_signed_volume_imbalance_1",
+            "oflow_v1_signed_count_imbalance_1",
+            "oflow_v1_signed_volume_imbalance_3",
+            "oflow_v1_signed_volume_imbalance_12",
+            "oflow_v1_flow_sign_persistence_12",
+            "oflow_v1_depth_conditioned_flow_1",
+            "oflow_v1_trade_book_imbalance_gap_1",
+            "oflow_v1_spread_conditioned_flow_1",
+            "oflow_v1_microprice_conditioned_flow_1",
+            "ctrend_v1_rsi_14",
+            "ctrend_v1_stochrsi_14",
+            "ctrend_v1_stoch_k_14_3",
+            "ctrend_v1_stoch_d_14_3_3",
+            "ctrend_v1_cci_20",
+            "ctrend_v1_macd_line_12_26",
+            "ctrend_v1_macd_hist_12_26_9",
+            "ctrend_v1_ma_gap_200",
+            "ctrend_v1_vol_ma_gap_200",
+            "ctrend_v1_vol_macd_hist_12_26_9",
+            "ctrend_v1_chaikin_mf_20",
+            "ctrend_v1_boll_width_20_2",
             "mom_x_illiq",
             "mom_x_spread",
             "spread_x_vol",
@@ -164,6 +202,15 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert frame.get_column("price_trend_short").null_count() == 0
     assert frame.get_column("volume_trend_long").null_count() == 0
     assert frame.filter(pl.col("trend_consensus").is_between(-1.0, 1.0, closed="both")).height == frame.height
+    assert frame.get_column("oflow_v1_signed_volume_imbalance_1").null_count() == 0
+    assert frame.get_column("oflow_v1_depth_conditioned_flow_1").null_count() == 0
+    assert frame.get_column("oflow_v1_microprice_conditioned_flow_1").null_count() == 0
+    assert frame.get_column("ctrend_v1_rsi_14").null_count() == 0
+    assert frame.get_column("ctrend_v1_cci_20").null_count() == 0
+    assert frame.get_column("ctrend_v1_macd_hist_12_26_9").null_count() == 0
+    assert frame.get_column("ctrend_v1_ma_gap_200").null_count() == 0
+    assert frame.get_column("ctrend_v1_vol_ma_gap_200").null_count() == 0
+    assert frame.get_column("ctrend_v1_boll_width_20_2").null_count() == 0
     assert frame.get_column("mom_x_illiq").null_count() == 0
     assert frame.get_column("one_m_pressure_x_spread").null_count() == 0
     assert frame.get_column("volume_z_x_trend").null_count() == 0
@@ -182,6 +229,12 @@ def _write_candles(dataset_root: Path) -> None:
     _write_tf(dataset_root, tf="15m", market="KRW-ETH", start_ts=start_ts, count=230, interval_ms=900_000, slope=0.06)
     _write_tf(dataset_root, tf="60m", market="KRW-ETH", start_ts=start_ts, count=80, interval_ms=3_600_000, slope=0.06)
     _write_tf(dataset_root, tf="240m", market="KRW-ETH", start_ts=start_ts, count=25, interval_ms=14_400_000, slope=0.06)
+
+
+def _write_candles_history(dataset_root: Path) -> None:
+    start_ts = int(datetime(2025, 4, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    _write_tf(dataset_root, tf="5m", market="KRW-BTC", start_ts=start_ts, count=82_000, interval_ms=300_000, slope=0.04)
+    _write_tf(dataset_root, tf="5m", market="KRW-ETH", start_ts=start_ts, count=82_000, interval_ms=300_000, slope=0.02)
 
 
 def _write_tf(dataset_root: Path, *, tf: str, market: str, start_ts: int, count: int, interval_ms: int, slope: float) -> None:
@@ -222,9 +275,15 @@ def _write_micro(dataset_root: Path) -> None:
                 "micro_trade_available": [True for _ in ts],
                 "micro_book_available": [True for _ in ts],
                 "micro_available": [True for _ in ts],
+                "trade_count": [20 for _ in ts],
+                "buy_count": [12 for _ in ts],
+                "sell_count": [8 for _ in ts],
                 "trade_volume_total": [20.0 for _ in ts],
                 "buy_volume": [12.0 for _ in ts],
                 "sell_volume": [8.0 for _ in ts],
+                "microprice_bias_bps_mean": [0.2 for _ in ts],
+                "depth_bid_top5_mean": [5.0 for _ in ts],
+                "depth_ask_top5_mean": [4.0 for _ in ts],
                 "spread_bps_mean": [1.0 for _ in ts],
             }
         ).write_parquet(part_dir / "part-000.parquet")
