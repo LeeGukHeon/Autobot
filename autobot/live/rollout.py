@@ -51,6 +51,24 @@ def normalize_rollout_mode(value: str | None) -> str:
     return mode
 
 
+def resolve_rollout_gate_inputs(
+    *,
+    default_mode: str,
+    default_target_unit: str,
+    contract: dict[str, Any] | None,
+) -> tuple[str, str]:
+    contract_value = dict(contract or {})
+    mode = normalize_rollout_mode(contract_value.get("mode")) if contract_value else normalize_rollout_mode(default_mode)
+    target_unit = (
+        str(contract_value.get("target_unit") or "").strip()
+        if contract_value
+        else str(default_target_unit).strip()
+    )
+    if not target_unit:
+        target_unit = str(default_target_unit).strip() or DEFAULT_LIVE_TARGET_UNIT
+    return mode, target_unit
+
+
 def rollout_artifact_root(project_root: Path) -> Path:
     return Path(project_root) / "logs" / "live_rollout"
 

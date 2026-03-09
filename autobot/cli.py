@@ -103,6 +103,7 @@ from .live import (
     hash_arm_token,
     load_ws_public_runtime_contract,
     reconcile_exchange_snapshot,
+    resolve_rollout_gate_inputs,
     resolve_live_runtime_model_contract,
     rollout_gate_to_payload,
     write_rollout_latest,
@@ -4188,9 +4189,14 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                 rollout_command = str(getattr(args, "live_rollout_command", "")).strip().lower()
                 now_ts = int(time.time() * 1000)
                 if rollout_command == "status":
+                    effective_rollout_mode, effective_rollout_target_unit = resolve_rollout_gate_inputs(
+                        default_mode=str(defaults["rollout_mode"]),
+                        default_target_unit=str(defaults["rollout_target_unit"]),
+                        contract=store.live_rollout_contract(),
+                    )
                     gate = evaluate_live_rollout_gate(
-                        mode=str(defaults["rollout_mode"]),
-                        target_unit=str(defaults["rollout_target_unit"]),
+                        mode=effective_rollout_mode,
+                        target_unit=effective_rollout_target_unit,
                         contract=store.live_rollout_contract(),
                         test_order=store.live_test_order(),
                         breaker_active=bool(breaker_status(store).get("active", False)),
@@ -4206,6 +4212,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         "db_path": str(db_path),
                         "configured_mode": str(defaults["rollout_mode"]),
                         "configured_target_unit": str(defaults["rollout_target_unit"]),
+                        "effective_mode": effective_rollout_mode,
+                        "effective_target_unit": effective_rollout_target_unit,
                         "contract": store.live_rollout_contract(),
                         "test_order": store.live_test_order(),
                         "status": rollout_gate_to_payload(gate),
@@ -4456,10 +4464,15 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             current_contract=current_runtime_contract,
                             ws_public_contract=ws_public_contract,
                         )
+                        rollout_mode, rollout_target_unit = resolve_rollout_gate_inputs(
+                            default_mode=str(defaults["rollout_mode"]),
+                            default_target_unit=str(defaults["rollout_target_unit"]),
+                            contract=persisted_rollout_contract,
+                        )
                         rollout_status = rollout_gate_to_payload(
                             evaluate_live_rollout_gate(
-                                mode=str(defaults["rollout_mode"]),
-                                target_unit=str(defaults["rollout_target_unit"]),
+                                mode=rollout_mode,
+                                target_unit=rollout_target_unit,
                                 contract=persisted_rollout_contract,
                                 test_order=persisted_rollout_test_order,
                                 breaker_active=bool(breaker_status(store).get("active", False)),

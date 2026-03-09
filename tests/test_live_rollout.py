@@ -13,6 +13,7 @@ from autobot.live.rollout import (
     build_rollout_contract,
     build_rollout_test_order_record,
     evaluate_live_rollout_gate,
+    resolve_rollout_gate_inputs,
 )
 from autobot.live.state_store import LiveStateStore
 
@@ -142,6 +143,32 @@ def test_rollout_canary_passes_with_matching_contract_and_fresh_test_order() -> 
     assert gate.start_allowed is True
     assert gate.order_emission_allowed is True
     assert gate.reason_codes == ()
+
+
+def test_resolve_rollout_gate_inputs_prefers_contract_mode_and_target() -> None:
+    contract = build_rollout_contract(
+        mode="canary",
+        target_unit="autobot-live-alpha.service",
+        arm_token="demo-token",
+        ts_ms=5_000,
+    )
+    mode, target_unit = resolve_rollout_gate_inputs(
+        default_mode="shadow",
+        default_target_unit="shadow-unit.service",
+        contract=contract,
+    )
+    assert mode == "canary"
+    assert target_unit == "autobot-live-alpha.service"
+
+
+def test_resolve_rollout_gate_inputs_falls_back_to_defaults_without_contract() -> None:
+    mode, target_unit = resolve_rollout_gate_inputs(
+        default_mode="shadow",
+        default_target_unit="autobot-live-alpha.service",
+        contract=None,
+    )
+    assert mode == "shadow"
+    assert target_unit == "autobot-live-alpha.service"
 
 
 def test_live_daemon_halts_when_canary_rollout_is_not_armed(tmp_path: Path, monkeypatch) -> None:
