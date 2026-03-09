@@ -88,6 +88,9 @@ from .live import (
     LiveDaemonSettings,
     LiveStateStore,
     apply_cancel_actions,
+    build_live_admissibility_report,
+    build_live_order_admissibility_snapshot,
+    evaluate_live_limit_order,
     reconcile_exchange_snapshot,
     run_live_sync_daemon,
     run_live_sync_daemon_with_executor_events,
@@ -1283,6 +1286,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow external order cancel only when config also allows it.",
     )
+
+    live_admissibility_parser = live_subparsers.add_parser(
+        "admissibility",
+        help="Evaluate exact live-order admissibility using exchange snapshots.",
+    )
+    live_admissibility_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
+    live_admissibility_parser.add_argument("--side", required=True, choices=("bid", "ask"))
+    live_admissibility_parser.add_argument("--price", required=True, type=float)
+    live_admissibility_parser.add_argument("--volume", required=True, type=float)
+    live_admissibility_parser.add_argument("--expected-edge-bps", type=float)
+    live_admissibility_parser.add_argument(
+        "--test-order",
+        action="store_true",
+        help="Also call Upbit order-test with adjusted fields when admissible.",
+    )
+    live_admissibility_parser.add_argument("--identifier", help="Optional identifier for order-test.")
+    live_admissibility_parser.add_argument("--time-in-force", choices=("ioc", "fok", "post_only"))
 
     live_export_state_parser = live_subparsers.add_parser("export-state", help="Export local state DB as JSON.")
     live_export_state_parser.add_argument("--bot-id", help="Override live.bot_id")
@@ -3951,6 +3971,62 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
             raise ValueError("live.bot_id must not be blank")
         db_path = Path(str(defaults["state_db_path"]))
         command = str(args.live_command)
+        if command == "admissibility":
+            settings = load_upbit_settings(config_dir)
+            credentials = require_upbit_credentials(settings)
+            market = str(args.market).strip().upper()
+            side = str(args.side).strip().lower()
+            with UpbitHttpClient(settings, credentials=credentials) as private_http:
+                private_client = UpbitPrivateClient(private_http)
+                chance_payload = private_client.chance(market=market)
+                accounts_payload = private_client.accounts()
+                with UpbitHttpClient(settings) as public_http:
+                    instruments_payload = UpbitPublicClient(public_http).orderbook_instruments([market])
+            snapshot = build_live_order_admissibility_snapshot(
+                market=market,
+                side=side,
+                chance_payload=chance_payload if isinstance(chance_payload, dict) else {},
+                instruments_payload=instruments_payload,
+                accounts_payload=accounts_payload,
+            )
+            decision = evaluate_live_limit_order(
+                snapshot=snapshot,
+                price=float(args.price),
+                volume=float(args.volume),
+                expected_edge_bps=getattr(args, "expected_edge_bps", None),
+            )
+            test_order_payload: dict[str, Any] | None = None
+            if bool(getattr(args, "test_order", False)):
+                test_order_payload = {
+                    "requested": True,
+                    "called": False,
+                }
+                if decision.admissible:
+                    with UpbitHttpClient(settings, credentials=credentials) as private_http:
+                        private_client = UpbitPrivateClient(private_http)
+                        payload = private_client.order_test(
+                            market=market,
+                            side=side,
+                            ord_type="limit",
+                            price=f"{decision.adjusted_price:.16f}".rstrip("0").rstrip("."),
+                            volume=f"{decision.adjusted_volume:.16f}".rstrip("0").rstrip("."),
+                            time_in_force=getattr(args, "time_in_force", None),
+                            identifier=getattr(args, "identifier", None),
+                        )
+                    test_order_payload = {
+                        "requested": True,
+                        "called": True,
+                        "ok": True,
+                        "payload": payload,
+                    }
+            _print_json(
+                build_live_admissibility_report(
+                    snapshot=snapshot,
+                    decision=decision,
+                    test_order_payload=test_order_payload,
+                )
+            )
+            return 0 if decision.admissible else 2
         apply_mode = bool(getattr(args, "apply", False)) and not bool(getattr(args, "dry_run", False))
         if bool(getattr(args, "apply", False)) and bool(getattr(args, "dry_run", False)):
             raise ValueError("cannot use --apply and --dry-run together")

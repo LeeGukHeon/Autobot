@@ -251,6 +251,14 @@ D:\MyApps\Autobot
 - 매일 `00:10` 데이터 수집 이후 `candidate acceptance`를 실행한다.
 - acceptance 기본 흐름은 `daily pipeline -> candidate train -> backtest sanity gate -> 3h paper final gate -> pass 시 promote -> 활성 runtime restart`다.
 
+### 향후 live 동기화 원칙
+
+- live runtime이 추가되면 `paper champion`과 별도 모델 포인터를 갖지 않는다.
+- `champion_v4`가 paper/live 공통 SSOT다.
+- `23:50` promote 이벤트는 같은 `champion_v4` 갱신과 함께 paper/live target unit을 같은 컷오버로 재기동한다.
+- live runtime은 시작 시 현재 `champion_v4`의 concrete `run_id`를 pinning하고, 재시작 후에도 이 값을 checkpoint/health에 기록한다.
+- `autobot-ws-public.service`는 daily 학습과 live runtime이 공유하는 항상-on public data plane이며, live health는 이 데이터 플레인의 freshness를 명시적으로 검사해야 한다.
+
 ### 승급 판단 정책
 
 - 승급 판단은 `backtest = sanity gate`, `paper = final gate` 원칙으로 운영한다.
@@ -454,6 +462,10 @@ D:\MyApps\Autobot
 - T20: v4 upgrade priority under `80GB` stable / `100GB` max budget
 - T21: literature-grounded methodology tickets for the current Oracle A1 server
   - T21.6: selector history and guarded auto-apply loop for stable automatic feature pruning
+- T22: live ops readiness and restart-safe continuity for small-account real trading
+  - T22.7: live model handoff and ws-public data-plane synchronization
+  - T22.6: shadow/canary rollout and explicit promote-to-live hook
+  - T22.5 small-account safety is a cross-cutting invariant, not an optional late ticket
 
 ## 19) 첫 작업 지시문 요약
 

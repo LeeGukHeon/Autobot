@@ -7,6 +7,7 @@ from typing import Any
 
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
+from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord
 
 
@@ -42,10 +43,17 @@ def _apply_my_order_event(
     intent_id = _as_optional_str(existing.get("intent_id")) if existing else None
     if not intent_id:
         intent_id = f"inferred-{event.uuid}"
+    raw = dict(event.raw) if isinstance(event.raw, dict) else {}
+    event_name = _as_optional_str(raw.get("event_name")) or "PRIVATE_WS_ORDER_EVENT"
+    normalized = normalize_order_state(
+        exchange_state=event.state,
+        event_name=event_name,
+        executed_volume=event.executed_volume,
+    )
 
     order_record = OrderRecord(
         uuid=event.uuid,
-        identifier=event.identifier,
+        identifier=(event.identifier or _as_optional_str(existing.get("identifier"))) if existing else event.identifier,
         market=event.market,
         side=event.side,
         ord_type=event.ord_type,
@@ -57,6 +65,14 @@ def _apply_my_order_event(
         updated_ts=int(event.ts_ms),
         intent_id=intent_id,
         tp_sl_link=_as_optional_str(existing.get("tp_sl_link")) if existing else None,
+        local_state=normalized.local_state,
+        raw_exchange_state=normalized.exchange_state,
+        last_event_name=normalized.event_name,
+        event_source="private_ws",
+        replace_seq=int(existing.get("replace_seq") or 0) if existing else 0,
+        root_order_uuid=_as_optional_str(existing.get("root_order_uuid")) if existing else event.uuid,
+        prev_order_uuid=_as_optional_str(existing.get("prev_order_uuid")) if existing else None,
+        prev_order_identifier=_as_optional_str(existing.get("prev_order_identifier")) if existing else None,
     )
     store.upsert_order(order_record)
 
@@ -88,6 +104,7 @@ def _apply_my_order_event(
         "type": "ws_order_upsert",
         "uuid": event.uuid,
         "state": order_record.state,
+        "local_state": order_record.local_state,
         "intent_id": intent_id,
         "intent_status": status,
     }

@@ -10,8 +10,7 @@ import sqlite3
 import time
 from typing import Any
 
-
-OPEN_ORDER_STATES = frozenset({"wait", "watch", "open", "partial"})
+from .order_state import is_open_local_state, normalize_order_state, resolve_transition
 
 
 @dataclass(frozen=True)
@@ -42,6 +41,14 @@ class OrderRecord:
     updated_ts: int
     intent_id: str | None = None
     tp_sl_link: str | None = None
+    local_state: str | None = None
+    raw_exchange_state: str | None = None
+    last_event_name: str | None = None
+    event_source: str | None = None
+    replace_seq: int = 0
+    root_order_uuid: str | None = None
+    prev_order_uuid: str | None = None
+    prev_order_identifier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,18 @@ class RiskPlanRecord:
     replace_attempt: int = 0
     created_ts: int = 0
     updated_ts: int = 0
+
+
+@dataclass(frozen=True)
+class OrderLineageRecord:
+    ts_ms: int
+    event_source: str
+    intent_id: str | None
+    prev_uuid: str | None
+    prev_identifier: str | None
+    new_uuid: str | None
+    new_identifier: str | None
+    replace_seq: int = 0
 
 
 class LiveStateStore:
@@ -175,14 +194,20 @@ class LiveStateStore:
             self._conn.execute("DELETE FROM positions WHERE market = ?", (market,))
 
     def upsert_order(self, record: OrderRecord) -> None:
+        previous = self.order_by_uuid(uuid=record.uuid)
+        previous_local_state = str(previous.get("local_state") or "").strip() if previous is not None else None
+        resolved_local_state, transition_ok = resolve_transition(previous_local_state, record.local_state)
+        root_order_uuid = record.root_order_uuid or (previous.get("root_order_uuid") if previous is not None else None) or record.uuid
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO orders (
                     uuid, identifier, market, side, ord_type, price,
-                    volume_req, volume_filled, state, created_ts, updated_ts, intent_id, tp_sl_link
+                    volume_req, volume_filled, state, created_ts, updated_ts, intent_id, tp_sl_link,
+                    local_state, raw_exchange_state, last_event_name, event_source,
+                    replace_seq, root_order_uuid, prev_order_uuid, prev_order_identifier
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET
                     identifier=excluded.identifier,
                     market=excluded.market,
@@ -195,7 +220,15 @@ class LiveStateStore:
                     created_ts=excluded.created_ts,
                     updated_ts=excluded.updated_ts,
                     intent_id=excluded.intent_id,
-                    tp_sl_link=excluded.tp_sl_link
+                    tp_sl_link=excluded.tp_sl_link,
+                    local_state=excluded.local_state,
+                    raw_exchange_state=excluded.raw_exchange_state,
+                    last_event_name=excluded.last_event_name,
+                    event_source=excluded.event_source,
+                    replace_seq=excluded.replace_seq,
+                    root_order_uuid=excluded.root_order_uuid,
+                    prev_order_uuid=excluded.prev_order_uuid,
+                    prev_order_identifier=excluded.prev_order_identifier
                 """,
                 (
                     record.uuid,
@@ -211,16 +244,64 @@ class LiveStateStore:
                     int(record.updated_ts),
                     record.intent_id,
                     record.tp_sl_link,
+                    resolved_local_state,
+                    record.raw_exchange_state if record.raw_exchange_state is not None else record.state,
+                    record.last_event_name,
+                    record.event_source,
+                    int(record.replace_seq),
+                    root_order_uuid,
+                    record.prev_order_uuid,
+                    record.prev_order_identifier,
                 ),
             )
+            if not transition_ok:
+                self._conn.execute(
+                    """
+                    INSERT INTO checkpoints (name, ts_ms, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        ts_ms=excluded.ts_ms,
+                        payload_json=excluded.payload_json
+                    """,
+                    (
+                        f"illegal_order_transition:{record.uuid}",
+                        int(record.updated_ts),
+                        json.dumps(
+                            {
+                                "uuid": record.uuid,
+                                "previous_local_state": previous_local_state,
+                                "requested_local_state": record.local_state,
+                                "resolved_local_state": resolved_local_state,
+                                "event_source": record.event_source,
+                                "last_event_name": record.last_event_name,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    ),
+                )
 
     def mark_order_state(self, *, uuid: str, state: str, updated_ts: int | None = None) -> None:
         now_ts = int(updated_ts if updated_ts is not None else time.time() * 1000)
+        previous = self.order_by_uuid(uuid=uuid)
+        previous_local_state = str(previous.get("local_state") or "").strip() if previous is not None else None
+        normalized = normalize_order_state(exchange_state=state, event_name="STATE_MARK")
+        resolved_local_state, _ = resolve_transition(previous_local_state, normalized.local_state)
         with self._conn:
             self._conn.execute(
-                "UPDATE orders SET state = ?, updated_ts = ? WHERE uuid = ?",
-                (state, now_ts, uuid),
+                """
+                UPDATE orders
+                SET state = ?, raw_exchange_state = ?, local_state = ?, last_event_name = ?, event_source = ?, updated_ts = ?
+                WHERE uuid = ?
+                """,
+                (state, state, resolved_local_state, normalized.event_name, "state_store", now_ts, uuid),
             )
+
+    def order_by_identifier(self, *, identifier: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM orders WHERE identifier = ?", (identifier,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_order(row)
 
     def upsert_intent(self, record: IntentRecord) -> None:
         with self._conn:
@@ -271,9 +352,8 @@ class LiveStateStore:
 
     def list_orders(self, *, open_only: bool = False) -> list[dict[str, Any]]:
         if open_only:
-            placeholders = ",".join("?" for _ in OPEN_ORDER_STATES)
-            query = f"SELECT * FROM orders WHERE lower(state) IN ({placeholders}) ORDER BY updated_ts DESC"
-            rows = self._conn.execute(query, tuple(sorted(OPEN_ORDER_STATES))).fetchall()
+            rows = self._conn.execute("SELECT * FROM orders ORDER BY updated_ts DESC").fetchall()
+            return [item for item in (_row_to_order(row) for row in rows) if is_open_local_state(item.get("local_state"))]
         else:
             rows = self._conn.execute("SELECT * FROM orders ORDER BY updated_ts DESC").fetchall()
         return [_row_to_order(row) for row in rows]
@@ -390,6 +470,49 @@ class LiveStateStore:
                 (name, now_ts, json.dumps(payload, ensure_ascii=False, sort_keys=True)),
             )
 
+    def append_order_lineage(self, record: OrderLineageRecord) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO order_lineage (
+                    ts_ms, event_source, intent_id, prev_uuid, prev_identifier,
+                    new_uuid, new_identifier, replace_seq
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(record.ts_ms),
+                    record.event_source,
+                    record.intent_id,
+                    record.prev_uuid,
+                    record.prev_identifier,
+                    record.new_uuid,
+                    record.new_identifier,
+                    int(record.replace_seq),
+                ),
+            )
+
+    def list_order_lineage(
+        self,
+        *,
+        intent_id: str | None = None,
+        root_order_uuid: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if intent_id:
+            clauses.append("intent_id = ?")
+            params.append(intent_id)
+        if root_order_uuid:
+            clauses.append("(prev_uuid = ? OR new_uuid = ?)")
+            params.extend([root_order_uuid, root_order_uuid])
+        query = "SELECT * FROM order_lineage"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY edge_id"
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_row_to_order_lineage(row) for row in rows]
+
     def export_state(self) -> dict[str, Any]:
         return {
             "db_path": str(self._db_path),
@@ -400,6 +523,10 @@ class LiveStateStore:
             "risk_plans": self.list_risk_plans(),
             "checkpoints": [
                 _row_to_checkpoint(row) for row in self._conn.execute("SELECT * FROM checkpoints ORDER BY name").fetchall()
+            ],
+            "order_lineage": [
+                _row_to_order_lineage(row)
+                for row in self._conn.execute("SELECT * FROM order_lineage ORDER BY edge_id").fetchall()
             ],
             "run_locks": [_row_to_plain_dict(row) for row in self._conn.execute("SELECT * FROM run_locks").fetchall()],
         }
@@ -440,8 +567,19 @@ class LiveStateStore:
                     created_ts INTEGER NOT NULL,
                     updated_ts INTEGER NOT NULL,
                     intent_id TEXT,
-                    tp_sl_link TEXT
+                    tp_sl_link TEXT,
+                    local_state TEXT,
+                    raw_exchange_state TEXT,
+                    last_event_name TEXT,
+                    event_source TEXT,
+                    replace_seq INTEGER NOT NULL DEFAULT 0,
+                    root_order_uuid TEXT,
+                    prev_order_uuid TEXT,
+                    prev_order_identifier TEXT
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid);
+                CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state);
 
                 CREATE TABLE IF NOT EXISTS intents (
                     intent_id TEXT PRIMARY KEY,
@@ -489,6 +627,18 @@ class LiveStateStore:
                     payload_json TEXT NOT NULL DEFAULT '{}'
                 );
 
+                CREATE TABLE IF NOT EXISTS order_lineage (
+                    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_ms INTEGER NOT NULL,
+                    event_source TEXT NOT NULL,
+                    intent_id TEXT,
+                    prev_uuid TEXT,
+                    prev_identifier TEXT,
+                    new_uuid TEXT,
+                    new_identifier TEXT,
+                    replace_seq INTEGER NOT NULL DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS run_locks (
                     bot_id TEXT PRIMARY KEY,
                     acquired_ts INTEGER NOT NULL,
@@ -496,6 +646,40 @@ class LiveStateStore:
                 );
                 """
             )
+        self._ensure_column("orders", "local_state", "TEXT")
+        self._ensure_column("orders", "raw_exchange_state", "TEXT")
+        self._ensure_column("orders", "last_event_name", "TEXT")
+        self._ensure_column("orders", "event_source", "TEXT")
+        self._ensure_column("orders", "replace_seq", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("orders", "root_order_uuid", "TEXT")
+        self._ensure_column("orders", "prev_order_uuid", "TEXT")
+        self._ensure_column("orders", "prev_order_identifier", "TEXT")
+        with self._conn:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state)")
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_lineage (
+                    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_ms INTEGER NOT NULL,
+                    event_source TEXT NOT NULL,
+                    intent_id TEXT,
+                    prev_uuid TEXT,
+                    prev_identifier TEXT,
+                    new_uuid TEXT,
+                    new_identifier TEXT,
+                    replace_seq INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+
+    def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        existing = {str(row["name"]) for row in rows}
+        if column_name in existing:
+            return
+        with self._conn:
+            self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def _row_to_plain_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -531,6 +715,14 @@ def _row_to_order(row: sqlite3.Row) -> dict[str, Any]:
         "updated_ts": int(row["updated_ts"]),
         "intent_id": row["intent_id"],
         "tp_sl_link": row["tp_sl_link"],
+        "local_state": row["local_state"],
+        "raw_exchange_state": row["raw_exchange_state"],
+        "last_event_name": row["last_event_name"],
+        "event_source": row["event_source"],
+        "replace_seq": int(row["replace_seq"]) if row["replace_seq"] is not None else 0,
+        "root_order_uuid": row["root_order_uuid"],
+        "prev_order_uuid": row["prev_order_uuid"],
+        "prev_order_identifier": row["prev_order_identifier"],
     }
 
 
@@ -587,6 +779,20 @@ def _row_to_checkpoint(row: sqlite3.Row) -> dict[str, Any]:
         "name": row["name"],
         "ts_ms": int(row["ts_ms"]),
         "payload": _parse_json(row["payload_json"]),
+    }
+
+
+def _row_to_order_lineage(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "edge_id": int(row["edge_id"]),
+        "ts_ms": int(row["ts_ms"]),
+        "event_source": row["event_source"],
+        "intent_id": row["intent_id"],
+        "prev_uuid": row["prev_uuid"],
+        "prev_identifier": row["prev_identifier"],
+        "new_uuid": row["new_uuid"],
+        "new_identifier": row["new_identifier"],
+        "replace_seq": int(row["replace_seq"]),
     }
 
 

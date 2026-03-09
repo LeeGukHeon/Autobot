@@ -218,6 +218,276 @@ bool IsPositiveNumberString(const std::string& raw) {
   }
 }
 
+bool IsOpenOrderState(const std::string& state) {
+  const std::string lowered = ToLower(state);
+  return lowered == "wait" || lowered == "watch";
+}
+
+struct AccountBalanceView {
+  double free = 0.0;
+  double locked = 0.0;
+  double avg_buy_price = 0.0;
+};
+
+struct LiveAdmissibilityDecision {
+  bool admissible = false;
+  std::string reject_code;
+  double adjusted_price = 0.0;
+  double adjusted_volume = 0.0;
+  double adjusted_notional = 0.0;
+  double fee_reserve_quote = 0.0;
+};
+
+std::optional<double> JsonNumber(const nlohmann::json& value) {
+  if (value.is_number_float() || value.is_number_integer() || value.is_number_unsigned()) {
+    return value.get<double>();
+  }
+  if (value.is_string()) {
+    try {
+      return std::stod(value.get<std::string>());
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<double> JsonPositiveDouble(const nlohmann::json& value) {
+  const std::optional<double> parsed = JsonNumber(value);
+  if (!parsed.has_value() || !std::isfinite(*parsed) || *parsed <= 0.0) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+double JsonNonNegativeDouble(const nlohmann::json& value) {
+  const std::optional<double> parsed = JsonNumber(value);
+  if (!parsed.has_value() || !std::isfinite(*parsed) || *parsed < 0.0) {
+    return 0.0;
+  }
+  return *parsed;
+}
+
+std::string QuoteCurrency(const std::string& market) {
+  const std::size_t split = market.find('-');
+  if (split == std::string::npos) {
+    return "";
+  }
+  return market.substr(0, split);
+}
+
+std::string BaseCurrency(const std::string& market) {
+  const std::size_t split = market.find('-');
+  if (split == std::string::npos || split + 1 >= market.size()) {
+    return "";
+  }
+  return market.substr(split + 1);
+}
+
+upbit::HttpResponse BuildPublicGetRequest(
+    upbit::UpbitHttpClient* http_client,
+    const std::string& endpoint,
+    const std::string& url_query,
+    const std::string& rate_limit_group) {
+  upbit::HttpRequest request;
+  request.method = "GET";
+  request.endpoint = endpoint;
+  request.url_query = url_query;
+  request.auth = false;
+  request.allow_retry = true;
+  request.rate_limit_group = rate_limit_group;
+  return http_client->RequestJson(request);
+}
+
+std::optional<double> ExtractTickSizeFromInstruments(
+    const nlohmann::json& payload,
+    const std::string& market) {
+  if (!payload.is_array()) {
+    return std::nullopt;
+  }
+  for (const auto& item : payload) {
+    if (!item.is_object()) {
+      continue;
+    }
+    const std::string item_market = ToUpper(item.value("market", ""));
+    if (item_market != market) {
+      continue;
+    }
+    const auto tick = JsonPositiveDouble(item.value("tick_size", nlohmann::json()));
+    if (tick.has_value()) {
+      return tick;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<double> ExtractMinTotalFromChance(
+    const nlohmann::json& payload,
+    const std::string& side) {
+  if (!payload.is_object()) {
+    return std::nullopt;
+  }
+  const auto market_it = payload.find("market");
+  if (market_it == payload.end() || !market_it->is_object()) {
+    return std::nullopt;
+  }
+  const auto side_it = market_it->find(side);
+  if (side_it != market_it->end() && side_it->is_object()) {
+    const auto side_min_total = JsonPositiveDouble(side_it->value("min_total", nlohmann::json()));
+    if (side_min_total.has_value()) {
+      return side_min_total;
+    }
+  }
+  for (const char* candidate_side : {"bid", "ask"}) {
+    const auto candidate_it = market_it->find(candidate_side);
+    if (candidate_it == market_it->end() || !candidate_it->is_object()) {
+      continue;
+    }
+    const auto candidate_min_total =
+        JsonPositiveDouble(candidate_it->value("min_total", nlohmann::json()));
+    if (candidate_min_total.has_value()) {
+      return candidate_min_total;
+    }
+  }
+  return std::nullopt;
+}
+
+double ExtractFeeRateFromChance(const nlohmann::json& payload, const char* key) {
+  if (!payload.is_object()) {
+    return 0.0;
+  }
+  const auto it = payload.find(key);
+  if (it == payload.end()) {
+    return 0.0;
+  }
+  const auto fee = JsonPositiveDouble(*it);
+  return fee.has_value() ? *fee : 0.0;
+}
+
+AccountBalanceView ExtractBalanceFromAccounts(
+    const nlohmann::json& payload,
+    const std::string& currency) {
+  AccountBalanceView out;
+  if (!payload.is_array()) {
+    return out;
+  }
+  for (const auto& item : payload) {
+    if (!item.is_object()) {
+      continue;
+    }
+    const std::string item_currency = ToUpper(item.value("currency", ""));
+    if (item_currency != currency) {
+      continue;
+    }
+    out.free = JsonNonNegativeDouble(item.value("balance", nlohmann::json()));
+    out.locked = JsonNonNegativeDouble(item.value("locked", nlohmann::json()));
+    out.avg_buy_price = JsonNonNegativeDouble(item.value("avg_buy_price", nlohmann::json()));
+    return out;
+  }
+  return out;
+}
+
+int DecimalPlaces(double value) {
+  std::ostringstream oss;
+  oss.setf(std::ios::fixed);
+  oss.precision(16);
+  oss << value;
+  std::string text = oss.str();
+  while (!text.empty() && text.back() == '0') {
+    text.pop_back();
+  }
+  const std::size_t dot = text.find('.');
+  if (dot == std::string::npos) {
+    return 0;
+  }
+  return static_cast<int>(text.size() - dot - 1);
+}
+
+double RoundPriceToTick(double price, double tick_size, const std::string& side) {
+  if (!(price > 0.0) || !(tick_size > 0.0)) {
+    return 0.0;
+  }
+  const double scaled = price / tick_size;
+  const std::string normalized_side = ToLower(side);
+  double rounded_ticks = 0.0;
+  if (normalized_side == "bid") {
+    rounded_ticks = std::floor(scaled + 1e-12);
+  } else if (normalized_side == "ask") {
+    rounded_ticks = std::ceil(scaled - 1e-12);
+  } else {
+    return 0.0;
+  }
+  const double rounded = std::max(rounded_ticks * tick_size, tick_size);
+  const int digits = DecimalPlaces(tick_size);
+  const double scale = std::pow(10.0, digits);
+  return std::round(rounded * scale) / scale;
+}
+
+LiveAdmissibilityDecision EvaluateLiveAdmissibility(
+    const std::string& side,
+    double requested_price,
+    double requested_volume,
+    double tick_size,
+    double min_total,
+    double bid_fee,
+    double ask_fee,
+    const AccountBalanceView& quote_balance,
+    const AccountBalanceView& base_balance) {
+  LiveAdmissibilityDecision decision;
+  const std::string normalized_side = ToLower(side);
+  if (!(tick_size > 0.0)) {
+    decision.reject_code = "TICK_SIZE_UNAVAILABLE";
+    return decision;
+  }
+  if (!(min_total > 0.0)) {
+    decision.reject_code = "MIN_TOTAL_UNAVAILABLE";
+    return decision;
+  }
+  decision.adjusted_price = RoundPriceToTick(requested_price, tick_size, normalized_side);
+  decision.adjusted_volume = requested_volume;
+  decision.adjusted_notional = decision.adjusted_price * decision.adjusted_volume;
+  const double fee_rate = normalized_side == "bid" ? bid_fee : ask_fee;
+  decision.fee_reserve_quote = decision.adjusted_notional * fee_rate;
+
+  if (!(decision.adjusted_price > 0.0) ||
+      decision.adjusted_notional + 1e-12 < min_total) {
+    decision.reject_code = "BELOW_MIN_TOTAL";
+    return decision;
+  }
+
+  if (normalized_side == "bid") {
+    if (quote_balance.free + 1e-12 < decision.adjusted_notional) {
+      decision.reject_code = "INSUFFICIENT_FREE_BALANCE";
+      return decision;
+    }
+    if (quote_balance.free + 1e-12 <
+        decision.adjusted_notional + decision.fee_reserve_quote) {
+      decision.reject_code = "FEE_RESERVE_INSUFFICIENT";
+      return decision;
+    }
+    decision.admissible = true;
+    return decision;
+  }
+
+  if (normalized_side == "ask") {
+    if (base_balance.free + 1e-12 < decision.adjusted_volume) {
+      decision.reject_code = "INSUFFICIENT_FREE_BALANCE";
+      return decision;
+    }
+    const double remaining_base = std::max(base_balance.free - decision.adjusted_volume, 0.0);
+    if (remaining_base > 1e-12 &&
+        (remaining_base * decision.adjusted_price) + 1e-12 < min_total) {
+      decision.reject_code = "DUST_REMAINDER";
+      return decision;
+    }
+    decision.admissible = true;
+    return decision;
+  }
+
+  decision.reject_code = "UNSUPPORTED_SIDE";
+  return decision;
+}
+
 }  // namespace
 
 UpbitRestClient::UpbitRestClient(
@@ -333,13 +603,66 @@ UpbitSubmitResult UpbitRestClient::SubmitLimitOrder(const UpbitSubmitRequest& re
   }
 
   const std::string market = ToUpper(request.market);
+  double effective_price = request.price;
+  double effective_volume = request.volume;
   if (!order_test_mode_) {
     if (!IsLiveMarketAllowed(market)) {
       result.reason = "market is not allowed in live mode";
       return result;
     }
+    const upbit::HttpResponse chance_response = private_client_->Chance(market);
+    if (!chance_response.ok) {
+      result.reason = "CHANCE_UNAVAILABLE: " + BuildErrorReason(chance_response, "chance_unavailable");
+      return result;
+    }
+    const upbit::HttpResponse accounts_response = private_client_->Accounts();
+    if (!accounts_response.ok) {
+      result.reason = "BALANCE_SNAPSHOT_UNAVAILABLE: " +
+                      BuildErrorReason(accounts_response, "accounts_unavailable");
+      return result;
+    }
+    const upbit::HttpResponse instruments_response = BuildPublicGetRequest(
+        http_client_.get(),
+        "/v1/orderbook/instruments",
+        "markets=" + market,
+        "orderbook");
+    if (!instruments_response.ok) {
+      result.reason = "TICK_SIZE_UNAVAILABLE: " +
+                      BuildErrorReason(instruments_response, "orderbook_instruments_unavailable");
+      return result;
+    }
+    const auto tick_size = ExtractTickSizeFromInstruments(instruments_response.json_body, market);
+    const auto min_total = ExtractMinTotalFromChance(chance_response.json_body, ToLower(request.side));
+    if (!tick_size.has_value()) {
+      result.reason = "TICK_SIZE_UNAVAILABLE";
+      return result;
+    }
+    if (!min_total.has_value()) {
+      result.reason = "MIN_TOTAL_UNAVAILABLE";
+      return result;
+    }
+    const AccountBalanceView quote_balance =
+        ExtractBalanceFromAccounts(accounts_response.json_body, QuoteCurrency(market));
+    const AccountBalanceView base_balance =
+        ExtractBalanceFromAccounts(accounts_response.json_body, BaseCurrency(market));
+    const LiveAdmissibilityDecision admissibility = EvaluateLiveAdmissibility(
+        request.side,
+        request.price,
+        request.volume,
+        *tick_size,
+        *min_total,
+        ExtractFeeRateFromChance(chance_response.json_body, "bid_fee"),
+        ExtractFeeRateFromChance(chance_response.json_body, "ask_fee"),
+        quote_balance,
+        base_balance);
+    if (!admissibility.admissible) {
+      result.reason = admissibility.reject_code;
+      return result;
+    }
+    effective_price = admissibility.adjusted_price;
+    effective_volume = admissibility.adjusted_volume;
     if (live_min_notional_krw_ > 0.0 && StartsWith(market, "KRW-")) {
-      const double notional = request.price * request.volume;
+      const double notional = effective_price * effective_volume;
       if (notional < live_min_notional_krw_) {
         result.reason = "live order notional below AUTOBOT_LIVE_MIN_NOTIONAL_KRW";
         return result;
@@ -383,8 +706,8 @@ UpbitSubmitResult UpbitRestClient::SubmitLimitOrder(const UpbitSubmitRequest& re
     }
   }
 
-  const std::string price_str = upbit::FormatPriceString(request.price, 0.0, 16);
-  const std::string volume_str = upbit::FormatVolumeString(request.volume, 16);
+  const std::string price_str = upbit::FormatPriceString(effective_price, 0.0, 16);
+  const std::string volume_str = upbit::FormatVolumeString(effective_volume, 16);
 
   upbit::OrderCreateRequest create;
   create.market = market;
@@ -657,12 +980,85 @@ UpbitReplaceResult UpbitRestClient::ReplaceOrder(const UpbitReplaceRequest& requ
     return result;
   }
 
+  const UpbitOrderResult current_order = GetOrder(resolved_prev_uuid, resolved_prev_identifier);
+  if (!current_order.ok || !current_order.found) {
+    result.reason = "PREV_ORDER_UNAVAILABLE";
+    return result;
+  }
+  if (!IsOpenOrderState(current_order.state)) {
+    result.reason = "PREV_ORDER_NOT_OPEN";
+    return result;
+  }
+  const std::string market = ToUpper(current_order.market);
+  const std::string side = ToLower(current_order.side);
+  const std::string evaluated_volume_str =
+      ToLower(new_volume) == "remain_only" ? current_order.remaining_volume_str : new_volume;
+  if (!IsPositiveNumberString(evaluated_volume_str)) {
+    result.reason = "new_volume_str could not be resolved to a positive number";
+    return result;
+  }
+  const double evaluated_price = std::stod(new_price);
+  const double evaluated_volume = std::stod(evaluated_volume_str);
+
+  const upbit::HttpResponse chance_response = private_client_->Chance(market);
+  if (!chance_response.ok) {
+    result.reason = "CHANCE_UNAVAILABLE: " + BuildErrorReason(chance_response, "chance_unavailable");
+    return result;
+  }
+  const upbit::HttpResponse accounts_response = private_client_->Accounts();
+  if (!accounts_response.ok) {
+    result.reason = "BALANCE_SNAPSHOT_UNAVAILABLE: " +
+                    BuildErrorReason(accounts_response, "accounts_unavailable");
+    return result;
+  }
+  const upbit::HttpResponse instruments_response = BuildPublicGetRequest(
+      http_client_.get(),
+      "/v1/orderbook/instruments",
+      "markets=" + market,
+      "orderbook");
+  if (!instruments_response.ok) {
+    result.reason = "TICK_SIZE_UNAVAILABLE: " +
+                    BuildErrorReason(instruments_response, "orderbook_instruments_unavailable");
+    return result;
+  }
+  const auto tick_size = ExtractTickSizeFromInstruments(instruments_response.json_body, market);
+  const auto min_total = ExtractMinTotalFromChance(chance_response.json_body, side);
+  if (!tick_size.has_value()) {
+    result.reason = "TICK_SIZE_UNAVAILABLE";
+    return result;
+  }
+  if (!min_total.has_value()) {
+    result.reason = "MIN_TOTAL_UNAVAILABLE";
+    return result;
+  }
+  const AccountBalanceView quote_balance =
+      ExtractBalanceFromAccounts(accounts_response.json_body, QuoteCurrency(market));
+  const AccountBalanceView base_balance =
+      ExtractBalanceFromAccounts(accounts_response.json_body, BaseCurrency(market));
+  const LiveAdmissibilityDecision admissibility = EvaluateLiveAdmissibility(
+      side,
+      evaluated_price,
+      evaluated_volume,
+      *tick_size,
+      *min_total,
+      ExtractFeeRateFromChance(chance_response.json_body, "bid_fee"),
+      ExtractFeeRateFromChance(chance_response.json_body, "ask_fee"),
+      quote_balance,
+      base_balance);
+  if (!admissibility.admissible) {
+    result.reason = admissibility.reject_code;
+    return result;
+  }
+
   upbit::CancelAndNewRequest replace_request;
   replace_request.prev_order_uuid = prev_uuid;
   replace_request.prev_order_identifier = prev_uuid.empty() ? prev_identifier : "";
   replace_request.new_identifier = new_identifier;
-  replace_request.new_price = new_price;
-  replace_request.new_volume = new_volume;
+  replace_request.new_price =
+      upbit::FormatPriceString(admissibility.adjusted_price, 0.0, 16);
+  replace_request.new_volume = ToLower(new_volume) == "remain_only"
+                                   ? new_volume
+                                   : upbit::FormatVolumeString(admissibility.adjusted_volume, 16);
   replace_request.new_time_in_force = new_tif;
 
   const std::int64_t replace_started_ts_ms = NowMs();

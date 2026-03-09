@@ -36,6 +36,7 @@ class UpbitPrivateClient {
   HttpResponse CancelAndNewOrder(const CancelAndNewRequest& request);
   HttpResponse GetOrder(const std::string& uuid, const std::string& identifier);
   HttpResponse Accounts();
+  HttpResponse Chance(const std::string& market);
   HttpResponse OpenOrders(const std::string& market, const std::vector<std::string>& states);
   HttpResponse CancelOrdersByKeys(
       const std::vector<std::string>& uuids, const std::vector<std::string>& identifiers);

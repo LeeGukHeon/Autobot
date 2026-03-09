@@ -34,6 +34,7 @@ def test_ws_order_event_upserts_order_and_intent(tmp_path: Path) -> None:
     assert action["type"] == "ws_order_upsert"
     assert order is not None
     assert order["intent_id"] is not None
+    assert order["local_state"] == "OPEN"
     assert len(intents) == 1
     assert intents[0]["status"] in {"INFERRED_FROM_EXCHANGE", "UPDATED_FROM_WS"}
 

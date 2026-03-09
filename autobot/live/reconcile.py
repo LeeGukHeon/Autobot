@@ -10,6 +10,7 @@ from typing import Any, Literal
 import time
 
 from .identifier import is_bot_identifier
+from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
@@ -330,6 +331,11 @@ def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | Non
     if not uuid or not market:
         return None
     created_ts = _parse_created_ts(payload.get("created_at"), fallback_ts=ts_ms)
+    normalized = normalize_order_state(
+        exchange_state=_as_optional_str(payload.get("state")),
+        event_name="EXCHANGE_SNAPSHOT",
+        executed_volume=_as_optional_float(payload.get("executed_volume")),
+    )
     return OrderRecord(
         uuid=uuid,
         identifier=_as_optional_str(payload.get("identifier")),
@@ -342,6 +348,11 @@ def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | Non
         state=str(payload.get("state") or "wait").strip().lower(),
         created_ts=created_ts,
         updated_ts=ts_ms,
+        local_state=normalized.local_state,
+        raw_exchange_state=normalized.exchange_state,
+        last_event_name=normalized.event_name,
+        event_source="reconcile_snapshot",
+        root_order_uuid=uuid,
     )
 
 

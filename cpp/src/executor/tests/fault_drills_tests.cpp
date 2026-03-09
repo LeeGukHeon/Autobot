@@ -515,6 +515,158 @@ void TestD5WsDropReconnectAndRestFallback() {
   CleanupStateFile(state_path);
 }
 
+void TestD6SubmitRejectedByExactAdmissibilityBeforePost() {
+  using autobot::executor::ManagedIntent;
+  using autobot::executor::OrderManager;
+  using autobot::executor::UpbitRestClient;
+  using autobot::executor::tests::FaultInjectionAction;
+  using autobot::executor::tests::FaultInjectionRule;
+  using autobot::executor::tests::FaultInjectionTransport;
+
+  const std::filesystem::path state_path = MakeStatePath("d6");
+  CleanupStateFile(state_path);
+  ConfigureLiveTestEnv(state_path);
+
+  auto transport = std::make_unique<FaultInjectionTransport>();
+
+  FaultInjectionRule chance_ok;
+  chance_ok.method = "GET";
+  chance_ok.endpoint = "/v1/orders/chance";
+  chance_ok.nth_call = 1;
+  chance_ok.probability = 1.0;
+  chance_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  chance_ok.action.status_code = 200;
+  chance_ok.action.body =
+      R"({"bid_fee":"0.0005","ask_fee":"0.0005","market":{"bid":{"min_total":"5000"},"ask":{"min_total":"5000"}}})";
+  transport->AddRule(chance_ok);
+
+  FaultInjectionRule accounts_ok;
+  accounts_ok.method = "GET";
+  accounts_ok.endpoint = "/v1/accounts";
+  accounts_ok.nth_call = 1;
+  accounts_ok.probability = 1.0;
+  accounts_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  accounts_ok.action.status_code = 200;
+  accounts_ok.action.body =
+      R"([{"currency":"KRW","balance":"5000","locked":"0","avg_buy_price":"1"},{"currency":"BTC","balance":"0.1","locked":"0","avg_buy_price":"100000000"}])";
+  transport->AddRule(accounts_ok);
+
+  FaultInjectionRule instruments_ok;
+  instruments_ok.method = "GET";
+  instruments_ok.endpoint = "/v1/orderbook/instruments";
+  instruments_ok.nth_call = 1;
+  instruments_ok.probability = 1.0;
+  instruments_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  instruments_ok.action.status_code = 200;
+  instruments_ok.action.body = R"([{"market":"KRW-BTC","tick_size":"1000"}])";
+  transport->AddRule(instruments_ok);
+
+  transport->SetDefaultHttp(200, "{}");
+
+  auto http_client = std::make_unique<autobot::executor::upbit::UpbitHttpClient>(
+      BuildHttpOptions(),
+      std::move(transport));
+  UpbitRestClient rest_client(/*order_test_mode=*/false, std::move(http_client));
+  {
+    OrderManager manager(&rest_client);
+    ManagedIntent intent;
+    intent.intent_id = "intent-d6";
+    intent.identifier = "AUTOBOT-D6";
+    intent.market = "KRW-BTC";
+    intent.side = "bid";
+    intent.ord_type = "limit";
+    intent.price = 5000.0;
+    intent.volume = 1.0;
+    intent.tif = "gtc";
+    intent.ts_ms = NowMs();
+
+    const auto result = manager.SubmitIntent(intent);
+    assert(!result.accepted);
+    assert(result.reason == "FEE_RESERVE_INSUFFICIENT");
+  }
+
+  CleanupStateFile(state_path);
+}
+
+void TestD7ReplaceRejectedByExactAdmissibilityBeforeCancelAndNew() {
+  using autobot::executor::UpbitRestClient;
+  using autobot::executor::UpbitReplaceRequest;
+  using autobot::executor::tests::FaultInjectionAction;
+  using autobot::executor::tests::FaultInjectionRule;
+  using autobot::executor::tests::FaultInjectionTransport;
+
+  const std::filesystem::path state_path = MakeStatePath("d7");
+  CleanupStateFile(state_path);
+  ConfigureLiveTestEnv(state_path);
+
+  auto transport = std::make_unique<FaultInjectionTransport>();
+
+  FaultInjectionRule get_order_ok;
+  get_order_ok.method = "GET";
+  get_order_ok.endpoint = "/v1/order";
+  get_order_ok.nth_call = 1;
+  get_order_ok.probability = 1.0;
+  get_order_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  get_order_ok.action.status_code = 200;
+  get_order_ok.action.body =
+      R"({"uuid":"prev-uuid","identifier":"AUTOBOT-PREV","market":"KRW-BTC","side":"ask","ord_type":"limit","state":"wait","price":"5000","volume":"2","executed_volume":"0","remaining_volume":"2"})";
+  transport->AddRule(get_order_ok);
+
+  FaultInjectionRule chance_ok;
+  chance_ok.method = "GET";
+  chance_ok.endpoint = "/v1/orders/chance";
+  chance_ok.nth_call = 1;
+  chance_ok.probability = 1.0;
+  chance_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  chance_ok.action.status_code = 200;
+  chance_ok.action.body =
+      R"({"bid_fee":"0.0005","ask_fee":"0.0005","market":{"bid":{"min_total":"5000"},"ask":{"min_total":"5000"}}})";
+  transport->AddRule(chance_ok);
+
+  FaultInjectionRule accounts_ok;
+  accounts_ok.method = "GET";
+  accounts_ok.endpoint = "/v1/accounts";
+  accounts_ok.nth_call = 1;
+  accounts_ok.probability = 1.0;
+  accounts_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  accounts_ok.action.status_code = 200;
+  accounts_ok.action.body =
+      R"([{"currency":"KRW","balance":"14700","locked":"0","avg_buy_price":"1"},{"currency":"BTC","balance":"2","locked":"0","avg_buy_price":"100000000"}])";
+  transport->AddRule(accounts_ok);
+
+  FaultInjectionRule instruments_ok;
+  instruments_ok.method = "GET";
+  instruments_ok.endpoint = "/v1/orderbook/instruments";
+  instruments_ok.nth_call = 1;
+  instruments_ok.probability = 1.0;
+  instruments_ok.action.kind = FaultInjectionAction::Kind::kHttp;
+  instruments_ok.action.status_code = 200;
+  instruments_ok.action.body = R"([{"market":"KRW-BTC","tick_size":"1000"}])";
+  transport->AddRule(instruments_ok);
+
+  transport->SetDefaultHttp(200, "{}");
+
+  auto http_client = std::make_unique<autobot::executor::upbit::UpbitHttpClient>(
+      BuildHttpOptions(),
+      std::move(transport));
+  UpbitRestClient rest_client(/*order_test_mode=*/false, std::move(http_client));
+
+  UpbitReplaceRequest request;
+  request.intent_id = "replace-d7";
+  request.prev_order_uuid = "prev-uuid";
+  request.prev_order_identifier = "AUTOBOT-PREV";
+  request.new_identifier = "AUTOBOT-NEW";
+  request.new_price_str = "5000";
+  request.new_volume_str = "1.5";
+  request.new_time_in_force = "gtc";
+
+  const auto result = rest_client.ReplaceOrder(request);
+  assert(!result.accepted);
+  assert(result.reason == "DUST_REMAINDER");
+
+  CleanupStateFile(state_path);
+}
+
 }  // namespace
 
 int main() {
@@ -523,5 +675,7 @@ int main() {
   TestD3GroupBreakerOn429();
   TestD4GlobalBreakerOn418();
   TestD5WsDropReconnectAndRestFallback();
+  TestD6SubmitRejectedByExactAdmissibilityBeforePost();
+  TestD7ReplaceRejectedByExactAdmissibilityBeforeCancelAndNew();
   return 0;
 }

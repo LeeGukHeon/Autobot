@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord
+from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, PositionRecord
 
 
 def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
@@ -35,16 +35,36 @@ def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
                 created_ts=1000,
                 updated_ts=1003,
                 intent_id="intent-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="uuid-1",
+            )
+        )
+        store.append_order_lineage(
+            OrderLineageRecord(
+                ts_ms=1004,
+                event_source="test",
+                intent_id="intent-1",
+                prev_uuid="uuid-1",
+                prev_identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                new_uuid="uuid-2",
+                new_identifier="AUTOBOT-autobot-001-intent-1-1004-b",
+                replace_seq=1,
             )
         )
 
         assert len(store.list_positions()) == 1
         assert len(store.list_orders(open_only=True)) == 1
+        assert len(store.list_order_lineage(intent_id="intent-1")) == 1
 
         exported = store.export_state()
         assert exported["db_path"] == str(db_path)
         assert exported["positions"][0]["managed"] is False
         assert exported["orders"][0]["uuid"] == "uuid-1"
+        assert exported["orders"][0]["local_state"] == "OPEN"
+        assert exported["order_lineage"][0]["new_uuid"] == "uuid-2"
 
         store.release_run_lock(bot_id="autobot-001")
 

@@ -12,8 +12,9 @@ from typing import Any
 
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent, parse_private_event
 
+from .order_state import normalize_order_state
 from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot
-from .state_store import LiveStateStore
+from .state_store import LiveStateStore, OrderLineageRecord, OrderRecord
 from .ws_handlers import apply_private_ws_event
 
 
@@ -355,15 +356,105 @@ def _apply_executor_event(
     if event_name == "ORDER_TIMEOUT":
         return {"type": "executor_order_timeout", "payload": payload}
     if event_name == "ORDER_REPLACED":
+        prev_uuid = _as_optional_str(payload.get("prev_uuid"))
+        prev_identifier = _as_optional_str(payload.get("prev_identifier"))
+        new_uuid = _as_optional_str(payload.get("new_uuid"))
+        new_identifier = _as_optional_str(payload.get("new_identifier"))
+        replace_seq = _as_optional_int(payload.get("replace_attempt_count")) or 0
+        previous_order = None
+        if store is not None:
+            if prev_uuid:
+                previous_order = store.order_by_uuid(uuid=prev_uuid)
+            if previous_order is None and prev_identifier:
+                previous_order = store.order_by_identifier(identifier=prev_identifier)
+            try:
+                store.append_order_lineage(
+                    OrderLineageRecord(
+                        ts_ms=ts_ms,
+                        event_source="executor_ws",
+                        intent_id=_as_optional_str(payload.get("intent_id"))
+                        or (_as_optional_str(previous_order.get("intent_id")) if previous_order else None),
+                        prev_uuid=prev_uuid,
+                        prev_identifier=prev_identifier,
+                        new_uuid=new_uuid,
+                        new_identifier=new_identifier,
+                        replace_seq=replace_seq,
+                    )
+                )
+            except Exception:
+                pass
+            if previous_order is not None and prev_uuid:
+                try:
+                    store.upsert_order(
+                        OrderRecord(
+                            uuid=prev_uuid,
+                            identifier=prev_identifier or _as_optional_str(previous_order.get("identifier")),
+                            market=str(previous_order.get("market") or ""),
+                            side=_as_optional_str(previous_order.get("side")),
+                            ord_type=_as_optional_str(previous_order.get("ord_type")),
+                            price=previous_order.get("price"),
+                            volume_req=previous_order.get("volume_req"),
+                            volume_filled=float(previous_order.get("volume_filled") or 0.0),
+                            state="cancel",
+                            created_ts=int(previous_order.get("created_ts") or ts_ms),
+                            updated_ts=ts_ms,
+                            intent_id=_as_optional_str(previous_order.get("intent_id")),
+                            tp_sl_link=_as_optional_str(previous_order.get("tp_sl_link")),
+                            local_state="CANCELLED",
+                            raw_exchange_state="cancel",
+                            last_event_name="ORDER_REPLACED",
+                            event_source="executor_ws",
+                            replace_seq=int(previous_order.get("replace_seq") or 0),
+                            root_order_uuid=_as_optional_str(previous_order.get("root_order_uuid")) or prev_uuid,
+                            prev_order_uuid=_as_optional_str(previous_order.get("prev_order_uuid")),
+                            prev_order_identifier=_as_optional_str(previous_order.get("prev_order_identifier")),
+                        )
+                    )
+                except Exception:
+                    pass
+            if new_uuid:
+                normalized = normalize_order_state(exchange_state="wait", event_name="ORDER_REPLACED")
+                try:
+                    store.upsert_order(
+                        OrderRecord(
+                            uuid=new_uuid,
+                            identifier=new_identifier,
+                            market=str((previous_order or {}).get("market") or payload.get("market") or "").strip().upper(),
+                            side=_as_optional_str((previous_order or {}).get("side") or payload.get("side")),
+                            ord_type=_as_optional_str((previous_order or {}).get("ord_type") or payload.get("ord_type")),
+                            price=_as_optional_float(payload.get("new_price_str"))
+                            or _as_optional_float(payload.get("price"))
+                            or _as_optional_float((previous_order or {}).get("price")),
+                            volume_req=_resolve_replaced_volume(payload=payload, previous_order=previous_order),
+                            volume_filled=0.0,
+                            state="wait",
+                            created_ts=ts_ms,
+                            updated_ts=ts_ms,
+                            intent_id=_as_optional_str(payload.get("intent_id"))
+                            or (_as_optional_str(previous_order.get("intent_id")) if previous_order else None),
+                            tp_sl_link=_as_optional_str(previous_order.get("tp_sl_link")) if previous_order else None,
+                            local_state=normalized.local_state,
+                            raw_exchange_state=normalized.exchange_state,
+                            last_event_name=normalized.event_name,
+                            event_source="executor_ws",
+                            replace_seq=replace_seq,
+                            root_order_uuid=_as_optional_str(previous_order.get("root_order_uuid")) if previous_order else prev_uuid or new_uuid,
+                            prev_order_uuid=prev_uuid,
+                            prev_order_identifier=prev_identifier,
+                        )
+                    )
+                except Exception:
+                    pass
         if hasattr(store, "set_checkpoint"):
             try:
                 store.set_checkpoint(
                     name="last_replace_chain",
                     payload={
-                        "prev_uuid": payload.get("prev_uuid"),
-                        "prev_identifier": payload.get("prev_identifier"),
-                        "new_uuid": payload.get("new_uuid"),
-                        "new_identifier": payload.get("new_identifier"),
+                        "prev_uuid": prev_uuid,
+                        "prev_identifier": prev_identifier,
+                        "new_uuid": new_uuid,
+                        "new_identifier": new_identifier,
+                        "replace_attempt_count": replace_seq,
                     },
                     ts_ms=ts_ms,
                 )
@@ -502,6 +593,32 @@ def _as_optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_replaced_volume(*, payload: dict[str, Any], previous_order: dict[str, Any] | None) -> float | None:
+    raw = _as_optional_str(payload.get("new_volume_str")) or _as_optional_str(payload.get("volume"))
+    if raw and raw.lower() == "remain_only":
+        if previous_order is None:
+            return None
+        requested = _as_optional_float(previous_order.get("volume_req")) or 0.0
+        filled = _as_optional_float(previous_order.get("volume_filled")) or 0.0
+        remain = max(requested - filled, 0.0)
+        return remain if remain > 0.0 else None
+    parsed = _as_optional_float(raw)
+    if parsed is not None:
+        return parsed
+    if previous_order is None:
+        return None
+    return _as_optional_float(previous_order.get("volume_req"))
 
 
 def _run_sync_cycle(

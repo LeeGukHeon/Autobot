@@ -215,6 +215,22 @@ HttpResponse UpbitPrivateClient::Accounts() {
   return http_client_->RequestJson(req);
 }
 
+HttpResponse UpbitPrivateClient::Chance(const std::string& market) {
+  const std::string market_value = Upper(Trim(market));
+  if (market_value.empty()) {
+    return BuildValidationError("market is required");
+  }
+
+  RequestSpec spec;
+  spec.method = "GET";
+  spec.path = "/v1/orders/chance";
+  spec.query_params.emplace_back("market", market_value);
+
+  PreparedRequest prepared = BuildPreparedRequest(spec);
+  HttpRequest req = ToHttpRequest(prepared, true, true, "default");
+  return http_client_->RequestJson(req);
+}
+
 HttpResponse UpbitPrivateClient::OpenOrders(const std::string& market, const std::vector<std::string>& states) {
   RequestSpec spec;
   spec.method = "GET";

@@ -288,6 +288,7 @@ def test_apply_executor_event_supports_payload_event_name_contract(tmp_path: Pat
     assert action["type"] == "ws_order_upsert"
     assert order is not None
     assert order["market"] == "KRW-BTC"
+    assert order["local_state"] == "OPEN"
 
 
 def test_apply_executor_event_supports_timeout_and_replaced_contract(tmp_path: Path) -> None:
@@ -326,10 +327,16 @@ def test_apply_executor_event_supports_timeout_and_replaced_contract(tmp_path: P
             quote_currency="KRW",
         )
         checkpoints = store.export_state()["checkpoints"]
+        order_lineage = store.export_state()["order_lineage"]
+        replaced_order = store.order_by_uuid(uuid="new-1")
 
     assert timeout_action["type"] == "executor_order_timeout"
     assert replaced_action["type"] == "executor_order_replaced"
     assert any(item["name"] == "last_replace_chain" for item in checkpoints)
+    assert len(order_lineage) == 1
+    assert order_lineage[0]["new_uuid"] == "new-1"
+    assert replaced_order is not None
+    assert replaced_order["local_state"] == "REPLACING"
 
 
 def test_live_daemon_settings_reject_dual_ws_sources() -> None:
