@@ -201,6 +201,97 @@ function Get-NullableDouble {
     }
 }
 
+function Get-ArtifactHashInfo {
+    param([string]$PathValue)
+    $info = [ordered]@{
+        path = $PathValue
+        exists = $false
+        size_bytes = $null
+        sha256 = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path -LiteralPath $PathValue -PathType Leaf))) {
+        return $info
+    }
+    $item = Get-Item -LiteralPath $PathValue
+    $info.exists = $true
+    $info.size_bytes = [int64]$item.Length
+    try {
+        $hash = Get-FileHash -LiteralPath $PathValue -Algorithm SHA256
+        $info.sha256 = [string]$hash.Hash
+    } catch {
+        $info.sha256 = ""
+    }
+    return $info
+}
+
+function Resolve-DuplicateCandidateArtifacts {
+    param(
+        [string]$CandidateRunDir,
+        [string]$ChampionRunDir
+    )
+    $result = [ordered]@{
+        evaluated = $false
+        duplicate = $false
+        basis = "model_bin_and_thresholds_sha256"
+        candidate = [ordered]@{
+            model_bin = (Get-ArtifactHashInfo -PathValue "")
+            thresholds = (Get-ArtifactHashInfo -PathValue "")
+        }
+        champion = [ordered]@{
+            model_bin = (Get-ArtifactHashInfo -PathValue "")
+            thresholds = (Get-ArtifactHashInfo -PathValue "")
+        }
+        reasons = @()
+    }
+    if ([string]::IsNullOrWhiteSpace($CandidateRunDir)) {
+        $result.reasons += "MISSING_CANDIDATE_RUN_DIR"
+        return $result
+    }
+    if ([string]::IsNullOrWhiteSpace($ChampionRunDir)) {
+        $result.reasons += "MISSING_CHAMPION_RUN_DIR"
+        return $result
+    }
+
+    $candidateModelPath = Join-Path $CandidateRunDir "model.bin"
+    $candidateThresholdsPath = Join-Path $CandidateRunDir "thresholds.json"
+    $championModelPath = Join-Path $ChampionRunDir "model.bin"
+    $championThresholdsPath = Join-Path $ChampionRunDir "thresholds.json"
+
+    $result.candidate.model_bin = Get-ArtifactHashInfo -PathValue $candidateModelPath
+    $result.candidate.thresholds = Get-ArtifactHashInfo -PathValue $candidateThresholdsPath
+    $result.champion.model_bin = Get-ArtifactHashInfo -PathValue $championModelPath
+    $result.champion.thresholds = Get-ArtifactHashInfo -PathValue $championThresholdsPath
+
+    foreach ($entry in @(
+        @{ prefix = "CANDIDATE"; label = "MODEL_BIN"; node = $result.candidate.model_bin },
+        @{ prefix = "CANDIDATE"; label = "THRESHOLDS"; node = $result.candidate.thresholds },
+        @{ prefix = "CHAMPION"; label = "MODEL_BIN"; node = $result.champion.model_bin },
+        @{ prefix = "CHAMPION"; label = "THRESHOLDS"; node = $result.champion.thresholds }
+    )) {
+        if (-not (To-Bool (Get-PropValue -ObjectValue $entry.node -Name "exists" -DefaultValue $false) $false)) {
+            $result.reasons += ("MISSING_" + [string]$entry.prefix + "_" + [string]$entry.label)
+        }
+    }
+
+    $candidateModelHash = [string](Get-PropValue -ObjectValue $result.candidate.model_bin -Name "sha256" -DefaultValue "")
+    $candidateThresholdHash = [string](Get-PropValue -ObjectValue $result.candidate.thresholds -Name "sha256" -DefaultValue "")
+    $championModelHash = [string](Get-PropValue -ObjectValue $result.champion.model_bin -Name "sha256" -DefaultValue "")
+    $championThresholdHash = [string](Get-PropValue -ObjectValue $result.champion.thresholds -Name "sha256" -DefaultValue "")
+    $result.evaluated = ($result.reasons.Count -eq 0)
+    if ($result.evaluated) {
+        $result.duplicate = (
+            (-not [string]::IsNullOrWhiteSpace($candidateModelHash)) -and
+            ($candidateModelHash -eq $championModelHash) -and
+            (-not [string]::IsNullOrWhiteSpace($candidateThresholdHash)) -and
+            ($candidateThresholdHash -eq $championThresholdHash)
+        )
+        if ($result.duplicate) {
+            $result.reasons += "ARTIFACT_HASH_MATCH"
+        }
+    }
+    return $result
+}
+
 function Get-CalmarLikeScore {
     param(
         [double]$RealizedPnlQuote,
@@ -1032,6 +1123,7 @@ function Build-ReportMarkdown {
     $lines.Add("- candidate_run_id_used_for_paper: $([string](Get-PropValue -ObjectValue $candidate -Name 'candidate_run_id_used_for_paper' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_model_ref_requested: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_model_ref_requested' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
+    $lines.Add("- duplicate_candidate: $([string](Get-PropValue -ObjectValue $candidate -Name 'duplicate_candidate' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
 
     $lines.Add("## Gates") | Out-Null
@@ -1409,6 +1501,8 @@ try {
     $candidatePaperModelRef = $candidateBacktestModelRef
     $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
     $championBacktestModelRef = if ([string]::IsNullOrWhiteSpace($championRunId)) { $ChampionModelRef } else { $championRunId }
+    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $championRunId }
+    $duplicateCandidateArtifacts = Resolve-DuplicateCandidateArtifacts -CandidateRunDir $candidateRunDir -ChampionRunDir $championModelRunDir
     $report.candidate = [ordered]@{
         run_id = $candidateRunId
         run_dir = $candidateRunDir
@@ -1420,6 +1514,73 @@ try {
         champion_model_ref_requested = $ChampionModelRef
         champion_run_id_used_for_backtest = $championBacktestModelRef
         champion_before_run_id = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
+        duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
+        duplicate_artifacts = $duplicateCandidateArtifacts
+    }
+    $report.steps.train.duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
+    $report.steps.train.duplicate_candidate_artifacts = $duplicateCandidateArtifacts
+
+    if (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false) {
+        $report.steps.backtest_candidate = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+            model_ref_requested = $CandidateModelRef
+            model_ref_used = $candidateBacktestModelRef
+        }
+        $report.steps.backtest_champion = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+            model_ref_requested = $ChampionModelRef
+            model_ref_used = $championBacktestModelRef
+        }
+        $report.steps.paper_candidate = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+            model_ref_requested = $CandidateModelRef
+            model_ref_used = $candidatePaperModelRef
+        }
+        $report.steps.overlay_calibration = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+        }
+        $report.gates.backtest = [ordered]@{
+            evaluated = $false
+            skipped = $true
+            pass = $false
+            decision_basis = "DUPLICATE_CANDIDATE"
+            compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
+            duplicate_candidate = $true
+            duplicate_artifacts = $duplicateCandidateArtifacts
+        }
+        $report.gates.paper = [ordered]@{
+            evaluated = $false
+            skipped = $true
+            pass = $null
+            reason = "DUPLICATE_CANDIDATE"
+        }
+        $report.gates.overall_pass = $false
+        $report.reasons = @("DUPLICATE_CANDIDATE")
+        $report.steps.promote = [ordered]@{
+            attempted = $false
+            promoted = $false
+            reason = "DUPLICATE_CANDIDATE"
+        }
+        $report.steps.restart_units = @()
+        $report.steps.report_refresh = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+        }
+        $report.candidate.champion_after_run_id = $championRunId
+        $paths = Save-Report
+        Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
+        Write-Host ("[{0}] duplicate_candidate={1}" -f $LogTag, $true)
+        Write-Host ("[{0}] backtest_pass={1}" -f $LogTag, $false)
+        Write-Host ("[{0}] paper_pass={1}" -f $LogTag, $null)
+        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+        if ($DryRun) {
+            exit 0
+        }
+        exit 2
     }
 
     $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
@@ -1451,7 +1612,6 @@ try {
     $championStatValidation = @{}
     $championDeflatedSharpeRatio = $null
     $championProbabilisticSharpeRatio = $null
-    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $championRunId }
     if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
         $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary

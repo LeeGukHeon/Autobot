@@ -103,7 +103,7 @@ class TrainV4CryptoCsOptions:
     ev_min_selected: int
     min_rows_for_train: int = 5000
     walk_forward_enabled: bool = True
-    walk_forward_windows: int = 3
+    walk_forward_windows: int = 4
     walk_forward_sweep_trials: int = 3
     walk_forward_min_train_rows: int = 1_000
     walk_forward_min_test_rows: int = 200
