@@ -103,6 +103,32 @@ def test_spawn_only_treats_candidate_rejection_as_successful_no_challenger_day(t
     assert "[daily-cc] challenger_candidate_run_id=candidate-run-001" in completed.stdout
 
 
+def test_spawn_only_treats_duplicate_candidate_as_successful_no_challenger_day(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-dup"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["DUPLICATE_CANDIDATE"],
+        },
+        exit_code=2,
+    )
+
+    completed = _run_spawn_only(project_root, acceptance_script)
+
+    assert completed.returncode == 0
+    assert "[daily-cc] mode=spawn_only" in completed.stdout
+    assert "[daily-cc] challenger_candidate_run_id=candidate-run-dup" in completed.stdout
+
+
 def test_spawn_only_still_fails_when_acceptance_reports_runtime_exception(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

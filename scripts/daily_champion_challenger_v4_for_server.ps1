@@ -525,6 +525,8 @@ if ($runSpawnPhase) {
             acceptance_reasons = @($acceptReasons)
             reason = if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
                 "NO_CANDIDATE_RUN_ID"
+            } elseif ($acceptReasons -contains "DUPLICATE_CANDIDATE") {
+                "DUPLICATE_CANDIDATE"
             } elseif (-not $backtestPass) {
                 "BACKTEST_SANITY_FAILED"
             } elseif (-not $overallPass) {
