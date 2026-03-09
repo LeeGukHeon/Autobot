@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -125,3 +126,57 @@ def test_state_store_rejects_identifier_collision(tmp_path: Path) -> None:
                     updated_ts=1001,
                 )
             )
+
+
+def test_state_store_migrates_legacy_orders_schema_before_index_creation(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy_live_state.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE orders (
+                uuid TEXT PRIMARY KEY,
+                identifier TEXT UNIQUE,
+                market TEXT NOT NULL,
+                side TEXT,
+                ord_type TEXT,
+                price REAL,
+                volume_req REAL,
+                volume_filled REAL NOT NULL DEFAULT 0,
+                state TEXT NOT NULL,
+                created_ts INTEGER NOT NULL,
+                updated_ts INTEGER NOT NULL,
+                intent_id TEXT,
+                tp_sl_link TEXT
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="legacy-uuid-1",
+                identifier="AUTOBOT-legacy-1",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=1000.0,
+                volume_req=1.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="legacy-uuid-1",
+            )
+        )
+        row = store.order_by_uuid(uuid="legacy-uuid-1")
+        assert row is not None
+        assert row["root_order_uuid"] == "legacy-uuid-1"
+        assert row["local_state"] == "OPEN"

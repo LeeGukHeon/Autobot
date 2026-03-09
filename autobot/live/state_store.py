@@ -742,9 +742,6 @@ class LiveStateStore:
                     prev_order_identifier TEXT
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid);
-                CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state);
-
                 CREATE TABLE IF NOT EXISTS intents (
                     intent_id TEXT PRIMARY KEY,
                     ts_ms INTEGER NOT NULL,
