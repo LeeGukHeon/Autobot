@@ -534,6 +534,27 @@ class LiveStateStore:
         checkpoint = self.get_checkpoint(name="live_runtime_health")
         return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
 
+    def set_live_rollout_contract(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
+        self.set_checkpoint(name="live_rollout_contract", payload=payload, ts_ms=ts_ms)
+
+    def live_rollout_contract(self) -> dict[str, Any] | None:
+        checkpoint = self.get_checkpoint(name="live_rollout_contract")
+        return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
+
+    def set_live_test_order(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
+        self.set_checkpoint(name="live_rollout_test_order", payload=payload, ts_ms=ts_ms)
+
+    def live_test_order(self) -> dict[str, Any] | None:
+        checkpoint = self.get_checkpoint(name="live_rollout_test_order")
+        return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
+
+    def set_live_rollout_status(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
+        self.set_checkpoint(name="live_rollout_status", payload=payload, ts_ms=ts_ms)
+
+    def live_rollout_status(self) -> dict[str, Any] | None:
+        checkpoint = self.get_checkpoint(name="live_rollout_status")
+        return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
+
     def upsert_breaker_state(self, record: BreakerStateRecord) -> None:
         with self._conn:
             self._conn.execute(

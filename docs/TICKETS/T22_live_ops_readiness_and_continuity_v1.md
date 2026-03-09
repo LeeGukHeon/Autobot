@@ -31,6 +31,7 @@ The right direction is:
 4. make every startup a deterministic reconcile-and-resume sequence
 5. make every outgoing order pass an exact admissibility contract built from exchange metadata
 6. only after that, add canary live rollout and live promotion hooks
+7. only after rollout and handoff are exact, connect the actual live strategy/runtime loop
 
 This direction is the best fit for the current codebase because the repo already has:
 
@@ -137,6 +138,7 @@ The live stack should be driven by explicit contracts, not informal rules:
 4. `T22.4` Live Breakers, Kill Switch, And Divergence Handling v1
 5. `T22.7` Live Model Handoff And Data Plane Sync v1
 6. `T22.6` Shadow, Canary, And Promote-To-Live Hook v1
+7. `T22.8` Live ModelAlpha Runtime And Public Data Plane v1
 
 ## Cross-Cutting Invariant
 - `T22.5` is not an optional late-stage mode.

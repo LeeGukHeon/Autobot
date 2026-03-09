@@ -86,16 +86,27 @@ from .features import (
 from .features.feature_spec import parse_date_to_ts_ms
 from .live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_AND_CANCEL_BOT_ORDERS, ACTION_HALT_NEW_INTENTS, arm_breaker, breaker_status, clear_breaker
 from .live import (
+    DEFAULT_LIVE_TARGET_UNIT,
+    DEFAULT_ROLLOUT_MODE,
     LiveDaemonSettings,
+    LiveModelAlphaRuntimeSettings,
     LiveStateStore,
     apply_cancel_actions,
     build_live_runtime_sync_status,
     build_live_admissibility_report,
+    build_rollout_contract,
+    build_rollout_disarmed_contract,
+    build_rollout_test_order_record,
     build_live_order_admissibility_snapshot,
     evaluate_live_limit_order,
+    evaluate_live_rollout_gate,
+    hash_arm_token,
     load_ws_public_runtime_contract,
     reconcile_exchange_snapshot,
     resolve_live_runtime_model_contract,
+    rollout_gate_to_payload,
+    write_rollout_latest,
+    run_live_model_alpha_runtime,
     run_live_sync_daemon,
     run_live_sync_daemon_with_executor_events,
     run_live_sync_daemon_with_private_ws,
@@ -1296,6 +1307,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow external order cancel only when config also allows it.",
     )
+    live_run_parser.add_argument("--use-private-ws", action="store_true", help="Override config and use private WS sync.")
+    live_run_parser.add_argument("--use-executor-ws", action="store_true", help="Override config and use executor WS sync.")
+    live_run_parser.add_argument(
+        "--rollout-mode",
+        choices=("shadow", "canary", "live"),
+        help="Live rollout mode override.",
+    )
+    live_run_parser.add_argument(
+        "--rollout-target-unit",
+        help="Target live systemd unit name used for promote-to-live restart contract.",
+    )
+    live_run_parser.add_argument(
+        "--strategy-runtime",
+        action="store_true",
+        help="Run model_alpha live strategy runtime instead of sync-only daemon.",
+    )
 
     live_admissibility_parser = live_subparsers.add_parser(
         "admissibility",
@@ -1315,6 +1342,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live_admissibility_parser.add_argument("--identifier", help="Optional identifier for order-test.")
     live_admissibility_parser.add_argument("--time-in-force", choices=("ioc", "fok", "post_only"))
+
+    live_rollout_parser = live_subparsers.add_parser(
+        "rollout",
+        help="Inspect or mutate live rollout contract for shadow/canary/live promotion.",
+    )
+    live_rollout_subparsers = live_rollout_parser.add_subparsers(dest="live_rollout_command", required=True)
+    live_rollout_status_parser = live_rollout_subparsers.add_parser("status", help="Show live rollout contract status.")
+    live_rollout_status_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_rollout_arm_parser = live_rollout_subparsers.add_parser("arm", help="Arm live rollout contract.")
+    live_rollout_arm_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_rollout_arm_parser.add_argument("--mode", choices=("canary", "live"), default="canary")
+    live_rollout_arm_parser.add_argument("--target-unit", default=DEFAULT_LIVE_TARGET_UNIT)
+    live_rollout_arm_parser.add_argument("--arm-token", required=True)
+    live_rollout_arm_parser.add_argument("--note")
+    live_rollout_arm_parser.add_argument("--canary-max-notional-quote", type=float)
+    live_rollout_disarm_parser = live_rollout_subparsers.add_parser("disarm", help="Disarm live rollout contract.")
+    live_rollout_disarm_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_rollout_disarm_parser.add_argument("--arm-token", required=True)
+    live_rollout_disarm_parser.add_argument("--note")
+    live_rollout_test_order_parser = live_rollout_subparsers.add_parser(
+        "test-order",
+        help="Run and persist a live test-order validation for rollout gating.",
+    )
+    live_rollout_test_order_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_rollout_test_order_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
+    live_rollout_test_order_parser.add_argument("--side", required=True, choices=("bid", "ask"))
+    live_rollout_test_order_parser.add_argument("--ord-type", default="limit")
+    live_rollout_test_order_parser.add_argument("--price", required=True)
+    live_rollout_test_order_parser.add_argument("--volume")
+    live_rollout_test_order_parser.add_argument("--identifier")
+    live_rollout_test_order_parser.add_argument("--time-in-force", choices=("ioc", "fok", "post_only"))
 
     live_kill_switch_parser = live_subparsers.add_parser(
         "kill-switch",
@@ -4001,6 +4059,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
 def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
         defaults = _live_defaults(base_config)
+        project_root = config_dir.resolve().parent
         bot_id = str(args.bot_id or defaults["bot_id"]).strip()
         if not bot_id:
             raise ValueError("live.bot_id must not be blank")
@@ -4048,6 +4107,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                 replace_risk_steps=max(int(getattr(args, "replace_risk_steps", 0)), 0),
             )
             now_ts = int(time.time() * 1000)
+            persisted_test_order: dict[str, Any] | None = None
             with LiveStateStore(db_path) as store:
                 record_small_account_decision(
                     store=store,
@@ -4066,30 +4126,49 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                     ts_ms=now_ts,
                     persist=True,
                 )
-            test_order_payload: dict[str, Any] | None = None
-            if bool(getattr(args, "test_order", False)):
-                test_order_payload = {
-                    "requested": True,
-                    "called": False,
-                }
-                if decision.admissible:
-                    with UpbitHttpClient(settings, credentials=credentials) as private_http:
-                        private_client = UpbitPrivateClient(private_http)
-                        payload = private_client.order_test(
+                test_order_payload: dict[str, Any] | None = None
+                if bool(getattr(args, "test_order", False)):
+                    test_order_payload = {
+                        "requested": True,
+                        "called": False,
+                    }
+                    if decision.admissible:
+                        with UpbitHttpClient(settings, credentials=credentials) as private_http:
+                            private_client = UpbitPrivateClient(private_http)
+                            payload = private_client.order_test(
+                                market=market,
+                                side=side,
+                                ord_type="limit",
+                                price=f"{decision.adjusted_price:.16f}".rstrip("0").rstrip("."),
+                                volume=f"{decision.adjusted_volume:.16f}".rstrip("0").rstrip("."),
+                                time_in_force=getattr(args, "time_in_force", None),
+                                identifier=getattr(args, "identifier", None),
+                            )
+                        test_order_payload = {
+                            "requested": True,
+                            "called": True,
+                            "ok": True,
+                            "payload": payload,
+                        }
+                        persisted_test_order = build_rollout_test_order_record(
                             market=market,
                             side=side,
                             ord_type="limit",
                             price=f"{decision.adjusted_price:.16f}".rstrip("0").rstrip("."),
                             volume=f"{decision.adjusted_volume:.16f}".rstrip("0").rstrip("."),
-                            time_in_force=getattr(args, "time_in_force", None),
-                            identifier=getattr(args, "identifier", None),
+                            ok=True,
+                            response_payload=payload if isinstance(payload, dict) else {},
+                            ts_ms=now_ts,
                         )
-                    test_order_payload = {
-                        "requested": True,
-                        "called": True,
-                        "ok": True,
-                        "payload": payload,
-                    }
+                        store.set_live_test_order(payload=persisted_test_order, ts_ms=now_ts)
+                        write_rollout_latest(
+                            project_root=project_root,
+                            event_kind="TEST_ORDER",
+                            contract=store.live_rollout_contract(),
+                            test_order=persisted_test_order,
+                            status=store.live_rollout_status(),
+                            ts_ms=now_ts,
+                        )
             _print_json(
                 build_live_admissibility_report(
                     snapshot=snapshot,
@@ -4105,6 +4184,178 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
         allow_cancel_external_cli = bool(getattr(args, "allow_cancel_external", False))
 
         with LiveStateStore(db_path) as store:
+            if command == "rollout":
+                rollout_command = str(getattr(args, "live_rollout_command", "")).strip().lower()
+                now_ts = int(time.time() * 1000)
+                if rollout_command == "status":
+                    gate = evaluate_live_rollout_gate(
+                        mode=str(defaults["rollout_mode"]),
+                        target_unit=str(defaults["rollout_target_unit"]),
+                        contract=store.live_rollout_contract(),
+                        test_order=store.live_test_order(),
+                        breaker_active=bool(breaker_status(store).get("active", False)),
+                        require_test_order=bool(defaults["rollout_require_test_order"]),
+                        test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
+                        small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
+                        and int(defaults["small_account_max_positions"]) == 1
+                        and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                        ts_ms=now_ts,
+                    )
+                    payload = {
+                        "bot_id": bot_id,
+                        "db_path": str(db_path),
+                        "configured_mode": str(defaults["rollout_mode"]),
+                        "configured_target_unit": str(defaults["rollout_target_unit"]),
+                        "contract": store.live_rollout_contract(),
+                        "test_order": store.live_test_order(),
+                        "status": rollout_gate_to_payload(gate),
+                        "artifact_path": str((project_root / "logs" / "live_rollout" / "latest.json")),
+                    }
+                    _print_json(payload)
+                    return 0
+                if rollout_command == "arm":
+                    contract = build_rollout_contract(
+                        mode=str(getattr(args, "mode", "canary")),
+                        target_unit=str(getattr(args, "target_unit", DEFAULT_LIVE_TARGET_UNIT)),
+                        arm_token=str(getattr(args, "arm_token", "")),
+                        note=getattr(args, "note", None),
+                        canary_max_notional_quote=getattr(args, "canary_max_notional_quote", None),
+                        ts_ms=now_ts,
+                    )
+                    store.set_live_rollout_contract(payload=contract, ts_ms=now_ts)
+                    gate = evaluate_live_rollout_gate(
+                        mode=str(contract["mode"]),
+                        target_unit=str(contract["target_unit"]),
+                        contract=contract,
+                        test_order=store.live_test_order(),
+                        breaker_active=bool(breaker_status(store).get("active", False)),
+                        require_test_order=bool(defaults["rollout_require_test_order"]),
+                        test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
+                        small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
+                        and int(defaults["small_account_max_positions"]) == 1
+                        and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                        ts_ms=now_ts,
+                    )
+                    status_payload = rollout_gate_to_payload(gate)
+                    store.set_live_rollout_status(payload=status_payload, ts_ms=now_ts)
+                    artifact_path = write_rollout_latest(
+                        project_root=project_root,
+                        event_kind="ARM",
+                        contract=contract,
+                        test_order=store.live_test_order(),
+                        status=status_payload,
+                        ts_ms=now_ts,
+                    )
+                    _print_json(
+                        {
+                            "bot_id": bot_id,
+                            "db_path": str(db_path),
+                            "contract": contract,
+                            "status": status_payload,
+                            "artifact_path": str(artifact_path),
+                        }
+                    )
+                    return 0
+                if rollout_command == "disarm":
+                    existing_contract = store.live_rollout_contract() or {}
+                    existing_hash = str(existing_contract.get("arm_token_sha256") or "").strip()
+                    provided_hash = hash_arm_token(getattr(args, "arm_token", None))
+                    if existing_hash and existing_hash != str(provided_hash or ""):
+                        raise ValueError("arm token mismatch for live rollout disarm")
+                    contract = build_rollout_disarmed_contract(
+                        previous_contract=existing_contract,
+                        note=getattr(args, "note", None),
+                        ts_ms=now_ts,
+                    )
+                    store.set_live_rollout_contract(payload=contract, ts_ms=now_ts)
+                    status_payload = {
+                        "mode": str(contract.get("mode") or DEFAULT_ROLLOUT_MODE),
+                        "target_unit": str(contract.get("target_unit") or DEFAULT_LIVE_TARGET_UNIT),
+                        "armed": False,
+                        "start_allowed": str(contract.get("mode") or DEFAULT_ROLLOUT_MODE) == "shadow",
+                        "order_emission_allowed": False,
+                        "reason_codes": [],
+                    }
+                    store.set_live_rollout_status(payload=status_payload, ts_ms=now_ts)
+                    artifact_path = write_rollout_latest(
+                        project_root=project_root,
+                        event_kind="DISARM",
+                        contract=contract,
+                        test_order=store.live_test_order(),
+                        status=status_payload,
+                        ts_ms=now_ts,
+                    )
+                    _print_json(
+                        {
+                            "bot_id": bot_id,
+                            "db_path": str(db_path),
+                            "contract": contract,
+                            "status": status_payload,
+                            "artifact_path": str(artifact_path),
+                        }
+                    )
+                    return 0
+                if rollout_command == "test-order":
+                    settings = load_upbit_settings(config_dir)
+                    _ensure_upbit_runtime_available()
+                    credentials = require_upbit_credentials(settings)
+                    with UpbitHttpClient(settings, credentials=credentials) as private_http:
+                        private_client = UpbitPrivateClient(private_http)
+                        payload = private_client.order_test(
+                            market=str(args.market).strip().upper(),
+                            side=str(args.side).strip().lower(),
+                            ord_type=str(args.ord_type).strip().lower(),
+                            price=str(args.price).strip() if getattr(args, "price", None) is not None else None,
+                            volume=str(args.volume).strip() if getattr(args, "volume", None) is not None else None,
+                            time_in_force=getattr(args, "time_in_force", None),
+                            identifier=getattr(args, "identifier", None),
+                        )
+                    test_order_record = build_rollout_test_order_record(
+                        market=str(args.market),
+                        side=str(args.side),
+                        ord_type=str(args.ord_type),
+                        price=str(args.price).strip() if getattr(args, "price", None) is not None else None,
+                        volume=str(args.volume).strip() if getattr(args, "volume", None) is not None else None,
+                        ok=True,
+                        response_payload=payload if isinstance(payload, dict) else {},
+                        ts_ms=now_ts,
+                    )
+                    store.set_live_test_order(payload=test_order_record, ts_ms=now_ts)
+                    gate = evaluate_live_rollout_gate(
+                        mode=str((store.live_rollout_contract() or {}).get("mode") or defaults["rollout_mode"]),
+                        target_unit=str((store.live_rollout_contract() or {}).get("target_unit") or defaults["rollout_target_unit"]),
+                        contract=store.live_rollout_contract(),
+                        test_order=test_order_record,
+                        breaker_active=bool(breaker_status(store).get("active", False)),
+                        require_test_order=bool(defaults["rollout_require_test_order"]),
+                        test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
+                        small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
+                        and int(defaults["small_account_max_positions"]) == 1
+                        and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                        ts_ms=now_ts,
+                    )
+                    status_payload = rollout_gate_to_payload(gate)
+                    store.set_live_rollout_status(payload=status_payload, ts_ms=now_ts)
+                    artifact_path = write_rollout_latest(
+                        project_root=project_root,
+                        event_kind="TEST_ORDER",
+                        contract=store.live_rollout_contract(),
+                        test_order=test_order_record,
+                        status=status_payload,
+                        ts_ms=now_ts,
+                    )
+                    _print_json(
+                        {
+                            "bot_id": bot_id,
+                            "db_path": str(db_path),
+                            "test_order": test_order_record,
+                            "status": status_payload,
+                            "artifact_path": str(artifact_path),
+                        }
+                    )
+                    return 0
+                raise ValueError(f"Unsupported live rollout command: {rollout_command}")
+
             if command == "kill-switch":
                 kill_switch_command = str(getattr(args, "live_kill_switch_command", "")).strip().lower()
                 now_ts = int(time.time() * 1000)
@@ -4169,6 +4420,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                     if command == "status":
                         pinned_contract = store.runtime_contract() or {}
                         persisted_ws_public_contract = store.ws_public_contract() or {}
+                        persisted_rollout_contract = store.live_rollout_contract() or {}
+                        persisted_rollout_test_order = store.live_test_order() or {}
                         current_runtime_contract: dict[str, Any] = {}
                         runtime_contract_error: str | None = None
                         try:
@@ -4191,6 +4444,21 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             pinned_contract=pinned_contract,
                             current_contract=current_runtime_contract,
                             ws_public_contract=ws_public_contract,
+                        )
+                        rollout_status = rollout_gate_to_payload(
+                            evaluate_live_rollout_gate(
+                                mode=str(defaults["rollout_mode"]),
+                                target_unit=str(defaults["rollout_target_unit"]),
+                                contract=persisted_rollout_contract,
+                                test_order=persisted_rollout_test_order,
+                                breaker_active=bool(breaker_status(store).get("active", False)),
+                                require_test_order=bool(defaults["rollout_require_test_order"]),
+                                test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
+                                small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
+                                and int(defaults["small_account_max_positions"]) == 1
+                                and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                                ts_ms=int(time.time() * 1000),
+                            )
                         )
                         reconcile_report = reconcile_exchange_snapshot(
                             store=store,
@@ -4239,6 +4507,13 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             "runtime_contract_error": runtime_contract_error,
                             "persisted_runtime_contract": pinned_contract,
                             "persisted_ws_public_contract": persisted_ws_public_contract,
+                            "persisted_rollout_contract": persisted_rollout_contract,
+                            "persisted_rollout_test_order": persisted_rollout_test_order,
+                            "rollout": rollout_status,
+                            "rollout_mode": rollout_status.get("mode"),
+                            "rollout_target_unit": rollout_status.get("target_unit"),
+                            "rollout_start_allowed": rollout_status.get("start_allowed"),
+                            "rollout_order_emission_allowed": rollout_status.get("order_emission_allowed"),
                             "breaker_status": breaker_status(store),
                         }
                         _print_json(payload)
@@ -4280,8 +4555,15 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         return 2 if bool(report.get("halted")) else 0
 
                     if command == "run":
-                        if bool(defaults["sync_use_private_ws"]) and bool(defaults["sync_use_executor_ws"]):
+                        use_private_ws = bool(getattr(args, "use_private_ws", False)) or bool(defaults["sync_use_private_ws"])
+                        use_executor_ws = bool(getattr(args, "use_executor_ws", False)) or bool(defaults["sync_use_executor_ws"])
+                        if use_private_ws and use_executor_ws:
                             raise ValueError("live.sync.use_private_ws and live.sync.use_executor_ws cannot both be true")
+                        strategy_runtime = bool(getattr(args, "strategy_runtime", False)) or bool(
+                            defaults["strategy_runtime_enabled"]
+                        )
+                        if strategy_runtime and (use_private_ws or use_executor_ws):
+                            raise ValueError("strategy-runtime currently supports poll sync only")
 
                         daemon_settings = LiveDaemonSettings(
                             bot_id=bot_id,
@@ -4296,8 +4578,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             default_risk_tp_pct=float(defaults["default_risk_tp_pct"]),
                             default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
                             allow_cancel_external_cli=allow_cancel_external_cli,
-                            use_private_ws=bool(defaults["sync_use_private_ws"]),
-                            use_executor_ws=bool(defaults["sync_use_executor_ws"]),
+                            use_private_ws=use_private_ws,
+                            use_executor_ws=use_executor_ws,
                             duration_sec=(
                                 int(getattr(args, "duration_sec", 0))
                                 if int(getattr(args, "duration_sec", 0)) > 0
@@ -4320,8 +4602,52 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             ws_public_meta_dir=str(defaults["ws_public_meta_dir"]),
                             ws_public_stale_threshold_sec=int(defaults["ws_public_stale_threshold_sec"]),
                             micro_aggregate_report_path=str(defaults["micro_aggregate_report_path"]),
+                            rollout_mode=str(getattr(args, "rollout_mode", None) or defaults["rollout_mode"]),
+                            rollout_target_unit=str(getattr(args, "rollout_target_unit", None) or defaults["rollout_target_unit"]),
+                            rollout_require_test_order=bool(defaults["rollout_require_test_order"]),
+                            rollout_test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
                         )
-                        if daemon_settings.use_private_ws:
+                        if strategy_runtime:
+                            strategy_defaults = _live_strategy_defaults(config_dir=config_dir, base_config=base_config)
+                            runtime_settings = _build_live_model_alpha_runtime_settings(
+                                daemon_settings=daemon_settings,
+                                live_defaults=defaults,
+                                strategy_defaults=strategy_defaults,
+                            )
+                            with UpbitHttpClient(settings) as public_http:
+                                public_client = UpbitPublicClient(public_http)
+                                public_ws_client = UpbitWebSocketPublicClient(settings.websocket)
+                                if daemon_settings.rollout_mode != "shadow" or bool(runtime_settings.risk_enabled):
+                                    from .execution import GrpcExecutionGateway
+
+                                    with GrpcExecutionGateway(
+                                        host=str(defaults["executor_host"]),
+                                        port=int(defaults["executor_port"]),
+                                        timeout_sec=float(defaults["executor_timeout_sec"]),
+                                        insecure=bool(defaults["executor_insecure"]),
+                                    ) as executor_gateway:
+                                        daemon_summary = asyncio.run(
+                                            run_live_model_alpha_runtime(
+                                                store=store,
+                                                client=client,
+                                                public_client=public_client,
+                                                public_ws_client=public_ws_client,
+                                                settings=runtime_settings,
+                                                executor_gateway=executor_gateway,
+                                            )
+                                        )
+                                else:
+                                    daemon_summary = asyncio.run(
+                                        run_live_model_alpha_runtime(
+                                            store=store,
+                                            client=client,
+                                            public_client=public_client,
+                                            public_ws_client=public_ws_client,
+                                            settings=runtime_settings,
+                                            executor_gateway=None,
+                                        )
+                                    )
+                        elif daemon_settings.use_private_ws:
                             ws_client = UpbitWebSocketPrivateClient(settings.websocket, credentials)
                             daemon_summary = asyncio.run(
                                 run_live_sync_daemon_with_private_ws(
@@ -4353,6 +4679,14 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                 settings=daemon_settings,
                             )
                         store.set_checkpoint(name="daemon_last_run", payload=daemon_summary)
+                        write_rollout_latest(
+                            project_root=project_root,
+                            event_kind="RUN",
+                            contract=store.live_rollout_contract(),
+                            test_order=store.live_test_order(),
+                            status=store.live_rollout_status() or daemon_summary.get("rollout"),
+                            ts_ms=int(time.time() * 1000),
+                        )
                         _print_json(daemon_summary)
                         return 2 if bool(daemon_summary.get("halted")) else 0
 
@@ -5244,10 +5578,12 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     orders_cfg = live_cfg.get("orders", {}) if isinstance(live_cfg.get("orders"), dict) else {}
     default_risk_cfg = live_cfg.get("default_risk", {}) if isinstance(live_cfg.get("default_risk"), dict) else {}
     live_risk_cfg = live_cfg.get("risk", {}) if isinstance(live_cfg.get("risk"), dict) else {}
+    live_strategy_cfg = live_cfg.get("strategy", {}) if isinstance(live_cfg.get("strategy"), dict) else {}
     small_account_cfg = (
         live_cfg.get("small_account", {}) if isinstance(live_cfg.get("small_account"), dict) else {}
     )
     model_cfg = live_cfg.get("model", {}) if isinstance(live_cfg.get("model"), dict) else {}
+    rollout_cfg = live_cfg.get("rollout", {}) if isinstance(live_cfg.get("rollout"), dict) else {}
     data_plane_cfg = live_cfg.get("data_plane", {}) if isinstance(live_cfg.get("data_plane"), dict) else {}
     ws_public_cfg = (
         data_plane_cfg.get("ws_public", {}) if isinstance(data_plane_cfg.get("ws_public"), dict) else {}
@@ -5300,6 +5636,11 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             micro_plane_cfg.get("aggregate_report_path", "data/parquet/micro_v1/_meta/aggregate_report.json")
         ).strip()
         or "data/parquet/micro_v1/_meta/aggregate_report.json",
+        "rollout_mode": str(rollout_cfg.get("mode", DEFAULT_ROLLOUT_MODE)).strip().lower() or DEFAULT_ROLLOUT_MODE,
+        "rollout_target_unit": str(rollout_cfg.get("target_unit", DEFAULT_LIVE_TARGET_UNIT)).strip()
+        or DEFAULT_LIVE_TARGET_UNIT,
+        "rollout_require_test_order": bool(rollout_cfg.get("require_test_order", True)),
+        "rollout_test_order_max_age_sec": max(int(rollout_cfg.get("test_order_max_age_sec", 86400)), 1),
         "executor_host": str(executor_cfg.get("host", "127.0.0.1")).strip(),
         "executor_port": max(int(executor_cfg.get("port", 50051)), 1),
         "executor_timeout_sec": max(float(executor_cfg.get("timeout_sec", 5.0)), 0.1),
@@ -5317,8 +5658,169 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             else max(int(live_risk_cfg.get("replace_max", 2)), 0)
         ),
         "risk_default_trail_pct": max(float(live_risk_cfg.get("default_trail_pct", 1.0)), 0.0),
+        "strategy_runtime_enabled": bool(live_strategy_cfg.get("enabled", False)),
+        "strategy_decision_interval_sec": max(float(live_strategy_cfg.get("decision_interval_sec", 1.0)), 0.1),
         "quote_currency": str(universe_cfg.get("quote_currency", "KRW")).strip().upper(),
     }
+
+
+def _live_strategy_defaults(*, config_dir: Path, base_config: dict[str, Any]) -> dict[str, Any]:
+    risk_doc = _load_yaml_doc(config_dir / "risk.yaml")
+    strategy_doc = _load_yaml_doc(config_dir / "strategy.yaml")
+    defaults = _paper_defaults(base_config=base_config, risk_doc=risk_doc, strategy_doc=strategy_doc)
+    return dict(defaults)
+
+
+def _build_model_alpha_settings_from_defaults(defaults: dict[str, Any]) -> ModelAlphaSettings:
+    model_alpha_defaults = (
+        defaults.get("model_alpha", {}) if isinstance(defaults.get("model_alpha"), dict) else {}
+    )
+    selection_defaults = (
+        model_alpha_defaults.get("selection", {})
+        if isinstance(model_alpha_defaults.get("selection"), dict)
+        else {}
+    )
+    position_defaults = (
+        model_alpha_defaults.get("position", {})
+        if isinstance(model_alpha_defaults.get("position"), dict)
+        else {}
+    )
+    exit_defaults = (
+        model_alpha_defaults.get("exit", {}) if isinstance(model_alpha_defaults.get("exit"), dict) else {}
+    )
+    execution_defaults = (
+        model_alpha_defaults.get("execution", {})
+        if isinstance(model_alpha_defaults.get("execution"), dict)
+        else {}
+    )
+    operational_defaults = (
+        model_alpha_defaults.get("operational", {})
+        if isinstance(model_alpha_defaults.get("operational"), dict)
+        else {}
+    )
+    return ModelAlphaSettings(
+        model_ref=str(model_alpha_defaults.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
+        or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
+        model_family=(
+            str(model_alpha_defaults.get("model_family")).strip()
+            if model_alpha_defaults.get("model_family") is not None
+            else None
+        ),
+        feature_set=str(model_alpha_defaults.get("feature_set", "v4")).strip().lower() or "v4",
+        selection=ModelAlphaSelectionSettings(
+            top_pct=max(min(float(selection_defaults.get("top_pct", 0.5)), 1.0), 0.0),
+            min_prob=_clamp_prob_value(_optional_float_value(selection_defaults.get("min_prob"))),
+            min_candidates_per_ts=max(int(selection_defaults.get("min_candidates_per_ts", 1)), 0),
+            registry_threshold_key=(
+                str(selection_defaults.get("registry_threshold_key", "top_5pct")).strip() or "top_5pct"
+            ),
+            use_learned_recommendations=bool(selection_defaults.get("use_learned_recommendations", True)),
+        ),
+        position=ModelAlphaPositionSettings(
+            max_positions_total=max(int(position_defaults.get("max_positions_total", 3)), 1),
+            cooldown_bars=max(int(position_defaults.get("cooldown_bars", 6)), 0),
+            entry_min_notional_buffer_bps=max(
+                float(position_defaults.get("entry_min_notional_buffer_bps", 25.0)),
+                0.0,
+            ),
+            sizing_mode=str(position_defaults.get("sizing_mode", "prob_ramp")).strip().lower() or "prob_ramp",
+            size_multiplier_min=max(float(position_defaults.get("size_multiplier_min", 0.5)), 0.0),
+            size_multiplier_max=max(
+                float(position_defaults.get("size_multiplier_max", 1.5)),
+                max(float(position_defaults.get("size_multiplier_min", 0.5)), 0.0),
+            ),
+        ),
+        exit=ModelAlphaExitSettings(
+            mode=str(exit_defaults.get("mode", "hold")).strip().lower() or "hold",
+            hold_bars=max(int(exit_defaults.get("hold_bars", 6)), 0),
+            use_learned_hold_bars=bool(exit_defaults.get("use_learned_hold_bars", True)),
+            use_learned_risk_recommendations=bool(exit_defaults.get("use_learned_risk_recommendations", True)),
+            risk_scaling_mode=str(exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
+            risk_vol_feature=str(exit_defaults.get("risk_vol_feature", "rv_12")).strip() or "rv_12",
+            tp_vol_multiplier=_optional_float_value(exit_defaults.get("tp_vol_multiplier")),
+            sl_vol_multiplier=_optional_float_value(exit_defaults.get("sl_vol_multiplier")),
+            trailing_vol_multiplier=_optional_float_value(exit_defaults.get("trailing_vol_multiplier")),
+            tp_pct=max(float(exit_defaults.get("tp_pct", 0.02)), 0.0),
+            sl_pct=max(float(exit_defaults.get("sl_pct", 0.01)), 0.0),
+            trailing_pct=max(float(exit_defaults.get("trailing_pct", 0.0)), 0.0),
+            expected_exit_slippage_bps=_optional_float_value(exit_defaults.get("expected_exit_slippage_bps")),
+            expected_exit_fee_bps=_optional_float_value(exit_defaults.get("expected_exit_fee_bps")),
+        ),
+        execution=ModelAlphaExecutionSettings(
+            price_mode=str(execution_defaults.get("price_mode", "JOIN")).strip().upper() or "JOIN",
+            timeout_bars=max(int(execution_defaults.get("timeout_bars", 2)), 1),
+            replace_max=max(int(execution_defaults.get("replace_max", 2)), 0),
+            use_learned_recommendations=bool(execution_defaults.get("use_learned_recommendations", True)),
+        ),
+        operational=ModelAlphaOperationalSettings(
+            enabled=bool(operational_defaults.get("enabled", True)),
+            risk_multiplier_min=max(float(operational_defaults.get("risk_multiplier_min", 0.80)), 0.0),
+            risk_multiplier_max=max(
+                float(operational_defaults.get("risk_multiplier_max", 1.20)),
+                max(float(operational_defaults.get("risk_multiplier_min", 0.80)), 0.0),
+            ),
+            max_positions_scale_min=max(float(operational_defaults.get("max_positions_scale_min", 0.50)), 0.10),
+            max_positions_scale_max=max(
+                float(operational_defaults.get("max_positions_scale_max", 1.50)),
+                max(float(operational_defaults.get("max_positions_scale_min", 0.50)), 0.10),
+            ),
+            session_overlap_boost=max(float(operational_defaults.get("session_overlap_boost", 0.10)), 0.0),
+            session_offpeak_penalty=max(float(operational_defaults.get("session_offpeak_penalty", 0.05)), 0.0),
+            micro_quality_block_threshold=max(
+                float(operational_defaults.get("micro_quality_block_threshold", 0.15)),
+                0.0,
+            ),
+            micro_quality_conservative_threshold=max(
+                float(operational_defaults.get("micro_quality_conservative_threshold", 0.35)),
+                0.0,
+            ),
+            micro_quality_aggressive_threshold=max(
+                float(operational_defaults.get("micro_quality_aggressive_threshold", 0.75)),
+                0.0,
+            ),
+            max_execution_spread_bps_for_join=max(
+                float(operational_defaults.get("max_execution_spread_bps_for_join", 20.0)),
+                0.0,
+            ),
+            use_calibration_artifact=bool(operational_defaults.get("use_calibration_artifact", True)),
+            calibration_artifact_path=str(
+                operational_defaults.get(
+                    "calibration_artifact_path",
+                    "logs/operational_overlay/auto/latest_calibration.json",
+                )
+            ).strip()
+            or "logs/operational_overlay/auto/latest_calibration.json",
+        ),
+    )
+
+
+def _build_live_model_alpha_runtime_settings(
+    *,
+    daemon_settings: LiveDaemonSettings,
+    live_defaults: dict[str, Any],
+    strategy_defaults: dict[str, Any],
+) -> LiveModelAlphaRuntimeSettings:
+    return LiveModelAlphaRuntimeSettings(
+        daemon=daemon_settings,
+        quote=str(strategy_defaults.get("quote", live_defaults.get("quote_currency", "KRW"))),
+        top_n=int(strategy_defaults.get("top_n", 20)),
+        tf=str(strategy_defaults.get("tf", "5m")),
+        decision_interval_sec=float(live_defaults.get("strategy_decision_interval_sec", 1.0)),
+        universe_refresh_sec=float(strategy_defaults.get("universe_refresh_sec", 60.0)),
+        universe_hold_sec=float(strategy_defaults.get("universe_hold_sec", 120.0)),
+        per_trade_krw=float(strategy_defaults.get("per_trade_krw", 10_000.0)),
+        min_order_krw=float(strategy_defaults.get("min_order_krw", 5_000.0)),
+        model_alpha=_build_model_alpha_settings_from_defaults(strategy_defaults),
+        paper_live_parquet_root=str(strategy_defaults.get("paper_live_parquet_root", "data/parquet")),
+        paper_live_candles_dataset=str(strategy_defaults.get("paper_live_candles_dataset", "candles_api_v1")),
+        paper_live_bootstrap_1m_bars=int(strategy_defaults.get("paper_live_bootstrap_1m_bars", 2000)),
+        paper_live_micro_max_age_ms=int(strategy_defaults.get("paper_live_micro_max_age_ms", 300000)),
+        risk_enabled=bool(live_defaults.get("risk_enabled", False)),
+        risk_exit_aggress_bps=float(live_defaults.get("risk_exit_aggress_bps", 8.0)),
+        risk_timeout_sec=int(live_defaults.get("risk_timeout_sec", 20)),
+        risk_replace_max=int(live_defaults.get("risk_replace_max", 2)),
+        risk_default_trail_pct=float(live_defaults.get("risk_default_trail_pct", 1.0)),
+    )
 
 
 def _load_micro_defaults(*, config_dir: Path, base_config: dict[str, Any]) -> dict[str, Any]:

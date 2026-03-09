@@ -110,6 +110,11 @@ function Load-JsonOrEmpty {
     return $raw | ConvertFrom-Json
 }
 
+function Resolve-LiveRolloutLatestPath {
+    param([string]$Root)
+    return (Join-Path $Root "logs/live_rollout/latest.json")
+}
+
 function Get-PropValue {
     param(
         [Parameter(Mandatory = $false)]$ObjectValue,
@@ -129,6 +134,76 @@ function Get-PropValue {
         return $ObjectValue.$Name
     }
     return $DefaultValue
+}
+
+function Resolve-PromotionTargetPolicy {
+    param(
+        [string]$Root,
+        [string]$UnitName
+    )
+    $trimmedUnit = [string]$UnitName
+    if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
+        return [ordered]@{
+            is_live_target = $false
+            allowed = $false
+            reason = "EMPTY_UNIT"
+            contract = @{}
+        }
+    }
+    $trimmedUnit = $trimmedUnit.Trim()
+    $rolloutLatest = Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $Root)
+    $contract = Get-PropValue -ObjectValue $rolloutLatest -Name "contract" -DefaultValue @{}
+    $contractTargetUnit = [string](Get-PropValue -ObjectValue $contract -Name "target_unit" -DefaultValue "")
+    $contractMode = [string](Get-PropValue -ObjectValue $contract -Name "mode" -DefaultValue "")
+    $contractArmed = [bool](Get-PropValue -ObjectValue $contract -Name "armed" -DefaultValue $false)
+    $isLiveLikeUnit = $trimmedUnit.StartsWith("autobot-live")
+    $isExplicitTarget = (-not [string]::IsNullOrWhiteSpace($contractTargetUnit)) -and ($contractTargetUnit -eq $trimmedUnit)
+    if ((-not $isLiveLikeUnit) -and (-not $isExplicitTarget)) {
+        return [ordered]@{
+            is_live_target = $false
+            allowed = $true
+            reason = "NON_LIVE_TARGET"
+            contract = $contract
+        }
+    }
+    if (-not (Test-ObjectHasValues -ObjectValue $contract)) {
+        return [ordered]@{
+            is_live_target = $true
+            allowed = $false
+            reason = "LIVE_ROLLOUT_CONTRACT_MISSING"
+            contract = @{}
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($contractTargetUnit) -or ($contractTargetUnit -ne $trimmedUnit)) {
+        return [ordered]@{
+            is_live_target = $true
+            allowed = $false
+            reason = "LIVE_ROLLOUT_TARGET_MISMATCH"
+            contract = $contract
+        }
+    }
+    if (-not $contractArmed) {
+        return [ordered]@{
+            is_live_target = $true
+            allowed = $false
+            reason = "LIVE_ROLLOUT_NOT_ARMED"
+            contract = $contract
+        }
+    }
+    if (@("canary", "live") -notcontains $contractMode) {
+        return [ordered]@{
+            is_live_target = $true
+            allowed = $false
+            reason = "LIVE_ROLLOUT_MODE_NOT_PROMOTABLE"
+            contract = $contract
+        }
+    }
+    return [ordered]@{
+        is_live_target = $true
+        allowed = $true
+        reason = "LIVE_ROLLOUT_ARMED"
+        contract = $contract
+    }
 }
 
 function Test-ObjectHasValues {
@@ -380,6 +455,7 @@ if ($runPromotionPhase) {
                 )
                 $promotionPerformed = $true
                 $restartedUnits = New-Object System.Collections.Generic.List[string]
+                $skippedUnits = New-Object System.Collections.Generic.List[object]
                 Restart-Unit -UnitName $ChampionUnitName
                 $restartedUnits.Add($ChampionUnitName) | Out-Null
                 foreach ($unit in @($PromotionTargetUnits)) {
@@ -390,9 +466,24 @@ if ($runPromotionPhase) {
                     if ($trimmedUnit -eq $ChampionUnitName) {
                         continue
                     }
+                    $targetPolicy = Resolve-PromotionTargetPolicy -Root $resolvedProjectRoot -UnitName $trimmedUnit
+                    if (-not [bool](Get-PropValue -ObjectValue $targetPolicy -Name "allowed" -DefaultValue $false)) {
+                        $skippedUnits.Add([ordered]@{
+                            unit = $trimmedUnit
+                            reason = [string](Get-PropValue -ObjectValue $targetPolicy -Name "reason" -DefaultValue "SKIPPED")
+                            is_live_target = [bool](Get-PropValue -ObjectValue $targetPolicy -Name "is_live_target" -DefaultValue $false)
+                        }) | Out-Null
+                        continue
+                    }
                     if (Test-SystemdUnitActive -UnitName $trimmedUnit) {
                         Restart-Unit -UnitName $trimmedUnit
                         $restartedUnits.Add($trimmedUnit) | Out-Null
+                    } else {
+                        $skippedUnits.Add([ordered]@{
+                            unit = $trimmedUnit
+                            reason = "UNIT_NOT_ACTIVE"
+                            is_live_target = [bool](Get-PropValue -ObjectValue $targetPolicy -Name "is_live_target" -DefaultValue $false)
+                        }) | Out-Null
                     }
                 }
                 $promoteCutover = [ordered]@{
@@ -404,6 +495,8 @@ if ($runPromotionPhase) {
                     champion_unit = $ChampionUnitName
                     target_units = @($restartedUnits)
                     configured_target_units = @($PromotionTargetUnits)
+                    skipped_target_units = @($skippedUnits)
+                    live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot)) -Name "contract" -DefaultValue @{})
                 }
                 New-Item -ItemType Directory -Force -Path $promoteCutoverArchiveRoot | Out-Null
                 $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
@@ -416,6 +509,7 @@ if ($runPromotionPhase) {
                     promoted = $true
                     candidate_run_id = $candidateRunId
                     restarted_units = @($restartedUnits)
+                    skipped_units = @($skippedUnits)
                     cutover_artifact = $promoteCutoverLatestPath
                 }
             } else {

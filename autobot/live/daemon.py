@@ -36,6 +36,12 @@ from .model_handoff import (
 )
 from .order_state import normalize_order_state
 from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot, resume_risk_plans_after_reconcile
+from .rollout import (
+    DEFAULT_LIVE_TARGET_UNIT,
+    DEFAULT_ROLLOUT_MODE,
+    evaluate_live_rollout_gate,
+    rollout_gate_to_payload,
+)
 from .small_account import build_small_account_runtime_report
 from .state_store import LiveStateStore, OrderLineageRecord, OrderRecord
 from .ws_handlers import apply_private_ws_event
@@ -74,6 +80,10 @@ class LiveDaemonSettings:
     ws_public_meta_dir: str = "data/raw_ws/upbit/_meta"
     ws_public_stale_threshold_sec: int = 180
     micro_aggregate_report_path: str = "data/parquet/micro_v1/_meta/aggregate_report.json"
+    rollout_mode: str = DEFAULT_ROLLOUT_MODE
+    rollout_target_unit: str = DEFAULT_LIVE_TARGET_UNIT
+    rollout_require_test_order: bool = True
+    rollout_test_order_max_age_sec: int = 86400
 
     def __post_init__(self) -> None:
         if self.use_private_ws and self.use_executor_ws:
@@ -88,6 +98,10 @@ class LiveDaemonSettings:
             raise ValueError("runtime_model_family must not be blank")
         if int(self.ws_public_stale_threshold_sec) <= 0:
             raise ValueError("ws_public_stale_threshold_sec must be positive")
+        if not str(self.rollout_target_unit).strip():
+            raise ValueError("rollout_target_unit must not be blank")
+        if int(self.rollout_test_order_max_age_sec) <= 0:
+            raise ValueError("rollout_test_order_max_age_sec must be positive")
 
 
 def _runtime_model_binding_after_resume(
@@ -233,6 +247,56 @@ def _apply_runtime_status_to_summary(summary: dict[str, Any], runtime_status: di
     summary["model_pointer_divergence"] = bool(payload.get("model_pointer_divergence", False))
 
 
+def _small_account_single_slot_ready(settings: LiveDaemonSettings) -> bool:
+    return (
+        bool(settings.small_account_canary_enabled)
+        and int(settings.small_account_max_positions) == 1
+        and int(settings.small_account_max_open_orders_per_market) == 1
+    )
+
+
+def _evaluate_rollout_gate(
+    *,
+    store: LiveStateStore,
+    settings: LiveDaemonSettings,
+    ts_ms: int,
+) -> dict[str, Any]:
+    breaker_report = breaker_status(store)
+    gate = evaluate_live_rollout_gate(
+        mode=str(settings.rollout_mode),
+        target_unit=str(settings.rollout_target_unit),
+        contract=store.live_rollout_contract(),
+        test_order=store.live_test_order(),
+        breaker_active=bool(breaker_report.get("active", False)),
+        require_test_order=bool(settings.rollout_require_test_order),
+        test_order_max_age_sec=int(settings.rollout_test_order_max_age_sec),
+        small_account_single_slot_ready=_small_account_single_slot_ready(settings),
+        ts_ms=ts_ms,
+    )
+    payload = rollout_gate_to_payload(gate)
+    store.set_live_rollout_status(payload=payload, ts_ms=ts_ms)
+    if bool(gate.mode != "shadow") and gate.reason_codes:
+        arm_breaker(
+            store,
+            reason_codes=list(gate.reason_codes),
+            source="live_rollout",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details=payload,
+        )
+    return payload
+
+
+def _apply_rollout_status_to_summary(summary: dict[str, Any], rollout_status: dict[str, Any] | None) -> None:
+    payload = dict(rollout_status or {})
+    summary["rollout"] = payload
+    summary["rollout_mode"] = payload.get("mode")
+    summary["rollout_target_unit"] = payload.get("target_unit")
+    summary["rollout_start_allowed"] = bool(payload.get("start_allowed", False))
+    summary["rollout_order_emission_allowed"] = bool(payload.get("order_emission_allowed", False))
+    summary["rollout_reason_codes"] = list(payload.get("reason_codes", []))
+
+
 def run_live_sync_daemon(
     *,
     store: LiveStateStore,
@@ -261,6 +325,12 @@ def run_live_sync_daemon(
         "ws_public_last_checkpoint_ts_ms": None,
         "ws_public_staleness_sec": None,
         "model_pointer_divergence": False,
+        "rollout": None,
+        "rollout_mode": None,
+        "rollout_target_unit": None,
+        "rollout_start_allowed": False,
+        "rollout_order_emission_allowed": False,
+        "rollout_reason_codes": [],
     }
 
     if settings.startup_reconcile:
@@ -305,6 +375,12 @@ def run_live_sync_daemon(
             ts_ms=int(time.time() * 1000),
         )
         _apply_runtime_status_to_summary(summary, runtime_status)
+        rollout_status = _evaluate_rollout_gate(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
         if bool(active_breaker_decision(store).active):
             summary["halted"] = True
@@ -319,6 +395,12 @@ def run_live_sync_daemon(
             ts_ms=int(time.time() * 1000),
         )
         _apply_runtime_status_to_summary(summary, runtime_status)
+        rollout_status = _evaluate_rollout_gate(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
         if bool(active_breaker_decision(store).active):
             summary["halted"] = True
@@ -348,6 +430,7 @@ def run_live_sync_daemon(
         summary["last_sync_error"] = cycle_result.get("sync_error")
         summary["small_account_report"] = cycle_result.get("small_account_report")
         _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
+        _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
         summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -406,6 +489,12 @@ def run_live_sync_daemon_with_executor_events(
         "ws_public_last_checkpoint_ts_ms": None,
         "ws_public_staleness_sec": None,
         "model_pointer_divergence": False,
+        "rollout": None,
+        "rollout_mode": None,
+        "rollout_target_unit": None,
+        "rollout_start_allowed": False,
+        "rollout_order_emission_allowed": False,
+        "rollout_reason_codes": [],
     }
 
     if settings.startup_reconcile:
@@ -449,6 +538,12 @@ def run_live_sync_daemon_with_executor_events(
             ts_ms=int(time.time() * 1000),
         )
         _apply_runtime_status_to_summary(summary, runtime_status)
+        rollout_status = _evaluate_rollout_gate(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
         if bool(active_breaker_decision(store).active):
             summary["halted"] = True
@@ -464,6 +559,12 @@ def run_live_sync_daemon_with_executor_events(
             ts_ms=int(time.time() * 1000),
         )
         _apply_runtime_status_to_summary(summary, runtime_status)
+        rollout_status = _evaluate_rollout_gate(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
         if bool(active_breaker_decision(store).active):
             summary["halted"] = True
@@ -559,6 +660,7 @@ def run_live_sync_daemon_with_executor_events(
                 summary["last_sync_error"] = cycle_result.get("sync_error")
                 summary["small_account_report"] = cycle_result.get("small_account_report")
                 _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
+                _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -624,6 +726,12 @@ async def run_live_sync_daemon_with_private_ws(
         "ws_public_last_checkpoint_ts_ms": None,
         "ws_public_staleness_sec": None,
         "model_pointer_divergence": False,
+        "rollout": None,
+        "rollout_mode": None,
+        "rollout_target_unit": None,
+        "rollout_start_allowed": False,
+        "rollout_order_emission_allowed": False,
+        "rollout_reason_codes": [],
     }
 
     if settings.startup_reconcile:
@@ -669,6 +777,12 @@ async def run_live_sync_daemon_with_private_ws(
             ts_ms=int(time.time() * 1000),
         )
         _apply_runtime_status_to_summary(summary, runtime_status)
+        rollout_status = _evaluate_rollout_gate(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
         if bool(active_breaker_decision(store).active):
             summary["halted"] = True
@@ -685,6 +799,12 @@ async def run_live_sync_daemon_with_private_ws(
             ts_ms=int(time.time() * 1000),
         )
         _apply_runtime_status_to_summary(summary, runtime_status)
+        rollout_status = _evaluate_rollout_gate(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
         if bool(active_breaker_decision(store).active):
             summary["halted"] = True
@@ -775,6 +895,7 @@ async def run_live_sync_daemon_with_private_ws(
                 summary["last_sync_error"] = cycle_result.get("sync_error")
                 summary["small_account_report"] = cycle_result.get("small_account_report")
                 _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
+                _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -1251,6 +1372,7 @@ def _run_sync_cycle_with_breakers(
         store.set_checkpoint(name="last_sync_error", payload=sync_error, ts_ms=ts_ms)
         active = active_breaker_decision(store)
         runtime_status = store.live_runtime_health() or {}
+        rollout_status = store.live_rollout_status() or {}
         return {
             "report": {
                 "halted": active.active,
@@ -1262,6 +1384,7 @@ def _run_sync_cycle_with_breakers(
             "breaker_report": breaker_report,
             "sync_error": sync_error,
             "runtime_handoff": runtime_status,
+            "rollout": rollout_status,
             "small_account_report": build_small_account_runtime_report(
                 store=store,
                 canary_enabled=bool(settings.small_account_canary_enabled),
@@ -1286,6 +1409,7 @@ def _run_sync_cycle_with_breakers(
         sync_error = {"error": str(exc)}
         store.set_checkpoint(name="last_sync_error", payload=sync_error, ts_ms=ts_ms)
         runtime_status = store.live_runtime_health() or {}
+        rollout_status = store.live_rollout_status() or {}
         return {
             "report": {
                 "halted": True,
@@ -1297,6 +1421,7 @@ def _run_sync_cycle_with_breakers(
             "breaker_report": breaker_report,
             "sync_error": sync_error,
             "runtime_handoff": runtime_status,
+            "rollout": rollout_status,
             "small_account_report": build_small_account_runtime_report(
                 store=store,
                 canary_enabled=bool(settings.small_account_canary_enabled),
@@ -1336,11 +1461,18 @@ def _run_sync_cycle_with_breakers(
         settings=settings,
         ts_ms=ts_ms,
     )
+    rollout_status = _evaluate_rollout_gate(
+        store=store,
+        settings=settings,
+        ts_ms=ts_ms,
+    )
     cycle_result["breaker_report"] = breaker_status(store)
     cycle_result["sync_error"] = None
     cycle_result["small_account_report"] = small_account_report
     cycle_result["runtime_handoff"] = runtime_status
+    cycle_result["rollout"] = rollout_status
     cycle_result["report"]["runtime_handoff"] = runtime_status
+    cycle_result["report"]["rollout"] = rollout_status
     return cycle_result
 
 

@@ -28,6 +28,11 @@ live:
       stale_threshold_sec: 180
     micro:
       aggregate_report_path: "data/parquet/micro_v1/_meta/aggregate_report.json"
+  rollout:
+    mode: "shadow"
+    target_unit: "autobot-live-alpha.service"
+    require_test_order: true
+    test_order_max_age_sec: 86400
   executor:
     host: "127.0.0.1"
     port: 50051
@@ -45,6 +50,9 @@ live:
     timeout_sec: 20
     replace_max: 2
     default_trail_pct: 1.0
+  strategy:
+    enabled: false
+    decision_interval_sec: 1.0
 
 universe:
   quote_currency: KRW

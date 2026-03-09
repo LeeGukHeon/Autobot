@@ -1,0 +1,106 @@
+param(
+    [string]$ProjectRoot = "",
+    [string]$PythonExe = "",
+    [string]$ServiceUser = "ubuntu",
+    [string]$UnitName = "autobot-live-alpha.service",
+    [ValidateSet("shadow", "canary", "live")]
+    [string]$RolloutMode = "shadow",
+    [ValidateSet("poll", "private_ws", "executor_ws")]
+    [string]$SyncMode = "private_ws",
+    [switch]$StrategyRuntime,
+    [string]$RolloutTargetUnit = "",
+    [switch]$AllowCancelExternal,
+    [switch]$NoStart,
+    [switch]$NoEnable,
+    [switch]$DryRun
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot "systemd_service_utils.ps1")
+
+$resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
+$resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
+$resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
+$effectiveTargetUnit = if ([string]::IsNullOrWhiteSpace($RolloutTargetUnit)) { $UnitName } else { $RolloutTargetUnit }
+
+$liveArgList = @(
+    "-m", "autobot.cli",
+    "live", "run",
+    "--duration-sec", "0",
+    "--rollout-mode", $RolloutMode,
+    "--rollout-target-unit", $effectiveTargetUnit
+)
+if ($StrategyRuntime) {
+    if ($SyncMode -ne "poll") {
+        throw "StrategyRuntime currently supports only SyncMode=poll"
+    }
+    $liveArgList += "--strategy-runtime"
+}
+switch ($SyncMode) {
+    "private_ws" { $liveArgList += "--use-private-ws" }
+    "executor_ws" { $liveArgList += "--use-executor-ws" }
+    default { }
+}
+if ($AllowCancelExternal) {
+    $liveArgList += "--allow-cancel-external"
+}
+
+$liveCommand = ($liveArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "
+$activatePath = Join-Path $resolvedProjectRoot ".venv/bin/activate"
+$execStart = "/bin/bash -lc " + (Quote-ShellArg ("source " + $activatePath + " && " + $resolvedPythonExe + " " + $liveCommand))
+
+$unitContent = @"
+[Unit]
+Description=Autobot Live Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$ServiceUser
+WorkingDirectory=$resolvedProjectRoot
+Environment=PYTHONUNBUFFERED=1
+Environment=AUTOBOT_LIVE_ROLLOUT_MODE=$RolloutMode
+Environment=AUTOBOT_LIVE_TARGET_UNIT=$effectiveTargetUnit
+Environment=AUTOBOT_LIVE_SYNC_MODE=$SyncMode
+SyslogIdentifier=$($UnitName -replace '\.service$', '')
+ExecStart=$execStart
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"@
+
+if ($DryRun) {
+    Write-Host ("[live-install][dry-run] service_user={0}" -f $ServiceUser)
+    Write-Host ("[live-install][dry-run] unit={0}" -f $UnitName)
+    Write-Host $unitContent
+    exit 0
+}
+
+Enable-UserLinger -UserName $ServiceUser
+Install-UnitFile -UnitName $UnitName -Content $unitContent
+& sudo systemctl daemon-reload
+if ($LASTEXITCODE -ne 0) {
+    throw "systemctl daemon-reload failed"
+}
+if (-not $NoEnable) {
+    & sudo systemctl enable $UnitName
+    if ($LASTEXITCODE -ne 0) {
+        throw "systemctl enable failed: $UnitName"
+    }
+}
+if (-not $NoStart) {
+    & sudo systemctl restart $UnitName
+    if ($LASTEXITCODE -ne 0) {
+        throw "systemctl restart failed: $UnitName"
+    }
+}
+
+& systemctl status $UnitName --no-pager

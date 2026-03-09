@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
+
+import autobot.live.daemon as daemon_module
+from autobot.live.daemon import LiveDaemonSettings, run_live_sync_daemon
+from autobot.live.rollout import (
+    build_rollout_contract,
+    build_rollout_test_order_record,
+    evaluate_live_rollout_gate,
+)
+from autobot.live.state_store import LiveStateStore
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _QuietClient:
+    def accounts(self):  # noqa: ANN201
+        return []
+
+    def open_orders(self, *, states):  # noqa: ANN201
+        _ = states
+        return []
+
+    def order(self, *, uuid: str | None = None, identifier: str | None = None):  # noqa: ANN201
+        _ = uuid, identifier
+        return {}
+
+    def cancel_order(self, *, uuid: str | None = None, identifier: str | None = None):  # noqa: ANN201
+        return {"ok": True, "uuid": uuid, "identifier": identifier}
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _seed_runtime_contract(tmp_path: Path, *, champion_run_id: str, ws_updated_at_ms: int) -> Path:
+    registry_root = tmp_path / "models" / "registry"
+    family_dir = registry_root / "train_v4_crypto_cs"
+    (family_dir / champion_run_id).mkdir(parents=True, exist_ok=True)
+    _write_json(family_dir / "champion.json", {"run_id": champion_run_id})
+    ws_meta_dir = tmp_path / "data" / "raw_ws" / "upbit" / "_meta"
+    _write_json(
+        ws_meta_dir / "ws_public_health.json",
+        {
+            "run_id": "ws-run-1",
+            "updated_at_ms": ws_updated_at_ms,
+            "connected": True,
+            "last_rx_ts_ms": {"trade": ws_updated_at_ms, "orderbook": ws_updated_at_ms},
+            "subscribed_markets_count": 20,
+        },
+    )
+    _write_json(
+        ws_meta_dir / "ws_runs_summary.json",
+        {"runs": [{"run_id": "ws-run-1", "rows_total": 10, "bytes_total": 100}]},
+    )
+    _write_json(
+        tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json",
+        {"run_id": "micro-run-1", "rows_written_total": 12},
+    )
+    return registry_root
+
+
+def _powershell_exe() -> str:
+    for name in ("powershell.exe", "pwsh"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    pytest.skip("PowerShell executable is required for installer dry-run test")
+
+
+def test_rollout_shadow_mode_starts_without_order_emission() -> None:
+    gate = evaluate_live_rollout_gate(
+        mode="shadow",
+        target_unit="autobot-live-alpha.service",
+        contract={},
+        test_order={},
+        breaker_active=False,
+        require_test_order=True,
+        test_order_max_age_sec=86400,
+        small_account_single_slot_ready=True,
+        ts_ms=10_000,
+    )
+    assert gate.start_allowed is True
+    assert gate.order_emission_allowed is False
+    assert gate.reason_codes == ()
+
+
+def test_rollout_canary_requires_arm_and_test_order() -> None:
+    gate = evaluate_live_rollout_gate(
+        mode="canary",
+        target_unit="autobot-live-alpha.service",
+        contract={},
+        test_order={},
+        breaker_active=False,
+        require_test_order=True,
+        test_order_max_age_sec=86400,
+        small_account_single_slot_ready=True,
+        ts_ms=10_000,
+    )
+    assert gate.start_allowed is False
+    assert gate.order_emission_allowed is False
+    assert "LIVE_ROLLOUT_NOT_ARMED" in gate.reason_codes
+    assert "LIVE_TEST_ORDER_REQUIRED" in gate.reason_codes
+
+
+def test_rollout_canary_passes_with_matching_contract_and_fresh_test_order() -> None:
+    contract = build_rollout_contract(
+        mode="canary",
+        target_unit="autobot-live-alpha.service",
+        arm_token="demo-token",
+        ts_ms=5_000,
+    )
+    test_order = build_rollout_test_order_record(
+        market="KRW-BTC",
+        side="bid",
+        ord_type="limit",
+        price="5000",
+        volume="1",
+        ok=True,
+        response_payload={"ok": True},
+        ts_ms=9_500,
+    )
+    gate = evaluate_live_rollout_gate(
+        mode="canary",
+        target_unit="autobot-live-alpha.service",
+        contract=contract,
+        test_order=test_order,
+        breaker_active=False,
+        require_test_order=True,
+        test_order_max_age_sec=86400,
+        small_account_single_slot_ready=True,
+        ts_ms=10_000,
+    )
+    assert gate.start_allowed is True
+    assert gate.order_emission_allowed is True
+    assert gate.reason_codes == ()
+
+
+def test_live_daemon_halts_when_canary_rollout_is_not_armed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
+    registry_root = _seed_runtime_contract(tmp_path, champion_run_id="run-live", ws_updated_at_ms=9_900)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = run_live_sync_daemon(
+            store=store,
+            client=_QuietClient(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=False,
+                registry_root=str(registry_root),
+                runtime_model_ref_source="champion_v4",
+                runtime_model_family="train_v4_crypto_cs",
+                ws_public_raw_root=str(tmp_path / "data" / "raw_ws" / "upbit" / "public"),
+                ws_public_meta_dir=str(tmp_path / "data" / "raw_ws" / "upbit" / "_meta"),
+                ws_public_stale_threshold_sec=180,
+                micro_aggregate_report_path=str(tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
+                rollout_mode="canary",
+                rollout_target_unit="autobot-live-alpha.service",
+            ),
+        )
+    assert summary["halted"] is True
+    assert "LIVE_ROLLOUT_NOT_ARMED" in summary["halted_reasons"]
+    assert summary["rollout_start_allowed"] is False
+
+
+def test_live_installer_dry_run_exposes_rollout_mode() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-RolloutMode",
+            "shadow",
+            "-SyncMode",
+            "private_ws",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "[live-install][dry-run] unit=autobot-live-alpha.service" in stdout
+    assert "autobot.cli" in stdout
+    assert "'live'" in stdout or '"live"' in stdout
+    assert "'run'" in stdout or '"run"' in stdout
+    assert "--rollout-mode" in stdout
+    assert "--use-private-ws" in stdout
+
+
+def test_live_installer_dry_run_supports_strategy_runtime() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-RolloutMode",
+            "shadow",
+            "-SyncMode",
+            "poll",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "--strategy-runtime" in stdout

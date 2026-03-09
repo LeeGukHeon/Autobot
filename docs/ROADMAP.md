@@ -258,6 +258,7 @@ D:\MyApps\Autobot
 - `23:50` promote 이벤트는 같은 `champion_v4` 갱신과 함께 paper/live target unit을 같은 컷오버로 재기동한다.
 - live runtime은 시작 시 현재 `champion_v4`의 concrete `run_id`를 pinning하고, 재시작 후에도 이 값을 checkpoint/health에 기록한다.
 - `autobot-ws-public.service`는 daily 학습과 live runtime이 공유하는 항상-on public data plane이며, live health는 이 데이터 플레인의 freshness를 명시적으로 검사해야 한다.
+- live runtime은 sync/reconcile 데몬만으로 끝내지 않고, paper와 같은 `model_alpha_v1 + v4 live features` 계약으로 실제 전략 의사결정을 수행해야 한다.
 
 ### 승급 판단 정책
 
