@@ -3,15 +3,17 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import pytest
+import time
 
 import autobot.live.daemon as daemon_module
+from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, arm_breaker
 from autobot.live.daemon import (
     LiveDaemonSettings,
     run_live_sync_daemon,
     run_live_sync_daemon_with_executor_events,
     run_live_sync_daemon_with_private_ws,
 )
-from autobot.live.state_store import LiveStateStore
+from autobot.live.state_store import LiveStateStore, PositionRecord
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
 
@@ -102,6 +104,15 @@ class _FakePrivateWsClient:
         _ = channels
         for event in self._events:
             yield event
+        while True:
+            await asyncio.sleep(0.05)
+            yield MyAssetEvent(
+                ts_ms=1700000000200,
+                currency="BTC",
+                balance=0.01,
+                locked=0.0,
+                avg_buy_price=100000000.0,
+            )
 
 
 class _FakeExecutorGateway:
@@ -131,6 +142,58 @@ class _FakeExecutorGateway:
                 "avg_buy_price": "100000000",
             },
         }
+        while True:
+            time.sleep(0.05)
+            yield {
+                "event_type": "HEALTH",
+                "ts_ms": 1700000000300,
+                "payload": {
+                    "message": "ok",
+                },
+            }
+
+
+class _FakeUnknownExternalClient(_FakePrivateClient):
+    def open_orders(self, *, states):  # noqa: ANN201
+        _ = states
+        return [
+            {
+                "uuid": "bot-1",
+                "identifier": "AUTOBOT-autobot-001-intent-1-123-abc",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "price": "100000000",
+                "volume": "0.01",
+                "state": "wait",
+            },
+            {
+                "uuid": "manual-1",
+                "identifier": "MANUAL-ORDER-1",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "price": "100000000",
+                "volume": "0.01",
+                "state": "wait",
+            },
+        ]
+
+
+class _FakePositionMissingClient(_FakePrivateClient):
+    def accounts(self):  # noqa: ANN201
+        return []
+
+    def open_orders(self, *, states):  # noqa: ANN201
+        _ = states
+        return []
+
+
+class _FakeRateLimitClient(_FakePrivateClient):
+    def accounts(self):  # noqa: ANN201
+        from autobot.upbit.exceptions import RateLimitError
+
+        raise RateLimitError("too many requests", status_code=429)
 
 
 def test_live_daemon_polling_updates_state(tmp_path: Path, monkeypatch) -> None:
@@ -353,3 +416,157 @@ def test_live_daemon_settings_reject_dual_ws_sources() -> None:
             use_private_ws=True,
             use_executor_ws=True,
         )
+
+
+def test_live_daemon_halts_and_cancels_bot_orders_on_unknown_external_order(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        client = _FakeUnknownExternalClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="halt",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=True,
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "UNKNOWN_OPEN_ORDERS_DETECTED" in summary["halted_reasons"]
+    assert summary["breaker_report"]["action"] == "HALT_AND_CANCEL_BOT_ORDERS"
+    assert ("bot-1", "AUTOBOT-autobot-001-intent-1-123-abc") in client.cancel_calls
+    assert ("manual-1", "MANUAL-ORDER-1") not in client.cancel_calls
+
+
+def test_live_daemon_halts_when_local_position_missing_on_exchange(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+            )
+        )
+        client = _FakePositionMissingClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=True,
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" in summary["halted_reasons"]
+
+
+def test_live_daemon_arms_manual_kill_switch_before_cycles(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        arm_breaker(
+            store,
+            reason_codes=["MANUAL_KILL_SWITCH"],
+            source="test",
+            ts_ms=1000,
+            action=ACTION_FULL_KILL_SWITCH,
+        )
+        client = _FakePrivateClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=True,
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert summary["halted_reasons"] == ["MANUAL_KILL_SWITCH"]
+
+
+def test_live_daemon_repeated_rate_limit_arms_breaker(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        client = _FakeRateLimitClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=3,
+                startup_reconcile=True,
+                breaker_rate_limit_error_limit=2,
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "REPEATED_RATE_LIMIT_ERRORS" in summary["halted_reasons"]
+
+
+def test_live_daemon_halts_when_private_ws_stream_ends(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+
+    class _FiniteWsClient:
+        stats = {}
+
+        async def stream_private(self, *, channels=("myOrder", "myAsset")):  # noqa: ANN201
+            _ = channels
+            if False:
+                yield None
+            return
+
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        client = _FakePrivateClient()
+        summary = asyncio.run(
+            run_live_sync_daemon_with_private_ws(
+                store=store,
+                client=client,
+                ws_client=_FiniteWsClient(),
+                settings=LiveDaemonSettings(
+                    bot_id="autobot-001",
+                    identifier_prefix="AUTOBOT",
+                    unknown_open_orders_policy="ignore",
+                    unknown_positions_policy="import_as_unmanaged",
+                    allow_cancel_external_orders=False,
+                    poll_interval_sec=1,
+                    startup_reconcile=True,
+                    duration_sec=1,
+                    use_private_ws=True,
+                ),
+            )
+        )
+
+    assert summary["halted"] is True
+    assert "STALE_PRIVATE_WS_STREAM" in summary["halted_reasons"]

@@ -6,6 +6,13 @@ import time
 from typing import Any
 
 from autobot.execution.intent import new_order_intent
+from autobot.live.breakers import (
+    arm_breaker,
+    classify_executor_reject_reason,
+    new_intents_allowed,
+    record_counter_failure,
+    reset_counter,
+)
 from autobot.live.state_store import LiveStateStore, RiskPlanRecord
 
 from .models import RiskManagerConfig, RiskPlan
@@ -165,6 +172,9 @@ class LiveRiskManager:
         last_price: float,
         ts_ms: int,
     ) -> tuple[RiskPlan, dict[str, Any]]:
+        if not new_intents_allowed(self._store):
+            updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
+            return updated, {"type": "risk_blocked_by_breaker", "plan_id": plan.plan_id, "reason": trigger_reason}
         exit_price = _aggressive_exit_price(
             last_price=last_price,
             base_bps=self._config.exit_aggress_bps,
@@ -203,6 +213,9 @@ class LiveRiskManager:
             meta_json=json.dumps(meta, ensure_ascii=False, sort_keys=True),
         )
         if bool(getattr(result, "accepted", False)):
+            reset_counter(self._store, counter_name="rate_limit_error", source="risk_submit_ok", ts_ms=ts_ms)
+            reset_counter(self._store, counter_name="auth_error", source="risk_submit_ok", ts_ms=ts_ms)
+            reset_counter(self._store, counter_name="nonce_error", source="risk_submit_ok", ts_ms=ts_ms)
             updated = replace(
                 plan,
                 state="EXITING",
@@ -220,6 +233,43 @@ class LiveRiskManager:
                 "volume_str": volume,
             }
 
+        reject_reason = str(getattr(result, "reason", "") or "")
+        classified_reject = classify_executor_reject_reason(reject_reason)
+        if classified_reject == "REPEATED_RATE_LIMIT_ERRORS":
+            record_counter_failure(
+                self._store,
+                counter_name="rate_limit_error",
+                limit=3,
+                source="risk_submit",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
+        elif classified_reject == "REPEATED_AUTH_ERRORS":
+            record_counter_failure(
+                self._store,
+                counter_name="auth_error",
+                limit=2,
+                source="risk_submit",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
+        elif classified_reject == "REPEATED_NONCE_ERRORS":
+            record_counter_failure(
+                self._store,
+                counter_name="nonce_error",
+                limit=2,
+                source="risk_submit",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
+        elif classified_reject == "IDENTIFIER_COLLISION":
+            arm_breaker(
+                self._store,
+                reason_codes=["IDENTIFIER_COLLISION"],
+                source="risk_submit",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
         updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
         return updated, {
             "type": "risk_exit_rejected",
@@ -235,6 +285,9 @@ class LiveRiskManager:
         last_price: float,
         ts_ms: int,
     ) -> tuple[RiskPlan, dict[str, Any]]:
+        if not new_intents_allowed(self._store):
+            updated = replace(plan, updated_ts=ts_ms)
+            return updated, {"type": "risk_replace_blocked_by_breaker", "plan_id": plan.plan_id}
         if self._executor_gateway is None or not hasattr(self._executor_gateway, "replace_order"):
             updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
             return updated, {"type": "risk_replace_no_executor", "plan_id": plan.plan_id}
@@ -257,6 +310,10 @@ class LiveRiskManager:
             new_time_in_force="gtc",
         )
         if bool(getattr(result, "accepted", False)):
+            reset_counter(self._store, counter_name="replace_reject", source="risk_replace_ok", ts_ms=ts_ms)
+            reset_counter(self._store, counter_name="rate_limit_error", source="risk_replace_ok", ts_ms=ts_ms)
+            reset_counter(self._store, counter_name="auth_error", source="risk_replace_ok", ts_ms=ts_ms)
+            reset_counter(self._store, counter_name="nonce_error", source="risk_replace_ok", ts_ms=ts_ms)
             updated = replace(
                 plan,
                 state="EXITING",
@@ -275,6 +332,43 @@ class LiveRiskManager:
                 "identifier": updated.current_exit_order_identifier,
             }
 
+        reject_reason = str(getattr(result, "reason", "") or "")
+        record_counter_failure(
+            self._store,
+            counter_name="replace_reject",
+            limit=max(int(self._config.replace_max), 1),
+            source="risk_replace",
+            ts_ms=ts_ms,
+            details={"plan_id": plan.plan_id, "reason": reject_reason},
+        )
+        classified_reject = classify_executor_reject_reason(reject_reason)
+        if classified_reject == "REPEATED_RATE_LIMIT_ERRORS":
+            record_counter_failure(
+                self._store,
+                counter_name="rate_limit_error",
+                limit=3,
+                source="risk_replace",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
+        elif classified_reject == "REPEATED_AUTH_ERRORS":
+            record_counter_failure(
+                self._store,
+                counter_name="auth_error",
+                limit=2,
+                source="risk_replace",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
+        elif classified_reject == "REPEATED_NONCE_ERRORS":
+            record_counter_failure(
+                self._store,
+                counter_name="nonce_error",
+                limit=2,
+                source="risk_replace",
+                ts_ms=ts_ms,
+                details={"plan_id": plan.plan_id, "reason": reject_reason},
+            )
         if replace_step >= max(int(self._config.replace_max), 0):
             updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
             return updated, {

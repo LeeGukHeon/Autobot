@@ -103,6 +103,29 @@ class OrderLineageRecord:
     replace_seq: int = 0
 
 
+@dataclass(frozen=True)
+class BreakerStateRecord:
+    breaker_key: str
+    active: bool
+    action: str | None
+    source: str
+    reason_codes_json: str = "[]"
+    details_json: str = "{}"
+    updated_ts: int = 0
+    armed_ts: int = 0
+
+
+@dataclass(frozen=True)
+class BreakerEventRecord:
+    ts_ms: int
+    breaker_key: str
+    event_kind: str
+    action: str | None
+    source: str
+    reason_codes_json: str = "[]"
+    details_json: str = "{}"
+
+
 class LiveStateStore:
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
@@ -195,6 +218,14 @@ class LiveStateStore:
 
     def upsert_order(self, record: OrderRecord) -> None:
         previous = self.order_by_uuid(uuid=record.uuid)
+        identifier = str(record.identifier or "").strip()
+        if identifier:
+            existing_identifier = self.order_by_identifier(identifier=identifier)
+            if existing_identifier is not None and str(existing_identifier.get("uuid") or "") != record.uuid:
+                raise ValueError(
+                    f"IDENTIFIER_COLLISION: identifier={identifier} existing_uuid={existing_identifier.get('uuid')} "
+                    f"incoming_uuid={record.uuid}"
+                )
         previous_local_state = str(previous.get("local_state") or "").strip() if previous is not None else None
         normalized = normalize_order_state(
             exchange_state=record.raw_exchange_state if record.raw_exchange_state is not None else record.state,
@@ -476,6 +507,83 @@ class LiveStateStore:
                 (name, now_ts, json.dumps(payload, ensure_ascii=False, sort_keys=True)),
             )
 
+    def get_checkpoint(self, *, name: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM checkpoints WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_checkpoint(row)
+
+    def upsert_breaker_state(self, record: BreakerStateRecord) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO breaker_state (
+                    breaker_key, active, action, source, reason_codes_json, details_json, updated_ts, armed_ts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(breaker_key) DO UPDATE SET
+                    active=excluded.active,
+                    action=excluded.action,
+                    source=excluded.source,
+                    reason_codes_json=excluded.reason_codes_json,
+                    details_json=excluded.details_json,
+                    updated_ts=excluded.updated_ts,
+                    armed_ts=excluded.armed_ts
+                """,
+                (
+                    record.breaker_key,
+                    1 if record.active else 0,
+                    record.action,
+                    record.source,
+                    record.reason_codes_json,
+                    record.details_json,
+                    int(record.updated_ts),
+                    int(record.armed_ts),
+                ),
+            )
+
+    def breaker_state(self, *, breaker_key: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM breaker_state WHERE breaker_key = ?", (breaker_key,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_breaker_state(row)
+
+    def append_breaker_event(self, record: BreakerEventRecord) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO breaker_events (
+                    ts_ms, breaker_key, event_kind, action, source, reason_codes_json, details_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(record.ts_ms),
+                    record.breaker_key,
+                    record.event_kind,
+                    record.action,
+                    record.source,
+                    record.reason_codes_json,
+                    record.details_json,
+                ),
+            )
+
+    def list_breaker_events(self, *, breaker_key: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if breaker_key:
+            clauses.append("breaker_key = ?")
+            params.append(breaker_key)
+        query = "SELECT * FROM breaker_events"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY event_id DESC"
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_row_to_breaker_event(row) for row in rows]
+
     def append_order_lineage(self, record: OrderLineageRecord) -> None:
         with self._conn:
             self._conn.execute(
@@ -529,6 +637,14 @@ class LiveStateStore:
             "risk_plans": self.list_risk_plans(),
             "checkpoints": [
                 _row_to_checkpoint(row) for row in self._conn.execute("SELECT * FROM checkpoints ORDER BY name").fetchall()
+            ],
+            "breaker_state": [
+                _row_to_breaker_state(row)
+                for row in self._conn.execute("SELECT * FROM breaker_state ORDER BY breaker_key").fetchall()
+            ],
+            "breaker_events": [
+                _row_to_breaker_event(row)
+                for row in self._conn.execute("SELECT * FROM breaker_events ORDER BY event_id").fetchall()
             ],
             "order_lineage": [
                 _row_to_order_lineage(row)
@@ -633,6 +749,28 @@ class LiveStateStore:
                     payload_json TEXT NOT NULL DEFAULT '{}'
                 );
 
+                CREATE TABLE IF NOT EXISTS breaker_state (
+                    breaker_key TEXT PRIMARY KEY,
+                    active INTEGER NOT NULL DEFAULT 0,
+                    action TEXT,
+                    source TEXT NOT NULL,
+                    reason_codes_json TEXT NOT NULL DEFAULT '[]',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    updated_ts INTEGER NOT NULL,
+                    armed_ts INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS breaker_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_ms INTEGER NOT NULL,
+                    breaker_key TEXT NOT NULL,
+                    event_kind TEXT NOT NULL,
+                    action TEXT,
+                    source TEXT NOT NULL,
+                    reason_codes_json TEXT NOT NULL DEFAULT '[]',
+                    details_json TEXT NOT NULL DEFAULT '{}'
+                );
+
                 CREATE TABLE IF NOT EXISTS order_lineage (
                     edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ts_ms INTEGER NOT NULL,
@@ -663,6 +801,7 @@ class LiveStateStore:
         with self._conn:
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_breaker_events_key_ts ON breaker_events (breaker_key, ts_ms)")
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS order_lineage (
@@ -802,6 +941,32 @@ def _row_to_order_lineage(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _row_to_breaker_state(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "breaker_key": row["breaker_key"],
+        "active": bool(row["active"]),
+        "action": row["action"],
+        "source": row["source"],
+        "reason_codes": _parse_json_list(row["reason_codes_json"]),
+        "details": _parse_json(row["details_json"]),
+        "updated_ts": int(row["updated_ts"]),
+        "armed_ts": int(row["armed_ts"]),
+    }
+
+
+def _row_to_breaker_event(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "event_id": int(row["event_id"]),
+        "ts_ms": int(row["ts_ms"]),
+        "breaker_key": row["breaker_key"],
+        "event_kind": row["event_kind"],
+        "action": row["action"],
+        "source": row["source"],
+        "reason_codes": _parse_json_list(row["reason_codes_json"]),
+        "details": _parse_json(row["details_json"]),
+    }
+
+
 def _parse_json(raw: object) -> dict[str, Any]:
     if raw is None:
         return {}
@@ -812,3 +977,15 @@ def _parse_json(raw: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _parse_json_list(raw: object) -> list[Any]:
+    if raw is None:
+        return []
+    try:
+        value = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return []
+    if isinstance(value, list):
+        return value
+    return []

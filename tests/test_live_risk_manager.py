@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, arm_breaker
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
 from autobot.live.state_store import LiveStateStore, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager
@@ -255,3 +256,26 @@ def test_risk_loop_helpers_forward_events(tmp_path: Path) -> None:
     assert close_action is not None
     assert close_action["type"] == "risk_closed"
     assert len(closed) == 1
+
+
+def test_risk_manager_blocks_new_exit_when_breaker_active(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        arm_breaker(
+            store,
+            reason_codes=["MANUAL_KILL_SWITCH"],
+            source="test",
+            ts_ms=900,
+            action=ACTION_FULL_KILL_SWITCH,
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(default_tp_pct=1.0, default_sl_pct=0.0),
+        )
+        manager.attach_default_risk(market="KRW-BTC", entry_price=100.0, qty=1.0, ts_ms=1000)
+        actions = manager.evaluate_price(market="KRW-BTC", last_price=101.5, ts_ms=2000)
+
+    assert any(item["type"] == "risk_blocked_by_breaker" for item in actions)
+    assert gateway.submit_calls == []

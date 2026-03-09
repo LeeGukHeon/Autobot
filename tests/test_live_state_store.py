@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from autobot.live.breakers import arm_breaker
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, PositionRecord
 
 
@@ -65,6 +68,11 @@ def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
         assert exported["orders"][0]["uuid"] == "uuid-1"
         assert exported["orders"][0]["local_state"] == "OPEN"
         assert exported["order_lineage"][0]["new_uuid"] == "uuid-2"
+        assert exported["breaker_state"] == []
+        arm_breaker(store, reason_codes=["MANUAL_KILL_SWITCH"], source="test", ts_ms=1005)
+        exported_after_breaker = store.export_state()
+        assert len(exported_after_breaker["breaker_state"]) == 1
+        assert exported_after_breaker["breaker_state"][0]["active"] is True
 
         store.release_run_lock(bot_id="autobot-001")
 
@@ -75,3 +83,39 @@ def test_run_lock_is_unique(tmp_path: Path) -> None:
         with LiveStateStore(db_path) as second:
             assert first.acquire_run_lock(bot_id="autobot-001", ts_ms=1)
             assert not second.acquire_run_lock(bot_id="autobot-001", ts_ms=2)
+
+
+def test_state_store_rejects_identifier_collision(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="uuid-1",
+                identifier="AUTOBOT-collision-1",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=1000.0,
+                volume_req=1.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        with pytest.raises(ValueError, match="IDENTIFIER_COLLISION"):
+            store.upsert_order(
+                OrderRecord(
+                    uuid="uuid-2",
+                    identifier="AUTOBOT-collision-1",
+                    market="KRW-BTC",
+                    side="bid",
+                    ord_type="limit",
+                    price=1000.0,
+                    volume_req=1.0,
+                    volume_filled=0.0,
+                    state="wait",
+                    created_ts=1001,
+                    updated_ts=1001,
+                )
+            )

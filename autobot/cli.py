@@ -84,6 +84,7 @@ from .features import (
     validate_features_dataset_v4,
 )
 from .features.feature_spec import parse_date_to_ts_ms
+from .live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_AND_CANCEL_BOT_ORDERS, ACTION_HALT_NEW_INTENTS, arm_breaker, breaker_status, clear_breaker
 from .live import (
     LiveDaemonSettings,
     LiveStateStore,
@@ -1303,6 +1304,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live_admissibility_parser.add_argument("--identifier", help="Optional identifier for order-test.")
     live_admissibility_parser.add_argument("--time-in-force", choices=("ioc", "fok", "post_only"))
+
+    live_kill_switch_parser = live_subparsers.add_parser(
+        "kill-switch",
+        help="Inspect or mutate persistent live breaker state.",
+    )
+    live_kill_switch_subparsers = live_kill_switch_parser.add_subparsers(
+        dest="live_kill_switch_command",
+        required=True,
+    )
+    live_kill_switch_status_parser = live_kill_switch_subparsers.add_parser("status", help="Show kill-switch status.")
+    live_kill_switch_status_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_kill_switch_arm_parser = live_kill_switch_subparsers.add_parser("arm", help="Arm live kill-switch.")
+    live_kill_switch_arm_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_kill_switch_arm_parser.add_argument(
+        "--action",
+        choices=("HALT_NEW_INTENTS", "HALT_AND_CANCEL_BOT_ORDERS", "FULL_KILL_SWITCH"),
+        default="FULL_KILL_SWITCH",
+    )
+    live_kill_switch_arm_parser.add_argument("--reason-code", default="MANUAL_KILL_SWITCH")
+    live_kill_switch_arm_parser.add_argument("--note")
+    live_kill_switch_clear_parser = live_kill_switch_subparsers.add_parser("clear", help="Clear live kill-switch.")
+    live_kill_switch_clear_parser.add_argument("--bot-id", help="Override live.bot_id")
+    live_kill_switch_clear_parser.add_argument("--note")
 
     live_export_state_parser = live_subparsers.add_parser("export-state", help="Export local state DB as JSON.")
     live_export_state_parser.add_argument("--bot-id", help="Override live.bot_id")
@@ -4033,6 +4057,41 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
         allow_cancel_external_cli = bool(getattr(args, "allow_cancel_external", False))
 
         with LiveStateStore(db_path) as store:
+            if command == "kill-switch":
+                kill_switch_command = str(getattr(args, "live_kill_switch_command", "")).strip().lower()
+                now_ts = int(time.time() * 1000)
+                if kill_switch_command == "status":
+                    _print_json({"bot_id": bot_id, "db_path": str(db_path), "breaker_status": breaker_status(store)})
+                    return 0
+                if kill_switch_command == "arm":
+                    action_value = str(getattr(args, "action", ACTION_FULL_KILL_SWITCH)).strip().upper()
+                    if action_value not in {
+                        ACTION_HALT_NEW_INTENTS,
+                        ACTION_HALT_AND_CANCEL_BOT_ORDERS,
+                        ACTION_FULL_KILL_SWITCH,
+                    }:
+                        raise ValueError(f"unsupported kill-switch action: {action_value}")
+                    payload = arm_breaker(
+                        store,
+                        reason_codes=[str(getattr(args, "reason_code", "MANUAL_KILL_SWITCH"))],
+                        source="cli_kill_switch",
+                        ts_ms=now_ts,
+                        action=action_value,
+                        details={"note": getattr(args, "note", None)},
+                    )
+                    _print_json({"bot_id": bot_id, "db_path": str(db_path), "breaker_status": payload})
+                    return 0
+                if kill_switch_command == "clear":
+                    payload = clear_breaker(
+                        store,
+                        source="cli_kill_switch",
+                        ts_ms=now_ts,
+                        details={"note": getattr(args, "note", None)},
+                    )
+                    _print_json({"bot_id": bot_id, "db_path": str(db_path), "breaker_status": payload})
+                    return 0
+                raise ValueError(f"Unsupported live kill-switch command: {kill_switch_command}")
+
             if command == "export-state":
                 _print_json(store.export_state())
                 return 0
@@ -4087,6 +4146,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                 "open_orders_count": len(store.list_orders(open_only=True)),
                             },
                             "reconcile_preview": reconcile_report,
+                            "breaker_status": breaker_status(store),
                         }
                         _print_json(payload)
                         return 0
@@ -4119,6 +4179,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             "apply": apply_mode,
                             "report": report,
                             "cancel_summary": cancel_summary,
+                            "breaker_status": breaker_status(store),
                         }
                         if apply_mode:
                             store.set_checkpoint(name="last_reconcile", payload=output)
@@ -4149,6 +4210,11 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                 if int(getattr(args, "duration_sec", 0)) > 0
                                 else None
                             ),
+                            breaker_cancel_reject_limit=int(defaults["breaker_cancel_reject_limit"]),
+                            breaker_replace_reject_limit=int(defaults["breaker_replace_reject_limit"]),
+                            breaker_rate_limit_error_limit=int(defaults["breaker_rate_limit_error_limit"]),
+                            breaker_auth_error_limit=int(defaults["breaker_auth_error_limit"]),
+                            breaker_nonce_error_limit=int(defaults["breaker_nonce_error_limit"]),
                         )
                         if daemon_settings.use_private_ws:
                             ws_client = UpbitWebSocketPrivateClient(settings.websocket, credentials)
@@ -5068,6 +5134,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     state_cfg = live_cfg.get("state", {}) if isinstance(live_cfg.get("state"), dict) else {}
     startup_cfg = live_cfg.get("startup", {}) if isinstance(live_cfg.get("startup"), dict) else {}
     sync_cfg = live_cfg.get("sync", {}) if isinstance(live_cfg.get("sync"), dict) else {}
+    breaker_cfg = live_cfg.get("breakers", {}) if isinstance(live_cfg.get("breakers"), dict) else {}
     executor_cfg = live_cfg.get("executor", {}) if isinstance(live_cfg.get("executor"), dict) else {}
     orders_cfg = live_cfg.get("orders", {}) if isinstance(live_cfg.get("orders"), dict) else {}
     default_risk_cfg = live_cfg.get("default_risk", {}) if isinstance(live_cfg.get("default_risk"), dict) else {}
@@ -5094,6 +5161,11 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "sync_poll_interval_sec": max(int(sync_cfg.get("poll_interval_sec", 15)), 1),
         "sync_use_private_ws": bool(sync_cfg.get("use_private_ws", False)),
         "sync_use_executor_ws": bool(sync_cfg.get("use_executor_ws", False)),
+        "breaker_cancel_reject_limit": max(int(breaker_cfg.get("cancel_reject_limit", 3)), 1),
+        "breaker_replace_reject_limit": max(int(breaker_cfg.get("replace_reject_limit", 3)), 1),
+        "breaker_rate_limit_error_limit": max(int(breaker_cfg.get("rate_limit_error_limit", 3)), 1),
+        "breaker_auth_error_limit": max(int(breaker_cfg.get("auth_error_limit", 2)), 1),
+        "breaker_nonce_error_limit": max(int(breaker_cfg.get("nonce_error_limit", 2)), 1),
         "executor_host": str(executor_cfg.get("host", "127.0.0.1")).strip(),
         "executor_port": max(int(executor_cfg.get("port", 50051)), 1),
         "executor_timeout_sec": max(float(executor_cfg.get("timeout_sec", 5.0)), 0.1),

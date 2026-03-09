@@ -152,6 +152,7 @@ def reconcile_exchange_snapshot(
     exchange_positions = _extract_exchange_positions(accounts_payload, quote_currency=quote_currency, ts_ms=now_ts)
     local_positions = {item["market"]: item for item in store.list_positions()}
     unknown_position_markets = sorted(set(exchange_positions) - set(local_positions))
+    local_positions_missing_on_exchange = sorted(set(local_positions) - set(exchange_positions))
 
     if unknown_position_markets:
         if unknown_positions_policy == "halt":
@@ -248,7 +249,17 @@ def reconcile_exchange_snapshot(
             "exchange_positions": len(exchange_positions),
             "local_positions": len(local_positions),
             "unknown_positions": len(unknown_position_markets),
+            "local_positions_missing_on_exchange": len(local_positions_missing_on_exchange),
         },
+        "exchange_bot_open_orders": [
+            {
+                "uuid": item.get("uuid"),
+                "identifier": item.get("identifier"),
+                "market": item.get("market"),
+                "state": item.get("state"),
+            }
+            for item in exchange_bot_open_orders
+        ],
         "external_open_orders": [
             {
                 "uuid": item.get("uuid"),
@@ -258,7 +269,17 @@ def reconcile_exchange_snapshot(
             }
             for item in external_open_orders
         ],
+        "local_only_open_orders": [
+            {
+                "uuid": local_uuid,
+                "identifier": local_open_orders[local_uuid].get("identifier"),
+                "market": local_open_orders[local_uuid].get("market"),
+                "local_state": local_open_orders[local_uuid].get("local_state"),
+            }
+            for local_uuid in local_only_open_uuids
+        ],
         "unknown_positions": [exchange_positions[market] for market in unknown_position_markets],
+        "local_positions_missing_on_exchange": [local_positions[market] for market in local_positions_missing_on_exchange],
         "actions": actions,
         "warnings": warnings,
         "ts_ms": now_ts,
