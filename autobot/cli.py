@@ -879,6 +879,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Override trainer-internal execution acceptance hold_bars for model_alpha_v1.",
     )
+    model_train_parser.add_argument(
+        "--cpcv-lite",
+        action="store_true",
+        help="Enable research-only CPCV-lite summary for trainer=v4_crypto_cs.",
+    )
+    model_train_parser.add_argument(
+        "--cpcv-lite-group-count",
+        type=int,
+        help="Override CPCV-lite contiguous time-group count.",
+    )
+    model_train_parser.add_argument(
+        "--cpcv-lite-test-groups",
+        type=int,
+        help="Override CPCV-lite held-out group count per fold.",
+    )
+    model_train_parser.add_argument(
+        "--cpcv-lite-max-combinations",
+        type=int,
+        help="Override CPCV-lite maximum evaluated combinations.",
+    )
 
     model_eval_parser = model_subparsers.add_parser("eval", help="Evaluate registered model on split.")
     model_eval_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
@@ -2406,6 +2426,10 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
                     ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
                     min_rows_for_train=max(int(features_v4_config.build.min_rows_for_train), 1),
+                    cpcv_lite_enabled=bool(getattr(args, "cpcv_lite", False)),
+                    cpcv_lite_group_count=max(int(getattr(args, "cpcv_lite_group_count", None) or 6), 3),
+                    cpcv_lite_test_group_count=max(int(getattr(args, "cpcv_lite_test_groups", None) or 2), 1),
+                    cpcv_lite_max_combinations=max(int(getattr(args, "cpcv_lite_max_combinations", None) or 6), 1),
                     execution_acceptance_enabled=True,
                     execution_acceptance_dataset_name=backtest_dataset_name_v4,
                     execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
@@ -2595,6 +2619,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 print(f"[model][train][v4_crypto_cs] train_report={summary_v4.train_report_path}")
                 if summary_v4.walk_forward_report_path is not None:
                     print(f"[model][train][v4_crypto_cs] walk_forward={summary_v4.walk_forward_report_path}")
+                if summary_v4.cpcv_lite_report_path is not None:
+                    print(f"[model][train][v4_crypto_cs] cpcv_lite={summary_v4.cpcv_lite_report_path}")
                 if summary_v4.execution_acceptance_report_path is not None:
                     print(
                         f"[model][train][v4_crypto_cs] execution_acceptance={summary_v4.execution_acceptance_report_path}"

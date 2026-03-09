@@ -31,6 +31,12 @@ from .dataset_loader import (
     load_feature_spec,
     load_label_spec,
 )
+from .cpcv_lite import (
+    build_cpcv_lite_plan,
+    summarize_cpcv_lite_dsr,
+    summarize_cpcv_lite_fold_selection,
+    summarize_cpcv_lite_pbo,
+)
 from .multiple_testing import (
     build_trial_window_differential_matrix,
     run_hansen_spa,
@@ -57,6 +63,7 @@ from .registry import (
     update_latest_candidate_pointer,
 )
 from .split import (
+    SPLIT_DROP,
     SPLIT_TEST,
     SPLIT_TRAIN,
     SPLIT_VALID,
@@ -110,6 +117,12 @@ class TrainV4CryptoCsOptions:
     walk_forward_sweep_trials: int = 3
     walk_forward_min_train_rows: int = 1_000
     walk_forward_min_test_rows: int = 200
+    cpcv_lite_enabled: bool = False
+    cpcv_lite_group_count: int = 6
+    cpcv_lite_test_group_count: int = 2
+    cpcv_lite_max_combinations: int = 6
+    cpcv_lite_min_train_rows: int = 1_000
+    cpcv_lite_min_test_rows: int = 200
     multiple_testing_alpha: float = 0.20
     multiple_testing_bootstrap_iters: int = 500
     multiple_testing_block_length: int = 0
@@ -145,6 +158,7 @@ class TrainV4CryptoCsResult:
     train_report_path: Path
     promotion_path: Path
     walk_forward_report_path: Path | None = None
+    cpcv_lite_report_path: Path | None = None
     execution_acceptance_report_path: Path | None = None
     runtime_recommendations_path: Path | None = None
 
@@ -338,6 +352,14 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_recommendations=selection_recommendations,
         options=options,
     )
+    cpcv_lite = _run_cpcv_lite_v4(
+        options=options,
+        task=task,
+        dataset=dataset,
+        interval_ms=interval_ms,
+        thresholds=thresholds,
+        best_params=dict(booster.get("best_params", {})),
+    )
     metrics = _build_v4_metrics_doc(
         run_id=run_id,
         options=options,
@@ -348,6 +370,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         valid_metrics=valid_metrics,
         test_metrics=test_metrics,
         walk_forward_summary=walk_forward.get("summary", {}),
+        cpcv_lite_summary=cpcv_lite.get("summary", {}),
         best_params=dict(booster.get("best_params", {})),
         sweep_records=list(booster.get("trials", [])),
         ranker_budget_profile=ranker_budget_profile,
@@ -388,6 +411,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         markets=dataset.selected_markets,
         selection_recommendations=selection_recommendations,
         ranker_budget_profile=ranker_budget_profile,
+        cpcv_lite_summary=cpcv_lite.get("summary", {}),
     )
 
     run_dir = save_run(
@@ -419,6 +443,13 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(walk_forward, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    cpcv_lite_report_path = None
+    if bool(cpcv_lite):
+        cpcv_lite_report_path = run_dir / "cpcv_lite_report.json"
+        cpcv_lite_report_path.write_text(
+            json.dumps(cpcv_lite, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     duplicate_artifacts = _detect_duplicate_candidate_artifacts(
         options=options,
         run_id=run_id,
@@ -501,6 +532,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
             "walk_forward": walk_forward,
+            "cpcv_lite": cpcv_lite,
             "execution_acceptance": execution_acceptance,
             "runtime_recommendations": runtime_recommendations,
             "selection_recommendations": selection_recommendations,
@@ -518,6 +550,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         train_report_path=report_path,
         promotion_path=promotion_path,
         walk_forward_report_path=walk_forward_report_path,
+        cpcv_lite_report_path=cpcv_lite_report_path,
         execution_acceptance_report_path=execution_acceptance_report_path,
         runtime_recommendations_path=runtime_recommendations_path,
     )
@@ -675,6 +708,508 @@ def _run_walk_forward_v4(
     report["windows_generated"] = len(window_specs)
     report["trial_panel"] = _summarize_walk_forward_trial_panel(windows, threshold_key="top_5pct")
     return report
+
+
+def _run_cpcv_lite_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    task: str,
+    dataset: Any,
+    interval_ms: int,
+    thresholds: dict[str, Any],
+    best_params: dict[str, Any],
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "policy": "cpcv_lite_research_v1",
+        "enabled": bool(options.cpcv_lite_enabled),
+        "estimate_label": "lite",
+        "summary": {
+            "status": "disabled",
+            "folds_requested": 0,
+            "folds_run": 0,
+            "skipped_folds": 0,
+            "comparable_fold_count": 0,
+            "budget_cut": False,
+        },
+        "folds": [],
+        "skipped_folds": [],
+        "pbo": {
+            "comparable": False,
+            "reason": "DISABLED",
+            "folds_considered": 0,
+            "pbo_estimate": 0.0,
+            "overfit_fold_count": 0,
+            "median_selected_test_percentile": 0.0,
+            "mean_selected_test_logit": 0.0,
+        },
+        "dsr": {
+            "comparable": False,
+            "reason": "DISABLED",
+            "observations": 0,
+            "mean_selected_test_objective": 0.0,
+            "std_selected_test_objective": 0.0,
+            "score_series_sharpe": 0.0,
+            "deflated_sharpe_ratio_est": 0.0,
+            "benchmark_sharpe": 0.0,
+            "effective_trials": 0,
+            "effective_trials_source": "selection_config_count_max",
+        },
+        "insufficiency_reasons": [],
+    }
+    if not bool(options.cpcv_lite_enabled):
+        report["skip_reason"] = "DISABLED"
+        return report
+
+    fold_specs, plan_report = build_cpcv_lite_plan(
+        dataset.ts_ms,
+        group_count=options.cpcv_lite_group_count,
+        test_group_count=options.cpcv_lite_test_group_count,
+        max_combinations=options.cpcv_lite_max_combinations,
+        embargo_bars=options.embargo_bars,
+        interval_ms=interval_ms,
+    )
+    report.update(plan_report)
+    report["fold_refit_policy"] = {
+        "mode": "reuse_main_best_params",
+        "task": str(task),
+        "params_present": bool(best_params),
+    }
+    if not fold_specs:
+        report["summary"] = {
+            "status": "insufficient",
+            "folds_requested": 0,
+            "folds_run": 0,
+            "skipped_folds": 0,
+            "comparable_fold_count": 0,
+            "budget_cut": bool(report.get("budget_cut", False)),
+        }
+        return report
+    if not best_params:
+        report["insufficiency_reasons"] = list(report.get("insufficiency_reasons", [])) + ["MISSING_MAIN_BEST_PARAMS"]
+        report["summary"] = {
+            "status": "insufficient",
+            "folds_requested": int(len(fold_specs)),
+            "folds_run": 0,
+            "skipped_folds": int(len(fold_specs)),
+            "comparable_fold_count": 0,
+            "budget_cut": bool(report.get("budget_cut", False)),
+        }
+        return report
+
+    min_train_rows = max(int(options.cpcv_lite_min_train_rows), 1)
+    min_test_rows = max(int(options.cpcv_lite_min_test_rows), 1)
+    valid_ratio = min(max(float(options.valid_ratio), 0.10), 0.40)
+    folds: list[dict[str, Any]] = []
+    skipped_folds: list[dict[str, Any]] = []
+    all_y_rank = np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)
+
+    for spec in fold_specs:
+        train_all_mask = spec.labels == SPLIT_TRAIN
+        test_mask = spec.labels == SPLIT_TEST
+        row_counts = {
+            "train": int(np.sum(train_all_mask)),
+            "test": int(np.sum(test_mask)),
+            "drop": int(np.sum(spec.labels == SPLIT_DROP)),
+        }
+        if row_counts["train"] < min_train_rows or row_counts["test"] < min_test_rows:
+            skipped_folds.append(
+                {
+                    "fold_index": int(spec.fold_index),
+                    "test_groups": list(spec.test_groups),
+                    "purged_groups": list(spec.purged_groups),
+                    "counts": row_counts,
+                    "reason": "INSUFFICIENT_ROWS",
+                }
+            )
+            continue
+
+        inner_masks = _build_cpcv_inner_train_valid_masks(
+            ts_ms=np.asarray(dataset.ts_ms[train_all_mask], dtype=np.int64),
+            valid_ratio=valid_ratio,
+            embargo_bars=options.embargo_bars,
+            interval_ms=interval_ms,
+        )
+        if inner_masks is None:
+            skipped_folds.append(
+                {
+                    "fold_index": int(spec.fold_index),
+                    "test_groups": list(spec.test_groups),
+                    "purged_groups": list(spec.purged_groups),
+                    "counts": row_counts,
+                    "reason": "INSUFFICIENT_INNER_VALIDATION_WINDOW",
+                }
+            )
+            continue
+
+        train_all_x = dataset.X[train_all_mask]
+        train_all_y_cls = dataset.y_cls[train_all_mask]
+        train_all_y_reg = dataset.y_reg[train_all_mask]
+        train_all_y_rank = all_y_rank[train_all_mask]
+        train_all_w = dataset.sample_weight[train_all_mask]
+        train_all_ts = dataset.ts_ms[train_all_mask]
+        fit_bundle = _fit_cpcv_lite_fold_model(
+            task=task,
+            options=options,
+            best_params=best_params,
+            x_train=train_all_x[inner_masks["train"]],
+            y_cls_train=train_all_y_cls[inner_masks["train"]],
+            y_reg_train=train_all_y_reg[inner_masks["train"]],
+            y_rank_train=train_all_y_rank[inner_masks["train"]],
+            w_train=train_all_w[inner_masks["train"]],
+            ts_train_ms=train_all_ts[inner_masks["train"]],
+            x_valid=train_all_x[inner_masks["valid"]],
+            y_valid_cls=train_all_y_cls[inner_masks["valid"]],
+            y_valid_reg=train_all_y_reg[inner_masks["valid"]],
+            y_valid_rank=train_all_y_rank[inner_masks["valid"]],
+            w_valid=train_all_w[inner_masks["valid"]],
+            ts_valid_ms=train_all_ts[inner_masks["valid"]],
+            fold_index=int(spec.fold_index),
+        )
+
+        train_scores = _predict_scores(fit_bundle, train_all_x)
+        test_scores = _predict_scores(fit_bundle, dataset.X[test_mask])
+        fold_metrics = _attach_ranking_metrics(
+            metrics=_evaluate_split(
+                y_cls=dataset.y_cls[test_mask],
+                y_reg=dataset.y_reg[test_mask],
+                scores=test_scores,
+                markets=dataset.markets[test_mask],
+                fee_bps_est=options.fee_bps_est,
+                safety_bps=options.safety_bps,
+            ),
+            y_rank=all_y_rank[test_mask],
+            ts_ms=dataset.ts_ms[test_mask],
+            scores=test_scores,
+        )
+        train_selection = build_window_selection_objectives(
+            scores=train_scores,
+            y_reg=train_all_y_reg,
+            ts_ms=train_all_ts,
+            thresholds=thresholds,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+            config=SelectionGridConfig(),
+        )
+        test_selection = build_window_selection_objectives(
+            scores=test_scores,
+            y_reg=dataset.y_reg[test_mask],
+            ts_ms=dataset.ts_ms[test_mask],
+            thresholds=thresholds,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+            config=SelectionGridConfig(),
+        )
+        selection_summary = summarize_cpcv_lite_fold_selection(
+            train_selection=train_selection,
+            test_selection=test_selection,
+        )
+        folds.append(
+            {
+                "fold_index": int(spec.fold_index),
+                "test_groups": list(spec.test_groups),
+                "purged_groups": list(spec.purged_groups),
+                "counts": row_counts,
+                "inner_validation": {
+                    "train_rows": int(np.sum(inner_masks["train"])),
+                    "valid_rows": int(np.sum(inner_masks["valid"])),
+                    "drop_rows": int(np.sum(inner_masks["drop"])),
+                    "valid_start_ts": int(inner_masks["valid_start_ts"]),
+                },
+                "metrics": _compact_eval_metrics(fold_metrics),
+                "selection_summary": selection_summary,
+            }
+        )
+
+    report["folds"] = folds
+    report["skipped_folds"] = skipped_folds
+    report["pbo"] = summarize_cpcv_lite_pbo(folds)
+    report["dsr"] = summarize_cpcv_lite_dsr(folds)
+    insufficiency_reasons = list(report.get("insufficiency_reasons", []))
+    if not folds:
+        insufficiency_reasons.append("NO_EVALUATED_FOLDS")
+    if not bool(report["pbo"].get("comparable", False)):
+        insufficiency_reasons.append(str(report["pbo"].get("reason", "PBO_NOT_COMPARABLE")))
+    if not bool(report["dsr"].get("comparable", False)):
+        insufficiency_reasons.append(str(report["dsr"].get("reason", "DSR_NOT_COMPARABLE")))
+    comparable_fold_count = int(
+        sum(
+            1
+            for fold in folds
+            if isinstance(fold, dict) and bool((fold.get("selection_summary") or {}).get("comparable", False))
+        )
+    )
+    status = "trusted"
+    if not folds:
+        status = "insufficient"
+    elif bool(report.get("budget_cut", False)) or skipped_folds or comparable_fold_count < 2:
+        status = "partial"
+    report["insufficiency_reasons"] = sorted({str(item) for item in insufficiency_reasons if str(item).strip()})
+    report["summary"] = {
+        "status": status,
+        "folds_requested": int(len(fold_specs)),
+        "folds_run": int(len(folds)),
+        "skipped_folds": int(len(skipped_folds)),
+        "comparable_fold_count": comparable_fold_count,
+        "budget_cut": bool(report.get("budget_cut", False)),
+    }
+    return report
+
+
+def _build_cpcv_inner_train_valid_masks(
+    *,
+    ts_ms: np.ndarray,
+    valid_ratio: float,
+    embargo_bars: int,
+    interval_ms: int,
+) -> dict[str, Any] | None:
+    ts_values = np.asarray(ts_ms, dtype=np.int64)
+    if ts_values.size <= 0:
+        return None
+    unique_ts = np.unique(ts_values)
+    if unique_ts.size < 4:
+        return None
+    valid_len = max(int(np.floor(unique_ts.size * float(valid_ratio))), 1)
+    if valid_len >= unique_ts.size:
+        return None
+    valid_start_ts = int(unique_ts[-valid_len])
+    embargo_ms = max(int(embargo_bars), 0) * max(int(interval_ms), 1)
+    valid_mask = ts_values >= valid_start_ts
+    drop_mask = np.zeros(ts_values.shape[0], dtype=bool)
+    if embargo_ms > 0:
+        drop_mask = np.abs(ts_values - valid_start_ts) <= embargo_ms
+        drop_mask &= ~valid_mask
+    train_mask = ~(valid_mask | drop_mask)
+    if int(np.sum(train_mask)) <= 0 or int(np.sum(valid_mask)) <= 0:
+        return None
+    return {
+        "train": train_mask,
+        "valid": valid_mask,
+        "drop": drop_mask,
+        "valid_start_ts": int(valid_start_ts),
+    }
+
+
+def _fit_cpcv_lite_fold_model(
+    *,
+    task: str,
+    options: TrainV4CryptoCsOptions,
+    best_params: dict[str, Any],
+    x_train: np.ndarray,
+    y_cls_train: np.ndarray,
+    y_reg_train: np.ndarray,
+    y_rank_train: np.ndarray,
+    w_train: np.ndarray,
+    ts_train_ms: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    y_valid_rank: np.ndarray,
+    w_valid: np.ndarray,
+    ts_valid_ms: np.ndarray,
+    fold_index: int,
+) -> dict[str, Any]:
+    task_name = str(task).strip().lower()
+    if task_name == "cls":
+        return _fit_fixed_classifier_model(
+            options=options,
+            best_params=best_params,
+            x_train=x_train,
+            y_train=y_cls_train,
+            w_train=w_train,
+            x_valid=x_valid,
+            y_valid=y_valid_cls,
+            w_valid=w_valid,
+            fold_index=fold_index,
+        )
+    if task_name == "reg":
+        return _fit_fixed_regression_model(
+            options=options,
+            best_params=best_params,
+            x_train=x_train,
+            y_train=y_reg_train,
+            w_train=w_train,
+            x_valid=x_valid,
+            y_valid=y_valid_reg,
+            w_valid=w_valid,
+            fold_index=fold_index,
+        )
+    return _fit_fixed_ranker_model(
+        options=options,
+        best_params=best_params,
+        x_train=x_train,
+        y_train=y_rank_train,
+        ts_train_ms=ts_train_ms,
+        w_train=w_train,
+        x_valid=x_valid,
+        y_valid=y_valid_rank,
+        ts_valid_ms=ts_valid_ms,
+        fold_index=fold_index,
+    )
+
+
+def _fit_fixed_classifier_model(
+    *,
+    options: TrainV4CryptoCsOptions,
+    best_params: dict[str, Any],
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    w_valid: np.ndarray,
+    fold_index: int,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+    params = _normalize_xgb_best_params(best_params)
+    train_w = np.clip(np.asarray(w_train, dtype=np.float64), 1e-6, None)
+    valid_w = np.clip(np.asarray(w_valid, dtype=np.float64), 1e-6, None)
+    estimator = xgb.XGBClassifier(
+        objective="binary:logistic",
+        tree_method="hist",
+        n_estimators=1200,
+        learning_rate=params["learning_rate"],
+        max_depth=params["max_depth"],
+        subsample=params["subsample"],
+        colsample_bytree=params["colsample_bytree"],
+        min_child_weight=params["min_child_weight"],
+        reg_lambda=params["reg_lambda"],
+        reg_alpha=params["reg_alpha"],
+        max_bin=params["max_bin"],
+        random_state=int(options.seed + fold_index),
+        nthread=max(int(options.nthread), 1),
+        eval_metric="logloss",
+    )
+    fit_kwargs = {
+        "sample_weight": train_w,
+        "eval_set": [(x_valid, y_valid)],
+        "sample_weight_eval_set": [valid_w],
+        "verbose": False,
+    }
+    try:
+        estimator.fit(x_train, y_train, early_stopping_rounds=50, **fit_kwargs)
+    except TypeError:
+        estimator.fit(x_train, y_train, sample_weight=train_w, eval_set=[(x_valid, y_valid)], verbose=False)
+    return {"model_type": "xgboost", "scaler": None, "estimator": estimator}
+
+
+def _fit_fixed_regression_model(
+    *,
+    options: TrainV4CryptoCsOptions,
+    best_params: dict[str, Any],
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    w_valid: np.ndarray,
+    fold_index: int,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+    params = _normalize_xgb_best_params(best_params)
+    train_w = np.clip(np.asarray(w_train, dtype=np.float64), 1e-6, None)
+    valid_w = np.clip(np.asarray(w_valid, dtype=np.float64), 1e-6, None)
+    estimator = xgb.XGBRegressor(
+        objective="reg:squarederror",
+        tree_method="hist",
+        n_estimators=1200,
+        learning_rate=params["learning_rate"],
+        max_depth=params["max_depth"],
+        subsample=params["subsample"],
+        colsample_bytree=params["colsample_bytree"],
+        min_child_weight=params["min_child_weight"],
+        reg_lambda=params["reg_lambda"],
+        reg_alpha=params["reg_alpha"],
+        max_bin=params["max_bin"],
+        random_state=int(options.seed + fold_index),
+        nthread=max(int(options.nthread), 1),
+        eval_metric="rmse",
+    )
+    fit_kwargs = {
+        "sample_weight": train_w,
+        "eval_set": [(x_valid, y_valid)],
+        "sample_weight_eval_set": [valid_w],
+        "verbose": False,
+    }
+    try:
+        estimator.fit(x_train, y_train, early_stopping_rounds=50, **fit_kwargs)
+    except TypeError:
+        estimator.fit(x_train, y_train, sample_weight=train_w, eval_set=[(x_valid, y_valid)], verbose=False)
+    return {"model_type": "xgboost_regressor", "scaler": None, "estimator": estimator}
+
+
+def _fit_fixed_ranker_model(
+    *,
+    options: TrainV4CryptoCsOptions,
+    best_params: dict[str, Any],
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    ts_train_ms: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    ts_valid_ms: np.ndarray,
+    fold_index: int,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+    params = _normalize_xgb_best_params(best_params)
+    train_group = _group_counts_by_ts(ts_train_ms)
+    valid_group = _group_counts_by_ts(ts_valid_ms)
+    if train_group.size <= 0 or valid_group.size <= 0:
+        raise RuntimeError("ranker CPCV-lite fold requires grouped train and valid rows")
+    train_w = np.clip(np.asarray(w_train, dtype=np.float64), 1e-6, None)
+    estimator = xgb.XGBRanker(
+        objective="rank:pairwise",
+        tree_method="hist",
+        n_estimators=900,
+        learning_rate=params["learning_rate"],
+        max_depth=params["max_depth"],
+        subsample=params["subsample"],
+        colsample_bytree=params["colsample_bytree"],
+        min_child_weight=params["min_child_weight"],
+        reg_lambda=params["reg_lambda"],
+        reg_alpha=params["reg_alpha"],
+        max_bin=params["max_bin"],
+        random_state=int(options.seed + fold_index),
+        nthread=max(int(options.nthread), 1),
+        eval_metric="ndcg@5",
+    )
+    fit_kwargs = {
+        "group": train_group.tolist(),
+        "sample_weight": train_w,
+        "eval_set": [(x_valid, np.nan_to_num(np.asarray(y_valid, dtype=np.float32), nan=0.0))],
+        "eval_group": [valid_group.tolist()],
+        "verbose": False,
+    }
+    try:
+        estimator.fit(
+            x_train,
+            np.nan_to_num(np.asarray(y_train, dtype=np.float32), nan=0.0),
+            early_stopping_rounds=50,
+            **fit_kwargs,
+        )
+    except TypeError:
+        estimator.fit(x_train, np.nan_to_num(np.asarray(y_train, dtype=np.float32), nan=0.0), **fit_kwargs)
+    return {"model_type": "xgboost_ranker", "scaler": None, "estimator": estimator}
+
+
+def _normalize_xgb_best_params(best_params: dict[str, Any] | None) -> dict[str, Any]:
+    source = dict(best_params or {})
+    return {
+        "learning_rate": float(source.get("learning_rate", 0.05) or 0.05),
+        "max_depth": int(source.get("max_depth", 6) or 6),
+        "subsample": float(source.get("subsample", 0.8) or 0.8),
+        "colsample_bytree": float(source.get("colsample_bytree", 0.8) or 0.8),
+        "min_child_weight": float(source.get("min_child_weight", 1.0) or 1.0),
+        "reg_lambda": float(source.get("reg_lambda", 1.0) or 1.0),
+        "reg_alpha": float(source.get("reg_alpha", 0.0) or 0.0),
+        "max_bin": int(source.get("max_bin", 256) or 256),
+    }
 
 
 def _fit_walk_forward_window_model(
@@ -2135,6 +2670,7 @@ def _build_v4_metrics_doc(
     valid_metrics: dict[str, Any],
     test_metrics: dict[str, Any],
     walk_forward_summary: dict[str, Any],
+    cpcv_lite_summary: dict[str, Any],
     best_params: dict[str, Any],
     sweep_records: list[dict[str, Any]],
     ranker_budget_profile: dict[str, Any],
@@ -2188,6 +2724,9 @@ def _build_v4_metrics_doc(
         },
         "champion_metrics": test_metrics,
         "walk_forward": walk_forward_summary,
+        "research_only": {
+            "cpcv_lite": cpcv_lite_summary,
+        },
     }
 
 
@@ -2233,6 +2772,7 @@ def _train_config_snapshot_v4(
     markets: tuple[str, ...],
     selection_recommendations: dict[str, Any],
     ranker_budget_profile: dict[str, Any],
+    cpcv_lite_summary: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -2257,6 +2797,13 @@ def _train_config_snapshot_v4(
     payload["y_rank_column"] = "y_rank_cs_12"
     payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12", "y_rank_cs_12"]
     payload["ranker_budget_profile"] = ranker_budget_profile
+    payload["cpcv_lite"] = {
+        "enabled": bool(options.cpcv_lite_enabled),
+        "group_count": int(options.cpcv_lite_group_count),
+        "test_group_count": int(options.cpcv_lite_test_group_count),
+        "max_combinations": int(options.cpcv_lite_max_combinations),
+        "summary": dict(cpcv_lite_summary or {}),
+    }
     payload["selection_recommendations"] = selection_recommendations
     return payload
 
