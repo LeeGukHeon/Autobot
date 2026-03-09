@@ -45,11 +45,15 @@ live:
     tp_pct: 3.0
     trailing_enabled: false
   risk:
-    enabled: false
+    enabled: true
     exit_aggress_bps: 8.0
     timeout_sec: 20
     replace_max: 2
     default_trail_pct: 1.0
+  small_account:
+    single_slot_canary: true
+    max_positions: 1
+    max_open_orders_per_market: 1
   strategy:
     enabled: false
     decision_interval_sec: 1.0
