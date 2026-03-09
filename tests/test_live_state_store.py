@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+import autobot.live.state_store as state_store_module
 from autobot.live.breakers import arm_breaker
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, PositionRecord
 
@@ -90,6 +91,38 @@ def test_run_lock_is_unique(tmp_path: Path) -> None:
         with LiveStateStore(db_path) as second:
             assert first.acquire_run_lock(bot_id="autobot-001", ts_ms=1)
             assert not second.acquire_run_lock(bot_id="autobot-001", ts_ms=2)
+
+
+def test_run_lock_reclaims_dead_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO run_locks (bot_id, acquired_ts, owner_pid) VALUES (?, ?, ?)",
+                ("autobot-001", 1000, 424242),
+            )
+        monkeypatch.setattr(state_store_module, "_pid_is_alive", lambda pid: False)
+        assert store.acquire_run_lock(bot_id="autobot-001", ts_ms=2000)
+        lock = store.run_lock(bot_id="autobot-001")
+        assert lock is not None
+        assert lock["owner_pid"] == state_store_module.os.getpid()
+        assert lock["acquired_ts"] == 2000
+
+
+def test_run_lock_does_not_reclaim_live_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO run_locks (bot_id, acquired_ts, owner_pid) VALUES (?, ?, ?)",
+                ("autobot-001", 1000, 31337),
+            )
+        monkeypatch.setattr(state_store_module, "_pid_is_alive", lambda pid: True)
+        assert not store.acquire_run_lock(bot_id="autobot-001", ts_ms=2000)
+        lock = store.run_lock(bot_id="autobot-001")
+        assert lock is not None
+        assert lock["owner_pid"] == 31337
+        assert lock["acquired_ts"] == 1000
 
 
 def test_state_store_rejects_identifier_collision(tmp_path: Path) -> None:

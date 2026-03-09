@@ -13,6 +13,21 @@ from typing import Any
 from .order_state import is_open_local_state, normalize_order_state, resolve_transition
 
 
+def _pid_is_alive(pid: int) -> bool:
+    pid_value = int(pid)
+    if pid_value <= 0:
+        return False
+    try:
+        os.kill(pid_value, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class PositionRecord:
     market: str
@@ -173,12 +188,37 @@ class LiveStateStore:
                     (bot_id, now_ts, os.getpid()),
                 )
         except sqlite3.IntegrityError:
-            return False
+            existing = self.run_lock(bot_id=bot_id)
+            if existing is None:
+                return False
+            owner_pid = int(existing.get("owner_pid") or 0)
+            if _pid_is_alive(owner_pid):
+                return False
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM run_locks WHERE bot_id = ? AND owner_pid = ?",
+                    (bot_id, owner_pid),
+                )
+            try:
+                with self._conn:
+                    self._conn.execute(
+                        "INSERT INTO run_locks (bot_id, acquired_ts, owner_pid) VALUES (?, ?, ?)",
+                        (bot_id, now_ts, os.getpid()),
+                    )
+            except sqlite3.IntegrityError:
+                return False
         return True
 
     def release_run_lock(self, *, bot_id: str) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM run_locks WHERE bot_id = ?", (bot_id,))
+
+    def run_lock(self, *, bot_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT bot_id, acquired_ts, owner_pid FROM run_locks WHERE bot_id = ?",
+            (bot_id,),
+        ).fetchone()
+        return _row_to_plain_dict(row) if row is not None else None
 
     def upsert_position(self, record: PositionRecord) -> None:
         with self._conn:
