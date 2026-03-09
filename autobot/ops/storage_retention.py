@@ -25,8 +25,8 @@ class StorageRetentionPolicy:
     micro_parquet_retention_days: int = 90
     candles_api_retention_days: int = 90
     paper_runs_retention_days: int = 30
-    backtest_runs_retention_days: int = 5
-    execution_backtest_retention_days: int = 2
+    backtest_runs_retention_days: int = 1
+    execution_backtest_retention_days: int = 1
     registry_retention_days: int = 30
     registry_keep_recent_count: int = 6
 
@@ -34,7 +34,7 @@ class StorageRetentionPolicy:
 @dataclass(frozen=True)
 class EmergencyRetentionPolicy:
     paper_runs_retention_days: int = 7
-    backtest_runs_retention_days: int = 3
+    backtest_runs_retention_days: int = 1
     execution_backtest_retention_days: int = 1
     registry_retention_days: int = 14
     registry_keep_recent_count: int = 3

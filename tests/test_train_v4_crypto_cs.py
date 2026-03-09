@@ -116,6 +116,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
         dataset_root=tmp_path / "features_v4",
         registry_root=tmp_path / "registry",
         logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
         model_family="train_v4_crypto_cs",
         tf="5m",
         quote="KRW",
@@ -236,6 +237,7 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
         dataset_root=tmp_path / "features_v4",
         registry_root=tmp_path / "registry",
         logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
         model_family="train_v4_crypto_cs",
         tf="5m",
         quote="KRW",
@@ -350,6 +352,16 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.render_model_card", lambda **kwargs: "# card")
     captured: dict[str, object] = {}
 
+    exec_runs_root = tmp_path / "logs" / "train_v4_execution_backtest" / "runs"
+    candidate_exec_run = exec_runs_root / "backtest-candidate"
+    champion_exec_run = exec_runs_root / "backtest-champion"
+    hold_exec_run = exec_runs_root / "backtest-hold"
+    risk_exec_run = exec_runs_root / "backtest-risk"
+    execution_exec_run = exec_runs_root / "backtest-execution"
+    for path in (candidate_exec_run, champion_exec_run, hold_exec_run, risk_exec_run, execution_exec_run):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "summary.json").write_text("{}", encoding="utf-8")
+
     def _fake_run_execution_acceptance(options):
         captured["options"] = options
         return {
@@ -357,8 +369,8 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
             "enabled": True,
             "status": "compared",
             "compare_to_champion": {"decision": "candidate_edge", "comparable": True},
-            "candidate_summary": {"orders_filled": 9},
-            "champion_summary": {"orders_filled": 7},
+            "candidate_summary": {"orders_filled": 9, "run_dir": str(candidate_exec_run)},
+            "champion_summary": {"orders_filled": 7, "run_dir": str(champion_exec_run)},
         }
 
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.run_execution_acceptance", _fake_run_execution_acceptance)
@@ -370,17 +382,20 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
             "exit": {
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
+                "summary": {"run_dir": str(hold_exec_run)},
                 "recommended_risk_scaling_mode": "volatility_scaled",
                 "recommended_risk_vol_feature": "rv_36",
                 "recommended_tp_vol_multiplier": 2.5,
                 "recommended_sl_vol_multiplier": 1.5,
                 "recommended_trailing_vol_multiplier": 0.75,
+                "risk_summary": {"run_dir": str(risk_exec_run)},
             },
             "execution": {
                 "recommended_price_mode": "JOIN",
                 "recommended_timeout_bars": 2,
                 "recommended_replace_max": 1,
                 "recommendation_source": "execution_backtest_grid_search",
+                "summary": {"run_dir": str(execution_exec_run)},
             },
         },
     )
@@ -389,6 +404,7 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
         dataset_root=tmp_path / "features_v4",
         registry_root=tmp_path / "registry",
         logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
         model_family="train_v4_crypto_cs",
         tf="5m",
         quote="KRW",
@@ -429,12 +445,19 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert result.runtime_recommendations_path is not None
     assert result.runtime_recommendations_path.exists()
     assert execution_doc["status"] == "compared"
+    assert execution_doc["artifacts_cleanup"]["removed_count"] == 5
+    assert runtime_doc["artifacts_cleanup"]["removed_count"] == 5
     assert runtime_doc["exit"]["recommended_hold_bars"] == 12
     assert runtime_doc["exit"]["recommended_risk_scaling_mode"] == "volatility_scaled"
     assert runtime_doc["exit"]["recommended_risk_vol_feature"] == "rv_36"
     assert runtime_doc["exit"]["recommended_tp_vol_multiplier"] == 2.5
     assert runtime_doc["exit"]["recommended_sl_vol_multiplier"] == 1.5
     assert runtime_doc["exit"]["recommended_trailing_vol_multiplier"] == 0.75
+    assert candidate_exec_run.exists() is False
+    assert champion_exec_run.exists() is False
+    assert hold_exec_run.exists() is False
+    assert risk_exec_run.exists() is False
+    assert execution_exec_run.exists() is False
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
     execution_options = captured["options"]

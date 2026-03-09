@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import time
 from typing import Any
 
@@ -393,11 +394,6 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             options=options,
             run_id=run_id,
         )
-    execution_acceptance_report_path = run_dir / "execution_acceptance_report.json"
-    execution_acceptance_report_path.write_text(
-        json.dumps(execution_acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
     if duplicate_candidate:
         runtime_recommendations = _build_duplicate_candidate_runtime_recommendations(
             run_id=run_id,
@@ -408,6 +404,19 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             options=options,
             run_id=run_id,
         )
+    execution_artifact_cleanup = _purge_execution_artifact_run_dirs(
+        output_root=options.execution_acceptance_output_root,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+    )
+    if execution_artifact_cleanup.get("evaluated"):
+        execution_acceptance["artifacts_cleanup"] = execution_artifact_cleanup
+        runtime_recommendations["artifacts_cleanup"] = execution_artifact_cleanup
+    execution_acceptance_report_path = run_dir / "execution_acceptance_report.json"
+    execution_acceptance_report_path.write_text(
+        json.dumps(execution_acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     runtime_recommendations_path = run_dir / "runtime_recommendations.json"
     runtime_recommendations_path.write_text(
         json.dumps(runtime_recommendations, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -1275,6 +1284,75 @@ def _build_duplicate_candidate_runtime_recommendations(
         "duplicate_candidate": True,
         "duplicate_artifacts": duplicate_artifacts,
     }
+
+
+def _purge_execution_artifact_run_dirs(
+    *,
+    output_root: Path,
+    execution_acceptance: dict[str, Any] | None,
+    runtime_recommendations: dict[str, Any] | None,
+) -> dict[str, Any]:
+    allowed_root = (Path(output_root) / "runs").resolve()
+    discovered = sorted(
+        {
+            run_dir
+            for run_dir in _collect_reported_run_dirs(execution_acceptance)
+            + _collect_reported_run_dirs(runtime_recommendations)
+            if run_dir
+        }
+    )
+    payload: dict[str, Any] = {
+        "evaluated": True,
+        "allowed_root": str(allowed_root),
+        "discovered_run_dirs": discovered,
+        "removed_paths": [],
+        "missing_paths": [],
+        "skipped_outside_root": [],
+    }
+    for raw_path in discovered:
+        candidate = Path(raw_path)
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            payload["missing_paths"].append(str(candidate))
+            continue
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError:
+            payload["skipped_outside_root"].append(str(resolved))
+            continue
+        if not resolved.exists():
+            payload["missing_paths"].append(str(resolved))
+            continue
+        if not resolved.is_dir():
+            payload["missing_paths"].append(str(resolved))
+            continue
+        shutil.rmtree(resolved, ignore_errors=False)
+        payload["removed_paths"].append(str(resolved))
+    payload["removed_count"] = len(payload["removed_paths"])
+    payload["missing_count"] = len(payload["missing_paths"])
+    payload["skipped_count"] = len(payload["skipped_outside_root"])
+    return payload
+
+
+def _collect_reported_run_dirs(payload: dict[str, Any] | None) -> list[str]:
+    found: list[str] = []
+
+    def _visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "run_dir":
+                    text = str(child).strip()
+                    if text:
+                        found.append(text)
+                _visit(child)
+            return
+        if isinstance(value, list):
+            for child in value:
+                _visit(child)
+
+    _visit(payload if isinstance(payload, dict) else {})
+    return found
 
 
 def _resolve_walk_forward_report_threshold_key(
