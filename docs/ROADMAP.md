@@ -463,6 +463,7 @@ D:\MyApps\Autobot
 - T20: v4 upgrade priority under `80GB` stable / `100GB` max budget
 - T21: literature-grounded methodology tickets for the current Oracle A1 server
   - T21.6: selector history and guarded auto-apply loop for stable automatic feature pruning
+  - T21.7: comparable `White/Hansen` trial-panel repair so multiple-testing evidence can actually materialize
 - T22: live ops readiness and restart-safe continuity for small-account real trading
   - T22.7: live model handoff and ws-public data-plane synchronization
   - T22.6: shadow/canary rollout and explicit promote-to-live hook

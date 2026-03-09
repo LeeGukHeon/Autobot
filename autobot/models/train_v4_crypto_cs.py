@@ -2422,7 +2422,7 @@ def _build_selection_search_trial_panel(
                     )
                 except Exception:
                     continue
-        grouped.setdefault(grid_key, []).append(
+                grouped.setdefault(grid_key, []).append(
                     {
                         "window": dict(window),
                         "window_index": window_index,

@@ -9,6 +9,7 @@ from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
 from autobot.models.train_v4_crypto_cs import (
     TrainV4CryptoCsOptions,
+    _build_selection_search_trial_panel,
     _summarize_walk_forward_trial_panel,
     train_and_register_v4_crypto_cs,
 )
@@ -751,6 +752,77 @@ def test_summarize_walk_forward_trial_panel_flattens_oos_slices() -> None:
     assert panel[0]["oos_periods"][1]["ts_ms"] == 2000
     assert panel[0]["oos_slices"][0]["window_index"] == 0
     assert panel[0]["oos_slices"][1]["slice_index"] == 1
+
+
+def test_build_selection_search_trial_panel_keeps_all_grid_trials() -> None:
+    windows = [
+        {
+            "window_index": 0,
+            "oos_slices": [{"slice_index": 0}],
+            "selection_optimization": {
+                "by_threshold_key": {
+                    "top_5pct": {
+                        "grid_results": [
+                            {
+                                "top_pct": 0.10,
+                                "min_candidates_per_ts": 1,
+                                "ev_net": 0.010,
+                                "selected_rows": 4,
+                                "period_results": [{"period_index": 0, "ts_ms": 1000, "ev_net": 0.010, "selected_rows": 4}],
+                            },
+                            {
+                                "top_pct": 0.20,
+                                "min_candidates_per_ts": 2,
+                                "ev_net": 0.015,
+                                "selected_rows": 3,
+                                "period_results": [{"period_index": 0, "ts_ms": 1000, "ev_net": 0.015, "selected_rows": 3}],
+                            },
+                        ]
+                    }
+                }
+            },
+        },
+        {
+            "window_index": 1,
+            "oos_slices": [{"slice_index": 0}],
+            "selection_optimization": {
+                "by_threshold_key": {
+                    "top_5pct": {
+                        "grid_results": [
+                            {
+                                "top_pct": 0.10,
+                                "min_candidates_per_ts": 1,
+                                "ev_net": 0.020,
+                                "selected_rows": 5,
+                                "period_results": [{"period_index": 0, "ts_ms": 2000, "ev_net": 0.020, "selected_rows": 5}],
+                            },
+                            {
+                                "top_pct": 0.20,
+                                "min_candidates_per_ts": 2,
+                                "ev_net": 0.030,
+                                "selected_rows": 2,
+                                "period_results": [{"period_index": 0, "ts_ms": 2000, "ev_net": 0.030, "selected_rows": 2}],
+                            },
+                        ]
+                    }
+                }
+            },
+        },
+    ]
+
+    panel = _build_selection_search_trial_panel(windows=windows, start_trial_id=7)
+
+    assert len(panel) == 2
+    assert [row["trial"] for row in panel] == [7, 8]
+    assert [row["params"] for row in panel] == [
+        {"threshold_key": "top_5pct", "top_pct": 0.1, "min_candidates_per_ts": 1},
+        {"threshold_key": "top_5pct", "top_pct": 0.2, "min_candidates_per_ts": 2},
+    ]
+    assert all(row["windows_run"] == 2 for row in panel)
+    assert panel[0]["windows"][0]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.01
+    assert panel[0]["windows"][1]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.02
+    assert panel[1]["windows"][0]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.015
+    assert panel[1]["windows"][1]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.03
 
 
 def test_train_v4_cls_writes_cpcv_lite_report_when_enabled(tmp_path, monkeypatch) -> None:
