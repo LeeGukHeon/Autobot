@@ -847,7 +847,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--end", help="End date YYYY-MM-DD")
     model_train_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3", "v4"))
     model_train_parser.add_argument("--label-set", default="v1", choices=("v1", "v2"))
-    model_train_parser.add_argument("--task", default="cls", choices=("cls", "reg"))
+    model_train_parser.add_argument("--task", default="cls", choices=("cls", "reg", "rank"))
     model_train_parser.add_argument("--model-family", help="Registry family, ex: train_v1")
     model_train_parser.add_argument("--run-baseline", default="true", help="Enable baseline track (true|false).")
     model_train_parser.add_argument("--run-booster", default="true", help="Enable booster track (true|false).")

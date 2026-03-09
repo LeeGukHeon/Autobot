@@ -29,9 +29,24 @@ class DummyRegressor:
         return x[:, 0].astype(np.float64)
 
 
+class DummyRanker:
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        return (x[:, 0].astype(np.float64) * 2.0) - 0.1
+
+
 def test_predict_scores_supports_predict_only_estimators() -> None:
     scores = _predict_scores(
         {"model_type": "xgboost_regressor", "scaler": None, "estimator": DummyRegressor()},
+        np.array([[-2.0], [0.0], [2.0]], dtype=np.float64),
+    )
+
+    assert scores.shape == (3,)
+    assert 0.0 < scores[0] < scores[1] < scores[2] < 1.0
+
+
+def test_predict_scores_supports_ranker_estimators() -> None:
+    scores = _predict_scores(
+        {"model_type": "xgboost_ranker", "scaler": None, "estimator": DummyRanker()},
         np.array([[-2.0], [0.0], [2.0]], dtype=np.float64),
     )
 
@@ -276,6 +291,123 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
     assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
     reasons = load_json(result.promotion_path)["reasons"]
     assert "NO_WALK_FORWARD_EVIDENCE" in reasons
+
+
+def test_train_v4_rank_registers_candidate_without_runtime_contract_change(tmp_path, monkeypatch) -> None:
+    dataset = SimpleNamespace(
+        rows=4,
+        X=np.array([[0.1], [0.2], [0.4], [0.8]], dtype=np.float64),
+        y_cls=np.array([0, 1, 0, 1], dtype=np.int64),
+        sample_weight=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float64),
+        y_reg=np.array([0.0, 0.02, -0.01, 0.05], dtype=np.float64),
+        y_rank=np.array([0.0, 1.0, 0.5, 1.0], dtype=np.float64),
+        markets=np.array(["KRW-BTC", "KRW-ETH", "KRW-BTC", "KRW-ETH"], dtype=object),
+        selected_markets=("KRW-BTC", "KRW-ETH"),
+        feature_names=("f1",),
+        ts_ms=np.array([1_000, 1_000, 2_000, 2_000], dtype=np.int64),
+    )
+    split_info = SimpleNamespace(valid_start_ts=1_000, test_start_ts=2_000, counts={"train": 2, "valid": 0, "test": 2})
+    masks = {
+        "train": np.array([True, True, False, False]),
+        "valid": np.array([False, False, True, False]),
+        "test": np.array([False, False, False, True]),
+        "drop": np.array([False, False, False, False]),
+    }
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._try_import_xgboost", lambda: object())
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_dataset_request",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.load_feature_spec",
+        lambda dataset_root: {"feature_columns": ["f1"]},
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.load_label_spec",
+        lambda dataset_root: {"label_columns": ["y_reg_net_12", "y_rank_cs_12", "y_cls_topq_12"]},
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.feature_columns_from_spec", lambda dataset_root: ("f1",))
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.load_feature_dataset", lambda *args, **kwargs: dataset)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.compute_time_splits",
+        lambda *args, **kwargs: (np.array(["train", "train", "valid", "test"], dtype=object), split_info),
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.split_masks", lambda labels: masks)
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._validate_split_counts", lambda split_masks: None)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._fit_booster_sweep_ranker",
+        lambda **kwargs: {
+            "bundle": {"model_type": "xgboost_ranker", "scaler": None, "estimator": DummyRanker()},
+            "best_params": {"max_depth": 2},
+            "objective": "rank:pairwise",
+            "grouping": {"query_key": "ts_ms"},
+            "trials": [],
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._evaluate_split",
+        lambda **kwargs: {
+            "classification": {
+                "roc_auc": 0.70,
+                "pr_auc": 0.62,
+                "log_loss": 0.39,
+                "brier_score": 0.19,
+            },
+            "trading": {
+                "top_5pct": {
+                    "precision": 0.65,
+                    "ev_net": 0.0013,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._build_thresholds", lambda **kwargs: {"top_5pct": 0.66})
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_data_fingerprint",
+        lambda **kwargs: {"manifest_sha256": "abc"},
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.render_model_card", lambda **kwargs: "# card")
+
+    options = TrainV4CryptoCsOptions(
+        dataset_root=tmp_path / "features_v4",
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
+        model_family="train_v4_crypto_cs",
+        tf="5m",
+        quote="KRW",
+        top_n=20,
+        start="2026-03-01",
+        end="2026-03-05",
+        feature_set="v4",
+        label_set="v2",
+        task="rank",
+        booster_sweep_trials=5,
+        seed=7,
+        nthread=1,
+        batch_rows=128,
+        train_ratio=0.6,
+        valid_ratio=0.2,
+        test_ratio=0.2,
+        embargo_bars=0,
+        fee_bps_est=5.0,
+        safety_bps=1.0,
+        ev_scan_steps=10,
+        ev_min_selected=1,
+        min_rows_for_train=1,
+    )
+
+    result = train_and_register_v4_crypto_cs(options)
+
+    assert result.status == "candidate"
+    assert result.leaderboard_row["task"] == "rank"
+    assert result.leaderboard_row["champion_backend"] == "xgboost_ranker"
+    assert result.leaderboard_row["test_ndcg_at5"] is not None
+    selection_doc = load_json(result.run_dir / "selection_recommendations.json")
+    assert selection_doc["recommended_threshold_key"] == "top_5pct"
+    reasons = load_json(result.promotion_path)["reasons"]
+    assert "MANUAL_PROMOTION_REQUIRED" in reasons
 
 
 def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, monkeypatch) -> None:

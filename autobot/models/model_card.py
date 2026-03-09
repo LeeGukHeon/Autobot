@@ -17,6 +17,7 @@ def render_model_card(
     rows = metrics.get("rows", {}) if isinstance(metrics, dict) else {}
     champion_metrics = metrics.get("champion_metrics", {}) if isinstance(metrics, dict) else {}
     cls = champion_metrics.get("classification", {}) if isinstance(champion_metrics, dict) else {}
+    ranking = champion_metrics.get("ranking", {}) if isinstance(champion_metrics, dict) else {}
     trade = champion_metrics.get("trading", {}) if isinstance(champion_metrics, dict) else {}
     top5 = trade.get("top_5pct", {}) if isinstance(trade, dict) else {}
 
@@ -33,6 +34,8 @@ def render_model_card(
         f"- PR-AUC: {_fmt(cls.get('pr_auc'))}",
         f"- LogLoss: {_fmt(cls.get('log_loss'))}",
         f"- Brier: {_fmt(cls.get('brier_score'))}",
+        f"- NDCG@5: {_fmt(ranking.get('ndcg_at_5_mean'))}",
+        f"- Top1 Match Rate: {_fmt(ranking.get('top1_match_rate'))}",
         f"- Precision@Top5%: {_fmt(top5.get('precision'))}",
         f"- EV_net@Top5%: {_fmt(top5.get('ev_net'))}",
         "",

@@ -66,6 +66,7 @@ from .split import (
 )
 from .train_v1 import (
     build_selection_recommendations,
+    _group_counts_by_ts,
     _build_thresholds,
     _estimate_dataset_memory_mb,
     _evaluate_split,
@@ -150,8 +151,8 @@ class TrainV4CryptoCsResult:
 
 def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4CryptoCsResult:
     task = str(options.task).strip().lower() or "cls"
-    if task not in {"cls", "reg"}:
-        raise ValueError("task currently supports only 'cls' or 'reg'")
+    if task not in {"cls", "reg", "rank"}:
+        raise ValueError("task currently supports only 'cls', 'reg', or 'rank'")
     if options.feature_set != "v4":
         raise ValueError("trainer v4_crypto_cs requires --feature-set v4")
     if options.label_set != "v2":
@@ -178,6 +179,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         feature_columns=feature_cols,
         y_cls_column="y_cls_topq_12",
         y_reg_column="y_reg_net_12",
+        y_rank_column="y_rank_cs_12",
     )
     if dataset.rows < int(options.min_rows_for_train):
         raise ValueError(
@@ -210,16 +212,23 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     x_train = dataset.X[train_mask]
     y_cls_train = dataset.y_cls[train_mask]
     y_reg_train = dataset.y_reg[train_mask]
+    y_rank_all = np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)
+    y_rank_train = y_rank_all[train_mask]
     w_train = dataset.sample_weight[train_mask]
+    ts_train = dataset.ts_ms[train_mask]
     x_valid = dataset.X[valid_mask]
     y_valid = dataset.y_cls[valid_mask]
     y_reg_valid = dataset.y_reg[valid_mask]
+    y_rank_valid = y_rank_all[valid_mask]
     w_valid = dataset.sample_weight[valid_mask]
+    ts_valid = dataset.ts_ms[valid_mask]
     x_test = dataset.X[test_mask]
     y_test = dataset.y_cls[test_mask]
     y_reg_test = dataset.y_reg[test_mask]
+    y_rank_test = y_rank_all[test_mask]
     market_valid = dataset.markets[valid_mask]
     market_test = dataset.markets[test_mask]
+    ranker_budget_profile = _resolve_ranker_budget_profile(options=options, task=task)
 
     if task == "cls":
         booster = _fit_booster_sweep_weighted(
@@ -236,7 +245,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             nthread=options.nthread,
             trials=max(int(options.booster_sweep_trials), 1),
         )
-    else:
+    elif task == "reg":
         booster = _fit_booster_sweep_regression(
             x_train=x_train,
             y_train=y_reg_train,
@@ -251,9 +260,26 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             nthread=options.nthread,
             trials=max(int(options.booster_sweep_trials), 1),
         )
+    else:
+        booster = _fit_booster_sweep_ranker(
+            x_train=x_train,
+            y_train_rank=y_rank_train,
+            ts_train_ms=ts_train,
+            w_train=w_train,
+            x_valid=x_valid,
+            y_valid_cls=y_valid,
+            y_valid_reg=y_reg_valid,
+            y_valid_rank=y_rank_valid,
+            ts_valid_ms=ts_valid,
+            w_valid=w_valid,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+            seed=options.seed,
+            nthread=options.nthread,
+            trials=int(ranker_budget_profile["main_trials"]),
+        )
 
     valid_scores = _predict_scores(booster["bundle"], x_valid)
-    test_scores = _predict_scores(booster["bundle"], x_test)
     valid_metrics = _evaluate_split(
         y_cls=y_valid,
         y_reg=y_reg_valid,
@@ -262,6 +288,13 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         fee_bps_est=options.fee_bps_est,
         safety_bps=options.safety_bps,
     )
+    valid_metrics = _attach_ranking_metrics(
+        metrics=valid_metrics,
+        y_rank=y_rank_valid,
+        ts_ms=ts_valid,
+        scores=valid_scores,
+    )
+    test_scores = _predict_scores(booster["bundle"], x_test)
     test_metrics = _evaluate_split(
         y_cls=y_test,
         y_reg=y_reg_test,
@@ -269,6 +302,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         markets=market_test,
         fee_bps_est=options.fee_bps_est,
         safety_bps=options.safety_bps,
+    )
+    test_metrics = _attach_ranking_metrics(
+        metrics=test_metrics,
+        y_rank=y_rank_test,
+        ts_ms=dataset.ts_ms[test_mask],
+        scores=test_scores,
     )
     thresholds = _build_thresholds(
         valid_scores=valid_scores,
@@ -311,6 +350,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         walk_forward_summary=walk_forward.get("summary", {}),
         best_params=dict(booster.get("best_params", {})),
         sweep_records=list(booster.get("trials", [])),
+        ranker_budget_profile=ranker_budget_profile,
     )
     leaderboard_row = _make_v4_leaderboard_row(
         run_id=run_id,
@@ -347,6 +387,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         feature_cols=dataset.feature_names,
         markets=dataset.selected_markets,
         selection_recommendations=selection_recommendations,
+        ranker_budget_profile=ranker_budget_profile,
     )
 
     run_dir = save_run(
@@ -456,6 +497,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "duration_sec": round(finished_at - started_at, 3),
             "rows": rows,
             "memory_estimate_mb": _estimate_dataset_memory_mb(dataset),
+            "ranker_budget_profile": ranker_budget_profile,
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
             "walk_forward": walk_forward,
@@ -519,7 +561,10 @@ def _run_walk_forward_v4(
 
     min_train_rows = max(int(options.walk_forward_min_train_rows), 1)
     min_test_rows = max(int(options.walk_forward_min_test_rows), 1)
+    ranker_budget_profile = _resolve_ranker_budget_profile(options=options, task=task)
     sweep_trials = max(min(int(options.walk_forward_sweep_trials), int(options.booster_sweep_trials)), 1)
+    if task == "rank":
+        sweep_trials = min(sweep_trials, int(ranker_budget_profile["walk_forward_trials"]))
     windows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
 
@@ -551,14 +596,19 @@ def _run_walk_forward_v4(
             x_train=dataset.X[train_mask],
             y_cls_train=dataset.y_cls[train_mask],
             y_reg_train=dataset.y_reg[train_mask],
+            y_rank_train=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[train_mask],
             w_train=dataset.sample_weight[train_mask],
+            ts_train_ms=dataset.ts_ms[train_mask],
             x_valid=dataset.X[valid_mask],
             y_valid_cls=dataset.y_cls[valid_mask],
             y_valid_reg=dataset.y_reg[valid_mask],
+            y_valid_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[valid_mask],
             w_valid=dataset.sample_weight[valid_mask],
+            ts_valid_ms=dataset.ts_ms[valid_mask],
             x_test=dataset.X[test_mask],
             y_test_cls=dataset.y_cls[test_mask],
             y_test_reg=dataset.y_reg[test_mask],
+            y_test_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[test_mask],
             market_test=dataset.markets[test_mask],
             ts_test_ms=dataset.ts_ms[test_mask],
         )
@@ -570,6 +620,12 @@ def _run_walk_forward_v4(
             markets=dataset.markets[test_mask],
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
+        )
+        metrics = _attach_ranking_metrics(
+            metrics=metrics,
+            y_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[test_mask],
+            ts_ms=dataset.ts_ms[test_mask],
+            scores=scores,
         )
         oos_periods = _build_oos_period_metrics(
             ts_ms=dataset.ts_ms[test_mask],
@@ -629,14 +685,19 @@ def _fit_walk_forward_window_model(
     x_train: np.ndarray,
     y_cls_train: np.ndarray,
     y_reg_train: np.ndarray,
+    y_rank_train: np.ndarray,
     w_train: np.ndarray,
+    ts_train_ms: np.ndarray,
     x_valid: np.ndarray,
     y_valid_cls: np.ndarray,
     y_valid_reg: np.ndarray,
+    y_valid_rank: np.ndarray,
     w_valid: np.ndarray,
+    ts_valid_ms: np.ndarray,
     x_test: np.ndarray,
     y_test_cls: np.ndarray,
     y_test_reg: np.ndarray,
+    y_test_rank: np.ndarray,
     market_test: np.ndarray,
     ts_test_ms: np.ndarray,
 ) -> dict[str, Any]:
@@ -657,19 +718,40 @@ def _fit_walk_forward_window_model(
             market_test=market_test,
             ts_test_ms=ts_test_ms,
         )
-    return _fit_walk_forward_regression_trials(
+    if task == "reg":
+        return _fit_walk_forward_regression_trials(
+            options=options,
+            sweep_trials=sweep_trials,
+            x_train=x_train,
+            y_train=y_reg_train,
+            w_train=w_train,
+            x_valid=x_valid,
+            y_valid_cls=y_valid_cls,
+            y_valid_reg=y_valid_reg,
+            w_valid=w_valid,
+            x_test=x_test,
+            y_test_cls=y_test_cls,
+            y_test_reg=y_test_reg,
+            market_test=market_test,
+            ts_test_ms=ts_test_ms,
+        )
+    return _fit_walk_forward_ranker_trials(
         options=options,
         sweep_trials=sweep_trials,
         x_train=x_train,
-        y_train=y_reg_train,
+        y_train_rank=y_rank_train,
+        ts_train_ms=ts_train_ms,
         w_train=w_train,
         x_valid=x_valid,
         y_valid_cls=y_valid_cls,
         y_valid_reg=y_valid_reg,
+        y_valid_rank=y_valid_rank,
+        ts_valid_ms=ts_valid_ms,
         w_valid=w_valid,
         x_test=x_test,
         y_test_cls=y_test_cls,
         y_test_reg=y_test_reg,
+        y_test_rank=y_test_rank,
         market_test=market_test,
         ts_test_ms=ts_test_ms,
     )
@@ -993,8 +1075,157 @@ def _fit_walk_forward_regression_trials(
     return {"bundle": best_bundle, "trial_records": trial_records}
 
 
+def _fit_walk_forward_ranker_trials(
+    *,
+    options: TrainV4CryptoCsOptions,
+    sweep_trials: int,
+    x_train: np.ndarray,
+    y_train_rank: np.ndarray,
+    ts_train_ms: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    y_valid_rank: np.ndarray,
+    ts_valid_ms: np.ndarray,
+    w_valid: np.ndarray,
+    x_test: np.ndarray,
+    y_test_cls: np.ndarray,
+    y_test_reg: np.ndarray,
+    y_test_rank: np.ndarray,
+    market_test: np.ndarray,
+    ts_test_ms: np.ndarray,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+
+    rng = np.random.default_rng(int(options.seed))
+    train_group = _group_counts_by_ts(ts_train_ms)
+    valid_group = _group_counts_by_ts(ts_valid_ms)
+    if train_group.size <= 0 or valid_group.size <= 0:
+        raise RuntimeError("walk-forward ranker requires timestamp-grouped train and valid rows")
+
+    w_train_safe = np.asarray(w_train, dtype=np.float64)
+    if w_train_safe.size != y_train_rank.size:
+        w_train_safe = np.ones(y_train_rank.size, dtype=np.float64)
+    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+
+    best_key: tuple[float, float, float] | None = None
+    best_bundle: dict[str, Any] | None = None
+    trial_records: list[dict[str, Any]] = []
+    for trial in range(max(int(sweep_trials), 1)):
+        params = _sample_xgb_params(rng)
+        estimator = xgb.XGBRanker(
+            objective="rank:pairwise",
+            tree_method="hist",
+            n_estimators=900,
+            learning_rate=params["learning_rate"],
+            max_depth=params["max_depth"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            min_child_weight=params["min_child_weight"],
+            reg_lambda=params["reg_lambda"],
+            reg_alpha=params["reg_alpha"],
+            max_bin=params["max_bin"],
+            random_state=int(options.seed + trial),
+            nthread=max(int(options.nthread), 1),
+            eval_metric="ndcg@5",
+        )
+        fit_kwargs = {
+            "group": train_group.tolist(),
+            "sample_weight": w_train_safe,
+            "eval_set": [(x_valid, np.nan_to_num(np.asarray(y_valid_rank, dtype=np.float32), nan=0.0))],
+            "eval_group": [valid_group.tolist()],
+            "verbose": False,
+        }
+        try:
+            estimator.fit(
+                x_train,
+                np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0),
+                early_stopping_rounds=50,
+                **fit_kwargs,
+            )
+        except TypeError:
+            estimator.fit(x_train, np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0), **fit_kwargs)
+
+        valid_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_valid), dtype=np.float64)))
+        valid_metrics = _attach_ranking_metrics(
+            metrics=_evaluate_split(
+                y_cls=y_valid_cls,
+                y_reg=y_valid_reg,
+                scores=valid_scores,
+                markets=np.array(["_ALL_"] * int(y_valid_cls.size), dtype=object),
+                fee_bps_est=options.fee_bps_est,
+                safety_bps=options.safety_bps,
+            ),
+            y_rank=y_valid_rank,
+            ts_ms=ts_valid_ms,
+            scores=valid_scores,
+        )
+        ranking = valid_metrics.get("ranking", {}) if isinstance(valid_metrics, dict) else {}
+        valid_top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
+        key = (
+            float(ranking.get("ndcg_at_5_mean", 0.0) or 0.0),
+            float(ranking.get("top1_match_rate", 0.0) or 0.0),
+            float(valid_top5.get("ev_net", 0.0)),
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_bundle = {"model_type": "xgboost_ranker", "scaler": None, "estimator": estimator}
+
+        test_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_test), dtype=np.float64)))
+        test_metrics = _attach_ranking_metrics(
+            metrics=_evaluate_split(
+                y_cls=y_test_cls,
+                y_reg=y_test_reg,
+                scores=test_scores,
+                markets=market_test,
+                fee_bps_est=options.fee_bps_est,
+                safety_bps=options.safety_bps,
+            ),
+            y_rank=y_test_rank,
+            ts_ms=ts_test_ms,
+            scores=test_scores,
+        )
+        test_oos_periods = _build_oos_period_metrics(
+            ts_ms=ts_test_ms,
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        test_oos_slices = _build_oos_slice_metrics(
+            ts_ms=ts_test_ms,
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=test_scores,
+            markets=market_test,
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        trial_records.append(
+            {
+                "trial": int(trial),
+                "params": params,
+                "objective": "rank:pairwise",
+                "grouping": {"query_key": "ts_ms"},
+                "valid_selection_key": _build_trial_selection_key(valid_metrics),
+                "test_metrics": _compact_eval_metrics(test_metrics),
+                "test_oos_periods": test_oos_periods,
+                "test_oos_slices": test_oos_slices,
+            }
+        )
+    if best_bundle is None:
+        raise RuntimeError("walk-forward ranker sweep failed to produce a model")
+    return {"bundle": best_bundle, "trial_records": trial_records}
+
+
 def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     cls = metrics.get("classification", {}) if isinstance(metrics, dict) else {}
+    ranking = metrics.get("ranking", {}) if isinstance(metrics, dict) else {}
     summary = metrics.get("per_market_summary", {}) if isinstance(metrics, dict) else {}
     return {
         "rows": int(metrics.get("rows", 0)) if isinstance(metrics, dict) else 0,
@@ -1003,6 +1234,13 @@ def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
             "pr_auc": _safe_float(cls.get("pr_auc")),
             "log_loss": _safe_float(cls.get("log_loss")),
             "brier_score": _safe_float(cls.get("brier_score")),
+        },
+        "ranking": {
+            "ts_group_count": int(ranking.get("ts_group_count", 0) or 0),
+            "eligible_group_count": int(ranking.get("eligible_group_count", 0) or 0),
+            "ndcg_at_5_mean": _safe_float(ranking.get("ndcg_at_5_mean")),
+            "ndcg_full_mean": _safe_float(ranking.get("ndcg_full_mean")),
+            "top1_match_rate": _safe_float(ranking.get("top1_match_rate")),
         },
         "trading": _compact_trading_metrics(metrics),
         "per_market_summary": {
@@ -1502,6 +1740,7 @@ def _compact_trading_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 def _build_trial_selection_key(metrics: dict[str, Any]) -> dict[str, float]:
     trading = metrics.get("trading", {}) if isinstance(metrics, dict) else {}
     cls = metrics.get("classification", {}) if isinstance(metrics, dict) else {}
+    ranking = metrics.get("ranking", {}) if isinstance(metrics, dict) else {}
     selection_key: dict[str, float] = {}
     if isinstance(trading, dict):
         for threshold_key, threshold_doc in trading.items():
@@ -1515,6 +1754,9 @@ def _build_trial_selection_key(metrics: dict[str, Any]) -> dict[str, float]:
     selection_key["roc_auc"] = _safe_float(cls.get("roc_auc"))
     selection_key["log_loss"] = _safe_float(cls.get("log_loss"))
     selection_key["brier_score"] = _safe_float(cls.get("brier_score"))
+    selection_key["ndcg_at_5_mean"] = _safe_float(ranking.get("ndcg_at_5_mean"))
+    selection_key["ndcg_full_mean"] = _safe_float(ranking.get("ndcg_full_mean"))
+    selection_key["top1_match_rate"] = _safe_float(ranking.get("top1_match_rate"))
     return selection_key
 
 
@@ -1624,6 +1866,264 @@ def _fit_booster_sweep_regression(
     }
 
 
+def _fit_booster_sweep_ranker(
+    *,
+    x_train: np.ndarray,
+    y_train_rank: np.ndarray,
+    ts_train_ms: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    y_valid_rank: np.ndarray,
+    ts_valid_ms: np.ndarray,
+    w_valid: np.ndarray,
+    fee_bps_est: float,
+    safety_bps: float,
+    seed: int,
+    nthread: int,
+    trials: int,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+
+    rng = np.random.default_rng(int(seed))
+    trial_rows: list[dict[str, Any]] = []
+    best_key: tuple[float, float, float] | None = None
+    best_bundle: dict[str, Any] | None = None
+    best_params: dict[str, Any] = {}
+
+    train_group = _group_counts_by_ts(ts_train_ms)
+    valid_group = _group_counts_by_ts(ts_valid_ms)
+    if train_group.size <= 0 or valid_group.size <= 0:
+        raise RuntimeError("ranker lane requires at least one timestamp-group in train and valid splits")
+
+    y_train = np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    w_train_safe = np.asarray(w_train, dtype=np.float64)
+    if w_train_safe.size != y_train.size:
+        w_train_safe = np.ones(y_train.size, dtype=np.float64)
+    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+
+    for trial in range(max(int(trials), 1)):
+        params = _sample_xgb_params(rng)
+        estimator = xgb.XGBRanker(
+            objective="rank:pairwise",
+            tree_method="hist",
+            n_estimators=900,
+            learning_rate=params["learning_rate"],
+            max_depth=params["max_depth"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            min_child_weight=params["min_child_weight"],
+            reg_lambda=params["reg_lambda"],
+            reg_alpha=params["reg_alpha"],
+            max_bin=params["max_bin"],
+            random_state=int(seed + trial),
+            nthread=max(int(nthread), 1),
+            eval_metric="ndcg@5",
+        )
+        fit_kwargs = {
+            "group": train_group.tolist(),
+            "sample_weight": w_train_safe,
+            "eval_set": [(x_valid, np.nan_to_num(np.asarray(y_valid_rank, dtype=np.float32), nan=0.0))],
+            "eval_group": [valid_group.tolist()],
+            "verbose": False,
+        }
+        try:
+            estimator.fit(x_train, y_train, early_stopping_rounds=50, **fit_kwargs)
+        except TypeError:
+            estimator.fit(x_train, y_train, **fit_kwargs)
+
+        valid_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_valid), dtype=np.float64)))
+        valid_metrics = _attach_ranking_metrics(
+            metrics=_evaluate_split(
+                y_cls=y_valid_cls,
+                y_reg=y_valid_reg,
+                scores=valid_scores,
+                markets=np.array(["_ALL_"] * int(y_valid_cls.size), dtype=object),
+                fee_bps_est=fee_bps_est,
+                safety_bps=safety_bps,
+            ),
+            y_rank=y_valid_rank,
+            ts_ms=ts_valid_ms,
+            scores=valid_scores,
+        )
+        ranking = valid_metrics.get("ranking", {}) if isinstance(valid_metrics, dict) else {}
+        top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
+        key = (
+            float(ranking.get("ndcg_at_5_mean", 0.0) or 0.0),
+            float(ranking.get("top1_match_rate", 0.0) or 0.0),
+            float(top5.get("ev_net", 0.0)),
+        )
+        trial_rows.append(
+            {
+                "trial": trial,
+                "backend": "xgboost_ranker",
+                "objective": "rank:pairwise",
+                "grouping": {"query_key": "ts_ms"},
+                "params": params,
+                "selection_key": {
+                    "ndcg_at_5_mean": key[0],
+                    "top1_match_rate": key[1],
+                    "ev_net_top5": key[2],
+                },
+            }
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_params = params
+            best_bundle = {"model_type": "xgboost_ranker", "scaler": None, "estimator": estimator}
+
+    if best_bundle is None:
+        raise RuntimeError("ranker booster sweep failed to produce a model")
+    return {
+        "bundle": best_bundle,
+        "best_params": best_params,
+        "backend": "xgboost_ranker",
+        "objective": "rank:pairwise",
+        "grouping": {"query_key": "ts_ms"},
+        "trials": trial_rows,
+    }
+
+
+def _resolve_ranker_budget_profile(*, options: TrainV4CryptoCsOptions, task: str) -> dict[str, Any]:
+    base_trials = max(int(options.booster_sweep_trials), 1)
+    walk_forward_trials = max(int(options.walk_forward_sweep_trials), 1)
+    if str(task).strip().lower() != "rank":
+        return {
+            "applied": False,
+            "profile": "default_non_rank",
+            "main_trials": base_trials,
+            "walk_forward_trials": walk_forward_trials,
+        }
+    return {
+        "applied": True,
+        "profile": "oracle_a1_ranker_lane_v1",
+        "objective": "rank:pairwise",
+        "group_key": "ts_ms",
+        "main_trials": min(base_trials, 3),
+        "walk_forward_trials": min(walk_forward_trials, 2),
+    }
+
+
+def _attach_ranking_metrics(
+    *,
+    metrics: dict[str, Any],
+    y_rank: np.ndarray,
+    ts_ms: np.ndarray,
+    scores: np.ndarray,
+) -> dict[str, Any]:
+    payload = dict(metrics) if isinstance(metrics, dict) else {}
+    payload["ranking"] = _evaluate_ranking_metrics(
+        y_rank=np.asarray(y_rank, dtype=np.float64),
+        ts_ms=np.asarray(ts_ms, dtype=np.int64),
+        scores=np.asarray(scores, dtype=np.float64),
+    )
+    return payload
+
+
+def _evaluate_ranking_metrics(
+    *,
+    y_rank: np.ndarray,
+    ts_ms: np.ndarray,
+    scores: np.ndarray,
+) -> dict[str, Any]:
+    rank_values = np.nan_to_num(np.asarray(y_rank, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    ts_values = np.asarray(ts_ms, dtype=np.int64)
+    score_values = np.asarray(scores, dtype=np.float64)
+    if rank_values.size <= 0 or ts_values.size <= 0 or score_values.size <= 0:
+        return {
+            "ts_group_count": 0,
+            "eligible_group_count": 0,
+            "mean_group_size": 0.0,
+            "min_group_size": 0,
+            "max_group_size": 0,
+            "ndcg_at_5_mean": 0.0,
+            "ndcg_full_mean": 0.0,
+            "top1_match_rate": 0.0,
+        }
+
+    ndcg_at5_values: list[float] = []
+    ndcg_full_values: list[float] = []
+    top1_matches = 0
+    group_sizes: list[int] = []
+    eligible_groups = 0
+    for _, indices in _group_indices_by_ts(ts_values):
+        if indices.size <= 0:
+            continue
+        group_sizes.append(int(indices.size))
+        true_values = np.maximum(rank_values[indices], 0.0)
+        pred_values = score_values[indices]
+        if indices.size == 1:
+            eligible_groups += 1
+            ndcg_at5_values.append(1.0)
+            ndcg_full_values.append(1.0)
+            top1_matches += 1
+            continue
+        eligible_groups += 1
+        ndcg_at5_values.append(_ndcg_at_k(true_values, pred_values, k=min(5, int(indices.size))))
+        ndcg_full_values.append(_ndcg_at_k(true_values, pred_values, k=int(indices.size)))
+        top1_matches += int(int(np.argmax(pred_values)) == int(np.argmax(true_values)))
+    if not group_sizes:
+        return {
+            "ts_group_count": 0,
+            "eligible_group_count": 0,
+            "mean_group_size": 0.0,
+            "min_group_size": 0,
+            "max_group_size": 0,
+            "ndcg_at_5_mean": 0.0,
+            "ndcg_full_mean": 0.0,
+            "top1_match_rate": 0.0,
+        }
+    return {
+        "ts_group_count": len(group_sizes),
+        "eligible_group_count": int(eligible_groups),
+        "mean_group_size": float(np.mean(np.asarray(group_sizes, dtype=np.float64))),
+        "min_group_size": int(min(group_sizes)),
+        "max_group_size": int(max(group_sizes)),
+        "ndcg_at_5_mean": float(np.mean(np.asarray(ndcg_at5_values, dtype=np.float64))) if ndcg_at5_values else 0.0,
+        "ndcg_full_mean": float(np.mean(np.asarray(ndcg_full_values, dtype=np.float64))) if ndcg_full_values else 0.0,
+        "top1_match_rate": float(top1_matches) / float(max(eligible_groups, 1)),
+    }
+
+
+def _group_indices_by_ts(ts_ms: np.ndarray) -> list[tuple[int, np.ndarray]]:
+    values = np.asarray(ts_ms, dtype=np.int64)
+    if values.size <= 0:
+        return []
+    unique, inverse = np.unique(values, return_inverse=True)
+    grouped: list[tuple[int, np.ndarray]] = []
+    for group_idx, ts_value in enumerate(unique):
+        grouped.append((int(ts_value), np.flatnonzero(inverse == group_idx).astype(np.int64, copy=False)))
+    return grouped
+
+
+def _ndcg_at_k(relevance: np.ndarray, scores: np.ndarray, *, k: int) -> float:
+    rel = np.asarray(relevance, dtype=np.float64)
+    pred = np.asarray(scores, dtype=np.float64)
+    if rel.size <= 0 or pred.size <= 0:
+        return 0.0
+    top_k = max(min(int(k), int(rel.size)), 1)
+    order = np.argsort(-pred, kind="mergesort")[:top_k]
+    ideal = np.argsort(-rel, kind="mergesort")[:top_k]
+    dcg = _dcg(rel[order])
+    idcg = _dcg(rel[ideal])
+    if idcg <= 1e-12:
+        return 0.0
+    return float(dcg / idcg)
+
+
+def _dcg(values: np.ndarray) -> float:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size <= 0:
+        return 0.0
+    positions = np.arange(2, arr.size + 2, dtype=np.float64)
+    gains = np.power(2.0, arr) - 1.0
+    discounts = np.log2(positions)
+    return float(np.sum(gains / discounts))
+
+
 def _build_v4_metrics_doc(
     *,
     run_id: str,
@@ -1637,7 +2137,10 @@ def _build_v4_metrics_doc(
     walk_forward_summary: dict[str, Any],
     best_params: dict[str, Any],
     sweep_records: list[dict[str, Any]],
+    ranker_budget_profile: dict[str, Any],
 ) -> dict[str, Any]:
+    backend = "xgboost_ranker" if task == "rank" else "xgboost_regressor" if task == "reg" else "xgboost"
+    objective = "rank:pairwise" if task == "rank" else "reg:squarederror" if task == "reg" else "binary:logistic"
     return {
         "run_id": run_id,
         "created_at_utc": _utc_now(),
@@ -1669,15 +2172,18 @@ def _build_v4_metrics_doc(
             "safety_bps": options.safety_bps,
         },
         "booster": {
-            "backend": "xgboost",
+            "backend": backend,
             "params": best_params,
+            "objective": objective,
+            "grouping_policy": {"query_key": "ts_ms"} if task == "rank" else {},
             "valid": valid_metrics,
             "test": test_metrics,
         },
         "booster_sweep": {"trials": len(sweep_records), "records": sweep_records},
+        "ranker_budget_profile": ranker_budget_profile,
         "champion": {
             "name": "booster",
-            "backend": "xgboost",
+            "backend": backend,
             "params": best_params,
         },
         "champion_metrics": test_metrics,
@@ -1694,7 +2200,9 @@ def _make_v4_leaderboard_row(
     test_metrics: dict[str, Any],
 ) -> dict[str, Any]:
     cls = test_metrics.get("classification", {}) if isinstance(test_metrics, dict) else {}
+    ranking = test_metrics.get("ranking", {}) if isinstance(test_metrics, dict) else {}
     top5 = (test_metrics.get("trading", {}) or {}).get("top_5pct", {})
+    backend = "xgboost_ranker" if task == "rank" else "xgboost_regressor" if task == "reg" else "xgboost"
     return {
         "run_id": run_id,
         "created_at_utc": _utc_now(),
@@ -1702,11 +2210,13 @@ def _make_v4_leaderboard_row(
         "trainer": "v4_crypto_cs",
         "task": task,
         "champion": "booster",
-        "champion_backend": "xgboost",
+        "champion_backend": backend,
         "test_roc_auc": _safe_float(cls.get("roc_auc")),
         "test_pr_auc": _safe_float(cls.get("pr_auc")),
         "test_log_loss": _safe_float(cls.get("log_loss")),
         "test_brier_score": _safe_float(cls.get("brier_score")),
+        "test_ndcg_at5": _safe_float(ranking.get("ndcg_at_5_mean")),
+        "test_top1_match_rate": _safe_float(ranking.get("top1_match_rate")),
         "test_precision_top5": _safe_float(top5.get("precision")),
         "test_ev_net_top5": _safe_float(top5.get("ev_net")),
         "rows_train": int(rows.get("train", 0)),
@@ -1722,6 +2232,7 @@ def _train_config_snapshot_v4(
     feature_cols: tuple[str, ...],
     markets: tuple[str, ...],
     selection_recommendations: dict[str, Any],
+    ranker_budget_profile: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -1743,7 +2254,9 @@ def _train_config_snapshot_v4(
     payload["task"] = task
     payload["y_cls_column"] = "y_cls_topq_12"
     payload["y_reg_column"] = "y_reg_net_12"
-    payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12"]
+    payload["y_rank_column"] = "y_rank_cs_12"
+    payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12", "y_rank_cs_12"]
+    payload["ranker_budget_profile"] = ranker_budget_profile
     payload["selection_recommendations"] = selection_recommendations
     return payload
 
