@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import shutil
 import time
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -36,6 +36,18 @@ from .cpcv_lite import (
     summarize_cpcv_lite_dsr,
     summarize_cpcv_lite_fold_selection,
     summarize_cpcv_lite_pbo,
+)
+from .factor_block_selector import (
+    append_factor_block_selection_history,
+    build_guarded_factor_block_policy,
+    build_factor_block_selection_report,
+    evaluate_factor_block_window_rows,
+    load_factor_block_selection_history,
+    normalize_factor_block_selection_mode,
+    resolve_selected_feature_columns_from_latest,
+    v4_factor_block_registry,
+    write_latest_guarded_factor_block_policy,
+    write_latest_factor_block_selection_pointer,
 )
 from .multiple_testing import (
     build_trial_window_differential_matrix,
@@ -123,6 +135,7 @@ class TrainV4CryptoCsOptions:
     cpcv_lite_max_combinations: int = 6
     cpcv_lite_min_train_rows: int = 1_000
     cpcv_lite_min_test_rows: int = 200
+    factor_block_selection_mode: str = "guarded_auto"
     multiple_testing_alpha: float = 0.20
     multiple_testing_bootstrap_iters: int = 500
     multiple_testing_block_length: int = 0
@@ -159,8 +172,42 @@ class TrainV4CryptoCsResult:
     promotion_path: Path
     walk_forward_report_path: Path | None = None
     cpcv_lite_report_path: Path | None = None
+    factor_block_selection_path: Path | None = None
+    factor_block_history_path: Path | None = None
+    factor_block_policy_path: Path | None = None
     execution_acceptance_report_path: Path | None = None
     runtime_recommendations_path: Path | None = None
+
+
+def _resolve_cpcv_lite_runtime_config(
+    *,
+    options: TrainV4CryptoCsOptions,
+    factor_block_selection_context: dict[str, Any],
+) -> dict[str, Any]:
+    requested = bool(options.cpcv_lite_enabled)
+    mode = normalize_factor_block_selection_mode(options.factor_block_selection_mode)
+    guarded_policy_applied = (
+        mode == "guarded_auto"
+        and bool((factor_block_selection_context or {}).get("applied", False))
+        and str((factor_block_selection_context or {}).get("resolution_source", "")).strip() == "guarded_policy"
+    )
+    if requested:
+        return {
+            "enabled": True,
+            "trigger": "manual",
+            "requested": True,
+        }
+    if guarded_policy_applied:
+        return {
+            "enabled": True,
+            "trigger": "guarded_policy",
+            "requested": False,
+        }
+    return {
+        "enabled": False,
+        "trigger": "disabled",
+        "requested": False,
+    }
 
 
 def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4CryptoCsResult:
@@ -187,7 +234,15 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     )
     feature_spec = load_feature_spec(options.dataset_root)
     label_spec = load_label_spec(options.dataset_root)
-    feature_cols = feature_columns_from_spec(options.dataset_root)
+    high_tfs = tuple(str(item).strip() for item in (feature_spec.get("high_tfs") or ("15m", "60m", "240m")) if str(item).strip())
+    all_feature_cols = feature_columns_from_spec(options.dataset_root)
+    feature_cols, factor_block_selection_context = resolve_selected_feature_columns_from_latest(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        mode=options.factor_block_selection_mode,
+        all_feature_columns=all_feature_cols,
+        high_tfs=high_tfs or ("15m", "60m", "240m"),
+    )
     dataset = load_feature_dataset(
         request,
         feature_columns=feature_cols,
@@ -243,6 +298,14 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     market_valid = dataset.markets[valid_mask]
     market_test = dataset.markets[test_mask]
     ranker_budget_profile = _resolve_ranker_budget_profile(options=options, task=task)
+    factor_block_registry = v4_factor_block_registry(
+        feature_columns=dataset.feature_names,
+        high_tfs=high_tfs or ("15m", "60m", "240m"),
+    )
+    cpcv_lite_runtime = _resolve_cpcv_lite_runtime_config(
+        options=options,
+        factor_block_selection_context=factor_block_selection_context,
+    )
 
     if task == "cls":
         booster = _fit_booster_sweep_weighted(
@@ -342,6 +405,8 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         dataset=dataset,
         interval_ms=interval_ms,
         thresholds=thresholds,
+        feature_names=dataset.feature_names,
+        factor_block_registry=factor_block_registry,
     )
     selection_recommendations = build_selection_recommendations_from_walk_forward(
         windows=walk_forward.get("windows", []),
@@ -359,6 +424,15 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         interval_ms=interval_ms,
         thresholds=thresholds,
         best_params=dict(booster.get("best_params", {})),
+        enabled=bool(cpcv_lite_runtime["enabled"]),
+        trigger=str(cpcv_lite_runtime["trigger"]),
+    )
+    factor_block_selection = build_factor_block_selection_report(
+        block_registry=factor_block_registry,
+        window_rows=walk_forward.pop("_factor_block_window_rows", []),
+        selection_mode=options.factor_block_selection_mode,
+        feature_columns=dataset.feature_names,
+        run_id=run_id,
     )
     metrics = _build_v4_metrics_doc(
         run_id=run_id,
@@ -371,9 +445,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         test_metrics=test_metrics,
         walk_forward_summary=walk_forward.get("summary", {}),
         cpcv_lite_summary=cpcv_lite.get("summary", {}),
+        factor_block_selection_summary=factor_block_selection.get("summary", {}),
         best_params=dict(booster.get("best_params", {})),
         sweep_records=list(booster.get("trials", [])),
         ranker_budget_profile=ranker_budget_profile,
+        cpcv_lite_runtime=cpcv_lite_runtime,
     )
     leaderboard_row = _make_v4_leaderboard_row(
         run_id=run_id,
@@ -412,6 +488,9 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_recommendations=selection_recommendations,
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_summary=cpcv_lite.get("summary", {}),
+        factor_block_selection_summary=factor_block_selection.get("summary", {}),
+        factor_block_selection_context=factor_block_selection_context,
+        cpcv_lite_runtime=cpcv_lite_runtime,
     )
 
     run_dir = save_run(
@@ -450,6 +529,47 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             json.dumps(cpcv_lite, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+    factor_block_selection_pointer_path = write_latest_factor_block_selection_pointer(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_id=run_id,
+        report=factor_block_selection,
+    )
+    if factor_block_selection_pointer_path is not None:
+        factor_block_selection["latest_pointer_path"] = str(factor_block_selection_pointer_path)
+    factor_block_selection_path = run_dir / "factor_block_selection.json"
+    factor_block_selection_path.write_text(
+        json.dumps(factor_block_selection, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    factor_block_history_path = append_factor_block_selection_history(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        report=factor_block_selection,
+    )
+    factor_block_history = load_factor_block_selection_history(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+    )
+    factor_block_policy = build_guarded_factor_block_policy(
+        block_registry=factor_block_registry,
+        history_records=factor_block_history,
+    )
+    factor_block_policy_path = write_latest_guarded_factor_block_policy(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_id=run_id,
+        policy=factor_block_policy,
+    )
+    if factor_block_history_path is not None:
+        factor_block_selection["history_path"] = str(factor_block_history_path)
+    if factor_block_policy_path is not None:
+        factor_block_selection["guarded_policy_path"] = str(factor_block_policy_path)
+    factor_block_selection["guarded_policy"] = factor_block_policy
+    factor_block_selection_path.write_text(
+        json.dumps(factor_block_selection, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     duplicate_artifacts = _detect_duplicate_candidate_artifacts(
         options=options,
         run_id=run_id,
@@ -533,6 +653,8 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "candidate": leaderboard_row,
             "walk_forward": walk_forward,
             "cpcv_lite": cpcv_lite,
+            "factor_block_selection": factor_block_selection,
+            "factor_block_policy": factor_block_policy,
             "execution_acceptance": execution_acceptance,
             "runtime_recommendations": runtime_recommendations,
             "selection_recommendations": selection_recommendations,
@@ -551,6 +673,9 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         promotion_path=promotion_path,
         walk_forward_report_path=walk_forward_report_path,
         cpcv_lite_report_path=cpcv_lite_report_path,
+        factor_block_selection_path=factor_block_selection_path,
+        factor_block_history_path=factor_block_history_path,
+        factor_block_policy_path=factor_block_policy_path,
         execution_acceptance_report_path=execution_acceptance_report_path,
         runtime_recommendations_path=runtime_recommendations_path,
     )
@@ -563,6 +688,8 @@ def _run_walk_forward_v4(
     dataset: Any,
     interval_ms: int,
     thresholds: dict[str, Any],
+    feature_names: Sequence[str],
+    factor_block_registry: Sequence[Any],
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "policy": "balanced_pareto_offline",
@@ -574,6 +701,7 @@ def _run_walk_forward_v4(
         "compare_to_champion": compare_balanced_pareto({}, {}),
         "selected_threshold_key": "top_5pct",
         "selected_threshold_key_source": "manual_fallback",
+        "_factor_block_window_rows": [],
     }
     if not bool(options.walk_forward_enabled):
         report["skip_reason"] = "DISABLED"
@@ -702,6 +830,21 @@ def _run_walk_forward_v4(
                 "trial_records": list(fitted.get("trial_records", [])),
             }
         )
+        report["_factor_block_window_rows"].extend(
+            evaluate_factor_block_window_rows(
+                window_index=int(info.window_index),
+                model_bundle=fitted["bundle"],
+                feature_names=feature_names,
+                x_window=dataset.X[test_mask],
+                y_cls=dataset.y_cls[test_mask],
+                y_reg=dataset.y_reg[test_mask],
+                ts_ms=dataset.ts_ms[test_mask],
+                thresholds=thresholds,
+                fee_bps_est=options.fee_bps_est,
+                safety_bps=options.safety_bps,
+                block_registry=factor_block_registry,
+            )
+        )
 
     report["windows"] = windows
     report["skipped_windows"] = skipped
@@ -718,10 +861,14 @@ def _run_cpcv_lite_v4(
     interval_ms: int,
     thresholds: dict[str, Any],
     best_params: dict[str, Any],
+    enabled: bool,
+    trigger: str,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "policy": "cpcv_lite_research_v1",
-        "enabled": bool(options.cpcv_lite_enabled),
+        "enabled": bool(enabled),
+        "trigger": str(trigger).strip() or "disabled",
+        "requested": bool(options.cpcv_lite_enabled),
         "estimate_label": "lite",
         "summary": {
             "status": "disabled",
@@ -756,7 +903,7 @@ def _run_cpcv_lite_v4(
         },
         "insufficiency_reasons": [],
     }
-    if not bool(options.cpcv_lite_enabled):
+    if not bool(enabled):
         report["skip_reason"] = "DISABLED"
         return report
 
@@ -2671,9 +2818,11 @@ def _build_v4_metrics_doc(
     test_metrics: dict[str, Any],
     walk_forward_summary: dict[str, Any],
     cpcv_lite_summary: dict[str, Any],
+    factor_block_selection_summary: dict[str, Any],
     best_params: dict[str, Any],
     sweep_records: list[dict[str, Any]],
     ranker_budget_profile: dict[str, Any],
+    cpcv_lite_runtime: dict[str, Any],
 ) -> dict[str, Any]:
     backend = "xgboost_ranker" if task == "rank" else "xgboost_regressor" if task == "reg" else "xgboost"
     objective = "rank:pairwise" if task == "rank" else "reg:squarederror" if task == "reg" else "binary:logistic"
@@ -2725,8 +2874,12 @@ def _build_v4_metrics_doc(
         "champion_metrics": test_metrics,
         "walk_forward": walk_forward_summary,
         "research_only": {
-            "cpcv_lite": cpcv_lite_summary,
+            "cpcv_lite": {
+                "summary": cpcv_lite_summary,
+                "runtime": dict(cpcv_lite_runtime or {}),
+            },
         },
+        "factor_block_selection": factor_block_selection_summary,
     }
 
 
@@ -2773,6 +2926,9 @@ def _train_config_snapshot_v4(
     selection_recommendations: dict[str, Any],
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_summary: dict[str, Any],
+    factor_block_selection_summary: dict[str, Any],
+    factor_block_selection_context: dict[str, Any],
+    cpcv_lite_runtime: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -2798,11 +2954,18 @@ def _train_config_snapshot_v4(
     payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12", "y_rank_cs_12"]
     payload["ranker_budget_profile"] = ranker_budget_profile
     payload["cpcv_lite"] = {
-        "enabled": bool(options.cpcv_lite_enabled),
+        "enabled": bool((cpcv_lite_runtime or {}).get("enabled", False)),
+        "requested": bool(options.cpcv_lite_enabled),
+        "trigger": str((cpcv_lite_runtime or {}).get("trigger", "disabled")).strip() or "disabled",
         "group_count": int(options.cpcv_lite_group_count),
         "test_group_count": int(options.cpcv_lite_test_group_count),
         "max_combinations": int(options.cpcv_lite_max_combinations),
         "summary": dict(cpcv_lite_summary or {}),
+    }
+    payload["factor_block_selection"] = {
+        "mode": normalize_factor_block_selection_mode(options.factor_block_selection_mode),
+        "summary": dict(factor_block_selection_summary or {}),
+        "resolution_context": dict(factor_block_selection_context or {}),
     }
     payload["selection_recommendations"] = selection_recommendations
     return payload

@@ -16,6 +16,10 @@ def test_cpcv_lite_defaults_are_server_safe() -> None:
     assert TrainV4CryptoCsOptions.__dataclass_fields__["cpcv_lite_max_combinations"].default == 6
 
 
+def test_factor_block_selection_default_mode_is_guarded_auto() -> None:
+    assert TrainV4CryptoCsOptions.__dataclass_fields__["factor_block_selection_mode"].default == "guarded_auto"
+
+
 def test_detect_duplicate_candidate_artifacts_matches_model_and_threshold_hashes(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     family = "train_v4_crypto_cs"

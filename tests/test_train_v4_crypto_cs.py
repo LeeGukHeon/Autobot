@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -765,4 +766,293 @@ def test_train_v4_cls_writes_cpcv_lite_report_when_enabled(tmp_path, monkeypatch
     assert result.cpcv_lite_report_path is not None
     assert result.cpcv_lite_report_path.exists()
     assert load_json(result.cpcv_lite_report_path)["summary"]["status"] == "partial"
-    assert result.metrics["research_only"]["cpcv_lite"]["status"] == "partial"
+    assert result.metrics["research_only"]["cpcv_lite"]["summary"]["status"] == "partial"
+
+
+def test_train_v4_use_latest_factor_block_selection_subsets_feature_columns(tmp_path, monkeypatch) -> None:
+    selected_feature_capture: dict[str, object] = {}
+    dataset = SimpleNamespace(
+        rows=3,
+        X=np.array([[0.1, 0.2, 0.3], [0.2, 0.3, 0.4], [0.3, 0.4, 0.5]], dtype=np.float64),
+        y_cls=np.array([0, 1, 1], dtype=np.int64),
+        sample_weight=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        y_reg=np.array([0.0, 0.1, 0.2], dtype=np.float64),
+        markets=np.array(["KRW-BTC", "KRW-ETH", "KRW-XRP"], dtype=object),
+        selected_markets=("KRW-BTC", "KRW-ETH", "KRW-XRP"),
+        feature_names=("logret_1", "volume_z", "btc_ret_1"),
+        ts_ms=np.array([1_000, 2_000, 3_000], dtype=np.int64),
+    )
+    split_info = SimpleNamespace(valid_start_ts=2_000, test_start_ts=3_000, counts={"train": 1, "valid": 1, "test": 1})
+    masks = {
+        "train": np.array([True, False, False]),
+        "valid": np.array([False, True, False]),
+        "test": np.array([False, False, True]),
+        "drop": np.array([False, False, False]),
+    }
+    family_dir = tmp_path / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "latest_factor_block_selection.json").write_text(
+        '{"run_id":"prior-run","accepted_blocks":["v3_base_core","v4_spillover_breadth"],"selected_feature_columns":["logret_1","volume_z","btc_ret_1"]}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._try_import_xgboost", lambda: object())
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_dataset_request",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.load_feature_spec",
+        lambda dataset_root: {"feature_columns": ["logret_1", "volume_z", "one_m_count", "btc_ret_1", "hour_sin"], "high_tfs": ["15m", "60m", "240m"]},
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.load_label_spec",
+        lambda dataset_root: {"label_columns": ["y_reg_net_12", "y_cls_topq_12"]},
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.feature_columns_from_spec",
+        lambda dataset_root: ("logret_1", "volume_z", "one_m_count", "btc_ret_1", "hour_sin"),
+    )
+
+    def _fake_load_feature_dataset(request, *, feature_columns, **kwargs):
+        selected_feature_capture["feature_columns"] = tuple(feature_columns)
+        return dataset
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.load_feature_dataset", _fake_load_feature_dataset)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.compute_time_splits",
+        lambda *args, **kwargs: (np.array(["train", "valid", "test"], dtype=object), split_info),
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.split_masks", lambda labels: masks)
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._validate_split_counts", lambda split_masks: None)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._fit_booster_sweep_weighted",
+        lambda **kwargs: {
+            "bundle": {"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()},
+            "best_params": {"max_depth": 2},
+            "trials": [],
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._evaluate_split",
+        lambda **kwargs: {
+            "classification": {
+                "roc_auc": 0.71,
+                "pr_auc": 0.61,
+                "log_loss": 0.4,
+                "brier_score": 0.2,
+            },
+            "trading": {
+                "top_5pct": {
+                    "precision": 0.63,
+                    "ev_net": 0.0012,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._build_thresholds", lambda **kwargs: {"top_5pct": 0.7})
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_data_fingerprint",
+        lambda **kwargs: {"manifest_sha256": "abc"},
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.render_model_card", lambda **kwargs: "# card")
+
+    options = TrainV4CryptoCsOptions(
+        dataset_root=tmp_path / "features_v4",
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
+        model_family="train_v4_crypto_cs",
+        tf="5m",
+        quote="KRW",
+        top_n=20,
+        start="2026-03-01",
+        end="2026-03-05",
+        feature_set="v4",
+        label_set="v2",
+        task="cls",
+        booster_sweep_trials=1,
+        seed=7,
+        nthread=1,
+        batch_rows=128,
+        train_ratio=0.6,
+        valid_ratio=0.2,
+        test_ratio=0.2,
+        embargo_bars=0,
+        fee_bps_est=5.0,
+        safety_bps=1.0,
+        ev_scan_steps=10,
+        ev_min_selected=1,
+        min_rows_for_train=1,
+        factor_block_selection_mode="use_latest",
+    )
+
+    result = train_and_register_v4_crypto_cs(options)
+
+    assert selected_feature_capture["feature_columns"] == ("logret_1", "volume_z", "btc_ret_1")
+    assert result.factor_block_selection_path is not None
+    assert result.factor_block_selection_path.exists()
+    assert load_json(result.run_dir / "train_config.yaml")["factor_block_selection"]["resolution_context"]["applied"] is True
+
+
+def test_train_v4_guarded_auto_policy_applies_pruned_features_and_triggers_cpcv(tmp_path, monkeypatch) -> None:
+    selected_feature_capture: dict[str, object] = {}
+    cpcv_capture: dict[str, object] = {}
+    dataset = SimpleNamespace(
+        rows=3,
+        X=np.array([[0.1, 0.2, 0.3], [0.2, 0.3, 0.4], [0.3, 0.4, 0.5]], dtype=np.float64),
+        y_cls=np.array([0, 1, 1], dtype=np.int64),
+        sample_weight=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        y_reg=np.array([0.0, 0.1, 0.2], dtype=np.float64),
+        markets=np.array(["KRW-BTC", "KRW-ETH", "KRW-XRP"], dtype=object),
+        selected_markets=("KRW-BTC", "KRW-ETH", "KRW-XRP"),
+        feature_names=("logret_1", "one_m_count", "btc_ret_1"),
+        ts_ms=np.array([1_000, 2_000, 3_000], dtype=np.int64),
+    )
+    split_info = SimpleNamespace(valid_start_ts=2_000, test_start_ts=3_000, counts={"train": 1, "valid": 1, "test": 1})
+    masks = {
+        "train": np.array([True, False, False]),
+        "valid": np.array([False, True, False]),
+        "test": np.array([False, False, True]),
+        "drop": np.array([False, False, False]),
+    }
+    family_dir = tmp_path / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "latest_factor_block_policy.json").write_text(
+        json.dumps(
+            {
+                "updated_by_run_id": "policy-run",
+                "apply_pruned_feature_set": True,
+                "accepted_blocks": ["v3_base_core", "v3_one_m_core", "v4_spillover_breadth"],
+                "selected_feature_columns": ["logret_1", "one_m_count", "btc_ret_1"],
+                "summary": {"status": "stable"},
+                "policy_reasons": ["GUARDED_AUTO_POLICY_ACTIVE"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._try_import_xgboost", lambda: object())
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_dataset_request",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.load_feature_spec",
+        lambda dataset_root: {"feature_columns": ["logret_1", "volume_z", "one_m_count", "btc_ret_1", "hour_sin"], "high_tfs": ["15m", "60m", "240m"]},
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.load_label_spec",
+        lambda dataset_root: {"label_columns": ["y_reg_net_12", "y_cls_topq_12"]},
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.feature_columns_from_spec",
+        lambda dataset_root: ("logret_1", "volume_z", "one_m_count", "btc_ret_1", "hour_sin"),
+    )
+
+    def _fake_load_feature_dataset(request, *, feature_columns, **kwargs):
+        selected_feature_capture["feature_columns"] = tuple(feature_columns)
+        return dataset
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.load_feature_dataset", _fake_load_feature_dataset)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.compute_time_splits",
+        lambda *args, **kwargs: (np.array(["train", "valid", "test"], dtype=object), split_info),
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.split_masks", lambda labels: masks)
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._validate_split_counts", lambda split_masks: None)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._fit_booster_sweep_weighted",
+        lambda **kwargs: {
+            "bundle": {"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()},
+            "best_params": {"max_depth": 2},
+            "trials": [],
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._evaluate_split",
+        lambda **kwargs: {
+            "classification": {
+                "roc_auc": 0.71,
+                "pr_auc": 0.61,
+                "log_loss": 0.4,
+                "brier_score": 0.2,
+            },
+            "trading": {
+                "top_5pct": {
+                    "precision": 0.63,
+                    "ev_net": 0.0012,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._build_thresholds", lambda **kwargs: {"top_5pct": 0.7})
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_data_fingerprint",
+        lambda **kwargs: {"manifest_sha256": "abc"},
+    )
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.render_model_card", lambda **kwargs: "# card")
+
+    def _fake_cpcv(**kwargs):
+        cpcv_capture["enabled"] = kwargs["enabled"]
+        cpcv_capture["trigger"] = kwargs["trigger"]
+        return {
+            "policy": "cpcv_lite_research_v1",
+            "enabled": bool(kwargs["enabled"]),
+            "trigger": kwargs["trigger"],
+            "estimate_label": "lite",
+            "summary": {
+                "status": "partial",
+                "folds_requested": 4,
+                "folds_run": 2,
+                "skipped_folds": 2,
+                "comparable_fold_count": 1,
+                "budget_cut": False,
+            },
+            "folds": [],
+            "skipped_folds": [],
+            "pbo": {"comparable": False, "reason": "TOY"},
+            "dsr": {"comparable": False, "reason": "TOY"},
+            "insufficiency_reasons": ["TOY"],
+        }
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs._run_cpcv_lite_v4", _fake_cpcv)
+
+    options = TrainV4CryptoCsOptions(
+        dataset_root=tmp_path / "features_v4",
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
+        model_family="train_v4_crypto_cs",
+        tf="5m",
+        quote="KRW",
+        top_n=20,
+        start="2026-03-01",
+        end="2026-03-05",
+        feature_set="v4",
+        label_set="v2",
+        task="cls",
+        booster_sweep_trials=1,
+        seed=7,
+        nthread=1,
+        batch_rows=128,
+        train_ratio=0.6,
+        valid_ratio=0.2,
+        test_ratio=0.2,
+        embargo_bars=0,
+        fee_bps_est=5.0,
+        safety_bps=1.0,
+        ev_scan_steps=10,
+        ev_min_selected=1,
+        min_rows_for_train=1,
+        factor_block_selection_mode="guarded_auto",
+    )
+
+    result = train_and_register_v4_crypto_cs(options)
+
+    assert selected_feature_capture["feature_columns"] == ("logret_1", "volume_z", "one_m_count", "btc_ret_1")
+    assert cpcv_capture == {"enabled": True, "trigger": "guarded_policy"}
+    train_config = load_json(result.run_dir / "train_config.yaml")
+    assert train_config["factor_block_selection"]["resolution_context"]["applied"] is True
+    assert train_config["cpcv_lite"]["enabled"] is True
+    assert train_config["cpcv_lite"]["trigger"] == "guarded_policy"

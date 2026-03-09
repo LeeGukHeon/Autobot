@@ -60,6 +60,7 @@ It should not be used for:
 3. `T21.3` Cross-Sectional Ranker Lane v1
 4. `T21.4` CPCV-Lite And PBO Research Lane v1
 5. `T21.5` Economically Significant Factor Selector v1
+6. `T21.6` Selector History And Guarded Auto-Apply v1
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

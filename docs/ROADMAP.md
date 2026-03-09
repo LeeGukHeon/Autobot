@@ -453,6 +453,7 @@ D:\MyApps\Autobot
 - T18.7: Daily champion-challenger loop (`v4` single-lane production paper rollout)
 - T20: v4 upgrade priority under `80GB` stable / `100GB` max budget
 - T21: literature-grounded methodology tickets for the current Oracle A1 server
+  - T21.6: selector history and guarded auto-apply loop for stable automatic feature pruning
 
 ## 19) 첫 작업 지시문 요약
 
