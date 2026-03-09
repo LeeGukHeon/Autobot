@@ -279,3 +279,5 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
     assert latest_report["steps"]["features_build"]["attempted"] is True
     assert latest_report["steps"]["features_build"]["feature_set"] == "v4"
     assert latest_report["steps"]["features_build"]["label_set"] == "v2"
+    assert latest_report["reasons"] == []
+    assert latest_report["notes"] == ["PAPER_SOAK_SKIPPED"]

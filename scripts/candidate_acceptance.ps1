@@ -2136,6 +2136,7 @@ try {
 
     $overallPass = if ($SkipPaperSoak) { $backtestPass } else { $backtestPass -and $paperPass }
     $reasons = @()
+    $notes = @()
     if (-not $backtestPass) {
         $reasons += "BACKTEST_ACCEPTANCE_FAILED"
     }
@@ -2143,7 +2144,7 @@ try {
         $reasons += "TRAINER_EVIDENCE_REQUIRED_FAILED"
     }
     if ($SkipPaperSoak) {
-        $reasons += "PAPER_SOAK_SKIPPED"
+        $notes += "PAPER_SOAK_SKIPPED"
     } elseif (-not $paperPass) {
         if ($promotionPolicyConfig.paper_final_gate) {
             $paperGate = Get-PropValue -ObjectValue $report.gates.paper -Name "final_decision_basis" -DefaultValue ""
@@ -2158,6 +2159,7 @@ try {
     }
     $report.gates.overall_pass = $overallPass
     $report.reasons = @($reasons)
+    $report.notes = @($notes)
 
     $promoteStep = [ordered]@{ attempted = $false; promoted = $false }
     if ($SkipPaperSoak) {

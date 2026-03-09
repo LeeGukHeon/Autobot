@@ -635,10 +635,13 @@ if ($runSpawnPhase) {
             candidate_run_id = $candidateRunId
             acceptance_exit_code = [int]$acceptExec.ExitCode
             acceptance_reasons = @($acceptReasons)
+            acceptance_notes = @((Get-PropValue -ObjectValue $acceptReport -Name "notes" -DefaultValue @()))
             reason = if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
                 "NO_CANDIDATE_RUN_ID"
             } elseif ($acceptReasons -contains "DUPLICATE_CANDIDATE") {
                 "DUPLICATE_CANDIDATE"
+            } elseif ($acceptReasons -contains "TRAINER_EVIDENCE_REQUIRED_FAILED") {
+                "TRAINER_EVIDENCE_REQUIRED_FAILED"
             } elseif (-not $backtestPass) {
                 "BACKTEST_SANITY_FAILED"
             } elseif (-not $overallPass) {
