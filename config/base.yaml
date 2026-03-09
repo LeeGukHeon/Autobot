@@ -17,6 +17,17 @@ live:
     poll_interval_sec: 15
     use_private_ws: false
     use_executor_ws: false
+  model:
+    ref: "champion_v4"
+    family: "train_v4_crypto_cs"
+    registry_root: "models/registry"
+  data_plane:
+    ws_public:
+      raw_root: "data/raw_ws/upbit/public"
+      meta_dir: "data/raw_ws/upbit/_meta"
+      stale_threshold_sec: 180
+    micro:
+      aggregate_report_path: "data/parquet/micro_v1/_meta/aggregate_report.json"
   executor:
     host: "127.0.0.1"
     port: 50051

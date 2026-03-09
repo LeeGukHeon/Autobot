@@ -89,10 +89,13 @@ from .live import (
     LiveDaemonSettings,
     LiveStateStore,
     apply_cancel_actions,
+    build_live_runtime_sync_status,
     build_live_admissibility_report,
     build_live_order_admissibility_snapshot,
     evaluate_live_limit_order,
+    load_ws_public_runtime_contract,
     reconcile_exchange_snapshot,
+    resolve_live_runtime_model_contract,
     run_live_sync_daemon,
     run_live_sync_daemon_with_executor_events,
     run_live_sync_daemon_with_private_ws,
@@ -4164,6 +4167,31 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         open_orders = client.open_orders(states=("wait", "watch"))
 
                     if command == "status":
+                        pinned_contract = store.runtime_contract() or {}
+                        persisted_ws_public_contract = store.ws_public_contract() or {}
+                        current_runtime_contract: dict[str, Any] = {}
+                        runtime_contract_error: str | None = None
+                        try:
+                            current_runtime_contract = resolve_live_runtime_model_contract(
+                                registry_root=Path(str(defaults["model_registry_root"])),
+                                model_ref=str(defaults["model_ref_source"]),
+                                model_family=str(defaults["model_family"]),
+                                ts_ms=int(time.time() * 1000),
+                            )
+                        except Exception as exc:
+                            runtime_contract_error = str(exc)
+                        ws_public_contract = load_ws_public_runtime_contract(
+                            meta_dir=Path(str(defaults["ws_public_meta_dir"])),
+                            raw_root=Path(str(defaults["ws_public_raw_root"])),
+                            stale_threshold_sec=int(defaults["ws_public_stale_threshold_sec"]),
+                            micro_aggregate_report_path=Path(str(defaults["micro_aggregate_report_path"])),
+                            ts_ms=int(time.time() * 1000),
+                        )
+                        runtime_handoff = build_live_runtime_sync_status(
+                            pinned_contract=pinned_contract,
+                            current_contract=current_runtime_contract,
+                            ws_public_contract=ws_public_contract,
+                        )
                         reconcile_report = reconcile_exchange_snapshot(
                             store=store,
                             bot_id=bot_id,
@@ -4202,6 +4230,15 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             },
                             "reconcile_preview": reconcile_report,
                             "small_account_report": small_account_report,
+                            "runtime_handoff": runtime_handoff,
+                            "live_runtime_model_run_id": runtime_handoff.get("live_runtime_model_run_id"),
+                            "champion_pointer_run_id": runtime_handoff.get("champion_pointer_run_id"),
+                            "ws_public_last_checkpoint_ts_ms": runtime_handoff.get("ws_public_last_checkpoint_ts_ms"),
+                            "ws_public_staleness_sec": runtime_handoff.get("ws_public_staleness_sec"),
+                            "model_pointer_divergence": runtime_handoff.get("model_pointer_divergence"),
+                            "runtime_contract_error": runtime_contract_error,
+                            "persisted_runtime_contract": pinned_contract,
+                            "persisted_ws_public_contract": persisted_ws_public_contract,
                             "breaker_status": breaker_status(store),
                         }
                         _print_json(payload)
@@ -4276,6 +4313,13 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             small_account_max_open_orders_per_market=int(
                                 defaults["small_account_max_open_orders_per_market"]
                             ),
+                            registry_root=str(defaults["model_registry_root"]),
+                            runtime_model_ref_source=str(defaults["model_ref_source"]),
+                            runtime_model_family=str(defaults["model_family"]),
+                            ws_public_raw_root=str(defaults["ws_public_raw_root"]),
+                            ws_public_meta_dir=str(defaults["ws_public_meta_dir"]),
+                            ws_public_stale_threshold_sec=int(defaults["ws_public_stale_threshold_sec"]),
+                            micro_aggregate_report_path=str(defaults["micro_aggregate_report_path"]),
                         )
                         if daemon_settings.use_private_ws:
                             ws_client = UpbitWebSocketPrivateClient(settings.websocket, credentials)
@@ -5203,6 +5247,14 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     small_account_cfg = (
         live_cfg.get("small_account", {}) if isinstance(live_cfg.get("small_account"), dict) else {}
     )
+    model_cfg = live_cfg.get("model", {}) if isinstance(live_cfg.get("model"), dict) else {}
+    data_plane_cfg = live_cfg.get("data_plane", {}) if isinstance(live_cfg.get("data_plane"), dict) else {}
+    ws_public_cfg = (
+        data_plane_cfg.get("ws_public", {}) if isinstance(data_plane_cfg.get("ws_public"), dict) else {}
+    )
+    micro_plane_cfg = (
+        data_plane_cfg.get("micro", {}) if isinstance(data_plane_cfg.get("micro"), dict) else {}
+    )
     universe_cfg = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
 
     unknown_open_orders_policy = str(startup_cfg.get("unknown_open_orders_policy", "halt")).strip().lower()
@@ -5236,6 +5288,18 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             int(small_account_cfg.get("max_open_orders_per_market", 1)),
             1,
         ),
+        "model_ref_source": str(model_cfg.get("ref", "champion_v4")).strip() or "champion_v4",
+        "model_family": str(model_cfg.get("family", "train_v4_crypto_cs")).strip() or "train_v4_crypto_cs",
+        "model_registry_root": str(model_cfg.get("registry_root", "models/registry")).strip() or "models/registry",
+        "ws_public_raw_root": str(ws_public_cfg.get("raw_root", "data/raw_ws/upbit/public")).strip()
+        or "data/raw_ws/upbit/public",
+        "ws_public_meta_dir": str(ws_public_cfg.get("meta_dir", "data/raw_ws/upbit/_meta")).strip()
+        or "data/raw_ws/upbit/_meta",
+        "ws_public_stale_threshold_sec": max(int(ws_public_cfg.get("stale_threshold_sec", 180)), 1),
+        "micro_aggregate_report_path": str(
+            micro_plane_cfg.get("aggregate_report_path", "data/parquet/micro_v1/_meta/aggregate_report.json")
+        ).strip()
+        or "data/parquet/micro_v1/_meta/aggregate_report.json",
         "executor_host": str(executor_cfg.get("host", "127.0.0.1")).strip(),
         "executor_port": max(int(executor_cfg.get("port", 50051)), 1),
         "executor_timeout_sec": max(float(executor_cfg.get("timeout_sec", 5.0)), 0.1),

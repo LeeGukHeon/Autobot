@@ -61,6 +61,9 @@ def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
         assert len(store.list_positions()) == 1
         assert len(store.list_orders(open_only=True)) == 1
         assert len(store.list_order_lineage(intent_id="intent-1")) == 1
+        store.set_runtime_contract(payload={"live_runtime_model_run_id": "run-1"}, ts_ms=1004)
+        store.set_ws_public_contract(payload={"ws_public_last_checkpoint_ts_ms": 1003}, ts_ms=1004)
+        store.set_live_runtime_health(payload={"model_pointer_divergence": False}, ts_ms=1004)
 
         exported = store.export_state()
         assert exported["db_path"] == str(db_path)
@@ -68,6 +71,9 @@ def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
         assert exported["orders"][0]["uuid"] == "uuid-1"
         assert exported["orders"][0]["local_state"] == "OPEN"
         assert exported["order_lineage"][0]["new_uuid"] == "uuid-2"
+        assert store.runtime_contract()["live_runtime_model_run_id"] == "run-1"
+        assert store.ws_public_contract()["ws_public_last_checkpoint_ts_ms"] == 1003
+        assert store.live_runtime_health()["model_pointer_divergence"] is False
         assert exported["breaker_state"] == []
         arm_breaker(store, reason_codes=["MANUAL_KILL_SWITCH"], source="test", ts_ms=1005)
         exported_after_breaker = store.export_state()

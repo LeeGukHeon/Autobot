@@ -167,6 +167,8 @@ Environment=AUTOBOT_PAPER_UNIT_NAME=$PaperUnitName
 Environment=AUTOBOT_PAPER_RUNTIME_ROLE=$effectiveRuntimeRole
 Environment=AUTOBOT_PAPER_LANE=$PaperLaneName
 Environment=AUTOBOT_PAPER_MODEL_REF_PINNED=$PaperModelRefPinned
+Environment=AUTOBOT_RUNTIME_MODEL_REF_SOURCE=$($runtimeSpec.RuntimeModelRef)
+Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=$($runtimeSpec.ModelFamily)
 SyslogIdentifier=$($runtimeSpec.SyslogIdentifier)
 ExecStart=$execStart
 Restart=always

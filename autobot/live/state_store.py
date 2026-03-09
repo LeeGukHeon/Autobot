@@ -513,6 +513,27 @@ class LiveStateStore:
             return None
         return _row_to_checkpoint(row)
 
+    def set_runtime_contract(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
+        self.set_checkpoint(name="live_runtime_contract", payload=payload, ts_ms=ts_ms)
+
+    def runtime_contract(self) -> dict[str, Any] | None:
+        checkpoint = self.get_checkpoint(name="live_runtime_contract")
+        return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
+
+    def set_ws_public_contract(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
+        self.set_checkpoint(name="ws_public_contract", payload=payload, ts_ms=ts_ms)
+
+    def ws_public_contract(self) -> dict[str, Any] | None:
+        checkpoint = self.get_checkpoint(name="ws_public_contract")
+        return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
+
+    def set_live_runtime_health(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
+        self.set_checkpoint(name="live_runtime_health", payload=payload, ts_ms=ts_ms)
+
+    def live_runtime_health(self) -> dict[str, Any] | None:
+        checkpoint = self.get_checkpoint(name="live_runtime_health")
+        return dict(checkpoint.get("payload", {})) if checkpoint is not None else None
+
     def upsert_breaker_state(self, record: BreakerStateRecord) -> None:
         with self._conn:
             self._conn.execute(

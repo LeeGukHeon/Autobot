@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 import pytest
 import time
@@ -218,6 +219,85 @@ class _FakeMultiPositionClient(_FakePrivateClient):
         return []
 
 
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _runtime_contract_settings(tmp_path: Path, *, ws_updated_at_ms: int | None = None) -> dict[str, object]:
+    registry_root = tmp_path / "models" / "registry"
+    family_dir = registry_root / "train_v4_crypto_cs"
+    run_id = "run-current"
+    (family_dir / run_id).mkdir(parents=True, exist_ok=True)
+    _write_json(family_dir / "champion.json", {"run_id": run_id})
+
+    now_ms = int(time.time() * 1000) if ws_updated_at_ms is None else int(ws_updated_at_ms)
+    ws_raw_root = tmp_path / "data" / "raw_ws" / "upbit" / "public"
+    ws_meta_dir = tmp_path / "data" / "raw_ws" / "upbit" / "_meta"
+    _write_json(
+        ws_meta_dir / "ws_public_health.json",
+        {
+            "run_id": "ws-run-current",
+            "updated_at_ms": now_ms,
+            "connected": True,
+            "last_rx_ts_ms": {"trade": now_ms, "orderbook": now_ms},
+            "subscribed_markets_count": 10,
+        },
+    )
+    _write_json(
+        ws_meta_dir / "ws_collect_report.json",
+        {
+            "run_id": "ws-collect-current",
+            "generated_at": "2026-03-09T00:00:00+00:00",
+        },
+    )
+    _write_json(
+        ws_meta_dir / "ws_validate_report.json",
+        {
+            "run_id": "ws-validate-current",
+            "generated_at": "2026-03-09T00:00:00+00:00",
+            "checked_files": 1,
+            "ok_files": 1,
+            "warn_files": 0,
+            "fail_files": 0,
+        },
+    )
+    _write_json(
+        ws_meta_dir / "ws_runs_summary.json",
+        {
+            "runs": [
+                {
+                    "run_id": "ws-run-current",
+                    "parts": 1,
+                    "rows_total": 10,
+                    "bytes_total": 100,
+                    "min_date": "2026-03-08",
+                    "max_date": "2026-03-09",
+                }
+            ]
+        },
+    )
+    micro_report_path = tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"
+    _write_json(
+        micro_report_path,
+        {
+            "run_id": "micro-run-current",
+            "start": "2026-03-08",
+            "end": "2026-03-08",
+            "rows_written_total": 10,
+        },
+    )
+    return {
+        "registry_root": str(registry_root),
+        "runtime_model_ref_source": "champion_v4",
+        "runtime_model_family": "train_v4_crypto_cs",
+        "ws_public_raw_root": str(ws_raw_root),
+        "ws_public_meta_dir": str(ws_meta_dir),
+        "ws_public_stale_threshold_sec": 180,
+        "micro_aggregate_report_path": str(micro_report_path),
+    }
+
+
 def test_live_daemon_polling_updates_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     db_path = tmp_path / "live_state.db"
@@ -235,6 +315,7 @@ def test_live_daemon_polling_updates_state(tmp_path: Path, monkeypatch) -> None:
                 poll_interval_sec=1,
                 max_cycles=2,
                 startup_reconcile=True,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -269,6 +350,7 @@ def test_live_daemon_cancel_policy_executes_bot_cancel(tmp_path: Path, monkeypat
                 poll_interval_sec=1,
                 max_cycles=1,
                 startup_reconcile=True,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -297,6 +379,7 @@ def test_live_daemon_private_ws_updates_state(tmp_path: Path, monkeypatch) -> No
                     startup_reconcile=True,
                     duration_sec=1,
                     use_private_ws=True,
+                    **_runtime_contract_settings(tmp_path),
                 ),
             )
         )
@@ -331,6 +414,7 @@ def test_live_daemon_executor_events_updates_state(tmp_path: Path, monkeypatch) 
                 startup_reconcile=True,
                 duration_sec=1,
                 use_executor_ws=True,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
         order = store.order_by_uuid(uuid="bot-exec-1")
@@ -457,6 +541,7 @@ def test_live_daemon_halts_and_cancels_bot_orders_on_unknown_external_order(tmp_
                 poll_interval_sec=1,
                 max_cycles=1,
                 startup_reconcile=True,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -493,6 +578,7 @@ def test_live_daemon_halts_when_local_position_missing_on_exchange(tmp_path: Pat
                 poll_interval_sec=1,
                 max_cycles=1,
                 startup_reconcile=True,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -538,6 +624,7 @@ def test_live_daemon_single_slot_canary_halts_on_multi_slot_state(tmp_path: Path
                 small_account_canary_enabled=True,
                 small_account_max_positions=1,
                 small_account_max_open_orders_per_market=1,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -571,6 +658,7 @@ def test_live_daemon_arms_manual_kill_switch_before_cycles(tmp_path: Path, monke
                 poll_interval_sec=1,
                 max_cycles=1,
                 startup_reconcile=True,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -596,6 +684,7 @@ def test_live_daemon_repeated_rate_limit_arms_breaker(tmp_path: Path, monkeypatc
                 max_cycles=3,
                 startup_reconcile=True,
                 breaker_rate_limit_error_limit=2,
+                **_runtime_contract_settings(tmp_path),
             ),
         )
 
@@ -633,6 +722,7 @@ def test_live_daemon_halts_when_private_ws_stream_ends(tmp_path: Path, monkeypat
                     startup_reconcile=True,
                     duration_sec=1,
                     use_private_ws=True,
+                    **_runtime_contract_settings(tmp_path),
                 ),
             )
         )

@@ -261,6 +261,8 @@ $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
 $reportPath = Join-Path $stateRoot ("daily_loop_" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".json")
 $latestReportPath = Join-Path $stateRoot "latest.json"
+$promoteCutoverLatestPath = Join-Path $stateRoot "latest_promote_cutover.json"
+$promoteCutoverArchiveRoot = Join-Path $stateRoot "promote_cutover_archive"
 $psExe = Resolve-PwshExe
 $runPromotionPhase = $Mode -ne "spawn_only"
 $runSpawnPhase = $Mode -ne "promote_only"
@@ -369,6 +371,7 @@ if ($runPromotionPhase) {
             }
             $shouldPromote = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "promote" -DefaultValue $false)
             if ($shouldPromote -and (-not $DryRun)) {
+                $promotedAtTsMs = [int64](Get-Date -UFormat %s) * 1000
                 $promoteExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList @(
                     "-m", "autobot.cli",
                     "model", "promote",
@@ -392,6 +395,20 @@ if ($runPromotionPhase) {
                         $restartedUnits.Add($trimmedUnit) | Out-Null
                     }
                 }
+                $promoteCutover = [ordered]@{
+                    batch_date = $resolvedBatchDate
+                    previous_champion_run_id = $championRunIdAtStart
+                    new_champion_run_id = $candidateRunId
+                    promoted_at_ts_ms = $promotedAtTsMs
+                    promoted_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+                    champion_unit = $ChampionUnitName
+                    target_units = @($restartedUnits)
+                    configured_target_units = @($PromotionTargetUnits)
+                }
+                New-Item -ItemType Directory -Force -Path $promoteCutoverArchiveRoot | Out-Null
+                $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
+                Write-JsonFile -PathValue $promoteCutoverLatestPath -Payload $promoteCutover
+                Write-JsonFile -PathValue $promoteCutoverArchivePath -Payload $promoteCutover
                 $report.steps.promote_previous_challenger = [ordered]@{
                     attempted = $true
                     command = $promoteExec.Command
@@ -399,6 +416,7 @@ if ($runPromotionPhase) {
                     promoted = $true
                     candidate_run_id = $candidateRunId
                     restarted_units = @($restartedUnits)
+                    cutover_artifact = $promoteCutoverLatestPath
                 }
             } else {
                 $report.steps.promote_previous_challenger = [ordered]@{

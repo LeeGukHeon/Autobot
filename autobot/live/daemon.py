@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import queue
 import threading
 import time
@@ -27,6 +28,11 @@ from .breakers import (
     record_counter_failure,
     reset_counter,
     should_cancel_bot_orders,
+)
+from .model_handoff import (
+    build_live_runtime_sync_status,
+    load_ws_public_runtime_contract,
+    resolve_live_runtime_model_contract,
 )
 from .order_state import normalize_order_state
 from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot, resume_risk_plans_after_reconcile
@@ -61,6 +67,13 @@ class LiveDaemonSettings:
     small_account_canary_enabled: bool = False
     small_account_max_positions: int = 1
     small_account_max_open_orders_per_market: int = 1
+    registry_root: str = "models/registry"
+    runtime_model_ref_source: str = "champion_v4"
+    runtime_model_family: str = "train_v4_crypto_cs"
+    ws_public_raw_root: str = "data/raw_ws/upbit/public"
+    ws_public_meta_dir: str = "data/raw_ws/upbit/_meta"
+    ws_public_stale_threshold_sec: int = 180
+    micro_aggregate_report_path: str = "data/parquet/micro_v1/_meta/aggregate_report.json"
 
     def __post_init__(self) -> None:
         if self.use_private_ws and self.use_executor_ws:
@@ -69,6 +82,155 @@ class LiveDaemonSettings:
             raise ValueError("small_account_max_positions must be positive")
         if int(self.small_account_max_open_orders_per_market) <= 0:
             raise ValueError("small_account_max_open_orders_per_market must be positive")
+        if not str(self.runtime_model_ref_source).strip():
+            raise ValueError("runtime_model_ref_source must not be blank")
+        if not str(self.runtime_model_family).strip():
+            raise ValueError("runtime_model_family must not be blank")
+        if int(self.ws_public_stale_threshold_sec) <= 0:
+            raise ValueError("ws_public_stale_threshold_sec must be positive")
+
+
+def _runtime_model_binding_after_resume(
+    *,
+    store: LiveStateStore,
+    settings: LiveDaemonSettings,
+    ts_ms: int,
+) -> dict[str, Any]:
+    previous_contract = store.runtime_contract() or {}
+    current_contract = resolve_live_runtime_model_contract(
+        registry_root=Path(str(settings.registry_root)),
+        model_ref=str(settings.runtime_model_ref_source),
+        model_family=str(settings.runtime_model_family),
+        ts_ms=ts_ms,
+    )
+    previous_pinned_run_id = str(previous_contract.get("live_runtime_model_run_id", "")).strip()
+    champion_pointer_run_id = str(current_contract.get("champion_pointer_run_id", "")).strip()
+    pinned_contract = dict(current_contract)
+    pinned_contract.update(
+        {
+            "previous_pinned_run_id": previous_pinned_run_id or None,
+            "promote_happened_while_down": bool(
+                previous_pinned_run_id and champion_pointer_run_id and previous_pinned_run_id != champion_pointer_run_id
+            ),
+            "bound_after_resume_ts_ms": int(ts_ms),
+        }
+    )
+    store.set_runtime_contract(payload=pinned_contract, ts_ms=ts_ms)
+    ws_public_contract = load_ws_public_runtime_contract(
+        meta_dir=Path(str(settings.ws_public_meta_dir)),
+        raw_root=Path(str(settings.ws_public_raw_root)),
+        stale_threshold_sec=int(settings.ws_public_stale_threshold_sec),
+        micro_aggregate_report_path=Path(str(settings.micro_aggregate_report_path)),
+        ts_ms=ts_ms,
+    )
+    store.set_ws_public_contract(payload=ws_public_contract, ts_ms=ts_ms)
+    runtime_status = build_live_runtime_sync_status(
+        pinned_contract=pinned_contract,
+        current_contract=current_contract,
+        ws_public_contract=ws_public_contract,
+    )
+    if bool(runtime_status.get("ws_public_stale")):
+        arm_breaker(
+            store,
+            reason_codes=["WS_PUBLIC_STALE"],
+            source="ws_public",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details=runtime_status,
+        )
+    store.set_live_runtime_health(payload=runtime_status, ts_ms=ts_ms)
+    return runtime_status
+
+
+def _refresh_runtime_contract_health(
+    *,
+    store: LiveStateStore,
+    settings: LiveDaemonSettings,
+    ts_ms: int,
+) -> dict[str, Any]:
+    try:
+        current_contract = resolve_live_runtime_model_contract(
+            registry_root=Path(str(settings.registry_root)),
+            model_ref=str(settings.runtime_model_ref_source),
+            model_family=str(settings.runtime_model_family),
+            ts_ms=ts_ms,
+        )
+    except Exception as exc:
+        breaker_report = arm_breaker(
+            store,
+            reason_codes=["MODEL_POINTER_UNRESOLVED"],
+            source="live_model_handoff",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={"error": str(exc)},
+        )
+        runtime_status = {
+            "live_runtime_model_run_id": str((store.runtime_contract() or {}).get("live_runtime_model_run_id", "")).strip() or None,
+            "champion_pointer_run_id": None,
+            "current_resolved_model_run_id": None,
+            "model_pointer_divergence": False,
+            "model_pointer_divergence_reason": "MODEL_POINTER_UNRESOLVED",
+            "previous_pinned_run_id": None,
+            "promote_happened_while_down": False,
+            "ws_public_last_checkpoint_ts_ms": None,
+            "ws_public_staleness_sec": None,
+            "ws_public_stale": False,
+            "ws_public_last_checkpoint_source": None,
+            "ws_public_run_id": None,
+            "ws_public_validate_run_id": None,
+            "micro_aggregate_run_id": None,
+            "pinned_contract": store.runtime_contract() or {},
+            "current_contract": {},
+            "ws_public_contract": store.ws_public_contract() or {},
+            "breaker_report": breaker_report,
+        }
+        store.set_live_runtime_health(payload=runtime_status, ts_ms=ts_ms)
+        return runtime_status
+
+    ws_public_contract = load_ws_public_runtime_contract(
+        meta_dir=Path(str(settings.ws_public_meta_dir)),
+        raw_root=Path(str(settings.ws_public_raw_root)),
+        stale_threshold_sec=int(settings.ws_public_stale_threshold_sec),
+        micro_aggregate_report_path=Path(str(settings.micro_aggregate_report_path)),
+        ts_ms=ts_ms,
+    )
+    store.set_ws_public_contract(payload=ws_public_contract, ts_ms=ts_ms)
+    pinned_contract = store.runtime_contract() or current_contract
+    runtime_status = build_live_runtime_sync_status(
+        pinned_contract=pinned_contract,
+        current_contract=current_contract,
+        ws_public_contract=ws_public_contract,
+    )
+    if bool(runtime_status.get("model_pointer_divergence")):
+        arm_breaker(
+            store,
+            reason_codes=["MODEL_POINTER_DIVERGENCE"],
+            source="live_model_handoff",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details=runtime_status,
+        )
+    if bool(runtime_status.get("ws_public_stale")):
+        arm_breaker(
+            store,
+            reason_codes=["WS_PUBLIC_STALE"],
+            source="ws_public",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details=runtime_status,
+        )
+    store.set_live_runtime_health(payload=runtime_status, ts_ms=ts_ms)
+    return runtime_status
+
+
+def _apply_runtime_status_to_summary(summary: dict[str, Any], runtime_status: dict[str, Any] | None) -> None:
+    payload = dict(runtime_status or {})
+    summary["runtime_handoff"] = payload
+    summary["live_runtime_model_run_id"] = payload.get("live_runtime_model_run_id")
+    summary["champion_pointer_run_id"] = payload.get("champion_pointer_run_id")
+    summary["ws_public_last_checkpoint_ts_ms"] = payload.get("ws_public_last_checkpoint_ts_ms")
+    summary["ws_public_staleness_sec"] = payload.get("ws_public_staleness_sec")
+    summary["model_pointer_divergence"] = bool(payload.get("model_pointer_divergence", False))
 
 
 def run_live_sync_daemon(
@@ -93,6 +255,12 @@ def run_live_sync_daemon(
         "small_account_report": None,
         "breaker_report": breaker_status(store),
         "last_sync_error": None,
+        "runtime_handoff": None,
+        "live_runtime_model_run_id": None,
+        "champion_pointer_run_id": None,
+        "ws_public_last_checkpoint_ts_ms": None,
+        "ws_public_staleness_sec": None,
+        "model_pointer_divergence": False,
     }
 
     if settings.startup_reconcile:
@@ -131,6 +299,32 @@ def run_live_sync_daemon(
             summary["cycles"] = cycles
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
+        runtime_status = _runtime_model_binding_after_resume(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_runtime_status_to_summary(summary, runtime_status)
+        summary["breaker_report"] = breaker_status(store)
+        if bool(active_breaker_decision(store).active):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
+    else:
+        runtime_status = _runtime_model_binding_after_resume(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_runtime_status_to_summary(summary, runtime_status)
+        summary["breaker_report"] = breaker_status(store)
+        if bool(active_breaker_decision(store).active):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
 
     while True:
         if settings.max_cycles is not None and cycles >= settings.max_cycles:
@@ -153,6 +347,7 @@ def run_live_sync_daemon(
         summary["breaker_report"] = cycle_result.get("breaker_report")
         summary["last_sync_error"] = cycle_result.get("sync_error")
         summary["small_account_report"] = cycle_result.get("small_account_report")
+        _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
         summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -205,6 +400,12 @@ def run_live_sync_daemon_with_executor_events(
         "small_account_report": None,
         "breaker_report": breaker_status(store),
         "last_sync_error": None,
+        "runtime_handoff": None,
+        "live_runtime_model_run_id": None,
+        "champion_pointer_run_id": None,
+        "ws_public_last_checkpoint_ts_ms": None,
+        "ws_public_staleness_sec": None,
+        "model_pointer_divergence": False,
     }
 
     if settings.startup_reconcile:
@@ -242,7 +443,33 @@ def run_live_sync_daemon_with_executor_events(
             summary["cycles"] = cycles
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
+        runtime_status = _runtime_model_binding_after_resume(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_runtime_status_to_summary(summary, runtime_status)
+        summary["breaker_report"] = breaker_status(store)
+        if bool(active_breaker_decision(store).active):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
         next_poll_monotonic = time.monotonic() + poll_interval_sec
+    else:
+        runtime_status = _runtime_model_binding_after_resume(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_runtime_status_to_summary(summary, runtime_status)
+        summary["breaker_report"] = breaker_status(store)
+        if bool(active_breaker_decision(store).active):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
 
     event_queue: queue.Queue[Any] = queue.Queue()
     stop_event = threading.Event()
@@ -331,6 +558,7 @@ def run_live_sync_daemon_with_executor_events(
                 summary["breaker_report"] = cycle_result.get("breaker_report")
                 summary["last_sync_error"] = cycle_result.get("sync_error")
                 summary["small_account_report"] = cycle_result.get("small_account_report")
+                _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -390,6 +618,12 @@ async def run_live_sync_daemon_with_private_ws(
         "small_account_report": None,
         "breaker_report": breaker_status(store),
         "last_sync_error": None,
+        "runtime_handoff": None,
+        "live_runtime_model_run_id": None,
+        "champion_pointer_run_id": None,
+        "ws_public_last_checkpoint_ts_ms": None,
+        "ws_public_staleness_sec": None,
+        "model_pointer_divergence": False,
     }
 
     if settings.startup_reconcile:
@@ -429,7 +663,35 @@ async def run_live_sync_daemon_with_private_ws(
             summary["ended_ts_ms"] = int(time.time() * 1000)
             summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
             return summary
+        runtime_status = _runtime_model_binding_after_resume(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_runtime_status_to_summary(summary, runtime_status)
+        summary["breaker_report"] = breaker_status(store)
+        if bool(active_breaker_decision(store).active):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
+            return summary
         next_poll_monotonic = time.monotonic() + poll_interval_sec
+    else:
+        runtime_status = _runtime_model_binding_after_resume(
+            store=store,
+            settings=settings,
+            ts_ms=int(time.time() * 1000),
+        )
+        _apply_runtime_status_to_summary(summary, runtime_status)
+        summary["breaker_report"] = breaker_status(store)
+        if bool(active_breaker_decision(store).active):
+            summary["halted"] = True
+            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
+            return summary
 
     event_queue: asyncio.Queue[MyOrderEvent | MyAssetEvent] = asyncio.Queue()
     stop_event = asyncio.Event()
@@ -512,6 +774,7 @@ async def run_live_sync_daemon_with_private_ws(
                 summary["breaker_report"] = cycle_result.get("breaker_report")
                 summary["last_sync_error"] = cycle_result.get("sync_error")
                 summary["small_account_report"] = cycle_result.get("small_account_report")
+                _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -987,6 +1250,7 @@ def _run_sync_cycle_with_breakers(
             raise
         store.set_checkpoint(name="last_sync_error", payload=sync_error, ts_ms=ts_ms)
         active = active_breaker_decision(store)
+        runtime_status = store.live_runtime_health() or {}
         return {
             "report": {
                 "halted": active.active,
@@ -997,6 +1261,7 @@ def _run_sync_cycle_with_breakers(
             "cancel_summary": None,
             "breaker_report": breaker_report,
             "sync_error": sync_error,
+            "runtime_handoff": runtime_status,
             "small_account_report": build_small_account_runtime_report(
                 store=store,
                 canary_enabled=bool(settings.small_account_canary_enabled),
@@ -1020,6 +1285,7 @@ def _run_sync_cycle_with_breakers(
         )
         sync_error = {"error": str(exc)}
         store.set_checkpoint(name="last_sync_error", payload=sync_error, ts_ms=ts_ms)
+        runtime_status = store.live_runtime_health() or {}
         return {
             "report": {
                 "halted": True,
@@ -1030,6 +1296,7 @@ def _run_sync_cycle_with_breakers(
             "cancel_summary": None,
             "breaker_report": breaker_report,
             "sync_error": sync_error,
+            "runtime_handoff": runtime_status,
             "small_account_report": build_small_account_runtime_report(
                 store=store,
                 canary_enabled=bool(settings.small_account_canary_enabled),
@@ -1064,9 +1331,16 @@ def _run_sync_cycle_with_breakers(
                 action=ACTION_HALT_NEW_INTENTS,
                 details=small_account_report,
             )
-    cycle_result["breaker_report"] = breaker_report
+    runtime_status = _refresh_runtime_contract_health(
+        store=store,
+        settings=settings,
+        ts_ms=ts_ms,
+    )
+    cycle_result["breaker_report"] = breaker_status(store)
     cycle_result["sync_error"] = None
     cycle_result["small_account_report"] = small_account_report
+    cycle_result["runtime_handoff"] = runtime_status
+    cycle_result["report"]["runtime_handoff"] = runtime_status
     return cycle_result
 
 
