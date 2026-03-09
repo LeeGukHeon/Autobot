@@ -37,6 +37,13 @@ from .cpcv_lite import (
     summarize_cpcv_lite_fold_selection,
     summarize_cpcv_lite_pbo,
 )
+from .experiment_ledger import (
+    append_experiment_ledger_record,
+    build_experiment_ledger_record,
+    build_recent_experiment_ledger_summary,
+    load_experiment_ledger,
+    write_latest_experiment_ledger_summary,
+)
 from .factor_block_selector import (
     append_factor_block_selection_history,
     build_guarded_factor_block_policy,
@@ -44,6 +51,7 @@ from .factor_block_selector import (
     evaluate_factor_block_window_rows,
     load_factor_block_selection_history,
     normalize_factor_block_selection_mode,
+    normalize_run_scope as normalize_factor_block_run_scope,
     resolve_selected_feature_columns_from_latest,
     v4_factor_block_registry,
     write_latest_guarded_factor_block_policy,
@@ -55,8 +63,9 @@ from .multiple_testing import (
     run_white_reality_check,
 )
 from .execution_acceptance import ExecutionAcceptanceOptions, run_execution_acceptance
-from .runtime_recommendations import optimize_runtime_recommendations
+from .runtime_recommendations import optimize_runtime_recommendations, runtime_recommendation_grid_for_profile
 from .model_card import render_model_card
+from .search_budget import resolve_v4_search_budget, write_search_budget_decision
 from .research_acceptance import (
     compare_balanced_pareto,
     compare_spa_like_window_test,
@@ -153,6 +162,7 @@ class TrainV4CryptoCsOptions:
     execution_acceptance_reprice_max_attempts: int = 1
     execution_acceptance_reprice_tick_steps: int = 1
     execution_acceptance_rules_ttl_sec: int = 86_400
+    run_scope: str = "scheduled_daily"
     execution_acceptance_model_alpha: ModelAlphaSettings = ModelAlphaSettings(
         selection=ModelAlphaSelectionSettings(use_learned_recommendations=False),
         exit=ModelAlphaExitSettings(use_learned_hold_bars=False),
@@ -175,8 +185,11 @@ class TrainV4CryptoCsResult:
     factor_block_selection_path: Path | None = None
     factor_block_history_path: Path | None = None
     factor_block_policy_path: Path | None = None
+    search_budget_decision_path: Path | None = None
     execution_acceptance_report_path: Path | None = None
     runtime_recommendations_path: Path | None = None
+    experiment_ledger_path: Path | None = None
+    experiment_ledger_summary_path: Path | None = None
 
 
 def _resolve_cpcv_lite_runtime_config(
@@ -240,8 +253,24 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         registry_root=options.registry_root,
         model_family=options.model_family,
         mode=options.factor_block_selection_mode,
+        run_scope=options.run_scope,
         all_feature_columns=all_feature_cols,
         high_tfs=high_tfs or ("15m", "60m", "240m"),
+    )
+    project_root = options.logs_root.parent.resolve()
+    search_budget_decision = resolve_v4_search_budget(
+        project_root=project_root,
+        logs_root=options.logs_root,
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+        requested_booster_sweep_trials=options.booster_sweep_trials,
+        factor_block_selection_context=factor_block_selection_context,
+        cpcv_requested=bool(options.cpcv_lite_enabled),
+    )
+    effective_booster_sweep_trials = max(
+        int((search_budget_decision.get("applied") or {}).get("booster_sweep_trials", options.booster_sweep_trials)),
+        1,
     )
     dataset = load_feature_dataset(
         request,
@@ -297,7 +326,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     y_rank_test = y_rank_all[test_mask]
     market_valid = dataset.markets[valid_mask]
     market_test = dataset.markets[test_mask]
-    ranker_budget_profile = _resolve_ranker_budget_profile(options=options, task=task)
+    ranker_budget_profile = _resolve_ranker_budget_profile(
+        options=options,
+        task=task,
+        effective_booster_sweep_trials=effective_booster_sweep_trials,
+    )
     factor_block_registry = v4_factor_block_registry(
         feature_columns=dataset.feature_names,
         high_tfs=high_tfs or ("15m", "60m", "240m"),
@@ -320,7 +353,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             safety_bps=options.safety_bps,
             seed=options.seed,
             nthread=options.nthread,
-            trials=max(int(options.booster_sweep_trials), 1),
+            trials=effective_booster_sweep_trials,
         )
     elif task == "reg":
         booster = _fit_booster_sweep_regression(
@@ -335,7 +368,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             safety_bps=options.safety_bps,
             seed=options.seed,
             nthread=options.nthread,
-            trials=max(int(options.booster_sweep_trials), 1),
+            trials=effective_booster_sweep_trials,
         )
     else:
         booster = _fit_booster_sweep_ranker(
@@ -407,6 +440,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         thresholds=thresholds,
         feature_names=dataset.feature_names,
         factor_block_registry=factor_block_registry,
+        effective_booster_sweep_trials=effective_booster_sweep_trials,
     )
     selection_recommendations = build_selection_recommendations_from_walk_forward(
         windows=walk_forward.get("windows", []),
@@ -450,6 +484,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         sweep_records=list(booster.get("trials", [])),
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_runtime=cpcv_lite_runtime,
+        search_budget_decision=search_budget_decision,
     )
     leaderboard_row = _make_v4_leaderboard_row(
         run_id=run_id,
@@ -491,6 +526,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         factor_block_selection_summary=factor_block_selection.get("summary", {}),
         factor_block_selection_context=factor_block_selection_context,
         cpcv_lite_runtime=cpcv_lite_runtime,
+        search_budget_decision=search_budget_decision,
     )
 
     run_dir = save_run(
@@ -510,13 +546,14 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             selection_recommendations=selection_recommendations,
         )
     )
-    update_latest_candidate_pointer(options.registry_root, options.model_family, run_id)
-    update_latest_candidate_pointer(
-        options.registry_root,
-        "_global",
-        run_id,
-        family=options.model_family,
-    )
+    if normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
+        update_latest_candidate_pointer(options.registry_root, options.model_family, run_id)
+        update_latest_candidate_pointer(
+            options.registry_root,
+            "_global",
+            run_id,
+            family=options.model_family,
+        )
     walk_forward_report_path = run_dir / "walk_forward_report.json"
     walk_forward_report_path.write_text(
         json.dumps(walk_forward, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -534,6 +571,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         model_family=options.model_family,
         run_id=run_id,
         report=factor_block_selection,
+        run_scope=options.run_scope,
     )
     if factor_block_selection_pointer_path is not None:
         factor_block_selection["latest_pointer_path"] = str(factor_block_selection_pointer_path)
@@ -546,10 +584,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         registry_root=options.registry_root,
         model_family=options.model_family,
         report=factor_block_selection,
+        run_scope=options.run_scope,
     )
     factor_block_history = load_factor_block_selection_history(
         registry_root=options.registry_root,
         model_family=options.model_family,
+        run_scope=options.run_scope,
     )
     factor_block_policy = build_guarded_factor_block_policy(
         block_registry=factor_block_registry,
@@ -560,6 +600,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         model_family=options.model_family,
         run_id=run_id,
         policy=factor_block_policy,
+        run_scope=options.run_scope,
     )
     if factor_block_history_path is not None:
         factor_block_selection["history_path"] = str(factor_block_history_path)
@@ -569,6 +610,10 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     factor_block_selection_path.write_text(
         json.dumps(factor_block_selection, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+    search_budget_decision_path = write_search_budget_decision(
+        run_dir=run_dir,
+        decision=search_budget_decision,
     )
     duplicate_artifacts = _detect_duplicate_candidate_artifacts(
         options=options,
@@ -595,6 +640,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         runtime_recommendations = _build_runtime_recommendations_v4(
             options=options,
             run_id=run_id,
+            search_budget_decision=search_budget_decision,
         )
     execution_artifact_cleanup = _purge_execution_artifact_run_dirs(
         output_root=options.execution_acceptance_output_root,
@@ -637,17 +683,60 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
 
     finished_at = time.time()
+    duration_sec = round(finished_at - started_at, 3)
+    experiment_ledger_record = build_experiment_ledger_record(
+        run_id=run_id,
+        task=task,
+        status=status,
+        duration_sec=duration_sec,
+        run_dir=run_dir,
+        search_budget_decision=search_budget_decision,
+        walk_forward=walk_forward,
+        cpcv_lite=cpcv_lite,
+        factor_block_selection=factor_block_selection,
+        factor_block_policy=factor_block_policy,
+        factor_block_selection_context=factor_block_selection_context,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+        duplicate_candidate=duplicate_candidate,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_path = append_experiment_ledger_record(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        record=experiment_ledger_record,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_history = load_experiment_ledger(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_summary = build_recent_experiment_ledger_summary(
+        history_records=experiment_ledger_history,
+    )
+    experiment_ledger_summary_path = write_latest_experiment_ledger_summary(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_id=run_id,
+        summary=experiment_ledger_summary,
+        run_scope=options.run_scope,
+    )
     report_path = _write_train_report_v4(
         options.logs_root,
+        options.run_scope,
         {
             "run_id": run_id,
             "status": status,
             "task": task,
+            "run_scope": normalize_factor_block_run_scope(options.run_scope),
             "started_at_utc": datetime.fromtimestamp(started_at, tz=timezone.utc).isoformat(),
             "finished_at_utc": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
-            "duration_sec": round(finished_at - started_at, 3),
+            "duration_sec": duration_sec,
             "rows": rows,
             "memory_estimate_mb": _estimate_dataset_memory_mb(dataset),
+            "search_budget_decision": search_budget_decision,
             "ranker_budget_profile": ranker_budget_profile,
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
@@ -659,6 +748,8 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "runtime_recommendations": runtime_recommendations,
             "selection_recommendations": selection_recommendations,
             "promotion": promotion,
+            "experiment_ledger_record": experiment_ledger_record,
+            "experiment_ledger_summary": experiment_ledger_summary,
         },
     )
 
@@ -676,8 +767,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         factor_block_selection_path=factor_block_selection_path,
         factor_block_history_path=factor_block_history_path,
         factor_block_policy_path=factor_block_policy_path,
+        search_budget_decision_path=search_budget_decision_path,
         execution_acceptance_report_path=execution_acceptance_report_path,
         runtime_recommendations_path=runtime_recommendations_path,
+        experiment_ledger_path=experiment_ledger_path,
+        experiment_ledger_summary_path=experiment_ledger_summary_path,
     )
 
 
@@ -690,6 +784,7 @@ def _run_walk_forward_v4(
     thresholds: dict[str, Any],
     feature_names: Sequence[str],
     factor_block_registry: Sequence[Any],
+    effective_booster_sweep_trials: int,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "policy": "balanced_pareto_offline",
@@ -722,8 +817,12 @@ def _run_walk_forward_v4(
 
     min_train_rows = max(int(options.walk_forward_min_train_rows), 1)
     min_test_rows = max(int(options.walk_forward_min_test_rows), 1)
-    ranker_budget_profile = _resolve_ranker_budget_profile(options=options, task=task)
-    sweep_trials = max(min(int(options.walk_forward_sweep_trials), int(options.booster_sweep_trials)), 1)
+    ranker_budget_profile = _resolve_ranker_budget_profile(
+        options=options,
+        task=task,
+        effective_booster_sweep_trials=effective_booster_sweep_trials,
+    )
+    sweep_trials = max(min(int(options.walk_forward_sweep_trials), int(effective_booster_sweep_trials)), 1)
     if task == "rank":
         sweep_trials = min(sweep_trials, int(ranker_budget_profile["walk_forward_trials"]))
     windows: list[dict[str, Any]] = []
@@ -2669,8 +2768,18 @@ def _fit_booster_sweep_ranker(
     }
 
 
-def _resolve_ranker_budget_profile(*, options: TrainV4CryptoCsOptions, task: str) -> dict[str, Any]:
-    base_trials = max(int(options.booster_sweep_trials), 1)
+def _resolve_ranker_budget_profile(
+    *,
+    options: TrainV4CryptoCsOptions,
+    task: str,
+    effective_booster_sweep_trials: int | None = None,
+) -> dict[str, Any]:
+    base_trials = max(
+        int(effective_booster_sweep_trials)
+        if effective_booster_sweep_trials is not None
+        else int(options.booster_sweep_trials),
+        1,
+    )
     walk_forward_trials = max(int(options.walk_forward_sweep_trials), 1)
     if str(task).strip().lower() != "rank":
         return {
@@ -2823,6 +2932,7 @@ def _build_v4_metrics_doc(
     sweep_records: list[dict[str, Any]],
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
+    search_budget_decision: dict[str, Any],
 ) -> dict[str, Any]:
     backend = "xgboost_ranker" if task == "rank" else "xgboost_regressor" if task == "reg" else "xgboost"
     objective = "rank:pairwise" if task == "rank" else "reg:squarederror" if task == "reg" else "binary:logistic"
@@ -2879,6 +2989,7 @@ def _build_v4_metrics_doc(
                 "runtime": dict(cpcv_lite_runtime or {}),
             },
         },
+        "search_budget": dict(search_budget_decision or {}),
         "factor_block_selection": factor_block_selection_summary,
     }
 
@@ -2929,6 +3040,7 @@ def _train_config_snapshot_v4(
     factor_block_selection_summary: dict[str, Any],
     factor_block_selection_context: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
+    search_budget_decision: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -2947,6 +3059,7 @@ def _train_config_snapshot_v4(
     payload["created_at_utc"] = _utc_now()
     payload["autobot_version"] = autobot_version
     payload["trainer"] = "v4_crypto_cs"
+    payload["run_scope"] = normalize_factor_block_run_scope(options.run_scope)
     payload["task"] = task
     payload["y_cls_column"] = "y_cls_topq_12"
     payload["y_reg_column"] = "y_reg_net_12"
@@ -2967,15 +3080,23 @@ def _train_config_snapshot_v4(
         "summary": dict(factor_block_selection_summary or {}),
         "resolution_context": dict(factor_block_selection_context or {}),
     }
+    payload["search_budget"] = dict(search_budget_decision or {})
     payload["selection_recommendations"] = selection_recommendations
     return payload
 
 
-def _write_train_report_v4(logs_root: Path, payload: dict[str, Any]) -> Path:
+def _write_train_report_v4(logs_root: Path, run_scope: str, payload: dict[str, Any]) -> Path:
     logs_root.mkdir(parents=True, exist_ok=True)
-    path = logs_root / "train_v4_report.json"
+    path = logs_root / _scoped_train_report_filename(run_scope)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _scoped_train_report_filename(run_scope: str) -> str:
+    normalized_scope = normalize_factor_block_run_scope(run_scope)
+    if normalized_scope == "scheduled_daily":
+        return "train_v4_report.json"
+    return f"train_v4_report.{normalized_scope}.json"
 
 
 def _run_execution_acceptance_v4(
@@ -3045,6 +3166,7 @@ def _build_runtime_recommendations_v4(
     *,
     options: TrainV4CryptoCsOptions,
     run_id: str,
+    search_budget_decision: dict[str, Any],
 ) -> dict[str, Any]:
     if not bool(options.execution_acceptance_enabled):
         return {
@@ -3102,6 +3224,9 @@ def _build_runtime_recommendations_v4(
                 model_alpha_settings=runtime_model_alpha,
             ),
             candidate_ref=run_id,
+            grid=runtime_recommendation_grid_for_profile(
+                str((search_budget_decision.get("applied") or {}).get("runtime_recommendation_profile", "full"))
+            ),
         )
     except Exception as exc:
         return {

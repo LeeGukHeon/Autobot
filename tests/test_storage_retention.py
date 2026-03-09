@@ -105,6 +105,9 @@ def test_run_storage_retention_prunes_old_operational_artifacts(tmp_path: Path) 
     assert keep_recent_run.exists()
     assert not removable_run.exists()
     assert payload["status"] == "ok"
+    assert payload["markers"] == []
+    assert "budget_summary" in payload
+    assert "execution_backtest_runs" in payload["budget_summary"]["sections"]
     assert (project_root / "logs" / "storage_retention" / "latest.json").exists()
 
 
@@ -129,8 +132,29 @@ def test_run_storage_retention_dry_run_keeps_files(tmp_path: Path) -> None:
     assert target.exists()
     ws_section = next(section for section in payload["sections"] if section["name"] == "ws_public")
     assert ws_section["removed_count"] == 1
+    assert "budget_summary" in payload
     assert payload["report_path"].endswith(".json")
     assert not (project_root / "logs" / "storage_retention" / "latest.json").exists()
+
+
+def test_run_storage_retention_sets_soft_budget_marker(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    _write_file(project_root / "logs" / "paper_micro_smoke" / "latest.json", "{}")
+
+    payload = run_storage_retention(
+        project_root=project_root,
+        policy=StorageRetentionPolicy(),
+        emergency_policy=EmergencyRetentionPolicy(),
+        model_family="train_v4_crypto_cs",
+        report_dir=Path("logs/storage_retention"),
+        warning_threshold_gb=0.0,
+        force_threshold_gb=10_000.0,
+        dry_run=False,
+        compact_candles_api=False,
+    )
+
+    assert payload["status"] == "warning_threshold_exceeded"
+    assert "SOFT_BUDGET_EXCEEDED" in payload["markers"]
 
 
 def test_systemd_unit_active_uses_fallback_path(monkeypatch) -> None:

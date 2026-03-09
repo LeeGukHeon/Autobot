@@ -208,3 +208,40 @@ def test_guarded_auto_policy_history_can_activate_pruned_feature_set(tmp_path: P
     assert selected == ("logret_1", "one_m_count", "btc_ret_1")
     assert context["applied"] is True
     assert context["policy_status"] == "stable"
+
+
+def test_factor_block_selector_scope_isolated_policy_files(tmp_path: Path) -> None:
+    family_dir = tmp_path / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "latest_factor_block_policy.manual_daily.json").write_text(
+        json.dumps(
+            {
+                "updated_by_run_id": "manual-run",
+                "apply_pruned_feature_set": True,
+                "accepted_blocks": ["v3_base_core"],
+                "selected_feature_columns": ["logret_1"],
+                "summary": {"status": "stable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    selected_manual, context_manual = resolve_selected_feature_columns_from_latest(
+        registry_root=tmp_path / "registry",
+        model_family="train_v4_crypto_cs",
+        mode="guarded_auto",
+        run_scope="manual_daily",
+        all_feature_columns=("logret_1", "btc_ret_1"),
+    )
+    selected_scheduled, context_scheduled = resolve_selected_feature_columns_from_latest(
+        registry_root=tmp_path / "registry",
+        model_family="train_v4_crypto_cs",
+        mode="guarded_auto",
+        run_scope="scheduled_daily",
+        all_feature_columns=("logret_1", "btc_ret_1"),
+    )
+
+    assert selected_manual == ("logret_1",)
+    assert context_manual["applied"] is True
+    assert selected_scheduled == ("logret_1", "btc_ret_1")
+    assert "MISSING_LATEST_FACTOR_BLOCK_POLICY" in context_scheduled["reasons"]

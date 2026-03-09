@@ -16,6 +16,7 @@ param(
     [string]$FeatureSet = "v4",
     [string]$LabelSet = "v2",
     [string]$Task = "cls",
+    [string]$RunScope = "scheduled_daily",
     [string]$CandidateModelRef = "latest_candidate_v4",
     [string]$ChampionModelRef = "champion_v4",
     [string]$StrategyName = "model_alpha_v1",
@@ -1269,6 +1270,7 @@ $report = [ordered]@{
     python_exe = $resolvedPythonExe
     batch_date = $effectiveBatchDate
     model_family = $ModelFamily
+    run_scope = $RunScope
     windows = [bool]$script:IsWindowsPlatform
     config = [ordered]@{
         train_lookback_days = [int]$TrainLookbackDays
@@ -1279,6 +1281,7 @@ $report = [ordered]@{
         feature_set = $FeatureSet
         label_set = $LabelSet
         task = $Task
+        run_scope = $RunScope
         strategy = $StrategyName
         candidate_model_ref = $CandidateModelRef
         champion_model_ref = $ChampionModelRef
@@ -1459,6 +1462,7 @@ try {
         "--feature-set", $FeatureSet,
         "--label-set", $LabelSet,
         "--task", $Task,
+        "--run-scope", $RunScope,
         "--tf", $Tf,
         "--quote", $Quote,
         "--top-n", $TrainTopN,

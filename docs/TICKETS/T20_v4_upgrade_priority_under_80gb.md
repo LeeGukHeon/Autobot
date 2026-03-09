@@ -113,6 +113,11 @@ Operational rule:
   - CPU: positive
   - RAM: neutral
   - Disk: positive
+- Safe first-phase implementation note:
+  - apply only budget downshifts
+  - never widen search beyond the requested budget
+  - write a compact `search_budget_decision` artifact per run
+  - keep production acceptance/promotion contracts unchanged
 
 ### T20.3 Duplicate candidate diversification
 
@@ -211,6 +216,12 @@ Operational rule:
   - CPU: low
   - RAM: low
   - Disk: low
+- Safe phase implementation note:
+  - keep the ledger family-level and compact:
+    - `experiment_ledger.jsonl`
+    - `latest_experiment_ledger_summary.json`
+  - let it auto-inform only conservative budget downshifts at first
+  - do not auto-switch trainer family or promotion rules in phase 1
 
 ### T20.8 Alternative data pilot under a strict budget
 

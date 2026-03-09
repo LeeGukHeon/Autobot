@@ -521,6 +521,38 @@ def _section_payload(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, **payload}
 
 
+def _build_budget_summary(*, project_root: Path, model_family: str) -> dict[str, Any]:
+    buckets = {
+        "raw_ws": project_root / "data" / "raw_ws",
+        "raw_ticks": project_root / "data" / "raw_ticks",
+        "parquet": project_root / "data" / "parquet",
+        "paper_runs": project_root / "data" / "paper" / "runs",
+        "backtest_runs": project_root / "data" / "backtest" / "runs",
+        "execution_backtest_runs": project_root / "logs" / "train_v4_execution_backtest" / "runs",
+        "registry_family": project_root / "models" / "registry" / model_family,
+        "model_v4_acceptance": project_root / "logs" / "model_v4_acceptance",
+        "model_v4_challenger": project_root / "logs" / "model_v4_challenger",
+        "paper_micro_smoke": project_root / "logs" / "paper_micro_smoke",
+        "micro_tiering": project_root / "logs" / "micro_tiering",
+    }
+    sections: dict[str, Any] = {}
+    total_bytes = 0
+    for name, path in buckets.items():
+        size_bytes = _directory_size_bytes(path)
+        total_bytes += size_bytes
+        sections[name] = {
+            "path": str(path),
+            "size_bytes": int(size_bytes),
+            "size_gb": round(float(size_bytes) / float(1024**3), 6),
+            "exists": bool(path.exists()),
+        }
+    return {
+        "tracked_total_bytes": int(total_bytes),
+        "tracked_total_gb": round(float(total_bytes) / float(1024**3), 6),
+        "sections": sections,
+    }
+
+
 def run_storage_retention(
     *,
     project_root: Path,
@@ -678,22 +710,28 @@ def run_storage_retention(
 
     after_usage = _disk_usage(resolved_root)
     warning_threshold_bytes = int(float(warning_threshold_gb) * (1024**3))
+    markers: list[str] = []
     status = "ok"
     if after_usage["used_bytes"] > force_threshold_bytes:
         status = "force_threshold_exceeded"
+        markers.append("HARD_BUDGET_EXCEEDED")
     elif after_usage["used_bytes"] > warning_threshold_bytes:
         status = "warning_threshold_exceeded"
+        markers.append("SOFT_BUDGET_EXCEEDED")
     total_freed = sum(int(section.get("freed_bytes", 0) or 0) for section in sections + emergency_sections)
+    budget_summary = _build_budget_summary(project_root=resolved_root, model_family=model_family)
     payload = {
         "generated_at": generated_at,
         "project_root": str(resolved_root),
         "model_family": model_family,
         "dry_run": bool(dry_run),
         "status": status,
+        "markers": markers,
         "thresholds": {"warning_gb": float(warning_threshold_gb), "force_gb": float(force_threshold_gb)},
         "policy": asdict(policy),
         "emergency_policy": asdict(emergency_policy),
         "usage": {"before": before_usage, "after_standard": after_standard_usage, "after": after_usage},
+        "budget_summary": budget_summary,
         "protected_registry_run_ids": sorted(protected_run_ids),
         "total_freed_bytes": total_freed,
         "total_freed_gb": round(total_freed / (1024**3), 3),

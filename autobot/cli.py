@@ -7,6 +7,9 @@ import argparse
 from dataclasses import asdict
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import time
 from typing import Any, Callable
 
@@ -904,6 +907,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("off", "report_only", "use_latest", "guarded_auto"),
         help="v4 factor block selector mode: off|report_only|use_latest|guarded_auto.",
     )
+    model_train_parser.add_argument("--run-scope", help=argparse.SUPPRESS)
+
+    model_daily_v4_parser = model_subparsers.add_parser(
+        "daily-v4",
+        help="Run the same v4 daily acceptance pipeline manually without mutating scheduled daily state.",
+    )
+    model_daily_v4_parser.add_argument(
+        "--mode",
+        choices=("spawn_only", "combined", "promote_only"),
+        default="spawn_only",
+        help="Orchestration mode. Default spawn_only.",
+    )
+    model_daily_v4_parser.add_argument("--batch-date", help="Batch date YYYY-MM-DD. Default: yesterday.")
+    model_daily_v4_parser.add_argument(
+        "--run-paper-soak",
+        action="store_true",
+        help="Run paper soak instead of the timer-default skip behavior.",
+    )
+    model_daily_v4_parser.add_argument(
+        "--paper-soak-duration-sec",
+        type=int,
+        help="Override paper soak duration in seconds. Implies --run-paper-soak.",
+    )
+    model_daily_v4_parser.add_argument("--dry-run", action="store_true")
 
     model_eval_parser = model_subparsers.add_parser("eval", help="Evaluate registered model on split.")
     model_eval_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
@@ -2310,6 +2337,59 @@ def _handle_features_command(args: argparse.Namespace, config_dir: Path, base_co
         return 2
 
 
+def _resolve_powershell_exe() -> str:
+    for name in ("pwsh", "powershell.exe", "powershell"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    raise RuntimeError("PowerShell executable not found in PATH")
+
+
+def _run_manual_v4_daily_pipeline(args: argparse.Namespace, config_dir: Path) -> int:
+    mode = str(getattr(args, "mode", "spawn_only")).strip().lower() or "spawn_only"
+    if mode != "spawn_only":
+        raise ValueError("model daily-v4 currently supports only --mode spawn_only to avoid runtime mutation")
+    project_root = config_dir.parent.resolve()
+    wrapper_script = project_root / "scripts" / "v4_candidate_acceptance.ps1"
+    if not wrapper_script.exists():
+        raise FileNotFoundError(f"missing wrapper script: {wrapper_script}")
+    pwsh_exe = _resolve_powershell_exe()
+    command = [
+        pwsh_exe,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(wrapper_script),
+        "-ProjectRoot",
+        str(project_root),
+        "-PythonExe",
+        sys.executable,
+        "-RunScope",
+        "manual_daily",
+        "-OutDir",
+        "logs/model_v4_acceptance_manual",
+        "-SkipPromote",
+    ]
+    if getattr(args, "batch_date", None):
+        command.extend(["-BatchDate", str(args.batch_date).strip()])
+    run_paper_soak = bool(getattr(args, "run_paper_soak", False))
+    paper_soak_duration_sec = int(getattr(args, "paper_soak_duration_sec", None) or 0)
+    if paper_soak_duration_sec > 0:
+        run_paper_soak = True
+        command.extend(["-PaperSoakDurationSec", str(paper_soak_duration_sec)])
+    if not run_paper_soak:
+        command.append("-SkipPaperSoak")
+    if getattr(args, "dry_run", False):
+        command.append("-DryRun")
+    completed = subprocess.run(
+        command,
+        cwd=project_root,
+        text=True,
+    )
+    return int(completed.returncode)
+
+
 def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     try:
         defaults = load_train_defaults(config_dir, base_config=base_config)
@@ -2328,6 +2408,9 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         features_v4_config = load_features_v4_config(config_dir, base_config=base_config)
         registry_root = Path(str(defaults["registry_root"]))
         logs_root = Path(str(defaults["logs_root"]))
+
+        if args.model_command == "daily-v4":
+            return _run_manual_v4_daily_pipeline(args, config_dir)
 
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
@@ -2438,6 +2521,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     factor_block_selection_mode=str(
                         getattr(args, "factor_block_selection_mode", None) or "guarded_auto"
                     ).strip().lower(),
+                    run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip().lower(),
                     execution_acceptance_enabled=True,
                     execution_acceptance_dataset_name=backtest_dataset_name_v4,
                     execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
@@ -2633,6 +2717,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     print(f"[model][train][v4_crypto_cs] factor_blocks={summary_v4.factor_block_selection_path}")
                 if summary_v4.factor_block_policy_path is not None:
                     print(f"[model][train][v4_crypto_cs] factor_block_policy={summary_v4.factor_block_policy_path}")
+                if summary_v4.search_budget_decision_path is not None:
+                    print(f"[model][train][v4_crypto_cs] search_budget={summary_v4.search_budget_decision_path}")
                 if summary_v4.execution_acceptance_report_path is not None:
                     print(
                         f"[model][train][v4_crypto_cs] execution_acceptance={summary_v4.execution_acceptance_report_path}"

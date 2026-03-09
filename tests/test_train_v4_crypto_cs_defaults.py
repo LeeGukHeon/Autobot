@@ -20,6 +20,10 @@ def test_factor_block_selection_default_mode_is_guarded_auto() -> None:
     assert TrainV4CryptoCsOptions.__dataclass_fields__["factor_block_selection_mode"].default == "guarded_auto"
 
 
+def test_run_scope_default_is_scheduled_daily() -> None:
+    assert TrainV4CryptoCsOptions.__dataclass_fields__["run_scope"].default == "scheduled_daily"
+
+
 def test_detect_duplicate_candidate_artifacts_matches_model_and_threshold_hashes(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     family = "train_v4_crypto_cs"

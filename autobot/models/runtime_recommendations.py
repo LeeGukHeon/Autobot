@@ -29,6 +29,33 @@ class RuntimeRecommendationGrid:
     replace_max_grid: tuple[int, ...] = (0, 1, 2)
 
 
+def runtime_recommendation_grid_for_profile(profile: str | None) -> RuntimeRecommendationGrid:
+    normalized = str(profile or "").strip().lower() or "full"
+    if normalized == "tiny":
+        return RuntimeRecommendationGrid(
+            hold_bars_grid=(3, 6),
+            risk_vol_feature_grid=("rv_12", "atr_pct_14"),
+            tp_vol_multiplier_grid=(1.5, 2.0),
+            sl_vol_multiplier_grid=(1.0, 1.5),
+            trailing_vol_multiplier_grid=(0.0, 1.0),
+            price_mode_grid=("PASSIVE_MAKER", "JOIN"),
+            timeout_bars_grid=(1, 2),
+            replace_max_grid=(0, 1),
+        )
+    if normalized == "compact":
+        return RuntimeRecommendationGrid(
+            hold_bars_grid=(3, 6, 9),
+            risk_vol_feature_grid=("rv_12", "rv_36"),
+            tp_vol_multiplier_grid=(1.5, 2.5),
+            sl_vol_multiplier_grid=(1.0, 1.5),
+            trailing_vol_multiplier_grid=(0.0, 0.75),
+            price_mode_grid=("PASSIVE_MAKER", "JOIN"),
+            timeout_bars_grid=(1, 2),
+            replace_max_grid=(0, 1),
+        )
+    return RuntimeRecommendationGrid()
+
+
 def optimize_runtime_recommendations(
     *,
     options: ExecutionAcceptanceOptions,

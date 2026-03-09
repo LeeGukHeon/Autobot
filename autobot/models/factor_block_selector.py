@@ -38,6 +38,7 @@ _DEFAULT_SELECTION_THRESHOLD_KEY = "top_5pct"
 _LATEST_SELECTOR_POINTER = "latest_factor_block_selection.json"
 _LATEST_SELECTOR_POLICY = "latest_factor_block_policy.json"
 _SELECTOR_HISTORY_PATH = "factor_block_selection_history.jsonl"
+_DEFAULT_RUN_SCOPE = "scheduled_daily"
 _DEFAULT_POLICY_HISTORY_WINDOW_RUNS = 8
 _DEFAULT_POLICY_MIN_ELIGIBLE_RUNS = 4
 _DEFAULT_POLICY_MIN_ACCEPT_RATIO = 0.75
@@ -68,6 +69,15 @@ def normalize_factor_block_selection_mode(value: str | None) -> str:
     if raw in {"guarded_auto", "guarded", "auto", "policy_auto"}:
         return _MODE_GUARDED_AUTO
     raise ValueError("factor_block_selection_mode must be one of off|report_only|use_latest|guarded_auto")
+
+
+def normalize_run_scope(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return _DEFAULT_RUN_SCOPE
+    normalized = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw)
+    normalized = normalized.strip("_-")
+    return normalized or _DEFAULT_RUN_SCOPE
 
 
 def v4_factor_block_registry(
@@ -157,15 +167,18 @@ def resolve_selected_feature_columns_from_latest(
     registry_root: Path,
     model_family: str,
     mode: str,
+    run_scope: str | None = None,
     all_feature_columns: Sequence[str],
     high_tfs: tuple[str, ...] = ("15m", "60m", "240m"),
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
     normalized_mode = normalize_factor_block_selection_mode(mode)
+    normalized_scope = normalize_run_scope(run_scope)
     full_cols = tuple(str(item).strip() for item in all_feature_columns if str(item).strip())
     registry = v4_factor_block_registry(feature_columns=full_cols, high_tfs=high_tfs)
     block_map = {block.block_id: block for block in registry}
     base_context: dict[str, Any] = {
         "mode": normalized_mode,
+        "run_scope": normalized_scope,
         "registry_blocks": [serialize_factor_block_definition(block) for block in registry],
         "applied": False,
         "resolved_run_id": "",
@@ -173,7 +186,7 @@ def resolve_selected_feature_columns_from_latest(
         "reasons": [],
     }
     if normalized_mode == _MODE_GUARDED_AUTO:
-        pointer = load_json(registry_root / model_family / _LATEST_SELECTOR_POLICY)
+        pointer = load_json(registry_root / model_family / _scoped_filename(_LATEST_SELECTOR_POLICY, normalized_scope))
         if not isinstance(pointer, dict) or not pointer:
             base_context["reasons"] = ["MISSING_LATEST_FACTOR_BLOCK_POLICY"]
             return full_cols, base_context
@@ -208,7 +221,7 @@ def resolve_selected_feature_columns_from_latest(
         base_context["reasons"] = ["MODE_DOES_NOT_PRUNE"]
         return full_cols, base_context
 
-    pointer = load_json(registry_root / model_family / _LATEST_SELECTOR_POINTER)
+    pointer = load_json(registry_root / model_family / _scoped_filename(_LATEST_SELECTOR_POINTER, normalized_scope))
     if not isinstance(pointer, dict) or not pointer:
         base_context["reasons"] = ["MISSING_LATEST_FACTOR_BLOCK_SELECTION"]
         return full_cols, base_context
@@ -452,6 +465,7 @@ def write_latest_factor_block_selection_pointer(
     model_family: str,
     run_id: str,
     report: dict[str, Any],
+    run_scope: str | None = None,
 ) -> Path | None:
     if not isinstance(report, dict):
         return None
@@ -465,7 +479,7 @@ def write_latest_factor_block_selection_pointer(
     ]
     if not selected_blocks or not selected_feature_columns:
         return None
-    path = registry_root / model_family / _LATEST_SELECTOR_POINTER
+    path = registry_root / model_family / _scoped_filename(_LATEST_SELECTOR_POINTER, normalize_run_scope(run_scope))
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "run_id": str(run_id),
@@ -481,8 +495,9 @@ def load_factor_block_selection_history(
     *,
     registry_root: Path,
     model_family: str,
+    run_scope: str | None = None,
 ) -> list[dict[str, Any]]:
-    path = registry_root / model_family / _SELECTOR_HISTORY_PATH
+    path = registry_root / model_family / _scoped_filename(_SELECTOR_HISTORY_PATH, normalize_run_scope(run_scope))
     if not path.exists():
         return []
     deduped: dict[str, dict[str, Any]] = {}
@@ -511,13 +526,19 @@ def append_factor_block_selection_history(
     registry_root: Path,
     model_family: str,
     report: dict[str, Any],
+    run_scope: str | None = None,
 ) -> Path | None:
     if not isinstance(report, dict) or not str(report.get("run_id", "")).strip():
         return None
     if normalize_factor_block_selection_mode(report.get("selection_mode")) == _MODE_OFF:
         return None
-    path = registry_root / model_family / _SELECTOR_HISTORY_PATH
-    records = load_factor_block_selection_history(registry_root=registry_root, model_family=model_family)
+    normalized_scope = normalize_run_scope(run_scope)
+    path = registry_root / model_family / _scoped_filename(_SELECTOR_HISTORY_PATH, normalized_scope)
+    records = load_factor_block_selection_history(
+        registry_root=registry_root,
+        model_family=model_family,
+        run_scope=normalized_scope,
+    )
     compact = _compact_factor_block_history_record(report)
     run_id = str(compact.get("run_id", "")).strip()
     records = [record for record in records if str(record.get("run_id", "")).strip() != run_id]
@@ -675,10 +696,11 @@ def write_latest_guarded_factor_block_policy(
     model_family: str,
     run_id: str,
     policy: dict[str, Any],
+    run_scope: str | None = None,
 ) -> Path | None:
     if not isinstance(policy, dict):
         return None
-    path = registry_root / model_family / _LATEST_SELECTOR_POLICY
+    path = registry_root / model_family / _scoped_filename(_LATEST_SELECTOR_POLICY, normalize_run_scope(run_scope))
     payload = dict(policy)
     payload["updated_by_run_id"] = str(run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -918,3 +940,11 @@ def _safe_optional_float(value: Any) -> float | None:
 def _safe_float(value: Any) -> float:
     result = _safe_optional_float(value)
     return float(result) if result is not None else 0.0
+
+
+def _scoped_filename(filename: str, run_scope: str) -> str:
+    normalized_scope = normalize_run_scope(run_scope)
+    if normalized_scope == _DEFAULT_RUN_SCOPE:
+        return filename
+    path = Path(filename)
+    return f"{path.stem}.{normalized_scope}{path.suffix}"
