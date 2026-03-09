@@ -155,6 +155,7 @@ def _resolve_ws_public_checkpoint_ts_ms(
     validate_report: dict[str, Any],
     ts_ms: int,
 ) -> tuple[int | None, str | None]:
+    _ = ts_ms
     candidates: list[tuple[int, str]] = []
     updated_at_ms = _coerce_int(health_snapshot.get("updated_at_ms"))
     if updated_at_ms is not None:
@@ -171,13 +172,12 @@ def _resolve_ws_public_checkpoint_ts_ms(
     validate_generated = _parse_iso_to_ts_ms(validate_report.get("generated_at"))
     if validate_generated is not None:
         candidates.append((validate_generated, "validate_report.generated_at"))
-    filtered = [(value, source) for value, source in candidates if int(value) <= int(ts_ms)]
-    if filtered:
-        latest_ts_ms, source = max(filtered, key=lambda item: item[0])
-        return latest_ts_ms, source
     if not candidates:
         return None, None
-    latest_ts_ms, source = min(candidates, key=lambda item: item[0])
+    # Producer checkpoints can legitimately be a few milliseconds ahead of the
+    # caller due to local file update/read timing. Prefer the freshest producer
+    # timestamp and let staleness clamp negative deltas to zero.
+    latest_ts_ms, source = max(candidates, key=lambda item: item[0])
     return latest_ts_ms, source
 
 

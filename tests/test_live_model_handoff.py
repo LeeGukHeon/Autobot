@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
@@ -52,6 +53,10 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _ts_ms_to_iso(ts_ms: int) -> str:
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
+
+
 def _seed_runtime_contract(tmp_path: Path, *, champion_run_id: str, ws_updated_at_ms: int) -> tuple[Path, Path, Path, Path]:
     registry_root = tmp_path / "models" / "registry"
     family_dir = registry_root / "train_v4_crypto_cs"
@@ -74,14 +79,14 @@ def _seed_runtime_contract(tmp_path: Path, *, champion_run_id: str, ws_updated_a
         ws_meta_dir / "ws_collect_report.json",
         {
             "run_id": "ws-collect-1",
-            "generated_at": "2026-03-09T00:00:00+00:00",
+            "generated_at": _ts_ms_to_iso(max(ws_updated_at_ms - 50, 0)),
         },
     )
     _write_json(
         ws_meta_dir / "ws_validate_report.json",
         {
             "run_id": "ws-validate-1",
-            "generated_at": "2026-03-09T00:00:00+00:00",
+            "generated_at": _ts_ms_to_iso(max(ws_updated_at_ms - 25, 0)),
             "checked_files": 4,
             "ok_files": 4,
             "warn_files": 0,
@@ -164,6 +169,49 @@ def test_live_startup_binds_runtime_model_and_ws_public_contract(tmp_path: Path,
     assert ws_contract["micro_aggregate"]["run_id"] == "micro-run-1"
     assert runtime_health is not None
     assert runtime_health["ws_public_run_id"] == "ws-run-1"
+
+
+def test_live_startup_prefers_fresh_health_checkpoint_even_if_slightly_ahead_of_read_clock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
+    registry_root, _, ws_raw_root, ws_meta_dir = _seed_runtime_contract(
+        tmp_path,
+        champion_run_id="run-fresh",
+        ws_updated_at_ms=10_050,
+    )
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = run_live_sync_daemon(
+            store=store,
+            client=_QuietClient(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=False,
+                registry_root=str(registry_root),
+                runtime_model_ref_source="champion_v4",
+                runtime_model_family="train_v4_crypto_cs",
+                ws_public_raw_root=str(ws_raw_root),
+                ws_public_meta_dir=str(ws_meta_dir),
+                ws_public_stale_threshold_sec=180,
+                micro_aggregate_report_path=str(tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
+            ),
+        )
+        ws_contract = store.ws_public_contract()
+
+    assert summary["halted"] is False
+    assert summary["ws_public_staleness_sec"] == pytest.approx(0.0, abs=1e-9)
+    assert ws_contract is not None
+    assert ws_contract["ws_public_last_checkpoint_source"] == "health_snapshot.updated_at_ms"
+    assert ws_contract["ws_public_last_checkpoint_ts_ms"] == 10_050
+    assert ws_contract["ws_public_stale"] is False
 
 
 def test_live_daemon_halts_on_model_pointer_divergence(tmp_path: Path, monkeypatch) -> None:
