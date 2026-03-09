@@ -1533,6 +1533,17 @@ def _run_sync_cycle(
 ) -> dict[str, Any]:
     accounts = client.accounts()
     open_orders = client.open_orders(states=("wait", "watch"))
+    chance_cache: dict[str, Any] = {}
+
+    def _fetch_market_chance(market: str) -> Any:
+        market_value = str(market).strip().upper()
+        cached = chance_cache.get(market_value)
+        if cached is not None:
+            return cached
+        payload = client.chance(market=market_value)
+        chance_cache[market_value] = payload
+        return payload
+
     report = reconcile_exchange_snapshot(
         store=store,
         bot_id=settings.bot_id,
@@ -1540,6 +1551,7 @@ def _run_sync_cycle(
         accounts_payload=accounts,
         open_orders_payload=open_orders,
         fetch_order_detail=lambda uuid, identifier: client.order(uuid=uuid, identifier=identifier),
+        fetch_market_chance=_fetch_market_chance,
         unknown_open_orders_policy=settings.unknown_open_orders_policy,  # type: ignore[arg-type]
         unknown_positions_policy=settings.unknown_positions_policy,  # type: ignore[arg-type]
         allow_cancel_external_orders=bool(settings.allow_cancel_external_orders),

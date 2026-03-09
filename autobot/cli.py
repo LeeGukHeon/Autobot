@@ -4418,6 +4418,17 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         open_orders = client.open_orders(states=("wait", "watch"))
 
                     if command == "status":
+                        chance_cache: dict[str, Any] = {}
+
+                        def _fetch_market_chance(market: str) -> Any:
+                            market_value = str(market).strip().upper()
+                            cached = chance_cache.get(market_value)
+                            if cached is not None:
+                                return cached
+                            payload = client.chance(market=market_value)
+                            chance_cache[market_value] = payload
+                            return payload
+
                         pinned_contract = store.runtime_contract() or {}
                         persisted_ws_public_contract = store.ws_public_contract() or {}
                         persisted_rollout_contract = store.live_rollout_contract() or {}
@@ -4466,6 +4477,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             identifier_prefix=str(defaults["identifier_prefix"]),
                             accounts_payload=accounts,
                             open_orders_payload=open_orders,
+                            fetch_market_chance=_fetch_market_chance,
                             unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
                             unknown_positions_policy=str(defaults["unknown_positions_policy"]),
                             allow_cancel_external_orders=bool(defaults["allow_cancel_external_orders"]),
@@ -4520,6 +4532,17 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         return 0
 
                     if command == "reconcile":
+                        chance_cache: dict[str, Any] = {}
+
+                        def _fetch_market_chance(market: str) -> Any:
+                            market_value = str(market).strip().upper()
+                            cached = chance_cache.get(market_value)
+                            if cached is not None:
+                                return cached
+                            payload = client.chance(market=market_value)
+                            chance_cache[market_value] = payload
+                            return payload
+
                         report = reconcile_exchange_snapshot(
                             store=store,
                             bot_id=bot_id,
@@ -4527,6 +4550,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             accounts_payload=accounts,
                             open_orders_payload=open_orders,
                             fetch_order_detail=lambda uuid, identifier: client.order(uuid=uuid, identifier=identifier),
+                            fetch_market_chance=_fetch_market_chance,
                             unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
                             unknown_positions_policy=str(defaults["unknown_positions_policy"]),
                             allow_cancel_external_orders=bool(defaults["allow_cancel_external_orders"]),

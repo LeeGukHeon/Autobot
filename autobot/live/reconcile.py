@@ -11,6 +11,7 @@ from typing import Any, Literal
 import time
 
 from .identifier import is_bot_identifier
+from .admissibility import extract_min_total
 from .order_state import is_open_local_state, normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
@@ -26,6 +27,7 @@ def reconcile_exchange_snapshot(
     accounts_payload: Any,
     open_orders_payload: Any,
     fetch_order_detail: Callable[[str, str | None], Any] | None = None,
+    fetch_market_chance: Callable[[str], Any] | None = None,
     unknown_open_orders_policy: UnknownOpenOrdersPolicy = "halt",
     unknown_positions_policy: UnknownPositionsPolicy = "halt",
     allow_cancel_external_orders: bool = False,
@@ -153,6 +155,28 @@ def reconcile_exchange_snapshot(
     local_positions = {item["market"]: item for item in store.list_positions()}
     unknown_position_markets = sorted(set(exchange_positions) - set(local_positions))
     local_positions_missing_on_exchange = sorted(set(local_positions) - set(exchange_positions))
+    ignored_dust_positions: list[dict[str, Any]] = []
+    retained_unknown_markets: list[str] = []
+
+    for market in unknown_position_markets:
+        position = exchange_positions[market]
+        dust_detail = _build_ignored_dust_position_detail(
+            position=position,
+            fetch_market_chance=fetch_market_chance,
+        )
+        if dust_detail is not None:
+            ignored_dust_positions.append(dust_detail)
+            actions.append(
+                {
+                    "type": "ignore_unknown_dust_position",
+                    "market": market,
+                    "reference_notional_quote": dust_detail["reference_notional_quote"],
+                    "min_total_quote": dust_detail["min_total_quote"],
+                }
+            )
+            continue
+        retained_unknown_markets.append(market)
+    unknown_position_markets = retained_unknown_markets
 
     if unknown_position_markets:
         if unknown_positions_policy == "halt":
@@ -249,6 +273,7 @@ def reconcile_exchange_snapshot(
             "exchange_positions": len(exchange_positions),
             "local_positions": len(local_positions),
             "unknown_positions": len(unknown_position_markets),
+            "ignored_dust_positions": len(ignored_dust_positions),
             "local_positions_missing_on_exchange": len(local_positions_missing_on_exchange),
         },
         "exchange_bot_open_orders": [
@@ -279,6 +304,7 @@ def reconcile_exchange_snapshot(
             for local_uuid in local_only_open_uuids
         ],
         "unknown_positions": [exchange_positions[market] for market in unknown_position_markets],
+        "ignored_dust_positions": ignored_dust_positions,
         "local_positions_missing_on_exchange": [local_positions[market] for market in local_positions_missing_on_exchange],
         "actions": actions,
         "warnings": warnings,
@@ -557,6 +583,39 @@ def _extract_exchange_positions(accounts_payload: Any, *, quote_currency: str, t
             "updated_ts": ts_ms,
         }
     return positions
+
+
+def _build_ignored_dust_position_detail(
+    *,
+    position: dict[str, Any],
+    fetch_market_chance: Callable[[str], Any] | None,
+) -> dict[str, Any] | None:
+    if fetch_market_chance is None:
+        return None
+    market = str(position.get("market") or "").strip().upper()
+    if not market:
+        return None
+    base_amount = float(_as_optional_float(position.get("base_amount")) or 0.0)
+    avg_entry_price = float(_as_optional_float(position.get("avg_entry_price")) or 0.0)
+    if base_amount <= 0.0 or avg_entry_price <= 0.0:
+        return None
+    try:
+        chance_payload = fetch_market_chance(market)
+        min_total_quote = float(extract_min_total(chance_payload, side="ask", market=market))
+    except Exception:
+        return None
+    reference_notional_quote = base_amount * avg_entry_price
+    if reference_notional_quote + 1e-12 >= min_total_quote:
+        return None
+    return {
+        "market": market,
+        "base_currency": str(position.get("base_currency") or ""),
+        "base_amount": base_amount,
+        "avg_entry_price": avg_entry_price,
+        "reference_price_source": "avg_entry_price",
+        "reference_notional_quote": reference_notional_quote,
+        "min_total_quote": min_total_quote,
+    }
 
 
 def _parse_created_ts(raw: object, *, fallback_ts: int) -> int:

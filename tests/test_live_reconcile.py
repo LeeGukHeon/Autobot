@@ -216,3 +216,70 @@ def test_reconcile_infers_intent_from_exchange_bot_order(tmp_path: Path) -> None
     assert order is not None
     assert str(order["intent_id"]).startswith("inferred-bot-2")
     assert any(str(item["intent_id"]).startswith("inferred-bot-2") for item in intents)
+
+
+def test_reconcile_ignores_unknown_dust_position_below_exchange_min_total(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "MOODENG",
+                    "balance": "0.0081",
+                    "locked": "0",
+                    "avg_buy_price": "74.1",
+                }
+            ],
+            open_orders_payload=[],
+            fetch_market_chance=lambda market: {
+                "market": {
+                    "bid": {"min_total": "5000"},
+                    "ask": {"min_total": "5000"},
+                }
+            },
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=True,
+        )
+
+    assert report["halted"] is False
+    assert report["counts"]["unknown_positions"] == 0
+    assert report["counts"]["ignored_dust_positions"] == 1
+    assert report["ignored_dust_positions"][0]["market"] == "KRW-MOODENG"
+    action_types = {item["type"] for item in report["actions"] if isinstance(item, dict)}
+    assert "ignore_unknown_dust_position" in action_types
+
+
+def test_reconcile_keeps_unknown_position_when_notional_is_above_min_total(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "BTC",
+                    "balance": "0.01000000",
+                    "locked": "0",
+                    "avg_buy_price": "100000000",
+                }
+            ],
+            open_orders_payload=[],
+            fetch_market_chance=lambda market: {
+                "market": {
+                    "bid": {"min_total": "5000"},
+                    "ask": {"min_total": "5000"},
+                }
+            },
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=True,
+        )
+
+    assert report["halted"] is True
+    assert "UNKNOWN_POSITIONS_DETECTED" in report["halted_reasons"]
+    assert report["counts"]["ignored_dust_positions"] == 0
