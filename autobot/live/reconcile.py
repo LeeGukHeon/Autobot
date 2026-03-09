@@ -6,11 +6,12 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 import json
+from pathlib import Path
 from typing import Any, Literal
 import time
 
 from .identifier import is_bot_identifier
-from .order_state import normalize_order_state
+from .order_state import is_open_local_state, normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
@@ -41,7 +42,7 @@ def reconcile_exchange_snapshot(
     halted_reasons: list[str] = []
 
     local_orders = {item["uuid"]: item for item in store.list_orders(open_only=False)}
-    local_open_orders = {uuid: item for uuid, item in local_orders.items() if str(item.get("state", "")).lower() in {"wait", "watch", "open", "partial"}}
+    local_open_orders = {uuid: item for uuid, item in local_orders.items() if is_open_local_state(item.get("local_state"))}
     exchange_open_orders = [item for item in _as_dict_list(open_orders_payload) if item.get("uuid")]
 
     exchange_bot_open_orders: list[dict[str, Any]] = []
@@ -323,6 +324,126 @@ def apply_cancel_actions(
     return summary
 
 
+def resume_risk_plans_after_reconcile(
+    *,
+    store: LiveStateStore,
+    ts_ms: int | None = None,
+) -> dict[str, Any]:
+    now_ts = int(ts_ms if ts_ms is not None else time.time() * 1000)
+    positions = {item["market"]: item for item in store.list_positions()}
+    open_orders = store.list_orders(open_only=True)
+    open_orders_by_uuid = {str(item.get("uuid")): item for item in open_orders if item.get("uuid")}
+    open_orders_by_identifier = {
+        str(item.get("identifier")): item
+        for item in open_orders
+        if item.get("identifier")
+    }
+
+    report: dict[str, Any] = {
+        "ts_ms": now_ts,
+        "halted": False,
+        "halted_plan_ids": [],
+        "counts": {
+            "positions": len(positions),
+            "open_orders": len(open_orders),
+            "risk_plans": 0,
+            "plans_resumed_exiting": 0,
+            "plans_retriggered": 0,
+            "plans_closed": 0,
+            "plans_kept_active": 0,
+            "plans_halted_for_review": 0,
+        },
+        "plans": [],
+    }
+
+    for row in store.list_risk_plans():
+        report["counts"]["risk_plans"] += 1
+        plan_id = str(row.get("plan_id") or "")
+        market = str(row.get("market") or "")
+        previous_state = str(row.get("state") or "")
+        current_exit_uuid = _as_optional_str(row.get("current_exit_order_uuid"))
+        current_exit_identifier = _as_optional_str(row.get("current_exit_order_identifier"))
+        position = positions.get(market)
+        matching_open_order = None
+        if current_exit_uuid:
+            matching_open_order = open_orders_by_uuid.get(current_exit_uuid)
+        if matching_open_order is None and current_exit_identifier:
+            matching_open_order = open_orders_by_identifier.get(current_exit_identifier)
+        ambiguous_market_orders = [
+            item
+            for item in open_orders
+            if str(item.get("market") or "") == market
+            and str(item.get("side") or "").lower() == "ask"
+            and item is not matching_open_order
+        ]
+
+        action = "KEEP"
+        next_state = previous_state
+        next_exit_uuid = current_exit_uuid
+        next_exit_identifier = current_exit_identifier
+        halted_for_review = False
+
+        if matching_open_order is not None:
+            next_state = "EXITING"
+            next_exit_uuid = _as_optional_str(matching_open_order.get("uuid"))
+            next_exit_identifier = _as_optional_str(matching_open_order.get("identifier"))
+            action = "RESUME_EXITING"
+            report["counts"]["plans_resumed_exiting"] += 1
+        elif position is None:
+            next_state = "CLOSED"
+            next_exit_uuid = None
+            next_exit_identifier = None
+            action = "CLOSE_NO_POSITION"
+            report["counts"]["plans_closed"] += 1
+        else:
+            if ambiguous_market_orders and (current_exit_uuid or current_exit_identifier or previous_state == "EXITING"):
+                halted_for_review = True
+                action = "HALT_AMBIGUOUS_EXIT"
+                report["counts"]["plans_halted_for_review"] += 1
+                report["halted"] = True
+                report["halted_plan_ids"].append(plan_id)
+            elif current_exit_uuid or current_exit_identifier or previous_state == "EXITING":
+                next_state = "TRIGGERED"
+                next_exit_uuid = None
+                next_exit_identifier = None
+                action = "RETRIGGER_MISSING_EXIT"
+                report["counts"]["plans_retriggered"] += 1
+            else:
+                next_state = "ACTIVE" if previous_state not in {"ACTIVE", "TRIGGERED"} else previous_state
+                action = "KEEP_ACTIVE"
+                report["counts"]["plans_kept_active"] += 1
+
+        if not halted_for_review:
+            updated = _risk_plan_record_from_row(
+                row,
+                state=next_state,
+                current_exit_order_uuid=next_exit_uuid,
+                current_exit_order_identifier=next_exit_identifier,
+                updated_ts=now_ts,
+                last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts if next_state == "CLOSED" else int(row.get("last_eval_ts_ms") or 0)),
+            )
+            store.upsert_risk_plan(updated)
+
+        report["plans"].append(
+            {
+                "plan_id": plan_id,
+                "market": market,
+                "previous_state": previous_state,
+                "next_state": next_state,
+                "position_present": position is not None,
+                "matched_open_exit_order_uuid": _as_optional_str(matching_open_order.get("uuid")) if matching_open_order else None,
+                "matched_open_exit_order_identifier": _as_optional_str(matching_open_order.get("identifier")) if matching_open_order else None,
+                "resumed_from_restart": not halted_for_review,
+                "halted_for_review": halted_for_review,
+                "action": action,
+            }
+        )
+
+    store.set_checkpoint(name="last_resume", payload=report, ts_ms=now_ts)
+    _write_resume_report(path=store.db_path.parent / "live_resume_report.json", payload=report)
+    return report
+
+
 def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | None:
     if not isinstance(payload, dict):
         return None
@@ -355,6 +476,44 @@ def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | Non
         root_order_uuid=uuid,
     )
 
+
+def _risk_plan_record_from_row(
+    row: dict[str, Any],
+    *,
+    state: str,
+    current_exit_order_uuid: str | None,
+    current_exit_order_identifier: str | None,
+    updated_ts: int,
+    last_eval_ts_ms: int,
+) -> RiskPlanRecord:
+    tp = row.get("tp") if isinstance(row.get("tp"), dict) else {}
+    sl = row.get("sl") if isinstance(row.get("sl"), dict) else {}
+    trailing = row.get("trailing") if isinstance(row.get("trailing"), dict) else {}
+    return RiskPlanRecord(
+        plan_id=str(row.get("plan_id") or ""),
+        market=str(row.get("market") or ""),
+        side=str(row.get("side") or ""),
+        entry_price_str=str(row.get("entry_price_str") or ""),
+        qty_str=str(row.get("qty_str") or ""),
+        tp_enabled=bool(tp.get("enabled")),
+        tp_price_str=_as_optional_str(tp.get("tp_price_str")),
+        tp_pct=_as_optional_float(tp.get("tp_pct")),
+        sl_enabled=bool(sl.get("enabled")),
+        sl_price_str=_as_optional_str(sl.get("sl_price_str")),
+        sl_pct=_as_optional_float(sl.get("sl_pct")),
+        trailing_enabled=bool(trailing.get("enabled")),
+        trail_pct=_as_optional_float(trailing.get("trail_pct")),
+        high_watermark_price_str=_as_optional_str(trailing.get("high_watermark_price_str")),
+        armed_ts_ms=_as_optional_int(trailing.get("armed_ts_ms")),
+        state=state,
+        last_eval_ts_ms=int(last_eval_ts_ms),
+        last_action_ts_ms=int(row.get("last_action_ts_ms") or 0),
+        current_exit_order_uuid=current_exit_order_uuid,
+        current_exit_order_identifier=current_exit_order_identifier,
+        replace_attempt=int(row.get("replace_attempt") or 0),
+        created_ts=int(row.get("created_ts") or updated_ts),
+        updated_ts=int(updated_ts),
+    )
 
 def _extract_exchange_positions(accounts_payload: Any, *, quote_currency: str, ts_ms: int) -> dict[str, dict[str, Any]]:
     positions: dict[str, dict[str, Any]] = {}
@@ -409,3 +568,17 @@ def _as_optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_resume_report(*, path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")

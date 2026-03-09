@@ -196,7 +196,13 @@ class LiveStateStore:
     def upsert_order(self, record: OrderRecord) -> None:
         previous = self.order_by_uuid(uuid=record.uuid)
         previous_local_state = str(previous.get("local_state") or "").strip() if previous is not None else None
-        resolved_local_state, transition_ok = resolve_transition(previous_local_state, record.local_state)
+        normalized = normalize_order_state(
+            exchange_state=record.raw_exchange_state if record.raw_exchange_state is not None else record.state,
+            event_name=record.last_event_name,
+            executed_volume=record.volume_filled,
+        )
+        requested_local_state = record.local_state or normalized.local_state
+        resolved_local_state, transition_ok = resolve_transition(previous_local_state, requested_local_state)
         root_order_uuid = record.root_order_uuid or (previous.get("root_order_uuid") if previous is not None else None) or record.uuid
         with self._conn:
             self._conn.execute(
@@ -245,8 +251,8 @@ class LiveStateStore:
                     record.intent_id,
                     record.tp_sl_link,
                     resolved_local_state,
-                    record.raw_exchange_state if record.raw_exchange_state is not None else record.state,
-                    record.last_event_name,
+                    record.raw_exchange_state if record.raw_exchange_state is not None else normalized.exchange_state or record.state,
+                    record.last_event_name or normalized.event_name,
                     record.event_source,
                     int(record.replace_seq),
                     root_order_uuid,
@@ -270,10 +276,10 @@ class LiveStateStore:
                             {
                                 "uuid": record.uuid,
                                 "previous_local_state": previous_local_state,
-                                "requested_local_state": record.local_state,
+                                "requested_local_state": requested_local_state,
                                 "resolved_local_state": resolved_local_state,
                                 "event_source": record.event_source,
-                                "last_event_name": record.last_event_name,
+                                "last_event_name": record.last_event_name or normalized.event_name,
                             },
                             ensure_ascii=False,
                             sort_keys=True,

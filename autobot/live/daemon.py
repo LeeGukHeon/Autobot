@@ -13,7 +13,7 @@ from typing import Any
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent, parse_private_event
 
 from .order_state import normalize_order_state
-from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot
+from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot, resume_risk_plans_after_reconcile
 from .state_store import LiveStateStore, OrderLineageRecord, OrderRecord
 from .ws_handlers import apply_private_ws_event
 
@@ -59,6 +59,7 @@ def run_live_sync_daemon(
         "halted_reasons": [],
         "last_report": None,
         "last_cancel_summary": None,
+        "resume_report": None,
     }
 
     if settings.startup_reconcile:
@@ -69,6 +70,14 @@ def run_live_sync_daemon(
         if bool(cycle_result["report"].get("halted")):
             summary["halted"] = True
             summary["halted_reasons"] = list(cycle_result["report"].get("halted_reasons", []))
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
+        resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
+        summary["resume_report"] = resume_report
+        if bool(resume_report.get("halted")):
+            summary["halted"] = True
+            summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
             summary["cycles"] = cycles
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
@@ -124,6 +133,7 @@ def run_live_sync_daemon_with_executor_events(
         "halted_reasons": [],
         "last_report": None,
         "last_cancel_summary": None,
+        "resume_report": None,
         "stream_errors": [],
     }
 
@@ -135,6 +145,14 @@ def run_live_sync_daemon_with_executor_events(
         if bool(cycle_result["report"].get("halted")):
             summary["halted"] = True
             summary["halted_reasons"] = list(cycle_result["report"].get("halted_reasons", []))
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            return summary
+        resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
+        summary["resume_report"] = resume_report
+        if bool(resume_report.get("halted")):
+            summary["halted"] = True
+            summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
             summary["cycles"] = cycles
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
@@ -250,6 +268,7 @@ async def run_live_sync_daemon_with_private_ws(
         "halted_reasons": [],
         "last_report": None,
         "last_cancel_summary": None,
+        "resume_report": None,
         "ws_stats": {},
     }
 
@@ -261,6 +280,15 @@ async def run_live_sync_daemon_with_private_ws(
         if bool(cycle_result["report"].get("halted")):
             summary["halted"] = True
             summary["halted_reasons"] = list(cycle_result["report"].get("halted_reasons", []))
+            summary["cycles"] = cycles
+            summary["ended_ts_ms"] = int(time.time() * 1000)
+            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
+            return summary
+        resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
+        summary["resume_report"] = resume_report
+        if bool(resume_report.get("halted")):
+            summary["halted"] = True
+            summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
             summary["cycles"] = cycles
             summary["ended_ts_ms"] = int(time.time() * 1000)
             summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}

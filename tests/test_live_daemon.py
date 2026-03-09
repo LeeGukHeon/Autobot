@@ -162,6 +162,8 @@ def test_live_daemon_polling_updates_state(tmp_path: Path, monkeypatch) -> None:
     assert len(positions) == 1
     assert len(intents) >= 1
     assert any(item["name"] == "last_sync" for item in checkpoints)
+    assert summary["resume_report"] is not None
+    assert any(item["name"] == "last_resume" for item in checkpoints)
 
 
 def test_live_daemon_cancel_policy_executes_bot_cancel(tmp_path: Path, monkeypatch) -> None:
