@@ -53,14 +53,42 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(payload), encoding="utf-8")
 
+            def append_log(payload: object) -> None:
+                log_path = ROOT / "logs" / "fake_python_invocations.jsonl"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload) + "\\n")
+
 
             args = sys.argv[1:]
             command_key = tuple(args[:4])
+
+            if command_key == ("-m", "autobot.cli", "features", "build"):
+                append_log(
+                    {
+                        "command": "features build",
+                        "feature_set": arg_value("--feature-set"),
+                        "label_set": arg_value("--label-set"),
+                        "start": arg_value("--start"),
+                        "end": arg_value("--end"),
+                    }
+                )
+                print("features_build_ok")
+                sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "train"):
                 family = arg_value("--model-family", "train_v4_crypto_cs")
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
+                append_log(
+                    {
+                        "command": "model train",
+                        "feature_set": arg_value("--feature-set"),
+                        "label_set": arg_value("--label-set"),
+                        "start": arg_value("--start"),
+                        "end": arg_value("--end"),
+                    }
+                )
                 write_json(registry_dir / "latest_candidate.json", {"run_id": CANDIDATE_RUN_ID})
                 write_json(candidate_dir / "promotion_decision.json", {"status": "PASS"})
                 print("train_ok")
@@ -233,3 +261,21 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
     )
     assert entries[1]["smoke_report_json"] == str(expected_refresh_path)
     assert entries[1]["smoke_report_json"] != str(project_root)
+
+    python_invocations_path = project_root / "logs" / "fake_python_invocations.jsonl"
+    python_invocations = [
+        json.loads(line)
+        for line in python_invocations_path.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip()
+    ]
+    commands = [entry["command"] for entry in python_invocations]
+    assert "features build" in commands
+    assert "model train" in commands
+    assert commands.index("features build") < commands.index("model train")
+
+    latest_report = json.loads(
+        (project_root / "logs" / "model_acceptance_test" / "latest.json").read_text(encoding="utf-8-sig")
+    )
+    assert latest_report["steps"]["features_build"]["attempted"] is True
+    assert latest_report["steps"]["features_build"]["feature_set"] == "v4"
+    assert latest_report["steps"]["features_build"]["label_set"] == "v2"

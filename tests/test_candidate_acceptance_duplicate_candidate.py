@@ -136,8 +136,9 @@ def test_candidate_acceptance_short_circuits_duplicate_candidate_before_backtest
     assert report["gates"]["backtest"]["pass"] is False
     assert report["gates"]["backtest"]["decision_basis"] == "DUPLICATE_CANDIDATE"
     assert report["candidate"]["duplicate_candidate"] is True
+    assert report["steps"]["features_build"]["attempted"] is False
+    assert report["steps"]["features_build"]["reason"] == "SKIPPED_BY_FLAG"
     assert report["steps"]["backtest_candidate"]["attempted"] is False
     assert report["steps"]["backtest_candidate"]["reason"] == "DUPLICATE_CANDIDATE"
     assert report["steps"]["paper_candidate"]["attempted"] is False
     assert report["steps"]["promote"]["reason"] == "DUPLICATE_CANDIDATE"
-

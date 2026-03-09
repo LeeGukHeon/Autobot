@@ -1454,6 +1454,40 @@ try {
         $report.steps.daily_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     }
 
+    if (-not $SkipDailyPipeline) {
+        $featuresBuildArgs = @(
+            "-m", "autobot.cli",
+            "features", "build",
+            "--feature-set", $FeatureSet,
+            "--label-set", $LabelSet,
+            "--tf", $Tf,
+            "--quote", $Quote,
+            "--top-n", $TrainTopN,
+            "--start", $trainStartDate,
+            "--end", $effectiveBatchDate
+        )
+        $featuresBuildExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $featuresBuildArgs
+        $report.steps.features_build = [ordered]@{
+            attempted = $true
+            exit_code = [int]$featuresBuildExec.ExitCode
+            command = $featuresBuildExec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$featuresBuildExec.Output))
+            feature_set = $FeatureSet
+            label_set = $LabelSet
+            start = $trainStartDate
+            end = $effectiveBatchDate
+        }
+        if ($featuresBuildExec.ExitCode -ne 0) {
+            $report.reasons = @("FEATURES_BUILD_FAILED")
+            $report.gates.overall_pass = $false
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.features_build = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+    }
+
     $trainArgs = @(
         "-m", "autobot.cli",
         "model", "train",
