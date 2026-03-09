@@ -245,6 +245,57 @@ def clear_breaker(
     return breaker_status(store)
 
 
+def clear_breaker_reasons(
+    store: LiveStateStore,
+    *,
+    reason_codes: list[str] | tuple[str, ...],
+    source: str,
+    ts_ms: int,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_reason_codes(reason_codes)
+    if not normalized:
+        return breaker_status(store)
+    current = store.breaker_state(breaker_key=BREAKER_KEY_LIVE)
+    if current is None:
+        return breaker_status(store)
+    existing_reasons = [str(item).strip().upper() for item in current.get("reason_codes", []) if str(item).strip()]
+    remaining_reasons = [item for item in existing_reasons if item not in normalized]
+    if len(remaining_reasons) == len(existing_reasons):
+        return breaker_status(store)
+    detail_payload = dict(current.get("details", {}))
+    detail_payload.update(dict(details or {}))
+    detail_payload["cleared_reason_codes"] = list(normalized)
+    detail_payload["remaining_reason_codes"] = list(remaining_reasons)
+    next_action = choose_action(remaining_reasons) if remaining_reasons else None
+    next_active = bool(remaining_reasons)
+    armed_ts = int(current.get("armed_ts") or ts_ms) if next_active else 0
+    store.upsert_breaker_state(
+        BreakerStateRecord(
+            breaker_key=BREAKER_KEY_LIVE,
+            active=next_active,
+            action=next_action,
+            source=source,
+            reason_codes_json=json.dumps(remaining_reasons, ensure_ascii=False, sort_keys=True),
+            details_json=json.dumps(detail_payload, ensure_ascii=False, sort_keys=True),
+            updated_ts=int(ts_ms),
+            armed_ts=armed_ts,
+        )
+    )
+    store.append_breaker_event(
+        BreakerEventRecord(
+            ts_ms=int(ts_ms),
+            breaker_key=BREAKER_KEY_LIVE,
+            event_kind=EVENT_KIND_CLEAR,
+            action=next_action,
+            source=source,
+            reason_codes_json=json.dumps(normalized, ensure_ascii=False, sort_keys=True),
+            details_json=json.dumps(detail_payload, ensure_ascii=False, sort_keys=True),
+        )
+    )
+    return breaker_status(store)
+
+
 def record_counter_failure(
     store: LiveStateStore,
     *,

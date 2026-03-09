@@ -7,6 +7,7 @@ from autobot.live.breakers import (
     ACTION_HALT_NEW_INTENTS,
     arm_breaker,
     breaker_status,
+    clear_breaker_reasons,
     clear_breaker,
     classify_upbit_exception,
     record_counter_failure,
@@ -62,6 +63,29 @@ def test_breaker_counter_arms_after_threshold(tmp_path: Path) -> None:
     assert status_after_second["action"] == ACTION_HALT_NEW_INTENTS
     assert "REPEATED_REPLACE_REJECTS" in status_after_second["reason_codes"]
     assert status_after_second["counters"]["replace_reject"]["count"] == 2
+
+
+def test_clear_breaker_reasons_preserves_structural_halts(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        arm_breaker(
+            store,
+            reason_codes=["MANUAL_KILL_SWITCH", "WS_PUBLIC_STALE"],
+            source="test",
+            ts_ms=1000,
+            action=ACTION_FULL_KILL_SWITCH,
+        )
+        cleared = clear_breaker_reasons(
+            store,
+            reason_codes=["WS_PUBLIC_STALE"],
+            source="test",
+            ts_ms=2000,
+            details={"recovered": True},
+        )
+
+    assert cleared["active"] is True
+    assert cleared["action"] == ACTION_FULL_KILL_SWITCH
+    assert cleared["reason_codes"] == ["MANUAL_KILL_SWITCH"]
 
 
 def test_classify_upbit_exception_is_exact() -> None:

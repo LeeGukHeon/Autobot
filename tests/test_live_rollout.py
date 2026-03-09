@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 import autobot.live.daemon as daemon_module
+from autobot.live.breakers import ACTION_HALT_NEW_INTENTS, arm_breaker
 from autobot.live.daemon import LiveDaemonSettings, run_live_sync_daemon
 from autobot.live.rollout import (
     build_rollout_contract,
@@ -202,6 +203,78 @@ def test_live_daemon_halts_when_canary_rollout_is_not_armed(tmp_path: Path, monk
     assert summary["halted"] is True
     assert "LIVE_ROLLOUT_NOT_ARMED" in summary["halted_reasons"]
     assert summary["rollout_start_allowed"] is False
+
+
+def test_live_daemon_clears_recovered_stale_breaker_before_canary_gate(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
+    registry_root = _seed_runtime_contract(tmp_path, champion_run_id="run-live", ws_updated_at_ms=9_950)
+    now_ms = 10_000
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1_000,
+            ),
+            ts_ms=now_ms - 1_000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="5000",
+                volume="1",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms - 100,
+            ),
+            ts_ms=now_ms - 100,
+        )
+        arm_breaker(
+            store,
+            reason_codes=["WS_PUBLIC_STALE", "LIVE_BREAKER_ACTIVE"],
+            source="test",
+            ts_ms=now_ms - 2_000,
+            action=ACTION_HALT_NEW_INTENTS,
+        )
+        summary = run_live_sync_daemon(
+            store=store,
+            client=_QuietClient(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=False,
+                registry_root=str(registry_root),
+                runtime_model_ref_source="champion_v4",
+                runtime_model_family="train_v4_crypto_cs",
+                ws_public_raw_root=str(tmp_path / "data" / "raw_ws" / "upbit" / "public"),
+                ws_public_meta_dir=str(tmp_path / "data" / "raw_ws" / "upbit" / "_meta"),
+                ws_public_stale_threshold_sec=180,
+                micro_aggregate_report_path=str(tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
+                rollout_mode="canary",
+                rollout_target_unit="autobot-live-alpha.service",
+                small_account_canary_enabled=True,
+                small_account_max_positions=1,
+                small_account_max_open_orders_per_market=1,
+            ),
+        )
+        breaker = store.breaker_state(breaker_key="live")
+
+    assert summary["halted"] is False
+    assert summary["rollout_start_allowed"] is True
+    assert summary["rollout_order_emission_allowed"] is True
+    assert summary["ws_public_staleness_sec"] == pytest.approx(0.05, rel=0.01)
+    assert breaker is not None
+    assert breaker["active"] is False
+    assert breaker["reason_codes"] == []
 
 
 def test_live_installer_dry_run_exposes_rollout_mode() -> None:

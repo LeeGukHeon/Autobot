@@ -20,6 +20,7 @@ from .breakers import (
     active_breaker_decision,
     arm_breaker,
     breaker_status,
+    clear_breaker_reasons,
     classify_executor_reject_reason,
     classify_identifier_collision,
     classify_upbit_exception,
@@ -143,6 +144,7 @@ def _runtime_model_binding_after_resume(
         current_contract=current_contract,
         ws_public_contract=ws_public_contract,
     )
+    _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
     if bool(runtime_status.get("ws_public_stale")):
         arm_breaker(
             store,
@@ -215,6 +217,7 @@ def _refresh_runtime_contract_health(
         current_contract=current_contract,
         ws_public_contract=ws_public_contract,
     )
+    _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
     if bool(runtime_status.get("model_pointer_divergence")):
         arm_breaker(
             store,
@@ -235,6 +238,29 @@ def _refresh_runtime_contract_health(
         )
     store.set_live_runtime_health(payload=runtime_status, ts_ms=ts_ms)
     return runtime_status
+
+
+def _clear_runtime_recovery_reasons(
+    *,
+    store: LiveStateStore,
+    runtime_status: dict[str, Any],
+    ts_ms: int,
+) -> None:
+    reasons_to_clear = ["MODEL_POINTER_UNRESOLVED"]
+    if not bool(runtime_status.get("model_pointer_divergence")):
+        reasons_to_clear.append("MODEL_POINTER_DIVERGENCE")
+    if not bool(runtime_status.get("ws_public_stale")):
+        reasons_to_clear.append("WS_PUBLIC_STALE")
+    clear_breaker_reasons(
+        store,
+        reason_codes=reasons_to_clear,
+        source="live_runtime_recovery",
+        ts_ms=ts_ms,
+        details={
+            "ws_public_stale": bool(runtime_status.get("ws_public_stale")),
+            "model_pointer_divergence": bool(runtime_status.get("model_pointer_divergence")),
+        },
+    )
 
 
 def _apply_runtime_status_to_summary(summary: dict[str, Any], runtime_status: dict[str, Any] | None) -> None:
@@ -261,6 +287,21 @@ def _evaluate_rollout_gate(
     settings: LiveDaemonSettings,
     ts_ms: int,
 ) -> dict[str, Any]:
+    clear_breaker_reasons(
+        store,
+        reason_codes=[
+            "LIVE_ROLLOUT_NOT_ARMED",
+            "LIVE_ROLLOUT_UNIT_MISMATCH",
+            "LIVE_ROLLOUT_MODE_MISMATCH",
+            "LIVE_TEST_ORDER_REQUIRED",
+            "LIVE_TEST_ORDER_STALE",
+            "LIVE_BREAKER_ACTIVE",
+            "LIVE_CANARY_REQUIRES_SINGLE_SLOT",
+        ],
+        source="live_rollout_recovery",
+        ts_ms=ts_ms,
+        details={"mode": str(settings.rollout_mode), "target_unit": str(settings.rollout_target_unit)},
+    )
     breaker_report = breaker_status(store)
     gate = evaluate_live_rollout_gate(
         mode=str(settings.rollout_mode),
@@ -275,10 +316,11 @@ def _evaluate_rollout_gate(
     )
     payload = rollout_gate_to_payload(gate)
     store.set_live_rollout_status(payload=payload, ts_ms=ts_ms)
-    if bool(gate.mode != "shadow") and gate.reason_codes:
+    rollout_reason_codes = [item for item in gate.reason_codes if item != "LIVE_BREAKER_ACTIVE"]
+    if bool(gate.mode != "shadow") and rollout_reason_codes:
         arm_breaker(
             store,
-            reason_codes=list(gate.reason_codes),
+            reason_codes=rollout_reason_codes,
             source="live_rollout",
             ts_ms=ts_ms,
             action=ACTION_HALT_NEW_INTENTS,
