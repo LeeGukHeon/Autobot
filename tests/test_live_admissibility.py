@@ -75,6 +75,10 @@ def test_bid_order_is_price_aligned_and_admissible_for_small_account() -> None:
     assert decision.adjusted_notional == 5000.0
     assert decision.fee_reserve_quote == pytest.approx(2.5)
     assert decision.remaining_quote_after == pytest.approx(9697.5)
+    assert decision.fee_cost_bps == pytest.approx(5.0)
+    assert decision.tick_proxy_bps == pytest.approx(2000.0)
+    assert decision.estimated_total_cost_bps == pytest.approx(2005.0)
+    assert decision.cost_formula
 
 
 def test_bid_order_rejects_when_fee_reserve_breaks_small_account() -> None:
@@ -155,3 +159,27 @@ def test_expected_edge_gate_is_exact_and_explicit() -> None:
 
     assert not decision.admissible
     assert decision.reject_code == REJECT_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST
+    assert decision.expected_net_edge_bps is not None
+    assert decision.expected_net_edge_bps < 0.0
+
+
+def test_expected_edge_gate_includes_replace_risk_budget() -> None:
+    snapshot = build_live_order_admissibility_snapshot(
+        market="KRW-BTC",
+        side="bid",
+        chance_payload=_chance_payload(),
+        instruments_payload=_instruments_payload(),
+        accounts_payload=_accounts_payload(),
+    )
+
+    decision = evaluate_live_limit_order(
+        snapshot=snapshot,
+        price=5_000_000.0,
+        volume=1.0,
+        expected_edge_bps=7.0,
+        replace_risk_steps=10,
+    )
+
+    assert not decision.admissible
+    assert decision.reject_code == REJECT_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST
+    assert decision.replace_risk_budget_bps > 0.0

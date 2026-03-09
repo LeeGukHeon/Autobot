@@ -97,6 +97,12 @@ from .live import (
     run_live_sync_daemon_with_executor_events,
     run_live_sync_daemon_with_private_ws,
 )
+from .live.small_account import (
+    build_small_account_runtime_report,
+    derive_volume_from_target_notional,
+    record_small_account_decision,
+    sizing_envelope_to_payload,
+)
 from .paper import PaperRunSettings, run_live_paper_sync
 from .models import (
     AblationOptions,
@@ -1295,8 +1301,10 @@ def build_parser() -> argparse.ArgumentParser:
     live_admissibility_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
     live_admissibility_parser.add_argument("--side", required=True, choices=("bid", "ask"))
     live_admissibility_parser.add_argument("--price", required=True, type=float)
-    live_admissibility_parser.add_argument("--volume", required=True, type=float)
+    live_admissibility_parser.add_argument("--volume", type=float)
+    live_admissibility_parser.add_argument("--target-notional-quote", type=float)
     live_admissibility_parser.add_argument("--expected-edge-bps", type=float)
+    live_admissibility_parser.add_argument("--replace-risk-steps", type=int, default=0)
     live_admissibility_parser.add_argument(
         "--test-order",
         action="store_true",
@@ -4000,6 +4008,10 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
             credentials = require_upbit_credentials(settings)
             market = str(args.market).strip().upper()
             side = str(args.side).strip().lower()
+            requested_volume = getattr(args, "volume", None)
+            target_notional_quote = getattr(args, "target_notional_quote", None)
+            if (requested_volume is None) == (target_notional_quote is None):
+                raise ValueError("provide exactly one of --volume or --target-notional-quote")
             with UpbitHttpClient(settings, credentials=credentials) as private_http:
                 private_client = UpbitPrivateClient(private_http)
                 chance_payload = private_client.chance(market=market)
@@ -4013,12 +4025,44 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                 instruments_payload=instruments_payload,
                 accounts_payload=accounts_payload,
             )
+            sizing_payload: dict[str, Any] | None = None
+            resolved_volume = requested_volume
+            if target_notional_quote is not None:
+                fee_rate = snapshot.bid_fee if side == "bid" else snapshot.ask_fee
+                sizing = derive_volume_from_target_notional(
+                    side=side,
+                    price=float(args.price),
+                    target_notional_quote=float(target_notional_quote),
+                    fee_rate=fee_rate,
+                )
+                sizing_payload = sizing_envelope_to_payload(sizing)
+                resolved_volume = float(sizing.admissible_volume)
             decision = evaluate_live_limit_order(
                 snapshot=snapshot,
                 price=float(args.price),
-                volume=float(args.volume),
+                volume=float(resolved_volume),
                 expected_edge_bps=getattr(args, "expected_edge_bps", None),
+                replace_risk_steps=max(int(getattr(args, "replace_risk_steps", 0)), 0),
             )
+            now_ts = int(time.time() * 1000)
+            with LiveStateStore(db_path) as store:
+                record_small_account_decision(
+                    store=store,
+                    decision=decision,
+                    source="cli_admissibility",
+                    ts_ms=now_ts,
+                    market=market,
+                )
+                build_small_account_runtime_report(
+                    store=store,
+                    canary_enabled=bool(defaults["small_account_canary_enabled"]),
+                    max_positions=int(defaults["small_account_max_positions"]),
+                    max_open_orders_per_market=int(defaults["small_account_max_open_orders_per_market"]),
+                    local_positions=store.list_positions(),
+                    exchange_bot_open_orders=store.list_orders(open_only=True),
+                    ts_ms=now_ts,
+                    persist=True,
+                )
             test_order_payload: dict[str, Any] | None = None
             if bool(getattr(args, "test_order", False)):
                 test_order_payload = {
@@ -4048,6 +4092,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                     snapshot=snapshot,
                     decision=decision,
                     test_order_payload=test_order_payload,
+                    sizing_payload=sizing_payload,
                 )
             )
             return 0 if decision.admissible else 2
@@ -4134,6 +4179,16 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             quote_currency=str(defaults["quote_currency"]),
                             dry_run=True,
                         )
+                        small_account_report = build_small_account_runtime_report(
+                            store=store,
+                            canary_enabled=bool(defaults["small_account_canary_enabled"]),
+                            max_positions=int(defaults["small_account_max_positions"]),
+                            max_open_orders_per_market=int(defaults["small_account_max_open_orders_per_market"]),
+                            local_positions=store.list_positions(),
+                            exchange_bot_open_orders=list(reconcile_report.get("exchange_bot_open_orders", [])),
+                            ts_ms=int(time.time() * 1000),
+                            persist=False,
+                        )
                         payload = {
                             "bot_id": bot_id,
                             "db_path": str(db_path),
@@ -4146,6 +4201,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                 "open_orders_count": len(store.list_orders(open_only=True)),
                             },
                             "reconcile_preview": reconcile_report,
+                            "small_account_report": small_account_report,
                             "breaker_status": breaker_status(store),
                         }
                         _print_json(payload)
@@ -4215,6 +4271,11 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             breaker_rate_limit_error_limit=int(defaults["breaker_rate_limit_error_limit"]),
                             breaker_auth_error_limit=int(defaults["breaker_auth_error_limit"]),
                             breaker_nonce_error_limit=int(defaults["breaker_nonce_error_limit"]),
+                            small_account_canary_enabled=bool(defaults["small_account_canary_enabled"]),
+                            small_account_max_positions=int(defaults["small_account_max_positions"]),
+                            small_account_max_open_orders_per_market=int(
+                                defaults["small_account_max_open_orders_per_market"]
+                            ),
                         )
                         if daemon_settings.use_private_ws:
                             ws_client = UpbitWebSocketPrivateClient(settings.websocket, credentials)
@@ -5139,6 +5200,9 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     orders_cfg = live_cfg.get("orders", {}) if isinstance(live_cfg.get("orders"), dict) else {}
     default_risk_cfg = live_cfg.get("default_risk", {}) if isinstance(live_cfg.get("default_risk"), dict) else {}
     live_risk_cfg = live_cfg.get("risk", {}) if isinstance(live_cfg.get("risk"), dict) else {}
+    small_account_cfg = (
+        live_cfg.get("small_account", {}) if isinstance(live_cfg.get("small_account"), dict) else {}
+    )
     universe_cfg = base_config.get("universe", {}) if isinstance(base_config.get("universe"), dict) else {}
 
     unknown_open_orders_policy = str(startup_cfg.get("unknown_open_orders_policy", "halt")).strip().lower()
@@ -5166,6 +5230,12 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "breaker_rate_limit_error_limit": max(int(breaker_cfg.get("rate_limit_error_limit", 3)), 1),
         "breaker_auth_error_limit": max(int(breaker_cfg.get("auth_error_limit", 2)), 1),
         "breaker_nonce_error_limit": max(int(breaker_cfg.get("nonce_error_limit", 2)), 1),
+        "small_account_canary_enabled": bool(small_account_cfg.get("single_slot_canary", False)),
+        "small_account_max_positions": max(int(small_account_cfg.get("max_positions", 1)), 1),
+        "small_account_max_open_orders_per_market": max(
+            int(small_account_cfg.get("max_open_orders_per_market", 1)),
+            1,
+        ),
         "executor_host": str(executor_cfg.get("host", "127.0.0.1")).strip(),
         "executor_port": max(int(executor_cfg.get("port", 50051)), 1),
         "executor_timeout_sec": max(float(executor_cfg.get("timeout_sec", 5.0)), 0.1),
@@ -5177,7 +5247,11 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "risk_enabled": bool(live_risk_cfg.get("enabled", False)),
         "risk_exit_aggress_bps": max(float(live_risk_cfg.get("exit_aggress_bps", 8.0)), 0.0),
         "risk_timeout_sec": max(int(live_risk_cfg.get("timeout_sec", 20)), 1),
-        "risk_replace_max": max(int(live_risk_cfg.get("replace_max", 2)), 0),
+        "risk_replace_max": (
+            min(max(int(live_risk_cfg.get("replace_max", 2)), 0), 1)
+            if bool(small_account_cfg.get("single_slot_canary", False))
+            else max(int(live_risk_cfg.get("replace_max", 2)), 0)
+        ),
         "risk_default_trail_pct": max(float(live_risk_cfg.get("default_trail_pct", 1.0)), 0.0),
         "quote_currency": str(universe_cfg.get("quote_currency", "KRW")).strip().upper(),
     }

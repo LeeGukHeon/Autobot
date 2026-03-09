@@ -9,6 +9,8 @@ import math
 import time
 from typing import Any
 
+from .small_account import SmallAccountCostBreakdown, compute_small_account_cost_breakdown
+
 EPSILON = 1e-12
 
 REJECT_TICK_SIZE_UNAVAILABLE = "TICK_SIZE_UNAVAILABLE"
@@ -62,6 +64,12 @@ class LiveOrderAdmissibilityDecision:
     price_adjusted: bool
     expected_edge_bps: float | None
     estimated_entry_cost_bps: float
+    fee_cost_bps: float
+    tick_proxy_bps: float
+    replace_risk_budget_bps: float
+    estimated_total_cost_bps: float
+    expected_net_edge_bps: float | None
+    cost_formula: str
 
 
 def build_live_order_admissibility_snapshot(
@@ -111,6 +119,7 @@ def evaluate_live_limit_order(
     price: float,
     volume: float,
     expected_edge_bps: float | None = None,
+    replace_risk_steps: int = 0,
 ) -> LiveOrderAdmissibilityDecision:
     requested_price = float(price)
     requested_volume = float(volume)
@@ -152,8 +161,15 @@ def evaluate_live_limit_order(
         )
 
     fee_rate = snapshot.bid_fee if snapshot.side == "bid" else snapshot.ask_fee
-    estimated_entry_cost_bps = max(float(fee_rate), 0.0) * 10_000.0
-    if expected_edge_bps is not None and float(expected_edge_bps) <= estimated_entry_cost_bps + EPSILON:
+    cost_breakdown = compute_small_account_cost_breakdown(
+        price=adjusted_price,
+        tick_size=snapshot.tick_size,
+        fee_rate=fee_rate,
+        expected_edge_bps=expected_edge_bps,
+        replace_risk_steps=replace_risk_steps,
+    )
+    estimated_entry_cost_bps = cost_breakdown.fee_cost_bps
+    if cost_breakdown.expected_net_edge_bps is not None and cost_breakdown.expected_net_edge_bps <= EPSILON:
         return _reject(
             snapshot=snapshot,
             reject_code=REJECT_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST,
@@ -163,6 +179,7 @@ def evaluate_live_limit_order(
             adjusted_volume=adjusted_volume,
             price_adjusted=price_adjusted,
             expected_edge_bps=float(expected_edge_bps),
+            cost_breakdown=cost_breakdown,
         )
 
     if snapshot.side == "bid":
@@ -177,6 +194,7 @@ def evaluate_live_limit_order(
                 adjusted_volume=adjusted_volume,
                 price_adjusted=price_adjusted,
                 expected_edge_bps=expected_edge_bps,
+                cost_breakdown=cost_breakdown,
             )
         fee_reserve_quote = adjusted_notional * fee_rate
         total_required_quote = adjusted_notional + fee_reserve_quote
@@ -190,6 +208,7 @@ def evaluate_live_limit_order(
                 adjusted_volume=adjusted_volume,
                 price_adjusted=price_adjusted,
                 expected_edge_bps=expected_edge_bps,
+                cost_breakdown=cost_breakdown,
             )
         return LiveOrderAdmissibilityDecision(
             admissible=True,
@@ -205,6 +224,12 @@ def evaluate_live_limit_order(
             price_adjusted=price_adjusted,
             expected_edge_bps=float(expected_edge_bps) if expected_edge_bps is not None else None,
             estimated_entry_cost_bps=estimated_entry_cost_bps,
+            fee_cost_bps=cost_breakdown.fee_cost_bps,
+            tick_proxy_bps=cost_breakdown.tick_proxy_bps,
+            replace_risk_budget_bps=cost_breakdown.replace_risk_budget_bps,
+            estimated_total_cost_bps=cost_breakdown.estimated_total_cost_bps,
+            expected_net_edge_bps=cost_breakdown.expected_net_edge_bps,
+            cost_formula=cost_breakdown.formula,
         )
 
     free_base = max(float(snapshot.base_balance.free), 0.0)
@@ -218,6 +243,7 @@ def evaluate_live_limit_order(
             adjusted_volume=adjusted_volume,
             price_adjusted=price_adjusted,
             expected_edge_bps=expected_edge_bps,
+            cost_breakdown=cost_breakdown,
         )
     remaining_base_after = max(free_base - adjusted_volume, 0.0)
     if remaining_base_after > EPSILON and (remaining_base_after * adjusted_price) + EPSILON < snapshot.min_total:
@@ -230,6 +256,7 @@ def evaluate_live_limit_order(
             adjusted_volume=adjusted_volume,
             price_adjusted=price_adjusted,
             expected_edge_bps=expected_edge_bps,
+            cost_breakdown=cost_breakdown,
         )
     return LiveOrderAdmissibilityDecision(
         admissible=True,
@@ -245,6 +272,12 @@ def evaluate_live_limit_order(
         price_adjusted=price_adjusted,
         expected_edge_bps=float(expected_edge_bps) if expected_edge_bps is not None else None,
         estimated_entry_cost_bps=estimated_entry_cost_bps,
+        fee_cost_bps=cost_breakdown.fee_cost_bps,
+        tick_proxy_bps=cost_breakdown.tick_proxy_bps,
+        replace_risk_budget_bps=cost_breakdown.replace_risk_budget_bps,
+        estimated_total_cost_bps=cost_breakdown.estimated_total_cost_bps,
+        expected_net_edge_bps=cost_breakdown.expected_net_edge_bps,
+        cost_formula=cost_breakdown.formula,
     )
 
 
@@ -253,6 +286,7 @@ def build_live_admissibility_report(
     snapshot: LiveOrderAdmissibilitySnapshot,
     decision: LiveOrderAdmissibilityDecision,
     test_order_payload: Any | None = None,
+    sizing_payload: Any | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "market": snapshot.market,
@@ -275,6 +309,8 @@ def build_live_admissibility_report(
     }
     if test_order_payload is not None:
         payload["test_order"] = test_order_payload
+    if sizing_payload is not None:
+        payload["sizing"] = sizing_payload
     return payload
 
 
@@ -369,9 +405,17 @@ def _reject(
     adjusted_volume: float,
     price_adjusted: bool = False,
     expected_edge_bps: float | None = None,
+    cost_breakdown: SmallAccountCostBreakdown | None = None,
 ) -> LiveOrderAdmissibilityDecision:
     adjusted_notional = float(adjusted_price) * float(adjusted_volume)
     fee_rate = snapshot.bid_fee if snapshot.side == "bid" else snapshot.ask_fee
+    resolved_cost = cost_breakdown or compute_small_account_cost_breakdown(
+        price=adjusted_price,
+        tick_size=snapshot.tick_size,
+        fee_rate=fee_rate,
+        expected_edge_bps=expected_edge_bps,
+        replace_risk_steps=0,
+    )
     return LiveOrderAdmissibilityDecision(
         admissible=False,
         reject_code=reject_code,
@@ -385,7 +429,13 @@ def _reject(
         remaining_base_after=None,
         price_adjusted=price_adjusted,
         expected_edge_bps=float(expected_edge_bps) if expected_edge_bps is not None else None,
-        estimated_entry_cost_bps=max(float(fee_rate), 0.0) * 10_000.0,
+        estimated_entry_cost_bps=resolved_cost.fee_cost_bps,
+        fee_cost_bps=resolved_cost.fee_cost_bps,
+        tick_proxy_bps=resolved_cost.tick_proxy_bps,
+        replace_risk_budget_bps=resolved_cost.replace_risk_budget_bps,
+        estimated_total_cost_bps=resolved_cost.estimated_total_cost_bps,
+        expected_net_edge_bps=resolved_cost.expected_net_edge_bps,
+        cost_formula=resolved_cost.formula,
     )
 
 

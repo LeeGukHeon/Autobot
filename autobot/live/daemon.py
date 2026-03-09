@@ -15,6 +15,7 @@ from autobot.upbit.exceptions import UpbitError
 
 from .breakers import (
     ACTION_FULL_KILL_SWITCH,
+    ACTION_HALT_NEW_INTENTS,
     active_breaker_decision,
     arm_breaker,
     breaker_status,
@@ -29,6 +30,7 @@ from .breakers import (
 )
 from .order_state import normalize_order_state
 from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot, resume_risk_plans_after_reconcile
+from .small_account import build_small_account_runtime_report
 from .state_store import LiveStateStore, OrderLineageRecord, OrderRecord
 from .ws_handlers import apply_private_ws_event
 
@@ -56,10 +58,17 @@ class LiveDaemonSettings:
     breaker_rate_limit_error_limit: int = 3
     breaker_auth_error_limit: int = 2
     breaker_nonce_error_limit: int = 2
+    small_account_canary_enabled: bool = False
+    small_account_max_positions: int = 1
+    small_account_max_open_orders_per_market: int = 1
 
     def __post_init__(self) -> None:
         if self.use_private_ws and self.use_executor_ws:
             raise ValueError("use_private_ws and use_executor_ws cannot both be true")
+        if int(self.small_account_max_positions) <= 0:
+            raise ValueError("small_account_max_positions must be positive")
+        if int(self.small_account_max_open_orders_per_market) <= 0:
+            raise ValueError("small_account_max_open_orders_per_market must be positive")
 
 
 def run_live_sync_daemon(
@@ -81,6 +90,7 @@ def run_live_sync_daemon(
         "last_cancel_summary": None,
         "last_breaker_cancel_summary": None,
         "resume_report": None,
+        "small_account_report": None,
         "breaker_report": breaker_status(store),
         "last_sync_error": None,
     }
@@ -97,6 +107,7 @@ def run_live_sync_daemon(
         summary["last_cancel_summary"] = cycle_result["cancel_summary"]
         summary["breaker_report"] = cycle_result.get("breaker_report")
         summary["last_sync_error"] = cycle_result.get("sync_error")
+        summary["small_account_report"] = cycle_result.get("small_account_report")
         breaker_cancel_summary = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -141,6 +152,7 @@ def run_live_sync_daemon(
         summary["last_cancel_summary"] = cycle_result["cancel_summary"]
         summary["breaker_report"] = cycle_result.get("breaker_report")
         summary["last_sync_error"] = cycle_result.get("sync_error")
+        summary["small_account_report"] = cycle_result.get("small_account_report")
         summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -190,6 +202,7 @@ def run_live_sync_daemon_with_executor_events(
         "last_breaker_cancel_summary": None,
         "resume_report": None,
         "stream_errors": [],
+        "small_account_report": None,
         "breaker_report": breaker_status(store),
         "last_sync_error": None,
     }
@@ -206,6 +219,7 @@ def run_live_sync_daemon_with_executor_events(
         summary["last_cancel_summary"] = cycle_result["cancel_summary"]
         summary["breaker_report"] = cycle_result.get("breaker_report")
         summary["last_sync_error"] = cycle_result.get("sync_error")
+        summary["small_account_report"] = cycle_result.get("small_account_report")
         summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -316,6 +330,7 @@ def run_live_sync_daemon_with_executor_events(
                 summary["last_cancel_summary"] = cycle_result["cancel_summary"]
                 summary["breaker_report"] = cycle_result.get("breaker_report")
                 summary["last_sync_error"] = cycle_result.get("sync_error")
+                summary["small_account_report"] = cycle_result.get("small_account_report")
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -372,6 +387,7 @@ async def run_live_sync_daemon_with_private_ws(
         "last_breaker_cancel_summary": None,
         "resume_report": None,
         "ws_stats": {},
+        "small_account_report": None,
         "breaker_report": breaker_status(store),
         "last_sync_error": None,
     }
@@ -388,6 +404,7 @@ async def run_live_sync_daemon_with_private_ws(
         summary["last_cancel_summary"] = cycle_result["cancel_summary"]
         summary["breaker_report"] = cycle_result.get("breaker_report")
         summary["last_sync_error"] = cycle_result.get("sync_error")
+        summary["small_account_report"] = cycle_result.get("small_account_report")
         summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -494,6 +511,7 @@ async def run_live_sync_daemon_with_private_ws(
                 summary["last_cancel_summary"] = cycle_result["cancel_summary"]
                 summary["breaker_report"] = cycle_result.get("breaker_report")
                 summary["last_sync_error"] = cycle_result.get("sync_error")
+                summary["small_account_report"] = cycle_result.get("small_account_report")
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -979,6 +997,15 @@ def _run_sync_cycle_with_breakers(
             "cancel_summary": None,
             "breaker_report": breaker_report,
             "sync_error": sync_error,
+            "small_account_report": build_small_account_runtime_report(
+                store=store,
+                canary_enabled=bool(settings.small_account_canary_enabled),
+                max_positions=int(settings.small_account_max_positions),
+                max_open_orders_per_market=int(settings.small_account_max_open_orders_per_market),
+                local_positions=store.list_positions(),
+                exchange_bot_open_orders=[],
+                ts_ms=ts_ms,
+            ),
         }
     except Exception as exc:
         if not classify_identifier_collision(exc):
@@ -1003,14 +1030,43 @@ def _run_sync_cycle_with_breakers(
             "cancel_summary": None,
             "breaker_report": breaker_report,
             "sync_error": sync_error,
+            "small_account_report": build_small_account_runtime_report(
+                store=store,
+                canary_enabled=bool(settings.small_account_canary_enabled),
+                max_positions=int(settings.small_account_max_positions),
+                max_open_orders_per_market=int(settings.small_account_max_open_orders_per_market),
+                local_positions=store.list_positions(),
+                exchange_bot_open_orders=[],
+                ts_ms=ts_ms,
+            ),
         }
 
     reset_counter(store, counter_name="rate_limit_error", source="sync_cycle_success", ts_ms=ts_ms)
     reset_counter(store, counter_name="auth_error", source="sync_cycle_success", ts_ms=ts_ms)
     reset_counter(store, counter_name="nonce_error", source="sync_cycle_success", ts_ms=ts_ms)
+    small_account_report = build_small_account_runtime_report(
+        store=store,
+        canary_enabled=bool(settings.small_account_canary_enabled),
+        max_positions=int(settings.small_account_max_positions),
+        max_open_orders_per_market=int(settings.small_account_max_open_orders_per_market),
+        local_positions=store.list_positions(),
+        exchange_bot_open_orders=list(cycle_result["report"].get("exchange_bot_open_orders", [])),
+        ts_ms=ts_ms,
+    )
     breaker_report = evaluate_cycle_contracts(store, report=cycle_result["report"], source="sync_cycle", ts_ms=ts_ms)
+    if bool(settings.small_account_canary_enabled) and small_account_report["canary"]["violations"]:
+        if not active_breaker_decision(store).active:
+            breaker_report = arm_breaker(
+                store,
+                reason_codes=list(small_account_report["canary"]["violations"]),
+                source="small_account_canary",
+                ts_ms=ts_ms,
+                action=ACTION_HALT_NEW_INTENTS,
+                details=small_account_report,
+            )
     cycle_result["breaker_report"] = breaker_report
     cycle_result["sync_error"] = None
+    cycle_result["small_account_report"] = small_account_report
     return cycle_result
 
 

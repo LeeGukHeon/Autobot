@@ -196,6 +196,28 @@ class _FakeRateLimitClient(_FakePrivateClient):
         raise RateLimitError("too many requests", status_code=429)
 
 
+class _FakeMultiPositionClient(_FakePrivateClient):
+    def accounts(self):  # noqa: ANN201
+        return [
+            {
+                "currency": "BTC",
+                "balance": "0.01000000",
+                "locked": "0",
+                "avg_buy_price": "100000000",
+            },
+            {
+                "currency": "ETH",
+                "balance": "0.02000000",
+                "locked": "0",
+                "avg_buy_price": "4000000",
+            },
+        ]
+
+    def open_orders(self, *, states):  # noqa: ANN201
+        _ = states
+        return []
+
+
 def test_live_daemon_polling_updates_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     db_path = tmp_path / "live_state.db"
@@ -258,7 +280,7 @@ def test_live_daemon_private_ws_updates_state(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
-        client = _FakePrivateClient()
+        client = _FakeMultiPositionClient()
         ws_client = _FakePrivateWsClient()
         summary = asyncio.run(
             run_live_sync_daemon_with_private_ws(
@@ -476,6 +498,53 @@ def test_live_daemon_halts_when_local_position_missing_on_exchange(tmp_path: Pat
 
     assert summary["halted"] is True
     assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" in summary["halted_reasons"]
+
+
+def test_live_daemon_single_slot_canary_halts_on_multi_slot_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ETH",
+                base_currency="ETH",
+                base_amount=0.02,
+                avg_entry_price=4000000.0,
+                updated_ts=1001,
+            )
+        )
+        client = _FakeMultiPositionClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=True,
+                small_account_canary_enabled=True,
+                small_account_max_positions=1,
+                small_account_max_open_orders_per_market=1,
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "SMALL_ACCOUNT_CANARY_MAX_POSITIONS_EXCEEDED" in summary["halted_reasons"]
+    assert summary["small_account_report"] is not None
+    assert (tmp_path / "live_small_account_report.json").exists()
 
 
 def test_live_daemon_arms_manual_kill_switch_before_cycles(tmp_path: Path, monkeypatch) -> None:
