@@ -633,7 +633,8 @@ INDEX_HTML = """<!doctype html>
     const fmtNumber=(v,d=2)=>v===null||v===undefined||Number.isNaN(Number(v))?"-":new Intl.NumberFormat("ko-KR",{maximumFractionDigits:d,minimumFractionDigits:0}).format(Number(v));
     const fmtMoney=(v)=>v===null||v===undefined?"-":`${fmtNumber(v,0)} KRW`;
     const fmtPct=(v)=>v===null||v===undefined?"-":`${fmtNumber(v,2)}%`;
-    const esc=(v)=>String(v??"").replace(/[&<>"]/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch]));
+    const HTML_ESC = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
+    const esc=(v)=>String(v??"").replace(/[&<>"]/g,(ch)=>HTML_ESC[ch]);
     const stateClass=(v)=>{const t=String(v||"").toLowerCase(); if(t.includes("active")||t.includes("running")||t==="true") return "good"; if(t.includes("inactive")||t.includes("waiting")||t.includes("dead")||t==="false") return "warn"; return "bad";};
     const pill=(label,value)=>`<span class="pill ${stateClass(value)}">${esc(label)}: ${esc(value??"-")}</span>`;
     const kpi=(label,value)=>`<div class="kpi"><div class="label">${esc(label)}</div><div class="value">${esc(value??"-")}</div></div>`;
