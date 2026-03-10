@@ -240,8 +240,89 @@ def reconcile_exchange_snapshot(
         )
         if matched_import is not None:
             if not dry_run:
+                risk_plan_record = matched_import["risk_plan_record"]
+                existing_live_plans = store.list_risk_plans(
+                    market=market,
+                    states=("ACTIVE", "TRIGGERED", "EXITING"),
+                )
+                if existing_live_plans:
+                    selected_existing = max(
+                        existing_live_plans,
+                        key=lambda item: (
+                            int(
+                                bool(
+                                    _as_optional_str(item.get("current_exit_order_uuid"))
+                                    or _as_optional_str(item.get("current_exit_order_identifier"))
+                                )
+                            ),
+                            int(item.get("updated_ts") or 0),
+                            int(item.get("created_ts") or 0),
+                            str(item.get("plan_id") or ""),
+                        ),
+                    )
+                    current_exit_uuid = _as_optional_str(selected_existing.get("current_exit_order_uuid"))
+                    current_exit_identifier = _as_optional_str(selected_existing.get("current_exit_order_identifier"))
+                    preserved_last_action_ts_ms = int(selected_existing.get("last_action_ts_ms") or 0)
+                    matched_exit_order = None
+                    if current_exit_uuid:
+                        matched_exit_order = store.order_by_uuid(uuid=current_exit_uuid)
+                    if matched_exit_order is None and current_exit_identifier:
+                        matched_exit_order = store.order_by_identifier(identifier=current_exit_identifier)
+                    if matched_exit_order is not None and preserved_last_action_ts_ms <= 0:
+                        preserved_last_action_ts_ms = max(
+                            int(matched_exit_order.get("updated_ts") or 0),
+                            int(matched_exit_order.get("created_ts") or 0),
+                            now_ts,
+                        )
+                    risk_plan_record = replace(
+                        risk_plan_record,
+                        plan_id=str(selected_existing.get("plan_id") or risk_plan_record.plan_id),
+                        state=str(selected_existing.get("state") or risk_plan_record.state),
+                        last_eval_ts_ms=max(
+                            int(selected_existing.get("last_eval_ts_ms") or 0),
+                            int(risk_plan_record.last_eval_ts_ms),
+                        ),
+                        last_action_ts_ms=max(
+                            preserved_last_action_ts_ms,
+                            int(risk_plan_record.last_action_ts_ms),
+                        ),
+                        current_exit_order_uuid=current_exit_uuid,
+                        current_exit_order_identifier=current_exit_identifier,
+                        replace_attempt=max(
+                            int(selected_existing.get("replace_attempt") or 0),
+                            int(risk_plan_record.replace_attempt),
+                        ),
+                        created_ts=(
+                            min(
+                                value
+                                for value in (
+                                    int(selected_existing.get("created_ts") or 0),
+                                    int(risk_plan_record.created_ts or 0),
+                                )
+                                if value > 0
+                            )
+                            if any(
+                                value > 0
+                                for value in (
+                                    int(selected_existing.get("created_ts") or 0),
+                                    int(risk_plan_record.created_ts or 0),
+                                )
+                            )
+                            else int(now_ts)
+                        ),
+                        updated_ts=int(now_ts),
+                        plan_source=_as_optional_str(selected_existing.get("plan_source")) or risk_plan_record.plan_source,
+                        source_intent_id=_as_optional_str(selected_existing.get("source_intent_id")) or risk_plan_record.source_intent_id,
+                    )
+                    if matched_exit_order is not None and _as_optional_str(matched_exit_order.get("tp_sl_link")) != risk_plan_record.plan_id:
+                        store.upsert_order(
+                            _order_record_from_row_dict(
+                                matched_exit_order,
+                                tp_sl_link=risk_plan_record.plan_id,
+                            )
+                        )
                 store.upsert_position(matched_import["position_record"])
-                store.upsert_risk_plan(matched_import["risk_plan_record"])
+                store.upsert_risk_plan(risk_plan_record)
                 order_uuid = matched_import.get("order_uuid")
                 if isinstance(order_uuid, str) and order_uuid.strip():
                     store.mark_order_state(uuid=order_uuid, state="done", updated_ts=now_ts)
@@ -250,7 +331,7 @@ def reconcile_exchange_snapshot(
                     "type": "import_managed_position_from_bot_intent",
                     "market": market,
                     "intent_id": matched_import["intent_id"],
-                    "plan_id": matched_import["risk_plan_record"].plan_id,
+                    "plan_id": risk_plan_record.plan_id if not dry_run else matched_import["risk_plan_record"].plan_id,
                 }
             )
             continue

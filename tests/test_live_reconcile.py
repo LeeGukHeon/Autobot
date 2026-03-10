@@ -642,6 +642,131 @@ def test_reconcile_imports_managed_position_after_order_detail_sync_preserves_in
     assert order["state"] == "done"
 
 
+def test_reconcile_import_preserves_existing_exiting_plan_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        intent_meta = {
+            "model_exit_plan": {
+                "source": "model_alpha_v1",
+                "mode": "hold",
+                "hold_bars": 6,
+                "timeout_delta_ms": 1800000,
+                "tp_pct": 0.0,
+                "sl_pct": 0.0,
+                "trailing_pct": 0.0,
+            },
+            "submit_result": {"accepted": True, "order_uuid": "entry-order-kite"},
+        }
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-kite",
+                ts_ms=1000,
+                market="KRW-KITE",
+                side="bid",
+                price=441.0,
+                volume=12.77,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-kite",
+                identifier="AUTOBOT-autobot-001-intent-entry-kite-1000-a",
+                market="KRW-KITE",
+                side="bid",
+                ord_type="limit",
+                price=441.0,
+                volume_req=12.77,
+                volume_filled=12.77,
+                state="done",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-entry-kite",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-kite",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-kite",
+                identifier="AUTOBOT-autobot-001-intent-exit-kite-1300-a",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=443.0,
+                volume_req=12.77,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1300,
+                updated_ts=1400,
+                intent_id="intent-exit-kite",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-kite",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-intent-entry-kite",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.77",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1200,
+                last_action_ts_ms=0,
+                current_exit_order_uuid="exit-order-kite",
+                current_exit_order_identifier="AUTOBOT-autobot-001-intent-exit-kite-1300-a",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1500,
+                timeout_ts_ms=1801000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-entry-kite",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "KITE",
+                    "balance": "12.77",
+                    "locked": "0",
+                    "avg_buy_price": "441",
+                }
+            ],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        plan = store.risk_plan_by_id(plan_id="model-risk-intent-entry-kite")
+        order = store.order_by_uuid(uuid="exit-order-kite")
+
+    assert report["halted"] is False
+    assert any(item["type"] == "import_managed_position_from_bot_intent" for item in report["actions"])
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "exit-order-kite"
+    assert plan["last_action_ts_ms"] == 5000
+    assert order is not None
+    assert order["tp_sl_link"] == "model-risk-intent-entry-kite"
+
+
 def test_reconcile_closes_local_position_when_bot_exit_is_done_and_exchange_position_missing(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
