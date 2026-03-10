@@ -466,6 +466,25 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         mode = str(self._settings.exit.mode).strip().lower() or "hold"
         hold_ms = max(int(self._settings.exit.hold_bars), 0) * self._interval_ms
         if mode == "hold":
+            entry_price = max(float(state.entry_price), 1e-12)
+            _, sl_pct, _ = _resolve_runtime_risk_exit_thresholds(
+                settings=self._settings,
+                row=row,
+            )
+            if sl_pct > 0:
+                exit_fee_rate, exit_slippage_bps = _resolve_expected_exit_costs(
+                    settings=self._settings,
+                    observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
+                )
+                net_return = _net_return_after_costs(
+                    entry_price=entry_price,
+                    exit_price=float(ref_price),
+                    entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
+                    exit_fee_rate=exit_fee_rate,
+                    exit_slippage_bps=exit_slippage_bps,
+                )
+                if net_return <= -sl_pct:
+                    return "MODEL_ALPHA_EXIT_SL"
             if hold_ms > 0 and int(ts_ms) - int(state.entry_ts_ms) >= hold_ms:
                 return "MODEL_ALPHA_EXIT_HOLD_TIMEOUT"
             return None
@@ -914,7 +933,7 @@ def build_model_alpha_exit_plan_payload(
         "interval_ms": max(int(interval_ms), 1),
         "timeout_delta_ms": int(timeout_delta_ms),
         "tp_pct": float(tp_pct) if mode == "risk" and float(tp_pct) > 0.0 else 0.0,
-        "sl_pct": float(sl_pct) if mode == "risk" and float(sl_pct) > 0.0 else 0.0,
+        "sl_pct": float(sl_pct) if float(sl_pct) > 0.0 else 0.0,
         "trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
         "expected_exit_fee_rate": float(exit_fee_rate),
         "expected_exit_slippage_bps": float(exit_slippage_bps),

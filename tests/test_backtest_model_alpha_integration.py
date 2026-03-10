@@ -17,6 +17,7 @@ from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSelectionSettings,
     ModelAlphaSettings,
     ModelAlphaStrategyV1,
+    build_model_alpha_exit_plan_payload,
 )
 
 
@@ -575,6 +576,48 @@ def test_model_alpha_cooldown_and_hold_exit() -> None:
         open_markets=set(),
     )
     assert not any(intent.side == "bid" for intent in fourth.intents)
+
+
+def test_model_alpha_hold_exit_uses_sl_guard_before_timeout() -> None:
+    strategy = _build_strategy(
+        groups=[],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=6, sl_pct=0.01),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(StrategyFillEvent(ts_ms=1_000, market="KRW-BTC", side="bid", price=100.0, volume=1.0))
+    result = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 98.7},
+        open_markets={"KRW-BTC"},
+    )
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_SL" for intent in result.intents)
+    assert not any(intent.reason_code == "MODEL_ALPHA_EXIT_HOLD_TIMEOUT" for intent in result.intents)
+
+
+def test_build_model_alpha_exit_plan_payload_keeps_sl_guard_for_hold_mode() -> None:
+    payload = build_model_alpha_exit_plan_payload(
+        settings=ModelAlphaSettings(
+            exit=ModelAlphaExitSettings(
+                mode="hold",
+                hold_bars=6,
+                tp_pct=0.02,
+                sl_pct=0.01,
+                trailing_pct=0.015,
+            )
+        ),
+        row=None,
+        interval_ms=300_000,
+    )
+
+    assert payload["mode"] == "hold"
+    assert payload["tp_pct"] == 0.0
+    assert payload["sl_pct"] == 0.01
+    assert payload["trailing_pct"] == 0.0
 
 
 def test_model_alpha_risk_exit_tp() -> None:
