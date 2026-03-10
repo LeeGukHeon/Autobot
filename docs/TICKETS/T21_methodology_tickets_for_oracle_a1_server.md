@@ -149,6 +149,9 @@ These tickets are the required follow-on family before changing core promotion b
   - `candidate_acceptance.ps1` now separates train and certification windows
   - each candidate run now gets `certification_report.json`
   - trainer evidence is consumed from the certification artifact rather than directly from `promotion_decision.json`
+- `T21.12` slice 2 landed:
+  - trainer now writes `trainer_research_evidence.json`
+  - certification no longer reads research evidence directly from `promotion_decision.json`
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

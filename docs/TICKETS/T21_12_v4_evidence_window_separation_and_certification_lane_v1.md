@@ -54,12 +54,13 @@ Out of scope:
 - the trainer call no longer uses the certification end date directly:
   - train ends on the day before certification starts
 - candidate acceptance now writes `certification_report.json` inside each candidate run directory
-- trainer evidence for the promote gate is now consumed from that certification artifact, not directly from `promotion_decision.json`
+- trainer now writes `trainer_research_evidence.json`
+- trainer evidence for the promote gate is now consumed from the certification artifact, and the certification artifact reads trainer research evidence from `trainer_research_evidence.json` rather than directly from `promotion_decision.json`
 - explicit certification failure reasons now include:
   - `MISSING_DECISION_SURFACE`
   - `TRAIN_CERTIFICATION_WINDOW_OVERLAP`
   - `RESEARCH_CERTIFICATION_WINDOW_OVERLAP`
 
 ## Remaining Work
-- the certification artifact still wraps train-produced research evidence from `promotion_decision.json`
-- a later slice must move the research/offline evidence producer itself into a separately governed certification lane
+- the certification artifact still wraps train-produced research evidence
+- a later slice must move the research/offline evidence producer itself into a separately governed certification lane with a stronger OOS contract

@@ -518,6 +518,7 @@ function New-CertificationArtifact {
         [string]$CandidateRunId,
         [string]$CandidateRunDir,
         [string]$PromotionDecisionPath,
+        [string]$ResearchEvidencePath,
         [string]$DecisionSurfacePath,
         [string]$TrainStartDate,
         [string]$TrainEndDate,
@@ -570,11 +571,13 @@ function New-CertificationArtifact {
         provenance = [ordered]@{
             promotion_decision_path = $PromotionDecisionPath
             promotion_decision_present = (Test-Path $PromotionDecisionPath)
+            research_evidence_path = $ResearchEvidencePath
+            research_evidence_present = (Test-Path $ResearchEvidencePath)
             decision_surface_path = $DecisionSurfacePath
             decision_surface_present = $decisionSurfacePresent
             trainer_evidence_mode = $TrainerEvidenceMode
             trainer_evidence_source = "certification_artifact"
-            research_evidence_source = "promotion_decision"
+            research_evidence_source = "trainer_research_evidence_artifact"
         }
         windows = [ordered]@{
             train_window = $trainWindow
@@ -801,6 +804,53 @@ function Resolve-ResearchEvidenceFromPromotionDecision {
     $resolved.offline_pass = $offlinePass
     $resolved.execution_pass = $executionPass
     $resolved.pass = $offlinePass -and $executionPass
+    if ($resolved.available -and $resolved.reasons.Count -eq 0) {
+        $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
+    }
+    return $resolved
+}
+
+function Resolve-ResearchEvidenceFromArtifact {
+    param(
+        [Parameter(Mandatory = $false)]$ResearchEvidenceArtifact,
+        [string]$Mode
+    )
+    $resolved = [ordered]@{
+        mode = $Mode
+        available = $false
+        required = ($Mode -eq "required")
+        source = "trainer_research_evidence_artifact"
+        pass = $null
+        offline_pass = $false
+        execution_pass = $true
+        reasons = @()
+        checks = [ordered]@{}
+        offline = [ordered]@{}
+        spa_like = [ordered]@{}
+        white_rc = [ordered]@{}
+        hansen_spa = [ordered]@{}
+        execution = [ordered]@{}
+    }
+    if ($Mode -eq "ignore") {
+        $resolved.reasons = @("IGNORED_BY_POLICY")
+        return $resolved
+    }
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $ResearchEvidenceArtifact) {
+        $resolved.pass = $false
+        $resolved.reasons = @("MISSING_TRAINER_RESEARCH_EVIDENCE_ARTIFACT")
+        return $resolved
+    }
+    $resolved.available = To-Bool (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "available" -DefaultValue $false) $false
+    $resolved.pass = To-Bool (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "pass" -DefaultValue $false) $false
+    $resolved.offline_pass = To-Bool (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "offline_pass" -DefaultValue $false) $false
+    $resolved.execution_pass = To-Bool (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "execution_pass" -DefaultValue $true) $true
+    $resolved.reasons = @((Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "reasons" -DefaultValue @()))
+    $resolved.checks = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "checks" -DefaultValue @{})
+    $resolved.offline = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "offline" -DefaultValue @{})
+    $resolved.spa_like = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "spa_like" -DefaultValue @{})
+    $resolved.white_rc = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "white_rc" -DefaultValue @{})
+    $resolved.hansen_spa = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "hansen_spa" -DefaultValue @{})
+    $resolved.execution = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "execution" -DefaultValue @{})
     if ($resolved.available -and $resolved.reasons.Count -eq 0) {
         $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
     }
@@ -1402,6 +1452,7 @@ function Build-ReportMarkdown {
     $lines.Add("- candidate_run_id_used_for_paper: $([string](Get-PropValue -ObjectValue $candidate -Name 'candidate_run_id_used_for_paper' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_model_ref_requested: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_model_ref_requested' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
+    $lines.Add("- research_evidence_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'research_evidence_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_artifact_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'certification_artifact_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- duplicate_candidate: $([string](Get-PropValue -ObjectValue $candidate -Name 'duplicate_candidate' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
@@ -1820,9 +1871,11 @@ try {
     $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
+    $researchEvidencePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "trainer_research_evidence.json" }
+    $researchEvidenceArtifact = if ([string]::IsNullOrWhiteSpace($researchEvidencePath)) { @{} } else { Load-JsonOrEmpty -PathValue $researchEvidencePath }
     $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
     $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
-    $researchEvidence = Resolve-ResearchEvidenceFromPromotionDecision -PromotionDecision $promotionDecision -Mode $TrainerEvidenceMode
+    $researchEvidence = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
     $certificationArtifact = if ([string]::IsNullOrWhiteSpace($certificationArtifactPath)) {
         @{}
     } else {
@@ -1830,6 +1883,7 @@ try {
             -CandidateRunId $candidateRunId `
             -CandidateRunDir $candidateRunDir `
             -PromotionDecisionPath $promotionDecisionPath `
+            -ResearchEvidencePath $researchEvidencePath `
             -DecisionSurfacePath $decisionSurfacePath `
             -TrainStartDate $trainStartDate `
             -TrainEndDate $trainEndDate `
@@ -1857,6 +1911,7 @@ try {
         end = $trainEndDate
         candidate_run_id = $candidateRunId
         candidate_run_dir = $candidateRunDir
+        research_evidence_path = $researchEvidencePath
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -1879,6 +1934,7 @@ try {
     $report.candidate = [ordered]@{
         run_id = $candidateRunId
         run_dir = $candidateRunDir
+        research_evidence_path = $researchEvidencePath
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath

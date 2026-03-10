@@ -190,6 +190,7 @@ class TrainV4CryptoCsResult:
     search_budget_decision_path: Path | None = None
     execution_acceptance_report_path: Path | None = None
     runtime_recommendations_path: Path | None = None
+    trainer_research_evidence_path: Path | None = None
     decision_surface_path: Path | None = None
     experiment_ledger_path: Path | None = None
     experiment_ledger_summary_path: Path | None = None
@@ -694,6 +695,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(promotion, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    trainer_research_evidence = _build_trainer_research_evidence_from_promotion_v4(promotion=promotion)
+    trainer_research_evidence_path = run_dir / "trainer_research_evidence.json"
+    trainer_research_evidence_path.write_text(
+        json.dumps(trainer_research_evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     decision_surface = _build_decision_surface_v4(
         options=options,
         task=task,
@@ -801,6 +808,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         search_budget_decision_path=search_budget_decision_path,
         execution_acceptance_report_path=execution_acceptance_report_path,
         runtime_recommendations_path=runtime_recommendations_path,
+        trainer_research_evidence_path=trainer_research_evidence_path,
         decision_surface_path=decision_surface_path,
         experiment_ledger_path=experiment_ledger_path,
         experiment_ledger_summary_path=experiment_ledger_summary_path,
@@ -3152,7 +3160,8 @@ def _build_decision_surface_v4(
         if str(item).strip()
     ]
     warnings: list[str] = [
-        "TRAINER_EVIDENCE_SOURCE_IS_PROMOTION_DECISION",
+        "TRAINER_EVIDENCE_SOURCE_IS_TRAINER_RESEARCH_EVIDENCE_ARTIFACT",
+        "TRAINER_RESEARCH_EVIDENCE_IS_TRAIN_PRODUCED",
         "PROMOTION_DECISION_CONTAINS_TRAIN_PRODUCED_RESEARCH_ARTIFACTS",
     ]
     if bool(options.execution_acceptance_enabled):
@@ -3258,12 +3267,163 @@ def _build_decision_surface_v4(
         },
         "promotion_contract": {
             "promotion_mode": str((promotion or {}).get("promotion_mode", "")).strip() or "candidate",
-            "trainer_evidence_source": "promotion_decision",
+            "trainer_evidence_source": "trainer_research_evidence_artifact",
+            "trainer_research_evidence_path": "trainer_research_evidence.json",
             "trainer_evidence_expected_consumer": "scripts/candidate_acceptance.ps1",
             "trainer_evidence_includes_execution_acceptance": bool(options.execution_acceptance_enabled),
             "promotion_reasons": promotion_reasons,
         },
         "known_methodology_warnings": sorted(set(warnings)),
+    }
+
+
+def _build_trainer_research_evidence_from_promotion_v4(
+    *,
+    promotion: dict[str, Any],
+) -> dict[str, Any]:
+    checks = dict((promotion or {}).get("checks") or {})
+    research = dict((promotion or {}).get("research_acceptance") or {})
+    offline_compare = dict(research.get("compare_to_champion") or {})
+    spa_like_doc = dict(research.get("spa_like_window_test") or {})
+    white_rc_doc = dict(research.get("white_reality_check") or {})
+    hansen_spa_doc = dict(research.get("hansen_spa") or {})
+    walk_summary = dict(research.get("walk_forward_summary") or {})
+    execution_doc = dict((promotion or {}).get("execution_acceptance") or {})
+    execution_compare = dict(execution_doc.get("compare_to_champion") or {})
+
+    existing_champion_present = bool(checks.get("existing_champion_present", False))
+    walk_forward_present = bool(checks.get("walk_forward_present", False))
+    walk_forward_windows_run = int(checks.get("walk_forward_windows_run", 0) or 0)
+    offline_comparable = bool(checks.get("balanced_pareto_comparable", False))
+    offline_candidate_edge = bool(checks.get("balanced_pareto_candidate_edge", False))
+    spa_like_present = bool(checks.get("spa_like_present", False))
+    spa_like_comparable = bool(checks.get("spa_like_comparable", False))
+    spa_like_candidate_edge = bool(checks.get("spa_like_candidate_edge", False))
+    white_rc_present = bool(checks.get("white_rc_present", False))
+    white_rc_comparable = bool(checks.get("white_rc_comparable", False))
+    white_rc_candidate_edge = bool(checks.get("white_rc_candidate_edge", False))
+    hansen_spa_present = bool(checks.get("hansen_spa_present", False))
+    hansen_spa_comparable = bool(checks.get("hansen_spa_comparable", False))
+    hansen_spa_candidate_edge = bool(checks.get("hansen_spa_candidate_edge", False))
+    execution_enabled = bool(checks.get("execution_acceptance_enabled", False))
+    execution_present = bool(checks.get("execution_acceptance_present", False))
+    execution_comparable = bool(checks.get("execution_balanced_pareto_comparable", False))
+    execution_candidate_edge = bool(checks.get("execution_balanced_pareto_candidate_edge", False))
+
+    offline_decision = str(offline_compare.get("decision", "")).strip()
+    spa_like_decision = str(spa_like_doc.get("decision", "")).strip()
+    white_rc_decision = str(white_rc_doc.get("decision", "")).strip()
+    hansen_spa_decision = str(hansen_spa_doc.get("decision", "")).strip()
+    execution_status = str(execution_doc.get("status", "")).strip()
+    execution_decision = str(execution_compare.get("decision", "")).strip()
+
+    reasons: list[str] = []
+    if not walk_forward_present:
+        reasons.append("NO_WALK_FORWARD_EVIDENCE")
+    elif existing_champion_present:
+        if not offline_comparable:
+            reasons.append("OFFLINE_NOT_COMPARABLE")
+        elif not offline_candidate_edge:
+            reasons.append("OFFLINE_NOT_CANDIDATE_EDGE")
+        if spa_like_present:
+            if not spa_like_comparable:
+                reasons.append("SPA_LIKE_NOT_COMPARABLE")
+            elif not spa_like_candidate_edge:
+                reasons.append("SPA_LIKE_NOT_CANDIDATE_EDGE")
+        if white_rc_present:
+            if not white_rc_comparable:
+                reasons.append("WHITE_RC_NOT_COMPARABLE")
+            elif not white_rc_candidate_edge:
+                reasons.append("WHITE_RC_NOT_CANDIDATE_EDGE")
+        if hansen_spa_present:
+            if not hansen_spa_comparable:
+                reasons.append("HANSEN_SPA_NOT_COMPARABLE")
+            elif not hansen_spa_candidate_edge:
+                reasons.append("HANSEN_SPA_NOT_CANDIDATE_EDGE")
+
+    offline_pass = walk_forward_present and (
+        (not existing_champion_present)
+        or (
+            offline_comparable
+            and offline_candidate_edge
+            and ((not spa_like_present) or (spa_like_comparable and spa_like_candidate_edge))
+            and ((not white_rc_present) or (white_rc_comparable and white_rc_candidate_edge))
+            and ((not hansen_spa_present) or (hansen_spa_comparable and hansen_spa_candidate_edge))
+        )
+    )
+    execution_pass = True
+    if execution_enabled:
+        if not execution_present:
+            execution_pass = False
+            reasons.append("NO_EXECUTION_EVIDENCE")
+        elif existing_champion_present:
+            if not execution_comparable:
+                execution_pass = False
+                reasons.append("EXECUTION_NOT_COMPARABLE")
+            elif not execution_candidate_edge:
+                execution_pass = False
+                reasons.append("EXECUTION_NOT_CANDIDATE_EDGE")
+
+    available = walk_forward_present or execution_present or bool(offline_decision) or bool(execution_decision)
+    passed = offline_pass and execution_pass
+    if available and not reasons:
+        reasons = ["TRAINER_EVIDENCE_PASS"]
+
+    return {
+        "version": 1,
+        "policy": "v4_trainer_research_evidence_v1",
+        "source": "train_v4_crypto_cs",
+        "available": available,
+        "pass": passed,
+        "offline_pass": offline_pass,
+        "execution_pass": execution_pass,
+        "reasons": reasons,
+        "checks": {
+            "existing_champion_present": existing_champion_present,
+            "walk_forward_present": walk_forward_present,
+            "walk_forward_windows_run": walk_forward_windows_run,
+            "offline_comparable": offline_comparable,
+            "offline_candidate_edge": offline_candidate_edge,
+            "spa_like_present": spa_like_present,
+            "spa_like_comparable": spa_like_comparable,
+            "spa_like_candidate_edge": spa_like_candidate_edge,
+            "white_rc_present": white_rc_present,
+            "white_rc_comparable": white_rc_comparable,
+            "white_rc_candidate_edge": white_rc_candidate_edge,
+            "hansen_spa_present": hansen_spa_present,
+            "hansen_spa_comparable": hansen_spa_comparable,
+            "hansen_spa_candidate_edge": hansen_spa_candidate_edge,
+            "execution_acceptance_enabled": execution_enabled,
+            "execution_acceptance_present": execution_present,
+            "execution_comparable": execution_comparable,
+            "execution_candidate_edge": execution_candidate_edge,
+        },
+        "offline": {
+            "policy": str(research.get("policy", "")).strip(),
+            "decision": offline_decision,
+            "comparable": offline_comparable,
+        },
+        "spa_like": {
+            "policy": str(spa_like_doc.get("policy", "")).strip(),
+            "decision": spa_like_decision,
+            "comparable": spa_like_comparable,
+        },
+        "white_rc": {
+            "policy": str(white_rc_doc.get("policy", "")).strip(),
+            "decision": white_rc_decision,
+            "comparable": white_rc_comparable,
+        },
+        "hansen_spa": {
+            "policy": str(hansen_spa_doc.get("policy", "")).strip(),
+            "decision": hansen_spa_decision,
+            "comparable": hansen_spa_comparable,
+        },
+        "execution": {
+            "status": execution_status,
+            "policy": str(execution_compare.get("policy", "")).strip(),
+            "decision": execution_decision,
+            "comparable": execution_comparable,
+        },
     }
 
 

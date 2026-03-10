@@ -165,6 +165,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     selection_policy_doc = load_json(result.run_dir / "selection_policy.json")
     selection_calibration_doc = load_json(result.run_dir / "selection_calibration.json")
     train_config_doc = load_json(result.run_dir / "train_config.yaml")
+    research_evidence_doc = load_json(result.run_dir / "trainer_research_evidence.json")
     decision_surface_doc = load_json(result.run_dir / "decision_surface.json")
     assert "by_threshold_key" in selection_doc
     assert selection_doc["version"] == 2
@@ -175,12 +176,15 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert int(selection_calibration_doc["version"]) == 1
     assert train_config_doc["selection_policy"]["mode"] == "rank_effective_quantile"
     assert int(train_config_doc["selection_calibration"]["version"]) == 1
+    assert result.trainer_research_evidence_path is not None
+    assert result.trainer_research_evidence_path.exists()
+    assert research_evidence_doc["policy"] == "v4_trainer_research_evidence_v1"
     assert result.decision_surface_path is not None
     assert result.decision_surface_path.exists()
     assert decision_surface_doc["policy"] == "v4_decision_surface_v1"
     assert decision_surface_doc["trainer_entrypoint"]["task"] == "cls"
     assert decision_surface_doc["selection_runtime_contract"]["selection_policy_mode"] == "rank_effective_quantile"
-    assert "TRAINER_EVIDENCE_SOURCE_IS_PROMOTION_DECISION" in decision_surface_doc["known_methodology_warnings"]
+    assert "TRAINER_EVIDENCE_SOURCE_IS_TRAINER_RESEARCH_EVIDENCE_ARTIFACT" in decision_surface_doc["known_methodology_warnings"]
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
@@ -707,12 +711,15 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     promotion = load_json(result.promotion_path)
     execution_doc = load_json(result.run_dir / "execution_acceptance_report.json")
     runtime_doc = load_json(result.run_dir / "runtime_recommendations.json")
+    research_evidence_doc = load_json(result.run_dir / "trainer_research_evidence.json")
     decision_surface_doc = load_json(result.run_dir / "decision_surface.json")
 
     assert result.execution_acceptance_report_path is not None
     assert result.execution_acceptance_report_path.exists()
     assert result.runtime_recommendations_path is not None
     assert result.runtime_recommendations_path.exists()
+    assert result.trainer_research_evidence_path is not None
+    assert result.trainer_research_evidence_path.exists()
     assert result.decision_surface_path is not None
     assert result.decision_surface_path.exists()
     assert execution_doc["status"] == "compared"
@@ -732,11 +739,12 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert execution_exec_run.exists() is False
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
+    assert research_evidence_doc["execution"]["decision"] == "candidate_edge"
     assert "EXECUTION_ACCEPTANCE_REUSES_TRAIN_WINDOW" in decision_surface_doc["known_methodology_warnings"]
     assert "RUNTIME_RECOMMENDATIONS_REUSE_TRAIN_WINDOW" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["execution_acceptance_contract"]["selection_use_learned_recommendations"] is False
     assert decision_surface_doc["runtime_recommendation_contract"]["selection_use_learned_recommendations"] is True
-    assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "promotion_decision"
+    assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "trainer_research_evidence_artifact"
     execution_options = captured["options"]
     assert execution_options.top_n == 11
     assert execution_options.model_alpha_settings.selection.top_pct == 0.5

@@ -137,6 +137,64 @@ def _make_fake_python_exe(tmp_path: Path, *, write_decision_surface: bool) -> Pa
                         }},
                     }},
                 )
+                write_json(
+                    candidate_dir / "trainer_research_evidence.json",
+                    {{
+                        "policy": "v4_trainer_research_evidence_v1",
+                        "source": "train_v4_crypto_cs",
+                        "available": True,
+                        "pass": True,
+                        "offline_pass": True,
+                        "execution_pass": True,
+                        "reasons": ["TRAINER_EVIDENCE_PASS"],
+                        "checks": {{
+                            "existing_champion_present": True,
+                            "walk_forward_present": True,
+                            "walk_forward_windows_run": 4,
+                            "offline_comparable": True,
+                            "offline_candidate_edge": True,
+                            "spa_like_present": True,
+                            "spa_like_comparable": True,
+                            "spa_like_candidate_edge": True,
+                            "white_rc_present": True,
+                            "white_rc_comparable": True,
+                            "white_rc_candidate_edge": True,
+                            "hansen_spa_present": True,
+                            "hansen_spa_comparable": True,
+                            "hansen_spa_candidate_edge": True,
+                            "execution_acceptance_enabled": True,
+                            "execution_acceptance_present": True,
+                            "execution_comparable": True,
+                            "execution_candidate_edge": True,
+                        }},
+                        "offline": {{
+                            "policy": "balanced_pareto_offline",
+                            "decision": "candidate_edge",
+                            "comparable": True,
+                        }},
+                        "spa_like": {{
+                            "policy": "spa_like",
+                            "decision": "candidate_edge",
+                            "comparable": True,
+                        }},
+                        "white_rc": {{
+                            "policy": "white_rc",
+                            "decision": "candidate_edge",
+                            "comparable": True,
+                        }},
+                        "hansen_spa": {{
+                            "policy": "hansen_spa",
+                            "decision": "candidate_edge",
+                            "comparable": True,
+                        }},
+                        "execution": {{
+                            "status": "compared",
+                            "policy": "balanced_pareto_execution",
+                            "decision": "candidate_edge",
+                            "comparable": True,
+                        }},
+                    }},
+                )
                 if WRITE_DECISION_SURFACE:
                     write_json(
                         candidate_dir / "decision_surface.json",
@@ -356,7 +414,7 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     ]
 
     assert certification["provenance"]["trainer_evidence_source"] == "certification_artifact"
-    assert certification["provenance"]["research_evidence_source"] == "promotion_decision"
+    assert certification["provenance"]["research_evidence_source"] == "trainer_research_evidence_artifact"
     assert certification["windows"]["train_window"]["start"] == "2026-03-03"
     assert certification["windows"]["train_window"]["end"] == "2026-03-05"
     assert certification["windows"]["research_window"]["start"] == "2026-03-03"
