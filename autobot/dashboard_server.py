@@ -599,6 +599,101 @@ INDEX_HTML = """<!doctype html>
     .muted { color:var(--muted); } .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; } .badge,.pill,.refresh { border-radius:999px; } .badge { padding:8px 12px; font-size:.84rem; background:rgba(19,34,47,.06); border:1px solid rgba(19,34,47,.08); } .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; font-size:.82rem; font-weight:700; } .refresh { display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border:1px solid rgba(13,92,140,.18); background:var(--accent-soft); color:var(--accent); font-weight:700; cursor:pointer; } .good { color:var(--good); background:rgba(19,111,99,.10); border-color:rgba(19,111,99,.18); } .warn { color:var(--warn); background:rgba(192,113,31,.12); border-color:rgba(192,113,31,.22); } .bad { color:var(--bad); background:rgba(179,58,58,.12); border-color:rgba(179,58,58,.22); } table { width:100%; border-collapse:collapse; font-size:.92rem; } th,td { text-align:left; padding:10px 8px; border-bottom:1px solid rgba(19,34,47,.08); vertical-align:top; } th { color:var(--muted); font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; } .empty { padding:20px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:18px; } .error-box { margin-top:14px; padding:12px 14px; border-radius:16px; border:1px solid rgba(179,58,58,.24); background:rgba(179,58,58,.08); color:var(--bad); display:none; }
     @media (max-width:1180px) { .hero { grid-template-columns:1fr; } .card.half { grid-column:span 12; } }
   </style>
+  <style>
+    .service-row, #live-state-cards, #paper-table, #artifact-details {
+      display:grid !important;
+      grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+      gap:12px;
+    }
+    #training-details, #challenger-details, #ws-details {
+      display:grid;
+      gap:12px;
+    }
+    .service-item,
+    .service-card,
+    .state-card,
+    .paper-card,
+    .artifact-card,
+    .note-card,
+    .summary-box,
+    .list-item {
+      border:1px solid rgba(19,34,47,.10);
+      background:rgba(255,255,255,.72);
+      border-radius:18px;
+      box-shadow:0 10px 24px rgba(19,34,47,.05);
+    }
+    .service-card,
+    .state-card,
+    .paper-card,
+    .artifact-card,
+    .summary-box,
+    .note-card {
+      padding:14px;
+    }
+    .summary-box strong,
+    .note-card strong {
+      display:block;
+      margin-bottom:6px;
+      font-size:.94rem;
+    }
+    .summary-box p,
+    .note-card span {
+      margin:0;
+      color:var(--muted);
+      line-height:1.65;
+      font-size:.92rem;
+    }
+    .mini-grid {
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:10px;
+      margin-top:12px;
+    }
+    .mini {
+      border-radius:14px;
+      padding:10px 11px;
+      background:rgba(19,34,47,.04);
+    }
+    .mini .label {
+      color:var(--muted);
+      font-size:.75rem;
+      margin-bottom:4px;
+    }
+    .mini .value {
+      font-size:.92rem;
+      line-height:1.4;
+      word-break:break-word;
+    }
+    .tag-row {
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+    }
+    .list-item {
+      padding:13px 14px;
+      display:grid;
+      gap:6px;
+    }
+    .list-item strong {
+      font-size:.9rem;
+    }
+    .list-item span,
+    .path {
+      color:var(--muted);
+      line-height:1.55;
+      font-size:.88rem;
+      word-break:break-all;
+    }
+    .empty {
+      grid-column:1 / -1;
+      background:rgba(255,255,255,.55);
+    }
+    @media (max-width:900px) {
+      .shell { padding:16px 12px 24px; }
+      .mini-grid { grid-template-columns:1fr; }
+      .service-row, #live-state-cards, #paper-table, #artifact-details { grid-template-columns:1fr !important; }
+    }
+  </style>
 </head>
 <body>
   <div class="shell">
@@ -635,6 +730,77 @@ INDEX_HTML = """<!doctype html>
     const fmtPct=(v)=>v===null||v===undefined?"-":`${fmtNumber(v,2)}%`;
     const HTML_ESC = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
     const esc=(v)=>String(v??"").replace(/[&<>"]/g,(ch)=>HTML_ESC[ch]);
+    const SERVICE_LABELS = {
+      paper_champion: "챔피언 페이퍼",
+      paper_challenger: "챌린저 페이퍼",
+      ws_public: "공용 WS 수집",
+      live_main: "메인 라이브",
+      live_candidate: "후보 카나리아",
+      spawn_service: "후보 생성 실행",
+      promote_service: "승급 평가 실행",
+      spawn_timer: "00:10 생성 타이머",
+      promote_timer: "23:50 승급 타이머",
+    };
+    const REASON_TEXT = {
+      BACKTEST_ACCEPTANCE_FAILED: "백테스트 승인 기준을 통과하지 못했습니다.",
+      TRAINER_EVIDENCE_REQUIRED_FAILED: "학습 증거 기준이 챔피언 우위를 뒤집지 못했습니다.",
+      PAPER_SOAK_SKIPPED: "내부 paper soak는 생략했고, 통과 시 실제 챌린저 페이퍼가 대신 검증합니다.",
+      OFFLINE_NOT_CANDIDATE_EDGE: "오프라인 비교에서 후보 우위가 확정되지 않았습니다.",
+      SPA_LIKE_NOT_CANDIDATE_EDGE: "공통 구간 SPA 유사 검정에서 후보 우위가 확인되지 않았습니다.",
+      WHITE_RC_NOT_CANDIDATE_EDGE: "White Reality Check에서 후보 우위가 확인되지 않았습니다.",
+      HANSEN_SPA_NOT_CANDIDATE_EDGE: "Hansen SPA에서 후보 우위가 확인되지 않았습니다.",
+      EXECUTION_NOT_CANDIDATE_EDGE: "실행 비용까지 반영한 비교에서 챔피언이 더 안정적이었습니다.",
+      DUPLICATE_CANDIDATE: "기존 챔피언과 사실상 같은 모델이라 새 챌린저로 올리지 않았습니다.",
+      LIVE_BREAKER_ACTIVE: "라이브 브레이커가 활성이라 주문을 막고 있습니다.",
+      MODEL_POINTER_DIVERGENCE: "라이브가 물고 있는 모델과 현재 챔피언 포인터가 어긋났습니다.",
+      WS_PUBLIC_STALE: "공용 WS 수집 신선도가 기준보다 오래됐습니다.",
+    };
+    const DECISION_TEXT = {
+      TRAINER_EVIDENCE_REQUIRED_FAIL: "학습 증거 기준 미달",
+      UTILITY_TIE_BREAK_FAIL: "효용 기준 동률 깨기 실패",
+      CHAMPION_PARETO_DOMINANCE: "챔피언이 위험·실행·손익 기준에서 더 우세했습니다.",
+    };
+    const POLICY_TEXT = {
+      rank_effective_quantile: "순위 기반 자동 컷",
+      raw_threshold: "고정 확률 컷",
+      rank_topk_budgeted: "예산 반영 상위 종목 선택",
+      hold: "보유 시간 기반 종료",
+      risk: "TP/SL/트레일링 기반 종료",
+      canary: "카나리아",
+      shadow: "섀도우",
+      live: "실거래",
+    };
+    const maybe = (value, fallback="-") => value===null||value===undefined||value==="" ? fallback : String(value);
+    const shortPath = (value) => { const text=maybe(value,""); return !text ? "-" : (text.length>86 ? `...${text.slice(-83)}` : text); };
+    const shortRun = (value) => { const text=maybe(value,""); return !text ? "-" : (text.length>24 ? `${text.slice(0,18)}...${text.slice(-4)}` : text); };
+    const boolLabel = (value) => value===null||value===undefined ? "-" : (value ? "예" : "아니오");
+    const translate = (value, mapping=REASON_TEXT) => mapping[String(value)] || String(value ?? "-");
+    const latestTimestamp = (value) => {
+      if (typeof value === "number") return value;
+      if (!value || typeof value !== "object") return null;
+      const numbers = Object.values(value).map((item)=>Number(item)).filter((item)=>Number.isFinite(item));
+      return numbers.length ? Math.max(...numbers) : null;
+    };
+    const fmtDateTime = (value) => {
+      if (!value) return "-";
+      const parsed = typeof value === "number" ? new Date(value) : new Date(String(value));
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return parsed.toLocaleString("ko-KR",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    };
+    const fmtAgeSeconds = (tsMs) => {
+      if (!Number.isFinite(tsMs)) return "-";
+      const diffSec=Math.max(0,(Date.now()-tsMs)/1000);
+      if (diffSec < 60) return `${fmtNumber(diffSec,1)}초 전`;
+      if (diffSec < 3600) return `${fmtNumber(diffSec/60,1)}분 전`;
+      return `${fmtNumber(diffSec/3600,1)}시간 전`;
+    };
+    const joinReasons = (items) => {
+      const values=(items||[]).filter(Boolean);
+      return values.length ? values.map((item)=>translate(item)).join(" · ") : "없음";
+    };
+    const noteCard = (label, value) => `<div class="note-card"><strong>${esc(label)}</strong><span>${esc(value ?? "-")}</span></div>`;
+    const listItem = (label, value) => `<li class="list-item"><strong>${esc(label)}</strong><span>${esc(value ?? "-")}</span></li>`;
+    const empty = (text) => `<div class="empty">${esc(text)}</div>`;
     const stateClass=(v)=>{const t=String(v||"").toLowerCase(); if(t.includes("active")||t.includes("running")||t==="true") return "good"; if(t.includes("inactive")||t.includes("waiting")||t.includes("dead")||t==="false") return "warn"; return "bad";};
     const pill=(label,value)=>`<span class="pill ${stateClass(value)}">${esc(label)}: ${esc(value??"-")}</span>`;
     const kpi=(label,value)=>`<div class="kpi"><div class="label">${esc(label)}</div><div class="value">${esc(value??"-")}</div></div>`;
@@ -648,6 +814,128 @@ INDEX_HTML = """<!doctype html>
     function renderMeta(data){ document.getElementById("generated-at").textContent=data.generated_at||"-"; document.getElementById("project-root").textContent=data.project_root||"-"; const s=data.system||{}; const usedGb=(Number(s.project_used_bytes||0)/(1024**3)).toFixed(1); const totalGb=(Number(s.total_bytes||0)/(1024**3)).toFixed(1); const fsUsedGb=(Number(s.used_bytes||0)/(1024**3)).toFixed(1); document.getElementById("storage-summary").textContent=`프로젝트 ${usedGb} GB / 파일시스템 ${fsUsedGb} GB / 총 ${totalGb} GB`; }
     function setError(message){ const node=document.getElementById("fetch-error"); if(!message){ node.style.display="none"; node.textContent=""; return; } node.style.display="block"; node.textContent=message; }
     function renderAll(data){ renderMeta(data); renderServices(data.services||{}); renderTraining(data.training||{}); renderChallenger(data.challenger||{}); renderPaper(data.paper||{}); renderWsPublic(data.ws_public||{}); renderLive(data.live||{}); renderArtifacts(data.training||{}); }
+
+    function renderServices(services){
+      const entries = Object.entries(services || {});
+      document.getElementById("hero-badges").innerHTML = entries
+        .filter(([, item]) => item)
+        .slice(0, 6)
+        .map(([key, item]) => pill(SERVICE_LABELS[key] || item.description || key, item.active_state))
+        .join("");
+      document.getElementById("service-cards").innerHTML = entries.map(([key, item]) => {
+        const label = SERVICE_LABELS[key] || item.description || key;
+        const extra = item.next_run_at
+          ? `<div class="mini"><div class="label">다음 실행</div><div class="value">${esc(item.next_run_at)}</div></div>`
+          : `<div class="mini"><div class="label">메인 PID</div><div class="value mono">${esc(maybe(item.main_pid, "-"))}</div></div>`;
+        return `<div class="service-card"><div class="row"><strong>${esc(label)}</strong>${pill("상태", item.active_state)}</div><div class="path mono" style="margin-top:8px">${esc(item.unit)}</div><div class="mini-grid"><div class="mini"><div class="label">세부 상태</div><div class="value">${esc(maybe(item.sub_state))}</div></div><div class="mini"><div class="label">활성화</div><div class="value">${esc(maybe(item.unit_file_state))}</div></div>${extra}<div class="mini"><div class="label">최근 시작</div><div class="value">${esc(fmtDateTime(item.started_at))}</div></div></div></div>`;
+      }).join("") || empty("서비스 상태를 읽지 못했습니다.");
+    }
+
+    function renderTraining(training){
+      const acceptance = training.acceptance || {};
+      const verdict = acceptance.overall_pass === true ? "통과" : acceptance.overall_pass === false ? "탈락" : "대기";
+      const summary = acceptance.overall_pass === false
+        ? `이번 후보 ${shortRun(acceptance.candidate_run_id)}는 챔피언을 넘지 못해 어셉턴스에서 탈락했습니다.`
+        : acceptance.overall_pass === true
+          ? `이번 후보 ${shortRun(acceptance.candidate_run_id)}는 어셉턴스를 통과했습니다.`
+          : "최근 후보가 아직 없거나 실행 중입니다.";
+      document.getElementById("training-kpis").innerHTML = [
+        kpi("후보 run", shortRun(acceptance.candidate_run_id)),
+        kpi("최종 판정", verdict),
+        kpi("백테스트 통과", boolLabel(acceptance.backtest_pass)),
+        kpi("완료 시각", fmtDateTime(acceptance.completed_at)),
+      ].join("");
+      document.getElementById("training-details").innerHTML = `<div class="summary-box"><strong>이번 후보 해석</strong><p>${esc(summary)}</p><div class="tag-row" style="margin-top:12px">${acceptance.decision_basis ? pill("판정 기준", translate(acceptance.decision_basis, DECISION_TEXT)) : ""}${acceptance.model_family ? pill("모델 패밀리", acceptance.model_family, "warn") : ""}${acceptance.batch_date ? pill("배치 날짜", acceptance.batch_date, "warn") : ""}</div></div><ul class="list">${listItem("어셉턴스 사유", joinReasons(acceptance.reasons))}${listItem("학습 증거 세부 사유", joinReasons(acceptance.trainer_reasons))}${listItem("운영 메모", joinReasons(acceptance.notes))}${listItem("후보 경로", shortPath(acceptance.candidate_run_dir))}${listItem("기존 챔피언", shortRun(acceptance.champion_before_run_id))}${listItem("현재 챔피언", shortRun(acceptance.champion_after_run_id))}</ul>`;
+    }
+
+    function renderChallenger(challenger){
+      const started = challenger.started === true ? "기동됨" : challenger.started === false ? "미기동" : "미생성";
+      document.getElementById("challenger-kpis").innerHTML = [
+        kpi("후보 run", shortRun(challenger.candidate_run_id)),
+        kpi("챌린저 상태", started),
+        kpi("직접 사유", translate(challenger.reason)),
+        kpi("완료 시각", fmtDateTime(challenger.completed_at)),
+      ].join("");
+      document.getElementById("challenger-details").innerHTML = `<div class="summary-box"><strong>이번 챌린저 생성 결과</strong><p>${challenger.started ? "이번 후보는 챌린저 페이퍼 유닛으로 실제 기동됐습니다." : "이번 후보는 챌린저 페이퍼로 넘어가지 못했습니다. 아래 사유를 먼저 확인하면 됩니다."}</p><div class="tag-row" style="margin-top:12px">${challenger.reason ? pill("직접 사유", translate(challenger.reason)) : ""}${challenger.paper_model_ref ? pill("페이퍼 모델 ref", shortRun(challenger.paper_model_ref), "warn") : ""}</div></div><ul class="list">${listItem("acceptance 메모", joinReasons(challenger.acceptance_notes))}${listItem("챌린저 유닛", challenger.challenger_unit || "생성되지 않음")}${listItem("리포트 경로", shortPath(challenger.artifact_path))}</ul>`;
+    }
+
+    function renderPaper(paper){
+      const rows = paper.recent_runs || [];
+      document.getElementById("paper-table").innerHTML = rows.length ? rows.map((run) => `<div class="paper-card"><div class="row"><strong>${esc(shortRun(run.run_id))}</strong>${pill("워밍업", boolLabel(run.warmup_satisfied), run.warmup_satisfied ? "good" : "warn")}</div><div class="path" style="margin-top:8px">${esc(`${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`)}</div><div class="mini-grid"><div class="mini"><div class="label">주문 수</div><div class="value">${esc(maybe(run.orders_submitted, "0"))}</div></div><div class="mini"><div class="label">체결 수</div><div class="value">${esc(maybe(run.orders_filled, "0"))}</div></div><div class="mini"><div class="label">실현 손익</div><div class="value">${esc(fmtMoney(run.realized_pnl_quote))}</div></div><div class="mini"><div class="label">최대 낙폭</div><div class="value">${esc(fmtPct(run.max_drawdown_pct))}</div></div><div class="mini"><div class="label">체결률</div><div class="value">${esc(fmtPct(run.fill_rate === null || run.fill_rate === undefined ? null : Number(run.fill_rate) * 100))}</div></div><div class="mini"><div class="label">업데이트</div><div class="value">${esc(fmtDateTime(run.updated_at))}</div></div></div></div>`).join("") : empty("최근 페이퍼 런 요약이 아직 없습니다.");
+    }
+
+    function renderWsPublic(ws){
+      const health = ws.health_snapshot || {};
+      const latestRun = ws.runs_summary_latest || {};
+      const lastRxMs = latestTimestamp(health.last_rx_ts_ms);
+      document.getElementById("ws-kpis").innerHTML = [
+        kpi("연결 상태", boolLabel(health.connected)),
+        kpi("구독 종목 수", maybe(health.subscribed_markets_count, "-")),
+        kpi("최근 수신", fmtAgeSeconds(lastRxMs)),
+        kpi("현재 run", shortRun(health.run_id || latestRun.run_id)),
+      ].join("");
+      document.getElementById("ws-details").innerHTML = `<div class="summary-box"><strong>수집기 해석</strong><p>${health.connected ? "공용 WS 수집기는 현재 연결된 상태입니다." : "공용 WS 수집기가 현재 끊겨 있어 원천 데이터 신선도를 먼저 확인해야 합니다."}</p><div class="tag-row" style="margin-top:12px">${pill("연결", boolLabel(health.connected), health.connected ? "good" : "bad")}${health.fatal_reason ? pill("치명 사유", health.fatal_reason, "bad") : ""}${pill("재연결 횟수", maybe(health.reconnect_count, "0"), "warn")}</div></div><ul class="list">${listItem("누적 적재 행 수", `총 ${fmtNumber((health.written_rows || {}).total, 0)}행 · trade ${fmtNumber((health.written_rows || {}).trade, 0)}행 · orderbook ${fmtNumber((health.written_rows || {}).orderbook, 0)}행`)}${listItem("누락·드롭 행 수", `총 ${fmtNumber((health.dropped_rows || {}).total, 0)}행 · orderbook downsample ${fmtNumber((health.dropped_rows || {}).orderbook_downsample, 0)}행`)}${listItem("최근 수신 시각", fmtDateTime(lastRxMs))}${listItem("최근 runs 요약", `parts ${fmtNumber(latestRun.parts, 0)}개 · bytes ${fmtNumber(latestRun.bytes_total, 0)} · rows ${fmtNumber(latestRun.rows_total, 0)}`)}</ul>`;
+    }
+    function renderLive(live){
+      const rollout = live.rollout_latest || {};
+      const states = live.states || [];
+      document.getElementById("live-state-cards").innerHTML = states.length ? states.map((state) => {
+        const runtime = state.runtime_health || {};
+        const rolloutStatus = state.rollout_status || {};
+        const lastResume = state.last_resume || {};
+        const openMarkets = []
+          .concat((state.positions || []).map((item)=>item.market))
+          .concat((state.open_orders || []).map((item)=>item.market))
+          .filter(Boolean);
+        return `<div class="state-card"><div class="row"><strong>${esc(state.label)}</strong>${pill("브레이커", boolLabel(state.breaker_active), state.breaker_active ? "bad" : "good")}</div><div class="path mono" style="margin-top:8px">${esc(shortPath(state.db_path))}</div><div class="mini-grid"><div class="mini"><div class="label">보유 포지션</div><div class="value">${esc(maybe(state.positions_count, "0"))}</div></div><div class="mini"><div class="label">오픈 주문</div><div class="value">${esc(maybe(state.open_orders_count, "0"))}</div></div><div class="mini"><div class="label">활성 risk plan</div><div class="value">${esc(maybe(state.active_risk_plans_count, "0"))}</div></div><div class="mini"><div class="label">최근 intent 수</div><div class="value">${esc(maybe(state.intents_count, "0"))}</div></div><div class="mini"><div class="label">현재 모델</div><div class="value mono">${esc(shortRun(runtime.live_runtime_model_run_id))}</div></div><div class="mini"><div class="label">챔피언 포인터</div><div class="value mono">${esc(shortRun(runtime.champion_pointer_run_id))}</div></div><div class="mini"><div class="label">rollout 모드</div><div class="value">${esc(translate(rolloutStatus.mode, POLICY_TEXT))}</div></div><div class="mini"><div class="label">주문 방출 허용</div><div class="value">${esc(boolLabel(rolloutStatus.order_emission_allowed))}</div></div></div><div class="tag-row" style="margin-top:12px">${runtime.ws_public_stale === true ? pill("WS 신선도", "오래됨", "bad") : runtime.ws_public_stale === false ? pill("WS 신선도", "정상", "good") : ""}${runtime.model_pointer_divergence === true ? pill("모델 포인터", "어긋남", "bad") : runtime.model_pointer_divergence === false ? pill("모델 포인터", "정상", "good") : ""}${openMarkets.length ? pill("열린 시장", openMarkets.join(", "), "warn") : pill("열린 시장", "없음", "good")}</div>${lastResume && Object.keys(lastResume).length ? `<div class="path" style="margin-top:12px">마지막 resume: ${esc(fmtDateTime(lastResume.generated_at || lastResume.checked_at || lastResume.completed_at))}</div>` : ""}</div>`;
+      }).join("") : empty("라이브 상태 DB를 찾지 못했습니다.");
+
+      const noteCards = [];
+      if (rollout.contract && Object.keys(rollout.contract).length) {
+        noteCards.push(noteCard("최근 rollout 계약", `${translate(rollout.contract.mode, POLICY_TEXT)} · armed ${boolLabel(rollout.contract.armed)} · 목표 유닛 ${rollout.contract.target_unit || "-"}`));
+      }
+      if (rollout.status && Object.keys(rollout.status).length) {
+        noteCards.push(noteCard("최근 rollout 상태", `시작 허용 ${boolLabel(rollout.status.start_allowed)} · 주문 허용 ${boolLabel(rollout.status.order_emission_allowed)} · 브레이커 해제 ${boolLabel(rollout.status.breaker_clear)}`));
+        if ((rollout.status.reason_codes || []).length) {
+          noteCards.push(noteCard("최근 rollout 제한 사유", joinReasons(rollout.status.reason_codes)));
+        }
+      }
+      const testOrder = rollout.status ? rollout.status.test_order : null;
+      if (testOrder && Object.keys(testOrder).length) {
+        noteCards.push(noteCard("테스트 주문", `${testOrder.market || "-"} ${testOrder.side || "-"} · 결과 ${boolLabel(testOrder.ok)} · 확인 시각 ${fmtDateTime(testOrder.checked_at_utc)}`));
+      }
+      document.getElementById("notes-list").innerHTML = noteCards.join("") || empty("특기할 rollout 메모가 아직 없습니다.");
+    }
+    function renderArtifacts(training){
+      const artifacts = training.candidate_artifacts || {};
+      const runtime = artifacts.runtime_recommendations || {};
+      const policy = artifacts.selection_policy || {};
+      const calibration = artifacts.selection_calibration || {};
+      const budget = artifacts.search_budget_decision || {};
+      const factor = artifacts.factor_block_selection || {};
+      const cpcv = artifacts.cpcv_lite_report || {};
+      const wf = artifacts.walk_forward_report || {};
+      document.getElementById("artifact-details").innerHTML = `<div class="artifact-card"><strong>런타임 추천</strong><div class="mini-grid"><div class="mini"><div class="label">종료 모드</div><div class="value">${esc(translate(runtime.recommended_exit_mode, POLICY_TEXT))}</div></div><div class="mini"><div class="label">권장 보유 bar</div><div class="value">${esc(maybe(runtime.recommended_hold_bars))}</div></div><div class="mini"><div class="label">TP / SL / 추적</div><div class="value">${esc(`${fmtPct(runtime.tp_pct)} / ${fmtPct(runtime.sl_pct)} / ${fmtPct(runtime.trailing_pct)}`)}</div></div><div class="mini"><div class="label">산출 방식</div><div class="value">${esc(maybe(runtime.recommendation_source))}</div></div></div></div><div class="artifact-card"><strong>선택 정책</strong><div class="mini-grid"><div class="mini"><div class="label">모드</div><div class="value">${esc(translate(policy.mode, POLICY_TEXT))}</div></div><div class="mini"><div class="label">기준 키</div><div class="value">${esc(maybe(policy.threshold_key))}</div></div><div class="mini"><div class="label">상위 비율</div><div class="value">${esc(policy.rank_quantile === null || policy.rank_quantile === undefined ? "-" : fmtPct(Number(policy.rank_quantile) * 100))}</div></div><div class="mini"><div class="label">보정 사용</div><div class="value">${esc(boolLabel(policy.calibration_enabled))}</div></div></div></div><div class="artifact-card"><strong>점수 보정</strong><div class="mini-grid"><div class="mini"><div class="label">활성화</div><div class="value">${esc(boolLabel(calibration.enabled))}</div></div><div class="mini"><div class="label">방법</div><div class="value">${esc(maybe(calibration.method))}</div></div><div class="mini"><div class="label">샘플 수</div><div class="value">${esc(maybe(calibration.sample_count))}</div></div><div class="mini"><div class="label">폴드 수</div><div class="value">${esc(maybe(calibration.fold_count))}</div></div></div></div><div class="artifact-card"><strong>탐색 예산</strong><div class="mini-grid"><div class="mini"><div class="label">결정 모드</div><div class="value">${esc(maybe(budget.decision_mode))}</div></div><div class="mini"><div class="label">booster sweep</div><div class="value">${esc(maybe(budget.booster_sweep_trials))}</div></div><div class="mini"><div class="label">runtime grid</div><div class="value">${esc(maybe(budget.runtime_grid_mode))}</div></div><div class="mini"><div class="label">사유</div><div class="value">${esc(joinReasons(budget.reasons))}</div></div></div></div><div class="artifact-card"><strong>팩터 블록 선택</strong><div class="mini-grid"><div class="mini"><div class="label">허용 블록 수</div><div class="value">${esc(maybe(factor.accepted_count))}</div></div><div class="mini"><div class="label">제외 블록 수</div><div class="value">${esc(maybe(factor.rejected_count))}</div></div><div class="mini"><div class="label">허용 블록</div><div class="value">${esc((factor.accepted_blocks || []).join(", ") || "-")}</div></div><div class="mini"><div class="label">제외 블록</div><div class="value">${esc((factor.rejected_blocks || []).join(", ") || "-")}</div></div></div></div><div class="artifact-card"><strong>강건성 검증</strong><div class="mini-grid"><div class="mini"><div class="label">CPCV 요청</div><div class="value">${esc(boolLabel(cpcv.requested))}</div></div><div class="mini"><div class="label">White comparable</div><div class="value">${esc(boolLabel(wf.white_rc_comparable))}</div></div><div class="mini"><div class="label">Hansen comparable</div><div class="value">${esc(boolLabel(wf.hansen_spa_comparable))}</div></div><div class="mini"><div class="label">selection trial 수</div><div class="value">${esc(maybe(wf.selection_search_trial_count))}</div></div></div></div>`;
+    }
+    function renderMeta(data){
+      document.getElementById("generated-at").textContent = fmtDateTime(data.generated_at);
+      document.getElementById("project-root").textContent = data.project_root || "-";
+      const s = data.system || {};
+      const usedGb=(Number(s.project_used_bytes||0)/(1024**3)).toFixed(1);
+      const totalGb=(Number(s.total_bytes||0)/(1024**3)).toFixed(1);
+      const fsUsedGb=(Number(s.used_bytes||0)/(1024**3)).toFixed(1);
+      document.getElementById("storage-summary").textContent = `프로젝트 ${usedGb} GB · 파일시스템 사용 ${fsUsedGb} GB / 전체 ${totalGb} GB`;
+    }
+    function renderAll(data){
+      renderMeta(data);
+      renderServices(data.services||{});
+      renderTraining(data.training||{});
+      renderChallenger(data.challenger||{});
+      renderPaper(data.paper||{});
+      renderWsPublic(data.ws_public||{});
+      renderLive(data.live||{});
+      renderArtifacts(data.training||{});
+    }
     async function refresh(){ try { const response=await fetch("/api/snapshot",{cache:"no-store"}); if(!response.ok){ throw new Error(`snapshot 응답 실패 (${response.status})`); } const data=await response.json(); renderAll(data); setError(""); } catch (err) { setError(`실시간 새로고침 실패: ${err && err.message ? err.message : err}`); } }
     document.getElementById("refresh-btn").addEventListener("click",refresh); if (INITIAL_SNAPSHOT && typeof INITIAL_SNAPSHOT === "object") { try { renderAll(INITIAL_SNAPSHOT); } catch (err) { setError(`초기 렌더링 실패: ${err && err.message ? err.message : err}`); } } refresh(); setInterval(refresh,10000);
   </script>
