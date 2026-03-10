@@ -572,3 +572,101 @@ def test_live_model_alpha_runtime_applies_trade_gate_duplicate_entry_block(tmp_p
     assert len(intents) == 1
     meta_payload = intents[0]["meta"]
     assert meta_payload.get("skip_reason") == "DUPLICATE_ENTRY"
+
+
+def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _StrategyWithExitPlan:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices, open_markets
+            return StrategyStepResult(
+                intents=(
+                    StrategyOrderIntent(
+                        market="KRW-FLOW",
+                        side="bid",
+                        ref_price=78.0,
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        prob=0.9,
+                        meta={
+                            "model_prob": 0.9,
+                            "model_exit_plan": {
+                                "source": "model_alpha_v1",
+                                "mode": "risk",
+                                "hold_bars": 6,
+                                "interval_ms": 300000,
+                                "timeout_delta_ms": 1800000,
+                                "tp_pct": 0.02,
+                                "sl_pct": 0.01,
+                                "trailing_pct": 0.015,
+                            },
+                        },
+                    ),
+                ),
+                scored_rows=1,
+                eligible_rows=1,
+                selected_rows=1,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _StrategyWithExitPlan())
+
+    settings = _runtime_settings(
+        tmp_path,
+        rollout_mode="canary",
+        canary=True,
+        model_alpha=ModelAlphaSettings(
+            execution=ModelAlphaExecutionSettings(price_mode="PASSIVE_MAKER", timeout_bars=2, replace_max=2),
+        ),
+    )
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-FLOW",
+                side="bid",
+                ord_type="limit",
+                price="90.6",
+                volume="10",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_FlowPublicClient(),
+                public_ws_client=_FlowPublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    strategy_payload = meta_payload.get("strategy")
+    assert isinstance(strategy_payload, dict)
+    strategy_meta = strategy_payload.get("meta")
+    assert isinstance(strategy_meta, dict)
+    exit_plan = strategy_meta.get("model_exit_plan")
+    assert isinstance(exit_plan, dict)
+    assert exit_plan.get("source") == "model_alpha_v1"
+    assert int(exit_plan.get("timeout_delta_ms", 0)) > 0

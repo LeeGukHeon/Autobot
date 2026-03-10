@@ -279,3 +279,35 @@ def test_risk_manager_blocks_new_exit_when_breaker_active(tmp_path: Path) -> Non
 
     assert any(item["type"] == "risk_blocked_by_breaker" for item in actions)
     assert gateway.submit_calls == []
+
+
+def test_risk_manager_timeout_trigger_submits_exit(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(default_tp_pct=0.0, default_sl_pct=0.0),
+        )
+        manager.attach_model_risk(
+            market="KRW-KITE",
+            entry_price=442.0,
+            qty=13.5,
+            tp_pct=None,
+            sl_pct=None,
+            trailing_pct=None,
+            timeout_ts_ms=2000,
+            ts_ms=1000,
+            plan_id="model-risk-intent-1",
+            source_intent_id="intent-1",
+        )
+        actions = manager.evaluate_price(market="KRW-KITE", last_price=442.0, ts_ms=2000)
+        persisted = store.risk_plan_by_id(plan_id="model-risk-intent-1")
+
+    assert any(item["type"] == "risk_exit_submitted" and item["trigger_reason"] == "TIMEOUT" for item in actions)
+    assert len(gateway.submit_calls) == 1
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
+    assert persisted["timeout_ts_ms"] == 2000
+    assert persisted["source_intent_id"] == "intent-1"

@@ -70,6 +70,56 @@ class LiveRiskManager:
         self._upsert_plan(plan)
         return plan
 
+    def attach_model_risk(
+        self,
+        *,
+        market: str,
+        entry_price: float,
+        qty: float,
+        tp_pct: float | None,
+        sl_pct: float | None,
+        trailing_pct: float | None,
+        timeout_ts_ms: int | None,
+        ts_ms: int | None = None,
+        plan_id: str | None = None,
+        plan_source: str | None = "model_alpha_v1",
+        source_intent_id: str | None = None,
+    ) -> RiskPlan:
+        now_ts = int(ts_ms if ts_ms is not None else time.time() * 1000)
+        market_value = str(market).strip().upper()
+        if not market_value:
+            raise ValueError("market is required")
+        if entry_price <= 0:
+            raise ValueError("entry_price must be positive")
+        if qty <= 0:
+            raise ValueError("qty must be positive")
+
+        plan_key = _as_optional_str(plan_id) or f"model-risk-{market_value}"
+        tp_value = max(float(tp_pct), 0.0) if tp_pct is not None else None
+        sl_value = max(float(sl_pct), 0.0) if sl_pct is not None else None
+        trailing_value = max(float(trailing_pct), 0.0) if trailing_pct is not None else None
+        plan = RiskPlan(
+            plan_id=plan_key,
+            market=market_value,
+            side="long",
+            entry_price=float(entry_price),
+            qty=float(qty),
+            tp_enabled=(tp_value or 0.0) > 0.0,
+            tp_pct=tp_value if (tp_value or 0.0) > 0.0 else None,
+            sl_enabled=(sl_value or 0.0) > 0.0,
+            sl_pct=sl_value if (sl_value or 0.0) > 0.0 else None,
+            trailing_enabled=(trailing_value or 0.0) > 0.0,
+            trail_pct=trailing_value if (trailing_value or 0.0) > 0.0 else None,
+            timeout_ts_ms=_as_int(timeout_ts_ms),
+            state="ACTIVE",
+            created_ts=now_ts,
+            updated_ts=now_ts,
+            plan_source=_as_optional_str(plan_source),
+            source_intent_id=_as_optional_str(source_intent_id),
+        )
+        self._upsert_plan(plan)
+        return plan
+
     def evaluate_price(
         self,
         *,
@@ -90,7 +140,7 @@ class LiveRiskManager:
                 if trailing_action is not None:
                     actions.append(trailing_action)
 
-                trigger = self._detect_trigger(updated, last_price=last_price)
+                trigger = self._detect_trigger(updated, last_price=last_price, ts_ms=now_ts)
                 if trigger is not None:
                     updated, action = self._submit_exit_order(
                         updated,
@@ -405,7 +455,7 @@ class LiveRiskManager:
         )
         return updated, {"type": "risk_trailing_watermark", "plan_id": plan.plan_id, "watermark": last_price}
 
-    def _detect_trigger(self, plan: RiskPlan, *, last_price: float) -> str | None:
+    def _detect_trigger(self, plan: RiskPlan, *, last_price: float, ts_ms: int) -> str | None:
         tp_price = plan.resolve_tp_price()
         if tp_price is not None and last_price >= tp_price:
             return "TP"
@@ -420,6 +470,8 @@ class LiveRiskManager:
                 floor = watermark * (1.0 - plan.trail_pct)
                 if last_price <= floor:
                     return "TRAILING"
+        if plan.timeout_ts_ms is not None and int(ts_ms) >= int(plan.timeout_ts_ms):
+            return "TIMEOUT"
         return None
 
     def _load_plans(
@@ -448,6 +500,7 @@ class LiveRiskManager:
             trail_pct=plan.trail_pct,
             high_watermark_price_str=_optional_decimal(plan.high_watermark_price, self._config.price_digits),
             armed_ts_ms=plan.armed_ts_ms,
+            timeout_ts_ms=plan.timeout_ts_ms,
             state=plan.state,
             last_eval_ts_ms=int(plan.last_eval_ts_ms),
             last_action_ts_ms=int(plan.last_action_ts_ms),
@@ -456,6 +509,8 @@ class LiveRiskManager:
             replace_attempt=int(plan.replace_attempt),
             created_ts=int(plan.created_ts),
             updated_ts=int(plan.updated_ts),
+            plan_source=plan.plan_source,
+            source_intent_id=plan.source_intent_id,
         )
         self._store.upsert_risk_plan(record)
 
@@ -480,6 +535,7 @@ def _risk_plan_from_row(row: dict[str, Any]) -> RiskPlan:
         trail_pct=_as_float(trailing.get("trail_pct")),
         high_watermark_price=_as_float(trailing.get("high_watermark_price_str")),
         armed_ts_ms=_as_int(trailing.get("armed_ts_ms")),
+        timeout_ts_ms=_as_int(row.get("timeout_ts_ms")),
         state=str(row.get("state", "ACTIVE")).strip().upper(),
         last_eval_ts_ms=int(row.get("last_eval_ts_ms") or 0),
         last_action_ts_ms=int(row.get("last_action_ts_ms") or 0),
@@ -488,6 +544,8 @@ def _risk_plan_from_row(row: dict[str, Any]) -> RiskPlan:
         replace_attempt=int(row.get("replace_attempt") or 0),
         created_ts=int(row.get("created_ts") or 0),
         updated_ts=int(row.get("updated_ts") or 0),
+        plan_source=_as_optional_str(row.get("plan_source")),
+        source_intent_id=_as_optional_str(row.get("source_intent_id")),
     )
 
 

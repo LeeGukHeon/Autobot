@@ -33,6 +33,7 @@ class RiskPlan:
     trail_pct: float | None = None
     high_watermark_price: float | None = None
     armed_ts_ms: int | None = None
+    timeout_ts_ms: int | None = None
     state: str = "ACTIVE"
     last_eval_ts_ms: int = 0
     last_action_ts_ms: int = 0
@@ -41,6 +42,8 @@ class RiskPlan:
     replace_attempt: int = 0
     created_ts: int = 0
     updated_ts: int = 0
+    plan_source: str | None = None
+    source_intent_id: str | None = None
 
     def resolve_tp_price(self) -> float | None:
         if not self.tp_enabled:

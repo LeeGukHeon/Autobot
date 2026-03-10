@@ -393,6 +393,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                             threshold=float(min_prob_used),
                             settings=self._settings.position,
                         ) * float(operational_risk_multiplier),
+                        "model_exit_plan": build_model_alpha_exit_plan_payload(
+                            settings=self._settings,
+                            row=row,
+                            interval_ms=self._interval_ms,
+                            observed_entry_fee_rate=0.0,
+                        ),
                         "operational_overlay": dict(operational_state),
                     },
                 )
@@ -842,6 +848,42 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def build_model_alpha_exit_plan_payload(
+    *,
+    settings: ModelAlphaSettings,
+    row: dict[str, Any] | None,
+    interval_ms: int,
+    observed_entry_fee_rate: float = 0.0,
+) -> dict[str, Any]:
+    mode = str(settings.exit.mode).strip().lower() or "hold"
+    hold_bars = max(int(settings.exit.hold_bars), 0)
+    timeout_delta_ms = hold_bars * max(int(interval_ms), 1) if hold_bars > 0 else 0
+    tp_pct, sl_pct, trailing_pct = _resolve_runtime_risk_exit_thresholds(
+        settings=settings,
+        row=row,
+    )
+    exit_fee_rate, exit_slippage_bps = _resolve_expected_exit_costs(
+        settings=settings,
+        observed_entry_fee_rate=max(float(observed_entry_fee_rate), 0.0),
+    )
+    return {
+        "source": "model_alpha_v1",
+        "version": 1,
+        "mode": mode,
+        "hold_bars": hold_bars,
+        "interval_ms": max(int(interval_ms), 1),
+        "timeout_delta_ms": int(timeout_delta_ms),
+        "tp_pct": float(tp_pct) if mode == "risk" and float(tp_pct) > 0.0 else 0.0,
+        "sl_pct": float(sl_pct) if mode == "risk" and float(sl_pct) > 0.0 else 0.0,
+        "trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
+        "expected_exit_fee_rate": float(exit_fee_rate),
+        "expected_exit_slippage_bps": float(exit_slippage_bps),
+        "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
+        "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
+        "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
+    }
 
 
 def _resolve_runtime_risk_exit_thresholds(

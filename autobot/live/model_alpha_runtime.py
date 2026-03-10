@@ -70,6 +70,7 @@ from .daemon import (
     _runtime_model_binding_after_resume,
 )
 from .identifier import new_order_identifier
+from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
 from .reconcile import resume_risk_plans_after_reconcile
 from .risk_loop import apply_ticker_event
 from .small_account import (
@@ -573,8 +574,9 @@ def _bootstrap_strategy_positions(
     ts_ms: int,
 ) -> None:
     for market, payload in known_positions.items():
-        _strategy_bid_fill(strategy=strategy, market=market, position=payload, ts_ms=ts_ms)
-        _ensure_default_risk_plan(store=store, risk_manager=risk_manager, market=market, position=payload, ts_ms=ts_ms)
+        entry_ts_ms = _resolve_strategy_entry_ts_ms(store=store, market=market, position=payload, default_ts_ms=ts_ms)
+        _strategy_bid_fill(strategy=strategy, market=market, position=payload, ts_ms=entry_ts_ms)
+        _ensure_live_risk_plan(store=store, risk_manager=risk_manager, market=market, position=payload, ts_ms=ts_ms)
 
 
 def _apply_position_sync_to_strategy(
@@ -592,8 +594,9 @@ def _apply_position_sync_to_strategy(
 
     for market in sorted(current_markets - previous_markets):
         payload = current_positions[market]
-        _strategy_bid_fill(strategy=strategy, market=market, position=payload, ts_ms=ts_ms)
-        _ensure_default_risk_plan(store=store, risk_manager=risk_manager, market=market, position=payload, ts_ms=ts_ms)
+        entry_ts_ms = _resolve_strategy_entry_ts_ms(store=store, market=market, position=payload, default_ts_ms=ts_ms)
+        _strategy_bid_fill(strategy=strategy, market=market, position=payload, ts_ms=entry_ts_ms)
+        _ensure_live_risk_plan(store=store, risk_manager=risk_manager, market=market, position=payload, ts_ms=ts_ms)
 
     for market in sorted(previous_markets - current_markets):
         previous = previous_positions[market]
@@ -604,7 +607,7 @@ def _apply_position_sync_to_strategy(
         _close_market_risk_plans(store=store, market=market, ts_ms=ts_ms)
 
     for market in sorted(current_markets & previous_markets):
-        _ensure_default_risk_plan(
+        _ensure_live_risk_plan(
             store=store,
             risk_manager=risk_manager,
             market=market,
@@ -654,7 +657,24 @@ def _strategy_ask_fill(
     )
 
 
-def _ensure_default_risk_plan(
+def _resolve_strategy_entry_ts_ms(
+    *,
+    store: LiveStateStore,
+    market: str,
+    position: dict[str, Any],
+    default_ts_ms: int,
+) -> int:
+    live_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING", "CLOSED"))
+    created_candidates = [int(item.get("created_ts") or 0) for item in live_plans if int(item.get("created_ts") or 0) > 0]
+    if created_candidates:
+        return min(created_candidates)
+    updated_ts = _safe_int(position.get("updated_ts"), default=0)
+    if updated_ts > 0:
+        return updated_ts
+    return int(default_ts_ms)
+
+
+def _ensure_live_risk_plan(
     *,
     store: LiveStateStore,
     risk_manager: LiveRiskManager | None,
@@ -670,6 +690,20 @@ def _ensure_default_risk_plan(
     if qty <= 0 or entry_price <= 0:
         return
     if not live_plans:
+        entry_intent = _find_latest_model_entry_intent(store=store, market=market)
+        if entry_intent is not None:
+            _, risk_plan_record = build_model_derived_risk_records(
+                market=market,
+                base_currency=str(market).split("-")[-1],
+                base_amount=qty,
+                avg_entry_price=entry_price,
+                plan_payload=entry_intent["plan_payload"],
+                created_ts=int(entry_intent["created_ts"]),
+                updated_ts=int(ts_ms),
+                intent_id=entry_intent["intent_id"],
+            )
+            store.upsert_risk_plan(risk_plan_record)
+            return
         risk_manager.attach_default_risk(
             market=market,
             entry_price=entry_price,
@@ -701,6 +735,7 @@ def _ensure_default_risk_plan(
                 trail_pct=_safe_optional_float(plan.get("trail_pct")),
                 high_watermark_price_str=_as_optional_str(plan.get("high_watermark_price_str")),
                 armed_ts_ms=_safe_optional_int(plan.get("armed_ts_ms")),
+                timeout_ts_ms=_safe_optional_int(plan.get("timeout_ts_ms")),
                 state=str(plan.get("state", "ACTIVE") or "ACTIVE"),
                 last_eval_ts_ms=int(plan.get("last_eval_ts_ms", 0) or 0),
                 last_action_ts_ms=int(plan.get("last_action_ts_ms", 0) or 0),
@@ -709,6 +744,8 @@ def _ensure_default_risk_plan(
                 replace_attempt=int(plan.get("replace_attempt", 0) or 0),
                 created_ts=int(plan.get("created_ts", ts_ms) or ts_ms),
                 updated_ts=int(ts_ms),
+                plan_source=_as_optional_str(plan.get("plan_source")),
+                source_intent_id=_as_optional_str(plan.get("source_intent_id")),
             )
         )
 
@@ -734,6 +771,7 @@ def _close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) 
                 trail_pct=_safe_optional_float(plan.get("trail_pct")),
                 high_watermark_price_str=_as_optional_str(plan.get("high_watermark_price_str")),
                 armed_ts_ms=_safe_optional_int(plan.get("armed_ts_ms")),
+                timeout_ts_ms=_safe_optional_int(plan.get("timeout_ts_ms")),
                 state="CLOSED",
                 last_eval_ts_ms=int(plan.get("last_eval_ts_ms", 0) or 0),
                 last_action_ts_ms=int(ts_ms),
@@ -742,8 +780,40 @@ def _close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) 
                 replace_attempt=int(plan.get("replace_attempt", 0) or 0),
                 created_ts=int(plan.get("created_ts", ts_ms) or ts_ms),
                 updated_ts=int(ts_ms),
+                plan_source=_as_optional_str(plan.get("plan_source")),
+                source_intent_id=_as_optional_str(plan.get("source_intent_id")),
             )
         )
+
+
+def _find_latest_model_entry_intent(
+    *,
+    store: LiveStateStore,
+    market: str,
+) -> dict[str, Any] | None:
+    market_value = str(market).strip().upper()
+    for item in store.list_intents():
+        if str(item.get("market", "")).strip().upper() != market_value:
+            continue
+        if str(item.get("side", "")).strip().lower() != "bid":
+            continue
+        if str(item.get("status", "")).strip().upper() != "SUBMITTED":
+            continue
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            continue
+        submit_result = meta.get("submit_result")
+        if not isinstance(submit_result, dict) or not bool(submit_result.get("accepted")):
+            continue
+        plan_payload = extract_model_exit_plan(meta)
+        if plan_payload is None:
+            continue
+        return {
+            "intent_id": str(item.get("intent_id")),
+            "created_ts": int(item.get("ts_ms") or 0),
+            "plan_payload": plan_payload,
+        }
+    return None
 
 
 @dataclass(frozen=True)
@@ -1599,3 +1669,10 @@ def _safe_optional_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_int(value: object, *, default: int) -> int:
+    resolved = _safe_optional_int(value)
+    if resolved is None:
+        return int(default)
+    return int(resolved)

@@ -13,6 +13,7 @@ import time
 from .identifier import is_bot_identifier
 from .admissibility import extract_min_total
 from .order_state import is_open_local_state, normalize_order_state
+from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
@@ -153,6 +154,12 @@ def reconcile_exchange_snapshot(
 
     exchange_positions = _extract_exchange_positions(accounts_payload, quote_currency=quote_currency, ts_ms=now_ts)
     local_positions = {item["market"]: item for item in store.list_positions()}
+    intents_by_id = {str(item.get("intent_id")): item for item in store.list_intents() if str(item.get("intent_id") or "").strip()}
+    bid_orders_by_market = _latest_bot_bid_orders_by_market(
+        store=store,
+        bot_id=bot_id,
+        identifier_prefix=identifier_prefix,
+    )
     unknown_position_markets = sorted(set(exchange_positions) - set(local_positions))
     local_positions_missing_on_exchange = sorted(set(local_positions) - set(exchange_positions))
     ignored_dust_positions: list[dict[str, Any]] = []
@@ -160,6 +167,29 @@ def reconcile_exchange_snapshot(
 
     for market in unknown_position_markets:
         position = exchange_positions[market]
+        matched_import = _match_model_managed_position_import(
+            market=market,
+            position=position,
+            latest_bid_order=bid_orders_by_market.get(market),
+            intents_by_id=intents_by_id,
+            ts_ms=now_ts,
+        )
+        if matched_import is not None:
+            if not dry_run:
+                store.upsert_position(matched_import["position_record"])
+                store.upsert_risk_plan(matched_import["risk_plan_record"])
+                order_uuid = matched_import.get("order_uuid")
+                if isinstance(order_uuid, str) and order_uuid.strip():
+                    store.mark_order_state(uuid=order_uuid, state="done", updated_ts=now_ts)
+            actions.append(
+                {
+                    "type": "import_managed_position_from_bot_intent",
+                    "market": market,
+                    "intent_id": matched_import["intent_id"],
+                    "plan_id": matched_import["risk_plan_record"].plan_id,
+                }
+            )
+            continue
         dust_detail = _build_ignored_dust_position_detail(
             position=position,
             fetch_market_chance=fetch_market_chance,
@@ -583,6 +613,73 @@ def _extract_exchange_positions(accounts_payload: Any, *, quote_currency: str, t
             "updated_ts": ts_ms,
         }
     return positions
+
+
+def _latest_bot_bid_orders_by_market(
+    *,
+    store: LiveStateStore,
+    bot_id: str,
+    identifier_prefix: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in store.list_orders(open_only=False):
+        market = str(item.get("market", "")).strip().upper()
+        side = str(item.get("side", "")).strip().lower()
+        identifier = _as_optional_str(item.get("identifier"))
+        if not market or side != "bid":
+            continue
+        if not is_bot_identifier(identifier, prefix=identifier_prefix, bot_id=bot_id):
+            continue
+        existing = result.get(market)
+        if existing is None or int(item.get("updated_ts") or 0) > int(existing.get("updated_ts") or 0):
+            result[market] = item
+    return result
+
+
+def _match_model_managed_position_import(
+    *,
+    market: str,
+    position: dict[str, Any],
+    latest_bid_order: dict[str, Any] | None,
+    intents_by_id: dict[str, dict[str, Any]],
+    ts_ms: int,
+) -> dict[str, Any] | None:
+    if latest_bid_order is None:
+        return None
+    intent_id = _as_optional_str(latest_bid_order.get("intent_id"))
+    if intent_id is None:
+        return None
+    intent = intents_by_id.get(intent_id)
+    if intent is None:
+        return None
+    meta = intent.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    submit_result = meta.get("submit_result")
+    if not isinstance(submit_result, dict) or not bool(submit_result.get("accepted")):
+        return None
+    plan_payload = extract_model_exit_plan(meta)
+    if plan_payload is None:
+        return None
+    created_ts = max(int(intent.get("ts_ms") or 0), 0) or int(ts_ms)
+    position_record, risk_plan_record = build_model_derived_risk_records(
+        market=market,
+        base_currency=str(position.get("base_currency", "")).strip().upper(),
+        base_amount=float(position.get("base_amount") or 0.0),
+        avg_entry_price=float(position.get("avg_entry_price") or 0.0),
+        plan_payload=plan_payload,
+        created_ts=created_ts,
+        updated_ts=int(ts_ms),
+        intent_id=intent_id,
+    )
+    if position_record.base_amount <= 0 or position_record.avg_entry_price <= 0:
+        return None
+    return {
+        "intent_id": intent_id,
+        "order_uuid": _as_optional_str(latest_bid_order.get("uuid")),
+        "position_record": position_record,
+        "risk_plan_record": risk_plan_record,
+    }
 
 
 def _build_ignored_dust_position_detail(

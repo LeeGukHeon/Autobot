@@ -81,3 +81,37 @@
 - Promote / restart causes live to rebind to the new champion run id and continue safely.
 - The same model, feature contract, and strategy logic are shared by paper and live.
 
+## Observed Canary Findings
+### 2026-03-10 candidate canary
+- Candidate live canary was pinned directly to run id `20260310T011523Z-s42-fc53106c`.
+- A real entry order was accepted for `KRW-KITE` at `442.0` KRW with requested quantity about `13.56787669`.
+- Exchange account state later showed:
+  - `KRW` balance reduced to about `8761.89521164`
+  - `KITE` balance `13.56787669`
+  - `avg_buy_price = 442`
+- This confirms that the candidate canary produced at least one real fill.
+
+### Gap exposed by that fill
+- Local candidate live state DB still had:
+  - `positions = 0`
+  - `risk_plans = 0`
+  - accepted entry intent and submitted order records only
+- Reconcile then observed:
+  - `exchange_positions = 3`
+  - `ignored_dust_positions = 2`
+  - `unknown_positions = 1`
+- The runtime armed `FULL_KILL_SWITCH` with reason `UNKNOWN_POSITIONS_DETECTED` and exited.
+
+### Implication
+- Entry signal generation, canary order submission, and exchange execution are now proven to work.
+- The remaining live-runtime gap is not entry generation.
+- The remaining gap is `entry fill -> local position import -> risk plan attach -> restart-safe continuity`.
+- Until that convergence is closed, live canary can buy successfully but still self-halt after the exchange-side position appears without a matching local position/risk plan.
+
+### Required follow-up
+- Import exchange-confirmed entry fills into local position state deterministically.
+- Attach the default/model-derived risk plan immediately after first confirmed fill.
+- Ensure restart/reconcile can convert a bot-owned filled entry into:
+  - one local position
+  - one active risk plan
+  - no `UNKNOWN_POSITIONS_DETECTED` breaker

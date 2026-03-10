@@ -96,6 +96,7 @@ class RiskPlanRecord:
     trail_pct: float | None = None
     high_watermark_price_str: str | None = None
     armed_ts_ms: int | None = None
+    timeout_ts_ms: int | None = None
     state: str = "ACTIVE"
     last_eval_ts_ms: int = 0
     last_action_ts_ms: int = 0
@@ -104,6 +105,8 @@ class RiskPlanRecord:
     replace_attempt: int = 0
     created_ts: int = 0
     updated_ts: int = 0
+    plan_source: str | None = None
+    source_intent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -447,12 +450,12 @@ class LiveStateStore:
                     plan_id, market, side, entry_price_str, qty_str,
                     tp_enabled, tp_price_str, tp_pct,
                     sl_enabled, sl_price_str, sl_pct,
-                    trailing_enabled, trail_pct, high_watermark_price_str, armed_ts_ms,
+                    trailing_enabled, trail_pct, high_watermark_price_str, armed_ts_ms, timeout_ts_ms,
                     state, last_eval_ts_ms, last_action_ts_ms,
                     current_exit_order_uuid, current_exit_order_identifier, replace_attempt,
-                    created_ts, updated_ts
+                    created_ts, updated_ts, plan_source, source_intent_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(plan_id) DO UPDATE SET
                     market=excluded.market,
                     side=excluded.side,
@@ -468,6 +471,7 @@ class LiveStateStore:
                     trail_pct=excluded.trail_pct,
                     high_watermark_price_str=excluded.high_watermark_price_str,
                     armed_ts_ms=excluded.armed_ts_ms,
+                    timeout_ts_ms=excluded.timeout_ts_ms,
                     state=excluded.state,
                     last_eval_ts_ms=excluded.last_eval_ts_ms,
                     last_action_ts_ms=excluded.last_action_ts_ms,
@@ -475,7 +479,9 @@ class LiveStateStore:
                     current_exit_order_identifier=excluded.current_exit_order_identifier,
                     replace_attempt=excluded.replace_attempt,
                     created_ts=excluded.created_ts,
-                    updated_ts=excluded.updated_ts
+                    updated_ts=excluded.updated_ts,
+                    plan_source=excluded.plan_source,
+                    source_intent_id=excluded.source_intent_id
                 """,
                 (
                     record.plan_id,
@@ -493,6 +499,7 @@ class LiveStateStore:
                     record.trail_pct,
                     record.high_watermark_price_str,
                     record.armed_ts_ms,
+                    record.timeout_ts_ms,
                     record.state,
                     int(record.last_eval_ts_ms),
                     int(record.last_action_ts_ms),
@@ -501,6 +508,8 @@ class LiveStateStore:
                     int(record.replace_attempt),
                     int(record.created_ts),
                     int(record.updated_ts),
+                    record.plan_source,
+                    record.source_intent_id,
                 ),
             )
 
@@ -810,6 +819,7 @@ class LiveStateStore:
                     trail_pct REAL,
                     high_watermark_price_str TEXT,
                     armed_ts_ms INTEGER,
+                    timeout_ts_ms INTEGER,
                     state TEXT NOT NULL DEFAULT 'ACTIVE',
                     last_eval_ts_ms INTEGER NOT NULL DEFAULT 0,
                     last_action_ts_ms INTEGER NOT NULL DEFAULT 0,
@@ -817,7 +827,9 @@ class LiveStateStore:
                     current_exit_order_identifier TEXT,
                     replace_attempt INTEGER NOT NULL DEFAULT 0,
                     created_ts INTEGER NOT NULL,
-                    updated_ts INTEGER NOT NULL
+                    updated_ts INTEGER NOT NULL,
+                    plan_source TEXT,
+                    source_intent_id TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_risk_plans_market_state ON risk_plans (market, state);
@@ -877,6 +889,9 @@ class LiveStateStore:
         self._ensure_column("orders", "root_order_uuid", "TEXT")
         self._ensure_column("orders", "prev_order_uuid", "TEXT")
         self._ensure_column("orders", "prev_order_identifier", "TEXT")
+        self._ensure_column("risk_plans", "timeout_ts_ms", "INTEGER")
+        self._ensure_column("risk_plans", "plan_source", "TEXT")
+        self._ensure_column("risk_plans", "source_intent_id", "TEXT")
         with self._conn:
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state)")
@@ -987,6 +1002,7 @@ def _row_to_risk_plan(row: sqlite3.Row) -> dict[str, Any]:
             "high_watermark_price_str": row["high_watermark_price_str"],
             "armed_ts_ms": int(row["armed_ts_ms"]) if row["armed_ts_ms"] is not None else None,
         },
+        "timeout_ts_ms": int(row["timeout_ts_ms"]) if row["timeout_ts_ms"] is not None else None,
         "state": row["state"],
         "last_eval_ts_ms": int(row["last_eval_ts_ms"]),
         "last_action_ts_ms": int(row["last_action_ts_ms"]),
@@ -995,6 +1011,8 @@ def _row_to_risk_plan(row: sqlite3.Row) -> dict[str, Any]:
         "replace_attempt": int(row["replace_attempt"]),
         "created_ts": int(row["created_ts"]),
         "updated_ts": int(row["updated_ts"]),
+        "plan_source": row["plan_source"],
+        "source_intent_id": row["source_intent_id"],
     }
 
 
