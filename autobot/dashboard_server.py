@@ -426,6 +426,22 @@ def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
         positions = _query_all(conn, "SELECT * FROM positions ORDER BY market") if "positions" in tables else []
         risk_plans = _query_all(conn, "SELECT * FROM risk_plans ORDER BY updated_ts DESC LIMIT 12") if "risk_plans" in tables else []
         breaker_states = _query_all(conn, "SELECT * FROM breaker_states ORDER BY updated_ts DESC") if "breaker_states" in tables else []
+        source_intent_lookup: dict[str, dict[str, Any]] = {}
+        if "intents" in tables and risk_plans:
+            source_ids = [str(row.get("source_intent_id") or "").strip() for row in risk_plans]
+            source_ids = [value for value in source_ids if value]
+            if source_ids:
+                placeholders = ", ".join("?" for _ in source_ids)
+                source_rows = _query_all(
+                    conn,
+                    f"SELECT intent_id, ts_ms FROM intents WHERE intent_id IN ({placeholders})",
+                    tuple(source_ids),
+                )
+                source_intent_lookup = {
+                    str(row.get("intent_id")): row
+                    for row in source_rows
+                    if row.get("intent_id")
+                }
         checkpoints: dict[str, Any] = {}
         if "checkpoints" in tables:
             for name in ("live_runtime_health", "live_rollout_status", "live_rollout_contract", "last_resume"):
@@ -445,6 +461,23 @@ def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
                 open_order_rows.append(row)
         active_risk_plans = [row for row in risk_plans if str(row.get("state") or "").upper() in {"ACTIVE", "TRIGGERED", "EXITING"}]
         active_breakers = [row for row in breaker_states if bool(row.get("active"))]
+        now_ts_ms = int(time.time() * 1000)
+        active_risk_plan_payloads: list[dict[str, Any]] = []
+        for row in active_risk_plans[:8]:
+            payload = _summarize_live_risk_plan(row)
+            source_intent = source_intent_lookup.get(str(payload.get("source_intent_id") or ""))
+            source_ts_ms = _coerce_int((source_intent or {}).get("ts_ms"))
+            timeout_ts_ms = _coerce_int(payload.get("timeout_ts_ms"))
+            if source_ts_ms is not None:
+                payload["source_intent_ts_ms"] = source_ts_ms
+            if source_ts_ms is not None and timeout_ts_ms is not None and timeout_ts_ms >= source_ts_ms:
+                total_min = max(0, int(round((timeout_ts_ms - source_ts_ms) / 60000)))
+                elapsed_min = max(0, int(round((now_ts_ms - source_ts_ms) / 60000)))
+                remaining_min = max(0, int(round((timeout_ts_ms - now_ts_ms) / 60000)))
+                payload["hold_total_minutes"] = total_min
+                payload["hold_elapsed_minutes"] = elapsed_min
+                payload["hold_remaining_minutes"] = remaining_min
+            active_risk_plan_payloads.append(payload)
         return {
             "label": label,
             "db_path": str(db_path),
@@ -457,7 +490,7 @@ def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
             "positions": [_summarize_live_position(row) for row in positions[:8]],
             "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
             "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
-            "active_risk_plans": [_summarize_live_risk_plan(row) for row in active_risk_plans[:8]],
+            "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {
                     **row,
