@@ -180,8 +180,57 @@ def reconcile_exchange_snapshot(
     ignored_dust_positions: list[dict[str, Any]] = []
     retained_unknown_markets: list[str] = []
 
+    for market in sorted(set(exchange_positions) & set(local_positions)):
+        position = exchange_positions[market]
+        local_position = local_positions[market]
+        dust_detail = _build_ignored_dust_position_detail(
+            position=position,
+            fetch_market_chance=fetch_market_chance,
+        )
+        if dust_detail is None:
+            continue
+        ignored_dust_positions.append(dust_detail)
+        if not dry_run:
+            store.delete_position(market=market)
+            for row in store.list_risk_plans(market=market):
+                store.upsert_risk_plan(
+                    _risk_plan_record_from_row(
+                        row,
+                        state="CLOSED",
+                        current_exit_order_uuid=_as_optional_str(row.get("current_exit_order_uuid")),
+                        current_exit_order_identifier=_as_optional_str(row.get("current_exit_order_identifier")),
+                        updated_ts=now_ts,
+                        last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
+                    )
+                )
+        actions.append(
+            {
+                "type": "drop_managed_dust_position",
+                "market": market,
+                "reference_notional_quote": dust_detail["reference_notional_quote"],
+                "min_total_quote": dust_detail["min_total_quote"],
+            }
+        )
+        del local_positions[market]
+        del exchange_positions[market]
+
     for market in unknown_position_markets:
         position = exchange_positions[market]
+        dust_detail = _build_ignored_dust_position_detail(
+            position=position,
+            fetch_market_chance=fetch_market_chance,
+        )
+        if dust_detail is not None:
+            ignored_dust_positions.append(dust_detail)
+            actions.append(
+                {
+                    "type": "ignore_unknown_dust_position",
+                    "market": market,
+                    "reference_notional_quote": dust_detail["reference_notional_quote"],
+                    "min_total_quote": dust_detail["min_total_quote"],
+                }
+            )
+            continue
         matched_import = _match_model_managed_position_import(
             market=market,
             position=position,
@@ -202,21 +251,6 @@ def reconcile_exchange_snapshot(
                     "market": market,
                     "intent_id": matched_import["intent_id"],
                     "plan_id": matched_import["risk_plan_record"].plan_id,
-                }
-            )
-            continue
-        dust_detail = _build_ignored_dust_position_detail(
-            position=position,
-            fetch_market_chance=fetch_market_chance,
-        )
-        if dust_detail is not None:
-            ignored_dust_positions.append(dust_detail)
-            actions.append(
-                {
-                    "type": "ignore_unknown_dust_position",
-                    "market": market,
-                    "reference_notional_quote": dust_detail["reference_notional_quote"],
-                    "min_total_quote": dust_detail["min_total_quote"],
                 }
             )
             continue
