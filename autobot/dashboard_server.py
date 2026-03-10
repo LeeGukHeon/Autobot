@@ -397,6 +397,90 @@ def _resolve_live_db_candidates(project_root: Path) -> list[tuple[str, Path]]:
     return candidates
 
 
+def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "recommended_exit_mode": _dig(payload, "exit", "mode"),
+        "recommended_hold_bars": _dig(payload, "exit", "recommended_hold_bars"),
+        "tp_pct": _dig(payload, "exit", "tp_pct"),
+        "sl_pct": _dig(payload, "exit", "sl_pct"),
+        "trailing_pct": _dig(payload, "exit", "trailing_pct"),
+        "risk_multiplier": _dig(payload, "risk", "risk_multiplier"),
+        "recommendation_source": _dig(payload, "exit", "recommendation_source"),
+    }
+
+
+def _summarize_selection_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": payload.get("mode"),
+        "threshold_key": payload.get("threshold_key"),
+        "rank_quantile": payload.get("rank_quantile"),
+        "top_k": payload.get("top_k"),
+        "min_names": payload.get("min_names"),
+        "max_names": payload.get("max_names"),
+        "fallback_mode": payload.get("fallback_mode"),
+        "calibration_enabled": payload.get("calibration_enabled"),
+    }
+
+
+def _summarize_selection_calibration(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "method": payload.get("method"),
+        "enabled": payload.get("enabled"),
+        "sample_count": payload.get("sample_count"),
+        "fold_count": payload.get("fold_count"),
+        "score_range": payload.get("score_range"),
+    }
+
+
+def _summarize_search_budget(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "decision_mode": payload.get("decision_mode"),
+        "project_used_gb": payload.get("project_used_gb"),
+        "filesystem_used_gb": payload.get("filesystem_used_gb"),
+        "booster_sweep_trials": payload.get("booster_sweep_trials"),
+        "runtime_grid_mode": payload.get("runtime_grid_mode"),
+        "reasons": payload.get("reasons"),
+    }
+
+
+def _summarize_factor_block_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    accepted = payload.get("accepted_blocks") if isinstance(payload.get("accepted_blocks"), list) else []
+    rejected = payload.get("rejected_blocks") if isinstance(payload.get("rejected_blocks"), list) else []
+    return {
+        "mode": payload.get("mode"),
+        "accepted_blocks": accepted[:8],
+        "rejected_blocks": rejected[:8],
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "reason_codes": payload.get("reason_codes"),
+    }
+
+
+def _summarize_cpcv_lite(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "requested": payload.get("requested"),
+        "executed": payload.get("executed"),
+        "decision": payload.get("decision"),
+        "fold_count": payload.get("fold_count"),
+        "pbo": payload.get("pbo"),
+        "dsr": payload.get("dsr"),
+        "reason": payload.get("reason"),
+    }
+
+
+def _summarize_walk_forward(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "windows_run": payload.get("windows_run"),
+        "selection_search_trial_count": payload.get("selection_search_trial_count"),
+        "white_rc_comparable": payload.get("white_rc_comparable"),
+        "white_rc_decision": payload.get("white_rc_decision"),
+        "hansen_spa_comparable": payload.get("hansen_spa_comparable"),
+        "hansen_spa_decision": payload.get("hansen_spa_decision"),
+        "balanced_pareto_decision": _dig(payload, "promotion_decision", "balanced_pareto", "decision"),
+        "execution_pareto_decision": _dig(payload, "promotion_decision", "execution_balanced_pareto", "decision"),
+    }
+
+
 def _collect_recent_model_artifacts(project_root: Path, candidate_run_dir: str | None) -> dict[str, Any]:
     if not candidate_run_dir:
         return {}
@@ -416,7 +500,23 @@ def _collect_recent_model_artifacts(project_root: Path, candidate_run_dir: str |
     }
     payload: dict[str, Any] = {"run_dir": str(run_dir), "exists": True}
     for key, path in files.items():
-        payload[key] = _load_json(path)
+        raw_payload = _load_json(path)
+        if key == "runtime_recommendations":
+            payload[key] = _summarize_runtime_recommendations(raw_payload)
+        elif key == "selection_policy":
+            payload[key] = _summarize_selection_policy(raw_payload)
+        elif key == "selection_calibration":
+            payload[key] = _summarize_selection_calibration(raw_payload)
+        elif key == "search_budget_decision":
+            payload[key] = _summarize_search_budget(raw_payload)
+        elif key == "factor_block_selection":
+            payload[key] = _summarize_factor_block_selection(raw_payload)
+        elif key == "cpcv_lite_report":
+            payload[key] = _summarize_cpcv_lite(raw_payload)
+        elif key == "walk_forward_report":
+            payload[key] = _summarize_walk_forward(raw_payload)
+        else:
+            payload[key] = raw_payload
         payload[f"{key}_path"] = str(path) if path.exists() else None
     return payload
 
