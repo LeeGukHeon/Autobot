@@ -32,6 +32,23 @@ def is_bot_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> bo
     return identifier_value.startswith(expected_prefix)
 
 
+def extract_intent_id_from_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> str | None:
+    if not is_bot_identifier(identifier, prefix=prefix, bot_id=bot_id):
+        return None
+    identifier_value = str(identifier).strip()
+    expected_prefix = f"{_normalize_token(prefix, upper=True)}-{_normalize_token(bot_id, upper=False)}-"
+    suffix = identifier_value[len(expected_prefix) :]
+    if not suffix:
+        return None
+    parts = suffix.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    intent_id, ts_ms, nonce = parts
+    if not intent_id or not ts_ms.isdigit() or not nonce:
+        return None
+    return intent_id
+
+
 def _normalize_token(raw: str, *, upper: bool) -> str:
     text = str(raw).strip()
     if not text:

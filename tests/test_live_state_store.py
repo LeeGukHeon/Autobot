@@ -161,6 +161,60 @@ def test_state_store_rejects_identifier_collision(tmp_path: Path) -> None:
             )
 
 
+def test_state_store_preserves_intent_id_when_exchange_refresh_omits_it(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="uuid-1",
+                identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=1000.0,
+                volume_req=1.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-1",
+                tp_sl_link="tp-sl-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                root_order_uuid="uuid-1",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="uuid-1",
+                identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=1000.0,
+                volume_req=1.0,
+                volume_filled=1.0,
+                state="done",
+                created_ts=1000,
+                updated_ts=2000,
+                intent_id=None,
+                tp_sl_link=None,
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="reconcile_snapshot",
+                root_order_uuid="uuid-1",
+            )
+        )
+        row = store.order_by_uuid(uuid="uuid-1")
+
+    assert row is not None
+    assert row["intent_id"] == "intent-1"
+    assert row["tp_sl_link"] == "tp-sl-1"
+
+
 def test_state_store_migrates_legacy_orders_schema_before_index_creation(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy_live_state.db"
     conn = sqlite3.connect(str(db_path))

@@ -379,6 +379,107 @@ def test_reconcile_imports_bot_owned_filled_entry_with_model_risk_plan(tmp_path:
     assert order["state"] == "done"
 
 
+def test_reconcile_imports_managed_position_after_order_detail_sync_preserves_intent(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        intent_meta = {
+            "model_exit_plan": {
+                "source": "model_alpha_v1",
+                "mode": "hold",
+                "hold_bars": 12,
+                "timeout_delta_ms": 900000,
+                "tp_pct": 0.02,
+                "sl_pct": 0.01,
+                "trailing_pct": 0.015,
+            },
+            "submit_result": {"accepted": True, "order_uuid": "entry-order-2"},
+        }
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-2",
+                ts_ms=1000,
+                market="KRW-FLOW",
+                side="bid",
+                price=88.1,
+                volume=64.59970922,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-2",
+                identifier="AUTOBOT-autobot-001-intent-entry-2-1000-a",
+                market="KRW-FLOW",
+                side="bid",
+                ord_type="limit",
+                price=88.1,
+                volume_req=64.59970922,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-entry-2",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                root_order_uuid="entry-order-2",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "FLOW",
+                    "balance": "64.59970922",
+                    "locked": "0",
+                    "avg_buy_price": "88.1",
+                }
+            ],
+            open_orders_payload=[],
+            fetch_order_detail=lambda uuid, identifier: {
+                "uuid": "entry-order-2",
+                "identifier": "AUTOBOT-autobot-001-intent-entry-2-1000-a",
+                "market": "KRW-FLOW",
+                "side": "bid",
+                "ord_type": "limit",
+                "price": "88.1",
+                "volume": "64.59970922",
+                "executed_volume": "64.59970922",
+                "state": "done",
+                "created_at": "2026-03-10T14:00:00+09:00",
+            },
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans()
+        order = store.order_by_uuid(uuid="entry-order-2")
+
+    assert report["halted"] is False
+    assert any(item["type"] == "sync_local_order_from_detail" for item in report["actions"])
+    assert any(item["type"] == "import_managed_position_from_bot_intent" for item in report["actions"])
+    assert len(positions) == 1
+    assert positions[0]["market"] == "KRW-FLOW"
+    assert positions[0]["managed"] is True
+    assert len(plans) == 1
+    assert plans[0]["market"] == "KRW-FLOW"
+    assert plans[0]["plan_source"] == "model_alpha_v1"
+    assert plans[0]["source_intent_id"] == "intent-entry-2"
+    assert plans[0]["tp"]["tp_pct"] == 2.0
+    assert plans[0]["sl"]["sl_pct"] == 1.0
+    assert order is not None
+    assert order["intent_id"] == "intent-entry-2"
+    assert order["state"] == "done"
+
+
 def test_reconcile_closes_local_position_when_bot_exit_is_done_and_exchange_position_missing(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

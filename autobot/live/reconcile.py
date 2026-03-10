@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 import time
 
-from .identifier import is_bot_identifier
+from .identifier import extract_intent_id_from_identifier, is_bot_identifier
 from .admissibility import extract_min_total
 from .order_state import is_open_local_state, normalize_order_state
 from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
@@ -137,6 +137,16 @@ def reconcile_exchange_snapshot(
 
         detail_record = _order_record_from_payload(detail_payload, ts_ms=now_ts) if isinstance(detail_payload, dict) else None
         if detail_record is not None:
+            recovered_intent_id = _as_optional_str(local_item.get("intent_id")) or extract_intent_id_from_identifier(
+                _as_optional_str(detail_record.identifier) or _as_optional_str(local_item.get("identifier")),
+                prefix=identifier_prefix,
+                bot_id=bot_id,
+            )
+            detail_record = replace(
+                detail_record,
+                intent_id=recovered_intent_id,
+                tp_sl_link=_as_optional_str(local_item.get("tp_sl_link")),
+            )
             if not dry_run:
                 store.upsert_order(detail_record)
             actions.append(
@@ -674,9 +684,16 @@ def _latest_bot_bid_orders_by_market(
             continue
         if not is_bot_identifier(identifier, prefix=identifier_prefix, bot_id=bot_id):
             continue
+        item_intent_id = _as_optional_str(item.get("intent_id")) or extract_intent_id_from_identifier(
+            identifier,
+            prefix=identifier_prefix,
+            bot_id=bot_id,
+        )
+        candidate = dict(item)
+        candidate["intent_id"] = item_intent_id
         existing = result.get(market)
-        if existing is None or int(item.get("updated_ts") or 0) > int(existing.get("updated_ts") or 0):
-            result[market] = item
+        if existing is None or int(candidate.get("updated_ts") or 0) > int(existing.get("updated_ts") or 0):
+            result[market] = candidate
     return result
 
 
