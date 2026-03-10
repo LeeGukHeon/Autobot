@@ -531,6 +531,14 @@ def resume_risk_plans_after_reconcile(
             matching_open_order = open_orders_by_uuid.get(current_exit_uuid)
         if matching_open_order is None and current_exit_identifier:
             matching_open_order = open_orders_by_identifier.get(current_exit_identifier)
+        if matching_open_order is None and position is not None and not current_exit_uuid and not current_exit_identifier:
+            market_open_asks = [
+                item
+                for item in open_orders
+                if str(item.get("market") or "") == market and str(item.get("side") or "").lower() == "ask"
+            ]
+            if len(market_open_asks) == 1:
+                matching_open_order = market_open_asks[0]
         ambiguous_market_orders = [
             item
             for item in open_orders

@@ -9,7 +9,12 @@ import time
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepResult
 from autobot.live.daemon import LiveDaemonSettings
-from autobot.live.model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
+from autobot.live.model_alpha_runtime import (
+    LiveModelAlphaRuntimeSettings,
+    _attach_exit_order_to_risk_plan,
+    _resolve_strategy_entry_ts_ms,
+    run_live_model_alpha_runtime,
+)
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
 from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager, RiskManagerConfig
@@ -952,3 +957,92 @@ def test_live_model_alpha_runtime_backfills_existing_active_plan_from_model_inte
     assert plan["tp"]["tp_pct"] == 2.0
     assert plan["sl"]["sl_pct"] == 1.0
     assert plan["trailing"]["trail_pct"] == 0.015
+
+
+def test_resolve_strategy_entry_ts_ms_ignores_closed_historical_plans(tmp_path: Path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-old-closed",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="1",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="CLOSED",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-new-active",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="1",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=10_000,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=10_000,
+                updated_ts=10_000,
+            )
+        )
+
+        resolved_ts = _resolve_strategy_entry_ts_ms(
+            store=store,
+            market="KRW-KITE",
+            position={"market": "KRW-KITE", "updated_ts": 20_000},
+            default_ts_ms=30_000,
+        )
+
+    assert resolved_ts == 10_000
+
+
+def test_attach_exit_order_to_risk_plan_marks_latest_plan_exiting(tmp_path: Path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-active",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.7",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=1_000,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=5_000,
+                updated_ts=5_000,
+                timeout_ts_ms=35_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite",
+            )
+        )
+
+        linked_plan_id = _attach_exit_order_to_risk_plan(
+            store=store,
+            market="KRW-KITE",
+            order_uuid="exit-uuid-1",
+            order_identifier="AUTOBOT-exit-1",
+            ts_ms=40_000,
+        )
+        plan = store.risk_plan_by_id(plan_id="plan-active")
+
+    assert linked_plan_id == "plan-active"
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "exit-uuid-1"
+    assert plan["current_exit_order_identifier"] == "AUTOBOT-exit-1"

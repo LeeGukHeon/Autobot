@@ -269,3 +269,68 @@ def test_resume_halts_on_ambiguous_market_exit(tmp_path: Path) -> None:
     assert report["halted"] is True
     assert report["counts"]["plans_halted_for_review"] == 1
     assert report["halted_plan_ids"] == ["plan-4"]
+
+
+def test_resume_adopts_single_market_exit_order_for_triggered_plan(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=12.77,
+                avg_entry_price=441.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-kite-1",
+                identifier="AUTOBOT-autobot-candidate-001-kite-exit",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=443.0,
+                volume_req=12.77,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1001,
+                intent_id="intent-kite-exit",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-kite-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-1",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.77",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="TRIGGERED",
+                last_eval_ts_ms=950,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=900,
+                updated_ts=960,
+                timeout_ts_ms=2700000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-entry",
+            )
+        )
+
+        report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
+        plan = store.risk_plan_by_id(plan_id="plan-kite-1")
+
+    assert report["halted"] is False
+    assert report["counts"]["plans_resumed_exiting"] == 1
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "exit-kite-1"

@@ -698,14 +698,69 @@ def _resolve_strategy_entry_ts_ms(
     position: dict[str, Any],
     default_ts_ms: int,
 ) -> int:
-    live_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING", "CLOSED"))
+    live_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
     created_candidates = [int(item.get("created_ts") or 0) for item in live_plans if int(item.get("created_ts") or 0) > 0]
     if created_candidates:
-        return min(created_candidates)
+        return max(created_candidates)
     updated_ts = _safe_int(position.get("updated_ts"), default=0)
     if updated_ts > 0:
         return updated_ts
     return int(default_ts_ms)
+
+
+def _attach_exit_order_to_risk_plan(
+    *,
+    store: LiveStateStore,
+    market: str,
+    order_uuid: str,
+    order_identifier: str,
+    ts_ms: int,
+) -> str | None:
+    live_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
+    if not live_plans:
+        return None
+    selected = max(
+        live_plans,
+        key=lambda item: (
+            int(item.get("created_ts") or 0),
+            int(item.get("updated_ts") or 0),
+            str(item.get("plan_id") or ""),
+        ),
+    )
+    plan_id = str(selected.get("plan_id") or "").strip()
+    if not plan_id:
+        return None
+    store.upsert_risk_plan(
+        RiskPlanRecord(
+            plan_id=plan_id,
+            market=str(selected.get("market", market) or market),
+            side=str(selected.get("side", "long") or "long"),
+            entry_price_str=str(selected.get("entry_price_str", "")),
+            qty_str=str(selected.get("qty_str", "")),
+            tp_enabled=bool(selected.get("tp_enabled")),
+            tp_price_str=_as_optional_str(selected.get("tp_price_str")),
+            tp_pct=_safe_optional_float(selected.get("tp_pct")),
+            sl_enabled=bool(selected.get("sl_enabled")),
+            sl_price_str=_as_optional_str(selected.get("sl_price_str")),
+            sl_pct=_safe_optional_float(selected.get("sl_pct")),
+            trailing_enabled=bool(selected.get("trailing_enabled")),
+            trail_pct=_safe_optional_float(selected.get("trail_pct")),
+            high_watermark_price_str=_as_optional_str(selected.get("high_watermark_price_str")),
+            armed_ts_ms=_safe_optional_int(selected.get("armed_ts_ms")),
+            timeout_ts_ms=_safe_optional_int(selected.get("timeout_ts_ms")),
+            state="EXITING",
+            last_eval_ts_ms=int(selected.get("last_eval_ts_ms", 0) or 0),
+            last_action_ts_ms=int(ts_ms),
+            current_exit_order_uuid=str(order_uuid).strip(),
+            current_exit_order_identifier=str(order_identifier).strip(),
+            replace_attempt=int(selected.get("replace_attempt", 0) or 0),
+            created_ts=int(selected.get("created_ts", ts_ms) or ts_ms),
+            updated_ts=int(ts_ms),
+            plan_source=_as_optional_str(selected.get("plan_source")),
+            source_intent_id=_as_optional_str(selected.get("source_intent_id")),
+        )
+    )
+    return plan_id
 
 
 def _ensure_live_risk_plan(
@@ -1159,6 +1214,15 @@ def _handle_strategy_intent(
         reset_counter(store, counter_name="nonce_error", source="live_model_alpha_submit_ok", ts_ms=ts_ms)
         reset_counter(store, counter_name="replace_reject", source="live_model_alpha_submit_ok", ts_ms=ts_ms)
         order_uuid = _as_optional_str(getattr(result, "upbit_uuid", None)) or f"pending-{intent.intent_id}"
+        linked_plan_id = None
+        if side == "ask":
+            linked_plan_id = _attach_exit_order_to_risk_plan(
+                store=store,
+                market=market,
+                order_uuid=order_uuid,
+                order_identifier=_as_optional_str(getattr(result, "identifier", None)) or identifier,
+                ts_ms=ts_ms,
+            )
         store.upsert_order(
             OrderRecord(
                 uuid=order_uuid,
@@ -1173,7 +1237,7 @@ def _handle_strategy_intent(
                 created_ts=ts_ms,
                 updated_ts=ts_ms,
                 intent_id=intent.intent_id,
-                tp_sl_link=None,
+                tp_sl_link=linked_plan_id,
                 local_state="OPEN",
                 raw_exchange_state="wait",
                 last_event_name="SUBMIT_ACCEPTED",
