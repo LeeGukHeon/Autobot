@@ -465,6 +465,7 @@ D:\MyApps\Autobot
   - T21.6: selector history and guarded auto-apply loop for stable automatic feature pruning
   - T21.7: comparable `White/Hansen` trial-panel repair so multiple-testing evidence can actually materialize
   - T21.8: shared paper/live rank-based selection policy artifact to replace brittle global raw-threshold dependence
+  - T21.9: shared paper/live OOS calibration artifact so runtime ranking uses auditable calibrated probabilities
 - T22: live ops readiness and restart-safe continuity for small-account real trading
   - T22.7: live model handoff and ws-public data-plane synchronization
   - T22.6: shadow/canary rollout and explicit promote-to-live hook

@@ -28,6 +28,7 @@ class RegistrySavePayload:
     model_card_text: str
     selection_recommendations: dict[str, Any] | None = None
     selection_policy: dict[str, Any] | None = None
+    selection_calibration: dict[str, Any] | None = None
     runtime_recommendations: dict[str, Any] | None = None
 
 
@@ -56,6 +57,8 @@ def save_run(payload: RegistrySavePayload) -> Path:
         _write_json(run_dir / "selection_recommendations.json", payload.selection_recommendations)
     if isinstance(payload.selection_policy, dict) and payload.selection_policy:
         _write_json(run_dir / "selection_policy.json", payload.selection_policy)
+    if isinstance(payload.selection_calibration, dict) and payload.selection_calibration:
+        _write_json(run_dir / "selection_calibration.json", payload.selection_calibration)
     if isinstance(payload.runtime_recommendations, dict) and payload.runtime_recommendations:
         _write_json(run_dir / "runtime_recommendations.json", payload.runtime_recommendations)
     (run_dir / "model_card.md").write_text(payload.model_card_text.rstrip() + "\n", encoding="utf-8")

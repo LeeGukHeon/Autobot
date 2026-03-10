@@ -10,6 +10,7 @@ import numpy as np
 
 from .dataset_loader import feature_columns_from_spec
 from .registry import load_json, load_model_bundle, resolve_run_dir
+from .selection_calibration import apply_selection_calibration, normalize_selection_calibration
 from .selection_policy import build_selection_policy_from_recommendations, normalize_selection_policy
 from .train_v1 import _predict_scores
 
@@ -26,6 +27,7 @@ class ModelPredictor:
     selection_recommendations: dict[str, Any]
     runtime_recommendations: dict[str, Any] = field(default_factory=dict)
     selection_policy: dict[str, Any] = field(default_factory=dict)
+    selection_calibration: dict[str, Any] = field(default_factory=dict)
 
     @property
     def dataset_root(self) -> Path | None:
@@ -36,6 +38,12 @@ class ModelPredictor:
 
     def predict_scores(self, x: np.ndarray) -> np.ndarray:
         return _predict_scores(self.model_bundle, x)
+
+    def predict_selection_scores(self, x: np.ndarray) -> np.ndarray:
+        return apply_selection_calibration(
+            self.predict_scores(x),
+            self.selection_calibration if isinstance(self.selection_calibration, dict) else {},
+        )
 
 
 def load_predictor_from_registry(
@@ -57,10 +65,15 @@ def load_predictor_from_registry(
         raise ValueError(f"unsupported model bundle type at {run_dir}: {type(model_bundle_raw)!r}")
     thresholds = load_json(run_dir / "thresholds.json")
     selection_recommendations = load_json(run_dir / "selection_recommendations.json")
+    selection_calibration = load_json(run_dir / "selection_calibration.json")
     if not selection_recommendations:
         raw_train_recommendations = train_config.get("selection_recommendations")
         if isinstance(raw_train_recommendations, dict):
             selection_recommendations = raw_train_recommendations
+    if not selection_calibration:
+        raw_train_calibration = train_config.get("selection_calibration")
+        if isinstance(raw_train_calibration, dict):
+            selection_calibration = raw_train_calibration
     runtime_recommendations = load_json(run_dir / "runtime_recommendations.json")
     if not runtime_recommendations:
         raw_runtime_recommendations = train_config.get("runtime_recommendations")
@@ -78,6 +91,8 @@ def load_predictor_from_registry(
         )
     if selection_policy:
         selection_policy = normalize_selection_policy(selection_policy, fallback_threshold_key="top_5pct")
+    if selection_calibration:
+        selection_calibration = normalize_selection_calibration(selection_calibration)
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -100,4 +115,5 @@ def load_predictor_from_registry(
         selection_recommendations=selection_recommendations if isinstance(selection_recommendations, dict) else {},
         runtime_recommendations=runtime_recommendations if isinstance(runtime_recommendations, dict) else {},
         selection_policy=selection_policy if isinstance(selection_policy, dict) else {},
+        selection_calibration=selection_calibration if isinstance(selection_calibration, dict) else {},
     )

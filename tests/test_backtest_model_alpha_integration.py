@@ -48,6 +48,7 @@ def _build_strategy(
     thresholds: dict[str, float] | None = None,
     selection_recommendations: dict[str, object] | None = None,
     selection_policy: dict[str, object] | None = None,
+    selection_calibration: dict[str, object] | None = None,
 ) -> ModelAlphaStrategyV1:
     predictor = ModelPredictor(
         run_dir=Path("."),
@@ -59,6 +60,7 @@ def _build_strategy(
         thresholds=thresholds or {},
         selection_recommendations=selection_recommendations or {},
         selection_policy=selection_policy or {},
+        selection_calibration=selection_calibration or {},
     )
     from autobot.models.dataset_loader import FeatureTsGroup
 
@@ -414,6 +416,51 @@ def test_model_alpha_manual_min_prob_keeps_raw_threshold_even_with_registry_poli
     assert result.eligible_rows == 2
     assert result.selected_rows == 2
 
+
+def test_model_alpha_rank_policy_uses_calibrated_probability_for_intent_metadata() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [2.0, 1.0, 0.1],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(
+                top_pct=1.0,
+                min_prob=None,
+                min_candidates_per_ts=1,
+                selection_policy_mode="auto",
+            ),
+        ),
+        selection_policy={
+            "mode": "rank_effective_quantile",
+            "selection_fraction": 0.34,
+            "min_candidates_per_ts": 1,
+            "threshold_key": "top_1pct",
+            "eligible_ratio": 0.01,
+            "recommended_top_pct": 1.0,
+        },
+        selection_calibration={
+            "mode": "isotonic_oos_v1",
+            "x_knots": [0.0, 1.0],
+            "y_knots": [0.0, 0.5],
+            "comparable": True,
+        },
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    assert bid_intent.market == "KRW-BTC"
+    assert float(bid_intent.prob or 0.0) < 0.5
+    assert float((bid_intent.meta or {}).get("model_prob_raw", 0.0)) > float(bid_intent.prob or 0.0)
 
 def test_model_alpha_min_candidates_can_block_all_entries() -> None:
     frame = pl.DataFrame(

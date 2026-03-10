@@ -238,10 +238,17 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 selection_policy_source=selection_policy_source,
             )
 
-        matrix = frame_active.select(list(self._predictor.feature_columns)).to_numpy().astype(np.float32, copy=False)
-        probs = self._predictor.predict_scores(matrix).astype(np.float64, copy=False)
-        scored = frame_active.with_columns(pl.Series(name="model_prob", values=probs))
         selection_mode = str(selection_policy.get("mode", "raw_threshold")).strip().lower()
+        matrix = frame_active.select(list(self._predictor.feature_columns)).to_numpy().astype(np.float32, copy=False)
+        raw_probs = self._predictor.predict_scores(matrix).astype(np.float64, copy=False)
+        if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
+            probs = self._predictor.predict_selection_scores(matrix).astype(np.float64, copy=False)
+        else:
+            probs = raw_probs
+        scored = frame_active.with_columns(
+            pl.Series(name="model_prob", values=probs),
+            pl.Series(name="model_prob_raw", values=raw_probs),
+        )
         if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
             eligible = scored
             eligible_rows = int(eligible.height)
@@ -371,6 +378,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     meta={
                         "strategy": "model_alpha_v1",
                         "model_prob": float(row.get("model_prob", 0.0)),
+                        "model_prob_raw": float(row.get("model_prob_raw", row.get("model_prob", 0.0))),
                         "selection_min_prob_used": float(min_prob_used),
                         "selection_min_prob_source": str(min_prob_source),
                         "selection_top_pct_used": float(top_pct_used),

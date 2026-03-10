@@ -72,6 +72,7 @@ from .research_acceptance import (
     summarize_walk_forward_windows,
 )
 from .selection_policy import build_selection_policy_from_recommendations
+from .selection_calibration import build_selection_calibration_from_oos_rows
 from .selection_optimizer import (
     SelectionGridConfig,
     build_selection_recommendations_from_walk_forward,
@@ -451,6 +452,9 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_recommendations=selection_recommendations,
         fallback_threshold_key="top_5pct",
     )
+    selection_calibration = build_selection_calibration_from_oos_rows(
+        oos_rows=walk_forward.pop("_selection_calibration_rows", []),
+    )
     walk_forward = _finalize_walk_forward_report(
         walk_forward=walk_forward,
         selection_recommendations=selection_recommendations,
@@ -527,6 +531,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         markets=dataset.selected_markets,
         selection_recommendations=selection_recommendations,
         selection_policy=selection_policy,
+        selection_calibration=selection_calibration,
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_summary=cpcv_lite.get("summary", {}),
         factor_block_selection_summary=factor_block_selection.get("summary", {}),
@@ -551,6 +556,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             model_card_text=model_card,
             selection_recommendations=selection_recommendations,
             selection_policy=selection_policy,
+            selection_calibration=selection_calibration,
         )
     )
     if normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
@@ -804,6 +810,7 @@ def _run_walk_forward_v4(
         "selected_threshold_key": "top_5pct",
         "selected_threshold_key_source": "manual_fallback",
         "_factor_block_window_rows": [],
+        "_selection_calibration_rows": [],
     }
     if not bool(options.walk_forward_enabled):
         report["skip_reason"] = "DISABLED"
@@ -934,6 +941,13 @@ def _run_walk_forward_v4(
                     config=SelectionGridConfig(),
                 ),
                 "trial_records": list(fitted.get("trial_records", [])),
+            }
+        )
+        report["_selection_calibration_rows"].append(
+            {
+                "window_index": int(info.window_index),
+                "scores": np.asarray(scores, dtype=np.float64).tolist(),
+                "y_cls": np.asarray(dataset.y_cls[test_mask], dtype=np.int64).tolist(),
             }
         )
         report["_factor_block_window_rows"].extend(
@@ -3043,6 +3057,7 @@ def _train_config_snapshot_v4(
     markets: tuple[str, ...],
     selection_recommendations: dict[str, Any],
     selection_policy: dict[str, Any],
+    selection_calibration: dict[str, Any],
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_summary: dict[str, Any],
     factor_block_selection_summary: dict[str, Any],
@@ -3091,6 +3106,7 @@ def _train_config_snapshot_v4(
     payload["search_budget"] = dict(search_budget_decision or {})
     payload["selection_recommendations"] = selection_recommendations
     payload["selection_policy"] = dict(selection_policy or {})
+    payload["selection_calibration"] = dict(selection_calibration or {})
     return payload
 
 

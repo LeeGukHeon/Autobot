@@ -163,6 +163,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert result.status == "candidate"
     selection_doc = load_json(result.run_dir / "selection_recommendations.json")
     selection_policy_doc = load_json(result.run_dir / "selection_policy.json")
+    selection_calibration_doc = load_json(result.run_dir / "selection_calibration.json")
     train_config_doc = load_json(result.run_dir / "train_config.yaml")
     assert "by_threshold_key" in selection_doc
     assert selection_doc["version"] == 2
@@ -170,7 +171,9 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert selection_doc["recommended_threshold_key"] == "top_5pct"
     assert selection_policy_doc["mode"] == "rank_effective_quantile"
     assert float(selection_policy_doc["selection_fraction"]) > 0.0
+    assert int(selection_calibration_doc["version"]) == 1
     assert train_config_doc["selection_policy"]["mode"] == "rank_effective_quantile"
+    assert int(train_config_doc["selection_calibration"]["version"]) == 1
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
