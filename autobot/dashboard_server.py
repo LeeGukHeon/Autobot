@@ -319,6 +319,98 @@ def _normalize_json_text(value: Any) -> Any:
         return value
 
 
+def _derive_live_exit_mode(plan: dict[str, Any]) -> str:
+    if bool(plan.get("tp_enabled")) or bool(plan.get("sl_enabled")) or bool(plan.get("trailing_enabled")):
+        return "risk"
+    if _coerce_int(plan.get("timeout_ts_ms")) is not None:
+        return "hold"
+    return "none"
+
+
+def _summarize_live_position(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "market": row.get("market"),
+        "base_amount": _coerce_float(row.get("base_amount")),
+        "avg_entry_price": _coerce_float(row.get("avg_entry_price")),
+        "managed": bool(row.get("managed", 1)),
+        "updated_ts": _coerce_int(row.get("updated_ts")),
+    }
+
+
+def _summarize_live_order(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "uuid": row.get("uuid"),
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "ord_type": row.get("ord_type"),
+        "price": _coerce_float(row.get("price")),
+        "volume_req": _coerce_float(row.get("volume_req")),
+        "volume_filled": _coerce_float(row.get("volume_filled")),
+        "local_state": row.get("local_state"),
+        "raw_exchange_state": row.get("raw_exchange_state"),
+        "intent_id": row.get("intent_id"),
+        "replace_seq": _coerce_int(row.get("replace_seq")),
+        "updated_ts": _coerce_int(row.get("updated_ts")),
+    }
+
+
+def _summarize_live_risk_plan(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "plan_id": row.get("plan_id"),
+        "market": row.get("market"),
+        "state": row.get("state"),
+        "plan_source": row.get("plan_source"),
+        "source_intent_id": row.get("source_intent_id"),
+        "entry_price": _coerce_float(row.get("entry_price_str")),
+        "qty": _coerce_float(row.get("qty_str")),
+        "tp_enabled": bool(row.get("tp_enabled")),
+        "tp_pct": _coerce_float(row.get("tp_pct")),
+        "sl_enabled": bool(row.get("sl_enabled")),
+        "sl_pct": _coerce_float(row.get("sl_pct")),
+        "trailing_enabled": bool(row.get("trailing_enabled")),
+        "trail_pct": _coerce_float(row.get("trail_pct")),
+        "timeout_ts_ms": _coerce_int(row.get("timeout_ts_ms")),
+        "current_exit_order_uuid": row.get("current_exit_order_uuid"),
+        "replace_attempt": _coerce_int(row.get("replace_attempt")),
+        "updated_ts": _coerce_int(row.get("updated_ts")),
+        "exit_mode": _derive_live_exit_mode(row),
+    }
+
+
+def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
+    meta = _normalize_json_text(row.get("meta_json"))
+    meta_dict = meta if isinstance(meta, dict) else {}
+    admissibility = _dig(meta_dict, "admissibility", "decision", default={}) or {}
+    sizing = _dig(meta_dict, "admissibility", "sizing", default={}) or {}
+    strategy_meta = _dig(meta_dict, "strategy", "meta", default={}) or {}
+    trade_gate = _dig(meta_dict, "trade_gate", default={}) or {}
+    requested_price = _coerce_float(row.get("price"))
+    requested_volume = _coerce_float(row.get("volume"))
+    inferred_notional = None
+    if requested_price is not None and requested_volume is not None:
+        inferred_notional = requested_price * requested_volume
+    return {
+        "intent_id": row.get("intent_id"),
+        "ts_ms": _coerce_int(row.get("ts_ms")),
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "price": requested_price,
+        "volume": requested_volume,
+        "notional_quote": _coerce_float(sizing.get("target_notional_quote"))
+        or _coerce_float(sizing.get("admissible_notional_quote"))
+        or inferred_notional,
+        "reason_code": row.get("reason_code"),
+        "status": row.get("status"),
+        "selection_policy_mode": strategy_meta.get("selection_policy_mode"),
+        "prob": _coerce_float(strategy_meta.get("model_prob")),
+        "skip_reason": meta_dict.get("skip_reason")
+        or trade_gate.get("reason_code")
+        or admissibility.get("reject_code"),
+        "estimated_total_cost_bps": _coerce_float(admissibility.get("estimated_total_cost_bps")),
+        "expected_net_edge_bps": _coerce_float(admissibility.get("expected_net_edge_bps")),
+    }
+
+
 def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
     if not db_path.exists():
         return {"label": label, "db_path": str(db_path), "exists": False}
@@ -361,10 +453,10 @@ def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
             "intents_count": len(intents),
             "active_risk_plans_count": len(active_risk_plans),
             "breaker_active": len(active_breakers) > 0,
-            "positions": positions[:8],
-            "open_orders": open_order_rows[:8],
-            "recent_intents": intents[:8],
-            "active_risk_plans": active_risk_plans[:8],
+            "positions": [_summarize_live_position(row) for row in positions[:8]],
+            "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
+            "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
+            "active_risk_plans": [_summarize_live_risk_plan(row) for row in active_risk_plans[:8]],
             "active_breakers": [
                 {
                     **row,
@@ -600,14 +692,64 @@ INDEX_HTML = """<!doctype html>
     @media (max-width:1180px) { .hero { grid-template-columns:1fr; } .card.half { grid-column:span 12; } }
   </style>
   <style>
+    .section-nav {
+      position:sticky;
+      top:10px;
+      z-index:10;
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      padding:12px;
+      margin:0 0 18px;
+      border-radius:20px;
+      border:1px solid rgba(19,34,47,.10);
+      background:rgba(255,255,255,.82);
+      backdrop-filter:blur(14px);
+      box-shadow:0 12px 30px rgba(19,34,47,.08);
+    }
+    .section-btn {
+      border:1px solid rgba(19,34,47,.08);
+      background:rgba(19,34,47,.04);
+      color:var(--ink);
+      border-radius:999px;
+      padding:10px 14px;
+      font:inherit;
+      cursor:pointer;
+      transition:all .18s ease;
+    }
+    .section-btn.active {
+      background:rgba(13,92,140,.14);
+      border-color:rgba(13,92,140,.25);
+      color:var(--accent);
+      font-weight:700;
+    }
+    .card-head {
+      display:grid;
+      gap:4px;
+      align-items:flex-start;
+      margin-bottom:14px;
+    }
+    .card-head .muted {
+      font-size:.82rem;
+      line-height:1.55;
+      max-width:none;
+      text-align:left;
+    }
+    .card-title {
+      font-size:1rem;
+      line-height:1.25;
+    }
     .service-row, #live-state-cards, #paper-table, #artifact-details {
       display:grid !important;
-      grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-      gap:12px;
+      grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+      gap:14px;
     }
     #training-details, #challenger-details, #ws-details {
       display:grid;
-      gap:12px;
+      gap:14px;
+    }
+    .panel-hidden {
+      display:none !important;
     }
     .service-item,
     .service-card,
@@ -616,7 +758,8 @@ INDEX_HTML = """<!doctype html>
     .artifact-card,
     .note-card,
     .summary-box,
-    .list-item {
+    .list-item,
+    .detail-box {
       border:1px solid rgba(19,34,47,.10);
       background:rgba(255,255,255,.72);
       border-radius:18px;
@@ -627,17 +770,20 @@ INDEX_HTML = """<!doctype html>
     .paper-card,
     .artifact-card,
     .summary-box,
-    .note-card {
+    .note-card,
+    .detail-box {
       padding:14px;
     }
     .summary-box strong,
-    .note-card strong {
+    .note-card strong,
+    .detail-box strong {
       display:block;
       margin-bottom:6px;
       font-size:.94rem;
     }
     .summary-box p,
-    .note-card span {
+    .note-card span,
+    .detail-box p {
       margin:0;
       color:var(--muted);
       line-height:1.65;
@@ -653,6 +799,7 @@ INDEX_HTML = """<!doctype html>
       border-radius:14px;
       padding:10px 11px;
       background:rgba(19,34,47,.04);
+      min-height:64px;
     }
     .mini .label {
       color:var(--muted);
@@ -669,6 +816,80 @@ INDEX_HTML = """<!doctype html>
       flex-wrap:wrap;
       gap:8px;
     }
+    .detail-stack {
+      display:grid;
+      gap:12px;
+      margin-top:12px;
+    }
+    .detail-title {
+      font-size:.84rem;
+      color:var(--muted);
+      text-transform:uppercase;
+      letter-spacing:.06em;
+      margin:2px 0 0;
+    }
+    .detail-list {
+      display:grid;
+      gap:10px;
+    }
+    .detail-item {
+      border-radius:14px;
+      padding:11px 12px;
+      background:rgba(19,34,47,.04);
+      border:1px solid rgba(19,34,47,.06);
+    }
+    .detail-item .title-row {
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      align-items:flex-start;
+      margin-bottom:6px;
+    }
+    .detail-item strong {
+      font-size:.92rem;
+      margin:0;
+    }
+    .detail-item .desc,
+    .detail-item .meta,
+    .detail-item .path {
+      color:var(--muted);
+      line-height:1.55;
+      font-size:.88rem;
+      word-break:break-word;
+    }
+    .detail-item .meta-grid {
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:8px;
+      margin-top:8px;
+    }
+    .detail-item .meta-chip {
+      background:rgba(255,255,255,.7);
+      border:1px solid rgba(19,34,47,.06);
+      border-radius:12px;
+      padding:8px 9px;
+    }
+    .detail-item .meta-chip .k {
+      color:var(--muted);
+      font-size:.72rem;
+      margin-bottom:3px;
+    }
+    .detail-item .meta-chip .v {
+      font-size:.84rem;
+      line-height:1.35;
+      word-break:break-word;
+    }
+    .section-lead {
+      color:var(--muted);
+      line-height:1.65;
+      font-size:.92rem;
+      margin:0;
+    }
+    .section-summary-grid {
+      display:grid;
+      gap:14px;
+      grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    }
     .list-item {
       padding:13px 14px;
       display:grid;
@@ -684,18 +905,39 @@ INDEX_HTML = """<!doctype html>
       font-size:.88rem;
       word-break:break-all;
     }
+    .muted-inline {
+      color:var(--muted);
+      font-size:.84rem;
+    }
     .empty {
       grid-column:1 / -1;
       background:rgba(255,255,255,.55);
     }
     @media (max-width:900px) {
       .shell { padding:16px 12px 24px; }
-      .mini-grid { grid-template-columns:1fr; }
-      .service-row, #live-state-cards, #paper-table, #artifact-details { grid-template-columns:1fr !important; }
+      .section-nav {
+        top:0;
+        margin-bottom:14px;
+        padding:10px;
+      }
+      .mini-grid,
+      .detail-item .meta-grid {
+        grid-template-columns:1fr;
+      }
+      .service-row, #live-state-cards, #paper-table, #artifact-details {
+        grid-template-columns:1fr !important;
+      }
+      .section-summary-grid {
+        grid-template-columns:1fr;
+      }
+      .card-head .muted {
+        max-width:none;
+        text-align:left;
+      }
     }
   </style>
 </head>
-<body>
+  <body>
   <div class="shell">
     <section class="hero">
       <div class="hero-panel">
@@ -712,15 +954,74 @@ INDEX_HTML = """<!doctype html>
         <div id="fetch-error" class="error-box"></div>
       </div>
     </section>
+    <nav class="section-nav" id="section-nav">
+      <button class="section-btn active" type="button" data-section="all">전체</button>
+      <button class="section-btn" type="button" data-section="overview">운영 개요</button>
+      <button class="section-btn" type="button" data-section="training">학습 / 검증</button>
+      <button class="section-btn" type="button" data-section="paper">페이퍼</button>
+      <button class="section-btn" type="button" data-section="live">라이브 / 카나리아</button>
+      <button class="section-btn" type="button" data-section="ingest">WS 수집</button>
+    </nav>
     <section class="grid">
-      <article class="card"><div class="card-head"><h2 class="card-title">서비스 상태</h2><span class="muted">systemd 기준</span></div><div class="service-row" id="service-cards"></div></article>
-      <article class="card half"><div class="card-head"><h2 class="card-title">학습 / 어셉턴스</h2><span class="muted">최신 acceptance</span></div><div class="kpis" id="training-kpis"></div><div id="training-details"></div></article>
-      <article class="card half"><div class="card-head"><h2 class="card-title">챌린저 루프</h2><span class="muted">spawn / promote 결과</span></div><div class="kpis" id="challenger-kpis"></div><div id="challenger-details"></div></article>
-      <article class="card half"><div class="card-head"><h2 class="card-title">페이퍼 런</h2><span class="muted">최근 요약</span></div><div id="paper-table"></div></article>
-      <article class="card half"><div class="card-head"><h2 class="card-title">WS 수집 상태</h2><span class="muted">public data plane</span></div><div class="kpis" id="ws-kpis"></div><div id="ws-details"></div></article>
-      <article class="card"><div class="card-head"><h2 class="card-title">라이브 상태</h2><span class="muted">메인 / 후보 카나리아 DB 요약</span></div><div class="service-row" id="live-state-cards"></div></article>
-      <article class="card half"><div class="card-head"><h2 class="card-title">후보 산출물</h2><span class="muted">selection / calibration / runtime</span></div><div id="artifact-details"></div></article>
-      <article class="card half"><div class="card-head"><h2 class="card-title">메모</h2><span class="muted">거절 사유 / 참고 정보</span></div><ul class="list" id="notes-list"></ul></article>
+      <article class="card" data-sections="overview,training,live,ingest">
+        <div class="card-head">
+          <h2 class="card-title">서비스 상태</h2>
+          <span class="muted">systemd 기준으로 현재 살아 있는 유닛, 타이머, 다음 실행 시각을 요약합니다.</span>
+        </div>
+        <div class="service-row" id="service-cards"></div>
+      </article>
+      <article class="card half" data-sections="training,overview">
+        <div class="card-head">
+          <h2 class="card-title">학습 / 어셉턴스</h2>
+          <span class="muted">이번 후보가 왜 통과했는지, 왜 탈락했는지 사람 말로 풀어 적습니다.</span>
+        </div>
+        <div class="kpis" id="training-kpis"></div>
+        <div id="training-details"></div>
+      </article>
+      <article class="card half" data-sections="training,overview">
+        <div class="card-head">
+          <h2 class="card-title">챌린저 루프</h2>
+          <span class="muted">spawn / promote 단계에서 챌린저가 실제로 생성됐는지와 직접 사유를 보여줍니다.</span>
+        </div>
+        <div class="kpis" id="challenger-kpis"></div>
+        <div id="challenger-details"></div>
+      </article>
+      <article class="card half" data-sections="paper,overview">
+        <div class="card-head">
+          <h2 class="card-title">페이퍼 런</h2>
+          <span class="muted">최근 챔피언 / 챌린저 페이퍼 런의 주문, 체결, 손익, 낙폭을 카드형으로 정리합니다.</span>
+        </div>
+        <div id="paper-table"></div>
+      </article>
+      <article class="card half" data-sections="ingest,overview">
+        <div class="card-head">
+          <h2 class="card-title">WS 수집 상태</h2>
+          <span class="muted">공용 WS 수집기 연결, 최신 수신 시각, 누적 적재량을 읽기 쉽게 정리합니다.</span>
+        </div>
+        <div class="kpis" id="ws-kpis"></div>
+        <div id="ws-details"></div>
+      </article>
+      <article class="card" data-sections="live,overview">
+        <div class="card-head">
+          <h2 class="card-title">라이브 / 카나리아</h2>
+          <span class="muted">보유 종목, 미체결 주문, 최근 진입 의도, 활성 리스크 플랜을 메인 / 후보 카나리아별로 분리해 보여줍니다.</span>
+        </div>
+        <div class="service-row" id="live-state-cards"></div>
+      </article>
+      <article class="card half" data-sections="training">
+        <div class="card-head">
+          <h2 class="card-title">후보 산출물</h2>
+          <span class="muted">selection policy, calibration, runtime recommendation, factor 선택 결과를 요약합니다.</span>
+        </div>
+        <div id="artifact-details"></div>
+      </article>
+      <article class="card half" data-sections="overview,training,live">
+        <div class="card-head">
+          <h2 class="card-title">운영 메모</h2>
+          <span class="muted">거절 사유, rollout 제한, 참고 정보처럼 사람이 바로 읽어야 하는 문장을 모읍니다.</span>
+        </div>
+        <div id="notes-list" class="section-summary-grid"></div>
+      </article>
     </section>
   </div>
   <script>
@@ -938,6 +1239,371 @@ INDEX_HTML = """<!doctype html>
     }
     async function refresh(){ try { const response=await fetch("/api/snapshot",{cache:"no-store"}); if(!response.ok){ throw new Error(`snapshot 응답 실패 (${response.status})`); } const data=await response.json(); renderAll(data); setError(""); } catch (err) { setError(`실시간 새로고침 실패: ${err && err.message ? err.message : err}`); } }
     document.getElementById("refresh-btn").addEventListener("click",refresh); if (INITIAL_SNAPSHOT && typeof INITIAL_SNAPSHOT === "object") { try { renderAll(INITIAL_SNAPSHOT); } catch (err) { setError(`초기 렌더링 실패: ${err && err.message ? err.message : err}`); } } refresh(); setInterval(refresh,10000);
+  </script>
+  <script>
+    (() => {
+      const reasonText = {
+        BACKTEST_ACCEPTANCE_FAILED: "백테스트 승급 기준을 통과하지 못했습니다.",
+        TRAINER_EVIDENCE_REQUIRED_FAILED: "학습 증거 기준에서 후보 우위가 확정되지 않았습니다.",
+        PAPER_SOAK_SKIPPED: "내부 paper soak는 생략했고, 통과 시 실제 챌린저 페이퍼가 대신 검증합니다.",
+        OFFLINE_NOT_CANDIDATE_EDGE: "오프라인 비교에서 후보 우위가 확인되지 않았습니다.",
+        SPA_LIKE_NOT_CANDIDATE_EDGE: "공통 구간 SPA 유사 검정에서 후보 우위가 확인되지 않았습니다.",
+        WHITE_RC_NOT_CANDIDATE_EDGE: "White Reality Check에서 후보 우위가 확인되지 않았습니다.",
+        HANSEN_SPA_NOT_CANDIDATE_EDGE: "Hansen SPA에서 후보 우위가 확인되지 않았습니다.",
+        EXECUTION_NOT_CANDIDATE_EDGE: "실행 비용을 반영한 비교에서 챔피언이 더 안정적이었습니다.",
+        DUPLICATE_CANDIDATE: "기존 챔피언과 사실상 같은 모델이라 새 챌린저로 올리지 않았습니다.",
+        LIVE_BREAKER_ACTIVE: "라이브 브레이커가 활성이라 새 주문을 막고 있습니다.",
+        MODEL_POINTER_DIVERGENCE: "라이브가 물고 있는 모델과 현재 챔피언 포인터가 어긋났습니다.",
+        WS_PUBLIC_STALE: "공용 WS 수집 신선도가 기준보다 오래됐습니다.",
+        UNKNOWN_POSITIONS_DETECTED: "거래소 포지션과 로컬 상태가 어긋나 브레이커가 동작했습니다.",
+        SMALL_ACCOUNT_CANARY_MULTIPLE_ACTIVE_MARKETS: "카나리아 단일 슬롯 제한을 넘는 시장이 감지됐습니다.",
+        EXTERNAL_OPEN_ORDERS_DETECTED: "봇이 만들지 않은 외부 미체결 주문이 감지됐습니다.",
+        LOCAL_POSITION_MISSING_ON_EXCHANGE: "로컬 포지션은 있는데 거래소 잔고가 사라졌습니다.",
+        SKIPPED_SINGLE_SLOT_ACTIVE_ORDER: "이미 열린 주문이 있어 단일 슬롯 규칙에 따라 새 진입을 막았습니다.",
+      };
+      const decisionText = {
+        TRAINER_EVIDENCE_REQUIRED_FAIL: "학습 증거 기준 미달",
+        UTILITY_TIE_BREAK_FAIL: "효용 기준 동률 깨기 실패",
+        CHAMPION_PARETO_DOMINANCE: "챔피언이 위험·실행·손익 기준에서 더 우세했습니다.",
+      };
+      const policyText = {
+        rank_effective_quantile: "순위 기반 자동 컷",
+        raw_threshold: "고정 확률 컷",
+        rank_topk_budgeted: "예산 반영 상위 종목 선택",
+        hold: "보유 시간 기반 종료",
+        risk: "TP/SL/트레일링 기반 종료",
+        canary: "카나리아",
+        shadow: "섀도우",
+        live: "실거래",
+        MODEL_ALPHA_ENTRY_V1: "모델 알파 진입",
+        MODEL_ALPHA_EXIT_V1: "모델 알파 종료",
+        bid: "매수",
+        ask: "매도",
+        wait: "거래소 대기",
+        done: "완료",
+        cancel: "취소",
+        OPEN: "로컬 오픈",
+        ACTIVE: "활성",
+        EXITING: "청산 진행",
+        CLOSED: "종료",
+        limit: "지정가",
+        price: "지정가",
+        market: "시장가",
+      };
+      const sectionButtons = () => [...document.querySelectorAll("#section-nav .section-btn")];
+      const cards = () => [...document.querySelectorAll("[data-sections]")];
+      const maybe = (value, fallback = "-") => value === null || value === undefined || value === "" ? fallback : String(value);
+      const boolLabel = (value) => value === null || value === undefined ? "-" : (value ? "예" : "아니오");
+      const fmtNumberLocal = (value, digits = 2) => value === null || value === undefined || Number.isNaN(Number(value))
+        ? "-"
+        : new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits, minimumFractionDigits: 0 }).format(Number(value));
+      const fmtMoneyLocal = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `${fmtNumberLocal(value, 0)} KRW`;
+      const fmtPctLocal = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `${fmtNumberLocal(value, 2)}%`;
+      const fmtBpsLocal = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `${fmtNumberLocal(value, 2)} bps`;
+      const shortRunLocal = (value) => {
+        const text = maybe(value, "");
+        return !text ? "-" : (text.length > 24 ? `${text.slice(0, 18)}...${text.slice(-4)}` : text);
+      };
+      const shortPathLocal = (value) => {
+        const text = maybe(value, "");
+        return !text ? "-" : (text.length > 86 ? `...${text.slice(-83)}` : text);
+      };
+      const translateLocal = (value, mapping = reasonText) => mapping[String(value)] || String(value ?? "-");
+      const uniqueLocal = (items) => [...new Set((items || []).filter(Boolean))];
+      const joinReasonsLocal = (items) => {
+        const values = (items || []).filter(Boolean);
+        return values.length ? values.map((item) => translateLocal(item)).join(" · ") : "없음";
+      };
+      const latestTimestampLocal = (value) => {
+        if (typeof value === "number") return value;
+        if (!value || typeof value !== "object") return null;
+        const numbers = Object.values(value).map((item) => Number(item)).filter((item) => Number.isFinite(item));
+        return numbers.length ? Math.max(...numbers) : null;
+      };
+      const coerceTsLocal = (value) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return null;
+        return numeric < 1e12 ? numeric * 1000 : numeric;
+      };
+      const fmtDateTimeLocal = (value) => {
+        if (!value) return "-";
+        if (typeof value === "number" || /^[0-9]+$/.test(String(value))) {
+          const ts = coerceTsLocal(value);
+          if (!ts) return String(value);
+          return new Date(ts).toLocaleString("ko-KR", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+        }
+        const parsed = new Date(String(value));
+        return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString("ko-KR", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+      };
+      const fmtAgeLocal = (tsMs) => {
+        if (!Number.isFinite(tsMs)) return "-";
+        const diffSec = Math.max(0, (Date.now() - tsMs) / 1000);
+        if (diffSec < 60) return `${fmtNumberLocal(diffSec, 1)}초 전`;
+        if (diffSec < 3600) return `${fmtNumberLocal(diffSec / 60, 1)}분 전`;
+        return `${fmtNumberLocal(diffSec / 3600, 1)}시간 전`;
+      };
+      const noteCardLocal = (label, value) => `<div class="note-card"><strong>${esc(label)}</strong><span>${esc(value ?? "-")}</span></div>`;
+      const listItemLocal = (label, value) => `<div class="list-item"><strong>${esc(label)}</strong><span>${esc(value ?? "-")}</span></div>`;
+      const emptyLocal = (text) => `<div class="empty">${esc(text)}</div>`;
+      const metaChipLocal = (label, value) => `<div class="meta-chip"><div class="k">${esc(label)}</div><div class="v">${esc(value ?? "-")}</div></div>`;
+      const detailItemLocal = ({ title, status, desc, path, meta = [] }) => `<div class="detail-item"><div class="title-row"><strong>${esc(title)}</strong>${status || ""}</div>${desc ? `<div class="desc">${esc(desc)}</div>` : ""}${path ? `<div class="path mono">${esc(path)}</div>` : ""}${meta.length ? `<div class="meta-grid">${meta.join("")}</div>` : ""}</div>`;
+      const detailSectionLocal = (title, items, emptyText) => `<div class="detail-box"><strong>${esc(title)}</strong>${items.length ? `<div class="detail-list">${items.join("")}</div>` : emptyLocal(emptyText)}</div>`;
+
+      window.setupSectionNav = function setupSectionNav() {
+        const active = window.__dashboardActiveSection || "all";
+        sectionButtons().forEach((button) => button.classList.toggle("active", button.dataset.section === active));
+        cards().forEach((card) => {
+          const sections = (card.dataset.sections || "").split(",").map((item) => item.trim()).filter(Boolean);
+          const visible = active === "all" || sections.includes(active);
+          card.classList.toggle("panel-hidden", !visible);
+        });
+      };
+
+      if (!window.__dashboardNavBound) {
+        document.getElementById("section-nav").addEventListener("click", (event) => {
+          const button = event.target.closest(".section-btn");
+          if (!button) return;
+          window.__dashboardActiveSection = button.dataset.section || "all";
+          window.setupSectionNav();
+        });
+        window.__dashboardNavBound = true;
+      }
+
+      window.renderServices = function renderServices(services) {
+        const entries = Object.entries(services || {}).filter(([, item]) => item);
+        document.getElementById("service-cards").innerHTML = entries.length ? entries.map(([key, item]) => {
+          const label = SERVICE_LABELS[key] || item.description || key;
+          const summary = item.next_run_at
+            ? `다음 실행은 ${fmtDateTimeLocal(item.next_run_at)} 입니다.`
+            : `${label} 서비스는 현재 ${maybe(item.active_state)} 상태입니다.`;
+          return `<div class="service-card"><div class="row"><strong>${esc(label)}</strong>${pill("상태", item.active_state)}</div><p class="section-lead" style="margin-top:10px">${esc(summary)}</p><div class="mini-grid"><div class="mini"><div class="label">세부 상태</div><div class="value">${esc(maybe(item.sub_state))}</div></div><div class="mini"><div class="label">활성화</div><div class="value">${esc(maybe(item.unit_file_state))}</div></div><div class="mini"><div class="label">유닛 이름</div><div class="value mono">${esc(item.unit)}</div></div><div class="mini"><div class="label">${item.next_run_at ? "다음 실행" : "메인 PID"}</div><div class="value">${esc(item.next_run_at ? fmtDateTimeLocal(item.next_run_at) : maybe(item.main_pid, "-"))}</div></div></div></div>`;
+        }).join("") : emptyLocal("서비스 상태를 읽지 못했습니다.");
+        document.getElementById("hero-badges").innerHTML = entries.slice(0, 6).map(([key, item]) => pill(SERVICE_LABELS[key] || item.description || key, item.active_state)).join("");
+      };
+
+      window.renderTraining = function renderTraining(training) {
+        const acceptance = training.acceptance || {};
+        const verdict = acceptance.overall_pass === true ? "통과" : acceptance.overall_pass === false ? "탈락" : "대기";
+        const summary = acceptance.overall_pass === false
+          ? `이번 후보 ${shortRunLocal(acceptance.candidate_run_id)}는 챔피언을 넘지 못해 어셉턴스에서 탈락했습니다.`
+          : acceptance.overall_pass === true
+            ? `이번 후보 ${shortRunLocal(acceptance.candidate_run_id)}는 어셉턴스를 통과했습니다.`
+            : "최근 후보가 아직 없거나 실행 중입니다.";
+        document.getElementById("training-kpis").innerHTML = [
+          kpi("후보 run", shortRunLocal(acceptance.candidate_run_id)),
+          kpi("최종 판정", verdict),
+          kpi("백테스트 통과", boolLabel(acceptance.backtest_pass)),
+          kpi("완료 시각", fmtDateTimeLocal(acceptance.completed_at || acceptance.generated_at)),
+        ].join("");
+        document.getElementById("training-details").innerHTML = `<div class="summary-box"><strong>이번 후보 해석</strong><p>${esc(summary)}</p><div class="tag-row" style="margin-top:12px">${acceptance.decision_basis ? pill("판정 기준", translateLocal(acceptance.decision_basis, decisionText), "warn") : ""}${acceptance.model_family ? pill("모델 패밀리", acceptance.model_family, "warn") : ""}${acceptance.batch_date ? pill("배치 날짜", acceptance.batch_date, "warn") : ""}</div></div><div class="section-summary-grid">${listItemLocal("어셉턴스 직접 사유", joinReasonsLocal(acceptance.reasons))}${listItemLocal("학습 증거 세부 사유", joinReasonsLocal(acceptance.trainer_reasons))}${listItemLocal("운영 메모", joinReasonsLocal(acceptance.notes))}${listItemLocal("후보 경로", shortPathLocal(acceptance.candidate_run_dir))}${listItemLocal("기존 챔피언", shortRunLocal(acceptance.champion_before_run_id))}${listItemLocal("현재 챔피언", shortRunLocal(acceptance.champion_after_run_id))}</div>`;
+      };
+
+      window.renderChallenger = function renderChallenger(challenger) {
+        const started = challenger.started === true ? "기동됨" : challenger.started === false ? "미기동" : "미생성";
+        document.getElementById("challenger-kpis").innerHTML = [
+          kpi("후보 run", shortRunLocal(challenger.candidate_run_id)),
+          kpi("챌린저 상태", started),
+          kpi("직접 사유", translateLocal(challenger.reason)),
+          kpi("완료 시각", fmtDateTimeLocal(challenger.completed_at || challenger.generated_at)),
+        ].join("");
+        document.getElementById("challenger-details").innerHTML = `<div class="summary-box"><strong>이번 챌린저 생성 결과</strong><p>${challenger.started ? "이번 후보는 실제 챌린저 페이퍼로 올라가 현재 챔피언과 경쟁 중입니다." : "이번 후보는 챌린저 페이퍼로 넘어가지 못했습니다. 아래 직접 사유를 먼저 확인하면 됩니다."}</p><div class="tag-row" style="margin-top:12px">${challenger.reason ? pill("직접 사유", translateLocal(challenger.reason), challenger.started ? "good" : "bad") : ""}${challenger.paper_model_ref ? pill("페이퍼 모델 ref", shortRunLocal(challenger.paper_model_ref), "warn") : ""}</div></div><div class="section-summary-grid">${listItemLocal("acceptance 메모", joinReasonsLocal(challenger.acceptance_notes))}${listItemLocal("챌린저 유닛", challenger.challenger_unit || "생성되지 않음")}${listItemLocal("사용한 피처 공급자", challenger.paper_feature_provider || "-")}${listItemLocal("리포트 경로", shortPathLocal(challenger.artifact_path))}</div>`;
+      };
+
+      window.renderPaper = function renderPaper(paper) {
+        const rows = paper.recent_runs || [];
+        document.getElementById("paper-table").innerHTML = rows.length ? rows.map((run) => {
+          const fillPct = run.fill_rate === null || run.fill_rate === undefined ? "-" : fmtPctLocal(Number(run.fill_rate) * 100);
+          const summary = `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)} 조합으로 ${fmtNumberLocal(run.duration_sec, 0)}초 동안 돌았습니다.`;
+          return `<div class="paper-card"><div class="row"><strong>${esc(shortRunLocal(run.run_id))}</strong>${pill("워밍업", boolLabel(run.warmup_satisfied), run.warmup_satisfied ? "good" : "warn")}</div><p class="section-lead" style="margin-top:10px">${esc(summary)}</p><div class="mini-grid"><div class="mini"><div class="label">제출 주문</div><div class="value">${esc(maybe(run.orders_submitted, "0"))}</div></div><div class="mini"><div class="label">체결 주문</div><div class="value">${esc(maybe(run.orders_filled, "0"))}</div></div><div class="mini"><div class="label">체결률</div><div class="value">${esc(fillPct)}</div></div><div class="mini"><div class="label">실현 손익</div><div class="value">${esc(fmtMoneyLocal(run.realized_pnl_quote))}</div></div><div class="mini"><div class="label">평가 손익</div><div class="value">${esc(fmtMoneyLocal(run.unrealized_pnl_quote))}</div></div><div class="mini"><div class="label">최대 낙폭</div><div class="value">${esc(fmtPctLocal(run.max_drawdown_pct))}</div></div></div><div class="path" style="margin-top:10px">마지막 갱신: ${esc(fmtDateTimeLocal(run.updated_at))}</div></div>`;
+        }).join("") : emptyLocal("최근 페이퍼 런 요약이 아직 없습니다.");
+      };
+
+      window.renderWsPublic = function renderWsPublic(ws) {
+        const health = ws.health_snapshot || {};
+        const latestRun = ws.runs_summary_latest || {};
+        const lastRxMs = latestTimestampLocal(health.last_rx_ts_ms);
+        document.getElementById("ws-kpis").innerHTML = [
+          kpi("연결 상태", boolLabel(health.connected)),
+          kpi("구독 종목 수", maybe(health.subscribed_markets_count, "-")),
+          kpi("최근 수신", fmtAgeLocal(lastRxMs)),
+          kpi("현재 run", shortRunLocal(health.run_id || latestRun.run_id)),
+        ].join("");
+        document.getElementById("ws-details").innerHTML = `<div class="summary-box"><strong>수집기 해석</strong><p>${health.connected ? "공용 WS 수집기는 현재 연결된 상태이며, 라이브와 학습이 같은 데이터 플레인을 공유합니다." : "공용 WS 수집기가 현재 끊겨 있습니다. 원천 데이터 신선도를 먼저 확인해야 합니다."}</p><div class="tag-row" style="margin-top:12px">${pill("연결", boolLabel(health.connected), health.connected ? "good" : "bad")}${health.fatal_reason ? pill("치명 사유", health.fatal_reason, "bad") : ""}${pill("재연결 횟수", maybe(health.reconnect_count, "0"), "warn")}</div></div><div class="section-summary-grid">${listItemLocal("누적 적재 행 수", `총 ${fmtNumberLocal((health.written_rows || {}).total, 0)}행 · trade ${fmtNumberLocal((health.written_rows || {}).trade, 0)}행 · orderbook ${fmtNumberLocal((health.written_rows || {}).orderbook, 0)}행`)}${listItemLocal("누락·드롭 행 수", `총 ${fmtNumberLocal((health.dropped_rows || {}).total, 0)}행 · orderbook downsample ${fmtNumberLocal((health.dropped_rows || {}).orderbook_downsample, 0)}행`)}${listItemLocal("최근 수신 시각", fmtDateTimeLocal(lastRxMs))}${listItemLocal("최근 run 요약", `parts ${fmtNumberLocal(latestRun.parts, 0)}개 · bytes ${fmtNumberLocal(latestRun.bytes_total, 0)} · rows ${fmtNumberLocal(latestRun.rows_total, 0)}`)}</div>`;
+      };
+
+      const summarizePosition = (position) => {
+        const qty = Number(position.base_amount || 0);
+        const avg = Number(position.avg_entry_price || 0);
+        return detailItemLocal({
+          title: position.market || "-",
+          status: pill("관리 대상", boolLabel(position.managed), position.managed ? "good" : "warn"),
+          desc: `보유 수량 ${fmtNumberLocal(qty, 8)} · 평균 매수가 ${fmtMoneyLocal(avg)} · 평가 원금 약 ${fmtMoneyLocal(qty * avg)}`,
+          meta: [metaChipLocal("최근 갱신", fmtDateTimeLocal(position.updated_ts))],
+        });
+      };
+      const summarizeOrder = (order) => {
+        const qty = Number(order.volume_req || 0);
+        const price = Number(order.price || 0);
+        const filled = Number(order.volume_filled || 0);
+        return detailItemLocal({
+          title: `${order.market || "-"} ${translateLocal(order.side, policyText)} ${translateLocal(order.ord_type, policyText)}`,
+          status: pill("거래소 상태", translateLocal(order.raw_exchange_state, policyText), order.raw_exchange_state === "done" ? "good" : "warn"),
+          desc: `요청 ${fmtNumberLocal(qty, 8)}개 · 지정가 ${fmtMoneyLocal(price)} · 주문금액 약 ${fmtMoneyLocal(qty * price)}`,
+          path: shortRunLocal(order.uuid),
+          meta: [
+            metaChipLocal("로컬 상태", translateLocal(order.local_state, policyText)),
+            metaChipLocal("체결 수량", fmtNumberLocal(filled, 8)),
+            metaChipLocal("replace 횟수", maybe(order.replace_seq, "0")),
+            metaChipLocal("intent", shortRunLocal(order.intent_id)),
+            metaChipLocal("최근 갱신", fmtDateTimeLocal(order.updated_ts)),
+          ],
+        });
+      };
+      const summarizeRiskPlan = (plan) => {
+        const qty = Number(plan.qty || 0);
+        const entry = Number(plan.entry_price || 0);
+        return detailItemLocal({
+          title: `${plan.market || "-"} · ${translateLocal(plan.exit_mode, policyText)}`,
+          status: pill("플랜 상태", translateLocal(plan.state, policyText), plan.state === "ACTIVE" ? "good" : "warn"),
+          desc: `진입가 ${fmtMoneyLocal(entry)} · 수량 ${fmtNumberLocal(qty, 8)} · 진입금액 약 ${fmtMoneyLocal(entry * qty)}`,
+          meta: [
+            metaChipLocal("익절", plan.tp_enabled ? fmtPctLocal(Number(plan.tp_pct) * 100) : "미사용"),
+            metaChipLocal("손절", plan.sl_enabled ? fmtPctLocal(Number(plan.sl_pct) * 100) : "미사용"),
+            metaChipLocal("추적", plan.trailing_enabled ? fmtPctLocal(Number(plan.trail_pct) * 100) : "미사용"),
+            metaChipLocal("타임아웃", fmtDateTimeLocal(plan.timeout_ts_ms)),
+            metaChipLocal("source", plan.plan_source || "-"),
+            metaChipLocal("intent", shortRunLocal(plan.source_intent_id)),
+          ],
+        });
+      };
+      const summarizeIntent = (intent) => detailItemLocal({
+        title: `${intent.market || "-"} ${translateLocal(intent.side, policyText)}`,
+        status: pill("상태", translateLocal(intent.status, policyText), intent.status === "ACCEPTED" || intent.status === "SUBMITTED" ? "good" : "warn"),
+        desc: `${translateLocal(intent.reason_code, policyText)} · 진입 금액 ${fmtMoneyLocal(intent.notional_quote)} · 모델 점수 ${fmtNumberLocal(intent.prob, 4)}`,
+        meta: [
+          metaChipLocal("선택 정책", translateLocal(intent.selection_policy_mode, policyText)),
+          metaChipLocal("예상 순엣지", fmtBpsLocal(intent.expected_net_edge_bps)),
+          metaChipLocal("예상 비용", fmtBpsLocal(intent.estimated_total_cost_bps)),
+          metaChipLocal("건너뜀 사유", translateLocal(intent.skip_reason)),
+          metaChipLocal("생성 시각", fmtDateTimeLocal(intent.ts_ms)),
+        ],
+      });
+
+      window.renderLive = function renderLive(live) {
+        const states = live.states || [];
+        document.getElementById("live-state-cards").innerHTML = states.length ? states.map((state) => {
+          const runtime = state.runtime_health || {};
+          const rolloutStatus = state.rollout_status || {};
+          const lastResume = state.last_resume || {};
+          const positions = (state.positions || []).map(summarizePosition);
+          const openOrders = (state.open_orders || []).map(summarizeOrder);
+          const plans = (state.active_risk_plans || []).map(summarizeRiskPlan);
+          const intents = (state.recent_intents || []).map(summarizeIntent);
+          const activeBreakers = uniqueLocal((state.active_breakers || []).map((item) => item.reason || item.code || item.name));
+          return `<div class="state-card"><div class="row"><strong>${esc(state.label)}</strong>${pill("브레이커", boolLabel(state.breaker_active), state.breaker_active ? "bad" : "good")}</div><p class="section-lead" style="margin-top:10px">${esc(`${state.label}는 현재 ${translateLocal(rolloutStatus.mode, policyText)} 모드이며, 챔피언 포인터 ${shortRunLocal(runtime.champion_pointer_run_id)}를 기준으로 동작합니다.`)}</p><div class="mini-grid"><div class="mini"><div class="label">현재 모델</div><div class="value mono">${esc(shortRunLocal(runtime.live_runtime_model_run_id))}</div></div><div class="mini"><div class="label">챔피언 포인터</div><div class="value mono">${esc(shortRunLocal(runtime.champion_pointer_run_id))}</div></div><div class="mini"><div class="label">보유 포지션 / 주문</div><div class="value">${esc(`${maybe(state.positions_count, "0")} / ${maybe(state.open_orders_count, "0")}`)}</div></div><div class="mini"><div class="label">활성 리스크 플랜</div><div class="value">${esc(maybe(state.active_risk_plans_count, "0"))}</div></div><div class="mini"><div class="label">주문 방출 허용</div><div class="value">${esc(boolLabel(rolloutStatus.order_emission_allowed))}</div></div><div class="mini"><div class="label">WS 신선도</div><div class="value">${esc(runtime.ws_public_stale ? "오래됨" : "정상")}</div></div><div class="mini"><div class="label">포인터 동기화</div><div class="value">${esc(runtime.model_pointer_divergence ? "어긋남" : "정상")}</div></div><div class="mini"><div class="label">마지막 resume</div><div class="value">${esc(fmtDateTimeLocal(lastResume.generated_at || lastResume.checked_at || lastResume.completed_at))}</div></div></div><div class="tag-row" style="margin-top:12px">${rolloutStatus.mode ? pill("운용 모드", translateLocal(rolloutStatus.mode, policyText), rolloutStatus.mode === "live" ? "bad" : "warn") : ""}${runtime.ws_public_stale === true ? pill("WS 신선도", "오래됨", "bad") : pill("WS 신선도", "정상", "good")}${runtime.model_pointer_divergence === true ? pill("모델 포인터", "어긋남", "bad") : pill("모델 포인터", "정상", "good")}${activeBreakers.length ? pill("활성 브레이커", activeBreakers.length, "bad") : pill("활성 브레이커", "없음", "good")}</div><div class="detail-stack">${detailSectionLocal("보유 중인 종목", positions, "현재 보유 포지션이 없습니다.")}${detailSectionLocal("미체결 주문", openOrders, "현재 열린 주문이 없습니다.")}${detailSectionLocal("활성 리스크 플랜", plans, "현재 활성 리스크 플랜이 없습니다.")}${detailSectionLocal("최근 진입 / 종료 의도", intents, "최근 기록된 intent가 없습니다.")}</div></div>`;
+        }).join("") : emptyLocal("라이브 상태 DB를 찾지 못했습니다.");
+      };
+
+      window.renderArtifacts = function renderArtifacts(training) {
+        const artifacts = training.candidate_artifacts || {};
+        const runtime = artifacts.runtime_recommendations || {};
+        const policy = artifacts.selection_policy || {};
+        const calibration = artifacts.selection_calibration || {};
+        const budget = artifacts.search_budget_decision || {};
+        const factor = artifacts.factor_block_selection || {};
+        const cpcv = artifacts.cpcv_lite_report || {};
+        const wf = artifacts.walk_forward_report || {};
+        document.getElementById("artifact-details").innerHTML = Object.keys(artifacts).length ? `<div class="artifact-card"><strong>런타임 추천</strong><div class="mini-grid"><div class="mini"><div class="label">종료 모드</div><div class="value">${esc(translateLocal(runtime.recommended_exit_mode, policyText))}</div></div><div class="mini"><div class="label">권장 보유 bar</div><div class="value">${esc(maybe(runtime.recommended_hold_bars))}</div></div><div class="mini"><div class="label">TP / SL / 추적</div><div class="value">${esc(`${fmtPctLocal(Number(runtime.tp_pct) * 100)} / ${fmtPctLocal(Number(runtime.sl_pct) * 100)} / ${fmtPctLocal(Number(runtime.trailing_pct) * 100)}`)}</div></div><div class="mini"><div class="label">산출 방식</div><div class="value">${esc(maybe(runtime.recommendation_source))}</div></div></div></div><div class="artifact-card"><strong>선택 정책 / 보정</strong><div class="mini-grid"><div class="mini"><div class="label">정책 모드</div><div class="value">${esc(translateLocal(policy.mode, policyText))}</div></div><div class="mini"><div class="label">기준 키</div><div class="value">${esc(maybe(policy.threshold_key))}</div></div><div class="mini"><div class="label">상위 비율</div><div class="value">${esc(policy.rank_quantile === null || policy.rank_quantile === undefined ? "-" : fmtPctLocal(Number(policy.rank_quantile) * 100))}</div></div><div class="mini"><div class="label">보정 사용</div><div class="value">${esc(boolLabel(policy.calibration_enabled))}</div></div><div class="mini"><div class="label">보정 방법</div><div class="value">${esc(maybe(calibration.method))}</div></div><div class="mini"><div class="label">보정 샘플 수</div><div class="value">${esc(maybe(calibration.sample_count))}</div></div></div></div><div class="artifact-card"><strong>탐색 예산 / 팩터 선택</strong><div class="mini-grid"><div class="mini"><div class="label">예산 결정</div><div class="value">${esc(maybe(budget.decision_mode))}</div></div><div class="mini"><div class="label">booster sweep</div><div class="value">${esc(maybe(budget.booster_sweep_trials))}</div></div><div class="mini"><div class="label">runtime grid</div><div class="value">${esc(maybe(budget.runtime_grid_mode))}</div></div><div class="mini"><div class="label">예산 사유</div><div class="value">${esc(joinReasonsLocal(budget.reasons))}</div></div><div class="mini"><div class="label">허용 블록</div><div class="value">${esc((factor.accepted_blocks || []).join(", ") || "-")}</div></div><div class="mini"><div class="label">제외 블록</div><div class="value">${esc((factor.rejected_blocks || []).join(", ") || "-")}</div></div></div></div><div class="artifact-card"><strong>강건성 검증</strong><div class="mini-grid"><div class="mini"><div class="label">CPCV 요청</div><div class="value">${esc(boolLabel(cpcv.requested))}</div></div><div class="mini"><div class="label">White comparable</div><div class="value">${esc(boolLabel(wf.white_rc_comparable))}</div></div><div class="mini"><div class="label">Hansen comparable</div><div class="value">${esc(boolLabel(wf.hansen_spa_comparable))}</div></div><div class="mini"><div class="label">selection trial 수</div><div class="value">${esc(maybe(wf.selection_search_trial_count))}</div></div></div></div>` : emptyLocal("최근 후보 산출물이 아직 없습니다.");
+      };
+
+      window.renderNotes = function renderNotes(data) {
+        const notes = [];
+        const acceptance = (data.training || {}).acceptance || {};
+        const challenger = data.challenger || {};
+        const rollout = (data.live || {}).rollout_latest || {};
+        const liveStates = (data.live || {}).states || [];
+        if ((acceptance.reasons || []).length) notes.push(noteCardLocal("이번 후보 직접 사유", joinReasonsLocal(acceptance.reasons)));
+        if ((acceptance.trainer_reasons || []).length) notes.push(noteCardLocal("학습 증거 세부 사유", joinReasonsLocal(acceptance.trainer_reasons)));
+        if ((acceptance.notes || []).length) notes.push(noteCardLocal("운영 메모", joinReasonsLocal(acceptance.notes)));
+        if (challenger.reason) notes.push(noteCardLocal("챌린저 미기동 사유", translateLocal(challenger.reason)));
+        if (rollout.status && (rollout.status.reason_codes || []).length) notes.push(noteCardLocal("최근 rollout 제한 사유", joinReasonsLocal(rollout.status.reason_codes)));
+        liveStates.forEach((state) => {
+          const activeBreakers = uniqueLocal((state.active_breakers || []).map((item) => item.reason || item.code || item.name));
+          if (activeBreakers.length) notes.push(noteCardLocal(`${state.label} 활성 브레이커`, joinReasonsLocal(activeBreakers)));
+        });
+        document.getElementById("notes-list").innerHTML = notes.length ? notes.join("") : emptyLocal("현재 바로 확인해야 할 경고나 참고 메모가 없습니다.");
+      };
+
+      window.renderMeta = function renderMeta(data) {
+        document.getElementById("generated-at").textContent = fmtDateTimeLocal(data.generated_at);
+        document.getElementById("project-root").textContent = data.project_root || "-";
+        const system = data.system || {};
+        const projectGb = Number(system.project_used_bytes || 0) / (1024 ** 3);
+        const totalGb = Number(system.total_bytes || 0) / (1024 ** 3);
+        const fsUsedGb = Number(system.used_bytes || 0) / (1024 ** 3);
+        document.getElementById("storage-summary").textContent = `프로젝트 ${fmtNumberLocal(projectGb, 1)} GB · 파일시스템 사용 ${fmtNumberLocal(fsUsedGb, 1)} GB / 전체 ${fmtNumberLocal(totalGb, 1)} GB`;
+      };
+
+      window.setError = function setError(message) {
+        const node = document.getElementById("fetch-error");
+        if (!message) {
+          node.style.display = "none";
+          node.textContent = "";
+          return;
+        }
+        node.style.display = "block";
+        node.textContent = message;
+      };
+
+      window.renderAll = function renderAll(data) {
+        window.renderMeta(data);
+        window.renderServices(data.services || {});
+        window.renderTraining(data.training || {});
+        window.renderChallenger(data.challenger || {});
+        window.renderPaper(data.paper || {});
+        window.renderWsPublic(data.ws_public || {});
+        window.renderLive(data.live || {});
+        window.renderArtifacts(data.training || {});
+        window.renderNotes(data);
+        window.setupSectionNav();
+      };
+
+      try {
+        renderServices = window.renderServices;
+        renderTraining = window.renderTraining;
+        renderChallenger = window.renderChallenger;
+        renderPaper = window.renderPaper;
+        renderWsPublic = window.renderWsPublic;
+        renderLive = window.renderLive;
+        renderArtifacts = window.renderArtifacts;
+        renderMeta = window.renderMeta;
+        renderAll = window.renderAll;
+        setError = window.setError;
+      } catch (_err) {}
+
+      window.setupSectionNav();
+      if (typeof INITIAL_SNAPSHOT !== "undefined" && INITIAL_SNAPSHOT) {
+        try {
+          window.renderAll(INITIAL_SNAPSHOT);
+        } catch (err) {
+          window.setError(`초기 렌더링 실패: ${err && err.message ? err.message : err}`);
+        }
+      }
+    })();
   </script>
 </body></html>
 """
