@@ -959,6 +959,203 @@ def test_live_model_alpha_runtime_backfills_existing_active_plan_from_model_inte
     assert plan["trailing"]["trail_pct"] == 0.015
 
 
+def test_find_latest_model_entry_intent_prefers_filled_order_match_over_newer_unfilled_order(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        for intent_id, ts_ms, price, volume, hold_bars in (
+            ("intent-old-filled", 1000, 100.0, 5.0, 6),
+            ("intent-new-open", 2000, 120.0, 9.0, 18),
+        ):
+            store.upsert_intent(
+                IntentRecord(
+                    intent_id=intent_id,
+                    ts_ms=ts_ms,
+                    market="KRW-ION",
+                    side="bid",
+                    price=price,
+                    volume=volume,
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    status="SUBMITTED",
+                    meta_json=json.dumps(
+                        {
+                            "submit_result": {"accepted": True},
+                            "strategy": {
+                                "meta": {
+                                    "model_exit_plan": {
+                                        "source": "model_alpha_v1",
+                                        "mode": "hold",
+                                        "hold_bars": hold_bars,
+                                        "interval_ms": 300000,
+                                        "timeout_delta_ms": 1800000,
+                                        "tp_pct": 0.02,
+                                        "sl_pct": 0.01,
+                                        "trailing_pct": 0.015,
+                                    }
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+        store.upsert_order(
+            OrderRecord(
+                uuid="order-old-filled",
+                identifier="AUTOBOT-autobot-001-intent-old-filled-1000-a",
+                market="KRW-ION",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=5.0,
+                volume_filled=5.0,
+                state="done",
+                created_ts=1000,
+                updated_ts=1100,
+                intent_id="intent-old-filled",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="order-old-filled",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="order-new-open",
+                identifier="AUTOBOT-autobot-001-intent-new-open-2000-a",
+                market="KRW-ION",
+                side="bid",
+                ord_type="limit",
+                price=120.0,
+                volume_req=9.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=2000,
+                updated_ts=2100,
+                intent_id="intent-new-open",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="order-new-open",
+            )
+        )
+
+        entry_intent = runtime_module._find_latest_model_entry_intent(
+            store=store,
+            market="KRW-ION",
+            position={
+                "market": "KRW-ION",
+                "base_amount": 5.0,
+                "avg_entry_price": 100.0,
+            },
+        )
+
+    assert entry_intent is not None
+    assert entry_intent["intent_id"] == "intent-old-filled"
+
+
+def test_live_model_alpha_runtime_uses_default_risk_when_position_intent_match_is_ambiguous(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ION",
+                base_currency="ION",
+                base_amount=5.0,
+                avg_entry_price=100.0,
+                updated_ts=now_ms - 500,
+            )
+        )
+        for intent_id, ts_ms, price, volume, hold_bars in (
+            ("intent-old-ambiguous", now_ms - 4000, 101.0, 5.0, 6),
+            ("intent-new-unfilled", now_ms - 2000, 120.0, 9.0, 18),
+        ):
+            store.upsert_intent(
+                IntentRecord(
+                    intent_id=intent_id,
+                    ts_ms=ts_ms,
+                    market="KRW-ION",
+                    side="bid",
+                    price=price,
+                    volume=volume,
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    status="SUBMITTED",
+                    meta_json=json.dumps(
+                        {
+                            "submit_result": {"accepted": True},
+                            "strategy": {
+                                "meta": {
+                                    "model_exit_plan": {
+                                        "source": "model_alpha_v1",
+                                        "mode": "hold",
+                                        "hold_bars": hold_bars,
+                                        "interval_ms": 300000,
+                                        "timeout_delta_ms": 1800000,
+                                        "tp_pct": 0.02,
+                                        "sl_pct": 0.01,
+                                        "trailing_pct": 0.015,
+                                    }
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+        store.upsert_order(
+            OrderRecord(
+                uuid="order-new-unfilled",
+                identifier="AUTOBOT-autobot-001-intent-new-unfilled-2000-a",
+                market="KRW-ION",
+                side="bid",
+                ord_type="limit",
+                price=120.0,
+                volume_req=9.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=now_ms - 2000,
+                updated_ts=now_ms - 1500,
+                intent_id="intent-new-unfilled",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="order-new-unfilled",
+            )
+        )
+
+        runtime_module._ensure_live_risk_plan(
+            store=store,
+            risk_manager=LiveRiskManager(
+                store=store,
+                executor_gateway=None,
+                config=RiskManagerConfig(
+                    default_tp_pct=3.0,
+                    default_sl_pct=2.0,
+                    default_trailing_enabled=False,
+                    default_trail_pct=0.01,
+                ),
+            ),
+            market="KRW-ION",
+            position={
+                "market": "KRW-ION",
+                "base_amount": 5.0,
+                "avg_entry_price": 100.0,
+            },
+            ts_ms=now_ms,
+        )
+        plans = store.list_risk_plans(states=("ACTIVE", "TRIGGERED", "EXITING"))
+
+    assert len(plans) == 1
+    assert plans[0]["plan_id"] == "default-risk-KRW-ION"
+    assert plans[0]["plan_source"] is None
+    assert plans[0]["source_intent_id"] is None
+
+
 def test_resolve_strategy_entry_ts_ms_ignores_closed_historical_plans(tmp_path: Path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         store.upsert_risk_plan(

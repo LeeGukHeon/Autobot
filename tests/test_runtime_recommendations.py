@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from autobot.models.predictor import ModelPredictor
+from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.models.runtime_recommendations import _build_exit_doc, _rank_execution_rows
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
@@ -35,6 +36,21 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_exec
                 "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
+                "summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 100.0,
+                    "fill_rate": 0.9,
+                    "max_drawdown_pct": 2.0,
+                    "slippage_bps_mean": 5.0,
+                },
+                "risk_summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 130.0,
+                    "fill_rate": 0.94,
+                    "max_drawdown_pct": 1.2,
+                    "slippage_bps_mean": 3.2,
+                },
+                "exit_mode_compare": {"decision": "candidate_edge", "comparable": True},
                 "recommended_risk_scaling_mode": "volatility_scaled",
                 "recommended_risk_vol_feature": "rv_36",
                 "recommended_tp_vol_multiplier": 2.5,
@@ -74,6 +90,94 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_exec
     assert state["exit_mode_source"] == "execution_backtest_grid_search_compare"
     assert state["exit_hold_bars_source"] == "execution_backtest_grid_search"
     assert state["execution_source"] == "execution_backtest_grid_search"
+
+
+def test_normalize_runtime_recommendations_backfills_legacy_exit_mode_compare() -> None:
+    payload = normalize_runtime_recommendations_payload(
+        {
+            "exit": {
+                "mode": "hold",
+                "recommended_hold_bars": 6,
+                "recommendation_source": "execution_backtest_grid_search",
+                "objective_score": 0.72,
+                "risk_objective_score": 0.0,
+                "summary": {
+                    "orders_filled": 10,
+                    "realized_pnl_quote": 120.0,
+                    "fill_rate": 0.95,
+                    "max_drawdown_pct": 1.1,
+                    "slippage_bps_mean": 2.0,
+                },
+                "risk_summary": {
+                    "orders_filled": 10,
+                    "realized_pnl_quote": 90.0,
+                    "fill_rate": 0.90,
+                    "max_drawdown_pct": 1.8,
+                    "slippage_bps_mean": 3.5,
+                },
+                "grid_point": {"hold_bars": 6},
+                "risk_grid_point": {
+                    "risk_scaling_mode": "volatility_scaled",
+                    "risk_vol_feature": "rv_12",
+                    "tp_vol_multiplier": 1.5,
+                    "sl_vol_multiplier": 1.0,
+                    "trailing_vol_multiplier": 0.0,
+                },
+            }
+        }
+    )
+
+    exit_doc = payload["exit"]
+    assert exit_doc["recommended_exit_mode"] == "hold"
+    assert exit_doc["recommended_exit_mode_source"] == "execution_backtest_grid_search_compare"
+    assert exit_doc["recommended_exit_mode_reason_code"] == "HOLD_PARETO_WIN_OR_INDETERMINATE"
+    assert exit_doc["exit_mode_compare"]["decision"] == "champion_edge"
+    assert exit_doc["contract_status"] == "backfilled"
+    assert "recommended_exit_mode" in exit_doc["contract_backfilled_fields"]
+    assert exit_doc["contract_issues"] == []
+
+
+def test_resolve_runtime_model_alpha_settings_rejects_partial_invalid_exit_contract() -> None:
+    predictor = _dummy_predictor(
+        runtime_recommendations={
+            "exit": {
+                "recommended_hold_bars": 12,
+                "recommendation_source": "execution_backtest_grid_search",
+                "recommended_risk_scaling_mode": "volatility_scaled",
+                "recommended_risk_vol_feature": "rv_36",
+                "recommended_tp_vol_multiplier": 2.5,
+                "recommended_sl_vol_multiplier": 1.5,
+                "recommended_trailing_vol_multiplier": 0.75,
+            }
+        }
+    )
+    settings = ModelAlphaSettings(
+        exit=ModelAlphaExitSettings(
+            mode="hold",
+            hold_bars=6,
+            risk_scaling_mode="fixed",
+            risk_vol_feature="rv_12",
+            tp_vol_multiplier=1.0,
+            sl_vol_multiplier=0.5,
+            trailing_vol_multiplier=0.25,
+            use_learned_exit_mode=True,
+            use_learned_hold_bars=True,
+            use_learned_risk_recommendations=True,
+        ),
+        execution=ModelAlphaExecutionSettings(use_learned_recommendations=False),
+    )
+
+    resolved, state = resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
+
+    assert resolved.exit.mode == "hold"
+    assert resolved.exit.hold_bars == 6
+    assert resolved.exit.risk_scaling_mode == "fixed"
+    assert resolved.exit.risk_vol_feature == "rv_12"
+    assert resolved.exit.tp_vol_multiplier == 1.0
+    assert resolved.exit.sl_vol_multiplier == 0.5
+    assert resolved.exit.trailing_vol_multiplier == 0.25
+    assert state["exit_contract_status"] == "invalid"
+    assert "EXIT_RECOMMENDATION_EVIDENCE_MISSING" in state["exit_contract_issues"]
 
 
 def test_rank_execution_rows_prefers_pairwise_winner() -> None:

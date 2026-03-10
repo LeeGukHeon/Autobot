@@ -767,6 +767,119 @@ def test_reconcile_import_preserves_existing_exiting_plan_metadata(tmp_path: Pat
     assert order["tp_sl_link"] == "model-risk-intent-entry-kite"
 
 
+def test_reconcile_import_promotes_existing_active_plan_to_exiting_when_exchange_exit_is_open(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        intent_meta = {
+            "model_exit_plan": {
+                "source": "model_alpha_v1",
+                "mode": "hold",
+                "hold_bars": 6,
+                "timeout_delta_ms": 1800000,
+                "tp_pct": 0.0,
+                "sl_pct": 0.0,
+                "trailing_pct": 0.0,
+            },
+            "submit_result": {"accepted": True, "order_uuid": "entry-order-wave"},
+        }
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-wave",
+                ts_ms=1000,
+                market="KRW-WAVE",
+                side="bid",
+                price=100.0,
+                volume=5.0,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-wave",
+                identifier="AUTOBOT-autobot-001-intent-entry-wave-1000-a",
+                market="KRW-WAVE",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=5.0,
+                volume_filled=5.0,
+                state="done",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-entry-wave",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-wave",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-intent-entry-wave",
+                market="KRW-WAVE",
+                side="long",
+                entry_price_str="100",
+                qty_str="5",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=1200,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1500,
+                timeout_ts_ms=1801000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-entry-wave",
+            )
+        )
+
+        reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "WAVE",
+                    "balance": "5",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                }
+            ],
+            open_orders_payload=[
+                {
+                    "uuid": "exit-order-wave",
+                    "identifier": "AUTOBOT-autobot-001-intent-exit-wave-1300-a",
+                    "market": "KRW-WAVE",
+                    "side": "ask",
+                    "ord_type": "limit",
+                    "price": "101.5",
+                    "volume": "5",
+                    "executed_volume": "0",
+                    "state": "wait",
+                }
+            ],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        plan = store.risk_plan_by_id(plan_id="model-risk-intent-entry-wave")
+        exit_order = store.order_by_uuid(uuid="exit-order-wave")
+
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "exit-order-wave"
+    assert plan["current_exit_order_identifier"] == "AUTOBOT-autobot-001-intent-exit-wave-1300-a"
+    assert plan["last_action_ts_ms"] == 5000
+    assert exit_order is not None
+    assert exit_order["tp_sl_link"] == "model-risk-intent-entry-wave"
+
+
 def test_reconcile_closes_local_position_when_bot_exit_is_done_and_exchange_position_missing(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

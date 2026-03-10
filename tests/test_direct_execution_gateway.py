@@ -131,3 +131,37 @@ def test_direct_gateway_replace_order_resolves_remain_only_and_nested_lookup() -
     assert result.new_order_uuid == "u-3"
     assert client.orders[0]["uuid"] == "u-1"
     assert client.replaced[0]["new_volume"] == "0.1"
+
+
+def test_direct_gateway_replace_order_accepts_identifier_when_uuid_lookup_is_pending() -> None:
+    class _PendingLookupClient(_DummyPrivateClient):
+        def cancel_and_new_order(self, **kwargs):
+            self.replaced.append(kwargs)
+            return {
+                "cancelled_order_uuid": kwargs.get("prev_order_uuid"),
+                "new_identifier": kwargs.get("new_identifier"),
+            }
+
+        def order(self, **kwargs):
+            self.orders.append(kwargs)
+            raise ClientRequestError("lookup pending", status_code=404, error_name="not_found")
+
+    client = _PendingLookupClient()
+    gateway = DirectRestExecutionGateway(client=client)
+
+    result = gateway.replace_order(
+        intent_id="intent-3",
+        prev_order_uuid="u-9",
+        prev_order_identifier=None,
+        new_identifier="AUTOBOT-4",
+        new_price_str="1002",
+        new_volume_str="0.2",
+        new_time_in_force="gtc",
+    )
+
+    assert result.accepted is True
+    assert result.reason == "replace_accepted_new_order_pending_lookup"
+    assert result.cancelled_order_uuid == "u-9"
+    assert result.new_order_uuid is None
+    assert result.new_identifier == "AUTOBOT-4"
+    assert client.orders[0]["identifier"] == "AUTOBOT-4"

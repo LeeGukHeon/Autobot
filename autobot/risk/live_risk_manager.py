@@ -187,7 +187,7 @@ class LiveRiskManager:
                     continue
                 updated = replace(
                     plan,
-                    current_exit_order_uuid=new_uuid or plan.current_exit_order_uuid,
+                    current_exit_order_uuid=new_uuid,
                     current_exit_order_identifier=new_identifier or plan.current_exit_order_identifier,
                     replace_attempt=plan.replace_attempt + 1,
                     last_action_ts_ms=ts_ms,
@@ -443,7 +443,7 @@ class LiveRiskManager:
             updated = replace(
                 plan,
                 state="EXITING",
-                current_exit_order_uuid=new_uuid or plan.current_exit_order_uuid,
+                current_exit_order_uuid=new_uuid,
                 current_exit_order_identifier=new_identifier_value,
                 replace_attempt=replace_step,
                 last_action_ts_ms=ts_ms,

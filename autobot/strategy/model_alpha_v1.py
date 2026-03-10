@@ -12,6 +12,7 @@ import polars as pl
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.predictor import ModelPredictor
+from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.models.selection_policy import DEFAULT_SELECTION_POLICY_MODE, normalize_selection_policy
 from autobot.strategy.operational_overlay_v1 import (
     ModelAlphaOperationalSettings,
@@ -704,10 +705,8 @@ def resolve_runtime_model_alpha_settings(
     settings: ModelAlphaSettings,
 ) -> tuple[ModelAlphaSettings, dict[str, Any]]:
     runtime_recommendations_payload = getattr(predictor, "runtime_recommendations", {})
-    runtime_recommendations = (
-        runtime_recommendations_payload
-        if isinstance(runtime_recommendations_payload, dict)
-        else {}
+    runtime_recommendations = normalize_runtime_recommendations_payload(
+        runtime_recommendations_payload if isinstance(runtime_recommendations_payload, dict) else {}
     )
     resolved = settings
     state: dict[str, Any] = {
@@ -720,7 +719,22 @@ def resolve_runtime_model_alpha_settings(
         return resolved, state
 
     exit_doc = runtime_recommendations.get("exit")
-    if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_exit_mode):
+    exit_contract_valid = isinstance(exit_doc, dict)
+    if isinstance(exit_doc, dict):
+        contract_status = str(exit_doc.get("contract_status") or "").strip()
+        contract_issues = [str(item).strip() for item in (exit_doc.get("contract_issues") or []) if str(item).strip()]
+        backfilled_fields = [
+            str(item).strip() for item in (exit_doc.get("contract_backfilled_fields") or []) if str(item).strip()
+        ]
+        if contract_status:
+            state["exit_contract_status"] = contract_status
+        if contract_issues:
+            state["exit_contract_issues"] = contract_issues
+            exit_contract_valid = False
+        if backfilled_fields:
+            state["exit_contract_backfilled_fields"] = backfilled_fields
+
+    if isinstance(exit_doc, dict) and exit_contract_valid and bool(settings.exit.use_learned_exit_mode):
         recommended_exit_mode = str(exit_doc.get("recommended_exit_mode", "")).strip().lower()
         if recommended_exit_mode in {"hold", "risk"}:
             resolved = replace(
@@ -743,7 +757,7 @@ def resolve_runtime_model_alpha_settings(
                 if isinstance(exit_doc.get("exit_mode_compare"), dict)
                 else {},
             }
-    if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_hold_bars):
+    if isinstance(exit_doc, dict) and exit_contract_valid and bool(settings.exit.use_learned_hold_bars):
         recommended_hold_bars = exit_doc.get("recommended_hold_bars")
         try:
             if (
@@ -764,7 +778,7 @@ def resolve_runtime_model_alpha_settings(
         except (TypeError, ValueError):
             pass
 
-    if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_risk_recommendations):
+    if isinstance(exit_doc, dict) and exit_contract_valid and bool(settings.exit.use_learned_risk_recommendations):
         try:
             recommended_scaling_mode = str(
                 exit_doc.get("recommended_risk_scaling_mode", resolved.exit.risk_scaling_mode)

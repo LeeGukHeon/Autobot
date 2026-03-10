@@ -10,6 +10,7 @@ import numpy as np
 
 from .dataset_loader import feature_columns_from_spec
 from .registry import load_json, load_model_bundle, resolve_run_dir
+from .runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from .selection_calibration import apply_selection_calibration, normalize_selection_calibration
 from .selection_policy import build_selection_policy_from_recommendations, normalize_selection_policy
 from .train_v1 import _predict_scores
@@ -79,6 +80,8 @@ def load_predictor_from_registry(
         raw_runtime_recommendations = train_config.get("runtime_recommendations")
         if isinstance(raw_runtime_recommendations, dict):
             runtime_recommendations = raw_runtime_recommendations
+    if runtime_recommendations:
+        runtime_recommendations = normalize_runtime_recommendations_payload(runtime_recommendations)
     selection_policy = load_json(run_dir / "selection_policy.json")
     if not selection_policy:
         raw_train_policy = train_config.get("selection_policy")

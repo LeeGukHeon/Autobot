@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from autobot.live.order_state import is_open_local_state, normalize_order_state
+from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 
 
 DEFAULT_DASHBOARD_HOST = "0.0.0.0"
@@ -378,6 +379,75 @@ def _summarize_live_risk_plan(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _summarize_execution_compare_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(summary or {})
+    realized_pnl_quote = _coerce_float(payload.get("realized_pnl_quote"))
+    if realized_pnl_quote is None:
+        realized_pnl_quote = _coerce_float(payload.get("realized_pnl_quote_total"))
+    return {
+        "realized_pnl_quote": realized_pnl_quote,
+        "unrealized_pnl_quote": _coerce_float(payload.get("unrealized_pnl_quote")),
+        "fill_rate": _coerce_float(payload.get("fill_rate")),
+        "max_drawdown_pct": _coerce_float(payload.get("max_drawdown_pct")),
+        "slippage_bps_mean": _coerce_float(payload.get("slippage_bps_mean")),
+        "orders_filled": _coerce_int(payload.get("orders_filled")),
+    }
+
+
+def _summarize_exit_mode_compare(exit_payload: dict[str, Any]) -> dict[str, Any]:
+    compare_doc = dict(exit_payload.get("exit_mode_compare") or {})
+    decision = str(compare_doc.get("decision") or "").strip().lower()
+    reasons = compare_doc.get("reasons") if isinstance(compare_doc.get("reasons"), list) else []
+    utility_score = _coerce_float(compare_doc.get("utility_score"))
+    recommended_mode = str(exit_payload.get("recommended_exit_mode") or exit_payload.get("mode") or "").strip().lower()
+    winner_ko = "리스크 관리형" if recommended_mode == "risk" else "시간 보유"
+    if not compare_doc:
+        reason_code = str(exit_payload.get("recommended_exit_mode_reason_code") or "").strip()
+        summary_ko = (
+            "시간 보유와 리스크 관리형 비교 기록이 없습니다."
+            if not reason_code
+            else f"{winner_ko} 선택: {reason_code}"
+        )
+    else:
+        if decision == "candidate_edge":
+            decision_ko = f"{winner_ko} 우세"
+        elif decision == "champion_edge":
+            decision_ko = f"{winner_ko} 선택"
+        elif decision == "indeterminate":
+            decision_ko = f"{winner_ko} 유지"
+        else:
+            decision_ko = winner_ko
+        reason_ko = " / ".join(str(item) for item in reasons if item) or "근거 요약 없음"
+        if utility_score is None:
+            summary_ko = f"{decision_ko}: {reason_ko}"
+        else:
+            summary_ko = f"{decision_ko}: {reason_ko}, 효용 점수 {utility_score:.3f}"
+    return {
+        "recommended_exit_mode": recommended_mode or None,
+        "recommended_exit_mode_reason_code": exit_payload.get("recommended_exit_mode_reason_code"),
+        "recommended_exit_mode_source": exit_payload.get("recommended_exit_mode_source"),
+        "decision": decision or None,
+        "reasons": reasons,
+        "utility_score": utility_score,
+        "summary_ko": summary_ko,
+        "hold": _summarize_execution_compare_metrics(exit_payload.get("summary")),
+        "risk": _summarize_execution_compare_metrics(exit_payload.get("risk_summary")),
+    }
+
+
+def _resolve_model_run_dir(project_root: Path, run_id: str | None) -> Path | None:
+    run_id_value = str(run_id or "").strip()
+    if not run_id_value:
+        return None
+    registry_root = project_root / "models" / "registry"
+    if not registry_root.exists():
+        return None
+    for candidate in registry_root.glob(f"*/{run_id_value}"):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
     meta = _normalize_json_text(row.get("meta_json"))
     meta_dict = meta if isinstance(meta, dict) else {}
@@ -412,7 +482,7 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
+def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict[str, Any]:
     if not db_path.exists():
         return {"label": label, "db_path": str(db_path), "exists": False}
     try:
@@ -478,6 +548,9 @@ def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
                 payload["hold_elapsed_minutes"] = elapsed_min
                 payload["hold_remaining_minutes"] = remaining_min
             active_risk_plan_payloads.append(payload)
+        runtime_health = checkpoints.get("live_runtime_health") or {}
+        runtime_run_dir = _resolve_model_run_dir(project_root, runtime_health.get("live_runtime_model_run_id"))
+        runtime_artifacts = _collect_recent_model_artifacts(project_root, str(runtime_run_dir)) if runtime_run_dir else {}
         return {
             "label": label,
             "db_path": str(db_path),
@@ -499,7 +572,8 @@ def _load_live_db_summary(db_path: Path, label: str) -> dict[str, Any]:
                 }
                 for row in active_breakers[:8]
             ],
-            "runtime_health": checkpoints.get("live_runtime_health") or {},
+            "runtime_health": runtime_health,
+            "runtime_artifacts": runtime_artifacts,
             "rollout_status": checkpoints.get("live_rollout_status") or {},
             "rollout_contract": checkpoints.get("live_rollout_contract") or {},
             "last_resume": checkpoints.get("last_resume") or {},
@@ -524,14 +598,29 @@ def _resolve_live_db_candidates(project_root: Path) -> list[tuple[str, Path]]:
 
 
 def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_runtime_recommendations_payload(payload)
+    exit_payload = dict(_dig(normalized, "exit") or {})
+    hold_grid_point = dict(exit_payload.get("grid_point") or {})
+    risk_grid_point = dict(exit_payload.get("risk_grid_point") or {})
     return {
-        "recommended_exit_mode": _dig(payload, "exit", "mode"),
-        "recommended_hold_bars": _dig(payload, "exit", "recommended_hold_bars"),
-        "tp_pct": _dig(payload, "exit", "tp_pct"),
-        "sl_pct": _dig(payload, "exit", "sl_pct"),
-        "trailing_pct": _dig(payload, "exit", "trailing_pct"),
-        "risk_multiplier": _dig(payload, "risk", "risk_multiplier"),
-        "recommendation_source": _dig(payload, "exit", "recommendation_source"),
+        "recommended_exit_mode": _dig(normalized, "exit", "recommended_exit_mode") or _dig(normalized, "exit", "mode"),
+        "recommended_exit_mode_reason_code": _dig(normalized, "exit", "recommended_exit_mode_reason_code"),
+        "recommended_hold_bars": _dig(normalized, "exit", "recommended_hold_bars"),
+        "hold_objective_score": _dig(normalized, "exit", "objective_score"),
+        "risk_objective_score": _dig(normalized, "exit", "risk_objective_score"),
+        "hold_grid_point": hold_grid_point,
+        "risk_grid_point": risk_grid_point,
+        "recommended_risk_scaling_mode": _dig(normalized, "exit", "recommended_risk_scaling_mode"),
+        "recommended_risk_vol_feature": _dig(normalized, "exit", "recommended_risk_vol_feature"),
+        "recommended_tp_vol_multiplier": _dig(normalized, "exit", "recommended_tp_vol_multiplier"),
+        "recommended_sl_vol_multiplier": _dig(normalized, "exit", "recommended_sl_vol_multiplier"),
+        "recommended_trailing_vol_multiplier": _dig(normalized, "exit", "recommended_trailing_vol_multiplier"),
+        "risk_multiplier": _dig(normalized, "risk", "risk_multiplier"),
+        "recommendation_source": _dig(normalized, "exit", "recommended_exit_mode_source")
+        or _dig(normalized, "exit", "recommendation_source"),
+        "contract_status": _dig(normalized, "exit", "contract_status"),
+        "contract_issues": list(_dig(normalized, "exit", "contract_issues") or []),
+        "exit_mode_compare": _summarize_exit_mode_compare(exit_payload),
     }
 
 
@@ -683,7 +772,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         },
         "live": {
             "rollout_latest": _load_json(live_rollout_latest),
-            "states": [_load_live_db_summary(path, label) for label, path in _resolve_live_db_candidates(project_root)],
+            "states": [_load_live_db_summary(path, label, project_root) for label, path in _resolve_live_db_candidates(project_root)],
         },
         "ws_public": ws_status,
     }
@@ -1407,6 +1496,54 @@ INDEX_HTML = """<!doctype html>
       const metaChipLocal = (label, value) => `<div class="meta-chip"><div class="k">${esc(label)}</div><div class="v">${esc(value ?? "-")}</div></div>`;
       const detailItemLocal = ({ title, status, desc, path, meta = [] }) => `<div class="detail-item"><div class="title-row"><strong>${esc(title)}</strong>${status || ""}</div>${desc ? `<div class="desc">${esc(desc)}</div>` : ""}${path ? `<div class="path mono">${esc(path)}</div>` : ""}${meta.length ? `<div class="meta-grid">${meta.join("")}</div>` : ""}</div>`;
       const detailSectionLocal = (title, items, emptyText) => `<div class="detail-box"><strong>${esc(title)}</strong>${items.length ? `<div class="detail-list">${items.join("")}</div>` : emptyLocal(emptyText)}</div>`;
+      const fmtFillRateLocal = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : fmtPctLocal(Number(value) * 100);
+      const summarizeExitCandidateLocal = (runtime, mode) => {
+        const payload = runtime && typeof runtime === "object" ? runtime : {};
+        if (mode === "hold") {
+          const holdGridPoint = payload.hold_grid_point || {};
+          const holdBars = holdGridPoint.hold_bars ?? payload.recommended_hold_bars;
+          if (holdBars === null || holdBars === undefined || holdBars === "") return "기록 없음";
+          const score = payload.hold_objective_score;
+          return score === null || score === undefined || Number.isNaN(Number(score))
+            ? `hold ${maybe(holdBars)} bar`
+            : `hold ${maybe(holdBars)} bar · score ${fmtNumberLocal(score, 3)}`;
+        }
+        const volFeature = payload.recommended_risk_vol_feature;
+        const scalingMode = payload.recommended_risk_scaling_mode;
+        if ((volFeature === null || volFeature === undefined || volFeature === "") && (scalingMode === null || scalingMode === undefined || scalingMode === "")) {
+          return "기록 없음";
+        }
+        const score = payload.risk_objective_score;
+        const pieces = [
+          maybe(scalingMode),
+          maybe(volFeature),
+          `TP ${fmtNumberLocal(payload.recommended_tp_vol_multiplier, 2)}x`,
+          `SL ${fmtNumberLocal(payload.recommended_sl_vol_multiplier, 2)}x`,
+          `Trail ${fmtNumberLocal(payload.recommended_trailing_vol_multiplier, 2)}x`,
+        ];
+        if (!(score === null || score === undefined || Number.isNaN(Number(score)))) {
+          pieces.push(`score ${fmtNumberLocal(score, 3)}`);
+        }
+        return pieces.join(" · ");
+      };
+      const summarizeExitMetricsLocal = (metrics) => {
+        const payload = metrics && typeof metrics === "object" ? metrics : {};
+        const parts = [
+          `손익 ${fmtMoneyLocal(payload.realized_pnl_quote)}`,
+          `체결률 ${fmtFillRateLocal(payload.fill_rate)}`,
+          `최대DD ${fmtPctLocal(payload.max_drawdown_pct)}`,
+          `슬리피지 ${fmtBpsLocal(payload.slippage_bps_mean)}`,
+          `체결 ${maybe(payload.orders_filled, "0")}`,
+        ];
+        return parts.join(" · ");
+      };
+      const renderExitCompareCardLocal = (runtime, title) => {
+        const payload = runtime && typeof runtime === "object" ? runtime : {};
+        if (!Object.keys(payload).length) return "";
+        const compare = payload.exit_mode_compare && typeof payload.exit_mode_compare === "object" ? payload.exit_mode_compare : {};
+        const compareSummary = maybe(compare.summary_ko, "비교 기록이 없습니다.");
+        return `<div class="artifact-card"><strong>${esc(title)}</strong><p class="section-lead" style="margin-top:10px">${esc(compareSummary)}</p><div class="tag-row" style="margin-top:12px">${payload.recommended_exit_mode_reason_code ? pill("판정 코드", payload.recommended_exit_mode_reason_code, "warn") : ""}${payload.recommendation_source ? pill("산출 방식", payload.recommendation_source, "warn") : ""}${compare.decision ? pill("비교 판정", String(compare.decision), compare.decision === "candidate_edge" ? "good" : "warn") : ""}</div><div class="mini-grid"><div class="mini"><div class="label">선택 모드</div><div class="value">${esc(translateLocal(payload.recommended_exit_mode, policyText))}</div></div><div class="mini"><div class="label">hold 후보</div><div class="value">${esc(summarizeExitCandidateLocal(payload, "hold"))}</div></div><div class="mini"><div class="label">risk 후보</div><div class="value">${esc(summarizeExitCandidateLocal(payload, "risk"))}</div></div><div class="mini"><div class="label">hold 성과</div><div class="value">${esc(summarizeExitMetricsLocal(compare.hold || {}))}</div></div><div class="mini"><div class="label">risk 성과</div><div class="value">${esc(summarizeExitMetricsLocal(compare.risk || {}))}</div></div></div></div>`;
+      };
 
       window.setupSectionNav = function setupSectionNav() {
         const active = window.__dashboardActiveSection || "all";
@@ -1554,13 +1691,29 @@ INDEX_HTML = """<!doctype html>
           const runtime = state.runtime_health || {};
           const rolloutStatus = state.rollout_status || {};
           const lastResume = state.last_resume || {};
+          const runtimeArtifacts = state.runtime_artifacts || {};
+          const liveRuntime = runtimeArtifacts.runtime_recommendations || {};
           const positions = (state.positions || []).map(summarizePosition);
           const openOrders = (state.open_orders || []).map(summarizeOrder);
           const plans = (state.active_risk_plans || []).map(summarizeRiskPlan);
           const intents = (state.recent_intents || []).map(summarizeIntent);
           const activeBreakers = uniqueLocal((state.active_breakers || []).map((item) => item.reason || item.code || item.name));
+          const liveRuntimeCard = renderExitCompareCardLocal(liveRuntime, "현재 런타임 종료 모드 경쟁");
           return `<div class="state-card"><div class="row"><strong>${esc(state.label)}</strong>${pill("브레이커", boolLabel(state.breaker_active), state.breaker_active ? "bad" : "good")}</div><p class="section-lead" style="margin-top:10px">${esc(`${state.label}는 현재 ${translateLocal(rolloutStatus.mode, policyText)} 모드이며, 챔피언 포인터 ${shortRunLocal(runtime.champion_pointer_run_id)}를 기준으로 동작합니다.`)}</p><div class="mini-grid"><div class="mini"><div class="label">현재 모델</div><div class="value mono">${esc(shortRunLocal(runtime.live_runtime_model_run_id))}</div></div><div class="mini"><div class="label">챔피언 포인터</div><div class="value mono">${esc(shortRunLocal(runtime.champion_pointer_run_id))}</div></div><div class="mini"><div class="label">보유 포지션 / 주문</div><div class="value">${esc(`${maybe(state.positions_count, "0")} / ${maybe(state.open_orders_count, "0")}`)}</div></div><div class="mini"><div class="label">활성 리스크 플랜</div><div class="value">${esc(maybe(state.active_risk_plans_count, "0"))}</div></div><div class="mini"><div class="label">주문 방출 허용</div><div class="value">${esc(boolLabel(rolloutStatus.order_emission_allowed))}</div></div><div class="mini"><div class="label">WS 신선도</div><div class="value">${esc(runtime.ws_public_stale ? "오래됨" : "정상")}</div></div><div class="mini"><div class="label">포인터 동기화</div><div class="value">${esc(runtime.model_pointer_divergence ? "어긋남" : "정상")}</div></div><div class="mini"><div class="label">마지막 resume</div><div class="value">${esc(fmtDateTimeLocal(lastResume.generated_at || lastResume.checked_at || lastResume.completed_at))}</div></div></div><div class="tag-row" style="margin-top:12px">${rolloutStatus.mode ? pill("운용 모드", translateLocal(rolloutStatus.mode, policyText), rolloutStatus.mode === "live" ? "bad" : "warn") : ""}${runtime.ws_public_stale === true ? pill("WS 신선도", "오래됨", "bad") : pill("WS 신선도", "정상", "good")}${runtime.model_pointer_divergence === true ? pill("모델 포인터", "어긋남", "bad") : pill("모델 포인터", "정상", "good")}${activeBreakers.length ? pill("활성 브레이커", activeBreakers.length, "bad") : pill("활성 브레이커", "없음", "good")}</div><div class="detail-stack">${detailSectionLocal("보유 중인 종목", positions, "현재 보유 포지션이 없습니다.")}${detailSectionLocal("미체결 주문", openOrders, "현재 열린 주문이 없습니다.")}${detailSectionLocal("활성 리스크 플랜", plans, "현재 활성 리스크 플랜이 없습니다.")}${detailSectionLocal("최근 진입 / 종료 의도", intents, "최근 기록된 intent가 없습니다.")}</div></div>`;
         }).join("") : emptyLocal("라이브 상태 DB를 찾지 못했습니다.");
+        const liveCards = Array.from(document.querySelectorAll("#live-state-cards .state-card"));
+        states.forEach((state, index) => {
+          const runtime = (((state || {}).runtime_artifacts || {}).runtime_recommendations) || {};
+          const compareCard = renderExitCompareCardLocal(runtime, "현재 런타임 종료 모드 경쟁");
+          const node = liveCards[index];
+          if (!compareCard || !node) return;
+          const detailStack = node.querySelector(".detail-stack");
+          if (detailStack) {
+            detailStack.insertAdjacentHTML("beforebegin", compareCard);
+            return;
+          }
+          node.insertAdjacentHTML("beforeend", compareCard);
+        });
       };
 
       window.renderArtifacts = function renderArtifacts(training) {
@@ -1573,6 +1726,12 @@ INDEX_HTML = """<!doctype html>
         const cpcv = artifacts.cpcv_lite_report || {};
         const wf = artifacts.walk_forward_report || {};
         document.getElementById("artifact-details").innerHTML = Object.keys(artifacts).length ? `<div class="artifact-card"><strong>런타임 추천</strong><div class="mini-grid"><div class="mini"><div class="label">종료 모드</div><div class="value">${esc(translateLocal(runtime.recommended_exit_mode, policyText))}</div></div><div class="mini"><div class="label">권장 보유 bar</div><div class="value">${esc(maybe(runtime.recommended_hold_bars))}</div></div><div class="mini"><div class="label">TP / SL / 추적</div><div class="value">${esc(`${fmtPctLocal(Number(runtime.tp_pct) * 100)} / ${fmtPctLocal(Number(runtime.sl_pct) * 100)} / ${fmtPctLocal(Number(runtime.trailing_pct) * 100)}`)}</div></div><div class="mini"><div class="label">산출 방식</div><div class="value">${esc(maybe(runtime.recommendation_source))}</div></div></div></div><div class="artifact-card"><strong>선택 정책 / 보정</strong><div class="mini-grid"><div class="mini"><div class="label">정책 모드</div><div class="value">${esc(translateLocal(policy.mode, policyText))}</div></div><div class="mini"><div class="label">기준 키</div><div class="value">${esc(maybe(policy.threshold_key))}</div></div><div class="mini"><div class="label">상위 비율</div><div class="value">${esc(policy.rank_quantile === null || policy.rank_quantile === undefined ? "-" : fmtPctLocal(Number(policy.rank_quantile) * 100))}</div></div><div class="mini"><div class="label">보정 사용</div><div class="value">${esc(boolLabel(policy.calibration_enabled))}</div></div><div class="mini"><div class="label">보정 방법</div><div class="value">${esc(maybe(calibration.method))}</div></div><div class="mini"><div class="label">보정 샘플 수</div><div class="value">${esc(maybe(calibration.sample_count))}</div></div></div></div><div class="artifact-card"><strong>탐색 예산 / 팩터 선택</strong><div class="mini-grid"><div class="mini"><div class="label">예산 결정</div><div class="value">${esc(maybe(budget.decision_mode))}</div></div><div class="mini"><div class="label">booster sweep</div><div class="value">${esc(maybe(budget.booster_sweep_trials))}</div></div><div class="mini"><div class="label">runtime grid</div><div class="value">${esc(maybe(budget.runtime_grid_mode))}</div></div><div class="mini"><div class="label">예산 사유</div><div class="value">${esc(joinReasonsLocal(budget.reasons))}</div></div><div class="mini"><div class="label">허용 블록</div><div class="value">${esc((factor.accepted_blocks || []).join(", ") || "-")}</div></div><div class="mini"><div class="label">제외 블록</div><div class="value">${esc((factor.rejected_blocks || []).join(", ") || "-")}</div></div></div></div><div class="artifact-card"><strong>강건성 검증</strong><div class="mini-grid"><div class="mini"><div class="label">CPCV 요청</div><div class="value">${esc(boolLabel(cpcv.requested))}</div></div><div class="mini"><div class="label">White comparable</div><div class="value">${esc(boolLabel(wf.white_rc_comparable))}</div></div><div class="mini"><div class="label">Hansen comparable</div><div class="value">${esc(boolLabel(wf.hansen_spa_comparable))}</div></div><div class="mini"><div class="label">selection trial 수</div><div class="value">${esc(maybe(wf.selection_search_trial_count))}</div></div></div></div>` : emptyLocal("최근 후보 산출물이 아직 없습니다.");
+        if (Object.keys(artifacts).length) {
+          const compareCard = renderExitCompareCardLocal(runtime, "후보 런타임 종료 모드 경쟁");
+          if (compareCard) {
+            document.getElementById("artifact-details").insertAdjacentHTML("afterbegin", compareCard);
+          }
+        }
       };
 
       window.renderNotes = function renderNotes(data) {

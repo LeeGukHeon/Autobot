@@ -40,8 +40,57 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     _write_json(meta_dir / "ws_collect_report.json", {"run_id": "collect-1", "generated_at": "2026-03-10T00:00:00Z"})
     _write_json(meta_dir / "ws_runs_summary.json", {"run_id": "ws-run-1"})
     _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    _write_json(
+        project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_recommendations.json",
+        {
+            "exit": {
+                "recommended_exit_mode": "hold",
+                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                "recommended_exit_mode_reason_code": "HOLD_PARETO_WIN_OR_INDETERMINATE",
+                "recommended_hold_bars": 6,
+                "objective_score": 0.15,
+                "grid_point": {"hold_bars": 6},
+                "recommended_risk_scaling_mode": "volatility_scaled",
+                "recommended_risk_vol_feature": "atr_14",
+                "recommended_tp_vol_multiplier": 1.8,
+                "recommended_sl_vol_multiplier": 0.9,
+                "recommended_trailing_vol_multiplier": 1.1,
+                "risk_objective_score": 0.11,
+                "risk_grid_point": {
+                    "risk_scaling_mode": "volatility_scaled",
+                    "risk_vol_feature": "atr_14",
+                    "tp_vol_multiplier": 1.8,
+                    "sl_vol_multiplier": 0.9,
+                    "trailing_vol_multiplier": 1.1,
+                },
+                "summary": {
+                    "realized_pnl_quote": 12000.0,
+                    "fill_rate": 0.82,
+                    "max_drawdown_pct": 4.5,
+                    "slippage_bps_mean": 11.0,
+                    "orders_filled": 8,
+                },
+                "risk_summary": {
+                    "realized_pnl_quote": 11800.0,
+                    "fill_rate": 0.78,
+                    "max_drawdown_pct": 5.0,
+                    "slippage_bps_mean": 13.5,
+                    "orders_filled": 7,
+                },
+                "exit_mode_compare": {
+                    "decision": "champion_edge",
+                    "reasons": ["UTILITY_TIE_BREAK_FAIL"],
+                    "utility_score": -0.05,
+                    "comparable": True,
+                },
+            }
+        },
+    )
 
     snapshot = build_dashboard_snapshot(project_root)
+    runtime_artifacts = snapshot["live"]["states"][0]["runtime_artifacts"]
+    runtime_recommendations = runtime_artifacts["runtime_recommendations"]
+    exit_compare = runtime_recommendations["exit_mode_compare"]
 
     assert snapshot["training"]["acceptance"]["candidate_run_id"] == "run-abc"
     assert snapshot["challenger"]["reason"] == "TRAINER_EVIDENCE_REQUIRED_FAILED"
@@ -49,3 +98,59 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["positions_count"] == 0
     assert snapshot["live"]["states"][0]["open_orders_count"] == 1
     assert snapshot["live"]["states"][0]["active_risk_plans_count"] == 1
+    assert runtime_artifacts["exists"] is True
+    assert runtime_recommendations["recommended_exit_mode"] == "hold"
+    assert runtime_recommendations["hold_grid_point"]["hold_bars"] == 6
+    assert runtime_recommendations["recommended_risk_vol_feature"] == "atr_14"
+    assert exit_compare["hold"]["orders_filled"] == 8
+    assert exit_compare["risk"]["slippage_bps_mean"] == 13.5
+    assert exit_compare["summary_ko"]
+
+
+def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    _write_json(
+        project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_recommendations.json",
+        {
+            "exit": {
+                "mode": "hold",
+                "recommended_hold_bars": 6,
+                "recommendation_source": "execution_backtest_grid_search",
+                "objective_score": 0.71,
+                "risk_objective_score": 0.0,
+                "grid_point": {"hold_bars": 6},
+                "risk_grid_point": {
+                    "risk_scaling_mode": "volatility_scaled",
+                    "risk_vol_feature": "rv_12",
+                    "tp_vol_multiplier": 1.5,
+                    "sl_vol_multiplier": 1.0,
+                    "trailing_vol_multiplier": 0.0,
+                },
+                "summary": {
+                    "realized_pnl_quote": 12608.64,
+                    "fill_rate": 0.9660,
+                    "max_drawdown_pct": 1.685,
+                    "slippage_bps_mean": 2.118,
+                    "orders_filled": 398,
+                },
+                "risk_summary": {
+                    "realized_pnl_quote": 11252.59,
+                    "fill_rate": 0.9638,
+                    "max_drawdown_pct": 1.886,
+                    "slippage_bps_mean": 2.501,
+                    "orders_filled": 586,
+                },
+            }
+        },
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+    runtime_recommendations = snapshot["live"]["states"][0]["runtime_artifacts"]["runtime_recommendations"]
+
+    assert runtime_recommendations["recommended_exit_mode"] == "hold"
+    assert runtime_recommendations["recommended_exit_mode_reason_code"] == "HOLD_PARETO_WIN_OR_INDETERMINATE"
+    assert runtime_recommendations["contract_status"] == "backfilled"
+    assert runtime_recommendations["contract_issues"] == []
+    assert runtime_recommendations["exit_mode_compare"]["decision"] == "champion_edge"

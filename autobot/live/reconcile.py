@@ -241,6 +241,7 @@ def reconcile_exchange_snapshot(
             market=market,
             position=position,
             latest_bid_order=bid_orders_by_market.get(market),
+            exchange_bot_open_orders=exchange_bot_open_orders_by_market.get(market, []),
             intents_by_id=intents_by_id,
             ts_ms=now_ts,
         )
@@ -266,8 +267,12 @@ def reconcile_exchange_snapshot(
                             str(item.get("plan_id") or ""),
                         ),
                     )
-                    current_exit_uuid = _as_optional_str(selected_existing.get("current_exit_order_uuid"))
-                    current_exit_identifier = _as_optional_str(selected_existing.get("current_exit_order_identifier"))
+                    recovered_exit_uuid = _as_optional_str(risk_plan_record.current_exit_order_uuid)
+                    recovered_exit_identifier = _as_optional_str(risk_plan_record.current_exit_order_identifier)
+                    current_exit_uuid = _as_optional_str(selected_existing.get("current_exit_order_uuid")) or recovered_exit_uuid
+                    current_exit_identifier = (
+                        _as_optional_str(selected_existing.get("current_exit_order_identifier")) or recovered_exit_identifier
+                    )
                     preserved_last_action_ts_ms = int(selected_existing.get("last_action_ts_ms") or 0)
                     matched_exit_order = None
                     if current_exit_uuid:
@@ -280,10 +285,13 @@ def reconcile_exchange_snapshot(
                             int(matched_exit_order.get("created_ts") or 0),
                             now_ts,
                         )
+                    merged_state = str(selected_existing.get("state") or risk_plan_record.state or "ACTIVE")
+                    if (recovered_exit_uuid or recovered_exit_identifier) and str(risk_plan_record.state or "").strip().upper() == "EXITING":
+                        merged_state = "EXITING"
                     risk_plan_record = replace(
                         risk_plan_record,
                         plan_id=str(selected_existing.get("plan_id") or risk_plan_record.plan_id),
-                        state=str(selected_existing.get("state") or risk_plan_record.state),
+                        state=merged_state,
                         last_eval_ts_ms=max(
                             int(selected_existing.get("last_eval_ts_ms") or 0),
                             int(risk_plan_record.last_eval_ts_ms),
@@ -332,6 +340,9 @@ def reconcile_exchange_snapshot(
                 order_uuid = matched_import.get("order_uuid")
                 if isinstance(order_uuid, str) and order_uuid.strip():
                     store.mark_order_state(uuid=order_uuid, state="done", updated_ts=now_ts)
+                exit_order_record = matched_import.get("exit_order_record")
+                if isinstance(exit_order_record, OrderRecord):
+                    store.upsert_order(replace(exit_order_record, tp_sl_link=risk_plan_record.plan_id))
             actions.append(
                 {
                     "type": "import_managed_position_from_bot_intent",
@@ -962,7 +973,27 @@ def _latest_bot_bid_orders_by_market(
         candidate = dict(item)
         candidate["intent_id"] = item_intent_id
         existing = result.get(market)
-        if existing is None or int(candidate.get("updated_ts") or 0) > int(existing.get("updated_ts") or 0):
+        candidate_has_fill = int(
+            float(candidate.get("volume_filled") or 0.0) > 0.0
+            or str(candidate.get("local_state") or "").strip().upper() in {"DONE", "PARTIAL"}
+            or str(candidate.get("state") or "").strip().lower() == "done"
+        )
+        existing_has_fill = int(
+            existing is not None
+            and (
+                float(existing.get("volume_filled") or 0.0) > 0.0
+                or str(existing.get("local_state") or "").strip().upper() in {"DONE", "PARTIAL"}
+                or str(existing.get("state") or "").strip().lower() == "done"
+            )
+        )
+        if (
+            existing is None
+            or candidate_has_fill > existing_has_fill
+            or (
+                candidate_has_fill == existing_has_fill
+                and int(candidate.get("updated_ts") or 0) > int(existing.get("updated_ts") or 0)
+            )
+        ):
             result[market] = candidate
     return result
 
@@ -995,6 +1026,7 @@ def _match_model_managed_position_import(
     market: str,
     position: dict[str, Any],
     latest_bid_order: dict[str, Any] | None,
+    exchange_bot_open_orders: list[dict[str, Any]],
     intents_by_id: dict[str, dict[str, Any]],
     ts_ms: int,
 ) -> dict[str, Any] | None:
@@ -1028,11 +1060,37 @@ def _match_model_managed_position_import(
     )
     if position_record.base_amount <= 0 or position_record.avg_entry_price <= 0:
         return None
+    exit_order_record: OrderRecord | None = None
+    open_exit_order = next(
+        (
+            item
+            for item in exchange_bot_open_orders
+            if str(item.get("market") or "").strip().upper() == str(market).strip().upper()
+            and str(item.get("side") or "").strip().lower() == "ask"
+        ),
+        None,
+    )
+    if open_exit_order is not None:
+        exit_order_record = _order_record_from_payload(open_exit_order, ts_ms=ts_ms)
+        if exit_order_record is not None:
+            last_action_ts_ms = max(
+                int(exit_order_record.updated_ts or 0),
+                int(exit_order_record.created_ts or 0),
+                int(ts_ms),
+            )
+            risk_plan_record = replace(
+                risk_plan_record,
+                state="EXITING",
+                last_action_ts_ms=last_action_ts_ms,
+                current_exit_order_uuid=exit_order_record.uuid,
+                current_exit_order_identifier=exit_order_record.identifier,
+            )
     return {
         "intent_id": intent_id,
         "order_uuid": _as_optional_str(latest_bid_order.get("uuid")),
         "position_record": position_record,
         "risk_plan_record": risk_plan_record,
+        "exit_order_record": exit_order_record,
     }
 
 

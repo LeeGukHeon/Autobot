@@ -812,7 +812,7 @@ def _ensure_live_risk_plan(
         return
     entry_intent: dict[str, Any] | None = None
     if not live_plans:
-        entry_intent = _find_latest_model_entry_intent(store=store, market=market)
+        entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=position)
         if entry_intent is not None:
             _, risk_plan_record = build_model_derived_risk_records(
                 market=market,
@@ -846,7 +846,7 @@ def _ensure_live_risk_plan(
         timeout_ts_ms = _safe_optional_int(plan.get("timeout_ts_ms"))
         if not plan_source or not source_intent_id or timeout_ts_ms is None:
             if entry_intent is None:
-                entry_intent = _find_latest_model_entry_intent(store=store, market=market)
+                entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=position)
             if entry_intent is not None:
                 _, derived_plan_record = build_model_derived_risk_records(
                     market=market,
@@ -934,8 +934,10 @@ def _find_latest_model_entry_intent(
     *,
     store: LiveStateStore,
     market: str,
+    position: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     market_value = str(market).strip().upper()
+    intents_by_id: dict[str, dict[str, Any]] = {}
     for item in store.list_intents():
         if str(item.get("market", "")).strip().upper() != market_value:
             continue
@@ -952,12 +954,56 @@ def _find_latest_model_entry_intent(
         plan_payload = extract_model_exit_plan(meta)
         if plan_payload is None:
             continue
-        return {
-            "intent_id": str(item.get("intent_id")),
+        intent_id = str(item.get("intent_id") or "").strip()
+        if not intent_id:
+            continue
+        intents_by_id[intent_id] = {
+            "intent_id": intent_id,
             "created_ts": int(item.get("ts_ms") or 0),
             "plan_payload": plan_payload,
         }
-    return None
+    if not intents_by_id:
+        return None
+    target_price = _safe_float((position or {}).get("avg_entry_price"), default=0.0)
+    target_qty = _safe_float((position or {}).get("base_amount"), default=0.0)
+    saw_market_bid_order = False
+    best: tuple[tuple[int, float, float, int], dict[str, Any]] | None = None
+    for order in store.list_orders(open_only=False):
+        if str(order.get("market", "")).strip().upper() != market_value:
+            continue
+        if str(order.get("side", "")).strip().lower() != "bid":
+            continue
+        saw_market_bid_order = True
+        intent_id = str(order.get("intent_id") or "").strip()
+        candidate = intents_by_id.get(intent_id)
+        if candidate is None:
+            continue
+        volume_filled = _safe_float(order.get("volume_filled"), default=0.0)
+        local_state = str(order.get("local_state") or "").strip().upper()
+        state = str(order.get("state") or "").strip().lower()
+        has_fill = int(volume_filled > 0.0 or local_state in {"DONE", "PARTIAL"} or state == "done")
+        if has_fill <= 0:
+            continue
+        matched_qty = volume_filled if volume_filled > 0.0 else (_safe_float(order.get("volume_req"), default=0.0) or 0.0)
+        matched_price = _safe_float(order.get("price"), default=0.0) or 0.0
+        price_delta = abs(matched_price - target_price) if target_price > 0.0 else 0.0
+        qty_delta = abs(matched_qty - target_qty) if target_qty > 0.0 else 0.0
+        sort_key = (
+            has_fill,
+            -qty_delta,
+            -price_delta,
+            int(order.get("updated_ts") or candidate["created_ts"] or 0),
+        )
+        if best is None or sort_key > best[0]:
+            best = (sort_key, candidate)
+    if best is not None:
+        return best[1]
+    if position is not None:
+        if saw_market_bid_order:
+            return None
+        if len(intents_by_id) != 1:
+            return None
+    return max(intents_by_id.values(), key=lambda item: int(item.get("created_ts") or 0))
 
 
 @dataclass(frozen=True)

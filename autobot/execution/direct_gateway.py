@@ -268,9 +268,10 @@ class DirectRestExecutionGateway:
                 if looked_up_uuid and looked_up_uuid != cancelled_uuid:
                     new_uuid = looked_up_uuid
                     resolved_new_identifier = _optional_str(lookup.get("identifier")) or resolved_new_identifier
+        accepted = new_uuid is not None or bool(resolved_new_identifier)
         return ExecutorReplaceResult(
-            accepted=new_uuid is not None,
-            reason="" if new_uuid is not None else "replace_accepted_new_order_unconfirmed",
+            accepted=accepted,
+            reason="" if new_uuid is not None else ("replace_accepted_new_order_pending_lookup" if accepted else "replace_accepted_new_order_unconfirmed"),
             cancelled_order_uuid=cancelled_uuid,
             new_order_uuid=new_uuid,
             new_identifier=resolved_new_identifier,
