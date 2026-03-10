@@ -113,6 +113,31 @@ def test_create_order_uses_live_orders_endpoint() -> None:
     assert call["kwargs"]["rate_limit_group"] == "order"
 
 
+def test_create_order_omits_gtc_for_limit_orders() -> None:
+    stub = _StubHttpClient()
+    client = UpbitPrivateClient(stub)  # type: ignore[arg-type]
+
+    client.create_order(
+        market="krw-btc",
+        side="bid",
+        ord_type="limit",
+        price="1000",
+        volume="0.01",
+        time_in_force="gtc",
+        identifier="AUTOBOT-1",
+    )
+
+    call = stub.calls[-1]
+    assert call["kwargs"]["json_body"] == {
+        "market": "KRW-BTC",
+        "side": "bid",
+        "ord_type": "limit",
+        "price": "1000",
+        "volume": "0.01",
+        "identifier": "AUTOBOT-1",
+    }
+
+
 def test_create_order_test_mode_uses_test_endpoint() -> None:
     stub = _StubHttpClient()
     client = UpbitPrivateClient(stub)  # type: ignore[arg-type]
@@ -129,6 +154,32 @@ def test_create_order_test_mode_uses_test_endpoint() -> None:
     call = stub.calls[-1]
     assert call["endpoint"] == "/v1/orders/test"
     assert call["kwargs"]["rate_limit_group"] == "order-test"
+
+
+def test_order_test_omits_gtc_for_limit_orders() -> None:
+    stub = _StubHttpClient()
+    client = UpbitPrivateClient(stub)  # type: ignore[arg-type]
+
+    client.order_test(
+        market="KRW-BTC",
+        side="bid",
+        ord_type="limit",
+        price="1000",
+        volume="0.01",
+        time_in_force="gtc",
+        identifier="AUTOBOT-1",
+    )
+
+    call = stub.calls[-1]
+    assert call["endpoint"] == "/v1/orders/test"
+    assert call["kwargs"]["json_body"] == {
+        "market": "KRW-BTC",
+        "side": "bid",
+        "ord_type": "limit",
+        "price": "1000",
+        "volume": "0.01",
+        "identifier": "AUTOBOT-1",
+    }
 
 
 def test_cancel_and_new_order_requires_prev_key() -> None:
@@ -167,3 +218,25 @@ def test_cancel_and_new_order_uses_expected_payload() -> None:
         "new_time_in_force": "ioc",
     }
     assert call["kwargs"]["rate_limit_group"] == "order"
+
+
+def test_cancel_and_new_order_omits_gtc_for_limit_orders() -> None:
+    stub = _StubHttpClient()
+    client = UpbitPrivateClient(stub)  # type: ignore[arg-type]
+
+    client.cancel_and_new_order(
+        prev_order_uuid="prev-uuid",
+        new_identifier="AUTOBOT-NEW",
+        new_price="1000",
+        new_volume="0.01",
+        new_time_in_force="gtc",
+    )
+
+    call = stub.calls[-1]
+    assert call["kwargs"]["json_body"] == {
+        "prev_order_uuid": "prev-uuid",
+        "new_identifier": "AUTOBOT-NEW",
+        "new_ord_type": "limit",
+        "new_price": "1000",
+        "new_volume": "0.01",
+    }

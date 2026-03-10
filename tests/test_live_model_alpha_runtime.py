@@ -113,6 +113,28 @@ class _ExecutorGateway:
         )
 
 
+class _LargeNotionalStrategy:
+    def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+        _ = ts_ms, active_markets, latest_prices, open_markets
+        return StrategyStepResult(
+            intents=(
+                StrategyOrderIntent(
+                    market="KRW-BTC",
+                    side="bid",
+                    ref_price=50_000_000.0,
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    meta={"notional_multiplier": 10.0},
+                ),
+            ),
+            scored_rows=1,
+            eligible_rows=1,
+            selected_rows=1,
+        )
+
+    def on_fill(self, event):  # noqa: ANN201
+        _ = event
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -252,3 +274,55 @@ def test_live_model_alpha_runtime_canary_submits_when_armed(tmp_path: Path, monk
     assert intents[0]["status"] == "SUBMITTED"
     assert orders
     assert orders[0]["uuid"] == "order-1"
+
+
+def test_live_model_alpha_runtime_caps_bid_notional_to_canary_limit(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _LargeNotionalStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    assert len(executor.calls) == 1
+    submitted_intent = executor.calls[0]["intent"]
+    notional_quote = float(submitted_intent.price) * float(submitted_intent.volume)
+    assert notional_quote <= 6003.0

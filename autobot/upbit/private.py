@@ -13,6 +13,30 @@ class UpbitPrivateClient:
     def __init__(self, http_client: UpbitHttpClient) -> None:
         self._http = http_client
 
+    @staticmethod
+    def _normalize_time_in_force(*, ord_type: str, raw_time_in_force: str | None) -> str | None:
+        ord_type_value = str(ord_type or "").strip().lower()
+        tif_value = str(raw_time_in_force or "").strip().lower()
+        omit_tif = not tif_value or tif_value == "gtc"
+
+        if ord_type_value in {"price", "market"}:
+            return None
+        if ord_type_value == "best":
+            if omit_tif:
+                raise ValidationError("time_in_force is required for ord_type=best (allowed: ioc, fok)")
+            if tif_value in {"ioc", "fok"}:
+                return tif_value
+            raise ValidationError("time_in_force for ord_type=best must be ioc or fok")
+        if not ord_type_value or ord_type_value == "limit":
+            if omit_tif:
+                return None
+            if tif_value in {"ioc", "fok", "post_only"}:
+                return tif_value
+            raise ValidationError(
+                "time_in_force for ord_type=limit must be omitted, ioc, fok, or post_only"
+            )
+        raise ValidationError(f"unsupported ord_type for time_in_force: {ord_type_value}")
+
     def accounts(self) -> JSONValue:
         return self._http.request_json(
             "GET",
@@ -49,13 +73,16 @@ class UpbitPrivateClient:
         market_value = market.strip().upper()
         side_value = side.strip().lower()
         ord_type_value = ord_type.strip().lower()
-        tif_value = str(time_in_force).strip().lower() if time_in_force is not None else None
         if not market_value:
             raise ValidationError("market is required")
         if side_value not in {"bid", "ask"}:
             raise ValidationError("side must be one of: bid, ask")
         if not ord_type_value:
             raise ValidationError("ord_type is required")
+        tif_value = self._normalize_time_in_force(
+            ord_type=ord_type_value,
+            raw_time_in_force=time_in_force,
+        )
 
         body: dict[str, str] = {
             "market": market_value,
@@ -174,7 +201,6 @@ class UpbitPrivateClient:
         new_identifier_value = str(new_identifier).strip()
         new_price_value = str(new_price).strip()
         new_volume_value = str(new_volume).strip()
-        new_tif_value = str(new_time_in_force or "").strip().lower()
         if not prev_uuid_value and not prev_identifier_value:
             raise ValidationError("prev_order_uuid or prev_order_identifier is required")
         if not new_identifier_value:
@@ -183,6 +209,10 @@ class UpbitPrivateClient:
             raise ValidationError("new_price is required")
         if not new_volume_value:
             raise ValidationError("new_volume is required")
+        new_tif_value = self._normalize_time_in_force(
+            ord_type="limit",
+            raw_time_in_force=new_time_in_force,
+        )
 
         body: dict[str, str] = {
             "new_identifier": new_identifier_value,
@@ -225,6 +255,10 @@ class UpbitPrivateClient:
             raise ValidationError("side must be one of: bid, ask")
         if not ord_type_value:
             raise ValidationError("ord_type is required")
+        tif_value = self._normalize_time_in_force(
+            ord_type=ord_type_value,
+            raw_time_in_force=time_in_force,
+        )
 
         body: dict[str, str] = {
             "market": market_value,
@@ -235,8 +269,8 @@ class UpbitPrivateClient:
             body["price"] = str(price)
         if volume is not None:
             body["volume"] = str(volume)
-        if time_in_force is not None:
-            body["time_in_force"] = str(time_in_force)
+        if tif_value:
+            body["time_in_force"] = tif_value
         if identifier is not None:
             body["identifier"] = str(identifier)
 

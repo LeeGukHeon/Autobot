@@ -754,6 +754,11 @@ def _handle_strategy_intent(
             model_alpha_settings=settings.model_alpha,
             candidate_meta=dict(strategy_intent.meta or {}),
         )
+        target_notional_quote = _apply_canary_notional_cap(
+            store=store,
+            settings=settings,
+            target_notional_quote=float(target_notional_quote),
+        )
         sizing = derive_volume_from_target_notional(
             side="bid",
             price=requested_price,
@@ -1075,6 +1080,31 @@ def _handle_submit_reject(
         },
         ts_ms=ts_ms,
     )
+
+
+def _apply_canary_notional_cap(
+    *,
+    store: LiveStateStore,
+    settings: LiveModelAlphaRuntimeSettings,
+    target_notional_quote: float,
+) -> float:
+    resolved_target = max(float(target_notional_quote), 0.0)
+    rollout_contract = store.live_rollout_contract() or {}
+    rollout_status = store.live_rollout_status() or {}
+    rollout_mode = (
+        str(rollout_status.get("mode") or rollout_contract.get("mode") or settings.daemon.rollout_mode)
+        .strip()
+        .lower()
+    )
+    if rollout_mode != "canary":
+        return resolved_target
+    contract_target_unit = str(rollout_contract.get("target_unit") or "").strip()
+    if contract_target_unit and contract_target_unit != str(settings.daemon.rollout_target_unit).strip():
+        return resolved_target
+    cap_value = _safe_optional_float(rollout_contract.get("canary_max_notional_quote"))
+    if cap_value is None or cap_value <= 0.0:
+        return resolved_target
+    return min(resolved_target, float(cap_value))
 
 
 def _order_emission_allowed(store: LiveStateStore) -> bool:
