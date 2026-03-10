@@ -500,6 +500,11 @@ def resume_risk_plans_after_reconcile(
         for item in open_orders
         if item.get("identifier")
     }
+    all_risk_plans = store.list_risk_plans()
+    primary_active_plan_by_market = _primary_active_plan_ids_by_market(
+        risk_plans=all_risk_plans,
+        positions=positions,
+    )
 
     report: dict[str, Any] = {
         "ts_ms": now_ts,
@@ -518,7 +523,7 @@ def resume_risk_plans_after_reconcile(
         "plans": [],
     }
 
-    for row in store.list_risk_plans():
+    for row in all_risk_plans:
         report["counts"]["risk_plans"] += 1
         plan_id = str(row.get("plan_id") or "")
         market = str(row.get("market") or "")
@@ -526,6 +531,54 @@ def resume_risk_plans_after_reconcile(
         current_exit_uuid = _as_optional_str(row.get("current_exit_order_uuid"))
         current_exit_identifier = _as_optional_str(row.get("current_exit_order_identifier"))
         position = positions.get(market)
+        primary_active_plan_id = primary_active_plan_by_market.get(market)
+
+        if (
+            position is not None
+            and previous_state == "CLOSED"
+            and primary_active_plan_id is not None
+            and plan_id != primary_active_plan_id
+        ):
+            report["plans"].append(
+                {
+                    "plan_id": plan_id,
+                    "market": market,
+                    "previous_state": previous_state,
+                    "next_state": previous_state,
+                    "position_present": True,
+                    "matched_open_exit_order_uuid": None,
+                    "matched_open_exit_order_identifier": None,
+                    "resumed_from_restart": True,
+                    "halted_for_review": False,
+                    "action": "KEEP_CLOSED_HISTORY",
+                }
+            )
+            continue
+
+        if (
+            position is not None
+            and previous_state in {"ACTIVE", "TRIGGERED", "EXITING"}
+            and primary_active_plan_id is not None
+            and plan_id != primary_active_plan_id
+        ):
+            report["halted"] = True
+            report["halted_plan_ids"].append(plan_id)
+            report["counts"]["plans_halted_for_review"] += 1
+            report["plans"].append(
+                {
+                    "plan_id": plan_id,
+                    "market": market,
+                    "previous_state": previous_state,
+                    "next_state": previous_state,
+                    "position_present": True,
+                    "matched_open_exit_order_uuid": None,
+                    "matched_open_exit_order_identifier": None,
+                    "resumed_from_restart": False,
+                    "halted_for_review": True,
+                    "action": "HALT_DUPLICATE_ACTIVE_PLAN",
+                }
+            )
+            continue
         matching_open_order = None
         if current_exit_uuid:
             matching_open_order = open_orders_by_uuid.get(current_exit_uuid)
@@ -612,6 +665,41 @@ def resume_risk_plans_after_reconcile(
     store.set_checkpoint(name="last_resume", payload=report, ts_ms=now_ts)
     _write_resume_report(path=store.db_path.parent / "live_resume_report.json", payload=report)
     return report
+
+
+def _primary_active_plan_ids_by_market(
+    *,
+    risk_plans: list[dict[str, Any]],
+    positions: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for market in positions:
+        active_rows = [
+            item
+            for item in risk_plans
+            if str(item.get("market") or "") == market
+            and str(item.get("state") or "") in {"ACTIVE", "TRIGGERED", "EXITING"}
+        ]
+        if not active_rows:
+            continue
+
+        def _sort_key(row: dict[str, Any]) -> tuple[int, int, int, str]:
+            has_exit_binding = int(
+                bool(
+                    _as_optional_str(row.get("current_exit_order_uuid"))
+                    or _as_optional_str(row.get("current_exit_order_identifier"))
+                )
+            )
+            return (
+                has_exit_binding,
+                int(row.get("updated_ts") or 0),
+                int(row.get("created_ts") or 0),
+                str(row.get("plan_id") or ""),
+            )
+
+        primary = max(active_rows, key=_sort_key)
+        result[market] = str(primary.get("plan_id") or "")
+    return result
 
 
 def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | None:

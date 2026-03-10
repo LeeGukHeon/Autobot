@@ -334,3 +334,144 @@ def test_resume_adopts_single_market_exit_order_for_triggered_plan(tmp_path: Pat
     assert plan is not None
     assert plan["state"] == "EXITING"
     assert plan["current_exit_order_uuid"] == "exit-kite-1"
+
+
+def test_resume_ignores_closed_history_when_primary_active_plan_exists(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=12.77,
+                avg_entry_price=441.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-kite-active",
+                identifier="AUTOBOT-autobot-candidate-001-kite-active-exit",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=443.0,
+                volume_req=12.77,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1001,
+                intent_id="intent-kite-exit",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-kite-active",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-active",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.77",
+                state="EXITING",
+                current_exit_order_uuid="exit-kite-active",
+                current_exit_order_identifier="AUTOBOT-autobot-candidate-001-kite-active-exit",
+                created_ts=1000,
+                updated_ts=1001,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-entry",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-closed-1",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.70",
+                state="CLOSED",
+                created_ts=100,
+                updated_ts=200,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-old-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-closed-2",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.72",
+                state="CLOSED",
+                created_ts=300,
+                updated_ts=400,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-old-2",
+            )
+        )
+
+        report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
+        active_plan = store.risk_plan_by_id(plan_id="plan-kite-active")
+        closed_plan = store.risk_plan_by_id(plan_id="plan-kite-closed-1")
+
+    assert report["halted"] is False
+    assert report["counts"]["plans_resumed_exiting"] == 1
+    assert report["counts"]["plans_halted_for_review"] == 0
+    assert any(item["action"] == "KEEP_CLOSED_HISTORY" for item in report["plans"])
+    assert active_plan is not None
+    assert active_plan["state"] == "EXITING"
+    assert closed_plan is not None
+    assert closed_plan["state"] == "CLOSED"
+
+
+def test_resume_halts_when_multiple_active_plans_exist_for_same_market(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=12.77,
+                avg_entry_price=441.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-primary",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.77",
+                state="ACTIVE",
+                created_ts=1000,
+                updated_ts=1001,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-primary",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-duplicate",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="441",
+                qty_str="12.77",
+                state="TRIGGERED",
+                created_ts=900,
+                updated_ts=950,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-duplicate",
+            )
+        )
+
+        report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
+
+    assert report["halted"] is True
+    assert report["counts"]["plans_halted_for_review"] == 1
+    assert report["halted_plan_ids"] == ["plan-kite-duplicate"]
+    assert any(item["action"] == "HALT_DUPLICATE_ACTIVE_PLAN" for item in report["plans"])
