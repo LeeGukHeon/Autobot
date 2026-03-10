@@ -6,6 +6,7 @@ import asyncio
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -5645,18 +5646,38 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     if unknown_positions_policy not in {"halt", "import_as_unmanaged", "attach_default_risk"}:
         unknown_positions_policy = "halt"
 
+    env_bot_id = str(os.getenv("AUTOBOT_LIVE_BOT_ID", "")).strip().lower()
+    env_state_db_path = str(os.getenv("AUTOBOT_LIVE_STATE_DB_PATH", "")).strip()
+    env_model_ref_source = str(os.getenv("AUTOBOT_LIVE_MODEL_REF_SOURCE", "")).strip()
+    env_model_family = str(os.getenv("AUTOBOT_LIVE_MODEL_FAMILY", "")).strip()
+    env_model_registry_root = str(os.getenv("AUTOBOT_LIVE_MODEL_REGISTRY_ROOT", "")).strip()
+    env_rollout_mode = str(os.getenv("AUTOBOT_LIVE_ROLLOUT_MODE", "")).strip().lower()
+    env_rollout_target_unit = str(os.getenv("AUTOBOT_LIVE_TARGET_UNIT", "")).strip()
+    env_sync_mode = str(os.getenv("AUTOBOT_LIVE_SYNC_MODE", "")).strip().lower()
+    sync_use_private_ws = bool(sync_cfg.get("use_private_ws", False))
+    sync_use_executor_ws = bool(sync_cfg.get("use_executor_ws", False))
+    if env_sync_mode == "poll":
+        sync_use_private_ws = False
+        sync_use_executor_ws = False
+    elif env_sync_mode == "private_ws":
+        sync_use_private_ws = True
+        sync_use_executor_ws = False
+    elif env_sync_mode == "executor_ws":
+        sync_use_private_ws = False
+        sync_use_executor_ws = True
+
     return {
         "enabled": bool(live_cfg.get("enabled", False)),
-        "bot_id": str(live_cfg.get("bot_id", "autobot-001")).strip().lower(),
-        "state_db_path": str(state_cfg.get("db_path", "data/state/live_state.db")),
+        "bot_id": env_bot_id or str(live_cfg.get("bot_id", "autobot-001")).strip().lower(),
+        "state_db_path": env_state_db_path or str(state_cfg.get("db_path", "data/state/live_state.db")),
         "state_run_lock": bool(state_cfg.get("run_lock", True)),
         "startup_reconcile": bool(startup_cfg.get("reconcile", True)),
         "unknown_open_orders_policy": unknown_open_orders_policy,
         "unknown_positions_policy": unknown_positions_policy,
         "allow_cancel_external_orders": bool(startup_cfg.get("allow_cancel_external_orders", False)),
         "sync_poll_interval_sec": max(int(sync_cfg.get("poll_interval_sec", 15)), 1),
-        "sync_use_private_ws": bool(sync_cfg.get("use_private_ws", False)),
-        "sync_use_executor_ws": bool(sync_cfg.get("use_executor_ws", False)),
+        "sync_use_private_ws": sync_use_private_ws,
+        "sync_use_executor_ws": sync_use_executor_ws,
         "breaker_cancel_reject_limit": max(int(breaker_cfg.get("cancel_reject_limit", 3)), 1),
         "breaker_replace_reject_limit": max(int(breaker_cfg.get("replace_reject_limit", 3)), 1),
         "breaker_rate_limit_error_limit": max(int(breaker_cfg.get("rate_limit_error_limit", 3)), 1),
@@ -5668,9 +5689,9 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             int(small_account_cfg.get("max_open_orders_per_market", 1)),
             1,
         ),
-        "model_ref_source": str(model_cfg.get("ref", "champion_v4")).strip() or "champion_v4",
-        "model_family": str(model_cfg.get("family", "train_v4_crypto_cs")).strip() or "train_v4_crypto_cs",
-        "model_registry_root": str(model_cfg.get("registry_root", "models/registry")).strip() or "models/registry",
+        "model_ref_source": env_model_ref_source or str(model_cfg.get("ref", "champion_v4")).strip() or "champion_v4",
+        "model_family": env_model_family or str(model_cfg.get("family", "train_v4_crypto_cs")).strip() or "train_v4_crypto_cs",
+        "model_registry_root": env_model_registry_root or str(model_cfg.get("registry_root", "models/registry")).strip() or "models/registry",
         "ws_public_raw_root": str(ws_public_cfg.get("raw_root", "data/raw_ws/upbit/public")).strip()
         or "data/raw_ws/upbit/public",
         "ws_public_meta_dir": str(ws_public_cfg.get("meta_dir", "data/raw_ws/upbit/_meta")).strip()
@@ -5680,8 +5701,9 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             micro_plane_cfg.get("aggregate_report_path", "data/parquet/micro_v1/_meta/aggregate_report.json")
         ).strip()
         or "data/parquet/micro_v1/_meta/aggregate_report.json",
-        "rollout_mode": str(rollout_cfg.get("mode", DEFAULT_ROLLOUT_MODE)).strip().lower() or DEFAULT_ROLLOUT_MODE,
-        "rollout_target_unit": str(rollout_cfg.get("target_unit", DEFAULT_LIVE_TARGET_UNIT)).strip()
+        "rollout_mode": env_rollout_mode or str(rollout_cfg.get("mode", DEFAULT_ROLLOUT_MODE)).strip().lower() or DEFAULT_ROLLOUT_MODE,
+        "rollout_target_unit": env_rollout_target_unit
+        or str(rollout_cfg.get("target_unit", DEFAULT_LIVE_TARGET_UNIT)).strip()
         or DEFAULT_LIVE_TARGET_UNIT,
         "rollout_require_test_order": bool(rollout_cfg.get("require_test_order", True)),
         "rollout_test_order_max_age_sec": max(int(rollout_cfg.get("test_order_max_age_sec", 86400)), 1),

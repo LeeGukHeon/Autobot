@@ -3,6 +3,11 @@ param(
     [string]$PythonExe = "",
     [string]$ServiceUser = "ubuntu",
     [string]$UnitName = "autobot-live-alpha.service",
+    [string]$BotId = "",
+    [string]$StateDbPath = "",
+    [string]$ModelRefSource = "",
+    [string]$ModelFamily = "",
+    [string]$ModelRegistryRoot = "",
     [ValidateSet("shadow", "canary", "live")]
     [string]$RolloutMode = "shadow",
     [ValidateSet("poll", "private_ws", "executor_ws")]
@@ -62,6 +67,11 @@ Type=simple
 User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
+Environment=AUTOBOT_LIVE_BOT_ID=$BotId
+Environment=AUTOBOT_LIVE_STATE_DB_PATH=$StateDbPath
+Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=$ModelRefSource
+Environment=AUTOBOT_LIVE_MODEL_FAMILY=$ModelFamily
+Environment=AUTOBOT_LIVE_MODEL_REGISTRY_ROOT=$ModelRegistryRoot
 Environment=AUTOBOT_LIVE_ROLLOUT_MODE=$RolloutMode
 Environment=AUTOBOT_LIVE_TARGET_UNIT=$effectiveTargetUnit
 Environment=AUTOBOT_LIVE_SYNC_MODE=$SyncMode
@@ -80,6 +90,10 @@ WantedBy=multi-user.target
 if ($DryRun) {
     Write-Host ("[live-install][dry-run] service_user={0}" -f $ServiceUser)
     Write-Host ("[live-install][dry-run] unit={0}" -f $UnitName)
+    Write-Host ("[live-install][dry-run] bot_id={0}" -f $BotId)
+    Write-Host ("[live-install][dry-run] state_db_path={0}" -f $StateDbPath)
+    Write-Host ("[live-install][dry-run] model_ref_source={0}" -f $ModelRefSource)
+    Write-Host ("[live-install][dry-run] model_family={0}" -f $ModelFamily)
     Write-Host $unitContent
     exit 0
 }

@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+import autobot.cli as cli_module
 import autobot.live.daemon as daemon_module
 from autobot.live.breakers import ACTION_HALT_NEW_INTENTS, arm_breaker
 from autobot.live.daemon import LiveDaemonSettings, run_live_sync_daemon
@@ -339,3 +340,84 @@ def test_live_installer_dry_run_supports_strategy_runtime() -> None:
     )
     stdout = completed.stdout
     assert "--strategy-runtime" in stdout
+
+
+def test_live_installer_dry_run_supports_candidate_specific_overrides() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-UnitName",
+            "autobot-live-alpha-candidate.service",
+            "-BotId",
+            "autobot-candidate-001",
+            "-StateDbPath",
+            "data/state/live_state_candidate.db",
+            "-ModelRefSource",
+            "20260310T011523Z-s42-fc53106c",
+            "-ModelFamily",
+            "train_v4_crypto_cs",
+            "-ModelRegistryRoot",
+            "models/registry",
+            "-RolloutMode",
+            "canary",
+            "-RolloutTargetUnit",
+            "autobot-live-alpha-candidate.service",
+            "-SyncMode",
+            "poll",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "Environment=AUTOBOT_LIVE_BOT_ID=autobot-candidate-001" in stdout
+    assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_state_candidate.db" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=20260310T011523Z-s42-fc53106c" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+    assert "Environment=AUTOBOT_LIVE_TARGET_UNIT=autobot-live-alpha-candidate.service" in stdout
+
+
+def test_live_defaults_accept_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_config = {
+        "live": {
+            "bot_id": "autobot-001",
+            "state": {"db_path": "data/state/live_state.db"},
+            "sync": {"use_private_ws": False, "use_executor_ws": False},
+            "model": {"ref": "champion_v4", "family": "train_v4_crypto_cs", "registry_root": "models/registry"},
+            "rollout": {"mode": "shadow", "target_unit": "autobot-live-alpha.service"},
+        },
+        "universe": {"quote_currency": "KRW"},
+    }
+    monkeypatch.setenv("AUTOBOT_LIVE_BOT_ID", "autobot-candidate-001")
+    monkeypatch.setenv("AUTOBOT_LIVE_STATE_DB_PATH", "data/state/live_state_candidate.db")
+    monkeypatch.setenv("AUTOBOT_LIVE_MODEL_REF_SOURCE", "20260310T011523Z-s42-fc53106c")
+    monkeypatch.setenv("AUTOBOT_LIVE_MODEL_FAMILY", "train_v4_crypto_cs")
+    monkeypatch.setenv("AUTOBOT_LIVE_MODEL_REGISTRY_ROOT", "models/registry")
+    monkeypatch.setenv("AUTOBOT_LIVE_ROLLOUT_MODE", "canary")
+    monkeypatch.setenv("AUTOBOT_LIVE_TARGET_UNIT", "autobot-live-alpha-candidate.service")
+    monkeypatch.setenv("AUTOBOT_LIVE_SYNC_MODE", "poll")
+
+    defaults = cli_module._live_defaults(base_config)
+
+    assert defaults["bot_id"] == "autobot-candidate-001"
+    assert defaults["state_db_path"] == "data/state/live_state_candidate.db"
+    assert defaults["model_ref_source"] == "20260310T011523Z-s42-fc53106c"
+    assert defaults["model_family"] == "train_v4_crypto_cs"
+    assert defaults["model_registry_root"] == "models/registry"
+    assert defaults["rollout_mode"] == "canary"
+    assert defaults["rollout_target_unit"] == "autobot-live-alpha-candidate.service"
+    assert defaults["sync_use_private_ws"] is False
+    assert defaults["sync_use_executor_ws"] is False
