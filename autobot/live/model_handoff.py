@@ -122,13 +122,18 @@ def build_live_runtime_sync_status(
     ws_public = dict(ws_public_contract or {})
     pinned_run_id = str(pinned.get("live_runtime_model_run_id", "")).strip()
     champion_pointer_run_id = str(current.get("champion_pointer_run_id", "")).strip()
+    pointer_monitoring_enabled = bool(str(current.get("resolved_pointer_name") or "").strip())
     model_pointer_divergence = bool(
-        pinned_run_id and champion_pointer_run_id and pinned_run_id != champion_pointer_run_id
+        pointer_monitoring_enabled
+        and pinned_run_id
+        and champion_pointer_run_id
+        and pinned_run_id != champion_pointer_run_id
     )
     return {
         "live_runtime_model_run_id": pinned_run_id or None,
         "champion_pointer_run_id": champion_pointer_run_id or None,
         "current_resolved_model_run_id": str(current.get("live_runtime_model_run_id", "")).strip() or None,
+        "pointer_monitoring_enabled": pointer_monitoring_enabled,
         "model_pointer_divergence": model_pointer_divergence,
         "model_pointer_divergence_reason": (
             "MODEL_POINTER_DIVERGENCE" if model_pointer_divergence else None
