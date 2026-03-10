@@ -648,7 +648,7 @@ function New-CertificationArtifact {
         [string]$CertificationStartDate,
         [string]$CertificationEndDate,
         [string]$TrainerEvidenceMode,
-        [Parameter(Mandatory = $false)]$ResearchEvidence
+        [Parameter(Mandatory = $false)]$TrainerResearchPrior
     )
     $decisionSurface = Load-JsonOrEmpty -PathValue $DecisionSurfacePath
     $decisionSurfacePresent = -not (Test-IsEffectivelyEmptyObject -ObjectValue $decisionSurface)
@@ -696,8 +696,8 @@ function New-CertificationArtifact {
         provenance = [ordered]@{
             promotion_decision_path = $PromotionDecisionPath
             promotion_decision_present = (Test-Path $PromotionDecisionPath)
-            research_evidence_path = $ResearchEvidencePath
-            research_evidence_present = (Test-Path $ResearchEvidencePath)
+            trainer_research_prior_path = $ResearchEvidencePath
+            trainer_research_prior_present = (Test-Path $ResearchEvidencePath)
             economic_objective_profile_path = $EconomicObjectiveProfilePath
             economic_objective_profile_present = $economicObjectiveProfilePresent
             economic_objective_profile_id = [string](Get-PropValue -ObjectValue $economicObjectiveProfile -Name "profile_id" -DefaultValue "")
@@ -705,7 +705,8 @@ function New-CertificationArtifact {
             decision_surface_present = $decisionSurfacePresent
             trainer_evidence_mode = $TrainerEvidenceMode
             trainer_evidence_source = "certification_artifact"
-            research_evidence_source = "trainer_research_evidence_artifact"
+            research_evidence_source = "certification_lane_backtest"
+            trainer_research_prior_source = "trainer_research_evidence_artifact"
         }
         windows = [ordered]@{
             train_window = $trainWindow
@@ -719,7 +720,8 @@ function New-CertificationArtifact {
         }
         valid_window_contract = ($reasons.Count -eq 0)
         reasons = @($reasons)
-        research_evidence = $ResearchEvidence
+        trainer_research_prior = $TrainerResearchPrior
+        research_evidence = @{}
         certification = [ordered]@{
             evaluated = $false
         }
@@ -985,6 +987,184 @@ function Resolve-ResearchEvidenceFromArtifact {
     return $resolved
 }
 
+function New-CertificationResearchEvidence {
+    param(
+        [Parameter(Mandatory = $false)]$CertificationArtifact,
+        [Parameter(Mandatory = $false)]$TrainerResearchPrior,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate,
+        [string]$PromotionPolicyName,
+        [string]$EconomicObjectiveProfileId,
+        [bool]$CandidateBacktestPresent,
+        [int64]$CandidateOrdersFilled,
+        [double]$CandidateRealizedPnl,
+        [bool]$CandidateMinOrdersPass,
+        [int]$CandidateMinOrdersThreshold,
+        [bool]$CandidateMinRealizedPnlPass,
+        [double]$CandidateMinRealizedPnlThreshold,
+        [bool]$CandidateDsrEvaluated,
+        [double]$CandidateDeflatedSharpeRatio,
+        [double]$CandidateMinDeflatedSharpeRatio,
+        [bool]$CandidateDeflatedSharpePass,
+        [bool]$CandidateBacktestPass,
+        [bool]$CompareRequired,
+        [bool]$ChampionPresent,
+        [bool]$ChampionCompareEvaluated,
+        [bool]$ChampionComparePass,
+        [bool]$CandidateParetoDominates,
+        [bool]$ChampionParetoDominates,
+        [bool]$ParetoIncomparable,
+        [string]$DecisionBasis
+    )
+    $artifactReasons = @((Get-PropValue -ObjectValue $CertificationArtifact -Name "reasons" -DefaultValue @()))
+    $windowValid = To-Bool (Get-PropValue -ObjectValue $CertificationArtifact -Name "valid_window_contract" -DefaultValue $false) $false
+    $artifactProvenance = Get-PropValue -ObjectValue $CertificationArtifact -Name "provenance" -DefaultValue @{}
+    $trainerResearchPriorPresent = To-Bool (Get-PropValue -ObjectValue $artifactProvenance -Name "trainer_research_prior_present" -DefaultValue $false) $false
+    $trainerResearchPriorPass = if ($trainerResearchPriorPresent) {
+        To-Bool (Get-PropValue -ObjectValue $TrainerResearchPrior -Name "pass" -DefaultValue $false) $false
+    } else {
+        $false
+    }
+
+    $reasons = @()
+    if (-not $windowValid) {
+        $reasons += "CERTIFICATION_WINDOW_CONTRACT_INVALID"
+        $reasons = Merge-UniqueStringArray -First $reasons -Second $artifactReasons
+    }
+    if (-not $CandidateBacktestPresent) {
+        $reasons += "NO_CERTIFICATION_CANDIDATE_BACKTEST"
+    }
+    if (-not $CandidateMinOrdersPass) {
+        $reasons += "CERTIFICATION_MIN_ORDERS_NOT_MET"
+    }
+    if (-not $CandidateMinRealizedPnlPass) {
+        $reasons += "CERTIFICATION_MIN_REALIZED_PNL_NOT_MET"
+    }
+    if (-not $CandidateDeflatedSharpePass) {
+        $reasons += "CERTIFICATION_MIN_DSR_NOT_MET"
+    }
+    if ($CompareRequired) {
+        if (-not $ChampionPresent) {
+            $reasons += "NO_CERTIFICATION_CHAMPION"
+        } elseif (-not $ChampionCompareEvaluated) {
+            $reasons += "NO_CERTIFICATION_CHAMPION_COMPARE"
+        } elseif (-not $ChampionComparePass) {
+            if ($ChampionParetoDominates) {
+                $reasons += "CERTIFICATION_CHAMPION_PARETO_DOMINANCE"
+            } elseif ($ParetoIncomparable) {
+                $reasons += "CERTIFICATION_COMPARE_INCOMPARABLE"
+            } else {
+                $reasons += "CERTIFICATION_EXECUTION_NOT_CANDIDATE_EDGE"
+            }
+        }
+    }
+
+    $offlinePass = $windowValid -and $CandidateBacktestPass
+    $executionPass = if ($CompareRequired) {
+        $ChampionPresent -and $ChampionCompareEvaluated -and $ChampionComparePass
+    } else {
+        $true
+    }
+    $passed = $offlinePass -and $executionPass
+    if ($passed -and $reasons.Count -eq 0) {
+        $reasons = @("CERTIFICATION_EVIDENCE_PASS")
+    }
+
+    $offlineDecision = if (-not $CandidateBacktestPresent) {
+        "missing"
+    } elseif ($offlinePass) {
+        "candidate_pass"
+    } else {
+        "candidate_fail"
+    }
+    $executionDecision = if (-not $CompareRequired) {
+        "sanity_only"
+    } elseif (-not $ChampionPresent) {
+        "missing_champion"
+    } elseif (-not $ChampionCompareEvaluated) {
+        "not_evaluated"
+    } elseif ($ChampionComparePass) {
+        "candidate_edge"
+    } elseif ($ChampionParetoDominates) {
+        "champion_edge"
+    } elseif ($ParetoIncomparable) {
+        "incomparable"
+    } else {
+        "candidate_fail"
+    }
+
+    return [ordered]@{
+        version = 1
+        policy = "candidate_acceptance_certification_research_evidence_v1"
+        source = "certification_lane_backtest"
+        available = ($windowValid -and $CandidateBacktestPresent)
+        pass = $passed
+        offline_pass = $offlinePass
+        execution_pass = $executionPass
+        reasons = @($reasons)
+        checks = [ordered]@{
+            certification_window_valid = $windowValid
+            candidate_backtest_present = $CandidateBacktestPresent
+            certification_window_start = $CertificationStartDate
+            certification_window_end = $CertificationEndDate
+            compare_required = $CompareRequired
+            champion_present = $ChampionPresent
+            champion_compare_evaluated = $ChampionCompareEvaluated
+            champion_compare_pass = $ChampionComparePass
+            candidate_min_orders_threshold = $CandidateMinOrdersThreshold
+            candidate_orders_filled = [int64]$CandidateOrdersFilled
+            candidate_min_orders_pass = $CandidateMinOrdersPass
+            candidate_min_realized_pnl_threshold = [double]$CandidateMinRealizedPnlThreshold
+            candidate_realized_pnl_quote = [double]$CandidateRealizedPnl
+            candidate_min_realized_pnl_pass = $CandidateMinRealizedPnlPass
+            candidate_dsr_evaluated = $CandidateDsrEvaluated
+            candidate_min_deflated_sharpe_ratio = [double]$CandidateMinDeflatedSharpeRatio
+            candidate_deflated_sharpe_ratio_est = [double]$CandidateDeflatedSharpeRatio
+            candidate_deflated_sharpe_pass = $CandidateDeflatedSharpePass
+            candidate_backtest_pass = $CandidateBacktestPass
+            candidate_pareto_dominates = $CandidateParetoDominates
+            champion_pareto_dominates = $ChampionParetoDominates
+            pareto_incomparable = $ParetoIncomparable
+            decision_basis = $DecisionBasis
+            promotion_policy = $PromotionPolicyName
+            economic_objective_profile_id = $EconomicObjectiveProfileId
+            trainer_research_prior_present = $trainerResearchPriorPresent
+            trainer_research_prior_pass = $trainerResearchPriorPass
+        }
+        offline = [ordered]@{
+            policy = "certification_candidate_sanity_v1"
+            decision = $offlineDecision
+            comparable = $CandidateBacktestPresent
+        }
+        spa_like = [ordered]@{
+            policy = "not_run_in_certification_lane"
+            decision = "not_evaluated"
+            comparable = $false
+        }
+        white_rc = [ordered]@{
+            policy = "not_run_in_certification_lane"
+            decision = "not_evaluated"
+            comparable = $false
+        }
+        hansen_spa = [ordered]@{
+            policy = "not_run_in_certification_lane"
+            decision = "not_evaluated"
+            comparable = $false
+        }
+        execution = [ordered]@{
+            status = if ($CompareRequired) { "compared" } else { "candidate_only" }
+            policy = "certification_backtest_compare_v1"
+            decision = $executionDecision
+            comparable = ($ChampionPresent -and $ChampionCompareEvaluated)
+        }
+        trainer_research_prior = [ordered]@{
+            present = $trainerResearchPriorPresent
+            pass = $trainerResearchPriorPass
+            source = [string](Get-PropValue -ObjectValue $TrainerResearchPrior -Name "source" -DefaultValue "")
+        }
+    }
+}
+
 function Resolve-TrainerEvidenceFromCertificationArtifact {
     param(
         [Parameter(Mandatory = $false)]$CertificationArtifact,
@@ -1024,7 +1204,7 @@ function Resolve-TrainerEvidenceFromCertificationArtifact {
         $resolved.pass = $false
         $resolved.certification_window_valid = $windowValid
         $resolved.certification_window_reasons = @($artifactReasons)
-        $resolved.reasons = Merge-UniqueStringArray -First @("MISSING_RESEARCH_EVIDENCE") -Second $artifactReasons
+        $resolved.reasons = Merge-UniqueStringArray -First @("MISSING_CERTIFICATION_RESEARCH_EVIDENCE") -Second $artifactReasons
         return $resolved
     }
     $resolved.available = To-Bool (Get-PropValue -ObjectValue $researchEvidence -Name "available" -DefaultValue $false) $false
@@ -2019,7 +2199,7 @@ try {
     Sync-PromotionPolicyConfigToReport -ReportValue $report -PromotionPolicyConfig $promotionPolicyConfig
     $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
     $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
-    $researchEvidence = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
+    $trainerResearchPrior = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
     $certificationArtifact = if ([string]::IsNullOrWhiteSpace($certificationArtifactPath)) {
         @{}
     } else {
@@ -2035,7 +2215,7 @@ try {
             -CertificationStartDate $certificationStartDate `
             -CertificationEndDate $effectiveBatchDate `
             -TrainerEvidenceMode $TrainerEvidenceMode `
-            -ResearchEvidence $researchEvidence
+            -TrainerResearchPrior $trainerResearchPrior
     }
     if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
         Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
@@ -2047,7 +2227,24 @@ try {
         end = $effectiveBatchDate
         alias_of = "certification"
     }
-    $trainerEvidence = Resolve-TrainerEvidenceFromCertificationArtifact -CertificationArtifact $certificationArtifact -Mode $TrainerEvidenceMode
+    $trainerEvidence = [ordered]@{
+        mode = $TrainerEvidenceMode
+        available = $false
+        required = ($TrainerEvidenceMode -eq "required")
+        source = "certification_artifact"
+        pass = $null
+        offline_pass = $false
+        execution_pass = $true
+        reasons = @("CERTIFICATION_EVIDENCE_PENDING")
+        checks = [ordered]@{}
+        offline = [ordered]@{}
+        spa_like = [ordered]@{}
+        white_rc = [ordered]@{}
+        hansen_spa = [ordered]@{}
+        execution = [ordered]@{}
+        certification_window_valid = (To-Bool (Get-PropValue -ObjectValue $certificationArtifact -Name "valid_window_contract" -DefaultValue $false) $false)
+        certification_window_reasons = @((Get-PropValue -ObjectValue $certificationArtifact -Name "reasons" -DefaultValue @()))
+    }
     $report.steps.train = [ordered]@{
         exit_code = [int]$trainExec.ExitCode
         command = $trainExec.Command
@@ -2057,6 +2254,7 @@ try {
         candidate_run_id = $candidateRunId
         candidate_run_dir = $candidateRunDir
         research_evidence_path = $researchEvidencePath
+        trainer_research_prior_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
         economic_objective_profile_path = $economicObjectiveProfilePath
         promotion_policy_contract_source = [string]$promotionPolicyConfig.threshold_source
@@ -2085,6 +2283,7 @@ try {
         run_id = $candidateRunId
         run_dir = $candidateRunDir
         research_evidence_path = $researchEvidencePath
+        trainer_research_prior_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
         economic_objective_profile_path = $economicObjectiveProfilePath
         economic_objective_profile_id = [string](Get-PropValue -ObjectValue $economicObjectiveProfile -Name "profile_id" -DefaultValue "")
@@ -2247,12 +2446,6 @@ try {
     $paretoIncomparable = $false
     $stabilityOverridePass = $false
     $trainerEvidenceApplied = $TrainerEvidenceMode -ne "ignore"
-    $trainerEvidenceAvailable = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "available" -DefaultValue $false) $false
-    $trainerEvidencePass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "pass" -DefaultValue $false) $false
-    $trainerEvidenceOfflinePass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "offline_pass" -DefaultValue $false) $false
-    $trainerEvidenceExecutionPass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "execution_pass" -DefaultValue $true) $true
-    $trainerEvidenceGatePass = if ($TrainerEvidenceMode -eq "required") { $trainerEvidencePass } else { $true }
-    $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
     $budgetContractApplied = -not (Test-IsEffectivelyEmptyObject -ObjectValue $searchBudgetDecision)
     $budgetLaneClassRequested = if ($budgetContractApplied) {
         [string](Get-PropValue -ObjectValue $searchBudgetDecision -Name "lane_class_requested" -DefaultValue "")
@@ -2447,6 +2640,42 @@ try {
             }
         }
     }
+    $certificationResearchEvidence = New-CertificationResearchEvidence `
+        -CertificationArtifact $certificationArtifact `
+        -TrainerResearchPrior $trainerResearchPrior `
+        -CertificationStartDate $certificationStartDate `
+        -CertificationEndDate $effectiveBatchDate `
+        -PromotionPolicyName ([string]$promotionPolicyConfig.name) `
+        -EconomicObjectiveProfileId $economicObjectiveProfileId `
+        -CandidateBacktestPresent ($null -ne $candidateBacktest) `
+        -CandidateOrdersFilled $candidateOrdersFilled `
+        -CandidateRealizedPnl $candidateRealizedPnl `
+        -CandidateMinOrdersPass ($candidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) `
+        -CandidateMinOrdersThreshold ([int]$promotionPolicyConfig.backtest_min_orders_filled) `
+        -CandidateMinRealizedPnlPass ($candidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) `
+        -CandidateMinRealizedPnlThreshold ([double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) `
+        -CandidateDsrEvaluated $candidateStatComparable `
+        -CandidateDeflatedSharpeRatio ([double]$candidateDeflatedSharpeRatio) `
+        -CandidateMinDeflatedSharpeRatio ([double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio) `
+        -CandidateDeflatedSharpePass $candidateDeflatedSharpePass `
+        -CandidateBacktestPass $candidateBacktestPass `
+        -CompareRequired ([bool]$promotionPolicyConfig.backtest_compare_required) `
+        -ChampionPresent (-not [string]::IsNullOrWhiteSpace($championRunId)) `
+        -ChampionCompareEvaluated $championCompareEvaluated `
+        -ChampionComparePass $championDeltaPass `
+        -CandidateParetoDominates $candidateParetoDominates `
+        -ChampionParetoDominates $championParetoDominates `
+        -ParetoIncomparable $paretoIncomparable `
+        -DecisionBasis $decisionBasis
+    $certificationArtifact.research_evidence = $certificationResearchEvidence
+    $trainerEvidence = Resolve-TrainerEvidenceFromCertificationArtifact -CertificationArtifact $certificationArtifact -Mode $TrainerEvidenceMode
+    $report.steps.train.trainer_evidence = $trainerEvidence
+    $trainerEvidenceAvailable = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "available" -DefaultValue $false) $false
+    $trainerEvidencePass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "pass" -DefaultValue $false) $false
+    $trainerEvidenceOfflinePass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "offline_pass" -DefaultValue $false) $false
+    $trainerEvidenceExecutionPass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "execution_pass" -DefaultValue $true) $true
+    $trainerEvidenceGatePass = if ($TrainerEvidenceMode -eq "required") { $trainerEvidencePass } else { $true }
+    $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
     $backtestPass = if ($promotionPolicyConfig.backtest_compare_required) {
         $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass -and $budgetContractGatePass
     } else {

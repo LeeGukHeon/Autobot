@@ -1,6 +1,7 @@
 # T21.12 V4 Evidence Window Separation And Certification Lane v1
 
 - Date: 2026-03-11
+- Status: landed locally
 
 ## Goal
 - Separate:
@@ -61,6 +62,20 @@ Out of scope:
   - `TRAIN_CERTIFICATION_WINDOW_OVERLAP`
   - `RESEARCH_CERTIFICATION_WINDOW_OVERLAP`
 
-## Remaining Work
-- the certification artifact still wraps train-produced research evidence
-- a later slice must move the research/offline evidence producer itself into a separately governed certification lane with a stronger OOS contract
+## 2026-03-11 Slice 3 Implementation
+- `certification_report.json` now produces `research_evidence` from the certification lane itself:
+  - candidate certification-window backtest
+  - champion certification-window compare when required
+  - certification-window stat validation
+- `trainer_research_evidence.json` is now retained only as:
+  - `trainer_research_prior`
+  - audit provenance
+  - non-gating historical context
+- `candidate_acceptance.ps1` no longer requires `trainer_research_evidence.json` to pass the trainer-evidence gate when certification evidence exists
+- certification provenance now makes the source split explicit:
+  - `research_evidence_source = certification_lane_backtest`
+  - `trainer_research_prior_source = trainer_research_evidence_artifact`
+
+## Result
+- promotion can no longer pass because the training run wrote favorable self-evidence and the certification artifact simply wrapped it
+- trainer evidence for the promote gate is now emitted by the certification lane on the certification window contract

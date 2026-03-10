@@ -290,7 +290,10 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert decision_surface_doc["search_budget_contract"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert decision_surface_doc["search_budget_contract"]["promotion_eligible_satisfied"] is False
     assert result.metrics["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
-    assert "TRAINER_EVIDENCE_SOURCE_IS_TRAINER_RESEARCH_EVIDENCE_ARTIFACT" in decision_surface_doc["known_methodology_warnings"]
+    assert "TRAINER_RESEARCH_PRIOR_IS_TRAIN_PRODUCED" in decision_surface_doc["known_methodology_warnings"]
+    assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
+    assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
+    assert decision_surface_doc["promotion_contract"]["trainer_research_prior_role"] == "audit_only_prior"
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
@@ -850,7 +853,8 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert "RUNTIME_RECOMMENDATIONS_REUSE_TRAIN_WINDOW" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["execution_acceptance_contract"]["selection_use_learned_recommendations"] is False
     assert decision_surface_doc["runtime_recommendation_contract"]["selection_use_learned_recommendations"] is True
-    assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "trainer_research_evidence_artifact"
+    assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
+    assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
     execution_options = captured["options"]
     assert execution_options.top_n == 11
     assert execution_options.model_alpha_settings.selection.top_pct == 0.5

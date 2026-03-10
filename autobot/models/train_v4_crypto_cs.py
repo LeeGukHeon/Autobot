@@ -3483,8 +3483,7 @@ def _build_decision_surface_v4(
         if str(item).strip()
     ]
     warnings: list[str] = [
-        "TRAINER_EVIDENCE_SOURCE_IS_TRAINER_RESEARCH_EVIDENCE_ARTIFACT",
-        "TRAINER_RESEARCH_EVIDENCE_IS_TRAIN_PRODUCED",
+        "TRAINER_RESEARCH_PRIOR_IS_TRAIN_PRODUCED",
         "PROMOTION_DECISION_CONTAINS_TRAIN_PRODUCED_RESEARCH_ARTIFACTS",
     ]
     if bool(options.execution_acceptance_enabled):
@@ -3613,8 +3612,9 @@ def _build_decision_surface_v4(
         },
         "promotion_contract": {
             "promotion_mode": str((promotion or {}).get("promotion_mode", "")).strip() or "candidate",
-            "trainer_evidence_source": "trainer_research_evidence_artifact",
-            "trainer_research_evidence_path": "trainer_research_evidence.json",
+            "trainer_evidence_source": "certification_artifact.research_evidence",
+            "trainer_research_prior_path": "trainer_research_evidence.json",
+            "trainer_research_prior_role": "audit_only_prior",
             "trainer_evidence_expected_consumer": "scripts/candidate_acceptance.ps1",
             "trainer_evidence_includes_execution_acceptance": bool(options.execution_acceptance_enabled),
             "promotion_reasons": promotion_reasons,

@@ -30,6 +30,7 @@ def _make_fake_python_exe(
     tmp_path: Path,
     *,
     write_decision_surface: bool,
+    write_trainer_research_evidence: bool = True,
     budget_lane_class_requested: str = "promotion_eligible",
     budget_lane_class_effective: str = "promotion_eligible",
     budget_contract_id: str = "v4_promotion_eligible_budget_v1",
@@ -49,6 +50,7 @@ def _make_fake_python_exe(
             CANDIDATE_RUN_ID = "candidate-run-001"
             CHAMPION_RUN_ID = "champion-run-000"
             WRITE_DECISION_SURFACE = {str(write_decision_surface)}
+            WRITE_TRAINER_RESEARCH_EVIDENCE = {str(write_trainer_research_evidence)}
             BUDGET_LANE_CLASS_REQUESTED = {budget_lane_class_requested!r}
             BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
             BUDGET_CONTRACT_ID = {budget_contract_id!r}
@@ -153,64 +155,65 @@ def _make_fake_python_exe(
                         }},
                     }},
                 )
-                write_json(
-                    candidate_dir / "trainer_research_evidence.json",
-                    {{
-                        "policy": "v4_trainer_research_evidence_v1",
-                        "source": "train_v4_crypto_cs",
-                        "available": True,
-                        "pass": True,
-                        "offline_pass": True,
-                        "execution_pass": True,
-                        "reasons": ["TRAINER_EVIDENCE_PASS"],
-                        "checks": {{
-                            "existing_champion_present": True,
-                            "walk_forward_present": True,
-                            "walk_forward_windows_run": 4,
-                            "offline_comparable": True,
-                            "offline_candidate_edge": True,
-                            "spa_like_present": True,
-                            "spa_like_comparable": True,
-                            "spa_like_candidate_edge": True,
-                            "white_rc_present": True,
-                            "white_rc_comparable": True,
-                            "white_rc_candidate_edge": True,
-                            "hansen_spa_present": True,
-                            "hansen_spa_comparable": True,
-                            "hansen_spa_candidate_edge": True,
-                            "execution_acceptance_enabled": True,
-                            "execution_acceptance_present": True,
-                            "execution_comparable": True,
-                            "execution_candidate_edge": True,
+                if WRITE_TRAINER_RESEARCH_EVIDENCE:
+                    write_json(
+                        candidate_dir / "trainer_research_evidence.json",
+                        {{
+                            "policy": "v4_trainer_research_evidence_v1",
+                            "source": "train_v4_crypto_cs",
+                            "available": True,
+                            "pass": True,
+                            "offline_pass": True,
+                            "execution_pass": True,
+                            "reasons": ["TRAINER_EVIDENCE_PASS"],
+                            "checks": {{
+                                "existing_champion_present": True,
+                                "walk_forward_present": True,
+                                "walk_forward_windows_run": 4,
+                                "offline_comparable": True,
+                                "offline_candidate_edge": True,
+                                "spa_like_present": True,
+                                "spa_like_comparable": True,
+                                "spa_like_candidate_edge": True,
+                                "white_rc_present": True,
+                                "white_rc_comparable": True,
+                                "white_rc_candidate_edge": True,
+                                "hansen_spa_present": True,
+                                "hansen_spa_comparable": True,
+                                "hansen_spa_candidate_edge": True,
+                                "execution_acceptance_enabled": True,
+                                "execution_acceptance_present": True,
+                                "execution_comparable": True,
+                                "execution_candidate_edge": True,
+                            }},
+                            "offline": {{
+                                "policy": "balanced_pareto_offline",
+                                "decision": "candidate_edge",
+                                "comparable": True,
+                            }},
+                            "spa_like": {{
+                                "policy": "spa_like",
+                                "decision": "candidate_edge",
+                                "comparable": True,
+                            }},
+                            "white_rc": {{
+                                "policy": "white_rc",
+                                "decision": "candidate_edge",
+                                "comparable": True,
+                            }},
+                            "hansen_spa": {{
+                                "policy": "hansen_spa",
+                                "decision": "candidate_edge",
+                                "comparable": True,
+                            }},
+                            "execution": {{
+                                "status": "compared",
+                                "policy": "balanced_pareto_execution",
+                                "decision": "candidate_edge",
+                                "comparable": True,
+                            }},
                         }},
-                        "offline": {{
-                            "policy": "balanced_pareto_offline",
-                            "decision": "candidate_edge",
-                            "comparable": True,
-                        }},
-                        "spa_like": {{
-                            "policy": "spa_like",
-                            "decision": "candidate_edge",
-                            "comparable": True,
-                        }},
-                        "white_rc": {{
-                            "policy": "white_rc",
-                            "decision": "candidate_edge",
-                            "comparable": True,
-                        }},
-                        "hansen_spa": {{
-                            "policy": "hansen_spa",
-                            "decision": "candidate_edge",
-                            "comparable": True,
-                        }},
-                        "execution": {{
-                            "status": "compared",
-                            "policy": "balanced_pareto_execution",
-                            "decision": "candidate_edge",
-                            "comparable": True,
-                        }},
-                    }},
-                )
+                    )
                 write_json(
                     candidate_dir / "search_budget_decision.json",
                     {{
@@ -534,7 +537,8 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     ]
 
     assert certification["provenance"]["trainer_evidence_source"] == "certification_artifact"
-    assert certification["provenance"]["research_evidence_source"] == "trainer_research_evidence_artifact"
+    assert certification["provenance"]["research_evidence_source"] == "certification_lane_backtest"
+    assert certification["provenance"]["trainer_research_prior_source"] == "trainer_research_evidence_artifact"
     assert certification["provenance"]["economic_objective_profile_present"] is True
     assert certification["provenance"]["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
     assert certification["windows"]["train_window"]["start"] == "2026-03-03"
@@ -546,6 +550,10 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     assert certification["valid_window_contract"] is True
     assert certification["certification"]["evaluated"] is True
     assert certification["certification"]["gate"]["pass"] is True
+    assert certification["research_evidence"]["source"] == "certification_lane_backtest"
+    assert certification["research_evidence"]["policy"] == "candidate_acceptance_certification_research_evidence_v1"
+    assert certification["research_evidence"]["trainer_research_prior"]["present"] is True
+    assert certification["research_evidence"]["trainer_research_prior"]["pass"] is True
 
 
 def test_candidate_acceptance_required_trainer_evidence_fails_without_decision_surface(
@@ -620,6 +628,37 @@ def test_candidate_acceptance_rejects_scout_only_budget_evidence(
     assert certification["certification"]["gate"]["budget_contract_gate_pass"] is False
     assert certification["certification"]["gate"]["decision_basis"] == "SCOUT_ONLY_BUDGET_EVIDENCE"
     assert certification["certification"]["gate"]["pass"] is False
+
+
+def test_candidate_acceptance_certification_evidence_does_not_require_trainer_research_prior(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        write_trainer_research_evidence=False,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    certification_path = Path(report["candidate"]["certification_artifact_path"])
+    certification = json.loads(certification_path.read_text(encoding="utf-8-sig"))
+
+    assert report["steps"]["train"]["trainer_evidence"]["source"] == "certification_artifact"
+    assert report["gates"]["backtest"]["trainer_evidence_gate_pass"] is True
+    assert certification["provenance"]["trainer_research_prior_present"] is False
+    assert certification["research_evidence"]["trainer_research_prior"]["present"] is False
+    assert certification["research_evidence"]["pass"] is True
 
 
 def test_candidate_acceptance_uses_profile_governed_backtest_thresholds(

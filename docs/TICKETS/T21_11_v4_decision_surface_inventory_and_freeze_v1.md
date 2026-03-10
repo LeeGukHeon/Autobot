@@ -1,7 +1,7 @@
 # T21.11 V4 Decision Surface Inventory And Freeze v1
 
 - Date: 2026-03-11
-- Status: started locally
+- Status: landed locally
 
 ## Goal
 - Freeze every resolved `v4` methodology decision into an auditable artifact before changing
@@ -73,3 +73,12 @@ Out of scope:
   - promotion-evidence decisions
 - the artifact explicitly shows the current methodology shortcuts instead of hiding them
 
+## 2026-03-11 Implementation
+- `train_v4_crypto_cs.py` now writes `decision_surface.json` for every `v4` run
+- the artifact records:
+  - trainer/task/model-family inputs
+  - dataset window ownership
+  - search-budget and factor-block contracts
+  - execution/runtime-recommendation coupling
+  - promotion evidence expectations
+- regression coverage landed in `tests/test_train_v4_crypto_cs.py`

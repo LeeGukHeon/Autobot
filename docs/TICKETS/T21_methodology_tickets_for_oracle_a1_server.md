@@ -143,7 +143,7 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.17` is shadow-lane only until the earlier tickets freeze the certification contract.
 
 ### Implementation Progress
-- `T21.11` slice 1 landed:
+- `T21.11` landed:
   - `decision_surface.json` is now written for each `v4` training run
 - `T21.12` slice 1 landed:
   - `candidate_acceptance.ps1` now separates train and certification windows
@@ -152,6 +152,10 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.12` slice 2 landed:
   - trainer now writes `trainer_research_evidence.json`
   - certification no longer reads research evidence directly from `promotion_decision.json`
+- `T21.12` slice 3 landed locally:
+  - `certification_report.json` now produces certification-lane `research_evidence` from certification-window backtests and stat validation
+  - `trainer_research_evidence.json` is now audit-only prior context under `trainer_research_prior`
+  - certification no longer depends on `trainer_research_evidence.json` to satisfy the trainer-evidence gate
 - `T21.13` slice 1 landed locally:
   - `search_budget_decision.json` now records:
     - `lane_class_requested`
