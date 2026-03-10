@@ -4,6 +4,7 @@ import numpy as np
 
 from autobot.models.multiple_testing import (
     TrialWindowMatrix,
+    build_trial_window_differential_diagnostics,
     build_trial_window_differential_matrix,
     run_hansen_spa,
     run_white_reality_check,
@@ -177,6 +178,71 @@ def test_build_trial_window_differential_matrix_uses_record_threshold_key() -> N
 
     assert matrix is not None
     assert matrix.differential_matrix[0, 0] == 0.007
+
+
+def test_build_trial_window_differential_matrix_accepts_selection_grid_period_panels() -> None:
+    matrix = build_trial_window_differential_matrix(
+        candidate_trial_panel=[
+            {
+                "trial": 7,
+                "trial_type": "selection_grid",
+                "selected_threshold_key": "top_5pct",
+                "windows": [
+                    {
+                        "window_index": 0,
+                        "oos_periods": [
+                            {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.010}}}},
+                            {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.012}}}},
+                        ],
+                    },
+                    {
+                        "window_index": 1,
+                        "oos_periods": [
+                            {"period_index": 0, "ts_ms": 3000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.020}}}},
+                        ],
+                    },
+                ],
+            },
+            {
+                "trial": 8,
+                "trial_type": "selection_grid",
+                "selected_threshold_key": "top_5pct",
+                "windows": [
+                    {
+                        "window_index": 0,
+                        "oos_periods": [
+                            {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.011}}}},
+                            {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.013}}}},
+                        ],
+                    },
+                    {
+                        "window_index": 1,
+                        "oos_periods": [
+                            {"period_index": 0, "ts_ms": 3000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.021}}}},
+                        ],
+                    },
+                ],
+            },
+        ],
+        champion_windows=[
+            {
+                "window_index": 0,
+                "oos_periods": [
+                    {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}},
+                    {"period_index": 1, "ts_ms": 2000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.002}}}},
+                ],
+            },
+            {
+                "window_index": 1,
+                "oos_periods": [
+                    {"period_index": 0, "ts_ms": 3000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.003}}}},
+                ],
+            },
+        ],
+    )
+
+    assert matrix is not None
+    assert matrix.panel_keys == ["0:ts:1000", "0:ts:2000", "1:ts:3000"]
 
 
 def test_run_white_reality_check_detects_candidate_edge() -> None:
@@ -449,5 +515,73 @@ def test_multiple_testing_returns_insufficient_when_windows_do_not_overlap() -> 
     )
 
     assert matrix is None
-    assert run_white_reality_check(matrix)["comparable"] is False
-    assert run_hansen_spa(matrix)["decision"] == "insufficient_evidence"
+    diagnostics = build_trial_window_differential_diagnostics(
+        candidate_trial_panel=[
+            {
+                "trial": 0,
+                "windows": [
+                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}},
+                ],
+            },
+            {
+                "trial": 1,
+                "windows": [
+                    {"window_index": 0, "metrics": {"trading": {"top_5pct": {"ev_net": 0.002}}}},
+                ],
+            },
+        ],
+        champion_windows=[
+            {"window_index": 5, "metrics": {"trading": {"top_5pct": {"ev_net": 0.0}}}},
+        ],
+    )
+    white = run_white_reality_check(matrix, diagnostics=diagnostics)
+    hansen = run_hansen_spa(matrix, diagnostics=diagnostics)
+    assert white["comparable"] is False
+    assert "NO_SHARED_PANEL_KEYS" in white["reasons"]
+    assert hansen["decision"] == "insufficient_evidence"
+    assert hansen["panel_diagnostics"]["common_panel_key_count"] == 0
+
+
+def test_multiple_testing_diagnostics_flags_selection_grid_without_period_results() -> None:
+    diagnostics = build_trial_window_differential_diagnostics(
+        candidate_trial_panel=[
+            {
+                "trial": 7,
+                "trial_type": "selection_grid",
+                "selected_threshold_key": "top_5pct",
+                "windows": [
+                    {
+                        "window_index": 0,
+                        "metrics": {"trading": {"top_5pct": {"ev_net": 0.010}}},
+                        "oos_periods": [],
+                        "oos_slices": [],
+                    }
+                ],
+            },
+            {
+                "trial": 8,
+                "trial_type": "selection_grid",
+                "selected_threshold_key": "top_5pct",
+                "windows": [
+                    {
+                        "window_index": 1,
+                        "metrics": {"trading": {"top_5pct": {"ev_net": 0.020}}},
+                        "oos_periods": [],
+                        "oos_slices": [],
+                    }
+                ],
+            },
+        ],
+        champion_windows=[
+            {
+                "window_index": 0,
+                "oos_periods": [
+                    {"period_index": 0, "ts_ms": 1000, "metrics": {"trading": {"top_5pct": {"ev_net": 0.001}}}},
+                ],
+            }
+        ],
+    )
+
+    assert diagnostics["comparable"] is False
+    assert diagnostics["candidate_trial_sources"] == {"selection_grid_missing_period_results": 2}
+    assert "SELECTION_GRID_MISSING_PERIOD_RESULTS" in diagnostics["reasons"]

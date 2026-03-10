@@ -30,36 +30,16 @@ def build_trial_window_differential_matrix(
     *,
     champion_threshold_key: str = "top_5pct",
 ) -> TrialWindowMatrix | None:
-    candidate_rows = list(candidate_trial_panel or [])
-    champion_panel_map = _extract_champion_panel_map(
-        champion_windows or [],
-        threshold_key=str(champion_threshold_key).strip() or "top_5pct",
+    analysis = _analyze_trial_window_panel_alignment(
+        candidate_trial_panel,
+        champion_windows,
+        champion_threshold_key=champion_threshold_key,
     )
-    if not candidate_rows or not champion_panel_map:
+    if not bool(analysis.get("comparable", False)):
         return None
-
-    trial_panel_maps: list[tuple[int, dict[str, float]]] = []
-    common_keys: set[str] | None = None
-    for record in candidate_rows:
-        trial_id = int(record.get("trial", -1))
-        if trial_id < 0:
-            continue
-        panels = _extract_trial_panel_map(record)
-        shared = sorted(set(panels).intersection(champion_panel_map))
-        if not shared:
-            continue
-        if common_keys is None:
-            common_keys = set(shared)
-        else:
-            common_keys &= set(shared)
-        trial_panel_maps.append((trial_id, panels))
-
-    if not trial_panel_maps or not common_keys:
-        return None
-
-    panel_keys = sorted(common_keys)
-    if len(panel_keys) < 2:
-        return None
+    panel_keys = list(analysis.get("panel_keys") or [])
+    trial_panel_maps = list(analysis.get("trial_panel_maps") or [])
+    champion_panel_map = dict(analysis.get("champion_panel_map") or {})
 
     matrix_rows: list[list[float]] = []
     trial_ids: list[int] = []
@@ -79,6 +59,20 @@ def build_trial_window_differential_matrix(
     )
 
 
+def build_trial_window_differential_diagnostics(
+    candidate_trial_panel: list[dict[str, Any]] | None,
+    champion_windows: list[dict[str, Any]] | None,
+    *,
+    champion_threshold_key: str = "top_5pct",
+) -> dict[str, Any]:
+    analysis = _analyze_trial_window_panel_alignment(
+        candidate_trial_panel,
+        champion_windows,
+        champion_threshold_key=champion_threshold_key,
+    )
+    return dict(analysis.get("diagnostics") or {})
+
+
 def run_white_reality_check(
     matrix: TrialWindowMatrix | None,
     *,
@@ -86,13 +80,14 @@ def run_white_reality_check(
     alpha: float = 0.20,
     seed: int = 42,
     average_block_length: int | str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if matrix is None:
-        return _insufficient("white_reality_check")
+        return _insufficient("white_reality_check", diagnostics=diagnostics)
     diffs = matrix.differential_matrix
     trial_count, window_count = diffs.shape
     if trial_count < 2 or window_count < 2:
-        return _insufficient("white_reality_check")
+        return _insufficient("white_reality_check", diagnostics=diagnostics)
 
     means = diffs.mean(axis=1)
     observed = math.sqrt(window_count) * max(float(np.max(means)), 0.0)
@@ -128,6 +123,7 @@ def run_white_reality_check(
         "best_trial": int(matrix.trial_ids[best_idx]),
         "best_mean_diff_ev_net": float(means[best_idx]),
         "p_value": p_value,
+        "panel_diagnostics": dict(diagnostics or {}),
         "reasons": ["WHITE_RC_PASS" if decision == "candidate_edge" else "WHITE_RC_HOLD"],
     }
 
@@ -139,13 +135,14 @@ def run_hansen_spa(
     alpha: float = 0.20,
     seed: int = 42,
     average_block_length: int | str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if matrix is None:
-        return _insufficient("hansen_spa")
+        return _insufficient("hansen_spa", diagnostics=diagnostics)
     diffs = matrix.differential_matrix
     trial_count, window_count = diffs.shape
     if trial_count < 2 or window_count < 2:
-        return _insufficient("hansen_spa")
+        return _insufficient("hansen_spa", diagnostics=diagnostics)
 
     means = diffs.mean(axis=1)
     stds = diffs.std(axis=1, ddof=1)
@@ -184,29 +181,115 @@ def run_hansen_spa(
         "best_trial": int(matrix.trial_ids[best_idx]),
         "best_mean_diff_ev_net": float(means[best_idx]),
         "p_value": p_value,
+        "panel_diagnostics": dict(diagnostics or {}),
         "reasons": ["HANSEN_SPA_PASS" if decision == "candidate_edge" else "HANSEN_SPA_HOLD"],
     }
 
 
-def _insufficient(policy: str) -> dict[str, Any]:
+def _insufficient(policy: str, *, diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+    reasons = [
+        str(item).strip()
+        for item in ((diagnostics or {}).get("reasons") or [])
+        if str(item).strip()
+    ]
+    if not reasons:
+        reasons = ["INSUFFICIENT_COMMON_TRIAL_WINDOWS"]
     return {
         "policy": policy,
         "comparable": False,
         "decision": "insufficient_evidence",
         "candidate_edge": False,
-        "reasons": ["INSUFFICIENT_COMMON_TRIAL_WINDOWS"],
+        "panel_diagnostics": dict(diagnostics or {}),
+        "reasons": reasons,
+    }
+
+def _analyze_trial_window_panel_alignment(
+    candidate_trial_panel: list[dict[str, Any]] | None,
+    champion_windows: list[dict[str, Any]] | None,
+    *,
+    champion_threshold_key: str = "top_5pct",
+) -> dict[str, Any]:
+    candidate_rows = [dict(item) for item in (candidate_trial_panel or []) if isinstance(item, dict)]
+    champion_panel_map, champion_source = _extract_champion_panel(
+        champion_windows or [],
+        threshold_key=str(champion_threshold_key).strip() or "top_5pct",
+    )
+    reasons: list[str] = []
+    if not candidate_rows:
+        reasons.append("MISSING_CANDIDATE_TRIAL_PANEL")
+    if not champion_panel_map:
+        reasons.append("MISSING_CHAMPION_PANEL")
+
+    candidate_source_counts: dict[str, int] = {}
+    trial_panel_maps: list[tuple[int, dict[str, float]]] = []
+    common_keys: set[str] | None = None
+    for record in candidate_rows:
+        trial_id = int(record.get("trial", -1))
+        if trial_id < 0:
+            continue
+        panels, panel_source = _extract_trial_panel(record)
+        candidate_source_counts[panel_source] = int(candidate_source_counts.get(panel_source, 0) or 0) + 1
+        if panel_source == "selection_grid_missing_period_results":
+            reasons.append("SELECTION_GRID_MISSING_PERIOD_RESULTS")
+        if not panels or not champion_panel_map:
+            continue
+        shared = sorted(set(panels).intersection(champion_panel_map))
+        if not shared:
+            continue
+        if common_keys is None:
+            common_keys = set(shared)
+        else:
+            common_keys &= set(shared)
+        trial_panel_maps.append((trial_id, panels))
+
+    panel_keys = sorted(common_keys or [])
+    if candidate_rows and champion_panel_map and not trial_panel_maps:
+        reasons.append("NO_SHARED_PANEL_KEYS")
+    if candidate_rows and champion_panel_map and common_keys is not None and len(panel_keys) < 2:
+        reasons.append("INSUFFICIENT_COMMON_PANEL_KEYS")
+
+    complete_trial_panel_maps: list[tuple[int, dict[str, float]]] = []
+    for trial_id, record_map in trial_panel_maps:
+        if panel_keys and all(key in record_map for key in panel_keys):
+            complete_trial_panel_maps.append((trial_id, record_map))
+    if panel_keys and len(complete_trial_panel_maps) < 2:
+        reasons.append("INSUFFICIENT_COMPARABLE_TRIALS")
+
+    comparable = bool(champion_panel_map) and len(panel_keys) >= 2 and len(complete_trial_panel_maps) >= 2
+    diagnostics = {
+        "comparable": comparable,
+        "candidate_trial_count": int(len(candidate_rows)),
+        "candidate_trial_sources": dict(sorted(candidate_source_counts.items())),
+        "candidate_trials_with_shared_panel_keys": int(len(trial_panel_maps)),
+        "candidate_trials_with_complete_panel_coverage": int(len(complete_trial_panel_maps)),
+        "champion_panel_source": str(champion_source),
+        "champion_panel_key_count": int(len(champion_panel_map)),
+        "common_panel_key_count": int(len(panel_keys)),
+        "common_window_count": int(len({_parse_window_index_from_panel_key(key) for key in panel_keys})),
+        "panel_keys": list(panel_keys),
+        "reasons": list(dict.fromkeys(reason for reason in reasons if str(reason).strip())),
+    }
+    return {
+        "comparable": comparable,
+        "panel_keys": panel_keys,
+        "trial_panel_maps": complete_trial_panel_maps,
+        "champion_panel_map": champion_panel_map,
+        "diagnostics": diagnostics,
     }
 
 
-def _extract_trial_slice_map(record: dict[str, Any]) -> dict[str, float]:
+def _extract_trial_panel(record: dict[str, Any]) -> tuple[dict[str, float], str]:
     period_map = _extract_trial_period_map(record)
     if period_map:
-        return period_map
+        return period_map, "oos_periods"
+    if str(record.get("trial_type", "")).strip().lower() == "selection_grid":
+        return {}, "selection_grid_missing_period_results"
     return _extract_trial_slice_fallback_map(record)
 
 
 def _extract_trial_panel_map(record: dict[str, Any]) -> dict[str, float]:
-    return _extract_trial_slice_map(record)
+    panel_map, _ = _extract_trial_panel(record)
+    return panel_map
 
 
 def _extract_trial_period_map(record: dict[str, Any]) -> dict[str, float]:
@@ -233,10 +316,12 @@ def _extract_trial_period_map(record: dict[str, Any]) -> dict[str, float]:
     return candidate_period_map
 
 
-def _extract_trial_slice_fallback_map(record: dict[str, Any]) -> dict[str, float]:
+def _extract_trial_slice_fallback_map(record: dict[str, Any]) -> tuple[dict[str, float], str]:
     threshold_key = _resolve_trial_threshold_key(record)
     windows = record.get("windows") or []
     candidate_slice_map: dict[str, float] = {}
+    saw_real_slice = False
+    saw_window_summary = False
     for window in windows:
         if not isinstance(window, dict):
             continue
@@ -253,22 +338,29 @@ def _extract_trial_slice_fallback_map(record: dict[str, Any]) -> dict[str, float
                 candidate_slice_map[slice_key] = _safe_float(
                     _extract_trading_ev_net(slice_doc.get("metrics"), threshold_key)
                 )
+                saw_real_slice = True
         elif window_index >= 0:
             candidate_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
                 _extract_trading_ev_net(window.get("metrics"), threshold_key)
             )
-    return candidate_slice_map
+            saw_window_summary = True
+    if saw_real_slice:
+        return candidate_slice_map, "oos_slices"
+    if saw_window_summary:
+        return candidate_slice_map, "window_summary_only"
+    return candidate_slice_map, "no_panel"
 
 
-def _extract_champion_slice_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
+def _extract_champion_panel(windows: list[dict[str, Any]], *, threshold_key: str) -> tuple[dict[str, float], str]:
     period_map = _extract_champion_period_map(windows, threshold_key=threshold_key)
     if period_map:
-        return period_map
+        return period_map, "oos_periods"
     return _extract_champion_slice_fallback_map(windows, threshold_key=threshold_key)
 
 
 def _extract_champion_panel_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
-    return _extract_champion_slice_map(windows, threshold_key=threshold_key)
+    panel_map, _ = _extract_champion_panel(windows, threshold_key=threshold_key)
+    return panel_map
 
 
 def _extract_champion_period_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
@@ -292,8 +384,10 @@ def _extract_champion_period_map(windows: list[dict[str, Any]], *, threshold_key
     return champion_period_map
 
 
-def _extract_champion_slice_fallback_map(windows: list[dict[str, Any]], *, threshold_key: str) -> dict[str, float]:
+def _extract_champion_slice_fallback_map(windows: list[dict[str, Any]], *, threshold_key: str) -> tuple[dict[str, float], str]:
     champion_slice_map: dict[str, float] = {}
+    saw_real_slice = False
+    saw_window_summary = False
     for window in windows:
         if not isinstance(window, dict):
             continue
@@ -311,11 +405,17 @@ def _extract_champion_slice_fallback_map(windows: list[dict[str, Any]], *, thres
                 champion_slice_map[_compose_panel_key(window_index, slice_index)] = _safe_float(
                     _extract_trading_ev_net(slice_doc.get("metrics"), threshold_key)
                 )
+                saw_real_slice = True
         else:
             champion_slice_map[_compose_panel_key(window_index, 0)] = _safe_float(
                 _extract_trading_ev_net(window.get("metrics"), threshold_key)
             )
-    return champion_slice_map
+            saw_window_summary = True
+    if saw_real_slice:
+        return champion_slice_map, "oos_slices"
+    if saw_window_summary:
+        return champion_slice_map, "window_summary_only"
+    return champion_slice_map, "no_panel"
 
 
 def _resolve_trial_threshold_key(record: dict[str, Any]) -> str:

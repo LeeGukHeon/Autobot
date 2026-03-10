@@ -176,6 +176,10 @@ These tickets are the required follow-on family before changing core promotion b
   - walk-forward factor-block evidence now stores bounded `refit_drop_block` certification rows
   - median ablation is now diagnostic-only and cannot reject optional blocks by itself
   - guarded auto only prunes optional blocks when refit-certified history exists
+- `T21.16` slice 1 landed locally:
+  - selection-grid comparable panels now preserve real period keys instead of flattened placeholder rows
+  - `White RC` / `Hansen SPA` now expose explicit panel-alignment diagnostics when evidence is insufficient
+  - `cpcv_lite` summaries now carry explicit budget/partial-support reasons
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

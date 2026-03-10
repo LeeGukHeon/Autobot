@@ -65,6 +65,7 @@ from .factor_block_selector import (
     write_latest_factor_block_selection_pointer,
 )
 from .multiple_testing import (
+    build_trial_window_differential_diagnostics,
     build_trial_window_differential_matrix,
     run_hansen_spa,
     run_white_reality_check,
@@ -1071,6 +1072,8 @@ def _run_cpcv_lite_v4(
             "skipped_folds": 0,
             "comparable_fold_count": 0,
             "budget_cut": False,
+            "budget_reason": "DISABLED",
+            "reasons": ["DISABLED"],
         },
         "folds": [],
         "skipped_folds": [],
@@ -1123,6 +1126,8 @@ def _run_cpcv_lite_v4(
             "skipped_folds": 0,
             "comparable_fold_count": 0,
             "budget_cut": bool(report.get("budget_cut", False)),
+            "budget_reason": str(report.get("budget_reason", "")).strip(),
+            "reasons": list(report.get("insufficiency_reasons", [])),
         }
         return report
     if not best_params:
@@ -1134,6 +1139,8 @@ def _run_cpcv_lite_v4(
             "skipped_folds": int(len(fold_specs)),
             "comparable_fold_count": 0,
             "budget_cut": bool(report.get("budget_cut", False)),
+            "budget_reason": str(report.get("budget_reason", "")).strip(),
+            "reasons": list(report.get("insufficiency_reasons", [])),
         }
         return report
 
@@ -1284,6 +1291,14 @@ def _run_cpcv_lite_v4(
         status = "insufficient"
     elif bool(report.get("budget_cut", False)) or skipped_folds or comparable_fold_count < 2:
         status = "partial"
+    if bool(report.get("budget_cut", False)):
+        insufficiency_reasons.append("BUDGET_CUT")
+        if str(report.get("budget_reason", "")).strip():
+            insufficiency_reasons.append(f"BUDGET_REASON_{str(report.get('budget_reason', '')).strip()}")
+    if skipped_folds:
+        insufficiency_reasons.append("SKIPPED_FOLDS_PRESENT")
+    if comparable_fold_count < 2:
+        insufficiency_reasons.append("INSUFFICIENT_COMPARABLE_FOLDS")
     report["insufficiency_reasons"] = sorted({str(item) for item in insufficiency_reasons if str(item).strip()})
     report["summary"] = {
         "status": status,
@@ -1292,6 +1307,8 @@ def _run_cpcv_lite_v4(
         "skipped_folds": int(len(skipped_folds)),
         "comparable_fold_count": comparable_fold_count,
         "budget_cut": bool(report.get("budget_cut", False)),
+        "budget_reason": str(report.get("budget_reason", "")).strip(),
+        "reasons": list(report["insufficiency_reasons"]),
     }
     return report
 
@@ -2482,6 +2499,12 @@ def _finalize_walk_forward_report(
         candidate_threshold_key=selected_threshold_key,
         champion_threshold_key=champion_threshold_key,
     )
+    multiple_testing_panel_diagnostics = build_trial_window_differential_diagnostics(
+        report.get("trial_panel", []),
+        champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
+        champion_threshold_key=champion_threshold_key,
+    )
+    report["multiple_testing_panel_diagnostics"] = multiple_testing_panel_diagnostics
     rc_matrix = build_trial_window_differential_matrix(
         report.get("trial_panel", []),
         champion_report.get("windows", []) if isinstance(champion_report, dict) else [],
@@ -2493,6 +2516,7 @@ def _finalize_walk_forward_report(
         bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
         seed=int(options.seed),
         average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
+        diagnostics=multiple_testing_panel_diagnostics,
     )
     report["hansen_spa"] = run_hansen_spa(
         rc_matrix,
@@ -2500,6 +2524,7 @@ def _finalize_walk_forward_report(
         bootstrap_iters=max(int(options.multiple_testing_bootstrap_iters), 100),
         seed=int(options.seed),
         average_block_length=(int(options.multiple_testing_block_length) if int(options.multiple_testing_block_length) > 0 else None),
+        diagnostics=multiple_testing_panel_diagnostics,
     )
     if champion_summary:
         report["champion_summary"] = champion_summary
@@ -2671,6 +2696,11 @@ def _build_selection_search_trial_panel(
                         "window_index": window_index,
                         "ev_net": _safe_float(row.get("ev_net")),
                         "selected_rows": int(row.get("selected_rows", 0) or 0),
+                        "period_results": [
+                            dict(period_doc)
+                            for period_doc in (row.get("period_results") or [])
+                            if isinstance(period_doc, dict)
+                        ],
                     }
                 )
 
@@ -2685,26 +2715,12 @@ def _build_selection_search_trial_panel(
                         str(threshold_key): {
                             "ev_net": float(row["ev_net"]),
                             "selected_rows": int(row["selected_rows"]),
-                            "precision": 0.0,
                         }
                     }
                 },
-                "oos_slices": [
-                    {
-                        "slice_index": int(slice_doc.get("slice_index", -1)),
-                        "metrics": {
-                            "trading": {
-                                str(threshold_key): {
-                                    "ev_net": float(row["ev_net"]),
-                                    "selected_rows": int(row["selected_rows"]),
-                                    "precision": 0.0,
-                                }
-                            }
-                        },
-                    }
-                    for slice_doc in ((row.get("window", {}) or {}).get("oos_slices") or [])
-                    if isinstance(slice_doc, dict) and int(slice_doc.get("slice_index", -1)) >= 0
-                ],
+                "panel_source": "oos_periods"
+                if any(int(period_doc.get("period_index", -1)) >= 0 for period_doc in (row.get("period_results") or []))
+                else "window_summary_only",
                 "oos_periods": [
                     {
                         "period_index": int(period_doc.get("period_index", -1)),
@@ -2714,14 +2730,16 @@ def _build_selection_search_trial_panel(
                                 str(threshold_key): {
                                     "ev_net": _safe_float(period_doc.get("ev_net")),
                                     "selected_rows": int(period_doc.get("selected_rows", 0) or 0),
-                                    "precision": 0.0,
                                 }
                             }
                         },
                     }
                     for period_doc in (row.get("period_results") or [])
-                    if isinstance(period_doc, dict) and int(period_doc.get("period_index", -1)) >= 0
+                    if isinstance(period_doc, dict)
+                    and int(period_doc.get("period_index", -1)) >= 0
+                    and int(period_doc.get("ts_ms", -1)) >= 0
                 ],
+                "oos_slices": [],
             }
             for row in rows
         ]

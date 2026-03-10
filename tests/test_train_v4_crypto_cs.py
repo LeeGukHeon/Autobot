@@ -964,6 +964,11 @@ def test_build_selection_search_trial_panel_keeps_all_grid_trials() -> None:
     assert panel[0]["windows"][1]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.02
     assert panel[1]["windows"][0]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.015
     assert panel[1]["windows"][1]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.03
+    assert panel[0]["windows"][0]["panel_source"] == "oos_periods"
+    assert panel[0]["windows"][0]["oos_slices"] == []
+    assert len(panel[0]["windows"][0]["oos_periods"]) == 1
+    assert panel[0]["windows"][0]["oos_periods"][0]["metrics"]["trading"]["top_5pct"]["ev_net"] == 0.01
+    assert "precision" not in panel[0]["windows"][0]["metrics"]["trading"]["top_5pct"]
 
 
 def test_train_v4_cls_writes_cpcv_lite_report_when_enabled(tmp_path, monkeypatch) -> None:
