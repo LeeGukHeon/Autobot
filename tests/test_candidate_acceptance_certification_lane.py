@@ -34,6 +34,8 @@ def _make_fake_python_exe(
     budget_lane_class_effective: str = "promotion_eligible",
     budget_contract_id: str = "v4_promotion_eligible_budget_v1",
     budget_promotion_eligible_satisfied: bool = True,
+    candidate_orders_filled: int = 64,
+    profile_candidate_min_orders_filled: int = 30,
 ) -> Path:
     driver_path = tmp_path / "fake_python_driver.py"
     driver_path.write_text(
@@ -51,6 +53,8 @@ def _make_fake_python_exe(
             BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
             BUDGET_CONTRACT_ID = {budget_contract_id!r}
             BUDGET_PROMOTION_ELIGIBLE_SATISFIED = {str(budget_promotion_eligible_satisfied)}
+            CANDIDATE_ORDERS_FILLED = {int(candidate_orders_filled)}
+            PROFILE_CANDIDATE_MIN_ORDERS_FILLED = {int(profile_candidate_min_orders_filled)}
 
 
             def arg_value(name: str, default: str = "") -> str:
@@ -243,6 +247,59 @@ def _make_fake_python_exe(
                             "pareto_higher_is_better": ["realized_pnl_quote", "fill_rate"],
                             "pareto_lower_is_better": ["max_drawdown_pct", "slippage_bps_mean"],
                             "utility_metric": "calmar_like",
+                            "threshold_defaults": {{
+                                "candidate_min_orders_filled": PROFILE_CANDIDATE_MIN_ORDERS_FILLED,
+                                "candidate_min_realized_pnl_quote": 0.0,
+                                "candidate_min_deflated_sharpe_ratio": 0.2,
+                                "candidate_min_pnl_delta_vs_champion": 0.0,
+                                "champion_min_drawdown_improvement_pct": 0.1,
+                            }},
+                            "policy_variants": {{
+                                "balanced_pareto": {{
+                                    "allow_stability_override": True,
+                                    "champion_pnl_tolerance_pct": 0.05,
+                                    "champion_max_fill_rate_degradation": 0.02,
+                                    "champion_max_slippage_deterioration_bps": 2.5,
+                                    "champion_min_utility_edge_pct": 0.0,
+                                    "use_pareto": True,
+                                    "use_utility_tie_break": True,
+                                    "backtest_compare_required": True,
+                                    "paper_final_gate": False,
+                                }},
+                                "strict": {{
+                                    "allow_stability_override": False,
+                                    "champion_pnl_tolerance_pct": 0.0,
+                                    "champion_max_fill_rate_degradation": 0.0,
+                                    "champion_max_slippage_deterioration_bps": 0.0,
+                                    "champion_min_utility_edge_pct": 0.0,
+                                    "use_pareto": False,
+                                    "use_utility_tie_break": False,
+                                    "backtest_compare_required": True,
+                                    "paper_final_gate": False,
+                                }},
+                                "conservative_pareto": {{
+                                    "allow_stability_override": True,
+                                    "champion_pnl_tolerance_pct": 0.02,
+                                    "champion_max_fill_rate_degradation": 0.01,
+                                    "champion_max_slippage_deterioration_bps": 1.0,
+                                    "champion_min_utility_edge_pct": 0.05,
+                                    "use_pareto": True,
+                                    "use_utility_tie_break": True,
+                                    "backtest_compare_required": True,
+                                    "paper_final_gate": False,
+                                }},
+                                "paper_final_balanced": {{
+                                    "allow_stability_override": True,
+                                    "champion_pnl_tolerance_pct": 0.05,
+                                    "champion_max_fill_rate_degradation": 0.02,
+                                    "champion_max_slippage_deterioration_bps": 2.5,
+                                    "champion_min_utility_edge_pct": 0.0,
+                                    "use_pareto": True,
+                                    "use_utility_tie_break": True,
+                                    "backtest_compare_required": False,
+                                    "paper_final_gate": True,
+                                }},
+                            }},
                         }},
                     }},
                 )
@@ -287,7 +344,7 @@ def _make_fake_python_exe(
                 run_dir.mkdir(parents=True, exist_ok=True)
                 if model_ref == CANDIDATE_RUN_ID:
                     payload = {{
-                        "orders_filled": 64,
+                        "orders_filled": CANDIDATE_ORDERS_FILLED,
                         "realized_pnl_quote": 250.0,
                         "fill_rate": 0.82,
                         "max_drawdown_pct": 0.05,
@@ -387,7 +444,13 @@ def _make_fake_daily_pipeline_script(tmp_path: Path) -> Path:
     return script_path
 
 
-def _run_acceptance(project_root: Path, python_exe: Path, daily_pipeline_script: Path) -> subprocess.CompletedProcess[str]:
+def _run_acceptance(
+    project_root: Path,
+    python_exe: Path,
+    daily_pipeline_script: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             _powershell_exe(),
@@ -415,6 +478,7 @@ def _run_acceptance(project_root: Path, python_exe: Path, daily_pipeline_script:
             "-SkipReportRefresh",
             "-TrainerEvidenceMode",
             "required",
+            *(extra_args or []),
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -556,3 +620,71 @@ def test_candidate_acceptance_rejects_scout_only_budget_evidence(
     assert certification["certification"]["gate"]["budget_contract_gate_pass"] is False
     assert certification["certification"]["gate"]["decision_basis"] == "SCOUT_ONLY_BUDGET_EVIDENCE"
     assert certification["certification"]["gate"]["pass"] is False
+
+
+def test_candidate_acceptance_uses_profile_governed_backtest_thresholds(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        candidate_orders_filled=24,
+        profile_candidate_min_orders_filled=70,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert report["config"]["backtest_min_orders_filled"] == 70
+    assert report["config"]["promotion_policy_contract_source"] == "economic_objective_profile"
+    assert report["gates"]["backtest"]["promotion_policy_contract_profile_id"] == "v4_shared_economic_objective_v1"
+    assert report["gates"]["backtest"]["candidate_min_orders_threshold"] == 70
+    assert report["gates"]["backtest"]["candidate_min_orders_pass"] is False
+    assert report["gates"]["backtest"]["pass"] is False
+    assert report["reasons"][0] == "BACKTEST_ACCEPTANCE_FAILED"
+
+
+def test_candidate_acceptance_cli_override_can_relax_profile_thresholds(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        candidate_orders_filled=24,
+        profile_candidate_min_orders_filled=70,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(
+        project_root,
+        python_exe,
+        daily_pipeline_script,
+        extra_args=["-BacktestMinOrdersFilled", "10"],
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert report["config"]["backtest_min_orders_filled"] == 10
+    assert report["config"]["promotion_policy_cli_override_keys"] == ["backtest_min_orders_filled"]
+    assert report["gates"]["backtest"]["promotion_policy_cli_override_keys"] == ["backtest_min_orders_filled"]
+    assert report["gates"]["backtest"]["candidate_min_orders_threshold"] == 10
+    assert report["gates"]["backtest"]["candidate_min_orders_pass"] is True
+    assert report["gates"]["backtest"]["pass"] is True

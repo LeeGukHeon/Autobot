@@ -51,7 +51,10 @@ from .experiment_ledger import (
 from .factor_block_selector import (
     append_factor_block_selection_history,
     build_guarded_factor_block_policy,
+    build_factor_block_selection_signature,
     build_factor_block_selection_report,
+    build_factor_block_window_baseline,
+    build_factor_block_window_row,
     evaluate_factor_block_window_rows,
     load_factor_block_selection_history,
     normalize_factor_block_selection_mode,
@@ -1007,6 +1010,35 @@ def _run_walk_forward_v4(
                 block_registry=factor_block_registry,
             )
         )
+        report["_factor_block_window_rows"].extend(
+            _evaluate_factor_block_refit_window_rows(
+                window_index=int(info.window_index),
+                task=task,
+                options=options,
+                best_params=dict(fitted.get("best_params", {}) or {}),
+                full_bundle=fitted["bundle"],
+                feature_names=feature_names,
+                x_train=dataset.X[train_mask],
+                y_cls_train=dataset.y_cls[train_mask],
+                y_reg_train=dataset.y_reg[train_mask],
+                y_rank_train=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[train_mask],
+                w_train=dataset.sample_weight[train_mask],
+                ts_train_ms=dataset.ts_ms[train_mask],
+                x_valid=dataset.X[valid_mask],
+                y_valid_cls=dataset.y_cls[valid_mask],
+                y_valid_reg=dataset.y_reg[valid_mask],
+                y_valid_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[valid_mask],
+                w_valid=dataset.sample_weight[valid_mask],
+                ts_valid_ms=dataset.ts_ms[valid_mask],
+                x_test=dataset.X[test_mask],
+                y_test_cls=dataset.y_cls[test_mask],
+                y_test_reg=dataset.y_reg[test_mask],
+                y_test_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[test_mask],
+                ts_test_ms=dataset.ts_ms[test_mask],
+                thresholds=thresholds,
+                block_registry=factor_block_registry,
+            )
+        )
 
     report["windows"] = windows
     report["skipped_windows"] = skipped
@@ -1601,6 +1633,160 @@ def _fit_walk_forward_window_model(
     )
 
 
+def _evaluate_factor_block_refit_window_rows(
+    *,
+    window_index: int,
+    task: str,
+    options: TrainV4CryptoCsOptions,
+    best_params: dict[str, Any] | None,
+    full_bundle: dict[str, Any],
+    feature_names: Sequence[str],
+    x_train: np.ndarray,
+    y_cls_train: np.ndarray,
+    y_reg_train: np.ndarray,
+    y_rank_train: np.ndarray,
+    w_train: np.ndarray,
+    ts_train_ms: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    y_valid_rank: np.ndarray,
+    w_valid: np.ndarray,
+    ts_valid_ms: np.ndarray,
+    x_test: np.ndarray,
+    y_test_cls: np.ndarray,
+    y_test_reg: np.ndarray,
+    y_test_rank: np.ndarray,
+    ts_test_ms: np.ndarray,
+    thresholds: dict[str, Any],
+    block_registry: Sequence[Any],
+) -> list[dict[str, Any]]:
+    if not best_params or x_test.size <= 0 or len(feature_names) <= 0:
+        return []
+    full_scores = _predict_scores(full_bundle, x_test)
+    baseline = build_factor_block_window_baseline(
+        scores=full_scores,
+        y_reg=y_test_reg,
+        ts_ms=ts_test_ms,
+        thresholds=thresholds,
+        fee_bps_est=options.fee_bps_est,
+        safety_bps=options.safety_bps,
+    )
+    if baseline is None:
+        return []
+    full_metrics = _evaluate_split(
+        y_cls=y_test_cls,
+        y_reg=y_test_reg,
+        scores=full_scores,
+        markets=np.array(["_ALL_"] * int(y_test_cls.size), dtype=object),
+        fee_bps_est=options.fee_bps_est,
+        safety_bps=options.safety_bps,
+    )
+    full_metrics = _attach_ranking_metrics(
+        metrics=full_metrics,
+        y_rank=y_test_rank,
+        ts_ms=ts_test_ms,
+        scores=full_scores,
+    )
+    full_top5 = ((full_metrics.get("trading", {}) or {}).get("top_5pct", {})) if isinstance(full_metrics, dict) else {}
+    full_signature = dict(baseline.get("selection_signature") or {})
+    feature_index = {str(name): idx for idx, name in enumerate(feature_names)}
+    all_indices = list(range(len(feature_names)))
+    rows: list[dict[str, Any]] = []
+
+    for block in block_registry:
+        if bool(getattr(block, "protected", False)):
+            continue
+        drop_indices = [feature_index[name] for name in block.feature_columns if name in feature_index]
+        if not drop_indices:
+            continue
+        keep_indices = [idx for idx in all_indices if idx not in set(drop_indices)]
+        if not keep_indices:
+            continue
+        x_train_drop = np.asarray(x_train[:, keep_indices], dtype=np.float32)
+        x_valid_drop = np.asarray(x_valid[:, keep_indices], dtype=np.float32)
+        x_test_drop = np.asarray(x_test[:, keep_indices], dtype=np.float32)
+        if task == "cls":
+            dropped_bundle = _fit_fixed_classifier_model(
+                options=options,
+                best_params=best_params,
+                x_train=x_train_drop,
+                y_train=y_cls_train,
+                w_train=w_train,
+                x_valid=x_valid_drop,
+                y_valid=y_valid_cls,
+                w_valid=w_valid,
+                fold_index=int(window_index),
+            )
+        elif task == "reg":
+            dropped_bundle = _fit_fixed_regression_model(
+                options=options,
+                best_params=best_params,
+                x_train=x_train_drop,
+                y_train=y_reg_train,
+                w_train=w_train,
+                x_valid=x_valid_drop,
+                y_valid=y_valid_reg,
+                w_valid=w_valid,
+                fold_index=int(window_index),
+            )
+        else:
+            dropped_bundle = _fit_fixed_ranker_model(
+                options=options,
+                best_params=best_params,
+                x_train=x_train_drop,
+                y_train=y_rank_train,
+                ts_train_ms=ts_train_ms,
+                w_train=w_train,
+                x_valid=x_valid_drop,
+                y_valid=y_valid_rank,
+                ts_valid_ms=ts_valid_ms,
+                fold_index=int(window_index),
+            )
+
+        dropped_scores = _predict_scores(dropped_bundle, x_test_drop)
+        dropped_metrics = _evaluate_split(
+            y_cls=y_test_cls,
+            y_reg=y_test_reg,
+            scores=dropped_scores,
+            markets=np.array(["_ALL_"] * int(y_test_cls.size), dtype=object),
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        dropped_metrics = _attach_ranking_metrics(
+            metrics=dropped_metrics,
+            y_rank=y_test_rank,
+            ts_ms=ts_test_ms,
+            scores=dropped_scores,
+        )
+        dropped_top5 = ((dropped_metrics.get("trading", {}) or {}).get("top_5pct", {})) if isinstance(dropped_metrics, dict) else {}
+        dropped_signature = build_factor_block_selection_signature(
+            scores=dropped_scores,
+            y_reg=y_test_reg,
+            ts_ms=ts_test_ms,
+            threshold=float(baseline["threshold_value"]),
+            top_pct=float(baseline["top_pct"]),
+            min_candidates=int(baseline["min_candidates_per_ts"]),
+            fee_bps_est=options.fee_bps_est,
+            safety_bps=options.safety_bps,
+        )
+        rows.append(
+            build_factor_block_window_row(
+                window_index=int(window_index),
+                block=block,
+                feature_count=int(len(drop_indices)),
+                full_top5=full_top5,
+                candidate_top5=dropped_top5,
+                full_signature=full_signature,
+                candidate_signature=dropped_signature,
+                selection_profile=dict(baseline.get("selection_profile") or {}),
+                evidence_mode="refit_drop_block",
+                diagnostic_only=False,
+            )
+        )
+    return rows
+
+
 def _summarize_walk_forward_trial_panel(
     windows: list[dict[str, Any]],
     *,
@@ -1702,6 +1888,7 @@ def _fit_walk_forward_weighted_trials(
 
     best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
+    best_params: dict[str, Any] | None = None
     trial_records: list[dict[str, Any]] = []
     economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
     for trial in range(max(int(sweep_trials), 1)):
@@ -1746,6 +1933,7 @@ def _fit_walk_forward_weighted_trials(
         if best_key is None or key > best_key:
             best_key = key
             best_bundle = {"model_type": "xgboost", "scaler": None, "estimator": estimator}
+            best_params = dict(params)
 
         test_scores = estimator.predict_proba(x_test)[:, 1]
         test_metrics = _evaluate_split(
@@ -1787,7 +1975,7 @@ def _fit_walk_forward_weighted_trials(
         )
     if best_bundle is None:
         raise RuntimeError("walk-forward weighted sweep failed to produce a model")
-    return {"bundle": best_bundle, "trial_records": trial_records}
+    return {"bundle": best_bundle, "trial_records": trial_records, "best_params": dict(best_params or {})}
 
 
 def _fit_walk_forward_regression_trials(
@@ -1823,6 +2011,7 @@ def _fit_walk_forward_regression_trials(
 
     best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
+    best_params: dict[str, Any] | None = None
     trial_records: list[dict[str, Any]] = []
     economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
     for trial in range(max(int(sweep_trials), 1)):
@@ -1867,6 +2056,7 @@ def _fit_walk_forward_regression_trials(
         if best_key is None or key > best_key:
             best_key = key
             best_bundle = {"model_type": "xgboost_regressor", "scaler": None, "estimator": estimator}
+            best_params = dict(params)
 
         test_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_test), dtype=np.float64)))
         test_metrics = _evaluate_split(
@@ -1908,7 +2098,7 @@ def _fit_walk_forward_regression_trials(
         )
     if best_bundle is None:
         raise RuntimeError("walk-forward regression sweep failed to produce a model")
-    return {"bundle": best_bundle, "trial_records": trial_records}
+    return {"bundle": best_bundle, "trial_records": trial_records, "best_params": dict(best_params or {})}
 
 
 def _fit_walk_forward_ranker_trials(
@@ -1949,6 +2139,7 @@ def _fit_walk_forward_ranker_trials(
 
     best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
+    best_params: dict[str, Any] | None = None
     trial_records: list[dict[str, Any]] = []
     economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
     for trial in range(max(int(sweep_trials), 1)):
@@ -2004,6 +2195,7 @@ def _fit_walk_forward_ranker_trials(
         if best_key is None or key > best_key:
             best_key = key
             best_bundle = {"model_type": "xgboost_ranker", "scaler": None, "estimator": estimator}
+            best_params = dict(params)
 
         test_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_test), dtype=np.float64)))
         test_metrics = _attach_ranking_metrics(
@@ -2052,7 +2244,7 @@ def _fit_walk_forward_ranker_trials(
         )
     if best_bundle is None:
         raise RuntimeError("walk-forward ranker sweep failed to produce a model")
-    return {"bundle": best_bundle, "trial_records": trial_records}
+    return {"bundle": best_bundle, "trial_records": trial_records, "best_params": dict(best_params or {})}
 
 
 def _compact_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -3148,6 +3340,7 @@ def _build_v4_metrics_doc(
             "walk_forward_selection": dict((economic_objective_profile or {}).get("walk_forward_selection") or {}),
             "offline_compare": dict((economic_objective_profile or {}).get("offline_compare") or {}),
             "execution_compare": dict((economic_objective_profile or {}).get("execution_compare") or {}),
+            "promotion_compare": dict((economic_objective_profile or {}).get("promotion_compare") or {}),
         },
         "factor_block_selection": factor_block_selection_summary,
     }

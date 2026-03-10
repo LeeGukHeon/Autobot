@@ -47,6 +47,8 @@ _DEFAULT_POLICY_MIN_MEAN_DELTA_EV = 0.0
 _DEFAULT_POLICY_MAX_COVERAGE_COST_PROXY = 0.35
 _DEFAULT_POLICY_MAX_TURNOVER_COST_PROXY = 0.60
 _DEFAULT_POLICY_MIN_OPTIONAL_BLOCKS = 1
+_EVIDENCE_MODE_MEDIAN_ABLATION = "median_ablation"
+_EVIDENCE_MODE_REFIT_DROP_BLOCK = "refit_drop_block"
 
 
 @dataclass(frozen=True)
@@ -247,6 +249,115 @@ def resolve_selected_feature_columns_from_latest(
     return selected_feature_columns, base_context
 
 
+def build_factor_block_window_baseline(
+    *,
+    scores: np.ndarray,
+    y_reg: np.ndarray,
+    ts_ms: np.ndarray,
+    thresholds: dict[str, Any],
+    fee_bps_est: float,
+    safety_bps: float,
+    threshold_key: str = _DEFAULT_SELECTION_THRESHOLD_KEY,
+) -> dict[str, Any] | None:
+    threshold_value = _safe_optional_float(thresholds.get(threshold_key))
+    if threshold_value is None:
+        return None
+    selection_config = SelectionGridConfig()
+    full_selection_doc = build_window_selection_objectives(
+        scores=scores,
+        y_reg=y_reg,
+        ts_ms=ts_ms,
+        thresholds={threshold_key: threshold_value},
+        fee_bps_est=fee_bps_est,
+        safety_bps=safety_bps,
+        config=selection_config,
+    )
+    full_threshold_doc = (full_selection_doc.get("by_threshold_key") or {}).get(threshold_key, {})
+    full_grid_choice = _choose_window_grid_choice(full_threshold_doc.get("grid_results"))
+    if full_grid_choice is None:
+        return None
+    full_signature = _selection_signature(
+        scores=scores,
+        y_reg=y_reg,
+        ts_ms=ts_ms,
+        threshold=float(threshold_value),
+        top_pct=float(full_grid_choice["top_pct"]),
+        min_candidates=int(full_grid_choice["min_candidates_per_ts"]),
+        fee_frac=float(fee_bps_est + safety_bps) / 10_000.0,
+    )
+    return {
+        "threshold_key": str(threshold_key),
+        "threshold_value": float(threshold_value),
+        "top_pct": float(full_grid_choice["top_pct"]),
+        "min_candidates_per_ts": int(full_grid_choice["min_candidates_per_ts"]),
+        "selection_profile": {
+            "threshold_key": str(threshold_key),
+            "threshold_value": float(threshold_value),
+            "top_pct": float(full_grid_choice["top_pct"]),
+            "min_candidates_per_ts": int(full_grid_choice["min_candidates_per_ts"]),
+        },
+        "selection_signature": full_signature,
+    }
+
+
+def build_factor_block_window_row(
+    *,
+    window_index: int,
+    block: FactorBlockDefinition,
+    feature_count: int,
+    full_top5: dict[str, Any],
+    candidate_top5: dict[str, Any],
+    full_signature: dict[str, Any],
+    candidate_signature: dict[str, Any],
+    selection_profile: dict[str, Any],
+    evidence_mode: str,
+    diagnostic_only: bool,
+) -> dict[str, Any]:
+    return {
+        "window_index": int(window_index),
+        "block_id": block.block_id,
+        "feature_count": int(feature_count),
+        "delta_ev_net_top5": _safe_float(full_top5.get("ev_net")) - _safe_float(candidate_top5.get("ev_net")),
+        "delta_precision_top5": _safe_float(full_top5.get("precision")) - _safe_float(candidate_top5.get("precision")),
+        "coverage_cost_proxy": abs(
+            float(full_signature["active_ts_ratio"]) - float(candidate_signature["active_ts_ratio"])
+        ),
+        "turnover_cost_proxy": _selection_turnover_cost(
+            full_selected=full_signature["selected_index_by_ts"],
+            ablated_selected=candidate_signature["selected_index_by_ts"],
+        ),
+        "full_active_ts_ratio": float(full_signature["active_ts_ratio"]),
+        "candidate_active_ts_ratio": float(candidate_signature["active_ts_ratio"]),
+        "full_selected_rows": int(full_signature["selected_rows"]),
+        "candidate_selected_rows": int(candidate_signature["selected_rows"]),
+        "selection_profile": dict(selection_profile or {}),
+        "evidence_mode": str(evidence_mode).strip() or _EVIDENCE_MODE_MEDIAN_ABLATION,
+        "diagnostic_only": bool(diagnostic_only),
+    }
+
+
+def build_factor_block_selection_signature(
+    *,
+    scores: np.ndarray,
+    y_reg: np.ndarray,
+    ts_ms: np.ndarray,
+    threshold: float,
+    top_pct: float,
+    min_candidates: int,
+    fee_bps_est: float,
+    safety_bps: float,
+) -> dict[str, Any]:
+    return _selection_signature(
+        scores=scores,
+        y_reg=y_reg,
+        ts_ms=ts_ms,
+        threshold=float(threshold),
+        top_pct=float(top_pct),
+        min_candidates=int(min_candidates),
+        fee_frac=float(fee_bps_est + safety_bps) / 10_000.0,
+    )
+
+
 def evaluate_factor_block_window_rows(
     *,
     window_index: int,
@@ -264,10 +375,6 @@ def evaluate_factor_block_window_rows(
 ) -> list[dict[str, Any]]:
     if x_window.size <= 0 or len(feature_names) <= 0:
         return []
-    threshold_value = _safe_optional_float(thresholds.get(threshold_key))
-    if threshold_value is None:
-        return []
-
     feature_index = {str(name): idx for idx, name in enumerate(feature_names)}
     full_scores = _predict_scores(model_bundle, x_window)
     full_metrics = _evaluate_split(
@@ -278,29 +385,18 @@ def evaluate_factor_block_window_rows(
         fee_bps_est=fee_bps_est,
         safety_bps=safety_bps,
     )
-    selection_config = SelectionGridConfig()
-    full_selection_doc = build_window_selection_objectives(
+    baseline = build_factor_block_window_baseline(
         scores=full_scores,
         y_reg=y_reg,
         ts_ms=ts_ms,
-        thresholds={threshold_key: threshold_value},
+        thresholds=thresholds,
         fee_bps_est=fee_bps_est,
         safety_bps=safety_bps,
-        config=selection_config,
+        threshold_key=threshold_key,
     )
-    full_threshold_doc = (full_selection_doc.get("by_threshold_key") or {}).get(threshold_key, {})
-    full_grid_choice = _choose_window_grid_choice(full_threshold_doc.get("grid_results"))
-    if full_grid_choice is None:
+    if baseline is None:
         return []
-    full_signature = _selection_signature(
-        scores=full_scores,
-        y_reg=y_reg,
-        ts_ms=ts_ms,
-        threshold=float(threshold_value),
-        top_pct=float(full_grid_choice["top_pct"]),
-        min_candidates=int(full_grid_choice["min_candidates_per_ts"]),
-        fee_frac=float(fee_bps_est + safety_bps) / 10_000.0,
-    )
+    full_signature = dict(baseline.get("selection_signature") or {})
     full_top5 = ((full_metrics.get("trading", {}) or {}).get("top_5pct", {})) if isinstance(full_metrics, dict) else {}
 
     rows: list[dict[str, Any]] = []
@@ -330,36 +426,24 @@ def evaluate_factor_block_window_rows(
             scores=ablated_scores,
             y_reg=y_reg,
             ts_ms=ts_ms,
-            threshold=float(threshold_value),
-            top_pct=float(full_grid_choice["top_pct"]),
-            min_candidates=int(full_grid_choice["min_candidates_per_ts"]),
+            threshold=float(baseline["threshold_value"]),
+            top_pct=float(baseline["top_pct"]),
+            min_candidates=int(baseline["min_candidates_per_ts"]),
             fee_frac=float(fee_bps_est + safety_bps) / 10_000.0,
         )
         rows.append(
-            {
-                "window_index": int(window_index),
-                "block_id": block.block_id,
-                "feature_count": int(len(indices)),
-                "delta_ev_net_top5": _safe_float(full_top5.get("ev_net")) - _safe_float(ablated_top5.get("ev_net")),
-                "delta_precision_top5": _safe_float(full_top5.get("precision")) - _safe_float(ablated_top5.get("precision")),
-                "coverage_cost_proxy": abs(
-                    float(full_signature["active_ts_ratio"]) - float(ablated_signature["active_ts_ratio"])
-                ),
-                "turnover_cost_proxy": _selection_turnover_cost(
-                    full_selected=full_signature["selected_index_by_ts"],
-                    ablated_selected=ablated_signature["selected_index_by_ts"],
-                ),
-                "full_active_ts_ratio": float(full_signature["active_ts_ratio"]),
-                "ablated_active_ts_ratio": float(ablated_signature["active_ts_ratio"]),
-                "full_selected_rows": int(full_signature["selected_rows"]),
-                "ablated_selected_rows": int(ablated_signature["selected_rows"]),
-                "selection_profile": {
-                    "threshold_key": str(threshold_key),
-                    "threshold_value": float(threshold_value),
-                    "top_pct": float(full_grid_choice["top_pct"]),
-                    "min_candidates_per_ts": int(full_grid_choice["min_candidates_per_ts"]),
-                },
-            }
+            build_factor_block_window_row(
+                window_index=int(window_index),
+                block=block,
+                feature_count=int(len(indices)),
+                full_top5=full_top5,
+                candidate_top5=ablated_top5,
+                full_signature=full_signature,
+                candidate_signature=ablated_signature,
+                selection_profile=dict(baseline.get("selection_profile") or {}),
+                evidence_mode=_EVIDENCE_MODE_MEDIAN_ABLATION,
+                diagnostic_only=True,
+            )
         )
     return rows
 
@@ -382,15 +466,37 @@ def build_factor_block_selection_report(
     accepted: list[str] = []
     rejected: list[str] = []
     decisions: dict[str, Any] = {}
+    optional_refit_certified_count = 0
     for block in block_registry:
         block_rows = [item for item in rows if str(item.get("block_id", "")).strip() == block.block_id]
-        aggregate = _aggregate_block_rows(block_rows)
+        available_evidence_modes = sorted(
+            {
+                str(item.get("evidence_mode", _EVIDENCE_MODE_MEDIAN_ABLATION)).strip() or _EVIDENCE_MODE_MEDIAN_ABLATION
+                for item in block_rows
+            }
+        )
+        refit_rows = [
+            item
+            for item in block_rows
+            if (str(item.get("evidence_mode", _EVIDENCE_MODE_MEDIAN_ABLATION)).strip() or _EVIDENCE_MODE_MEDIAN_ABLATION)
+            == _EVIDENCE_MODE_REFIT_DROP_BLOCK
+        ]
+        aggregate_rows = refit_rows if refit_rows else block_rows
+        aggregate = _aggregate_block_rows(aggregate_rows)
         reason_codes: list[str] = []
         status = "accepted"
+        evidence_mode_used = _EVIDENCE_MODE_REFIT_DROP_BLOCK if refit_rows else (
+            available_evidence_modes[0] if available_evidence_modes else "none"
+        )
+        refit_certified = bool(refit_rows) and not bool(block.protected)
         if block.protected:
             reason_codes.append("PROTECTED_BASE_BLOCK")
         elif weak_sample:
             reason_codes.append("INSUFFICIENT_SAMPLE_KEEP_FULL_SET")
+        elif not refit_rows:
+            reason_codes.append("NO_REFIT_EVIDENCE_KEEP_FULL_SET")
+            if _EVIDENCE_MODE_MEDIAN_ABLATION in available_evidence_modes:
+                reason_codes.append("MEDIAN_ABLATION_DIAGNOSTIC_ONLY")
         else:
             if aggregate["delta_ev_net_top5_mean"] <= 0.0:
                 status = "rejected"
@@ -399,11 +505,13 @@ def build_factor_block_selection_report(
                 status = "rejected"
                 reason_codes.append("UNSTABLE_OOS_EDGE")
             if not reason_codes:
-                reason_codes.append("ECONOMIC_EDGE_POSITIVE")
+                reason_codes.append("REFIT_CERTIFIED_ECONOMIC_EDGE_POSITIVE")
             if aggregate["coverage_cost_proxy_mean"] > 0.25:
                 reason_codes.append("COVERAGE_SHIFT_HIGH")
             if aggregate["turnover_cost_proxy_mean"] > 0.50:
                 reason_codes.append("TURNOVER_SHIFT_HIGH")
+        if refit_certified:
+            optional_refit_certified_count += 1
         decisions[block.block_id] = {
             "block_id": block.block_id,
             "label": block.label,
@@ -413,6 +521,11 @@ def build_factor_block_selection_report(
             "source_contracts": list(block.source_contracts),
             "status": status,
             "reason_codes": reason_codes,
+            "available_evidence_modes": available_evidence_modes,
+            "evidence_mode_used": evidence_mode_used,
+            "refit_certified": bool(refit_certified),
+            "evidence_row_count": int(len(aggregate_rows)),
+            "diagnostic_row_count": int(max(len(block_rows) - len(refit_rows), 0)),
             "contribution_summary": aggregate,
         }
         if status == "accepted":
@@ -432,10 +545,14 @@ def build_factor_block_selection_report(
     elif normalized_mode == _MODE_REPORT_ONLY:
         summary_status = "report_only"
     report = {
-        "version": 1,
-        "policy": "economically_significant_factor_selector_v1",
+        "version": 2,
+        "policy": "economically_significant_factor_selector_v2",
         "run_id": str(run_id),
         "selection_mode": normalized_mode,
+        "evidence_contract": {
+            "required_for_optional_block_rejection": _EVIDENCE_MODE_REFIT_DROP_BLOCK,
+            "median_ablation_diagnostic_only": True,
+        },
         "sample_support": {
             "windows_evaluated": int(len(windows_evaluated)),
             "window_indices": list(windows_evaluated),
@@ -454,6 +571,7 @@ def build_factor_block_selection_report(
             "rejected_block_count": int(len(rejected)),
             "windows_evaluated": int(len(windows_evaluated)),
             "weak_sample": bool(weak_sample),
+            "optional_refit_certified_block_count": int(optional_refit_certified_count),
         },
     }
     return report
@@ -587,26 +705,27 @@ def build_guarded_factor_block_policy(
         if block.protected:
             reason_codes.append("PROTECTED_BASE_BLOCK")
         else:
-            if int(stats["eligible_record_count"]) < max(int(min_eligible_runs), 1):
-                accepted = False
-                reason_codes.append("INSUFFICIENT_BLOCK_HISTORY")
-            if float(stats["accept_ratio"]) < float(min_accept_ratio):
-                accepted = False
-                reason_codes.append("ACCEPT_RATIO_TOO_LOW")
-            if float(stats["mean_delta_ev_net_top5"]) <= float(min_mean_delta_ev):
-                accepted = False
-                reason_codes.append("MEAN_DELTA_EV_NONPOSITIVE")
-            if float(stats["mean_positive_delta_ev_ratio"]) < float(min_positive_delta_ratio):
-                accepted = False
-                reason_codes.append("POSITIVE_DELTA_RATIO_TOO_LOW")
-            if float(stats["mean_coverage_cost_proxy"]) > float(max_coverage_cost_proxy):
-                accepted = False
-                reason_codes.append("COVERAGE_SHIFT_TOO_HIGH")
-            if float(stats["mean_turnover_cost_proxy"]) > float(max_turnover_cost_proxy):
-                accepted = False
-                reason_codes.append("TURNOVER_SHIFT_TOO_HIGH")
-            if accepted:
-                reason_codes.append("GUARDED_HISTORY_ACCEPTED")
+            if int(stats["refit_certified_record_count"]) < max(int(min_eligible_runs), 1):
+                accepted = True
+                reason_codes.append("INSUFFICIENT_REFIT_HISTORY_KEEP_FULL_SET")
+            else:
+                if float(stats["accept_ratio"]) < float(min_accept_ratio):
+                    accepted = False
+                    reason_codes.append("ACCEPT_RATIO_TOO_LOW")
+                if float(stats["mean_delta_ev_net_top5"]) <= float(min_mean_delta_ev):
+                    accepted = False
+                    reason_codes.append("MEAN_DELTA_EV_NONPOSITIVE")
+                if float(stats["mean_positive_delta_ev_ratio"]) < float(min_positive_delta_ratio):
+                    accepted = False
+                    reason_codes.append("POSITIVE_DELTA_RATIO_TOO_LOW")
+                if float(stats["mean_coverage_cost_proxy"]) > float(max_coverage_cost_proxy):
+                    accepted = False
+                    reason_codes.append("COVERAGE_SHIFT_TOO_HIGH")
+                if float(stats["mean_turnover_cost_proxy"]) > float(max_turnover_cost_proxy):
+                    accepted = False
+                    reason_codes.append("TURNOVER_SHIFT_TOO_HIGH")
+                if accepted:
+                    reason_codes.append("GUARDED_REFIT_HISTORY_ACCEPTED")
         block_policy[block.block_id] = {
             "block_id": block.block_id,
             "label": block.label,
@@ -653,9 +772,13 @@ def build_guarded_factor_block_policy(
                 policy_reasons.append("NO_PRUNING_SIGNAL")
 
     return {
-        "version": 1,
-        "policy": "economically_significant_factor_selector_guarded_auto_v1",
+        "version": 2,
+        "policy": "economically_significant_factor_selector_guarded_auto_v2",
         "history_window_runs": int(window_runs),
+        "evidence_contract": {
+            "required_for_optional_block_rejection": _EVIDENCE_MODE_REFIT_DROP_BLOCK,
+            "median_ablation_diagnostic_only": True,
+        },
         "criteria": {
             "min_eligible_runs": int(max(int(min_eligible_runs), 1)),
             "min_accept_ratio": float(min_accept_ratio),
@@ -729,6 +852,13 @@ def _compact_factor_block_history_record(report: dict[str, Any]) -> dict[str, An
             compact_decisions[str(block_id)] = {
                 "status": str(decision.get("status", "")).strip(),
                 "protected": bool(decision.get("protected", False)),
+                "available_evidence_modes": [
+                    str(item).strip()
+                    for item in (decision.get("available_evidence_modes") or [])
+                    if str(item).strip()
+                ],
+                "evidence_mode_used": str(decision.get("evidence_mode_used", "")).strip(),
+                "refit_certified": bool(decision.get("refit_certified", False)),
                 "reason_codes": [str(item).strip() for item in (decision.get("reason_codes") or []) if str(item).strip()],
                 "contribution_summary": dict(decision.get("contribution_summary") or {}),
             }
@@ -755,9 +885,16 @@ def _summarize_history_for_block(
         decision = (record.get("decision_by_block") or {}).get(block.block_id)
         if isinstance(decision, dict):
             relevant.append(decision)
-    if not relevant:
+    certified = [
+        item
+        for item in relevant
+        if bool(item.get("protected", False)) or bool(item.get("refit_certified", False))
+    ]
+    if not certified:
         return {
             "eligible_record_count": 0,
+            "refit_certified_record_count": 0,
+            "uncertified_record_count": int(len(relevant)),
             "accept_ratio": 0.0,
             "mean_delta_ev_net_top5": 0.0,
             "mean_positive_delta_ev_ratio": 0.0,
@@ -765,12 +902,14 @@ def _summarize_history_for_block(
             "mean_turnover_cost_proxy": 0.0,
         }
     accepted = np.asarray(
-        [1.0 if str(item.get("status", "")).strip() == "accepted" else 0.0 for item in relevant],
+        [1.0 if str(item.get("status", "")).strip() == "accepted" else 0.0 for item in certified],
         dtype=np.float64,
     )
-    contribution = [dict(item.get("contribution_summary") or {}) for item in relevant]
+    contribution = [dict(item.get("contribution_summary") or {}) for item in certified]
     return {
-        "eligible_record_count": int(len(relevant)),
+        "eligible_record_count": int(len(certified)),
+        "refit_certified_record_count": int(len(certified)),
+        "uncertified_record_count": int(max(len(relevant) - len(certified), 0)),
         "accept_ratio": float(np.mean(accepted)) if accepted.size > 0 else 0.0,
         "mean_delta_ev_net_top5": float(
             np.mean(np.asarray([_safe_float(item.get("delta_ev_net_top5_mean")) for item in contribution], dtype=np.float64))

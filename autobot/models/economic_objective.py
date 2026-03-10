@@ -104,12 +104,95 @@ _V4_SHARED_ECONOMIC_OBJECTIVE_PROFILE: dict[str, Any] = {
             "candidate_min_realized_pnl_quote",
             "candidate_min_deflated_sharpe_ratio",
         ],
+        "threshold_defaults": {
+            "candidate_min_orders_filled": 30,
+            "candidate_min_realized_pnl_quote": 0.0,
+            "candidate_min_deflated_sharpe_ratio": 0.20,
+            "candidate_min_pnl_delta_vs_champion": 0.0,
+            "champion_min_drawdown_improvement_pct": 0.10,
+        },
+        "policy_variants": {
+            "balanced_pareto": {
+                "allow_stability_override": True,
+                "champion_pnl_tolerance_pct": 0.05,
+                "champion_max_fill_rate_degradation": 0.02,
+                "champion_max_slippage_deterioration_bps": 2.5,
+                "champion_min_utility_edge_pct": 0.0,
+                "use_pareto": True,
+                "use_utility_tie_break": True,
+                "backtest_compare_required": True,
+                "paper_final_gate": False,
+            },
+            "strict": {
+                "allow_stability_override": False,
+                "champion_pnl_tolerance_pct": 0.0,
+                "champion_max_fill_rate_degradation": 0.0,
+                "champion_max_slippage_deterioration_bps": 0.0,
+                "champion_min_utility_edge_pct": 0.0,
+                "use_pareto": False,
+                "use_utility_tie_break": False,
+                "backtest_compare_required": True,
+                "paper_final_gate": False,
+            },
+            "conservative_pareto": {
+                "allow_stability_override": True,
+                "champion_pnl_tolerance_pct": 0.02,
+                "champion_max_fill_rate_degradation": 0.01,
+                "champion_max_slippage_deterioration_bps": 1.0,
+                "champion_min_utility_edge_pct": 0.05,
+                "use_pareto": True,
+                "use_utility_tie_break": True,
+                "backtest_compare_required": True,
+                "paper_final_gate": False,
+            },
+            "paper_final_balanced": {
+                "allow_stability_override": True,
+                "champion_pnl_tolerance_pct": 0.05,
+                "champion_max_fill_rate_degradation": 0.02,
+                "champion_max_slippage_deterioration_bps": 2.5,
+                "champion_min_utility_edge_pct": 0.0,
+                "use_pareto": True,
+                "use_utility_tie_break": True,
+                "backtest_compare_required": False,
+                "paper_final_gate": True,
+            },
+        },
     },
 }
 
 
 def build_v4_shared_economic_objective_profile() -> dict[str, Any]:
     return copy.deepcopy(_V4_SHARED_ECONOMIC_OBJECTIVE_PROFILE)
+
+
+def resolve_v4_promotion_compare_contract(
+    policy_name: str | None,
+    *,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile = build_v4_shared_economic_objective_profile()
+    promotion_compare = dict(profile.get("promotion_compare") or {})
+    threshold_defaults = dict(promotion_compare.get("threshold_defaults") or {})
+    policy_variants = dict(promotion_compare.get("policy_variants") or {})
+    requested = str(policy_name or "").strip() or "balanced_pareto"
+    effective = requested if requested in policy_variants else "balanced_pareto"
+    resolved: dict[str, Any] = {
+        "profile_id": str(profile.get("profile_id", "")).strip(),
+        "policy_name_requested": requested,
+        "policy_name_effective": effective,
+        "threshold_source": "economic_objective_profile",
+        "cli_override_keys": [],
+    }
+    resolved.update(threshold_defaults)
+    resolved.update(dict(policy_variants.get(effective) or {}))
+    override_keys: list[str] = []
+    for key, value in dict(overrides or {}).items():
+        if key not in resolved or value is None:
+            continue
+        resolved[key] = value
+        override_keys.append(str(key))
+    resolved["cli_override_keys"] = override_keys
+    return resolved
 
 
 def build_v4_trainer_sweep_sort_key(metrics: dict[str, Any] | None, *, task: str) -> tuple[float, ...]:

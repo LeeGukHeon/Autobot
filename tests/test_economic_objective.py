@@ -4,6 +4,7 @@ from autobot.models.economic_objective import (
     build_v4_shared_economic_objective_profile,
     build_v4_trainer_sweep_sort_key,
     compare_v4_profiled_pareto,
+    resolve_v4_promotion_compare_contract,
 )
 
 
@@ -47,3 +48,21 @@ def test_compare_v4_profiled_pareto_emits_profile_metadata() -> None:
     assert compare["economic_objective_profile_id"] == profile["profile_id"]
     assert compare["economic_objective_context"] == "execution_compare"
     assert compare["metric_order"]["higher_is_better"] == ["realized_pnl_quote", "fill_rate"]
+
+
+def test_resolve_v4_promotion_compare_contract_exposes_thresholds_and_policy_variants() -> None:
+    resolved = resolve_v4_promotion_compare_contract(
+        "conservative_pareto",
+        overrides={"candidate_min_orders_filled": 45},
+    )
+
+    assert resolved["profile_id"] == "v4_shared_economic_objective_v1"
+    assert resolved["policy_name_requested"] == "conservative_pareto"
+    assert resolved["policy_name_effective"] == "conservative_pareto"
+    assert resolved["candidate_min_orders_filled"] == 45
+    assert resolved["candidate_min_realized_pnl_quote"] == 0.0
+    assert resolved["candidate_min_deflated_sharpe_ratio"] == 0.20
+    assert resolved["champion_pnl_tolerance_pct"] == 0.02
+    assert resolved["champion_min_utility_edge_pct"] == 0.05
+    assert resolved["allow_stability_override"] is True
+    assert resolved["cli_override_keys"] == ["candidate_min_orders_filled"]

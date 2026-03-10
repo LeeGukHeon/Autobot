@@ -1,7 +1,7 @@
 # T21.14 V4 Shared Economic Objective Contract v1
 
 - Date: 2026-03-11
-- Status: slice 1 landed locally
+- Status: slice 2 landed locally
 
 ## Goal
 - Replace the current stack of mixed local objectives with one auditable economic objective contract
@@ -82,6 +82,30 @@ Out of scope:
 - `tests/test_train_v4_crypto_cs.py`
   - trainer artifact and decision-surface exposure
 
+## 2026-03-11 Slice 2 Implementation
+- extended `economic_objective_profile.json` so `promotion_compare` now governs:
+  - candidate min-order / min-PnL / min-DSR thresholds
+  - strict-vs-champion PnL delta threshold
+  - drawdown-improvement threshold
+  - policy variants for:
+    - `strict`
+    - `balanced_pareto`
+    - `conservative_pareto`
+    - `paper_final_balanced`
+- `candidate_acceptance.ps1` now resolves promotion thresholds from the shared profile first
+- explicit CLI flags still override, but only as a thin wrapper and the override keys are recorded in:
+  - acceptance report config
+  - train step metadata
+  - backtest gate metadata
+- `metrics.json` now exposes `promotion_compare` alongside the other objective contexts
+
+## Additional Regression Coverage
+- `tests/test_candidate_acceptance_certification_lane.py`
+  - profile-governed min-order threshold can fail acceptance
+  - explicit CLI override can relax a profile threshold and is recorded
+- `tests/test_economic_objective.py`
+  - resolved promotion contract exposes policy-variant thresholds and override keys
+
 ## Remaining Work
-- promotion policy thresholds still live in PowerShell policy config and are only partially governed by the shared profile
-- a follow-up slice should move promote-gate tolerances and tie-break thresholds into the same objective contract so policy config becomes a thin wrapper instead of a second decision surface
+- `BacktestMinProb` and `BacktestMinCandidatesPerTs` still live outside `promotion_compare`
+- that is intentional for now because they shape certification backtest input construction rather than the promotion compare gate itself

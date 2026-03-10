@@ -169,6 +169,13 @@ These tickets are the required follow-on family before changing core promotion b
     - `profile_id = v4_shared_economic_objective_v1`
   - `decision_surface.json`, `metrics.json`, certification provenance, and acceptance reports now expose that profile id
   - promotion pareto metric selection now comes from the shared profile artifact rather than a PowerShell-only hardcoded metric list
+- `T21.14` slice 2 landed locally:
+  - promotion gate thresholds and policy variants now come from `economic_objective_profile.json`
+  - `candidate_acceptance.ps1` records when CLI flags override the shared promotion contract
+- `T21.15` slice 1 landed locally:
+  - walk-forward factor-block evidence now stores bounded `refit_drop_block` certification rows
+  - median ablation is now diagnostic-only and cannot reject optional blocks by itself
+  - guarded auto only prunes optional blocks when refit-certified history exists
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

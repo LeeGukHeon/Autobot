@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from autobot.models.factor_block_selector import FactorBlockDefinition
 from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
 from autobot.models.train_v4_crypto_cs import (
     TrainV4CryptoCsOptions,
+    _evaluate_factor_block_refit_window_rows,
     _build_selection_search_trial_panel,
     _summarize_walk_forward_trial_panel,
     train_and_register_v4_crypto_cs,
@@ -54,6 +56,102 @@ def test_predict_scores_supports_ranker_estimators() -> None:
 
     assert scores.shape == (3,)
     assert 0.0 < scores[0] < scores[1] < scores[2] < 1.0
+
+
+def test_evaluate_factor_block_refit_window_rows_marks_refit_evidence(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._predict_scores",
+        lambda bundle, x: np.clip(0.45 + (np.asarray(x, dtype=np.float64)[:, 0] * 0.2), 0.01, 0.99),
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._evaluate_split",
+        lambda **kwargs: {
+            "trading": {
+                "top_5pct": {
+                    "ev_net": float(np.mean(np.asarray(kwargs["scores"], dtype=np.float64))),
+                    "precision": float(np.mean(np.asarray(kwargs["scores"], dtype=np.float64))),
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._attach_ranking_metrics",
+        lambda **kwargs: kwargs["metrics"],
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._fit_fixed_classifier_model",
+        lambda **kwargs: {"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()},
+    )
+
+    options = TrainV4CryptoCsOptions(
+        dataset_root=tmp_path / "features_v4",
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
+        model_family="train_v4_crypto_cs",
+        tf="5m",
+        quote="KRW",
+        top_n=20,
+        start="2026-03-01",
+        end="2026-03-05",
+        feature_set="v4",
+        label_set="v2",
+        task="cls",
+        booster_sweep_trials=1,
+        seed=7,
+        nthread=1,
+        batch_rows=128,
+        train_ratio=0.6,
+        valid_ratio=0.2,
+        test_ratio=0.2,
+        embargo_bars=0,
+        fee_bps_est=5.0,
+        safety_bps=1.0,
+        ev_scan_steps=10,
+        ev_min_selected=1,
+        min_rows_for_train=1,
+    )
+
+    rows = _evaluate_factor_block_refit_window_rows(
+        window_index=2,
+        task="cls",
+        options=options,
+        best_params={"max_depth": 2},
+        full_bundle={"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()},
+        feature_names=("f1", "f2"),
+        x_train=np.asarray([[0.1, 0.2], [0.2, 0.4], [0.3, 0.6], [0.4, 0.8]], dtype=np.float32),
+        y_cls_train=np.asarray([0, 1, 0, 1], dtype=np.int64),
+        y_reg_train=np.asarray([0.0, 0.1, 0.0, 0.2], dtype=np.float32),
+        y_rank_train=np.asarray([0.0, 0.1, 0.0, 0.2], dtype=np.float32),
+        w_train=np.ones(4, dtype=np.float64),
+        ts_train_ms=np.asarray([1_000, 2_000, 3_000, 4_000], dtype=np.int64),
+        x_valid=np.asarray([[0.5, 1.0], [0.6, 1.2]], dtype=np.float32),
+        y_valid_cls=np.asarray([1, 0], dtype=np.int64),
+        y_valid_reg=np.asarray([0.2, -0.1], dtype=np.float32),
+        y_valid_rank=np.asarray([0.2, -0.1], dtype=np.float32),
+        w_valid=np.ones(2, dtype=np.float64),
+        ts_valid_ms=np.asarray([5_000, 6_000], dtype=np.int64),
+        x_test=np.asarray([[0.7, 1.4], [0.8, 1.6], [0.9, 1.8], [1.0, 2.0]], dtype=np.float32),
+        y_test_cls=np.asarray([1, 0, 1, 0], dtype=np.int64),
+        y_test_reg=np.asarray([0.1, -0.1, 0.2, -0.2], dtype=np.float32),
+        y_test_rank=np.asarray([0.1, -0.1, 0.2, -0.2], dtype=np.float32),
+        ts_test_ms=np.asarray([7_000, 7_000, 8_000, 8_000], dtype=np.int64),
+        thresholds={"top_5pct": 0.5},
+        block_registry=[
+            FactorBlockDefinition(
+                block_id="v4_optional_test",
+                label="optional test",
+                feature_columns=("f2",),
+                protected=False,
+                source_contracts=("tests.synthetic",),
+            )
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["block_id"] == "v4_optional_test"
+    assert rows[0]["evidence_mode"] == "refit_drop_block"
+    assert rows[0]["diagnostic_only"] is False
 
 
 def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monkeypatch) -> None:

@@ -109,7 +109,9 @@ def test_build_factor_block_selection_report_and_pointer_are_deterministic(tmp_p
     assert "v3_base_core" in report["accepted_blocks"]
     assert "v3_one_m_core" in report["accepted_blocks"]
     assert "v4_spillover_breadth" in report["accepted_blocks"]
-    assert "v4_periodicity" in report["rejected_blocks"]
+    assert "v4_periodicity" in report["accepted_blocks"]
+    assert report["decision_by_block"]["v4_periodicity"]["evidence_mode_used"] == "median_ablation"
+    assert "NO_REFIT_EVIDENCE_KEEP_FULL_SET" in report["decision_by_block"]["v4_periodicity"]["reason_codes"]
 
     pointer_path = write_latest_factor_block_selection_pointer(
         registry_root=tmp_path / "registry",
@@ -121,9 +123,10 @@ def test_build_factor_block_selection_report_and_pointer_are_deterministic(tmp_p
     payload = json.loads(pointer_path.read_text(encoding="utf-8"))
     assert payload["run_id"] == "run-1"
     assert "v4_spillover_breadth" in payload["accepted_blocks"]
+    assert "v4_periodicity" in payload["accepted_blocks"]
 
 
-def test_guarded_auto_policy_history_can_activate_pruned_feature_set(tmp_path: Path) -> None:
+def test_guarded_auto_policy_requires_refit_certified_history(tmp_path: Path) -> None:
     registry = v4_factor_block_registry(
         feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin")
     )
@@ -186,10 +189,11 @@ def test_guarded_auto_policy_history_can_activate_pruned_feature_set(tmp_path: P
     history = load_factor_block_selection_history(registry_root=registry_root, model_family=model_family)
     assert len(history) == 4
     policy = build_guarded_factor_block_policy(block_registry=registry, history_records=history)
-    assert policy["summary"]["status"] == "stable"
-    assert policy["apply_pruned_feature_set"] is True
+    assert policy["summary"]["status"] == "stable_full"
+    assert policy["apply_pruned_feature_set"] is False
     assert "v4_spillover_breadth" in policy["accepted_blocks"]
-    assert "v4_periodicity" in policy["rejected_blocks"]
+    assert "v4_periodicity" in policy["accepted_blocks"]
+    assert "INSUFFICIENT_REFIT_HISTORY_KEEP_FULL_SET" in policy["decision_by_block"]["v4_periodicity"]["reason_codes"]
 
     policy_path = write_latest_guarded_factor_block_policy(
         registry_root=registry_root,
@@ -205,9 +209,82 @@ def test_guarded_auto_policy_history_can_activate_pruned_feature_set(tmp_path: P
         mode="guarded_auto",
         all_feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin"),
     )
-    assert selected == ("logret_1", "one_m_count", "btc_ret_1")
-    assert context["applied"] is True
-    assert context["policy_status"] == "stable"
+    assert selected == ("logret_1", "one_m_count", "btc_ret_1", "hour_sin")
+    assert context["applied"] is False
+    assert context["policy_status"] == "stable_full"
+
+
+def test_guarded_auto_policy_can_activate_with_refit_certified_history(tmp_path: Path) -> None:
+    registry = v4_factor_block_registry(
+        feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin")
+    )
+    registry_root = tmp_path / "registry"
+    model_family = "train_v4_crypto_cs"
+
+    runs = (
+        ("run-1", 0.003, -0.001),
+        ("run-2", 0.002, -0.001),
+        ("run-3", 0.002, -0.002),
+        ("run-4", 0.001, -0.001),
+    )
+    for run_id, spillover_delta, periodicity_delta in runs:
+        report = build_factor_block_selection_report(
+            block_registry=registry,
+            window_rows=[
+                {
+                    "window_index": 0,
+                    "block_id": "v4_spillover_breadth",
+                    "delta_ev_net_top5": spillover_delta,
+                    "delta_precision_top5": 0.01,
+                    "coverage_cost_proxy": 0.04,
+                    "turnover_cost_proxy": 0.10,
+                    "evidence_mode": "refit_drop_block",
+                },
+                {
+                    "window_index": 1,
+                    "block_id": "v4_spillover_breadth",
+                    "delta_ev_net_top5": spillover_delta,
+                    "delta_precision_top5": 0.01,
+                    "coverage_cost_proxy": 0.04,
+                    "turnover_cost_proxy": 0.10,
+                    "evidence_mode": "refit_drop_block",
+                },
+                {
+                    "window_index": 0,
+                    "block_id": "v4_periodicity",
+                    "delta_ev_net_top5": periodicity_delta,
+                    "delta_precision_top5": -0.01,
+                    "coverage_cost_proxy": 0.02,
+                    "turnover_cost_proxy": 0.05,
+                    "evidence_mode": "refit_drop_block",
+                },
+                {
+                    "window_index": 1,
+                    "block_id": "v4_periodicity",
+                    "delta_ev_net_top5": periodicity_delta,
+                    "delta_precision_top5": -0.01,
+                    "coverage_cost_proxy": 0.02,
+                    "turnover_cost_proxy": 0.05,
+                    "evidence_mode": "refit_drop_block",
+                },
+            ],
+            selection_mode="report_only",
+            feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin"),
+            run_id=run_id,
+        )
+        assert append_factor_block_selection_history(
+            registry_root=registry_root,
+            model_family=model_family,
+            report=report,
+        ) is not None
+
+    history = load_factor_block_selection_history(registry_root=registry_root, model_family=model_family)
+    policy = build_guarded_factor_block_policy(block_registry=registry, history_records=history)
+    assert policy["summary"]["status"] == "stable"
+    assert policy["apply_pruned_feature_set"] is True
+    assert "v4_spillover_breadth" in policy["accepted_blocks"]
+    assert "v4_periodicity" in policy["rejected_blocks"]
+    assert policy["decision_by_block"]["v4_periodicity"]["history_summary"]["refit_certified_record_count"] == 4
 
 
 def test_factor_block_selector_scope_isolated_policy_files(tmp_path: Path) -> None:

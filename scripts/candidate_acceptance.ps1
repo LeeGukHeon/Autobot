@@ -381,10 +381,27 @@ function Get-CalmarLikeScore {
 function Resolve-PromotionPolicyConfig {
     param(
         [string]$PolicyName,
-        [System.Collections.IDictionary]$BoundParams
+        [System.Collections.IDictionary]$BoundParams,
+        [object]$EconomicObjectiveProfile = @{}
     )
+    $promotionCompareProfile = if (Test-IsEffectivelyEmptyObject -ObjectValue $EconomicObjectiveProfile) {
+        @{}
+    } else {
+        Get-PropValue -ObjectValue $EconomicObjectiveProfile -Name "promotion_compare" -DefaultValue @{}
+    }
+    $thresholdDefaults = Get-PropValue -ObjectValue $promotionCompareProfile -Name "threshold_defaults" -DefaultValue @{}
+    $policyVariants = Get-PropValue -ObjectValue $promotionCompareProfile -Name "policy_variants" -DefaultValue @{}
+    $profileApplied = -not (Test-IsEffectivelyEmptyObject -ObjectValue $promotionCompareProfile)
     $resolved = [ordered]@{
         name = $PolicyName
+        profile_id = if ($profileApplied) { [string](Get-PropValue -ObjectValue $EconomicObjectiveProfile -Name "profile_id" -DefaultValue "") } else { "" }
+        threshold_source = if ($profileApplied) { "economic_objective_profile" } else { "script_defaults" }
+        cli_override_keys = @()
+        backtest_min_orders_filled = 30
+        backtest_min_realized_pnl_quote = 0.0
+        backtest_min_deflated_sharpe_ratio = 0.20
+        backtest_min_pnl_delta_vs_champion = 0.0
+        backtest_champion_min_drawdown_improvement_pct = 0.10
         backtest_allow_stability_override = $true
         backtest_champion_pnl_tolerance_pct = 0.05
         backtest_champion_max_fill_rate_degradation = 0.02
@@ -426,22 +443,99 @@ function Resolve-PromotionPolicyConfig {
             $resolved.paper_final_gate = $true
         }
     }
+    $resolved.backtest_min_orders_filled = To-Int64 (Get-PropValue -ObjectValue $thresholdDefaults -Name "candidate_min_orders_filled" -DefaultValue $resolved.backtest_min_orders_filled) $resolved.backtest_min_orders_filled
+    $resolved.backtest_min_realized_pnl_quote = To-Double (Get-PropValue -ObjectValue $thresholdDefaults -Name "candidate_min_realized_pnl_quote" -DefaultValue $resolved.backtest_min_realized_pnl_quote) $resolved.backtest_min_realized_pnl_quote
+    $resolved.backtest_min_deflated_sharpe_ratio = To-Double (Get-PropValue -ObjectValue $thresholdDefaults -Name "candidate_min_deflated_sharpe_ratio" -DefaultValue $resolved.backtest_min_deflated_sharpe_ratio) $resolved.backtest_min_deflated_sharpe_ratio
+    $resolved.backtest_min_pnl_delta_vs_champion = To-Double (Get-PropValue -ObjectValue $thresholdDefaults -Name "candidate_min_pnl_delta_vs_champion" -DefaultValue $resolved.backtest_min_pnl_delta_vs_champion) $resolved.backtest_min_pnl_delta_vs_champion
+    $resolved.backtest_champion_min_drawdown_improvement_pct = To-Double (Get-PropValue -ObjectValue $thresholdDefaults -Name "champion_min_drawdown_improvement_pct" -DefaultValue $resolved.backtest_champion_min_drawdown_improvement_pct) $resolved.backtest_champion_min_drawdown_improvement_pct
+    $profilePolicy = Get-PropValue -ObjectValue $policyVariants -Name $PolicyName -DefaultValue @{}
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $profilePolicy) {
+        $profilePolicy = Get-PropValue -ObjectValue $policyVariants -Name "balanced_pareto" -DefaultValue @{}
+    }
+    if (-not (Test-IsEffectivelyEmptyObject -ObjectValue $profilePolicy)) {
+        $resolved.backtest_allow_stability_override = To-Bool (Get-PropValue -ObjectValue $profilePolicy -Name "allow_stability_override" -DefaultValue $resolved.backtest_allow_stability_override) $resolved.backtest_allow_stability_override
+        $resolved.backtest_champion_pnl_tolerance_pct = To-Double (Get-PropValue -ObjectValue $profilePolicy -Name "champion_pnl_tolerance_pct" -DefaultValue $resolved.backtest_champion_pnl_tolerance_pct) $resolved.backtest_champion_pnl_tolerance_pct
+        $resolved.backtest_champion_max_fill_rate_degradation = To-Double (Get-PropValue -ObjectValue $profilePolicy -Name "champion_max_fill_rate_degradation" -DefaultValue $resolved.backtest_champion_max_fill_rate_degradation) $resolved.backtest_champion_max_fill_rate_degradation
+        $resolved.backtest_champion_max_slippage_deterioration_bps = To-Double (Get-PropValue -ObjectValue $profilePolicy -Name "champion_max_slippage_deterioration_bps" -DefaultValue $resolved.backtest_champion_max_slippage_deterioration_bps) $resolved.backtest_champion_max_slippage_deterioration_bps
+        $resolved.backtest_champion_min_utility_edge_pct = To-Double (Get-PropValue -ObjectValue $profilePolicy -Name "champion_min_utility_edge_pct" -DefaultValue $resolved.backtest_champion_min_utility_edge_pct) $resolved.backtest_champion_min_utility_edge_pct
+        $resolved.use_pareto = To-Bool (Get-PropValue -ObjectValue $profilePolicy -Name "use_pareto" -DefaultValue $resolved.use_pareto) $resolved.use_pareto
+        $resolved.use_utility_tie_break = To-Bool (Get-PropValue -ObjectValue $profilePolicy -Name "use_utility_tie_break" -DefaultValue $resolved.use_utility_tie_break) $resolved.use_utility_tie_break
+        $resolved.backtest_compare_required = To-Bool (Get-PropValue -ObjectValue $profilePolicy -Name "backtest_compare_required" -DefaultValue $resolved.backtest_compare_required) $resolved.backtest_compare_required
+        $resolved.paper_final_gate = To-Bool (Get-PropValue -ObjectValue $profilePolicy -Name "paper_final_gate" -DefaultValue $resolved.paper_final_gate) $resolved.paper_final_gate
+    }
+    $overrideKeys = New-Object System.Collections.Generic.List[string]
+    if ($BoundParams.ContainsKey("BacktestMinOrdersFilled")) {
+        $resolved.backtest_min_orders_filled = [int]$BacktestMinOrdersFilled
+        $overrideKeys.Add("backtest_min_orders_filled") | Out-Null
+    }
+    if ($BoundParams.ContainsKey("BacktestMinRealizedPnlQuote")) {
+        $resolved.backtest_min_realized_pnl_quote = [double]$BacktestMinRealizedPnlQuote
+        $overrideKeys.Add("backtest_min_realized_pnl_quote") | Out-Null
+    }
+    if ($BoundParams.ContainsKey("BacktestMinDeflatedSharpeRatio")) {
+        $resolved.backtest_min_deflated_sharpe_ratio = [double]$BacktestMinDeflatedSharpeRatio
+        $overrideKeys.Add("backtest_min_deflated_sharpe_ratio") | Out-Null
+    }
+    if ($BoundParams.ContainsKey("BacktestMinPnlDeltaVsChampion")) {
+        $resolved.backtest_min_pnl_delta_vs_champion = [double]$BacktestMinPnlDeltaVsChampion
+        $overrideKeys.Add("backtest_min_pnl_delta_vs_champion") | Out-Null
+    }
+    if ($BoundParams.ContainsKey("BacktestChampionMinDrawdownImprovementPct")) {
+        $resolved.backtest_champion_min_drawdown_improvement_pct = [double]$BacktestChampionMinDrawdownImprovementPct
+        $overrideKeys.Add("backtest_champion_min_drawdown_improvement_pct") | Out-Null
+    }
     if ($BoundParams.ContainsKey("BacktestAllowStabilityOverride")) {
         $resolved.backtest_allow_stability_override = [bool]$BacktestAllowStabilityOverride
+        $overrideKeys.Add("backtest_allow_stability_override") | Out-Null
     }
     if ($BoundParams.ContainsKey("BacktestChampionPnlTolerancePct")) {
         $resolved.backtest_champion_pnl_tolerance_pct = [double]$BacktestChampionPnlTolerancePct
+        $overrideKeys.Add("backtest_champion_pnl_tolerance_pct") | Out-Null
     }
     if ($BoundParams.ContainsKey("BacktestChampionMaxFillRateDegradation")) {
         $resolved.backtest_champion_max_fill_rate_degradation = [double]$BacktestChampionMaxFillRateDegradation
+        $overrideKeys.Add("backtest_champion_max_fill_rate_degradation") | Out-Null
     }
     if ($BoundParams.ContainsKey("BacktestChampionMaxSlippageDeteriorationBps")) {
         $resolved.backtest_champion_max_slippage_deterioration_bps = [double]$BacktestChampionMaxSlippageDeteriorationBps
+        $overrideKeys.Add("backtest_champion_max_slippage_deterioration_bps") | Out-Null
     }
     if ($BoundParams.ContainsKey("BacktestChampionMinUtilityEdgePct")) {
         $resolved.backtest_champion_min_utility_edge_pct = [double]$BacktestChampionMinUtilityEdgePct
+        $overrideKeys.Add("backtest_champion_min_utility_edge_pct") | Out-Null
     }
+    $resolved.cli_override_keys = @($overrideKeys)
     return $resolved
+}
+
+function Sync-PromotionPolicyConfigToReport {
+    param(
+        [object]$ReportValue,
+        [object]$PromotionPolicyConfig
+    )
+    if (($null -eq $ReportValue) -or ($null -eq $PromotionPolicyConfig)) {
+        return
+    }
+    $config = Get-PropValue -ObjectValue $ReportValue -Name "config" -DefaultValue $null
+    if ($null -eq $config) {
+        return
+    }
+    $config.backtest_min_orders_filled = [int](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_min_orders_filled" -DefaultValue 30)
+    $config.backtest_min_realized_pnl_quote = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_min_realized_pnl_quote" -DefaultValue 0.0)
+    $config.backtest_min_pnl_delta_vs_champion = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_min_pnl_delta_vs_champion" -DefaultValue 0.0)
+    $config.backtest_min_deflated_sharpe_ratio = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_min_deflated_sharpe_ratio" -DefaultValue 0.20)
+    $config.promotion_policy = [string](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "name" -DefaultValue "")
+    $config.backtest_allow_stability_override = [bool](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_allow_stability_override" -DefaultValue $true)
+    $config.backtest_champion_pnl_tolerance_pct = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_champion_pnl_tolerance_pct" -DefaultValue 0.05)
+    $config.backtest_champion_min_drawdown_improvement_pct = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_champion_min_drawdown_improvement_pct" -DefaultValue 0.10)
+    $config.backtest_champion_max_fill_rate_degradation = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_champion_max_fill_rate_degradation" -DefaultValue 0.02)
+    $config.backtest_champion_max_slippage_deterioration_bps = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_champion_max_slippage_deterioration_bps" -DefaultValue 2.5)
+    $config.backtest_champion_min_utility_edge_pct = [double](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "backtest_champion_min_utility_edge_pct" -DefaultValue 0.0)
+    $config.backtest_use_pareto = [bool](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "use_pareto" -DefaultValue $true)
+    $config.backtest_use_utility_tie_break = [bool](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "use_utility_tie_break" -DefaultValue $true)
+    $config.promotion_policy_contract_source = [string](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "threshold_source" -DefaultValue "script_defaults")
+    $config.promotion_policy_contract_profile_id = [string](Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "profile_id" -DefaultValue "")
+    $config.promotion_policy_cli_override_keys = @((Get-PropValue -ObjectValue $PromotionPolicyConfig -Name "cli_override_keys" -DefaultValue @()))
 }
 
 function New-DateWindowRecord {
@@ -1633,7 +1727,7 @@ $certificationStartDate = $batchDateObj.AddDays(-1 * [Math]::Max($BacktestLookba
 $trainEndDate = $batchDateObj.AddDays(-1 * [Math]::Max($BacktestLookbackDays, 0)).ToString("yyyy-MM-dd")
 $trainEndObj = [DateTime]::ParseExact($trainEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
 $trainStartDate = $trainEndObj.AddDays(-1 * [Math]::Max($TrainLookbackDays - 1, 0)).ToString("yyyy-MM-dd")
-$promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPolicy -BoundParams $PSBoundParameters
+$promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPolicy -BoundParams $PSBoundParameters -EconomicObjectiveProfile @{}
 
 $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest_candidate"
 $championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "champion"
@@ -1676,18 +1770,22 @@ $report = [ordered]@{
         paper_min_active_windows = [int]$PaperMinActiveWindows
         paper_min_nonnegative_window_ratio = [double]$PaperMinNonnegativeWindowRatio
         paper_max_fill_concentration_ratio = [double]$PaperMaxFillConcentrationRatio
-        backtest_min_orders_filled = [int]$BacktestMinOrdersFilled
-        backtest_min_realized_pnl_quote = [double]$BacktestMinRealizedPnlQuote
-        backtest_min_pnl_delta_vs_champion = [double]$BacktestMinPnlDeltaVsChampion
+        backtest_min_orders_filled = [int]$promotionPolicyConfig.backtest_min_orders_filled
+        backtest_min_realized_pnl_quote = [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote
+        backtest_min_deflated_sharpe_ratio = [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio
+        backtest_min_pnl_delta_vs_champion = [double]$promotionPolicyConfig.backtest_min_pnl_delta_vs_champion
         promotion_policy = $promotionPolicyConfig.name
         backtest_allow_stability_override = [bool]$promotionPolicyConfig.backtest_allow_stability_override
         backtest_champion_pnl_tolerance_pct = [double]$promotionPolicyConfig.backtest_champion_pnl_tolerance_pct
-        backtest_champion_min_drawdown_improvement_pct = [double]$BacktestChampionMinDrawdownImprovementPct
+        backtest_champion_min_drawdown_improvement_pct = [double]$promotionPolicyConfig.backtest_champion_min_drawdown_improvement_pct
         backtest_champion_max_fill_rate_degradation = [double]$promotionPolicyConfig.backtest_champion_max_fill_rate_degradation
         backtest_champion_max_slippage_deterioration_bps = [double]$promotionPolicyConfig.backtest_champion_max_slippage_deterioration_bps
         backtest_champion_min_utility_edge_pct = [double]$promotionPolicyConfig.backtest_champion_min_utility_edge_pct
         backtest_use_pareto = [bool]$promotionPolicyConfig.use_pareto
         backtest_use_utility_tie_break = [bool]$promotionPolicyConfig.use_utility_tie_break
+        promotion_policy_contract_source = [string]$promotionPolicyConfig.threshold_source
+        promotion_policy_contract_profile_id = [string]$promotionPolicyConfig.profile_id
+        promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
         skip_paper_soak = [bool]$SkipPaperSoak
         restart_units = @($RestartUnits)
         known_runtime_units = @($KnownRuntimeUnits)
@@ -1917,6 +2015,8 @@ try {
     $searchBudgetDecision = if ([string]::IsNullOrWhiteSpace($searchBudgetDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $searchBudgetDecisionPath }
     $economicObjectiveProfilePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "economic_objective_profile.json" }
     $economicObjectiveProfile = if ([string]::IsNullOrWhiteSpace($economicObjectiveProfilePath)) { @{} } else { Load-JsonOrEmpty -PathValue $economicObjectiveProfilePath }
+    $promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPolicy -BoundParams $PSBoundParameters -EconomicObjectiveProfile $economicObjectiveProfile
+    Sync-PromotionPolicyConfigToReport -ReportValue $report -PromotionPolicyConfig $promotionPolicyConfig
     $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
     $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
     $researchEvidence = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
@@ -1959,6 +2059,9 @@ try {
         research_evidence_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
         economic_objective_profile_path = $economicObjectiveProfilePath
+        promotion_policy_contract_source = [string]$promotionPolicyConfig.threshold_source
+        promotion_policy_contract_profile_id = [string]$promotionPolicyConfig.profile_id
+        promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -2121,8 +2224,8 @@ try {
         $championCompareEvaluated = $true
     }
 
-    $candidateDeflatedSharpePass = (-not $candidateStatComparable) -or ($candidateDeflatedSharpeRatio -ge $BacktestMinDeflatedSharpeRatio)
-    $candidateBacktestPass = ($candidateOrdersFilled -ge $BacktestMinOrdersFilled) -and ($candidateRealizedPnl -ge $BacktestMinRealizedPnlQuote) -and $candidateDeflatedSharpePass
+    $candidateDeflatedSharpePass = (-not $candidateStatComparable) -or ($candidateDeflatedSharpeRatio -ge [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio)
+    $candidateBacktestPass = ($candidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) -and ($candidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) -and $candidateDeflatedSharpePass
     $championDeltaPass = $true
     $strictChampionDeltaPass = $true
     $championDeltaQuote = $candidateRealizedPnl - $championRealizedPnl
@@ -2210,7 +2313,7 @@ try {
     }
     $decisionBasis = if ($championCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
     if ($championCompareEvaluated) {
-        $strictChampionDeltaPass = $championDeltaQuote -ge $BacktestMinPnlDeltaVsChampion
+        $strictChampionDeltaPass = $championDeltaQuote -ge [double]$promotionPolicyConfig.backtest_min_pnl_delta_vs_champion
         $championWithinTolerancePass = $strictChampionDeltaPass
         if ($championRealizedPnl -ne 0.0) {
             $championDeltaPct = $championDeltaQuote / $championRealizedPnl
@@ -2219,10 +2322,7 @@ try {
         if (($candidateMaxDrawdownPct -ge 0.0) -and ($championMaxDrawdownPct -ge 0.0)) {
             if ($championMaxDrawdownPct -gt 0.0) {
                 $drawdownImprovementPct = ($championMaxDrawdownPct - $candidateMaxDrawdownPct) / $championMaxDrawdownPct
-                $drawdownImprovementPass = $drawdownImprovementPct -ge 0.0
-                if ($PSBoundParameters.ContainsKey("BacktestChampionMinDrawdownImprovementPct")) {
-                    $drawdownImprovementPass = $drawdownImprovementPct -ge $BacktestChampionMinDrawdownImprovementPct
-                }
+                $drawdownImprovementPass = $drawdownImprovementPct -ge [double]$promotionPolicyConfig.backtest_champion_min_drawdown_improvement_pct
             } else {
                 $drawdownImprovementPct = 0.0
                 $drawdownImprovementPass = $candidateMaxDrawdownPct -le $championMaxDrawdownPct
@@ -2404,10 +2504,15 @@ try {
         [ordered]@{ attempted = $false; reason = "NO_EXISTING_CHAMPION" }
     }
     $report.gates.backtest = [ordered]@{
-        candidate_min_orders_pass = ($candidateOrdersFilled -ge $BacktestMinOrdersFilled)
-        candidate_min_realized_pnl_pass = ($candidateRealizedPnl -ge $BacktestMinRealizedPnlQuote)
+        promotion_policy_contract_source = [string]$promotionPolicyConfig.threshold_source
+        promotion_policy_contract_profile_id = [string]$promotionPolicyConfig.profile_id
+        promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
+        candidate_min_orders_pass = ($candidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled)
+        candidate_min_orders_threshold = [int]$promotionPolicyConfig.backtest_min_orders_filled
+        candidate_min_realized_pnl_pass = ($candidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote)
+        candidate_min_realized_pnl_threshold = [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote
         candidate_dsr_evaluated = $candidateStatComparable
-        candidate_min_deflated_sharpe_ratio = [double]$BacktestMinDeflatedSharpeRatio
+        candidate_min_deflated_sharpe_ratio = [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio
         candidate_deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
         candidate_deflated_sharpe_pass = $candidateDeflatedSharpePass
         compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
@@ -2418,10 +2523,12 @@ try {
         vs_champion_pareto_champion_dominates = $championParetoDominates
         vs_champion_pareto_incomparable = $paretoIncomparable
         vs_champion_pnl_delta_quote = [double]$championDeltaQuote
+        vs_champion_pnl_delta_threshold = [double]$promotionPolicyConfig.backtest_min_pnl_delta_vs_champion
         vs_champion_pnl_delta_pct = $championDeltaPct
         vs_champion_pnl_within_tolerance_pass = $championWithinTolerancePass
         vs_champion_drawdown_improvement_pct = $drawdownImprovementPct
         vs_champion_drawdown_improvement_pass = $drawdownImprovementPass
+        vs_champion_drawdown_improvement_threshold = [double]$promotionPolicyConfig.backtest_champion_min_drawdown_improvement_pct
         utility_metric = $utilityMetric
         vs_champion_utility_candidate_score = $candidateUtilityScore
         vs_champion_utility_champion_score = $championUtilityScore
