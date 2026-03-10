@@ -57,6 +57,12 @@ def reconcile_exchange_snapshot(
             exchange_bot_open_orders.append(order)
         else:
             external_open_orders.append(order)
+    exchange_bot_open_orders_by_market: dict[str, list[dict[str, Any]]] = {}
+    for item in exchange_bot_open_orders:
+        market_key = _as_optional_str(item.get("market"))
+        if not market_key:
+            continue
+        exchange_bot_open_orders_by_market.setdefault(market_key.upper(), []).append(item)
 
     if unknown_open_orders_policy == "cancel":
         for item in exchange_bot_open_orders:
@@ -341,10 +347,16 @@ def reconcile_exchange_snapshot(
     retained_local_missing_markets: list[str] = []
     for market in local_positions_missing_on_exchange:
         local_position = local_positions[market]
+        active_live_plans = store.list_risk_plans(
+            market=market,
+            states=("ACTIVE", "TRIGGERED", "EXITING"),
+        )
         matched_close = _match_model_managed_position_close(
             market=market,
             local_position=local_position,
             latest_done_ask_order=done_ask_orders_by_market.get(market),
+            active_live_plans=active_live_plans,
+            exchange_bot_open_orders=exchange_bot_open_orders_by_market.get(market, []),
         )
         if matched_close is not None:
             if not dry_run:
@@ -368,6 +380,7 @@ def reconcile_exchange_snapshot(
                     "market": market,
                     "order_uuid": matched_close.get("order_uuid"),
                     "order_identifier": matched_close.get("order_identifier"),
+                    "close_mode": matched_close.get("close_mode"),
                 }
             )
             continue
@@ -1028,15 +1041,58 @@ def _match_model_managed_position_close(
     market: str,
     local_position: dict[str, Any],
     latest_done_ask_order: dict[str, Any] | None,
+    active_live_plans: list[dict[str, Any]] | None,
+    exchange_bot_open_orders: list[dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
     if latest_done_ask_order is None:
+        pass
+    else:
+        if int(latest_done_ask_order.get("updated_ts") or 0) >= int(local_position.get("updated_ts") or 0):
+            return {
+                "market": market,
+                "order_uuid": _as_optional_str(latest_done_ask_order.get("uuid")),
+                "order_identifier": _as_optional_str(latest_done_ask_order.get("identifier")),
+                "close_mode": "done_ask_order",
+            }
+
+    if exchange_bot_open_orders:
         return None
-    if int(latest_done_ask_order.get("updated_ts") or 0) < int(local_position.get("updated_ts") or 0):
+    if not active_live_plans:
+        return None
+
+    def _plan_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        state_value = str(item.get("state") or "").strip().upper()
+        if state_value == "EXITING":
+            state_rank = 2
+        elif state_value == "TRIGGERED":
+            state_rank = 1
+        else:
+            state_rank = 0
+        return (
+            state_rank,
+            int(bool(_as_optional_str(item.get("current_exit_order_uuid")) or _as_optional_str(item.get("current_exit_order_identifier")))),
+            int(item.get("updated_ts") or 0),
+            str(item.get("plan_id") or ""),
+        )
+
+    selected_plan = max(active_live_plans, key=_plan_rank)
+    selected_state = str(selected_plan.get("state") or "").strip().upper()
+    if selected_state not in {"TRIGGERED", "EXITING"}:
+        return None
+    if _as_optional_str(selected_plan.get("plan_source")) != "model_alpha_v1":
+        return None
+    if (
+        int(selected_plan.get("last_action_ts_ms") or 0) <= 0
+        and int(selected_plan.get("replace_attempt") or 0) <= 0
+        and not _as_optional_str(selected_plan.get("current_exit_order_uuid"))
+        and not _as_optional_str(selected_plan.get("current_exit_order_identifier"))
+    ):
         return None
     return {
         "market": market,
-        "order_uuid": _as_optional_str(latest_done_ask_order.get("uuid")),
-        "order_identifier": _as_optional_str(latest_done_ask_order.get("identifier")),
+        "order_uuid": _as_optional_str(selected_plan.get("current_exit_order_uuid")),
+        "order_identifier": _as_optional_str(selected_plan.get("current_exit_order_identifier")),
+        "close_mode": "missing_on_exchange_after_exit_plan",
     }
 
 
