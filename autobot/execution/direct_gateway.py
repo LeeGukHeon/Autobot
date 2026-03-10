@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from ..upbit.exceptions import UpbitError
+from ..upbit.exceptions import UpbitError, ValidationError
 from ..upbit.private import UpbitPrivateClient
 from .grpc_gateway import ExecutorEvent, ExecutorReplaceResult, ExecutorSubmitResult
 from .intent import OrderIntent, new_order_intent
@@ -27,6 +27,52 @@ def _format_decimal(value: float) -> str:
 def _optional_str(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _first_nonempty(mapping: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = _optional_str(mapping.get(key))
+        if value:
+            return value
+    return None
+
+
+def _extract_replace_result(
+    payload: Any,
+    *,
+    cancelled_order_uuid: str | None,
+    requested_new_identifier: str,
+) -> tuple[str | None, str | None, str | None]:
+    if not isinstance(payload, dict):
+        return cancelled_order_uuid, None, requested_new_identifier
+
+    cancelled_uuid = _first_nonempty(
+        payload,
+        ("cancelled_order_uuid", "canceled_order_uuid", "prev_order_uuid", "cancel_uuid"),
+    ) or cancelled_order_uuid
+
+    new_uuid = _first_nonempty(payload, ("new_order_uuid", "new_uuid", "order_uuid"))
+    new_identifier = _first_nonempty(payload, ("new_identifier", "new_order_identifier"))
+
+    for nested_key in ("new_order", "order", "data", "result"):
+        nested = payload.get(nested_key)
+        if not isinstance(nested, dict):
+            continue
+        if not new_uuid:
+            new_uuid = _first_nonempty(nested, ("uuid", "new_order_uuid", "new_uuid", "order_uuid"))
+        if not new_identifier:
+            new_identifier = _first_nonempty(nested, ("identifier", "new_identifier", "new_order_identifier"))
+
+    if not new_uuid:
+        direct_uuid = _optional_str(payload.get("uuid"))
+        if direct_uuid and direct_uuid != cancelled_uuid:
+            new_uuid = direct_uuid
+    if not new_identifier:
+        direct_identifier = _optional_str(payload.get("identifier"))
+        if direct_identifier and direct_identifier != requested_new_identifier:
+            new_identifier = direct_identifier
+
+    return cancelled_uuid, new_uuid, new_identifier or requested_new_identifier
 
 
 @dataclass(frozen=True)
@@ -168,12 +214,34 @@ class DirectRestExecutionGateway:
         new_time_in_force: str | None = None,
     ) -> ExecutorReplaceResult:
         try:
+            resolved_new_volume = self._resolve_replace_volume(
+                prev_order_uuid=prev_order_uuid,
+                prev_order_identifier=prev_order_identifier,
+                new_volume_str=new_volume_str,
+            )
+        except UpbitError as exc:
+            return ExecutorReplaceResult(
+                accepted=False,
+                reason=str(exc),
+                cancelled_order_uuid=_optional_str(prev_order_uuid),
+                new_order_uuid=None,
+                new_identifier=new_identifier,
+            )
+        except ValueError as exc:
+            return ExecutorReplaceResult(
+                accepted=False,
+                reason=str(exc),
+                cancelled_order_uuid=_optional_str(prev_order_uuid),
+                new_order_uuid=None,
+                new_identifier=new_identifier,
+            )
+        try:
             payload = self.client.cancel_and_new_order(
                 prev_order_uuid=prev_order_uuid,
                 prev_order_identifier=prev_order_identifier,
                 new_identifier=new_identifier,
                 new_price=new_price_str,
-                new_volume=new_volume_str,
+                new_volume=resolved_new_volume,
                 new_time_in_force=new_time_in_force,
             )
         except UpbitError as exc:
@@ -185,13 +253,61 @@ class DirectRestExecutionGateway:
                 new_identifier=new_identifier,
             )
         _ = intent_id
-        return ExecutorReplaceResult(
-            accepted=True,
-            reason="",
+        cancelled_uuid, new_uuid, resolved_new_identifier = _extract_replace_result(
+            payload,
             cancelled_order_uuid=_optional_str(prev_order_uuid),
-            new_order_uuid=_optional_str(payload.get("uuid") if isinstance(payload, dict) else None),
-            new_identifier=_optional_str(payload.get("identifier") if isinstance(payload, dict) else None) or new_identifier,
+            requested_new_identifier=new_identifier,
         )
+        if new_uuid is None:
+            try:
+                lookup = self.client.order(uuid=None, identifier=resolved_new_identifier)
+            except UpbitError:
+                lookup = None
+            if isinstance(lookup, dict):
+                looked_up_uuid = _optional_str(lookup.get("uuid"))
+                if looked_up_uuid and looked_up_uuid != cancelled_uuid:
+                    new_uuid = looked_up_uuid
+                    resolved_new_identifier = _optional_str(lookup.get("identifier")) or resolved_new_identifier
+        return ExecutorReplaceResult(
+            accepted=new_uuid is not None,
+            reason="" if new_uuid is not None else "replace_accepted_new_order_unconfirmed",
+            cancelled_order_uuid=cancelled_uuid,
+            new_order_uuid=new_uuid,
+            new_identifier=resolved_new_identifier,
+        )
+
+    def _resolve_replace_volume(
+        self,
+        *,
+        prev_order_uuid: str | None,
+        prev_order_identifier: str | None,
+        new_volume_str: str,
+    ) -> str:
+        requested = str(new_volume_str or "").strip()
+        if not requested:
+            raise ValidationError("new_volume_str is required")
+        if requested.lower() != "remain_only":
+            return requested
+        payload = self.client.order(uuid=prev_order_uuid, identifier=prev_order_identifier)
+        if not isinstance(payload, dict):
+            raise ValidationError("remain_only could not be resolved")
+        remaining = _optional_str(payload.get("remaining_volume")) or _optional_str(payload.get("remaining_volume_str"))
+        if remaining:
+            return remaining
+        volume = _optional_str(payload.get("volume"))
+        executed = _optional_str(payload.get("executed_volume"))
+        if volume is None:
+            raise ValidationError("remain_only could not be resolved")
+        try:
+            remaining_value = Decimal(volume) - Decimal(executed or "0")
+        except (InvalidOperation, ValueError):
+            raise ValidationError("remain_only could not be resolved")
+        if remaining_value <= 0:
+            raise ValidationError("remain_only could not be resolved")
+        normalized = format(remaining_value.normalize(), "f")
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        return normalized or "0"
 
     def get_snapshot(self) -> ExecutorEvent:
         return ExecutorEvent(

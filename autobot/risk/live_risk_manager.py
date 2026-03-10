@@ -15,7 +15,8 @@ from autobot.live.breakers import (
     record_counter_failure,
     reset_counter,
 )
-from autobot.live.state_store import LiveStateStore, RiskPlanRecord
+from autobot.live.order_state import normalize_order_state
+from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 
 from .models import RiskManagerConfig, RiskPlan
 
@@ -362,13 +363,88 @@ class LiveRiskManager:
             reset_counter(self._store, counter_name="rate_limit_error", source="risk_replace_ok", ts_ms=ts_ms)
             reset_counter(self._store, counter_name="auth_error", source="risk_replace_ok", ts_ms=ts_ms)
             reset_counter(self._store, counter_name="nonce_error", source="risk_replace_ok", ts_ms=ts_ms)
+            previous_uuid = _as_optional_str(plan.current_exit_order_uuid)
+            previous_identifier = _as_optional_str(plan.current_exit_order_identifier)
+            new_uuid = _as_optional_str(getattr(result, "new_order_uuid", None))
+            new_identifier_value = _as_optional_str(getattr(result, "new_identifier", None)) or new_identifier
+            previous_order = None
+            if previous_uuid:
+                previous_order = self._store.order_by_uuid(uuid=previous_uuid)
+            if previous_order is None and previous_identifier:
+                previous_order = self._store.order_by_identifier(identifier=previous_identifier)
+            if previous_order is not None and previous_uuid:
+                self._store.upsert_order(
+                    OrderRecord(
+                        uuid=previous_uuid,
+                        identifier=previous_identifier or _as_optional_str(previous_order.get("identifier")),
+                        market=str(previous_order.get("market") or plan.market),
+                        side=_as_optional_str(previous_order.get("side")) or "ask",
+                        ord_type=_as_optional_str(previous_order.get("ord_type")) or "limit",
+                        price=_as_float(previous_order.get("price")),
+                        volume_req=_as_float(previous_order.get("volume_req")),
+                        volume_filled=float(previous_order.get("volume_filled") or 0.0),
+                        state="cancel",
+                        created_ts=int(previous_order.get("created_ts") or ts_ms),
+                        updated_ts=ts_ms,
+                        intent_id=_as_optional_str(previous_order.get("intent_id")),
+                        tp_sl_link=_as_optional_str(previous_order.get("tp_sl_link")) or plan.plan_id,
+                        local_state="CANCELLED",
+                        raw_exchange_state="cancel",
+                        last_event_name="ORDER_REPLACED",
+                        event_source="risk_manager",
+                        replace_seq=int(previous_order.get("replace_seq") or 0),
+                        root_order_uuid=_as_optional_str(previous_order.get("root_order_uuid")) or previous_uuid,
+                        prev_order_uuid=_as_optional_str(previous_order.get("prev_order_uuid")),
+                        prev_order_identifier=_as_optional_str(previous_order.get("prev_order_identifier")),
+                    )
+                )
+            if new_uuid:
+                normalized = normalize_order_state(exchange_state="wait", event_name="ORDER_REPLACED")
+                self._store.upsert_order(
+                    OrderRecord(
+                        uuid=new_uuid,
+                        identifier=new_identifier_value,
+                        market=plan.market,
+                        side="ask",
+                        ord_type="limit",
+                        price=new_price,
+                        volume_req=plan.qty,
+                        volume_filled=0.0,
+                        state="wait",
+                        created_ts=ts_ms,
+                        updated_ts=ts_ms,
+                        intent_id=_as_optional_str(previous_order.get("intent_id")) if previous_order else None,
+                        tp_sl_link=plan.plan_id,
+                        local_state=normalized.local_state,
+                        raw_exchange_state=normalized.exchange_state,
+                        last_event_name=normalized.event_name,
+                        event_source="risk_manager",
+                        replace_seq=replace_step,
+                        root_order_uuid=_as_optional_str(previous_order.get("root_order_uuid")) if previous_order else previous_uuid or new_uuid,
+                        prev_order_uuid=previous_uuid,
+                        prev_order_identifier=previous_identifier,
+                    )
+                )
+            try:
+                self._store.append_order_lineage(
+                    OrderLineageRecord(
+                        ts_ms=ts_ms,
+                        event_source="risk_manager",
+                        intent_id=_as_optional_str(previous_order.get("intent_id")) if previous_order else None,
+                        prev_uuid=previous_uuid,
+                        prev_identifier=previous_identifier,
+                        new_uuid=new_uuid,
+                        new_identifier=new_identifier_value,
+                        replace_seq=replace_step,
+                    )
+                )
+            except Exception:
+                pass
             updated = replace(
                 plan,
                 state="EXITING",
-                current_exit_order_uuid=_as_optional_str(getattr(result, "new_order_uuid", None))
-                or plan.current_exit_order_uuid,
-                current_exit_order_identifier=_as_optional_str(getattr(result, "new_identifier", None))
-                or new_identifier,
+                current_exit_order_uuid=new_uuid or plan.current_exit_order_uuid,
+                current_exit_order_identifier=new_identifier_value,
                 replace_attempt=replace_step,
                 last_action_ts_ms=ts_ms,
                 updated_ts=ts_ms,

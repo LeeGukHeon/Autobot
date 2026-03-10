@@ -11,6 +11,7 @@ class _DummyPrivateClient:
         self.cancelled = []
         self.replaced = []
         self.tested = []
+        self.orders = []
 
     def accounts(self):
         return [{"currency": "KRW"}]
@@ -29,7 +30,19 @@ class _DummyPrivateClient:
 
     def cancel_and_new_order(self, **kwargs):
         self.replaced.append(kwargs)
-        return {"uuid": "u-2", "identifier": kwargs.get("new_identifier")}
+        return {
+            "cancelled_order_uuid": kwargs.get("prev_order_uuid"),
+            "new_order_uuid": "u-2",
+            "new_identifier": kwargs.get("new_identifier"),
+        }
+
+    def order(self, **kwargs):
+        self.orders.append(kwargs)
+        return {
+            "uuid": kwargs.get("uuid") or "u-1",
+            "identifier": kwargs.get("identifier"),
+            "remaining_volume": "0.1",
+        }
 
 
 def test_direct_gateway_submit_intent_success() -> None:
@@ -87,3 +100,34 @@ def test_direct_gateway_replace_order_success() -> None:
     assert result.accepted is True
     assert result.new_order_uuid == "u-2"
     assert client.replaced[0]["new_identifier"] == "AUTOBOT-2"
+
+
+def test_direct_gateway_replace_order_resolves_remain_only_and_nested_lookup() -> None:
+    class _NestedReplaceClient(_DummyPrivateClient):
+        def cancel_and_new_order(self, **kwargs):
+            self.replaced.append(kwargs)
+            return {
+                "cancelled_order_uuid": kwargs.get("prev_order_uuid"),
+                "result": {
+                    "uuid": "u-3",
+                    "identifier": kwargs.get("new_identifier"),
+                },
+            }
+
+    client = _NestedReplaceClient()
+    gateway = DirectRestExecutionGateway(client=client)
+
+    result = gateway.replace_order(
+        intent_id="intent-2",
+        prev_order_uuid="u-1",
+        prev_order_identifier=None,
+        new_identifier="AUTOBOT-3",
+        new_price_str="1001",
+        new_volume_str="remain_only",
+        new_time_in_force="gtc",
+    )
+
+    assert result.accepted is True
+    assert result.new_order_uuid == "u-3"
+    assert client.orders[0]["uuid"] == "u-1"
+    assert client.replaced[0]["new_volume"] == "0.1"

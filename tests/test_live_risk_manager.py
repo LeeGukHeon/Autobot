@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, arm_breaker
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
-from autobot.live.state_store import LiveStateStore, RiskPlanRecord
+from autobot.live.state_store import LiveStateStore, OrderRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager
 from autobot.risk.models import RiskManagerConfig
 
@@ -162,6 +162,31 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     gateway = _FakeExecutorGateway()
     with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-prev-uuid",
+                identifier="AUTOBOT-RISK-old",
+                market="KRW-XRP",
+                side="ask",
+                ord_type="limit",
+                price=490.0,
+                volume_req=100.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-risk-old",
+                tp_sl_link="replace-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="exit-prev-uuid",
+                prev_order_uuid=None,
+                prev_order_identifier=None,
+            )
+        )
         store.upsert_risk_plan(
             RiskPlanRecord(
                 plan_id="replace-1",
@@ -192,6 +217,8 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
         )
         replace_actions = manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
         persisted_after_replace = store.risk_plan_by_id(plan_id="replace-1")
+        replaced_old_order = store.order_by_uuid(uuid="exit-prev-uuid")
+        replaced_new_order = store.order_by_uuid(uuid="new-exit-uuid-1")
         assert persisted_after_replace is not None
         current_identifier = str(persisted_after_replace["current_exit_order_identifier"])
         close_action = manager.handle_executor_event(
@@ -213,6 +240,13 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
     assert persisted_after_replace is not None
     assert persisted_after_replace["state"] == "EXITING"
     assert persisted_after_replace["replace_attempt"] == 1
+    assert replaced_old_order is not None
+    assert replaced_old_order["state"] == "cancel"
+    assert replaced_old_order["tp_sl_link"] == "replace-1"
+    assert replaced_new_order is not None
+    assert replaced_new_order["identifier"] == current_identifier
+    assert replaced_new_order["tp_sl_link"] == "replace-1"
+    assert replaced_new_order["state"] == "wait"
     assert close_action is not None
     assert close_action["type"] == "risk_closed"
     assert persisted_after_close is not None
