@@ -1493,7 +1493,10 @@ def _write_health_snapshot(*, path: Path | None, payload: dict[str, Any]) -> Non
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_text(serialized, encoding="utf-8")
+    temp_path.replace(path)
 
 
 def _normalize_channels(value: Any) -> tuple[str, ...]:
@@ -1545,13 +1548,18 @@ def _parse_reasons_json(value: Any) -> list[str]:
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    for attempt in range(3):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            if attempt == 2:
+                return None
+            time.sleep(0.05)
+            continue
+        if isinstance(payload, dict):
+            return payload
         return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
+    return None
 
 
 def _spread_bps(*, bid1_price: float | None, ask1_price: float | None) -> float | None:

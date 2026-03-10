@@ -113,6 +113,41 @@ def test_load_ws_public_status_reads_health_and_latest_run(tmp_path: Path) -> No
     assert payload["runs_summary_latest"]["run_id"] == "r1"
 
 
+def test_load_ws_public_status_retries_transient_health_snapshot_read(tmp_path: Path, monkeypatch) -> None:
+    raw_root = tmp_path / "raw_ws" / "upbit" / "public"
+    meta_dir = tmp_path / "raw_ws" / "upbit" / "_meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+
+    health_path = meta_dir / "ws_public_health.json"
+    health_path.write_text(
+        json.dumps({"run_id": "r1", "connected": True, "updated_at_ms": 123}),
+        encoding="utf-8",
+    )
+    (meta_dir / "ws_collect_report.json").write_text(
+        json.dumps({"run_id": "r1", "written_trade": 10}),
+        encoding="utf-8",
+    )
+    (meta_dir / "ws_runs_summary.json").write_text(
+        json.dumps({"runs": [{"run_id": "r0"}, {"run_id": "r1"}]}),
+        encoding="utf-8",
+    )
+
+    original_read_text = Path.read_text
+    attempts = {"health": 0}
+
+    def _flaky_read_text(self: Path, *args, **kwargs):
+        if self == health_path and attempts["health"] == 0:
+            attempts["health"] += 1
+            return "{"
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _flaky_read_text)
+
+    payload = load_ws_public_status(meta_dir=meta_dir, raw_root=raw_root)
+    assert attempts["health"] == 1
+    assert payload["health_snapshot"]["run_id"] == "r1"
+
+
 def test_fetch_top_quote_markets_uses_ticker_ranking(monkeypatch) -> None:
     import autobot.data.collect.ws_public_collector as wsops
 
