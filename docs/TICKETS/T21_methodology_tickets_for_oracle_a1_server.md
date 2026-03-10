@@ -62,6 +62,7 @@ It should not be used for:
 5. `T21.5` Economically Significant Factor Selector v1
 6. `T21.6` Selector History And Guarded Auto-Apply v1
 7. `T21.7` White/Hansen Comparable Panel v1
+8. `T21.8` Shared Rank Selection Policy v1
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

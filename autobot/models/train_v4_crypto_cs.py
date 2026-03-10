@@ -71,6 +71,7 @@ from .research_acceptance import (
     compare_spa_like_window_test,
     summarize_walk_forward_windows,
 )
+from .selection_policy import build_selection_policy_from_recommendations
 from .selection_optimizer import (
     SelectionGridConfig,
     build_selection_recommendations_from_walk_forward,
@@ -446,6 +447,10 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         windows=walk_forward.get("windows", []),
         fallback_recommendations=fallback_selection_recommendations,
     )
+    selection_policy = build_selection_policy_from_recommendations(
+        selection_recommendations=selection_recommendations,
+        fallback_threshold_key="top_5pct",
+    )
     walk_forward = _finalize_walk_forward_report(
         walk_forward=walk_forward,
         selection_recommendations=selection_recommendations,
@@ -521,6 +526,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         feature_cols=dataset.feature_names,
         markets=dataset.selected_markets,
         selection_recommendations=selection_recommendations,
+        selection_policy=selection_policy,
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_summary=cpcv_lite.get("summary", {}),
         factor_block_selection_summary=factor_block_selection.get("summary", {}),
@@ -544,6 +550,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             leaderboard_row=leaderboard_row,
             model_card_text=model_card,
             selection_recommendations=selection_recommendations,
+            selection_policy=selection_policy,
         )
     )
     if normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
@@ -3035,6 +3042,7 @@ def _train_config_snapshot_v4(
     feature_cols: tuple[str, ...],
     markets: tuple[str, ...],
     selection_recommendations: dict[str, Any],
+    selection_policy: dict[str, Any],
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_summary: dict[str, Any],
     factor_block_selection_summary: dict[str, Any],
@@ -3082,6 +3090,7 @@ def _train_config_snapshot_v4(
     }
     payload["search_budget"] = dict(search_budget_decision or {})
     payload["selection_recommendations"] = selection_recommendations
+    payload["selection_policy"] = dict(selection_policy or {})
     return payload
 
 

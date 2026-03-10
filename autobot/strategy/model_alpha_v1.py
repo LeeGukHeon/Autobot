@@ -12,6 +12,7 @@ import polars as pl
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.predictor import ModelPredictor
+from autobot.models.selection_policy import DEFAULT_SELECTION_POLICY_MODE, normalize_selection_policy
 from autobot.strategy.operational_overlay_v1 import (
     ModelAlphaOperationalSettings,
     build_regime_snapshot_from_scored_frame,
@@ -28,6 +29,7 @@ class ModelAlphaSelectionSettings:
     min_candidates_per_ts: int = 1
     registry_threshold_key: str = "top_5pct"
     use_learned_recommendations: bool = True
+    selection_policy_mode: str = "auto"  # auto | raw_threshold | rank_effective_quantile
 
 
 @dataclass(frozen=True)
@@ -133,14 +135,25 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             predictor=self._predictor,
             settings=self._settings.selection,
         )
+        selection_policy, selection_policy_source = _resolve_selection_policy(
+            predictor=self._predictor,
+            settings=self._settings.selection,
+        )
         top_pct_used, top_pct_source = _resolve_selection_top_pct(
             predictor=self._predictor,
             settings=self._settings.selection,
+            selection_policy=selection_policy,
+            selection_policy_source=selection_policy_source,
         )
         min_candidates_used, min_candidates_source = _resolve_selection_min_candidates(
             predictor=self._predictor,
             settings=self._settings.selection,
+            selection_policy=selection_policy,
+            selection_policy_source=selection_policy_source,
         )
+        if str(selection_policy.get("mode", "")).strip().lower() == DEFAULT_SELECTION_POLICY_MODE:
+            min_prob_used = 0.0
+            min_prob_source = f"{selection_policy_source}:{DEFAULT_SELECTION_POLICY_MODE}"
         frame: pl.DataFrame | None
         if self._live_frame_provider is not None:
             frame = self._live_frame_provider(ts_value, tuple(sorted(active_set)))
@@ -202,6 +215,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 top_pct_source=top_pct_source,
                 min_candidates_used=min_candidates_used,
                 min_candidates_source=min_candidates_source,
+                selection_policy_mode=str(selection_policy.get("mode", "raw_threshold")),
+                selection_policy_source=selection_policy_source,
             )
 
         frame_active = frame.filter(pl.col("market").is_in(list(active_set))) if active_set else frame
@@ -219,14 +234,22 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 top_pct_source=top_pct_source,
                 min_candidates_used=min_candidates_used,
                 min_candidates_source=min_candidates_source,
+                selection_policy_mode=str(selection_policy.get("mode", "raw_threshold")),
+                selection_policy_source=selection_policy_source,
             )
 
         matrix = frame_active.select(list(self._predictor.feature_columns)).to_numpy().astype(np.float32, copy=False)
         probs = self._predictor.predict_scores(matrix).astype(np.float64, copy=False)
         scored = frame_active.with_columns(pl.Series(name="model_prob", values=probs))
-        eligible = scored.filter(pl.col("model_prob") >= float(min_prob_used))
-        eligible_rows = int(eligible.height)
-        dropped_min_prob_rows = max(scored_rows - eligible_rows, 0)
+        selection_mode = str(selection_policy.get("mode", "raw_threshold")).strip().lower()
+        if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
+            eligible = scored
+            eligible_rows = int(eligible.height)
+            dropped_min_prob_rows = 0
+        else:
+            eligible = scored.filter(pl.col("model_prob") >= float(min_prob_used))
+            eligible_rows = int(eligible.height)
+            dropped_min_prob_rows = max(scored_rows - eligible_rows, 0)
         operational_state: dict[str, Any] = {}
         operational_regime_score = 0.0
         operational_risk_multiplier = 1.0
@@ -293,6 +316,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 top_pct_source=top_pct_source,
                 min_candidates_used=min_candidates_used,
                 min_candidates_source=min_candidates_source,
+                selection_policy_mode=selection_mode,
+                selection_policy_source=selection_policy_source,
                 operational_regime_score=operational_regime_score,
                 operational_risk_multiplier=operational_risk_multiplier,
                 operational_max_positions=operational_max_positions,
@@ -300,7 +325,11 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 skipped_reasons=skipped_reasons,
             )
 
-        select_count = int(math.floor(eligible_rows * max(float(top_pct_used), 0.0)))
+        if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
+            select_count = max(int(math.floor(eligible_rows * max(float(top_pct_used), 0.0))), min_candidates)
+            select_count = min(select_count, eligible_rows)
+        else:
+            select_count = int(math.floor(eligible_rows * max(float(top_pct_used), 0.0)))
         if select_count > 0:
             selected = eligible.sort("model_prob", descending=True).head(select_count)
         else:
@@ -348,6 +377,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "selection_top_pct_source": str(top_pct_source),
                         "selection_min_candidates_used": int(min_candidates_used),
                         "selection_min_candidates_source": str(min_candidates_source),
+                        "selection_policy_mode": str(selection_mode),
+                        "selection_policy_source": str(selection_policy_source),
                         "sizing_mode": str(self._settings.position.sizing_mode),
                         "notional_multiplier": _resolve_entry_notional_multiplier(
                             prob=float(row.get("model_prob", 0.0)),
@@ -375,6 +406,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             top_pct_source=top_pct_source,
             min_candidates_used=min_candidates_used,
             min_candidates_source=min_candidates_source,
+            selection_policy_mode=selection_mode,
+            selection_policy_source=selection_policy_source,
             operational_regime_score=operational_regime_score,
             operational_risk_multiplier=operational_risk_multiplier,
             operational_max_positions=operational_max_positions,
@@ -531,7 +564,12 @@ def _resolve_selection_top_pct(
     *,
     predictor: ModelPredictor,
     settings: ModelAlphaSelectionSettings,
+    selection_policy: dict[str, Any] | None = None,
+    selection_policy_source: str = "manual",
 ) -> tuple[float, str]:
+    normalized_policy = dict(selection_policy or {})
+    if str(normalized_policy.get("mode", "")).strip().lower() == DEFAULT_SELECTION_POLICY_MODE:
+        return max(min(float(normalized_policy.get("selection_fraction", 0.0)), 1.0), 0.0), selection_policy_source
     manual_value = max(min(float(settings.top_pct), 1.0), 0.0)
     if not bool(settings.use_learned_recommendations):
         return manual_value, "manual"
@@ -550,7 +588,12 @@ def _resolve_selection_min_candidates(
     *,
     predictor: ModelPredictor,
     settings: ModelAlphaSelectionSettings,
+    selection_policy: dict[str, Any] | None = None,
+    selection_policy_source: str = "manual",
 ) -> tuple[int, str]:
+    normalized_policy = dict(selection_policy or {})
+    if str(normalized_policy.get("mode", "")).strip().lower() == DEFAULT_SELECTION_POLICY_MODE:
+        return max(int(normalized_policy.get("min_candidates_per_ts", 1) or 1), 1), selection_policy_source
     manual_value = max(int(settings.min_candidates_per_ts), 0)
     if not bool(settings.use_learned_recommendations):
         return manual_value, "manual"
@@ -611,6 +654,32 @@ def _resolve_runtime_threshold_key(
     if recommended_key and isinstance(by_key, dict) and isinstance(by_key.get(recommended_key), dict):
         return recommended_key, "registry_recommendation"
     return default_key, "settings"
+
+
+def _resolve_selection_policy(
+    *,
+    predictor: ModelPredictor,
+    settings: ModelAlphaSelectionSettings,
+) -> tuple[dict[str, Any], str]:
+    mode = str(settings.selection_policy_mode).strip().lower() or "auto"
+    if mode == "raw_threshold":
+        return {"mode": "raw_threshold"}, "settings"
+    if mode == DEFAULT_SELECTION_POLICY_MODE:
+        policy = normalize_selection_policy(
+            predictor.selection_policy if isinstance(predictor.selection_policy, dict) else {},
+            fallback_threshold_key=str(settings.registry_threshold_key).strip() or "top_5pct",
+        )
+        return policy, "registry_selection_policy"
+    if _safe_optional_float(settings.min_prob) is not None:
+        return {"mode": "raw_threshold"}, "manual_min_prob"
+    policy_payload = predictor.selection_policy if isinstance(predictor.selection_policy, dict) else {}
+    if policy_payload:
+        policy = normalize_selection_policy(
+            policy_payload,
+            fallback_threshold_key=str(settings.registry_threshold_key).strip() or "top_5pct",
+        )
+        return policy, "registry_selection_policy"
+    return {"mode": "raw_threshold"}, "manual_fallback"
 
 
 def resolve_runtime_model_alpha_settings(

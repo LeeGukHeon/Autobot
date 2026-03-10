@@ -10,6 +10,7 @@ import numpy as np
 
 from .dataset_loader import feature_columns_from_spec
 from .registry import load_json, load_model_bundle, resolve_run_dir
+from .selection_policy import build_selection_policy_from_recommendations, normalize_selection_policy
 from .train_v1 import _predict_scores
 
 
@@ -24,6 +25,7 @@ class ModelPredictor:
     thresholds: dict[str, Any]
     selection_recommendations: dict[str, Any]
     runtime_recommendations: dict[str, Any] = field(default_factory=dict)
+    selection_policy: dict[str, Any] = field(default_factory=dict)
 
     @property
     def dataset_root(self) -> Path | None:
@@ -64,6 +66,18 @@ def load_predictor_from_registry(
         raw_runtime_recommendations = train_config.get("runtime_recommendations")
         if isinstance(raw_runtime_recommendations, dict):
             runtime_recommendations = raw_runtime_recommendations
+    selection_policy = load_json(run_dir / "selection_policy.json")
+    if not selection_policy:
+        raw_train_policy = train_config.get("selection_policy")
+        if isinstance(raw_train_policy, dict):
+            selection_policy = raw_train_policy
+    if not selection_policy and selection_recommendations:
+        selection_policy = build_selection_policy_from_recommendations(
+            selection_recommendations=selection_recommendations,
+            fallback_threshold_key="top_5pct",
+        )
+    if selection_policy:
+        selection_policy = normalize_selection_policy(selection_policy, fallback_threshold_key="top_5pct")
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -85,4 +99,5 @@ def load_predictor_from_registry(
         thresholds=thresholds if isinstance(thresholds, dict) else {},
         selection_recommendations=selection_recommendations if isinstance(selection_recommendations, dict) else {},
         runtime_recommendations=runtime_recommendations if isinstance(runtime_recommendations, dict) else {},
+        selection_policy=selection_policy if isinstance(selection_policy, dict) else {},
     )

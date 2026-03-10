@@ -47,6 +47,7 @@ def _build_strategy(
     settings: ModelAlphaSettings,
     thresholds: dict[str, float] | None = None,
     selection_recommendations: dict[str, object] | None = None,
+    selection_policy: dict[str, object] | None = None,
 ) -> ModelAlphaStrategyV1:
     predictor = ModelPredictor(
         run_dir=Path("."),
@@ -57,6 +58,7 @@ def _build_strategy(
         train_config={"dataset_root": "unused"},
         thresholds=thresholds or {},
         selection_recommendations=selection_recommendations or {},
+        selection_policy=selection_policy or {},
     )
     from autobot.models.dataset_loader import FeatureTsGroup
 
@@ -314,6 +316,103 @@ def test_model_alpha_min_candidates_blocks_on_eligible_rows() -> None:
     assert result.blocked_min_candidates_ts == 1
     assert result.selected_rows == 0
     assert not any(intent.side == "bid" for intent in result.intents)
+
+
+def test_model_alpha_auto_selection_policy_uses_rank_quantile_when_registry_policy_exists() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [2.0, 1.0, 0.1],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(
+                top_pct=1.0,
+                min_prob=None,
+                min_candidates_per_ts=1,
+                registry_threshold_key="top_1pct",
+                use_learned_recommendations=True,
+                selection_policy_mode="auto",
+            ),
+        ),
+        thresholds={"top_1pct": 0.9999},
+        selection_recommendations={
+            "recommended_threshold_key": "top_1pct",
+            "by_threshold_key": {
+                "top_1pct": {
+                    "recommended_top_pct": 1.0,
+                    "recommended_min_candidates_per_ts": 1,
+                    "eligible_ratio": 0.01,
+                }
+            },
+        },
+        selection_policy={
+            "mode": "rank_effective_quantile",
+            "selection_fraction": 0.34,
+            "min_candidates_per_ts": 1,
+            "threshold_key": "top_1pct",
+            "eligible_ratio": 0.01,
+            "recommended_top_pct": 1.0,
+        },
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+    bid_intents = [intent.market for intent in result.intents if intent.side == "bid"]
+    assert result.selection_policy_mode == "rank_effective_quantile"
+    assert result.selection_policy_source == "registry_selection_policy"
+    assert result.min_prob_used == 0.0
+    assert result.eligible_rows == 3
+    assert result.selected_rows == 1
+    assert bid_intents == ["KRW-BTC"]
+
+
+def test_model_alpha_manual_min_prob_keeps_raw_threshold_even_with_registry_policy() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+            "f1": [2.0, 1.0, 0.1],
+            "close": [100.0, 200.0, 300.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(
+                top_pct=1.0,
+                min_prob=0.7,
+                min_candidates_per_ts=1,
+                selection_policy_mode="auto",
+            ),
+        ),
+        selection_policy={
+            "mode": "rank_effective_quantile",
+            "selection_fraction": 0.34,
+            "min_candidates_per_ts": 1,
+            "threshold_key": "top_1pct",
+            "eligible_ratio": 0.01,
+            "recommended_top_pct": 1.0,
+        },
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0, "KRW-XRP": 300.0},
+        open_markets=set(),
+    )
+    assert result.selection_policy_mode == "raw_threshold"
+    assert result.selection_policy_source == "manual_min_prob"
+    assert result.min_prob_used == 0.7
+    assert result.eligible_rows == 2
+    assert result.selected_rows == 2
 
 
 def test_model_alpha_min_candidates_can_block_all_entries() -> None:
