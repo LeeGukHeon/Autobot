@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from autobot.live.reconcile import reconcile_exchange_snapshot
-from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord
+from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
 
 def test_reconcile_halts_on_unknown_external_open_order(tmp_path: Path) -> None:
@@ -377,3 +377,87 @@ def test_reconcile_imports_bot_owned_filled_entry_with_model_risk_plan(tmp_path:
     assert plans[0]["trailing"]["trail_pct"] == 0.015
     assert order is not None
     assert order["state"] == "done"
+
+
+def test_reconcile_closes_local_position_when_bot_exit_is_done_and_exchange_position_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=13.56787669,
+                avg_entry_price=442.0,
+                updated_ts=1000,
+                tp_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-intent-1",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="442",
+                qty_str="13.56787669",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+                timeout_ts_ms=1801000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-entry-1",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-1",
+                identifier="AUTOBOT-autobot-001-exit-order-1",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=450.0,
+                volume_req=13.56787669,
+                volume_filled=13.56787669,
+                state="done",
+                created_ts=1100,
+                updated_ts=2000,
+                intent_id=None,
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-1",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=3000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans()
+
+    assert report["halted"] is False
+    assert report["counts"]["local_positions_missing_on_exchange"] == 0
+    assert any(item["type"] == "close_managed_position_from_bot_exit" for item in report["actions"])
+    assert positions == []
+    assert len(plans) == 1
+    assert plans[0]["state"] == "CLOSED"
+    assert plans[0]["current_exit_order_uuid"] == "exit-order-1"
+    assert plans[0]["plan_source"] == "model_alpha_v1"
+    assert plans[0]["source_intent_id"] == "intent-entry-1"

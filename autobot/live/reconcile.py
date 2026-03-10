@@ -160,6 +160,11 @@ def reconcile_exchange_snapshot(
         bot_id=bot_id,
         identifier_prefix=identifier_prefix,
     )
+    done_ask_orders_by_market = _latest_bot_done_ask_orders_by_market(
+        store=store,
+        bot_id=bot_id,
+        identifier_prefix=identifier_prefix,
+    )
     unknown_position_markets = sorted(set(exchange_positions) - set(local_positions))
     local_positions_missing_on_exchange = sorted(set(local_positions) - set(exchange_positions))
     ignored_dust_positions: list[dict[str, Any]] = []
@@ -207,6 +212,42 @@ def reconcile_exchange_snapshot(
             continue
         retained_unknown_markets.append(market)
     unknown_position_markets = retained_unknown_markets
+
+    retained_local_missing_markets: list[str] = []
+    for market in local_positions_missing_on_exchange:
+        local_position = local_positions[market]
+        matched_close = _match_model_managed_position_close(
+            market=market,
+            local_position=local_position,
+            latest_done_ask_order=done_ask_orders_by_market.get(market),
+        )
+        if matched_close is not None:
+            if not dry_run:
+                store.delete_position(market=market)
+                for row in store.list_risk_plans(market=market):
+                    store.upsert_risk_plan(
+                        _risk_plan_record_from_row(
+                            row,
+                            state="CLOSED",
+                            current_exit_order_uuid=matched_close.get("order_uuid"),
+                            current_exit_order_identifier=matched_close.get("order_identifier"),
+                            updated_ts=now_ts,
+                            last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
+                        )
+                    )
+                if matched_close.get("order_uuid"):
+                    store.mark_order_state(uuid=str(matched_close["order_uuid"]), state="done", updated_ts=now_ts)
+            actions.append(
+                {
+                    "type": "close_managed_position_from_bot_exit",
+                    "market": market,
+                    "order_uuid": matched_close.get("order_uuid"),
+                    "order_identifier": matched_close.get("order_identifier"),
+                }
+            )
+            continue
+        retained_local_missing_markets.append(market)
+    local_positions_missing_on_exchange = retained_local_missing_markets
 
     if unknown_position_markets:
         if unknown_positions_policy == "halt":
@@ -639,6 +680,29 @@ def _latest_bot_bid_orders_by_market(
     return result
 
 
+def _latest_bot_done_ask_orders_by_market(
+    *,
+    store: LiveStateStore,
+    bot_id: str,
+    identifier_prefix: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in store.list_orders(open_only=False):
+        market = str(item.get("market", "")).strip().upper()
+        side = str(item.get("side", "")).strip().lower()
+        identifier = _as_optional_str(item.get("identifier"))
+        if not market or side != "ask":
+            continue
+        if not is_bot_identifier(identifier, prefix=identifier_prefix, bot_id=bot_id):
+            continue
+        if str(item.get("local_state") or "").strip().upper() != "DONE":
+            continue
+        existing = result.get(market)
+        if existing is None or int(item.get("updated_ts") or 0) > int(existing.get("updated_ts") or 0):
+            result[market] = item
+    return result
+
+
 def _match_model_managed_position_import(
     *,
     market: str,
@@ -682,6 +746,23 @@ def _match_model_managed_position_import(
         "order_uuid": _as_optional_str(latest_bid_order.get("uuid")),
         "position_record": position_record,
         "risk_plan_record": risk_plan_record,
+    }
+
+
+def _match_model_managed_position_close(
+    *,
+    market: str,
+    local_position: dict[str, Any],
+    latest_done_ask_order: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if latest_done_ask_order is None:
+        return None
+    if int(latest_done_ask_order.get("updated_ts") or 0) < int(local_position.get("updated_ts") or 0):
+        return None
+    return {
+        "market": market,
+        "order_uuid": _as_optional_str(latest_done_ask_order.get("uuid")),
+        "order_identifier": _as_optional_str(latest_done_ask_order.get("identifier")),
     }
 
 
