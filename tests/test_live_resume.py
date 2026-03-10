@@ -78,6 +78,55 @@ def test_resume_relinks_open_exit_order(tmp_path: Path) -> None:
     assert plan["trailing"]["high_watermark_price_str"] == "110000000"
 
 
+def test_resume_preserves_model_derived_risk_plan_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=13.56787669,
+                avg_entry_price=442.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-intent-1",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="442",
+                qty_str="13.56787669",
+                tp_enabled=False,
+                tp_pct=0.0,
+                sl_enabled=False,
+                sl_pct=0.0,
+                trailing_enabled=False,
+                trail_pct=0.0,
+                state="ACTIVE",
+                last_eval_ts_ms=950,
+                last_action_ts_ms=960,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1001,
+                timeout_ts_ms=1801000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-1",
+            )
+        )
+
+        report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
+        plan = store.risk_plan_by_id(plan_id="model-risk-intent-1")
+
+    assert report["halted"] is False
+    assert report["counts"]["plans_kept_active"] == 1
+    assert plan is not None
+    assert plan["state"] == "ACTIVE"
+    assert plan["timeout_ts_ms"] == 1801000
+    assert plan["plan_source"] == "model_alpha_v1"
+    assert plan["source_intent_id"] == "intent-1"
+
+
 def test_resume_closes_plan_when_position_missing(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

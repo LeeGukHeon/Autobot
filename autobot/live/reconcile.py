@@ -582,6 +582,7 @@ def _risk_plan_record_from_row(
         trail_pct=_as_optional_float(trailing.get("trail_pct")),
         high_watermark_price_str=_as_optional_str(trailing.get("high_watermark_price_str")),
         armed_ts_ms=_as_optional_int(trailing.get("armed_ts_ms")),
+        timeout_ts_ms=_as_optional_int(row.get("timeout_ts_ms")),
         state=state,
         last_eval_ts_ms=int(last_eval_ts_ms),
         last_action_ts_ms=int(row.get("last_action_ts_ms") or 0),
@@ -590,6 +591,8 @@ def _risk_plan_record_from_row(
         replace_attempt=int(row.get("replace_attempt") or 0),
         created_ts=int(row.get("created_ts") or updated_ts),
         updated_ts=int(updated_ts),
+        plan_source=_as_optional_str(row.get("plan_source")),
+        source_intent_id=_as_optional_str(row.get("source_intent_id")),
     )
 
 def _extract_exchange_positions(accounts_payload: Any, *, quote_currency: str, ts_ms: int) -> dict[str, dict[str, Any]]:
