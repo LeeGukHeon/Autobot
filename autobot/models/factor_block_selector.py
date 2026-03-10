@@ -448,6 +448,100 @@ def evaluate_factor_block_window_rows(
     return rows
 
 
+def build_factor_block_refit_support_summary(
+    *,
+    block_registry: Sequence[FactorBlockDefinition],
+    window_support: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    windows = [dict(item) for item in window_support if isinstance(item, dict)]
+    optional_blocks = [block for block in block_registry if not bool(block.protected)]
+    aggregated_by_block: dict[str, Any] = {}
+    aggregate_reasons: list[str] = []
+    windows_with_rows = 0
+    windows_without_rows = 0
+
+    for window_doc in windows:
+        rows_emitted = int(window_doc.get("optional_blocks_with_rows", 0) or 0)
+        if rows_emitted > 0:
+            windows_with_rows += 1
+        else:
+            windows_without_rows += 1
+        aggregate_reasons.extend(
+            str(item).strip()
+            for item in (window_doc.get("reason_codes") or [])
+            if str(item).strip()
+        )
+
+    for block in optional_blocks:
+        support_rows = []
+        for window_doc in windows:
+            block_doc = (window_doc.get("by_block") or {}).get(block.block_id)
+            if isinstance(block_doc, dict):
+                support_rows.append(dict(block_doc))
+        rows_emitted = int(sum(int(item.get("rows_emitted", 0) or 0) for item in support_rows))
+        windows_considered = int(len(support_rows))
+        windows_with_block_rows = int(sum(1 for item in support_rows if int(item.get("rows_emitted", 0) or 0) > 0))
+        reason_codes = _dedupe_reason_codes(
+            str(item).strip()
+            for row in support_rows
+            for item in (row.get("reason_codes") or [])
+            if str(item).strip()
+        )
+        if windows_considered <= 0:
+            status = "insufficient"
+            if not reason_codes:
+                reason_codes = ["NO_WINDOW_REFIT_SUPPORT"]
+        elif rows_emitted <= 0:
+            status = "insufficient"
+        elif windows_with_block_rows < windows_considered:
+            status = "partial"
+        else:
+            status = "supported"
+        aggregated_by_block[block.block_id] = {
+            "block_id": block.block_id,
+            "label": block.label,
+            "feature_count": int(len(block.feature_columns)),
+            "windows_considered": windows_considered,
+            "windows_with_rows": windows_with_block_rows,
+            "rows_emitted": rows_emitted,
+            "status": status,
+            "reason_codes": reason_codes,
+        }
+
+    optional_blocks_with_rows = int(
+        sum(1 for item in aggregated_by_block.values() if int(item.get("rows_emitted", 0) or 0) > 0)
+    )
+    if not optional_blocks:
+        status = "not_applicable"
+        aggregate_reasons = ["NO_OPTIONAL_BLOCKS"]
+    elif optional_blocks_with_rows <= 0:
+        status = "insufficient"
+    elif optional_blocks_with_rows < len(optional_blocks):
+        status = "partial"
+    else:
+        status = "supported"
+
+    if not aggregate_reasons and status == "supported":
+        aggregate_reasons = ["BOUNDED_REFIT_SUPPORT_AVAILABLE"]
+
+    return {
+        "policy": "bounded_drop_block_refit_v1",
+        "bound_mode": "reuse_window_best_params",
+        "summary": {
+            "status": status,
+            "windows_recorded": int(len(windows)),
+            "windows_with_rows": int(windows_with_rows),
+            "windows_without_rows": int(windows_without_rows),
+            "optional_block_count": int(len(optional_blocks)),
+            "optional_blocks_with_rows": int(optional_blocks_with_rows),
+            "optional_blocks_without_rows": int(max(len(optional_blocks) - optional_blocks_with_rows, 0)),
+            "reason_codes": _dedupe_reason_codes(aggregate_reasons),
+        },
+        "by_block": aggregated_by_block,
+        "windows": windows,
+    }
+
+
 def build_factor_block_selection_report(
     *,
     block_registry: Sequence[FactorBlockDefinition],
@@ -455,10 +549,18 @@ def build_factor_block_selection_report(
     selection_mode: str,
     feature_columns: Sequence[str],
     run_id: str,
+    refit_support: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     universe = [serialize_factor_block_definition(block) for block in block_registry]
     normalized_mode = normalize_factor_block_selection_mode(selection_mode)
     rows = [dict(item) for item in window_rows if isinstance(item, dict)]
+    refit_support_doc = (
+        dict(refit_support)
+        if isinstance(refit_support, dict) and refit_support
+        else build_factor_block_refit_support_summary(block_registry=block_registry, window_support=[])
+    )
+    refit_support_by_block = dict(refit_support_doc.get("by_block") or {})
+    refit_support_summary = dict(refit_support_doc.get("summary") or {})
     windows_evaluated = sorted({int(item.get("window_index", -1)) for item in rows if int(item.get("window_index", -1)) >= 0})
     weak_sample = len(windows_evaluated) < 2
     weak_reasons = ["INSUFFICIENT_WINDOWS_FOR_PRUNING"] if weak_sample else []
@@ -489,12 +591,19 @@ def build_factor_block_selection_report(
             available_evidence_modes[0] if available_evidence_modes else "none"
         )
         refit_certified = bool(refit_rows) and not bool(block.protected)
+        support_reason_codes = [
+            str(item).strip()
+            for item in ((refit_support_by_block.get(block.block_id) or {}).get("reason_codes") or [])
+            if str(item).strip()
+        ]
         if block.protected:
             reason_codes.append("PROTECTED_BASE_BLOCK")
         elif weak_sample:
             reason_codes.append("INSUFFICIENT_SAMPLE_KEEP_FULL_SET")
+            reason_codes.extend(support_reason_codes)
         elif not refit_rows:
             reason_codes.append("NO_REFIT_EVIDENCE_KEEP_FULL_SET")
+            reason_codes.extend(support_reason_codes)
             if _EVIDENCE_MODE_MEDIAN_ABLATION in available_evidence_modes:
                 reason_codes.append("MEDIAN_ABLATION_DIAGNOSTIC_ONLY")
         else:
@@ -572,7 +681,10 @@ def build_factor_block_selection_report(
             "windows_evaluated": int(len(windows_evaluated)),
             "weak_sample": bool(weak_sample),
             "optional_refit_certified_block_count": int(optional_refit_certified_count),
+            "refit_support_status": str(refit_support_summary.get("status", "")).strip() or "unknown",
+            "refit_windows_recorded": int(refit_support_summary.get("windows_recorded", 0) or 0),
         },
+        "refit_support": refit_support_doc,
     }
     return report
 
@@ -958,6 +1070,18 @@ def _aggregate_block_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "coverage_cost_proxy_mean": float(np.mean(coverage)) if coverage.size > 0 else 0.0,
         "turnover_cost_proxy_mean": float(np.mean(turnover)) if turnover.size > 0 else 0.0,
     }
+
+
+def _dedupe_reason_codes(values: Sequence[Any]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ordered
 
 
 def _choose_window_grid_choice(grid_results: Any) -> dict[str, Any] | None:

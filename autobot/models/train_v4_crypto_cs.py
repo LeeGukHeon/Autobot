@@ -50,6 +50,7 @@ from .experiment_ledger import (
 )
 from .factor_block_selector import (
     append_factor_block_selection_history,
+    build_factor_block_refit_support_summary,
     build_guarded_factor_block_policy,
     build_factor_block_selection_signature,
     build_factor_block_selection_report,
@@ -471,6 +472,10 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_recommendations=selection_recommendations,
         options=options,
     )
+    walk_forward["factor_block_refit_support"] = build_factor_block_refit_support_summary(
+        block_registry=factor_block_registry,
+        window_support=walk_forward.get("factor_block_refit_windows", []),
+    )
     cpcv_lite = _run_cpcv_lite_v4(
         options=options,
         task=task,
@@ -487,6 +492,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_mode=options.factor_block_selection_mode,
         feature_columns=dataset.feature_names,
         run_id=run_id,
+        refit_support=walk_forward.get("factor_block_refit_support"),
     )
     metrics = _build_v4_metrics_doc(
         run_id=run_id,
@@ -546,7 +552,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_calibration=selection_calibration,
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_summary=cpcv_lite.get("summary", {}),
-        factor_block_selection_summary=factor_block_selection.get("summary", {}),
+        factor_block_selection=factor_block_selection,
         factor_block_selection_context=factor_block_selection_context,
         cpcv_lite_runtime=cpcv_lite_runtime,
         search_budget_decision=search_budget_decision,
@@ -721,6 +727,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         task=task,
         selection_policy=selection_policy,
         selection_calibration=selection_calibration,
+        factor_block_selection=factor_block_selection,
         factor_block_selection_context=factor_block_selection_context,
         cpcv_lite_runtime=cpcv_lite_runtime,
         search_budget_decision=search_budget_decision,
@@ -857,6 +864,7 @@ def _run_walk_forward_v4(
         "selected_threshold_key_source": "manual_fallback",
         "_factor_block_window_rows": [],
         "_selection_calibration_rows": [],
+        "factor_block_refit_windows": [],
     }
     if not bool(options.walk_forward_enabled):
         report["skip_reason"] = "DISABLED"
@@ -1011,35 +1019,35 @@ def _run_walk_forward_v4(
                 block_registry=factor_block_registry,
             )
         )
-        report["_factor_block_window_rows"].extend(
-            _evaluate_factor_block_refit_window_rows(
-                window_index=int(info.window_index),
-                task=task,
-                options=options,
-                best_params=dict(fitted.get("best_params", {}) or {}),
-                full_bundle=fitted["bundle"],
-                feature_names=feature_names,
-                x_train=dataset.X[train_mask],
-                y_cls_train=dataset.y_cls[train_mask],
-                y_reg_train=dataset.y_reg[train_mask],
-                y_rank_train=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[train_mask],
-                w_train=dataset.sample_weight[train_mask],
-                ts_train_ms=dataset.ts_ms[train_mask],
-                x_valid=dataset.X[valid_mask],
-                y_valid_cls=dataset.y_cls[valid_mask],
-                y_valid_reg=dataset.y_reg[valid_mask],
-                y_valid_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[valid_mask],
-                w_valid=dataset.sample_weight[valid_mask],
-                ts_valid_ms=dataset.ts_ms[valid_mask],
-                x_test=dataset.X[test_mask],
-                y_test_cls=dataset.y_cls[test_mask],
-                y_test_reg=dataset.y_reg[test_mask],
-                y_test_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[test_mask],
-                ts_test_ms=dataset.ts_ms[test_mask],
-                thresholds=thresholds,
-                block_registry=factor_block_registry,
-            )
+        refit_evidence = _evaluate_factor_block_refit_window_evidence(
+            window_index=int(info.window_index),
+            task=task,
+            options=options,
+            best_params=dict(fitted.get("best_params", {}) or {}),
+            full_bundle=fitted["bundle"],
+            feature_names=feature_names,
+            x_train=dataset.X[train_mask],
+            y_cls_train=dataset.y_cls[train_mask],
+            y_reg_train=dataset.y_reg[train_mask],
+            y_rank_train=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[train_mask],
+            w_train=dataset.sample_weight[train_mask],
+            ts_train_ms=dataset.ts_ms[train_mask],
+            x_valid=dataset.X[valid_mask],
+            y_valid_cls=dataset.y_cls[valid_mask],
+            y_valid_reg=dataset.y_reg[valid_mask],
+            y_valid_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[valid_mask],
+            w_valid=dataset.sample_weight[valid_mask],
+            ts_valid_ms=dataset.ts_ms[valid_mask],
+            x_test=dataset.X[test_mask],
+            y_test_cls=dataset.y_cls[test_mask],
+            y_test_reg=dataset.y_reg[test_mask],
+            y_test_rank=np.asarray(getattr(dataset, "y_rank", dataset.y_reg), dtype=np.float32)[test_mask],
+            ts_test_ms=dataset.ts_ms[test_mask],
+            thresholds=thresholds,
+            block_registry=factor_block_registry,
         )
+        report["_factor_block_window_rows"].extend(refit_evidence["rows"])
+        report["factor_block_refit_windows"].append(refit_evidence["support"])
 
     report["windows"] = windows
     report["skipped_windows"] = skipped
@@ -1650,7 +1658,7 @@ def _fit_walk_forward_window_model(
     )
 
 
-def _evaluate_factor_block_refit_window_rows(
+def _evaluate_factor_block_refit_window_evidence(
     *,
     window_index: int,
     task: str,
@@ -1677,9 +1685,59 @@ def _evaluate_factor_block_refit_window_rows(
     ts_test_ms: np.ndarray,
     thresholds: dict[str, Any],
     block_registry: Sequence[Any],
-) -> list[dict[str, Any]]:
-    if not best_params or x_test.size <= 0 or len(feature_names) <= 0:
-        return []
+) -> dict[str, Any]:
+    optional_blocks = [block for block in block_registry if not bool(getattr(block, "protected", False))]
+    support: dict[str, Any] = {
+        "window_index": int(window_index),
+        "policy": "bounded_drop_block_refit_v1",
+        "bound_mode": "reuse_window_best_params",
+        "task": str(task),
+        "status": "supported",
+        "best_params_present": bool(best_params),
+        "optional_blocks_total": int(len(optional_blocks)),
+        "optional_blocks_attempted": 0,
+        "optional_blocks_with_rows": 0,
+        "optional_blocks_without_rows": int(len(optional_blocks)),
+        "reason_codes": [],
+        "by_block": {},
+    }
+    if not optional_blocks:
+        support["status"] = "not_applicable"
+        support["reason_codes"] = ["NO_OPTIONAL_BLOCKS"]
+        return {"rows": [], "support": support}
+    if not best_params:
+        support["status"] = "insufficient"
+        support["reason_codes"] = ["MISSING_WINDOW_BEST_PARAMS"]
+        for block in optional_blocks:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": ["MISSING_WINDOW_BEST_PARAMS"],
+            }
+        return {"rows": [], "support": support}
+    if x_test.size <= 0:
+        support["status"] = "insufficient"
+        support["reason_codes"] = ["NO_TEST_ROWS"]
+        for block in optional_blocks:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": ["NO_TEST_ROWS"],
+            }
+        return {"rows": [], "support": support}
+    if len(feature_names) <= 0:
+        support["status"] = "insufficient"
+        support["reason_codes"] = ["NO_FEATURE_NAMES"]
+        for block in optional_blocks:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": ["NO_FEATURE_NAMES"],
+            }
+        return {"rows": [], "support": support}
     full_scores = _predict_scores(full_bundle, x_test)
     baseline = build_factor_block_window_baseline(
         scores=full_scores,
@@ -1690,7 +1748,16 @@ def _evaluate_factor_block_refit_window_rows(
         safety_bps=options.safety_bps,
     )
     if baseline is None:
-        return []
+        support["status"] = "insufficient"
+        support["reason_codes"] = ["SELECTION_BASELINE_UNAVAILABLE"]
+        for block in optional_blocks:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": ["SELECTION_BASELINE_UNAVAILABLE"],
+            }
+        return {"rows": [], "support": support}
     full_metrics = _evaluate_split(
         y_cls=y_test_cls,
         y_reg=y_test_reg,
@@ -1711,55 +1778,77 @@ def _evaluate_factor_block_refit_window_rows(
     all_indices = list(range(len(feature_names)))
     rows: list[dict[str, Any]] = []
 
-    for block in block_registry:
-        if bool(getattr(block, "protected", False)):
-            continue
+    for block in optional_blocks:
         drop_indices = [feature_index[name] for name in block.feature_columns if name in feature_index]
         if not drop_indices:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": ["BLOCK_FEATURES_NOT_PRESENT"],
+            }
             continue
+        support["optional_blocks_attempted"] = int(support["optional_blocks_attempted"]) + 1
         keep_indices = [idx for idx in all_indices if idx not in set(drop_indices)]
         if not keep_indices:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": ["DROP_ELIMINATES_ALL_FEATURES"],
+            }
             continue
         x_train_drop = np.asarray(x_train[:, keep_indices], dtype=np.float32)
         x_valid_drop = np.asarray(x_valid[:, keep_indices], dtype=np.float32)
         x_test_drop = np.asarray(x_test[:, keep_indices], dtype=np.float32)
-        if task == "cls":
-            dropped_bundle = _fit_fixed_classifier_model(
-                options=options,
-                best_params=best_params,
-                x_train=x_train_drop,
-                y_train=y_cls_train,
-                w_train=w_train,
-                x_valid=x_valid_drop,
-                y_valid=y_valid_cls,
-                w_valid=w_valid,
-                fold_index=int(window_index),
-            )
-        elif task == "reg":
-            dropped_bundle = _fit_fixed_regression_model(
-                options=options,
-                best_params=best_params,
-                x_train=x_train_drop,
-                y_train=y_reg_train,
-                w_train=w_train,
-                x_valid=x_valid_drop,
-                y_valid=y_valid_reg,
-                w_valid=w_valid,
-                fold_index=int(window_index),
-            )
-        else:
-            dropped_bundle = _fit_fixed_ranker_model(
-                options=options,
-                best_params=best_params,
-                x_train=x_train_drop,
-                y_train=y_rank_train,
-                ts_train_ms=ts_train_ms,
-                w_train=w_train,
-                x_valid=x_valid_drop,
-                y_valid=y_valid_rank,
-                ts_valid_ms=ts_valid_ms,
-                fold_index=int(window_index),
-            )
+        try:
+            if task == "cls":
+                dropped_bundle = _fit_fixed_classifier_model(
+                    options=options,
+                    best_params=best_params,
+                    x_train=x_train_drop,
+                    y_train=y_cls_train,
+                    w_train=w_train,
+                    x_valid=x_valid_drop,
+                    y_valid=y_valid_cls,
+                    w_valid=w_valid,
+                    fold_index=int(window_index),
+                )
+            elif task == "reg":
+                dropped_bundle = _fit_fixed_regression_model(
+                    options=options,
+                    best_params=best_params,
+                    x_train=x_train_drop,
+                    y_train=y_reg_train,
+                    w_train=w_train,
+                    x_valid=x_valid_drop,
+                    y_valid=y_valid_reg,
+                    w_valid=w_valid,
+                    fold_index=int(window_index),
+                )
+            else:
+                dropped_bundle = _fit_fixed_ranker_model(
+                    options=options,
+                    best_params=best_params,
+                    x_train=x_train_drop,
+                    y_train=y_rank_train,
+                    ts_train_ms=ts_train_ms,
+                    w_train=w_train,
+                    x_valid=x_valid_drop,
+                    y_valid=y_valid_rank,
+                    ts_valid_ms=ts_valid_ms,
+                    fold_index=int(window_index),
+                )
+        except Exception as exc:
+            support["by_block"][block.block_id] = {
+                "block_id": block.block_id,
+                "status": "insufficient",
+                "rows_emitted": 0,
+                "reason_codes": [f"REFIT_MODEL_FAILED_{type(exc).__name__.upper()}"],
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+            continue
 
         dropped_scores = _predict_scores(dropped_bundle, x_test_drop)
         dropped_metrics = _evaluate_split(
@@ -1801,7 +1890,89 @@ def _evaluate_factor_block_refit_window_rows(
                 diagnostic_only=False,
             )
         )
-    return rows
+        support["by_block"][block.block_id] = {
+            "block_id": block.block_id,
+            "status": "supported",
+            "rows_emitted": 1,
+            "reason_codes": ["REFIT_ROW_EMITTED"],
+        }
+
+    support["optional_blocks_with_rows"] = int(sum(int(item["rows_emitted"]) > 0 for item in support["by_block"].values()))
+    support["optional_blocks_without_rows"] = int(
+        max(int(support["optional_blocks_total"]) - int(support["optional_blocks_with_rows"]), 0)
+    )
+    aggregated_reasons = [
+        str(item).strip()
+        for block_doc in support["by_block"].values()
+        for item in (block_doc.get("reason_codes") or [])
+        if str(item).strip()
+    ]
+    if rows and int(support["optional_blocks_with_rows"]) == int(support["optional_blocks_total"]):
+        support["status"] = "supported"
+    elif rows:
+        support["status"] = "partial"
+    else:
+        support["status"] = "insufficient"
+    support["reason_codes"] = list(dict.fromkeys(aggregated_reasons))
+    return {"rows": rows, "support": support}
+
+
+def _evaluate_factor_block_refit_window_rows(
+    *,
+    window_index: int,
+    task: str,
+    options: TrainV4CryptoCsOptions,
+    best_params: dict[str, Any] | None,
+    full_bundle: dict[str, Any],
+    feature_names: Sequence[str],
+    x_train: np.ndarray,
+    y_cls_train: np.ndarray,
+    y_reg_train: np.ndarray,
+    y_rank_train: np.ndarray,
+    w_train: np.ndarray,
+    ts_train_ms: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_cls: np.ndarray,
+    y_valid_reg: np.ndarray,
+    y_valid_rank: np.ndarray,
+    w_valid: np.ndarray,
+    ts_valid_ms: np.ndarray,
+    x_test: np.ndarray,
+    y_test_cls: np.ndarray,
+    y_test_reg: np.ndarray,
+    y_test_rank: np.ndarray,
+    ts_test_ms: np.ndarray,
+    thresholds: dict[str, Any],
+    block_registry: Sequence[Any],
+) -> list[dict[str, Any]]:
+    evidence = _evaluate_factor_block_refit_window_evidence(
+        window_index=window_index,
+        task=task,
+        options=options,
+        best_params=best_params,
+        full_bundle=full_bundle,
+        feature_names=feature_names,
+        x_train=x_train,
+        y_cls_train=y_cls_train,
+        y_reg_train=y_reg_train,
+        y_rank_train=y_rank_train,
+        w_train=w_train,
+        ts_train_ms=ts_train_ms,
+        x_valid=x_valid,
+        y_valid_cls=y_valid_cls,
+        y_valid_reg=y_valid_reg,
+        y_valid_rank=y_valid_rank,
+        w_valid=w_valid,
+        ts_valid_ms=ts_valid_ms,
+        x_test=x_test,
+        y_test_cls=y_test_cls,
+        y_test_reg=y_test_reg,
+        y_test_rank=y_test_rank,
+        ts_test_ms=ts_test_ms,
+        thresholds=thresholds,
+        block_registry=block_registry,
+    )
+    return list(evidence["rows"])
 
 
 def _summarize_walk_forward_trial_panel(
@@ -3409,7 +3580,7 @@ def _train_config_snapshot_v4(
     selection_calibration: dict[str, Any],
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_summary: dict[str, Any],
-    factor_block_selection_summary: dict[str, Any],
+    factor_block_selection: dict[str, Any],
     factor_block_selection_context: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
     search_budget_decision: dict[str, Any],
@@ -3449,7 +3620,8 @@ def _train_config_snapshot_v4(
     }
     payload["factor_block_selection"] = {
         "mode": normalize_factor_block_selection_mode(options.factor_block_selection_mode),
-        "summary": dict(factor_block_selection_summary or {}),
+        "summary": dict((factor_block_selection or {}).get("summary") or {}),
+        "refit_support": dict((factor_block_selection or {}).get("refit_support") or {}),
         "resolution_context": dict(factor_block_selection_context or {}),
     }
     payload["search_budget"] = dict(search_budget_decision or {})
@@ -3465,6 +3637,7 @@ def _build_decision_surface_v4(
     task: str,
     selection_policy: dict[str, Any],
     selection_calibration: dict[str, Any],
+    factor_block_selection: dict[str, Any],
     factor_block_selection_context: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
     search_budget_decision: dict[str, Any],
@@ -3477,6 +3650,8 @@ def _build_decision_surface_v4(
     search_applied = dict((search_budget_decision or {}).get("applied") or {})
     execution_compare = dict((execution_acceptance or {}).get("compare_to_champion") or {})
     runtime_exit = dict((runtime_recommendations or {}).get("exit") or {})
+    factor_block_refit_support = dict((factor_block_selection or {}).get("refit_support") or {})
+    factor_block_refit_summary = dict(factor_block_refit_support.get("summary") or {})
     promotion_reasons = [
         str(item).strip()
         for item in ((promotion or {}).get("reasons") or [])
@@ -3496,6 +3671,8 @@ def _build_decision_surface_v4(
         and not bool((factor_block_selection_context or {}).get("applied", False))
     ):
         warnings.append("GUARDED_FACTOR_POLICY_NOT_ACTIVE")
+    if str(factor_block_refit_summary.get("status", "")).strip().lower() in {"insufficient", "partial"}:
+        warnings.append("FACTOR_BLOCK_REFIT_SUPPORT_NOT_FULLY_AVAILABLE")
 
     return {
         "version": 1,
@@ -3561,6 +3738,8 @@ def _build_decision_surface_v4(
             or "full_set",
             "applied": bool((factor_block_selection_context or {}).get("applied", False)),
             "resolved_run_id": str((factor_block_selection_context or {}).get("resolved_run_id", "")).strip(),
+            "refit_support_status": str(factor_block_refit_summary.get("status", "")).strip() or "unknown",
+            "refit_support": factor_block_refit_support,
         },
         "search_budget_contract": {
             "status": str((search_budget_decision or {}).get("status", "")).strip() or "default",

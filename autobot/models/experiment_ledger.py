@@ -42,6 +42,7 @@ def build_experiment_ledger_record(
     cpcv_summary = dict((cpcv_lite or {}).get("summary") or {})
     factor_selection_summary = dict((factor_block_selection or {}).get("summary") or {})
     factor_selection_support = dict((factor_block_selection or {}).get("sample_support") or {})
+    factor_refit_support = dict(((factor_block_selection or {}).get("refit_support") or {}).get("summary") or {})
     factor_policy_summary = dict((factor_block_policy or {}).get("summary") or {})
     execution_compare = dict((execution_acceptance or {}).get("compare_to_champion") or {})
     search_applied = dict((search_budget_decision or {}).get("applied") or {})
@@ -107,6 +108,8 @@ def build_experiment_ledger_record(
             "weak_sample": bool(factor_selection_support.get("weak_sample", False)),
             "accepted_block_count": int(factor_selection_summary.get("accepted_block_count", 0) or 0),
             "rejected_block_count": int(factor_selection_summary.get("rejected_block_count", 0) or 0),
+            "refit_support_status": str(factor_refit_support.get("status", "")).strip() or "unknown",
+            "optional_blocks_with_refit_rows": int(factor_refit_support.get("optional_blocks_with_rows", 0) or 0),
             "feature_set_applied": bool((factor_block_selection_context or {}).get("applied", False)),
             "resolution_source": str((factor_block_selection_context or {}).get("resolution_source", "")).strip() or "full_set",
         },

@@ -126,6 +126,45 @@ def test_build_factor_block_selection_report_and_pointer_are_deterministic(tmp_p
     assert "v4_periodicity" in payload["accepted_blocks"]
 
 
+def test_factor_block_selection_report_carries_refit_support_insufficiency_reasons() -> None:
+    registry = v4_factor_block_registry(
+        feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin")
+    )
+    report = build_factor_block_selection_report(
+        block_registry=registry,
+        window_rows=[
+            {
+                "window_index": 0,
+                "block_id": "v4_periodicity",
+                "delta_ev_net_top5": -0.001,
+                "delta_precision_top5": -0.01,
+                "coverage_cost_proxy": 0.02,
+                "turnover_cost_proxy": 0.05,
+            }
+        ],
+        selection_mode="report_only",
+        feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin"),
+        run_id="run-refit-missing",
+        refit_support={
+            "summary": {
+                "status": "insufficient",
+                "windows_recorded": 1,
+                "optional_blocks_with_rows": 0,
+            },
+            "by_block": {
+                "v4_periodicity": {
+                    "status": "insufficient",
+                    "rows_emitted": 0,
+                    "reason_codes": ["MISSING_WINDOW_BEST_PARAMS"],
+                }
+            },
+        },
+    )
+
+    assert report["refit_support"]["summary"]["status"] == "insufficient"
+    assert "MISSING_WINDOW_BEST_PARAMS" in report["decision_by_block"]["v4_periodicity"]["reason_codes"]
+
+
 def test_guarded_auto_policy_requires_refit_certified_history(tmp_path: Path) -> None:
     registry = v4_factor_block_registry(
         feature_columns=("logret_1", "one_m_count", "btc_ret_1", "hour_sin")

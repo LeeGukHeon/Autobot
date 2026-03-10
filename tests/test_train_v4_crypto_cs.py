@@ -10,6 +10,7 @@ from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
 from autobot.models.train_v4_crypto_cs import (
     TrainV4CryptoCsOptions,
+    _evaluate_factor_block_refit_window_evidence,
     _evaluate_factor_block_refit_window_rows,
     _build_selection_search_trial_panel,
     _summarize_walk_forward_trial_panel,
@@ -154,6 +155,101 @@ def test_evaluate_factor_block_refit_window_rows_marks_refit_evidence(tmp_path, 
     assert rows[0]["diagnostic_only"] is False
 
 
+def test_evaluate_factor_block_refit_window_evidence_records_nonfatal_refit_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._predict_scores",
+        lambda bundle, x: np.clip(0.45 + (np.asarray(x, dtype=np.float64)[:, 0] * 0.2), 0.01, 0.99),
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._evaluate_split",
+        lambda **kwargs: {
+            "trading": {
+                "top_5pct": {
+                    "ev_net": float(np.mean(np.asarray(kwargs["scores"], dtype=np.float64))),
+                    "precision": float(np.mean(np.asarray(kwargs["scores"], dtype=np.float64))),
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._attach_ranking_metrics",
+        lambda **kwargs: kwargs["metrics"],
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs._fit_fixed_classifier_model",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("refit failed")),
+    )
+
+    options = TrainV4CryptoCsOptions(
+        dataset_root=tmp_path / "features_v4",
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        execution_acceptance_output_root=tmp_path / "logs" / "train_v4_execution_backtest",
+        model_family="train_v4_crypto_cs",
+        tf="5m",
+        quote="KRW",
+        top_n=20,
+        start="2026-03-01",
+        end="2026-03-05",
+        feature_set="v4",
+        label_set="v2",
+        task="cls",
+        booster_sweep_trials=1,
+        seed=7,
+        nthread=1,
+        batch_rows=128,
+        train_ratio=0.6,
+        valid_ratio=0.2,
+        test_ratio=0.2,
+        embargo_bars=0,
+        fee_bps_est=5.0,
+        safety_bps=1.0,
+        ev_scan_steps=10,
+        ev_min_selected=1,
+        min_rows_for_train=1,
+    )
+
+    evidence = _evaluate_factor_block_refit_window_evidence(
+        window_index=2,
+        task="cls",
+        options=options,
+        best_params={"max_depth": 2},
+        full_bundle={"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()},
+        feature_names=("f1", "f2"),
+        x_train=np.asarray([[0.1, 0.2], [0.2, 0.4], [0.3, 0.6], [0.4, 0.8]], dtype=np.float32),
+        y_cls_train=np.asarray([0, 1, 0, 1], dtype=np.int64),
+        y_reg_train=np.asarray([0.0, 0.1, 0.0, 0.2], dtype=np.float32),
+        y_rank_train=np.asarray([0.0, 0.1, 0.0, 0.2], dtype=np.float32),
+        w_train=np.ones(4, dtype=np.float64),
+        ts_train_ms=np.asarray([1_000, 2_000, 3_000, 4_000], dtype=np.int64),
+        x_valid=np.asarray([[0.5, 1.0], [0.6, 1.2]], dtype=np.float32),
+        y_valid_cls=np.asarray([1, 0], dtype=np.int64),
+        y_valid_reg=np.asarray([0.2, -0.1], dtype=np.float32),
+        y_valid_rank=np.asarray([0.2, -0.1], dtype=np.float32),
+        w_valid=np.ones(2, dtype=np.float64),
+        ts_valid_ms=np.asarray([5_000, 6_000], dtype=np.int64),
+        x_test=np.asarray([[0.7, 1.4], [0.8, 1.6], [0.9, 1.8], [1.0, 2.0]], dtype=np.float32),
+        y_test_cls=np.asarray([1, 0, 1, 0], dtype=np.int64),
+        y_test_reg=np.asarray([0.1, -0.1, 0.2, -0.2], dtype=np.float32),
+        y_test_rank=np.asarray([0.1, -0.1, 0.2, -0.2], dtype=np.float32),
+        ts_test_ms=np.asarray([7_000, 7_000, 8_000, 8_000], dtype=np.int64),
+        thresholds={"top_5pct": 0.5},
+        block_registry=[
+            FactorBlockDefinition(
+                block_id="v4_optional_test",
+                label="optional test",
+                feature_columns=("f2",),
+                protected=False,
+                source_contracts=("tests.synthetic",),
+            )
+        ],
+    )
+
+    assert evidence["rows"] == []
+    assert evidence["support"]["status"] == "insufficient"
+    assert evidence["support"]["by_block"]["v4_optional_test"]["reason_codes"] == ["REFIT_MODEL_FAILED_RUNTIMEERROR"]
+
+
 def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monkeypatch) -> None:
     dataset = SimpleNamespace(
         rows=3,
@@ -274,6 +370,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert int(selection_calibration_doc["version"]) == 1
     assert train_config_doc["selection_policy"]["mode"] == "rank_effective_quantile"
     assert int(train_config_doc["selection_calibration"]["version"]) == 1
+    assert train_config_doc["factor_block_selection"]["refit_support"]["summary"]["status"] == "not_applicable"
     assert result.trainer_research_evidence_path is not None
     assert result.trainer_research_evidence_path.exists()
     assert research_evidence_doc["policy"] == "v4_trainer_research_evidence_v1"
@@ -289,6 +386,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert decision_surface_doc["search_budget_contract"]["lane_class_effective"] == "scout"
     assert decision_surface_doc["search_budget_contract"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert decision_surface_doc["search_budget_contract"]["promotion_eligible_satisfied"] is False
+    assert decision_surface_doc["factor_block_contract"]["refit_support_status"] == "not_applicable"
     assert result.metrics["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
     assert "TRAINER_RESEARCH_PRIOR_IS_TRAIN_PRODUCED" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"

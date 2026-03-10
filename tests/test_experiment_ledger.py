@@ -56,6 +56,12 @@ def test_experiment_ledger_record_and_summary_capture_duplicate_history(tmp_path
             "selection_mode": "guarded_auto",
             "summary": {"status": "trusted", "accepted_block_count": 6, "rejected_block_count": 2},
             "sample_support": {"weak_sample": False},
+            "refit_support": {
+                "summary": {
+                    "status": "partial",
+                    "optional_blocks_with_rows": 1,
+                }
+            },
         },
         factor_block_policy={
             "apply_pruned_feature_set": True,
@@ -88,6 +94,8 @@ def test_experiment_ledger_record_and_summary_capture_duplicate_history(tmp_path
     assert record["search_budget"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert record["search_budget"]["promotion_eligible_satisfied"] is False
     assert record["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
+    assert record["factor_block_selection"]["refit_support_status"] == "partial"
+    assert record["factor_block_selection"]["optional_blocks_with_refit_rows"] == 1
 
     history = [record, dict(record, run_id="run-002"), dict(record, run_id="run-003", duplicate_candidate=False)]
     summary = build_recent_experiment_ledger_summary(history_records=history)
