@@ -29,7 +29,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v4_promotable_candidate_acceptance.ps1")
 }
 
 function Resolve-DefaultRuntimeInstallScript {

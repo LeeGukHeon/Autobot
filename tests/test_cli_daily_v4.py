@@ -10,7 +10,7 @@ import autobot.cli as cli_mod
 def test_run_manual_v4_daily_pipeline_defaults_to_skip_paper_soak(tmp_path, monkeypatch) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
-    wrapper_script = tmp_path / "scripts" / "v4_candidate_acceptance.ps1"
+    wrapper_script = tmp_path / "scripts" / "v4_scout_candidate_acceptance.ps1"
     wrapper_script.parent.mkdir(parents=True, exist_ok=True)
     wrapper_script.write_text("# noop\n", encoding="utf-8")
 
@@ -39,8 +39,6 @@ def test_run_manual_v4_daily_pipeline_defaults_to_skip_paper_soak(tmp_path, monk
     assert captured["cwd"] == tmp_path.resolve()
     command = captured["command"]
     assert command[:6] == ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper_script)]
-    assert "-RunScope" in command
-    assert command[command.index("-RunScope") + 1] == "manual_daily"
     assert "-OutDir" in command
     assert command[command.index("-OutDir") + 1] == "logs/model_v4_acceptance_manual"
     assert "-SkipPromote" in command
@@ -53,7 +51,7 @@ def test_run_manual_v4_daily_pipeline_defaults_to_skip_paper_soak(tmp_path, monk
 def test_run_manual_v4_daily_pipeline_enables_paper_soak_when_duration_set(tmp_path, monkeypatch) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
-    wrapper_script = tmp_path / "scripts" / "v4_candidate_acceptance.ps1"
+    wrapper_script = tmp_path / "scripts" / "v4_scout_candidate_acceptance.ps1"
     wrapper_script.parent.mkdir(parents=True, exist_ok=True)
     wrapper_script.write_text("# noop\n", encoding="utf-8")
 
@@ -81,6 +79,72 @@ def test_run_manual_v4_daily_pipeline_enables_paper_soak_when_duration_set(tmp_p
     assert "-SkipPaperSoak" not in command
     assert "-PaperSoakDurationSec" in command
     assert command[command.index("-PaperSoakDurationSec") + 1] == "120"
+
+
+def test_run_manual_v4_daily_pipeline_treats_scout_only_budget_rejection_as_success(
+    tmp_path, monkeypatch
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_script = tmp_path / "scripts" / "v4_scout_candidate_acceptance.ps1"
+    wrapper_script.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_script.write_text("# noop\n", encoding="utf-8")
+
+    def _fake_run(command, cwd=None, text=None):
+        report_path = tmp_path / "logs" / "model_v4_acceptance_manual" / "latest.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            '{"reasons":["BACKTEST_ACCEPTANCE_FAILED","SCOUT_ONLY_BUDGET_EVIDENCE"],"gates":{"backtest":{"budget_contract_reasons":["SCOUT_ONLY_BUDGET_EVIDENCE"]}}}',
+            encoding="utf-8-sig",
+        )
+        return SimpleNamespace(returncode=2)
+
+    monkeypatch.setattr(cli_mod, "_resolve_powershell_exe", lambda: "pwsh")
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+
+    args = argparse.Namespace(
+        mode="spawn_only",
+        batch_date="2026-03-08",
+        run_paper_soak=False,
+        paper_soak_duration_sec=None,
+        dry_run=False,
+    )
+
+    exit_code = cli_mod._run_manual_v4_daily_pipeline(args, config_dir)
+
+    assert exit_code == 0
+
+
+def test_run_manual_v4_daily_pipeline_preserves_fatal_acceptance_exit(tmp_path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_script = tmp_path / "scripts" / "v4_scout_candidate_acceptance.ps1"
+    wrapper_script.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_script.write_text("# noop\n", encoding="utf-8")
+
+    def _fake_run(command, cwd=None, text=None):
+        report_path = tmp_path / "logs" / "model_v4_acceptance_manual" / "latest.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            '{"reasons":["UNHANDLED_EXCEPTION"],"gates":{"backtest":{"budget_contract_reasons":[]}}}',
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=2)
+
+    monkeypatch.setattr(cli_mod, "_resolve_powershell_exe", lambda: "pwsh")
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+
+    args = argparse.Namespace(
+        mode="spawn_only",
+        batch_date="2026-03-08",
+        run_paper_soak=False,
+        paper_soak_duration_sec=None,
+        dry_run=False,
+    )
+
+    exit_code = cli_mod._run_manual_v4_daily_pipeline(args, config_dir)
+
+    assert exit_code == 2
 
 
 def test_run_manual_v4_daily_pipeline_rejects_non_spawn_mode(tmp_path) -> None:

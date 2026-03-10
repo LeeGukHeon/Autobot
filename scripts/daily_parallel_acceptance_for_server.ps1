@@ -34,7 +34,7 @@ function Resolve-DefaultV3AcceptanceScript {
 
 function Resolve-DefaultV4AcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v4_scout_candidate_acceptance.ps1")
 }
 
 function Resolve-DateToken {
@@ -194,6 +194,25 @@ function To-Bool {
     } catch {
         return $DefaultValue
     }
+}
+
+function Get-StringArray {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    return @($Value | ForEach-Object { [string]$_ })
+}
+
+function Test-NonFatalScoutReport {
+    param([Parameter(Mandatory = $false)]$AcceptanceReport)
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    if ($reasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE") {
+        return $true
+    }
+    $backtestGate = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $AcceptanceReport -Name "gates" -DefaultValue @{}) -Name "backtest" -DefaultValue @{}
+    $budgetReasons = Get-StringArray -Value (Get-PropValue -ObjectValue $backtestGate -Name "budget_contract_reasons" -DefaultValue @())
+    return ($budgetReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE")
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -379,6 +398,7 @@ try {
                 Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $effectiveReport -Name "gates" -DefaultValue @{}) -Name "overall_pass" -DefaultValue $false
             ) $false
             $latestReasons = @(Get-PropValue -ObjectValue $effectiveReport -Name "reasons" -DefaultValue @())
+            $nonfatalScoutRejection = Test-NonFatalScoutReport -AcceptanceReport $effectiveReport
             $report.lanes[$lane.name] = [ordered]@{
                 attempted = $true
                 exit_code = [int]$lane.meta.Process.ExitCode
@@ -391,6 +411,7 @@ try {
                 effective_report_source = if ($effectiveReportPath -eq $runReportPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($effectiveReportPath)) { "latest_fresh_fallback" } else { "missing" }
                 latest_overall_pass = [bool]$latestOverallPass
                 latest_reasons = @($latestReasons)
+                nonfatal_scout_rejection = [bool]$nonfatalScoutRejection
             }
         }
     }
@@ -408,7 +429,8 @@ try {
             $true
         } else {
             $v4LatestOverallPass = Get-PropValue -ObjectValue $report.lanes.v4 -Name "latest_overall_pass" -DefaultValue $false
-            [bool]($v4LatestOverallPass -or ($report.lanes.v4.dry_run -eq $true -and $report.lanes.v4.exit_code -eq 0))
+            $v4NonfatalScoutRejection = Get-PropValue -ObjectValue $report.lanes.v4 -Name "nonfatal_scout_rejection" -DefaultValue $false
+            [bool]($v4LatestOverallPass -or $v4NonfatalScoutRejection -or ($report.lanes.v4.dry_run -eq $true -and $report.lanes.v4.exit_code -eq 0))
         }
     } else { $true }
     $report.overall_pass = $v3Pass -and $v4Pass

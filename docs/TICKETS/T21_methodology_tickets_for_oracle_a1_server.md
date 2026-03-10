@@ -167,6 +167,13 @@ These tickets are the required follow-on family before changing core promotion b
     - `SCOUT_ONLY_BUDGET_EVIDENCE`
   - the daily `v4` wrapper now pins:
     - `RunScope = scheduled_daily`
+- `T21.13` slice 2 landed locally:
+  - explicit promotable/scout wrappers now exist:
+    - `v4_promotable_candidate_acceptance.ps1`
+    - `v4_scout_candidate_acceptance.ps1`
+  - promotable orchestration now uses the promotable wrapper
+  - scout orchestration and manual `model daily-v4` now use the scout wrapper
+  - scout-only budget rejection is now treated as a successful scout run by scout orchestration instead of a fatal scheduler failure
 - `T21.14` slice 1 landed locally:
   - `economic_objective_profile.json` is now written for each `v4` run
   - trainer sweep, walk-forward selection, offline compare, execution compare, and promotion compare now share:

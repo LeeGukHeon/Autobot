@@ -17,7 +17,72 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v4_scout_candidate_acceptance.ps1")
+}
+
+function Resolve-ReportedJsonPath {
+    param([string]$OutputText)
+    $regex = [System.Text.RegularExpressions.Regex]::new("(?m)^\[[^\]]+\]\s+report=(.+)$")
+    $match = $regex.Match([string]$OutputText)
+    if (-not $match.Success) {
+        return ""
+    }
+    return [string]$match.Groups[1].Value.Trim()
+}
+
+function Load-JsonOrEmpty {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
+        return @{}
+    }
+    $raw = Get-Content -Path $PathValue -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return @{}
+    }
+    return $raw | ConvertFrom-Json
+}
+
+function Get-PropValue {
+    param(
+        [Parameter(Mandatory = $false)]$ObjectValue,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $false)]$DefaultValue = $null
+    )
+    if ($null -eq $ObjectValue) {
+        return $DefaultValue
+    }
+    if ($ObjectValue -is [System.Collections.IDictionary]) {
+        if ($ObjectValue.Contains($Name)) {
+            return $ObjectValue[$Name]
+        }
+        return $DefaultValue
+    }
+    if ($ObjectValue.PSObject -and $ObjectValue.PSObject.Properties.Name -contains $Name) {
+        return $ObjectValue.$Name
+    }
+    return $DefaultValue
+}
+
+function Test-ObjectHasValues {
+    param([Parameter(Mandatory = $false)]$ObjectValue)
+    if ($null -eq $ObjectValue) {
+        return $false
+    }
+    if ($ObjectValue -is [System.Collections.IDictionary]) {
+        return ($ObjectValue.Count -gt 0)
+    }
+    if ($ObjectValue.PSObject) {
+        return (@($ObjectValue.PSObject.Properties).Count -gt 0)
+    }
+    return $true
+}
+
+function Get-StringArray {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    return @($Value | ForEach-Object { [string]$_ })
 }
 
 function Resolve-BatchDateValue {
@@ -44,6 +109,73 @@ function Test-SystemdUnitActive {
     }
     & $systemctl.Source is-active --quiet $UnitName
     return ($LASTEXITCODE -eq 0)
+}
+
+function Invoke-CommandCapture {
+    param(
+        [string]$Exe,
+        [string[]]$ArgList,
+        [switch]$AllowFailure
+    )
+    $commandText = $Exe + " " + (($ArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
+    if ($DryRun) {
+        Write-Host ("[daily-accept][dry-run] {0}" -f $commandText)
+        return [PSCustomObject]@{
+            ExitCode = 0
+            Output = "[dry-run] $commandText"
+            Command = $commandText
+        }
+    }
+    $output = & $Exe @ArgList 2>&1
+    $exitCode = [int]$LASTEXITCODE
+    if ((-not $AllowFailure) -and $exitCode -ne 0) {
+        throw ("command failed: " + $commandText)
+    }
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = ($output -join "`n")
+        Command = $commandText
+    }
+}
+
+function Test-AcceptanceFatalFailure {
+    param(
+        [int]$ExitCode,
+        [Parameter(Mandatory = $false)]$AcceptanceReport
+    )
+    if ($ExitCode -eq 0) {
+        return $false
+    }
+    if (($ExitCode -ne 2) -or (-not (Test-ObjectHasValues -ObjectValue $AcceptanceReport))) {
+        return $true
+    }
+    $steps = Get-PropValue -ObjectValue $AcceptanceReport -Name "steps" -DefaultValue @{}
+    $exceptionStep = Get-PropValue -ObjectValue $steps -Name "exception" -DefaultValue @{}
+    if (Test-ObjectHasValues -ObjectValue $exceptionStep) {
+        return $true
+    }
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    foreach ($reason in $reasons) {
+        if (@(
+            "UNHANDLED_EXCEPTION",
+            "DAILY_PIPELINE_FAILED",
+            "TRAIN_OR_CANDIDATE_POINTER_FAILED"
+        ) -contains [string]$reason) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-ScoutNonFatalRejection {
+    param([Parameter(Mandatory = $false)]$AcceptanceReport)
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    if ($reasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE") {
+        return $true
+    }
+    $backtestGate = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $AcceptanceReport -Name "gates" -DefaultValue @{}) -Name "backtest" -DefaultValue @{}
+    $budgetReasons = Get-StringArray -Value (Get-PropValue -ObjectValue $backtestGate -Name "budget_contract_reasons" -DefaultValue @())
+    return ($budgetReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE")
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -93,5 +225,14 @@ Write-Host ("[daily-accept] batch_date={0}" -f $resolvedBatchDate)
 Write-Host ("[daily-accept] acceptance_script={0}" -f $resolvedAcceptanceScript)
 Write-Host ("[daily-accept] command={0}" -f $commandPreview)
 
-& $psExe @argList
-exit $LASTEXITCODE
+$exec = Invoke-CommandCapture -Exe $psExe -ArgList $argList -AllowFailure
+$reportPath = Resolve-ReportedJsonPath -OutputText $exec.Output
+$acceptanceReport = Load-JsonOrEmpty -PathValue $reportPath
+if (Test-AcceptanceFatalFailure -ExitCode $exec.ExitCode -AcceptanceReport $acceptanceReport) {
+    exit $exec.ExitCode
+}
+if (($exec.ExitCode -ne 0) -and (Test-ScoutNonFatalRejection -AcceptanceReport $acceptanceReport)) {
+    Write-Host ("[daily-accept] scout_nonfatal_reason=SCOUT_ONLY_BUDGET_EVIDENCE")
+    exit 0
+}
+exit $exec.ExitCode

@@ -351,7 +351,7 @@ def _load_registry_pointer_payload(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
@@ -2466,10 +2466,11 @@ def _run_manual_v4_daily_pipeline(args: argparse.Namespace, config_dir: Path) ->
     if mode != "spawn_only":
         raise ValueError("model daily-v4 currently supports only --mode spawn_only to avoid runtime mutation")
     project_root = config_dir.parent.resolve()
-    wrapper_script = project_root / "scripts" / "v4_candidate_acceptance.ps1"
+    wrapper_script = project_root / "scripts" / "v4_scout_candidate_acceptance.ps1"
     if not wrapper_script.exists():
         raise FileNotFoundError(f"missing wrapper script: {wrapper_script}")
     pwsh_exe = _resolve_powershell_exe()
+    out_dir = "logs/model_v4_acceptance_manual"
     command = [
         pwsh_exe,
         "-NoProfile",
@@ -2481,10 +2482,8 @@ def _run_manual_v4_daily_pipeline(args: argparse.Namespace, config_dir: Path) ->
         str(project_root),
         "-PythonExe",
         sys.executable,
-        "-RunScope",
-        "manual_daily",
         "-OutDir",
-        "logs/model_v4_acceptance_manual",
+        out_dir,
         "-SkipPromote",
     ]
     if getattr(args, "batch_date", None):
@@ -2503,7 +2502,20 @@ def _run_manual_v4_daily_pipeline(args: argparse.Namespace, config_dir: Path) ->
         cwd=project_root,
         text=True,
     )
-    return int(completed.returncode)
+    exit_code = int(completed.returncode)
+    if exit_code == 2:
+        latest_report = project_root / out_dir / "latest.json"
+        report = _load_registry_pointer_payload(latest_report)
+        reasons = [str(item).strip() for item in report.get("reasons", []) if str(item).strip()]
+        backtest_gate = report.get("gates", {}).get("backtest", {}) if isinstance(report.get("gates"), dict) else {}
+        budget_reasons = [
+            str(item).strip()
+            for item in ((backtest_gate.get("budget_contract_reasons", []) if isinstance(backtest_gate, dict) else []) or [])
+            if str(item).strip()
+        ]
+        if "SCOUT_ONLY_BUDGET_EVIDENCE" in reasons or "SCOUT_ONLY_BUDGET_EVIDENCE" in budget_reasons:
+            return 0
+    return exit_code
 
 
 def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:

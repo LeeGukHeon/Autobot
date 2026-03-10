@@ -1,7 +1,7 @@
 # T21.13 V4 Promotion-Eligible Budget Freeze And Scout Split v1
 
 - Date: 2026-03-11
-- Status: slice 1 landed locally
+- Status: landed locally
 
 ## Goal
 - Split daily `v4` runs into:
@@ -80,6 +80,26 @@ Out of scope:
 - `tests/test_train_v4_crypto_cs.py`
   - `decision_surface.json` exposure of the search-budget contract
 
-## Remaining Work
-- introduce an explicit promotable-run launcher instead of relying only on `scheduled_daily`
-- split cheap scout scheduling from frozen promotable scheduling at the orchestration layer so both can coexist intentionally
+## 2026-03-11 Slice 2 Implementation
+- added explicit wrapper scripts:
+  - `scripts/v4_promotable_candidate_acceptance.ps1`
+  - `scripts/v4_scout_candidate_acceptance.ps1`
+- kept `scripts/v4_candidate_acceptance.ps1` as a compatibility alias to the promotable wrapper
+- promotable orchestration now resolves explicitly to the promotable wrapper:
+  - `scripts/daily_champion_challenger_v4_for_server.ps1`
+- scout orchestration now resolves explicitly to the scout wrapper:
+  - `scripts/daily_candidate_acceptance_for_server.ps1`
+  - `scripts/daily_parallel_acceptance_for_server.ps1`
+  - `scripts/install_server_daily_acceptance_service.ps1`
+  - `autobot.cli model daily-v4`
+- scout scheduling now treats `SCOUT_ONLY_BUDGET_EVIDENCE` as an expected non-promotable outcome rather than an orchestration failure
+
+## Additional Regression Coverage
+- `tests/test_cli_daily_v4.py`
+  - manual `daily-v4` now uses the scout wrapper
+  - scout-only budget rejection is treated as a successful scout run
+- `tests/test_daily_candidate_acceptance_for_server.py`
+  - scout-only budget rejection returns success
+  - fatal acceptance failures still fail the wrapper
+- `tests/test_daily_parallel_acceptance_for_server.py`
+  - default v4 lane now resolves to the scout wrapper
