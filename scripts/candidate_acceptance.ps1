@@ -1341,7 +1341,23 @@ $effectiveRestartUnits = if ($AutoRestartKnownUnits) {
 $report.runtime_units_before = @($runtimeUnitsBefore)
 $report.restart_targets = @($effectiveRestartUnits)
 
+function Sync-ReportTopLevelSummary {
+    $candidate = Get-PropValue -ObjectValue $report -Name "candidate" -DefaultValue @{}
+    $gates = Get-PropValue -ObjectValue $report -Name "gates" -DefaultValue @{}
+    $backtestGate = Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{}
+    $paperGate = Get-PropValue -ObjectValue $gates -Name "paper" -DefaultValue @{}
+    $report.candidate_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "run_id" -DefaultValue "")
+    $report.candidate_run_dir = [string](Get-PropValue -ObjectValue $candidate -Name "run_dir" -DefaultValue "")
+    $report.champion_before_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "champion_before_run_id" -DefaultValue "")
+    $report.champion_after_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "champion_after_run_id" -DefaultValue "")
+    $report.overall_pass = Get-PropValue -ObjectValue $gates -Name "overall_pass" -DefaultValue $null
+    $report.backtest_pass = Get-PropValue -ObjectValue $backtestGate -Name "pass" -DefaultValue $null
+    $report.paper_pass = Get-PropValue -ObjectValue $paperGate -Name "pass" -DefaultValue $null
+    $report.completed_at = (Get-Date).ToString("o")
+}
+
 function Save-Report {
+    Sync-ReportTopLevelSummary
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $runReportPath = Join-Path $resolvedOutDir ($ReportPrefix + "_" + $stamp + ".json")
     $latestReportPath = Join-Path $resolvedOutDir "latest.json"

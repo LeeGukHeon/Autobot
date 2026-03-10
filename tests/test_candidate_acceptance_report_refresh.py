@@ -276,6 +276,12 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
     latest_report = json.loads(
         (project_root / "logs" / "model_acceptance_test" / "latest.json").read_text(encoding="utf-8-sig")
     )
+    assert latest_report["candidate_run_id"] == "candidate-run-001"
+    assert latest_report["candidate_run_dir"].endswith("candidate-run-001")
+    assert latest_report["overall_pass"] is True
+    assert latest_report["backtest_pass"] is True
+    assert latest_report["paper_pass"] is None
+    assert latest_report["completed_at"]
     assert latest_report["steps"]["features_build"]["attempted"] is True
     assert latest_report["steps"]["features_build"]["feature_set"] == "v4"
     assert latest_report["steps"]["features_build"]["label_set"] == "v2"
