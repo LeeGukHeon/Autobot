@@ -576,6 +576,10 @@ def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], sta
         return
 
 
+def _html_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+
+
 INDEX_HTML = """<!doctype html>
 <html lang="ko">
 <head>
@@ -592,7 +596,7 @@ INDEX_HTML = """<!doctype html>
     h1,h2,h3 { margin:0; } h1 { font-family:"Space Grotesk","Noto Sans KR",sans-serif; font-size:2.15rem; line-height:1.05; letter-spacing:-.05em; max-width:12ch; margin-bottom:12px; } .sub { max-width:60ch; color:var(--muted); line-height:1.65; font-size:.98rem; } .meta-panel { padding:22px; display:grid; gap:14px; align-content:start; } .badge-row,.service-row { display:flex; flex-wrap:wrap; gap:8px; }
     .grid { display:grid; gap:18px; grid-template-columns:repeat(12,minmax(0,1fr)); } .card { padding:18px 18px 16px; grid-column:span 12; } .card.half { grid-column:span 6; } .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:12px; } .kpi { padding:14px; border-radius:18px; background:linear-gradient(180deg, rgba(255,255,255,.72), rgba(13,92,140,.03)); border:1px solid var(--line); } .kpi .label { font-size:.8rem; color:var(--muted); margin-bottom:6px; } .kpi .value { font-family:"Space Grotesk","Noto Sans KR",sans-serif; font-size:1.2rem; letter-spacing:-.04em; }
     .service-item { padding:10px 12px; border-radius:14px; border:1px solid var(--line); background:rgba(255,255,255,.58); min-width:220px; } .row { display:flex; justify-content:space-between; gap:12px; align-items:baseline; flex-wrap:wrap; } .list { display:grid; gap:10px; margin:0; padding:0; list-style:none; } .list li { border:1px solid var(--line); border-radius:16px; padding:12px 14px; background:rgba(255,255,255,.55); } .card-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; } .card-title { font-family:"Space Grotesk","Noto Sans KR",sans-serif; font-size:1.08rem; letter-spacing:-.03em; }
-    .muted { color:var(--muted); } .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; } .badge,.pill,.refresh { border-radius:999px; } .badge { padding:8px 12px; font-size:.84rem; background:rgba(19,34,47,.06); border:1px solid rgba(19,34,47,.08); } .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; font-size:.82rem; font-weight:700; } .refresh { display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border:1px solid rgba(13,92,140,.18); background:var(--accent-soft); color:var(--accent); font-weight:700; cursor:pointer; } .good { color:var(--good); background:rgba(19,111,99,.10); border-color:rgba(19,111,99,.18); } .warn { color:var(--warn); background:rgba(192,113,31,.12); border-color:rgba(192,113,31,.22); } .bad { color:var(--bad); background:rgba(179,58,58,.12); border-color:rgba(179,58,58,.22); } table { width:100%; border-collapse:collapse; font-size:.92rem; } th,td { text-align:left; padding:10px 8px; border-bottom:1px solid rgba(19,34,47,.08); vertical-align:top; } th { color:var(--muted); font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; } .empty { padding:20px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:18px; }
+    .muted { color:var(--muted); } .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; } .badge,.pill,.refresh { border-radius:999px; } .badge { padding:8px 12px; font-size:.84rem; background:rgba(19,34,47,.06); border:1px solid rgba(19,34,47,.08); } .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; font-size:.82rem; font-weight:700; } .refresh { display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border:1px solid rgba(13,92,140,.18); background:var(--accent-soft); color:var(--accent); font-weight:700; cursor:pointer; } .good { color:var(--good); background:rgba(19,111,99,.10); border-color:rgba(19,111,99,.18); } .warn { color:var(--warn); background:rgba(192,113,31,.12); border-color:rgba(192,113,31,.22); } .bad { color:var(--bad); background:rgba(179,58,58,.12); border-color:rgba(179,58,58,.22); } table { width:100%; border-collapse:collapse; font-size:.92rem; } th,td { text-align:left; padding:10px 8px; border-bottom:1px solid rgba(19,34,47,.08); vertical-align:top; } th { color:var(--muted); font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; } .empty { padding:20px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:18px; } .error-box { margin-top:14px; padding:12px 14px; border-radius:16px; border:1px solid rgba(179,58,58,.24); background:rgba(179,58,58,.08); color:var(--bad); display:none; }
     @media (max-width:1180px) { .hero { grid-template-columns:1fr; } .card.half { grid-column:span 12; } }
   </style>
 </head>
@@ -610,6 +614,7 @@ INDEX_HTML = """<!doctype html>
         <div class="row"><strong>저장공간</strong><span id="storage-summary" class="muted">-</span></div>
         <div class="row"><strong>자동 갱신</strong><span class="muted">10초</span></div>
         <button class="refresh" id="refresh-btn" type="button">지금 새로고침</button>
+        <div id="fetch-error" class="error-box"></div>
       </div>
     </section>
     <section class="grid">
@@ -624,6 +629,7 @@ INDEX_HTML = """<!doctype html>
     </section>
   </div>
   <script>
+    const INITIAL_SNAPSHOT = __INITIAL_SNAPSHOT__;
     const fmtNumber=(v,d=2)=>v===null||v===undefined||Number.isNaN(Number(v))?"-":new Intl.NumberFormat("ko-KR",{maximumFractionDigits:d,minimumFractionDigits:0}).format(Number(v));
     const fmtMoney=(v)=>v===null||v===undefined?"-":`${fmtNumber(v,0)} KRW`;
     const fmtPct=(v)=>v===null||v===undefined?"-":`${fmtNumber(v,2)}%`;
@@ -639,8 +645,10 @@ INDEX_HTML = """<!doctype html>
     function renderLive(live){ const rollout=live.rollout_latest||{}; const states=live.states||[]; document.getElementById("live-state-cards").innerHTML=states.map((s)=>`<div class="service-item"><div class="row"><strong>${esc(s.label)}</strong>${pill("breaker",String(Boolean(s.breaker_active)))}</div><div class="muted mono" style="margin-top:8px">${esc(s.db_path)}</div><div class="muted" style="margin-top:8px">포지션 ${esc(String(s.positions_count??0))} / 오픈주문 ${esc(String(s.open_orders_count??0))} / intent ${esc(String(s.intents_count??0))}</div><div class="muted">활성 risk plan ${esc(String(s.active_risk_plans_count??0))}</div><div class="muted">rollout ${esc(String((s.rollout_status||{}).mode||"-"))} / 주문허용 ${esc(String((s.rollout_status||{}).order_emission_allowed??"-"))}</div><div class="muted">모델 ${esc(String((s.runtime_health||{}).live_runtime_model_run_id||"-"))}</div></div>`).join("") || `<div class="empty">라이브 상태 DB를 찾지 못했습니다.</div>`; const notes=[]; if(rollout.contract) notes.push(`<li><strong>latest rollout contract</strong><div class="muted mono">${esc(JSON.stringify(rollout.contract))}</div></li>`); if(rollout.status) notes.push(`<li><strong>latest rollout status</strong><div class="muted mono">${esc(JSON.stringify(rollout.status))}</div></li>`); document.getElementById("notes-list").innerHTML=notes.join("") || `<li><div class="muted">특기할 rollout 메모가 없습니다.</div></li>`; }
     function renderArtifacts(training){ const artifacts=training.candidate_artifacts||{}; const entries=[["runtime_recommendations",artifacts.runtime_recommendations],["selection_policy",artifacts.selection_policy],["selection_calibration",artifacts.selection_calibration],["search_budget_decision",artifacts.search_budget_decision],["factor_block_selection",artifacts.factor_block_selection],["cpcv_lite_report",artifacts.cpcv_lite_report]]; document.getElementById("artifact-details").innerHTML=`<ul class="list">${entries.map(([name,payload])=>`<li><strong>${esc(name)}</strong><div class="muted mono">${esc(payload&&Object.keys(payload).length?JSON.stringify(payload).slice(0,420):"없음")}</div></li>`).join("")}</ul>`; }
     function renderMeta(data){ document.getElementById("generated-at").textContent=data.generated_at||"-"; document.getElementById("project-root").textContent=data.project_root||"-"; const s=data.system||{}; const usedGb=(Number(s.project_used_bytes||0)/(1024**3)).toFixed(1); const totalGb=(Number(s.total_bytes||0)/(1024**3)).toFixed(1); const fsUsedGb=(Number(s.used_bytes||0)/(1024**3)).toFixed(1); document.getElementById("storage-summary").textContent=`프로젝트 ${usedGb} GB / 파일시스템 ${fsUsedGb} GB / 총 ${totalGb} GB`; }
-    async function refresh(){ const response=await fetch("/api/snapshot",{cache:"no-store"}); const data=await response.json(); renderMeta(data); renderServices(data.services||{}); renderTraining(data.training||{}); renderChallenger(data.challenger||{}); renderPaper(data.paper||{}); renderWsPublic(data.ws_public||{}); renderLive(data.live||{}); renderArtifacts(data.training||{}); }
-    document.getElementById("refresh-btn").addEventListener("click",refresh); refresh(); setInterval(refresh,10000);
+    function setError(message){ const node=document.getElementById("fetch-error"); if(!message){ node.style.display="none"; node.textContent=""; return; } node.style.display="block"; node.textContent=message; }
+    function renderAll(data){ renderMeta(data); renderServices(data.services||{}); renderTraining(data.training||{}); renderChallenger(data.challenger||{}); renderPaper(data.paper||{}); renderWsPublic(data.ws_public||{}); renderLive(data.live||{}); renderArtifacts(data.training||{}); }
+    async function refresh(){ try { const response=await fetch("/api/snapshot",{cache:"no-store"}); if(!response.ok){ throw new Error(`snapshot 응답 실패 (${response.status})`); } const data=await response.json(); renderAll(data); setError(""); } catch (err) { setError(`실시간 새로고침 실패: ${err && err.message ? err.message : err}`); } }
+    document.getElementById("refresh-btn").addEventListener("click",refresh); if (INITIAL_SNAPSHOT && typeof INITIAL_SNAPSHOT === "object") { try { renderAll(INITIAL_SNAPSHOT); } catch (err) { setError(`초기 렌더링 실패: ${err && err.message ? err.message : err}`); } } refresh(); setInterval(refresh,10000);
   </script>
 </body></html>
 """
@@ -652,7 +660,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            body = INDEX_HTML.encode("utf-8")
+            try:
+                initial_snapshot = build_dashboard_snapshot(self.project_root)
+            except Exception:
+                initial_snapshot = {"generated_at": _utc_now_iso()}
+            html = INDEX_HTML.replace("__INITIAL_SNAPSHOT__", _html_json(initial_snapshot))
+            body = html.encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
