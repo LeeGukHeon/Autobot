@@ -397,15 +397,31 @@ def evaluate_cycle_contracts(
     halted_reasons = {str(item).strip().upper() for item in report.get("halted_reasons", []) if str(item).strip()}
     warnings: list[str] = []
     halts: list[str] = []
+    reasons_to_clear: list[str] = []
 
     if int(counts.get("local_only_open_orders") or 0) > 0:
         warnings.append("LOCAL_OPEN_ORDER_NOT_FOUND_ON_EXCHANGE")
     if int(counts.get("external_open_orders") or 0) > 0 or "UNKNOWN_OPEN_ORDERS_DETECTED" in halted_reasons:
         halts.append("UNKNOWN_OPEN_ORDERS_DETECTED")
+    else:
+        reasons_to_clear.append("UNKNOWN_OPEN_ORDERS_DETECTED")
     if "UNKNOWN_POSITIONS_DETECTED" in halted_reasons:
         halts.append("UNKNOWN_POSITIONS_DETECTED")
+    else:
+        reasons_to_clear.append("UNKNOWN_POSITIONS_DETECTED")
     if int(counts.get("local_positions_missing_on_exchange") or 0) > 0:
         halts.append("LOCAL_POSITION_MISSING_ON_EXCHANGE")
+    else:
+        reasons_to_clear.append("LOCAL_POSITION_MISSING_ON_EXCHANGE")
+
+    if reasons_to_clear:
+        clear_breaker_reasons(
+            store,
+            reason_codes=reasons_to_clear,
+            source=f"{source}_recovery",
+            ts_ms=ts_ms,
+            details={"counts": counts},
+        )
 
     if warnings:
         record_warning(

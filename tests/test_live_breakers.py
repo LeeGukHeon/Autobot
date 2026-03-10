@@ -10,6 +10,7 @@ from autobot.live.breakers import (
     clear_breaker_reasons,
     clear_breaker,
     classify_upbit_exception,
+    evaluate_cycle_contracts,
     record_counter_failure,
 )
 from autobot.live.state_store import LiveStateStore
@@ -91,3 +92,29 @@ def test_clear_breaker_reasons_preserves_structural_halts(tmp_path: Path) -> Non
 def test_classify_upbit_exception_is_exact() -> None:
     assert classify_upbit_exception(RateLimitError("slow down", status_code=429)) == "REPEATED_RATE_LIMIT_ERRORS"
     assert classify_upbit_exception(AuthError("nonce used", status_code=401)) == "REPEATED_NONCE_ERRORS"
+
+
+def test_evaluate_cycle_contracts_clears_recovered_position_mismatch_reason(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        arm_breaker(
+            store,
+            reason_codes=["LOCAL_POSITION_MISSING_ON_EXCHANGE"],
+            source="sync_cycle",
+            ts_ms=1000,
+        )
+        status = evaluate_cycle_contracts(
+            store,
+            report={
+                "counts": {
+                    "external_open_orders": 0,
+                    "local_positions_missing_on_exchange": 0,
+                },
+                "halted_reasons": [],
+            },
+            source="sync_cycle",
+            ts_ms=2000,
+        )
+
+    assert status["active"] is False
+    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" not in status["reason_codes"]
