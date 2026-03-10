@@ -133,6 +133,40 @@ function Load-JsonOrEmpty {
     return $raw | ConvertFrom-Json
 }
 
+function Write-JsonFile {
+    param(
+        [string]$PathValue,
+        [Parameter(Mandatory = $false)]$Payload,
+        [int]$Depth = 12
+    )
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return
+    }
+    $parent = Split-Path -Parent $PathValue
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    ($Payload | ConvertTo-Json -Depth $Depth) | Set-Content -Path $PathValue -Encoding UTF8
+}
+
+function Test-IsEffectivelyEmptyObject {
+    param([Parameter(Mandatory = $false)]$ObjectValue)
+    if ($null -eq $ObjectValue) {
+        return $true
+    }
+    if ($ObjectValue -is [System.Collections.IDictionary]) {
+        return $ObjectValue.Count -eq 0
+    }
+    if ($ObjectValue.PSObject) {
+        $ownProperties = @(
+            $ObjectValue.PSObject.Properties |
+                Where-Object { $_.MemberType -in @("NoteProperty", "Property") }
+        )
+        return $ownProperties.Count -eq 0
+    }
+    return $false
+}
+
 function Get-PropValue {
     param(
         [Parameter(Mandatory = $false)]$ObjectValue,
@@ -382,7 +416,186 @@ function Resolve-PromotionPolicyConfig {
     return $resolved
 }
 
-function Resolve-TrainerEvidence {
+function New-DateWindowRecord {
+    param(
+        [string]$Name,
+        [string]$Start,
+        [string]$End,
+        [string]$Source = ""
+    )
+    $reasonPrefix = ([string]$Name).Trim().ToUpperInvariant().Replace("-", "_")
+    $window = [ordered]@{
+        name = $Name
+        start = ""
+        end = ""
+        source = $Source
+        valid = $false
+        day_count = $null
+        reasons = @()
+    }
+    if ([string]::IsNullOrWhiteSpace($Start) -or [string]::IsNullOrWhiteSpace($End)) {
+        $window.reasons = @("MISSING_${reasonPrefix}_WINDOW")
+        return $window
+    }
+    try {
+        $normalizedStart = Resolve-DateToken -DateText $Start -LabelForError ("{0}_window_start" -f $Name)
+        $normalizedEnd = Resolve-DateToken -DateText $End -LabelForError ("{0}_window_end" -f $Name)
+        $startObj = [DateTime]::ParseExact($normalizedStart, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+        $endObj = [DateTime]::ParseExact($normalizedEnd, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+        $window.start = $normalizedStart
+        $window.end = $normalizedEnd
+        if ($endObj -lt $startObj) {
+            $window.reasons = @("INVALID_${reasonPrefix}_WINDOW_RANGE")
+            return $window
+        }
+        $window.valid = $true
+        $window.day_count = [int](($endObj - $startObj).TotalDays + 1)
+        return $window
+    } catch {
+        $window.start = [string]$Start
+        $window.end = [string]$End
+        $window.reasons = @("INVALID_${reasonPrefix}_WINDOW_DATE")
+        return $window
+    }
+}
+
+function Compare-DateWindowRecords {
+    param(
+        [Parameter(Mandatory = $false)]$LeftWindow,
+        [Parameter(Mandatory = $false)]$RightWindow
+    )
+    $comparison = [ordered]@{
+        comparable = $false
+        overlap = $false
+        left_ends_before_right_starts = $false
+        gap_days = $null
+    }
+    if ((-not (To-Bool (Get-PropValue -ObjectValue $LeftWindow -Name "valid" -DefaultValue $false) $false)) -or
+        (-not (To-Bool (Get-PropValue -ObjectValue $RightWindow -Name "valid" -DefaultValue $false) $false))) {
+        return $comparison
+    }
+    $leftStart = [DateTime]::ParseExact([string](Get-PropValue -ObjectValue $LeftWindow -Name "start" -DefaultValue ""), "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $leftEnd = [DateTime]::ParseExact([string](Get-PropValue -ObjectValue $LeftWindow -Name "end" -DefaultValue ""), "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $rightStart = [DateTime]::ParseExact([string](Get-PropValue -ObjectValue $RightWindow -Name "start" -DefaultValue ""), "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $rightEnd = [DateTime]::ParseExact([string](Get-PropValue -ObjectValue $RightWindow -Name "end" -DefaultValue ""), "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $comparison.comparable = $true
+    $comparison.overlap = ($leftStart -le $rightEnd) -and ($rightStart -le $leftEnd)
+    $comparison.left_ends_before_right_starts = $leftEnd -lt $rightStart
+    if ($comparison.left_ends_before_right_starts) {
+        $comparison.gap_days = [int](($rightStart - $leftEnd).TotalDays - 1)
+    }
+    return $comparison
+}
+
+function Resolve-ResearchWindowFromDecisionSurface {
+    param(
+        [Parameter(Mandatory = $false)]$DecisionSurface,
+        [string]$FallbackStart,
+        [string]$FallbackEnd
+    )
+    $trainerEntrypoint = Get-PropValue -ObjectValue $DecisionSurface -Name "trainer_entrypoint" -DefaultValue @{}
+    $datasetWindow = Get-PropValue -ObjectValue $trainerEntrypoint -Name "dataset_window" -DefaultValue @{}
+    $researchStart = [string](Get-PropValue -ObjectValue $datasetWindow -Name "start" -DefaultValue "")
+    $researchEnd = [string](Get-PropValue -ObjectValue $datasetWindow -Name "end" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($researchStart) -or [string]::IsNullOrWhiteSpace($researchEnd)) {
+        return [ordered]@{
+            start = $FallbackStart
+            end = $FallbackEnd
+            source = "candidate_acceptance_train_window_fallback"
+            fallback = $true
+        }
+    }
+    return [ordered]@{
+        start = $researchStart
+        end = $researchEnd
+        source = "decision_surface.trainer_entrypoint.dataset_window"
+        fallback = $false
+    }
+}
+
+function New-CertificationArtifact {
+    param(
+        [string]$CandidateRunId,
+        [string]$CandidateRunDir,
+        [string]$PromotionDecisionPath,
+        [string]$DecisionSurfacePath,
+        [string]$TrainStartDate,
+        [string]$TrainEndDate,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate,
+        [string]$TrainerEvidenceMode,
+        [Parameter(Mandatory = $false)]$ResearchEvidence
+    )
+    $decisionSurface = Load-JsonOrEmpty -PathValue $DecisionSurfacePath
+    $decisionSurfacePresent = -not (Test-IsEffectivelyEmptyObject -ObjectValue $decisionSurface)
+    $researchWindowSpec = Resolve-ResearchWindowFromDecisionSurface `
+        -DecisionSurface $decisionSurface `
+        -FallbackStart $TrainStartDate `
+        -FallbackEnd $TrainEndDate
+    $trainWindow = New-DateWindowRecord -Name "train" -Start $TrainStartDate -End $TrainEndDate -Source "candidate_acceptance.train_args"
+    $researchWindow = New-DateWindowRecord `
+        -Name "research" `
+        -Start ([string](Get-PropValue -ObjectValue $researchWindowSpec -Name "start" -DefaultValue "")) `
+        -End ([string](Get-PropValue -ObjectValue $researchWindowSpec -Name "end" -DefaultValue "")) `
+        -Source ([string](Get-PropValue -ObjectValue $researchWindowSpec -Name "source" -DefaultValue ""))
+    $certificationWindow = New-DateWindowRecord `
+        -Name "certification" `
+        -Start $CertificationStartDate `
+        -End $CertificationEndDate `
+        -Source "candidate_acceptance.backtest_window"
+    $trainVsResearch = Compare-DateWindowRecords -LeftWindow $trainWindow -RightWindow $researchWindow
+    $trainVsCertification = Compare-DateWindowRecords -LeftWindow $trainWindow -RightWindow $certificationWindow
+    $researchVsCertification = Compare-DateWindowRecords -LeftWindow $researchWindow -RightWindow $certificationWindow
+    $reasons = @()
+    if (-not $decisionSurfacePresent) {
+        $reasons += "MISSING_DECISION_SURFACE"
+    }
+    foreach ($window in @($trainWindow, $researchWindow, $certificationWindow)) {
+        $reasons = Merge-UniqueStringArray -First $reasons -Second @(Get-PropValue -ObjectValue $window -Name "reasons" -DefaultValue @())
+    }
+    if (To-Bool (Get-PropValue -ObjectValue $trainVsCertification -Name "overlap" -DefaultValue $false) $false) {
+        $reasons += "TRAIN_CERTIFICATION_WINDOW_OVERLAP"
+    }
+    if (To-Bool (Get-PropValue -ObjectValue $researchVsCertification -Name "overlap" -DefaultValue $false) $false) {
+        $reasons += "RESEARCH_CERTIFICATION_WINDOW_OVERLAP"
+    }
+    $reasons = Merge-UniqueStringArray -First $reasons -Second @()
+    return [ordered]@{
+        version = 1
+        policy = "candidate_acceptance_certification_v1"
+        generated_at = (Get-Date).ToString("o")
+        candidate_run_id = $CandidateRunId
+        candidate_run_dir = $CandidateRunDir
+        status = "pending"
+        provenance = [ordered]@{
+            promotion_decision_path = $PromotionDecisionPath
+            promotion_decision_present = (Test-Path $PromotionDecisionPath)
+            decision_surface_path = $DecisionSurfacePath
+            decision_surface_present = $decisionSurfacePresent
+            trainer_evidence_mode = $TrainerEvidenceMode
+            trainer_evidence_source = "certification_artifact"
+            research_evidence_source = "promotion_decision"
+        }
+        windows = [ordered]@{
+            train_window = $trainWindow
+            research_window = $researchWindow
+            certification_window = $certificationWindow
+        }
+        overlap_checks = [ordered]@{
+            train_vs_research = $trainVsResearch
+            train_vs_certification = $trainVsCertification
+            research_vs_certification = $researchVsCertification
+        }
+        valid_window_contract = ($reasons.Count -eq 0)
+        reasons = @($reasons)
+        research_evidence = $ResearchEvidence
+        certification = [ordered]@{
+            evaluated = $false
+        }
+    }
+}
+
+function Resolve-ResearchEvidenceFromPromotionDecision {
     param(
         [Parameter(Mandatory = $false)]$PromotionDecision,
         [string]$Mode
@@ -447,7 +660,7 @@ function Resolve-TrainerEvidence {
         $resolved.reasons = @("IGNORED_BY_POLICY")
         return $resolved
     }
-    if ($null -eq $PromotionDecision -or (@($PromotionDecision.PSObject.Properties).Count -eq 0 -and -not ($PromotionDecision -is [System.Collections.IDictionary]))) {
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $PromotionDecision) {
         $resolved.pass = $false
         $resolved.reasons = @("MISSING_PROMOTION_DECISION")
         return $resolved
@@ -588,6 +801,71 @@ function Resolve-TrainerEvidence {
     $resolved.offline_pass = $offlinePass
     $resolved.execution_pass = $executionPass
     $resolved.pass = $offlinePass -and $executionPass
+    if ($resolved.available -and $resolved.reasons.Count -eq 0) {
+        $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
+    }
+    return $resolved
+}
+
+function Resolve-TrainerEvidenceFromCertificationArtifact {
+    param(
+        [Parameter(Mandatory = $false)]$CertificationArtifact,
+        [string]$Mode
+    )
+    $resolved = [ordered]@{
+        mode = $Mode
+        available = $false
+        required = ($Mode -eq "required")
+        source = "certification_artifact"
+        pass = $null
+        offline_pass = $false
+        execution_pass = $true
+        reasons = @()
+        checks = [ordered]@{}
+        offline = [ordered]@{}
+        spa_like = [ordered]@{}
+        white_rc = [ordered]@{}
+        hansen_spa = [ordered]@{}
+        execution = [ordered]@{}
+        certification_window_valid = $false
+        certification_window_reasons = @()
+    }
+    if ($Mode -eq "ignore") {
+        $resolved.reasons = @("IGNORED_BY_POLICY")
+        return $resolved
+    }
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $CertificationArtifact) {
+        $resolved.pass = $false
+        $resolved.reasons = @("MISSING_CERTIFICATION_ARTIFACT")
+        return $resolved
+    }
+    $researchEvidence = Get-PropValue -ObjectValue $CertificationArtifact -Name "research_evidence" -DefaultValue @{}
+    $artifactReasons = @(Get-PropValue -ObjectValue $CertificationArtifact -Name "reasons" -DefaultValue @())
+    $windowValid = To-Bool (Get-PropValue -ObjectValue $CertificationArtifact -Name "valid_window_contract" -DefaultValue $false) $false
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $researchEvidence) {
+        $resolved.pass = $false
+        $resolved.certification_window_valid = $windowValid
+        $resolved.certification_window_reasons = @($artifactReasons)
+        $resolved.reasons = Merge-UniqueStringArray -First @("MISSING_RESEARCH_EVIDENCE") -Second $artifactReasons
+        return $resolved
+    }
+    $resolved.available = To-Bool (Get-PropValue -ObjectValue $researchEvidence -Name "available" -DefaultValue $false) $false
+    $resolved.pass = To-Bool (Get-PropValue -ObjectValue $researchEvidence -Name "pass" -DefaultValue $false) $false
+    $resolved.offline_pass = To-Bool (Get-PropValue -ObjectValue $researchEvidence -Name "offline_pass" -DefaultValue $false) $false
+    $resolved.execution_pass = To-Bool (Get-PropValue -ObjectValue $researchEvidence -Name "execution_pass" -DefaultValue $true) $true
+    $resolved.reasons = @((Get-PropValue -ObjectValue $researchEvidence -Name "reasons" -DefaultValue @()))
+    $resolved.checks = (Get-PropValue -ObjectValue $researchEvidence -Name "checks" -DefaultValue @{})
+    $resolved.offline = (Get-PropValue -ObjectValue $researchEvidence -Name "offline" -DefaultValue @{})
+    $resolved.spa_like = (Get-PropValue -ObjectValue $researchEvidence -Name "spa_like" -DefaultValue @{})
+    $resolved.white_rc = (Get-PropValue -ObjectValue $researchEvidence -Name "white_rc" -DefaultValue @{})
+    $resolved.hansen_spa = (Get-PropValue -ObjectValue $researchEvidence -Name "hansen_spa" -DefaultValue @{})
+    $resolved.execution = (Get-PropValue -ObjectValue $researchEvidence -Name "execution" -DefaultValue @{})
+    $resolved.certification_window_valid = $windowValid
+    $resolved.certification_window_reasons = @($artifactReasons)
+    if (-not $windowValid) {
+        $resolved.pass = $false
+        $resolved.reasons = Merge-UniqueStringArray -First $resolved.reasons -Second $artifactReasons
+    }
     if ($resolved.available -and $resolved.reasons.Count -eq 0) {
         $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
     }
@@ -1124,6 +1402,7 @@ function Build-ReportMarkdown {
     $lines.Add("- candidate_run_id_used_for_paper: $([string](Get-PropValue -ObjectValue $candidate -Name 'candidate_run_id_used_for_paper' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_model_ref_requested: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_model_ref_requested' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
+    $lines.Add("- certification_artifact_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'certification_artifact_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- duplicate_candidate: $([string](Get-PropValue -ObjectValue $candidate -Name 'duplicate_candidate' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
 
@@ -1173,6 +1452,7 @@ function Build-ReportMarkdown {
     $lines.Add("- pass: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- offline_pass: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'offline_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- execution_pass: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'execution_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- certification_window_valid: $([string](Get-PropValue -ObjectValue $trainerEvidence -Name 'certification_window_valid' -DefaultValue ''))") | Out-Null
     $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
     $lines.Add("- reasons: $([string]($trainerEvidenceReasons -join ','))") | Out-Null
 
@@ -1203,6 +1483,9 @@ function Build-ReportMarkdown {
     $lines.Add("- trainer_evidence_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_offline_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_offline_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_execution_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_execution_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- certification_window_start: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_start' -DefaultValue ''))") | Out-Null
+    $lines.Add("- certification_window_end: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_end' -DefaultValue ''))") | Out-Null
+    $lines.Add("- certification_window_valid: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_valid' -DefaultValue ''))") | Out-Null
     $lines.Add("- decision_basis: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'decision_basis' -DefaultValue ''))") | Out-Null
     $lines.Add("- compare_mode: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'compare_mode' -DefaultValue ''))") | Out-Null
 
@@ -1255,8 +1538,10 @@ New-Item -ItemType Directory -Path $resolvedPaperSmokeOutDir -Force | Out-Null
 $effectiveBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) { (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd") } else { $BatchDate }
 $effectiveBatchDate = Resolve-DateToken -DateText $effectiveBatchDate -LabelForError "batch_date"
 $batchDateObj = [DateTime]::ParseExact($effectiveBatchDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
-$trainStartDate = $batchDateObj.AddDays(-1 * [Math]::Max($TrainLookbackDays - 1, 0)).ToString("yyyy-MM-dd")
-$backtestStartDate = $batchDateObj.AddDays(-1 * [Math]::Max($BacktestLookbackDays - 1, 0)).ToString("yyyy-MM-dd")
+$certificationStartDate = $batchDateObj.AddDays(-1 * [Math]::Max($BacktestLookbackDays - 1, 0)).ToString("yyyy-MM-dd")
+$trainEndDate = $batchDateObj.AddDays(-1 * [Math]::Max($BacktestLookbackDays, 0)).ToString("yyyy-MM-dd")
+$trainEndObj = [DateTime]::ParseExact($trainEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+$trainStartDate = $trainEndObj.AddDays(-1 * [Math]::Max($TrainLookbackDays - 1, 0)).ToString("yyyy-MM-dd")
 $promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPolicy -BoundParams $PSBoundParameters
 
 $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest_candidate"
@@ -1318,8 +1603,10 @@ $report = [ordered]@{
         auto_restart_known_units = [bool]$AutoRestartKnownUnits
     }
     windows_by_step = [ordered]@{
-        train = [ordered]@{ start = $trainStartDate; end = $effectiveBatchDate }
-        backtest = [ordered]@{ start = $backtestStartDate; end = $effectiveBatchDate }
+        train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
+        research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "train_command_window" }
+        certification = [ordered]@{ start = $certificationStartDate; end = $effectiveBatchDate }
+        backtest = [ordered]@{ start = $certificationStartDate; end = $effectiveBatchDate; alias_of = "certification" }
     }
     steps = [ordered]@{}
     candidate = [ordered]@{}
@@ -1480,7 +1767,7 @@ try {
             "--quote", $Quote,
             "--top-n", $TrainTopN,
             "--start", $trainStartDate,
-            "--end", $effectiveBatchDate
+            "--end", $trainEndDate
         )
         $featuresBuildExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $featuresBuildArgs
         $report.steps.features_build = [ordered]@{
@@ -1491,7 +1778,7 @@ try {
             feature_set = $FeatureSet
             label_set = $LabelSet
             start = $trainStartDate
-            end = $effectiveBatchDate
+            end = $trainEndDate
         }
         if ($featuresBuildExec.ExitCode -ne 0) {
             $report.reasons = @("FEATURES_BUILD_FAILED")
@@ -1517,7 +1804,7 @@ try {
         "--quote", $Quote,
         "--top-n", $TrainTopN,
         "--start", $trainStartDate,
-        "--end", $effectiveBatchDate,
+        "--end", $trainEndDate,
         "--booster-sweep-trials", $BoosterSweepTrials,
         "--seed", $Seed,
         "--nthread", $NThread,
@@ -1533,14 +1820,46 @@ try {
     $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
-    $trainerEvidence = Resolve-TrainerEvidence -PromotionDecision $promotionDecision -Mode $TrainerEvidenceMode
+    $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
+    $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
+    $researchEvidence = Resolve-ResearchEvidenceFromPromotionDecision -PromotionDecision $promotionDecision -Mode $TrainerEvidenceMode
+    $certificationArtifact = if ([string]::IsNullOrWhiteSpace($certificationArtifactPath)) {
+        @{}
+    } else {
+        New-CertificationArtifact `
+            -CandidateRunId $candidateRunId `
+            -CandidateRunDir $candidateRunDir `
+            -PromotionDecisionPath $promotionDecisionPath `
+            -DecisionSurfacePath $decisionSurfacePath `
+            -TrainStartDate $trainStartDate `
+            -TrainEndDate $trainEndDate `
+            -CertificationStartDate $certificationStartDate `
+            -CertificationEndDate $effectiveBatchDate `
+            -TrainerEvidenceMode $TrainerEvidenceMode `
+            -ResearchEvidence $researchEvidence
+    }
+    if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+        Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+    }
+    $report.windows_by_step.research = (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $certificationArtifact -Name "windows" -DefaultValue @{}) -Name "research_window" -DefaultValue $report.windows_by_step.research)
+    $report.windows_by_step.certification = (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $certificationArtifact -Name "windows" -DefaultValue @{}) -Name "certification_window" -DefaultValue $report.windows_by_step.certification)
+    $report.windows_by_step.backtest = [ordered]@{
+        start = $certificationStartDate
+        end = $effectiveBatchDate
+        alias_of = "certification"
+    }
+    $trainerEvidence = Resolve-TrainerEvidenceFromCertificationArtifact -CertificationArtifact $certificationArtifact -Mode $TrainerEvidenceMode
     $report.steps.train = [ordered]@{
         exit_code = [int]$trainExec.ExitCode
         command = $trainExec.Command
         output_preview = (Get-OutputPreview -Text ([string]$trainExec.Output))
+        start = $trainStartDate
+        end = $trainEndDate
         candidate_run_id = $candidateRunId
         candidate_run_dir = $candidateRunDir
         promotion_decision_path = $promotionDecisionPath
+        decision_surface_path = $decisionSurfacePath
+        certification_artifact_path = $certificationArtifactPath
         promotion_decision_status = [string](Get-PropValue -ObjectValue $promotionDecision -Name "status" -DefaultValue "")
         trainer_evidence = $trainerEvidence
     }
@@ -1561,6 +1880,8 @@ try {
         run_id = $candidateRunId
         run_dir = $candidateRunDir
         promotion_decision_path = $promotionDecisionPath
+        decision_surface_path = $decisionSurfacePath
+        certification_artifact_path = $certificationArtifactPath
         promotion_decision = $promotionDecision
         candidate_model_ref_requested = $CandidateModelRef
         candidate_run_id_used_for_backtest = $candidateBacktestModelRef
@@ -1625,6 +1946,15 @@ try {
             reason = "DUPLICATE_CANDIDATE"
         }
         $report.candidate.champion_after_run_id = $championRunId
+        if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+            $certificationArtifact.status = "skipped"
+            $certificationArtifact.certification = [ordered]@{
+                evaluated = $false
+                decision_basis = "DUPLICATE_CANDIDATE"
+                duplicate_candidate = $true
+            }
+            Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+        }
         $paths = Save-Report
         Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
         Write-Host ("[{0}] duplicate_candidate={1}" -f $LogTag, $true)
@@ -1637,7 +1967,7 @@ try {
         exit 2
     }
 
-    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
+    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -StartDate $certificationStartDate -EndDate $effectiveBatchDate
     $candidateSummary = $candidateBacktest.Summary
     $candidateOrdersFilled = To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_filled" -DefaultValue 0) 0
     $candidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
@@ -1667,7 +1997,7 @@ try {
     $championDeflatedSharpeRatio = $null
     $championProbabilisticSharpeRatio = $null
     if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
-        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -StartDate $backtestStartDate -EndDate $effectiveBatchDate
+        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -StartDate $certificationStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary
         $championRealizedPnl = To-Double (Get-PropValue -ObjectValue $championSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
         $championFillRate = To-Double (Get-PropValue -ObjectValue $championSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
@@ -1853,6 +2183,8 @@ try {
         exit_code = [int]$candidateBacktest.Exec.ExitCode
         command = $candidateBacktest.Exec.Command
         output_preview = (Get-OutputPreview -Text ([string]$candidateBacktest.Exec.Output))
+        start = $certificationStartDate
+        end = $effectiveBatchDate
         model_ref_requested = $CandidateModelRef
         model_ref_used = $candidateBacktestModelRef
         run_dir = $candidateBacktest.RunDir
@@ -1872,6 +2204,8 @@ try {
             exit_code = [int]$championBacktest.Exec.ExitCode
             command = $championBacktest.Exec.Command
             output_preview = (Get-OutputPreview -Text ([string]$championBacktest.Exec.Output))
+            start = $certificationStartDate
+            end = $effectiveBatchDate
             model_ref_requested = $ChampionModelRef
             model_ref_used = $championBacktestModelRef
             run_dir = $championBacktest.RunDir
@@ -1924,9 +2258,24 @@ try {
         trainer_evidence_offline_pass = $trainerEvidenceOfflinePass
         trainer_evidence_execution_pass = $trainerEvidenceExecutionPass
         trainer_evidence_reasons = @($trainerEvidenceReasons)
+        certification_artifact_path = $certificationArtifactPath
+        certification_window_start = $certificationStartDate
+        certification_window_end = $effectiveBatchDate
+        certification_window_valid = (To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "certification_window_valid" -DefaultValue $false) $false)
+        certification_window_reasons = @((Get-PropValue -ObjectValue $trainerEvidence -Name "certification_window_reasons" -DefaultValue @()))
         decision_basis = $decisionBasis
         compare_mode = $promotionPolicyConfig.name
         pass = $backtestPass
+    }
+    if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+        $certificationArtifact.status = "evaluated"
+        $certificationArtifact.certification = [ordered]@{
+            evaluated = $true
+            candidate_backtest = $report.steps.backtest_candidate
+            champion_backtest = $report.steps.backtest_champion
+            gate = $report.gates.backtest
+        }
+        Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
     }
 
     $paperPass = $null

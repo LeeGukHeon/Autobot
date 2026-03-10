@@ -190,6 +190,7 @@ class TrainV4CryptoCsResult:
     search_budget_decision_path: Path | None = None
     execution_acceptance_report_path: Path | None = None
     runtime_recommendations_path: Path | None = None
+    decision_surface_path: Path | None = None
     experiment_ledger_path: Path | None = None
     experiment_ledger_summary_path: Path | None = None
 
@@ -693,6 +694,23 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(promotion, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    decision_surface = _build_decision_surface_v4(
+        options=options,
+        task=task,
+        selection_policy=selection_policy,
+        selection_calibration=selection_calibration,
+        factor_block_selection_context=factor_block_selection_context,
+        cpcv_lite_runtime=cpcv_lite_runtime,
+        search_budget_decision=search_budget_decision,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+    )
+    decision_surface_path = run_dir / "decision_surface.json"
+    decision_surface_path.write_text(
+        json.dumps(decision_surface, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
 
     finished_at = time.time()
@@ -783,6 +801,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         search_budget_decision_path=search_budget_decision_path,
         execution_acceptance_report_path=execution_acceptance_report_path,
         runtime_recommendations_path=runtime_recommendations_path,
+        decision_surface_path=decision_surface_path,
         experiment_ledger_path=experiment_ledger_path,
         experiment_ledger_summary_path=experiment_ledger_summary_path,
     )
@@ -3108,6 +3127,144 @@ def _train_config_snapshot_v4(
     payload["selection_policy"] = dict(selection_policy or {})
     payload["selection_calibration"] = dict(selection_calibration or {})
     return payload
+
+
+def _build_decision_surface_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    task: str,
+    selection_policy: dict[str, Any],
+    selection_calibration: dict[str, Any],
+    factor_block_selection_context: dict[str, Any],
+    cpcv_lite_runtime: dict[str, Any],
+    search_budget_decision: dict[str, Any],
+    execution_acceptance: dict[str, Any],
+    runtime_recommendations: dict[str, Any],
+    promotion: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_run_scope = normalize_factor_block_run_scope(options.run_scope)
+    search_applied = dict((search_budget_decision or {}).get("applied") or {})
+    execution_compare = dict((execution_acceptance or {}).get("compare_to_champion") or {})
+    runtime_exit = dict((runtime_recommendations or {}).get("exit") or {})
+    promotion_reasons = [
+        str(item).strip()
+        for item in ((promotion or {}).get("reasons") or [])
+        if str(item).strip()
+    ]
+    warnings: list[str] = [
+        "TRAINER_EVIDENCE_SOURCE_IS_PROMOTION_DECISION",
+        "PROMOTION_DECISION_CONTAINS_TRAIN_PRODUCED_RESEARCH_ARTIFACTS",
+    ]
+    if bool(options.execution_acceptance_enabled):
+        warnings.append("EXECUTION_ACCEPTANCE_REUSES_TRAIN_WINDOW")
+        warnings.append("RUNTIME_RECOMMENDATIONS_REUSE_TRAIN_WINDOW")
+    if str((search_budget_decision or {}).get("status", "")).strip().lower() in {"adjusted", "throttled"}:
+        warnings.append("SEARCH_BUDGET_ALTERS_RESEARCH_BREADTH")
+    if (
+        normalize_factor_block_selection_mode(options.factor_block_selection_mode) == "guarded_auto"
+        and not bool((factor_block_selection_context or {}).get("applied", False))
+    ):
+        warnings.append("GUARDED_FACTOR_POLICY_NOT_ACTIVE")
+
+    return {
+        "version": 1,
+        "policy": "v4_decision_surface_v1",
+        "trainer_entrypoint": {
+            "trainer": "v4_crypto_cs",
+            "task": str(task).strip().lower() or "cls",
+            "model_family": str(options.model_family).strip(),
+            "feature_set": str(options.feature_set).strip().lower() or "v4",
+            "label_set": str(options.label_set).strip().lower() or "v2",
+            "run_scope": normalized_run_scope,
+            "dataset_window": {
+                "start": str(options.start).strip(),
+                "end": str(options.end).strip(),
+                "start_ts_ms": parse_date_to_ts_ms(options.start),
+                "end_ts_ms": parse_date_to_ts_ms(options.end, end_of_day=True),
+            },
+            "top_n": int(options.top_n),
+            "booster_sweep_trials_requested": int(options.booster_sweep_trials),
+            "booster_sweep_trials_applied": int(
+                search_applied.get("booster_sweep_trials", options.booster_sweep_trials) or options.booster_sweep_trials
+            ),
+        },
+        "data_split_contract": {
+            "train_ratio": float(options.train_ratio),
+            "valid_ratio": float(options.valid_ratio),
+            "test_ratio": float(options.test_ratio),
+            "embargo_bars": int(options.embargo_bars),
+            "walk_forward_enabled": bool(options.walk_forward_enabled),
+            "walk_forward_windows": int(options.walk_forward_windows),
+            "walk_forward_min_train_rows": int(options.walk_forward_min_train_rows),
+            "walk_forward_min_test_rows": int(options.walk_forward_min_test_rows),
+            "cpcv_lite_requested": bool(options.cpcv_lite_enabled),
+            "cpcv_lite_trigger": str((cpcv_lite_runtime or {}).get("trigger", "disabled")).strip() or "disabled",
+            "cpcv_lite_enabled": bool((cpcv_lite_runtime or {}).get("enabled", False)),
+        },
+        "selection_runtime_contract": {
+            "selection_policy_mode": str((selection_policy or {}).get("mode", "")).strip() or "unknown",
+            "selection_policy_threshold_key": str((selection_policy or {}).get("threshold_key", "")).strip(),
+            "selection_policy_source": str(
+                (selection_policy or {}).get("selection_recommendation_source", "")
+            ).strip(),
+            "selection_calibration_method": str((selection_calibration or {}).get("method", "")).strip(),
+            "selection_calibration_sample_count": int((selection_calibration or {}).get("sample_count", 0) or 0),
+        },
+        "factor_block_contract": {
+            "selection_mode": normalize_factor_block_selection_mode(options.factor_block_selection_mode),
+            "resolution_source": str((factor_block_selection_context or {}).get("resolution_source", "")).strip()
+            or "full_set",
+            "applied": bool((factor_block_selection_context or {}).get("applied", False)),
+            "resolved_run_id": str((factor_block_selection_context or {}).get("resolved_run_id", "")).strip(),
+        },
+        "search_budget_contract": {
+            "status": str((search_budget_decision or {}).get("status", "")).strip() or "default",
+            "markers": [
+                str(item).strip()
+                for item in ((search_budget_decision or {}).get("markers") or [])
+                if str(item).strip()
+            ],
+            "runtime_recommendation_profile": str(
+                search_applied.get("runtime_recommendation_profile", "full")
+            ).strip()
+            or "full",
+            "cpcv_lite_auto_enabled": bool(search_applied.get("cpcv_lite_auto_enabled", False)),
+        },
+        "execution_acceptance_contract": {
+            "enabled": bool(options.execution_acceptance_enabled),
+            "window_source": "train_options_start_end",
+            "window_start": str(options.start).strip(),
+            "window_end": str(options.end).strip(),
+            "selection_use_learned_recommendations": False,
+            "exit_use_learned_exit_mode": False,
+            "exit_use_learned_hold_bars": False,
+            "execution_use_learned_recommendations": False,
+            "status": str((execution_acceptance or {}).get("status", "")).strip() or "disabled",
+            "compare_decision": str(execution_compare.get("decision", "")).strip(),
+            "compare_comparable": bool(execution_compare.get("comparable", False)),
+        },
+        "runtime_recommendation_contract": {
+            "enabled": bool(options.execution_acceptance_enabled),
+            "window_source": "train_options_start_end",
+            "window_start": str(options.start).strip(),
+            "window_end": str(options.end).strip(),
+            "selection_use_learned_recommendations": True,
+            "exit_use_learned_exit_mode": False,
+            "exit_use_learned_hold_bars": False,
+            "execution_use_learned_recommendations": False,
+            "status": str((runtime_recommendations or {}).get("status", "")).strip() or "unknown",
+            "recommended_exit_mode": str(runtime_exit.get("recommended_exit_mode", "")).strip(),
+            "recommended_hold_bars": int(runtime_exit.get("recommended_hold_bars", 0) or 0),
+        },
+        "promotion_contract": {
+            "promotion_mode": str((promotion or {}).get("promotion_mode", "")).strip() or "candidate",
+            "trainer_evidence_source": "promotion_decision",
+            "trainer_evidence_expected_consumer": "scripts/candidate_acceptance.ps1",
+            "trainer_evidence_includes_execution_acceptance": bool(options.execution_acceptance_enabled),
+            "promotion_reasons": promotion_reasons,
+        },
+        "known_methodology_warnings": sorted(set(warnings)),
+    }
 
 
 def _write_train_report_v4(logs_root: Path, run_scope: str, payload: dict[str, Any]) -> Path:
