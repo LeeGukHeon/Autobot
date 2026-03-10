@@ -26,7 +26,15 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
-def _make_fake_python_exe(tmp_path: Path, *, write_decision_surface: bool) -> Path:
+def _make_fake_python_exe(
+    tmp_path: Path,
+    *,
+    write_decision_surface: bool,
+    budget_lane_class_requested: str = "promotion_eligible",
+    budget_lane_class_effective: str = "promotion_eligible",
+    budget_contract_id: str = "v4_promotion_eligible_budget_v1",
+    budget_promotion_eligible_satisfied: bool = True,
+) -> Path:
     driver_path = tmp_path / "fake_python_driver.py"
     driver_path.write_text(
         textwrap.dedent(
@@ -39,6 +47,10 @@ def _make_fake_python_exe(tmp_path: Path, *, write_decision_surface: bool) -> Pa
             CANDIDATE_RUN_ID = "candidate-run-001"
             CHAMPION_RUN_ID = "champion-run-000"
             WRITE_DECISION_SURFACE = {str(write_decision_surface)}
+            BUDGET_LANE_CLASS_REQUESTED = {budget_lane_class_requested!r}
+            BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
+            BUDGET_CONTRACT_ID = {budget_contract_id!r}
+            BUDGET_PROMOTION_ELIGIBLE_SATISFIED = {str(budget_promotion_eligible_satisfied)}
 
 
             def arg_value(name: str, default: str = "") -> str:
@@ -193,6 +205,31 @@ def _make_fake_python_exe(tmp_path: Path, *, write_decision_surface: bool) -> Pa
                             "decision": "candidate_edge",
                             "comparable": True,
                         }},
+                    }},
+                )
+                write_json(
+                    candidate_dir / "search_budget_decision.json",
+                    {{
+                        "policy": "v4_daily_search_budget_v1",
+                        "status": "default",
+                        "lane_class_requested": BUDGET_LANE_CLASS_REQUESTED,
+                        "lane_class_effective": BUDGET_LANE_CLASS_EFFECTIVE,
+                        "budget_contract_id": BUDGET_CONTRACT_ID,
+                        "promotion_eligible_contract": {{
+                            "requested": BUDGET_LANE_CLASS_REQUESTED == "promotion_eligible",
+                            "satisfied": BUDGET_PROMOTION_ELIGIBLE_SATISFIED,
+                            "contract_id": "v4_promotion_eligible_budget_v1",
+                            "min_booster_sweep_trials": 10,
+                            "required_runtime_recommendation_profile": "full",
+                            "require_cpcv_lite_auto_disabled": True,
+                        }},
+                        "applied": {{
+                            "booster_sweep_trials": 10,
+                            "runtime_recommendation_profile": "full",
+                            "cpcv_lite_auto_enabled": False,
+                        }},
+                        "markers": [],
+                        "reasons": [],
                     }},
                 )
                 if WRITE_DECISION_SURFACE:
@@ -399,10 +436,13 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
 
     assert report["steps"]["train"]["start"] == "2026-03-03"
     assert report["steps"]["train"]["end"] == "2026-03-05"
+    assert report["candidate"]["search_budget_decision_path"].endswith("search_budget_decision.json")
     assert report["steps"]["backtest_candidate"]["start"] == "2026-03-06"
     assert report["steps"]["backtest_candidate"]["end"] == "2026-03-07"
     assert report["steps"]["train"]["trainer_evidence"]["source"] == "certification_artifact"
     assert report["gates"]["backtest"]["trainer_evidence_gate_pass"] is True
+    assert report["gates"]["backtest"]["budget_contract_gate_pass"] is True
+    assert report["gates"]["backtest"]["budget_lane_class_effective"] == "promotion_eligible"
     assert report["gates"]["backtest"]["certification_window_valid"] is True
     assert report["gates"]["backtest"]["decision_basis"] == "PARETO_DOMINANCE"
 
@@ -454,3 +494,46 @@ def test_candidate_acceptance_required_trainer_evidence_fails_without_decision_s
 
     assert certification["valid_window_contract"] is False
     assert "MISSING_DECISION_SURFACE" in certification["reasons"]
+
+
+def test_candidate_acceptance_rejects_scout_only_budget_evidence(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        budget_lane_class_requested="promotion_eligible",
+        budget_lane_class_effective="scout",
+        budget_contract_id="v4_promotion_eligible_budget_v1",
+        budget_promotion_eligible_satisfied=False,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    certification_path = Path(report["candidate"]["certification_artifact_path"])
+    certification = json.loads(certification_path.read_text(encoding="utf-8-sig"))
+
+    assert report["gates"]["backtest"]["pass"] is False
+    assert report["gates"]["backtest"]["trainer_evidence_gate_pass"] is True
+    assert report["gates"]["backtest"]["budget_contract_gate_pass"] is False
+    assert report["gates"]["backtest"]["budget_lane_class_requested"] == "promotion_eligible"
+    assert report["gates"]["backtest"]["budget_lane_class_effective"] == "scout"
+    assert report["gates"]["backtest"]["budget_promotion_eligible_satisfied"] is False
+    assert report["gates"]["backtest"]["decision_basis"] == "SCOUT_ONLY_BUDGET_EVIDENCE"
+    assert report["gates"]["backtest"]["budget_contract_reasons"] == ["SCOUT_ONLY_BUDGET_EVIDENCE"]
+    assert report["reasons"] == ["BACKTEST_ACCEPTANCE_FAILED", "SCOUT_ONLY_BUDGET_EVIDENCE"]
+
+    assert certification["valid_window_contract"] is True
+    assert certification["certification"]["gate"]["budget_contract_gate_pass"] is False
+    assert certification["certification"]["gate"]["decision_basis"] == "SCOUT_ONLY_BUDGET_EVIDENCE"
+    assert certification["certification"]["gate"]["pass"] is False

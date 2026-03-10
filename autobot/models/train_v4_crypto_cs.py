@@ -3228,6 +3228,15 @@ def _build_decision_surface_v4(
         },
         "search_budget_contract": {
             "status": str((search_budget_decision or {}).get("status", "")).strip() or "default",
+            "lane_class_requested": str((search_budget_decision or {}).get("lane_class_requested", "")).strip()
+            or "promotion_eligible",
+            "lane_class_effective": str((search_budget_decision or {}).get("lane_class_effective", "")).strip()
+            or "promotion_eligible",
+            "budget_contract_id": str((search_budget_decision or {}).get("budget_contract_id", "")).strip()
+            or "v4_promotion_eligible_budget_v1",
+            "promotion_eligible_satisfied": bool(
+                ((search_budget_decision or {}).get("promotion_eligible_contract") or {}).get("satisfied", False)
+            ),
             "markers": [
                 str(item).strip()
                 for item in ((search_budget_decision or {}).get("markers") or [])

@@ -1453,6 +1453,7 @@ function Build-ReportMarkdown {
     $lines.Add("- champion_model_ref_requested: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_model_ref_requested' -DefaultValue ''))") | Out-Null
     $lines.Add("- champion_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
     $lines.Add("- research_evidence_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'research_evidence_path' -DefaultValue ''))") | Out-Null
+    $lines.Add("- search_budget_decision_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'search_budget_decision_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_artifact_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'certification_artifact_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- duplicate_candidate: $([string](Get-PropValue -ObjectValue $candidate -Name 'duplicate_candidate' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
@@ -1534,6 +1535,8 @@ function Build-ReportMarkdown {
     $lines.Add("- trainer_evidence_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_offline_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_offline_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_execution_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_execution_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- budget_contract_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_contract_gate_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- budget_lane_class_effective: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_lane_class_effective' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_start: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_start' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_end: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_end' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_valid: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_valid' -DefaultValue ''))") | Out-Null
@@ -1873,6 +1876,8 @@ try {
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
     $researchEvidencePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "trainer_research_evidence.json" }
     $researchEvidenceArtifact = if ([string]::IsNullOrWhiteSpace($researchEvidencePath)) { @{} } else { Load-JsonOrEmpty -PathValue $researchEvidencePath }
+    $searchBudgetDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "search_budget_decision.json" }
+    $searchBudgetDecision = if ([string]::IsNullOrWhiteSpace($searchBudgetDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $searchBudgetDecisionPath }
     $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
     $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
     $researchEvidence = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
@@ -1912,6 +1917,7 @@ try {
         candidate_run_id = $candidateRunId
         candidate_run_dir = $candidateRunDir
         research_evidence_path = $researchEvidencePath
+        search_budget_decision_path = $searchBudgetDecisionPath
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -1935,6 +1941,7 @@ try {
         run_id = $candidateRunId
         run_dir = $candidateRunDir
         research_evidence_path = $researchEvidencePath
+        search_budget_decision_path = $searchBudgetDecisionPath
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -2098,6 +2105,41 @@ try {
     $trainerEvidenceExecutionPass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "execution_pass" -DefaultValue $true) $true
     $trainerEvidenceGatePass = if ($TrainerEvidenceMode -eq "required") { $trainerEvidencePass } else { $true }
     $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
+    $budgetContractApplied = -not (Test-IsEffectivelyEmptyObject -ObjectValue $searchBudgetDecision)
+    $budgetLaneClassRequested = if ($budgetContractApplied) {
+        [string](Get-PropValue -ObjectValue $searchBudgetDecision -Name "lane_class_requested" -DefaultValue "")
+    } else {
+        ""
+    }
+    $budgetLaneClassEffective = if ($budgetContractApplied) {
+        [string](Get-PropValue -ObjectValue $searchBudgetDecision -Name "lane_class_effective" -DefaultValue "")
+    } else {
+        ""
+    }
+    $budgetContractId = if ($budgetContractApplied) {
+        [string](Get-PropValue -ObjectValue $searchBudgetDecision -Name "budget_contract_id" -DefaultValue "")
+    } else {
+        ""
+    }
+    $promotionEligibleContract = if ($budgetContractApplied) {
+        Get-PropValue -ObjectValue $searchBudgetDecision -Name "promotion_eligible_contract" -DefaultValue @{}
+    } else {
+        @{}
+    }
+    $budgetPromotionEligibleSatisfied = if ($budgetContractApplied) {
+        To-Bool (Get-PropValue -ObjectValue $promotionEligibleContract -Name "satisfied" -DefaultValue $false) $false
+    } else {
+        $true
+    }
+    $budgetContractGatePass = if ($budgetContractApplied) {
+        $budgetLaneClassEffective -eq "promotion_eligible"
+    } else {
+        $true
+    }
+    $budgetContractReasons = @()
+    if ($budgetContractApplied -and (-not $budgetContractGatePass)) {
+        $budgetContractReasons += "SCOUT_ONLY_BUDGET_EVIDENCE"
+    }
     $decisionBasis = if ($championCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
     if ($championCompareEvaluated) {
         $strictChampionDeltaPass = $championDeltaQuote -ge $BacktestMinPnlDeltaVsChampion
@@ -2225,15 +2267,17 @@ try {
         }
     }
     $backtestPass = if ($promotionPolicyConfig.backtest_compare_required) {
-        $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass
+        $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass -and $budgetContractGatePass
     } else {
-        $candidateBacktestPass -and $trainerEvidenceGatePass
+        $candidateBacktestPass -and $trainerEvidenceGatePass -and $budgetContractGatePass
     }
     if ((-not $promotionPolicyConfig.backtest_compare_required) -and $decisionBasis -eq "PENDING_COMPARE") {
         $decisionBasis = "SANITY_ONLY_BACKTEST"
     }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $decisionBasis = "TRAINER_EVIDENCE_REQUIRED_FAIL"
+    } elseif (-not $budgetContractGatePass) {
+        $decisionBasis = "SCOUT_ONLY_BUDGET_EVIDENCE"
     }
     $report.steps.backtest_candidate = [ordered]@{
         exit_code = [int]$candidateBacktest.Exec.ExitCode
@@ -2314,6 +2358,13 @@ try {
         trainer_evidence_offline_pass = $trainerEvidenceOfflinePass
         trainer_evidence_execution_pass = $trainerEvidenceExecutionPass
         trainer_evidence_reasons = @($trainerEvidenceReasons)
+        budget_contract_applied = $budgetContractApplied
+        budget_contract_id = $budgetContractId
+        budget_lane_class_requested = $budgetLaneClassRequested
+        budget_lane_class_effective = $budgetLaneClassEffective
+        budget_promotion_eligible_satisfied = $budgetPromotionEligibleSatisfied
+        budget_contract_gate_pass = $budgetContractGatePass
+        budget_contract_reasons = @($budgetContractReasons)
         certification_artifact_path = $certificationArtifactPath
         certification_window_start = $certificationStartDate
         certification_window_end = $effectiveBatchDate
@@ -2563,6 +2614,9 @@ try {
     }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $reasons += "TRAINER_EVIDENCE_REQUIRED_FAILED"
+    }
+    if (-not $budgetContractGatePass) {
+        $reasons += "SCOUT_ONLY_BUDGET_EVIDENCE"
     }
     if ($SkipPaperSoak) {
         $notes += "PAPER_SOAK_SKIPPED"

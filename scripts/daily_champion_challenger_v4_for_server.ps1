@@ -642,6 +642,8 @@ if ($runSpawnPhase) {
                 "DUPLICATE_CANDIDATE"
             } elseif ($acceptReasons -contains "TRAINER_EVIDENCE_REQUIRED_FAILED") {
                 "TRAINER_EVIDENCE_REQUIRED_FAILED"
+            } elseif ($acceptReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE") {
+                "SCOUT_ONLY_BUDGET_EVIDENCE"
             } elseif (-not $backtestPass) {
                 "BACKTEST_SANITY_FAILED"
             } elseif (-not $overallPass) {

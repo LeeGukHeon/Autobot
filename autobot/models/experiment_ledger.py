@@ -60,6 +60,15 @@ def build_experiment_ledger_record(
         "duplicate_candidate": bool(duplicate_candidate),
         "search_budget": {
             "status": str((search_budget_decision or {}).get("status", "")).strip() or "default",
+            "lane_class_requested": str((search_budget_decision or {}).get("lane_class_requested", "")).strip()
+            or "promotion_eligible",
+            "lane_class_effective": str((search_budget_decision or {}).get("lane_class_effective", "")).strip()
+            or "promotion_eligible",
+            "budget_contract_id": str((search_budget_decision or {}).get("budget_contract_id", "")).strip()
+            or "v4_promotion_eligible_budget_v1",
+            "promotion_eligible_satisfied": bool(
+                ((search_budget_decision or {}).get("promotion_eligible_contract") or {}).get("satisfied", False)
+            ),
             "applied_booster_sweep_trials": int(search_applied.get("booster_sweep_trials", 0) or 0),
             "runtime_recommendation_profile": str(search_applied.get("runtime_recommendation_profile", "")).strip() or "full",
             "cpcv_lite_auto_enabled": bool(search_applied.get("cpcv_lite_auto_enabled", False)),

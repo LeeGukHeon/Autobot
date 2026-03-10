@@ -184,6 +184,10 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert decision_surface_doc["policy"] == "v4_decision_surface_v1"
     assert decision_surface_doc["trainer_entrypoint"]["task"] == "cls"
     assert decision_surface_doc["selection_runtime_contract"]["selection_policy_mode"] == "rank_effective_quantile"
+    assert decision_surface_doc["search_budget_contract"]["lane_class_requested"] == "promotion_eligible"
+    assert decision_surface_doc["search_budget_contract"]["lane_class_effective"] == "scout"
+    assert decision_surface_doc["search_budget_contract"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
+    assert decision_surface_doc["search_budget_contract"]["promotion_eligible_satisfied"] is False
     assert "TRAINER_EVIDENCE_SOURCE_IS_TRAINER_RESEARCH_EVIDENCE_ARTIFACT" in decision_surface_doc["known_methodology_warnings"]
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
@@ -1117,6 +1121,10 @@ def test_train_v4_use_latest_factor_block_selection_subsets_feature_columns(tmp_
     assert result.factor_block_selection_path.exists()
     assert result.search_budget_decision_path is not None
     assert result.search_budget_decision_path.exists()
+    search_budget_doc = load_json(result.search_budget_decision_path)
+    assert search_budget_doc["lane_class_requested"] == "promotion_eligible"
+    assert search_budget_doc["lane_class_effective"] == "scout"
+    assert search_budget_doc["promotion_eligible_contract"]["satisfied"] is False
     assert load_json(result.run_dir / "train_config.yaml")["factor_block_selection"]["resolution_context"]["applied"] is True
 
 

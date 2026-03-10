@@ -26,6 +26,11 @@ def test_resolve_v4_search_budget_defaults_to_full_profile(tmp_path: Path) -> No
     )
 
     assert decision["status"] == "default"
+    assert decision["lane_class_requested"] == "promotion_eligible"
+    assert decision["lane_class_effective"] == "promotion_eligible"
+    assert decision["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
+    assert decision["promotion_eligible_contract"]["requested"] is True
+    assert decision["promotion_eligible_contract"]["satisfied"] is True
     assert decision["applied"]["booster_sweep_trials"] == 10
     assert decision["applied"]["runtime_recommendation_profile"] == "full"
     assert decision["markers"] == []
@@ -60,6 +65,11 @@ def test_resolve_v4_search_budget_reduces_trials_under_pressure(tmp_path: Path) 
     )
 
     assert decision["status"] == "throttled"
+    assert decision["lane_class_requested"] == "promotion_eligible"
+    assert decision["lane_class_effective"] == "scout"
+    assert decision["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
+    assert decision["promotion_eligible_contract"]["requested"] is True
+    assert decision["promotion_eligible_contract"]["satisfied"] is False
     assert decision["applied"]["booster_sweep_trials"] == 8
     assert decision["applied"]["runtime_recommendation_profile"] == "compact"
     assert "SOFT_DISK_BUDGET_PRESSURE" in decision["markers"]
@@ -90,6 +100,10 @@ def test_resolve_v4_search_budget_enables_cpcv_auto_for_guarded_policy(tmp_path:
         ),
     )
 
+    assert decision["lane_class_requested"] == "promotion_eligible"
+    assert decision["lane_class_effective"] == "scout"
+    assert decision["promotion_eligible_contract"]["requested"] is True
+    assert decision["promotion_eligible_contract"]["satisfied"] is False
     assert decision["applied"]["cpcv_lite_auto_enabled"] is True
     assert decision["applied"]["runtime_recommendation_profile"] == "compact"
     assert "GUARDED_POLICY_ACTIVE" in decision["markers"]
@@ -171,4 +185,9 @@ def test_resolve_v4_search_budget_uses_scope_specific_train_report(tmp_path: Pat
     )
 
     assert decision["resource_state"]["previous_train_duration_sec"] == 8100.0
+    assert decision["lane_class_requested"] == "scout"
+    assert decision["lane_class_effective"] == "scout"
+    assert decision["budget_contract_id"] == "v4_scout_budget_v1"
+    assert decision["promotion_eligible_contract"]["requested"] is False
+    assert decision["promotion_eligible_contract"]["satisfied"] is False
     assert "SOFT_WALL_TIME_PRESSURE" in decision["markers"]

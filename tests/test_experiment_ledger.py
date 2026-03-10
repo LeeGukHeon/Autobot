@@ -26,6 +26,13 @@ def test_experiment_ledger_record_and_summary_capture_duplicate_history(tmp_path
         run_dir=run_dir,
         search_budget_decision={
             "status": "throttled",
+            "lane_class_requested": "promotion_eligible",
+            "lane_class_effective": "scout",
+            "budget_contract_id": "v4_promotion_eligible_budget_v1",
+            "promotion_eligible_contract": {
+                "requested": True,
+                "satisfied": False,
+            },
             "applied": {
                 "booster_sweep_trials": 5,
                 "runtime_recommendation_profile": "compact",
@@ -70,6 +77,10 @@ def test_experiment_ledger_record_and_summary_capture_duplicate_history(tmp_path
     assert record["duplicate_candidate"] is True
     assert record["factor_block_policy"]["apply_pruned_feature_set"] is True
     assert record["cpcv_lite"]["status"] == "partial"
+    assert record["search_budget"]["lane_class_requested"] == "promotion_eligible"
+    assert record["search_budget"]["lane_class_effective"] == "scout"
+    assert record["search_budget"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
+    assert record["search_budget"]["promotion_eligible_satisfied"] is False
 
     history = [record, dict(record, run_id="run-002"), dict(record, run_id="run-003", duplicate_candidate=False)]
     summary = build_recent_experiment_ledger_summary(history_records=history)

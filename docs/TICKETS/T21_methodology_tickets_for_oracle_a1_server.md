@@ -152,6 +152,17 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.12` slice 2 landed:
   - trainer now writes `trainer_research_evidence.json`
   - certification no longer reads research evidence directly from `promotion_decision.json`
+- `T21.13` slice 1 landed locally:
+  - `search_budget_decision.json` now records:
+    - `lane_class_requested`
+    - `lane_class_effective`
+    - `budget_contract_id`
+    - `promotion_eligible_contract`
+  - `decision_surface.json` and the experiment ledger now surface the same budget-lane contract
+  - `candidate_acceptance.ps1` now rejects scout-only evidence with:
+    - `SCOUT_ONLY_BUDGET_EVIDENCE`
+  - the daily `v4` wrapper now pins:
+    - `RunScope = scheduled_daily`
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:
