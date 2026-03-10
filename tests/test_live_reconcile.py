@@ -330,7 +330,7 @@ def test_reconcile_imports_bot_owned_filled_entry_with_model_risk_plan(tmp_path:
                 created_ts=1000,
                 updated_ts=1000,
                 intent_id="intent-entry-1",
-                local_state="OPEN_WORKING",
+                local_state="OPEN",
                 raw_exchange_state="wait",
                 last_event_name="SUBMIT_ACCEPTED",
                 event_source="test",

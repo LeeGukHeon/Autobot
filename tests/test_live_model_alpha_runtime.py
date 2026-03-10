@@ -11,7 +11,7 @@ from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepR
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
-from autobot.live.state_store import IntentRecord, LiveStateStore, PositionRecord, RiskPlanRecord
+from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager, RiskManagerConfig
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
@@ -586,7 +586,177 @@ def test_live_model_alpha_runtime_applies_trade_gate_duplicate_entry_block(tmp_p
     assert executor.calls == []
     assert len(intents) == 1
     meta_payload = intents[0]["meta"]
-    assert meta_payload.get("skip_reason") == "DUPLICATE_ENTRY"
+    assert meta_payload.get("skip_reason") == "CANARY_MARKET_ALREADY_ACTIVE"
+
+
+def test_live_model_alpha_runtime_exposes_open_order_markets_to_strategy(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    seen_open_markets: list[set[str]] = []
+
+    class _CaptureOpenMarketsStrategy:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices
+            seen_open_markets.append(set(open_markets))
+            return StrategyStepResult(
+                intents=(),
+                scored_rows=0,
+                eligible_rows=0,
+                selected_rows=0,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _CaptureOpenMarketsStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="order-eth-open",
+                identifier="AUTOBOT-open-eth",
+                market="KRW-ETH",
+                side="bid",
+                ord_type="limit",
+                price=3_000_000.0,
+                volume_req=0.002,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=now_ms - 1000,
+                updated_ts=now_ms - 1000,
+                intent_id="intent-eth-open",
+                tp_sl_link=None,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="order-eth-open",
+                prev_order_uuid=None,
+                prev_order_identifier=None,
+            )
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=_ExecutorGateway(),
+            )
+        )
+
+    assert seen_open_markets
+    assert "KRW-ETH" in seen_open_markets[-1]
+
+
+def test_live_model_alpha_runtime_canary_skips_new_bid_when_other_market_order_is_open(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="order-eth-open",
+                identifier="AUTOBOT-open-eth",
+                market="KRW-ETH",
+                side="bid",
+                ord_type="limit",
+                price=3_000_000.0,
+                volume_req=0.002,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=now_ms - 1000,
+                updated_ts=now_ms - 1000,
+                intent_id="intent-eth-open",
+                tp_sl_link=None,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="order-eth-open",
+                prev_order_uuid=None,
+                prev_order_identifier=None,
+            )
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        intents = store.list_intents()
+
+    assert summary["submitted_intents_total"] == 0
+    assert summary["skipped_intents_total"] == 1
+    assert executor.calls == []
+    assert len(intents) == 1
+    assert intents[0]["meta"].get("skip_reason") == "CANARY_SLOT_UNAVAILABLE"
 
 
 def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_path: Path, monkeypatch) -> None:

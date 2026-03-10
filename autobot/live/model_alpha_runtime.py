@@ -269,7 +269,7 @@ async def run_live_model_alpha_runtime(
                         ts_ms=decision_ts_ms,
                         active_markets=universe.markets(),
                         latest_prices=market_data.latest_prices(),
-                        open_markets=set(_snapshot_position_state(store).keys()),
+                        open_markets=_snapshot_open_markets(store),
                     )
                     summary["decisions"] = int(summary["decisions"]) + 1
                     store.set_checkpoint(
@@ -563,6 +563,40 @@ def _snapshot_position_state(store: LiveStateStore) -> dict[str, dict[str, Any]]
             continue
         positions[market] = dict(item)
     return positions
+
+
+def _snapshot_open_order_markets(store: LiveStateStore) -> set[str]:
+    markets: set[str] = set()
+    for item in store.list_orders(open_only=True):
+        market = str(item.get("market", "")).strip().upper()
+        if market:
+            markets.add(market)
+    return markets
+
+
+def _snapshot_open_markets(store: LiveStateStore) -> set[str]:
+    return set(_snapshot_position_state(store).keys()) | _snapshot_open_order_markets(store)
+
+
+def _canary_entry_guard_reason(
+    *,
+    store: LiveStateStore,
+    settings: LiveModelAlphaRuntimeSettings,
+    market: str,
+    side: str,
+) -> str | None:
+    if str(side).strip().lower() != "bid":
+        return None
+    if not bool(settings.daemon.small_account_canary_enabled):
+        return None
+    market_value = str(market).strip().upper()
+    active_markets = _snapshot_open_markets(store)
+    if market_value in active_markets:
+        return "CANARY_MARKET_ALREADY_ACTIVE"
+    max_positions = max(int(settings.daemon.small_account_max_positions), 1)
+    if len(active_markets) >= max_positions:
+        return "CANARY_SLOT_UNAVAILABLE"
+    return None
 
 
 def _bootstrap_strategy_positions(
@@ -924,6 +958,25 @@ def _handle_strategy_intent(
     side = str(strategy_intent.side).strip().lower()
     if not market or side not in {"bid", "ask"}:
         return "skipped"
+    canary_guard_reason = _canary_entry_guard_reason(
+        store=store,
+        settings=settings,
+        market=market,
+        side=side,
+    )
+    if canary_guard_reason:
+        _record_strategy_intent(
+            store=store,
+            market=market,
+            side=side,
+            price=_safe_optional_float(getattr(strategy_intent, "ref_price", None)),
+            volume=_safe_optional_float(getattr(strategy_intent, "volume", None)),
+            reason_code=str(strategy_intent.reason_code),
+            meta_payload={"skip_reason": canary_guard_reason},
+            status="SKIPPED",
+            ts_ms=ts_ms,
+        )
+        return "skipped"
 
     accounts_payload = client.accounts()
     chance_payload = client.chance(market=market)
@@ -1121,7 +1174,7 @@ def _handle_strategy_intent(
                 updated_ts=ts_ms,
                 intent_id=intent.intent_id,
                 tp_sl_link=None,
-                local_state="OPEN_WORKING",
+                local_state="OPEN",
                 raw_exchange_state="wait",
                 last_event_name="SUBMIT_ACCEPTED",
                 event_source="live_model_alpha_runtime",
