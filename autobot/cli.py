@@ -4655,14 +4655,21 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                 public_client = UpbitPublicClient(public_http)
                                 public_ws_client = UpbitWebSocketPublicClient(settings.websocket)
                                 if daemon_settings.rollout_mode != "shadow" or bool(runtime_settings.risk_enabled):
-                                    from .execution import GrpcExecutionGateway
+                                    execution_backend = str(defaults["executor_backend"]).strip().lower()
+                                    if execution_backend == "direct_rest":
+                                        from .execution import DirectRestExecutionGateway
 
-                                    with GrpcExecutionGateway(
-                                        host=str(defaults["executor_host"]),
-                                        port=int(defaults["executor_port"]),
-                                        timeout_sec=float(defaults["executor_timeout_sec"]),
-                                        insecure=bool(defaults["executor_insecure"]),
-                                    ) as executor_gateway:
+                                        executor_gateway_ctx = DirectRestExecutionGateway(client=client)
+                                    else:
+                                        from .execution import GrpcExecutionGateway
+
+                                        executor_gateway_ctx = GrpcExecutionGateway(
+                                            host=str(defaults["executor_host"]),
+                                            port=int(defaults["executor_port"]),
+                                            timeout_sec=float(defaults["executor_timeout_sec"]),
+                                            insecure=bool(defaults["executor_insecure"]),
+                                        )
+                                    with executor_gateway_ctx as executor_gateway:
                                         daemon_summary = asyncio.run(
                                             run_live_model_alpha_runtime(
                                                 store=store,
@@ -5682,6 +5689,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "executor_port": max(int(executor_cfg.get("port", 50051)), 1),
         "executor_timeout_sec": max(float(executor_cfg.get("timeout_sec", 5.0)), 0.1),
         "executor_insecure": bool(executor_cfg.get("insecure", True)),
+        "executor_backend": str(executor_cfg.get("backend", "grpc")).strip().lower() or "grpc",
         "identifier_prefix": str(orders_cfg.get("identifier_prefix", "AUTOBOT")).strip().upper(),
         "default_risk_sl_pct": max(float(default_risk_cfg.get("sl_pct", 2.0)), 0.0),
         "default_risk_tp_pct": max(float(default_risk_cfg.get("tp_pct", 3.0)), 0.0),

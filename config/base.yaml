@@ -34,6 +34,7 @@ live:
     require_test_order: true
     test_order_max_age_sec: 86400
   executor:
+    backend: "direct_rest"
     host: "127.0.0.1"
     port: 50051
     timeout_sec: 5.0
