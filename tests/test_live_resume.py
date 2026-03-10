@@ -328,12 +328,16 @@ def test_resume_adopts_single_market_exit_order_for_triggered_plan(tmp_path: Pat
 
         report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
         plan = store.risk_plan_by_id(plan_id="plan-kite-1")
+        order = store.order_by_uuid(uuid="exit-kite-1")
 
     assert report["halted"] is False
     assert report["counts"]["plans_resumed_exiting"] == 1
     assert plan is not None
     assert plan["state"] == "EXITING"
     assert plan["current_exit_order_uuid"] == "exit-kite-1"
+    assert plan["last_action_ts_ms"] == 2000
+    assert order is not None
+    assert order["tp_sl_link"] == "plan-kite-1"
 
 
 def test_resume_ignores_closed_history_when_primary_active_plan_exists(tmp_path: Path) -> None:

@@ -604,12 +604,19 @@ def resume_risk_plans_after_reconcile(
         next_state = previous_state
         next_exit_uuid = current_exit_uuid
         next_exit_identifier = current_exit_identifier
+        next_last_action_ts_ms = int(row.get("last_action_ts_ms") or 0)
         halted_for_review = False
 
         if matching_open_order is not None:
             next_state = "EXITING"
             next_exit_uuid = _as_optional_str(matching_open_order.get("uuid"))
             next_exit_identifier = _as_optional_str(matching_open_order.get("identifier"))
+            if next_last_action_ts_ms <= 0:
+                next_last_action_ts_ms = max(
+                    int(matching_open_order.get("updated_ts") or 0),
+                    int(matching_open_order.get("created_ts") or 0),
+                    now_ts,
+                )
             action = "RESUME_EXITING"
             report["counts"]["plans_resumed_exiting"] += 1
         elif position is None:
@@ -637,6 +644,13 @@ def resume_risk_plans_after_reconcile(
                 report["counts"]["plans_kept_active"] += 1
 
         if not halted_for_review:
+            if matching_open_order is not None and _as_optional_str(matching_open_order.get("tp_sl_link")) != plan_id:
+                store.upsert_order(
+                    _order_record_from_row_dict(
+                        matching_open_order,
+                        tp_sl_link=plan_id,
+                    )
+                )
             updated = _risk_plan_record_from_row(
                 row,
                 state=next_state,
@@ -644,6 +658,7 @@ def resume_risk_plans_after_reconcile(
                 current_exit_order_identifier=next_exit_identifier,
                 updated_ts=now_ts,
                 last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts if next_state == "CLOSED" else int(row.get("last_eval_ts_ms") or 0)),
+                last_action_ts_ms=next_last_action_ts_ms,
             )
             store.upsert_risk_plan(updated)
 
@@ -743,6 +758,7 @@ def _risk_plan_record_from_row(
     current_exit_order_identifier: str | None,
     updated_ts: int,
     last_eval_ts_ms: int,
+    last_action_ts_ms: int | None = None,
 ) -> RiskPlanRecord:
     tp = row.get("tp") if isinstance(row.get("tp"), dict) else {}
     sl = row.get("sl") if isinstance(row.get("sl"), dict) else {}
@@ -766,7 +782,7 @@ def _risk_plan_record_from_row(
         timeout_ts_ms=_as_optional_int(row.get("timeout_ts_ms")),
         state=state,
         last_eval_ts_ms=int(last_eval_ts_ms),
-        last_action_ts_ms=int(row.get("last_action_ts_ms") or 0),
+        last_action_ts_ms=int(last_action_ts_ms if last_action_ts_ms is not None else row.get("last_action_ts_ms") or 0),
         current_exit_order_uuid=current_exit_order_uuid,
         current_exit_order_identifier=current_exit_order_identifier,
         replace_attempt=int(row.get("replace_attempt") or 0),
@@ -774,6 +790,36 @@ def _risk_plan_record_from_row(
         updated_ts=int(updated_ts),
         plan_source=_as_optional_str(row.get("plan_source")),
         source_intent_id=_as_optional_str(row.get("source_intent_id")),
+    )
+
+
+def _order_record_from_row_dict(
+    row: dict[str, Any],
+    *,
+    tp_sl_link: str | None = None,
+) -> OrderRecord:
+    return OrderRecord(
+        uuid=str(row.get("uuid") or ""),
+        identifier=_as_optional_str(row.get("identifier")),
+        market=str(row.get("market") or ""),
+        side=_as_optional_str(row.get("side")),
+        ord_type=_as_optional_str(row.get("ord_type")),
+        price=_as_optional_float(row.get("price")),
+        volume_req=_as_optional_float(row.get("volume_req")),
+        volume_filled=float(_as_optional_float(row.get("volume_filled")) or 0.0),
+        state=str(row.get("state") or ""),
+        created_ts=int(row.get("created_ts") or 0),
+        updated_ts=int(row.get("updated_ts") or 0),
+        intent_id=_as_optional_str(row.get("intent_id")),
+        tp_sl_link=tp_sl_link if tp_sl_link is not None else _as_optional_str(row.get("tp_sl_link")),
+        local_state=_as_optional_str(row.get("local_state")),
+        raw_exchange_state=_as_optional_str(row.get("raw_exchange_state")),
+        last_event_name=_as_optional_str(row.get("last_event_name")),
+        event_source=_as_optional_str(row.get("event_source")),
+        replace_seq=int(row.get("replace_seq") or 0),
+        root_order_uuid=_as_optional_str(row.get("root_order_uuid")),
+        prev_order_uuid=_as_optional_str(row.get("prev_order_uuid")),
+        prev_order_identifier=_as_optional_str(row.get("prev_order_identifier")),
     )
 
 def _extract_exchange_positions(accounts_payload: Any, *, quote_currency: str, ts_ms: int) -> dict[str, dict[str, Any]]:
