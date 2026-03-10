@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 import json
 import time
 from typing import Any
 
 from autobot.execution.intent import new_order_intent
+from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
     arm_breaker,
     classify_executor_reject_reason,
@@ -26,11 +28,13 @@ class LiveRiskManager:
         executor_gateway: Any | None,
         config: RiskManagerConfig | None = None,
         identifier_prefix: str = "AUTOBOT",
+        tick_size_resolver: Callable[[str], float | None] | None = None,
     ) -> None:
         self._store = store
         self._executor_gateway = executor_gateway
         self._config = config or RiskManagerConfig()
         self._identifier_prefix = str(identifier_prefix).strip().upper() or "AUTOBOT"
+        self._tick_size_resolver = tick_size_resolver
 
     def attach_default_risk(
         self,
@@ -225,12 +229,7 @@ class LiveRiskManager:
         if not new_intents_allowed(self._store):
             updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
             return updated, {"type": "risk_blocked_by_breaker", "plan_id": plan.plan_id, "reason": trigger_reason}
-        exit_price = _aggressive_exit_price(
-            last_price=last_price,
-            base_bps=self._config.exit_aggress_bps,
-            step=1,
-            digits=self._config.price_digits,
-        )
+        exit_price = self._resolve_exit_price(market=plan.market, last_price=last_price, step=1)
         volume = _format_decimal(plan.qty, self._config.volume_digits)
         identifier = f"{self._identifier_prefix}-RISK-{plan.plan_id[:10]}-{ts_ms}"
         if self._executor_gateway is None or not hasattr(self._executor_gateway, "submit_intent"):
@@ -343,11 +342,10 @@ class LiveRiskManager:
             return updated, {"type": "risk_replace_no_executor", "plan_id": plan.plan_id}
 
         replace_step = plan.replace_attempt + 1
-        new_price = _aggressive_exit_price(
+        new_price = self._resolve_exit_price(
+            market=plan.market,
             last_price=last_price,
-            base_bps=self._config.exit_aggress_bps,
             step=max(replace_step, 1),
-            digits=self._config.price_digits,
         )
         new_identifier = f"{self._identifier_prefix}-RISKREP-{plan.plan_id[:8]}-{replace_step}-{ts_ms}"
         result = self._executor_gateway.replace_order(
@@ -434,6 +432,35 @@ class LiveRiskManager:
             "replace_attempt": replace_step,
             "reason": str(getattr(result, "reason", "")),
         }
+
+    def _resolve_exit_price(self, *, market: str, last_price: float, step: int) -> float:
+        raw = _aggressive_exit_price(
+            last_price=last_price,
+            base_bps=self._config.exit_aggress_bps,
+            step=step,
+            digits=self._config.price_digits,
+        )
+        tick_size = self._resolve_tick_size(market)
+        if tick_size is None or tick_size <= 0:
+            return raw
+        return round_price_to_tick(
+            price=raw,
+            tick_size=float(tick_size),
+            side="ask",
+        )
+
+    def _resolve_tick_size(self, market: str) -> float | None:
+        if self._tick_size_resolver is None:
+            return None
+        try:
+            value = self._tick_size_resolver(str(market).strip().upper())
+        except Exception:
+            return None
+        try:
+            tick_size = float(value) if value is not None else 0.0
+        except (TypeError, ValueError):
+            return None
+        return tick_size if tick_size > 0 else None
 
     def _update_trailing(
         self,

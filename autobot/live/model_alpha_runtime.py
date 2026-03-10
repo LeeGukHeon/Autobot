@@ -225,7 +225,13 @@ async def run_live_model_alpha_runtime(
         settings=settings,
         feature_provider=feature_provider,
     )
-    risk_manager = _build_risk_manager(store=store, settings=settings, executor_gateway=executor_gateway)
+    risk_manager = _build_risk_manager(
+        store=store,
+        settings=settings,
+        executor_gateway=executor_gateway,
+        public_client=public_client,
+        instrument_cache=instrument_cache,
+    )
     market_data = MarketDataHub(history_sec=300)
     universe = UniverseProviderTop20(
         quote=str(settings.quote).strip().upper(),
@@ -534,9 +540,34 @@ def _build_risk_manager(
     store: LiveStateStore,
     settings: LiveModelAlphaRuntimeSettings,
     executor_gateway: Any | None,
+    public_client: Any,
+    instrument_cache: dict[str, dict[str, Any]],
 ) -> LiveRiskManager | None:
     if not bool(settings.risk_enabled):
         return None
+
+    def _resolve_tick_size(market: str) -> float | None:
+        market_value = str(market).strip().upper()
+        if not market_value:
+            return None
+        payload = instrument_cache.get(market_value)
+        if payload is None:
+            loaded = public_client.orderbook_instruments([market_value])
+            if isinstance(loaded, list):
+                for item in loaded:
+                    if isinstance(item, dict):
+                        item_market = str(item.get("market", "")).strip().upper()
+                        if item_market:
+                            instrument_cache[item_market] = dict(item)
+                payload = instrument_cache.get(market_value)
+        if not isinstance(payload, dict):
+            return None
+        try:
+            tick_size = float(payload.get("tick_size") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return tick_size if tick_size > 0 else None
+
     return LiveRiskManager(
         store=store,
         executor_gateway=executor_gateway,
@@ -550,6 +581,7 @@ def _build_risk_manager(
             default_trail_pct=float(settings.risk_default_trail_pct),
         ),
         identifier_prefix=str(settings.daemon.identifier_prefix),
+        tick_size_resolver=_resolve_tick_size,
     )
 
 

@@ -188,6 +188,7 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
             store=store,
             executor_gateway=gateway,
             config=RiskManagerConfig(order_timeout_sec=1, replace_max=2, exit_aggress_bps=10.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
         )
         replace_actions = manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
         persisted_after_replace = store.risk_plan_by_id(plan_id="replace-1")
@@ -208,6 +209,7 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
 
     assert any(item["type"] == "risk_exit_replaced" for item in replace_actions)
     assert len(gateway.replace_calls) == 1
+    assert gateway.replace_calls[0].new_price_str == "480"
     assert persisted_after_replace is not None
     assert persisted_after_replace["state"] == "EXITING"
     assert persisted_after_replace["replace_attempt"] == 1
@@ -289,6 +291,7 @@ def test_risk_manager_timeout_trigger_submits_exit(tmp_path: Path) -> None:
             store=store,
             executor_gateway=gateway,
             config=RiskManagerConfig(default_tp_pct=0.0, default_sl_pct=0.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-KITE" else None,
         )
         manager.attach_model_risk(
             market="KRW-KITE",
@@ -307,6 +310,7 @@ def test_risk_manager_timeout_trigger_submits_exit(tmp_path: Path) -> None:
 
     assert any(item["type"] == "risk_exit_submitted" and item["trigger_reason"] == "TIMEOUT" for item in actions)
     assert len(gateway.submit_calls) == 1
+    assert gateway.submit_calls[0].price == 442.0
     assert persisted is not None
     assert persisted["state"] == "EXITING"
     assert persisted["timeout_ts_ms"] == 2000
