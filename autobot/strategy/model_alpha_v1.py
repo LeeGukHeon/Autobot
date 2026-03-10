@@ -669,18 +669,19 @@ def _resolve_selection_policy(
     predictor: ModelPredictor,
     settings: ModelAlphaSelectionSettings,
 ) -> tuple[dict[str, Any], str]:
+    selection_policy_payload = getattr(predictor, "selection_policy", {})
     mode = str(settings.selection_policy_mode).strip().lower() or "auto"
     if mode == "raw_threshold":
         return {"mode": "raw_threshold"}, "settings"
     if mode == DEFAULT_SELECTION_POLICY_MODE:
         policy = normalize_selection_policy(
-            predictor.selection_policy if isinstance(predictor.selection_policy, dict) else {},
+            selection_policy_payload if isinstance(selection_policy_payload, dict) else {},
             fallback_threshold_key=str(settings.registry_threshold_key).strip() or "top_5pct",
         )
         return policy, "registry_selection_policy"
     if _safe_optional_float(settings.min_prob) is not None:
         return {"mode": "raw_threshold"}, "manual_min_prob"
-    policy_payload = predictor.selection_policy if isinstance(predictor.selection_policy, dict) else {}
+    policy_payload = selection_policy_payload if isinstance(selection_policy_payload, dict) else {}
     if policy_payload:
         policy = normalize_selection_policy(
             policy_payload,
@@ -695,9 +696,10 @@ def resolve_runtime_model_alpha_settings(
     predictor: ModelPredictor,
     settings: ModelAlphaSettings,
 ) -> tuple[ModelAlphaSettings, dict[str, Any]]:
+    runtime_recommendations_payload = getattr(predictor, "runtime_recommendations", {})
     runtime_recommendations = (
-        predictor.runtime_recommendations
-        if isinstance(predictor.runtime_recommendations, dict)
+        runtime_recommendations_payload
+        if isinstance(runtime_recommendations_payload, dict)
         else {}
     )
     resolved = settings

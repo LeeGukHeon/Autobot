@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,9 @@ from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepR
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
-from autobot.live.state_store import LiveStateStore
+from autobot.live.state_store import LiveStateStore, PositionRecord
+from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
+from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
 from autobot.upbit.ws.models import TickerEvent
 
 
@@ -54,6 +57,16 @@ class _PublicClient:
         return [{"market": "KRW-BTC", "tick_size": 1000}]
 
 
+class _FlowPublicClient:
+    def markets(self, *, is_details: bool = False):  # noqa: ANN201
+        _ = is_details
+        return [{"market": "KRW-FLOW"}]
+
+    def orderbook_instruments(self, markets):  # noqa: ANN201
+        _ = markets
+        return [{"market": "KRW-FLOW", "tick_size": 0.1}]
+
+
 class _PublicWsClient:
     async def stream_ticker(self, markets, duration_sec=None):  # noqa: ANN201
         _ = markets, duration_sec
@@ -62,6 +75,17 @@ class _PublicWsClient:
             ts_ms=int(time.time() * 1000),
             trade_price=50_000_000.0,
             acc_trade_price_24h=10_000_000_000.0,
+        )
+
+
+class _FlowPublicWsClient:
+    async def stream_ticker(self, markets, duration_sec=None):  # noqa: ANN201
+        _ = markets, duration_sec
+        yield TickerEvent(
+            market="KRW-FLOW",
+            ts_ms=int(time.time() * 1000),
+            trade_price=90.6,
+            acc_trade_price_24h=1_000_000_000.0,
         )
 
 
@@ -135,6 +159,29 @@ class _LargeNotionalStrategy:
         _ = event
 
 
+class _StalePriceFlowStrategy:
+    def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+        _ = ts_ms, active_markets, latest_prices, open_markets
+        return StrategyStepResult(
+            intents=(
+                StrategyOrderIntent(
+                    market="KRW-FLOW",
+                    side="bid",
+                    ref_price=78.0,
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    prob=0.9,
+                    meta={"model_prob": 0.9},
+                ),
+            ),
+            scored_rows=1,
+            eligible_rows=1,
+            selected_rows=1,
+        )
+
+    def on_fill(self, event):  # noqa: ANN201
+        _ = event
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -168,7 +215,14 @@ def _seed_runtime_contract(tmp_path: Path, *, run_id: str) -> Path:
     return registry_root
 
 
-def _runtime_settings(tmp_path: Path, *, rollout_mode: str, canary: bool = False) -> LiveModelAlphaRuntimeSettings:
+def _runtime_settings(
+    tmp_path: Path,
+    *,
+    rollout_mode: str,
+    canary: bool = False,
+    model_alpha: ModelAlphaSettings | None = None,
+    micro_order_policy: MicroOrderPolicySettings | None = None,
+) -> LiveModelAlphaRuntimeSettings:
     registry_root = _seed_runtime_contract(tmp_path, run_id="run-live")
     daemon_settings = LiveDaemonSettings(
         bot_id="autobot-001",
@@ -192,7 +246,11 @@ def _runtime_settings(tmp_path: Path, *, rollout_mode: str, canary: bool = False
         rollout_mode=rollout_mode,
         rollout_target_unit="autobot-live-alpha.service",
     )
-    return LiveModelAlphaRuntimeSettings(daemon=daemon_settings)
+    return LiveModelAlphaRuntimeSettings(
+        daemon=daemon_settings,
+        model_alpha=model_alpha or ModelAlphaSettings(),
+        micro_order_policy=micro_order_policy or MicroOrderPolicySettings(),
+    )
 
 
 def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: Path, monkeypatch) -> None:
@@ -326,3 +384,191 @@ def test_live_model_alpha_runtime_caps_bid_notional_to_canary_limit(tmp_path: Pa
     submitted_intent = executor.calls[0]["intent"]
     notional_quote = float(submitted_intent.price) * float(submitted_intent.volume)
     assert notional_quote <= 6003.0
+
+
+def test_live_model_alpha_runtime_uses_latest_price_and_price_mode_for_bid(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _StalePriceFlowStrategy())
+
+    settings = _runtime_settings(
+        tmp_path,
+        rollout_mode="canary",
+        canary=True,
+        model_alpha=ModelAlphaSettings(
+            execution=ModelAlphaExecutionSettings(price_mode="PASSIVE_MAKER", timeout_bars=2, replace_max=2),
+        ),
+    )
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-FLOW",
+                side="bid",
+                ord_type="limit",
+                price="90.6",
+                volume="10",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_FlowPublicClient(),
+                public_ws_client=_FlowPublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    submitted_intent = executor.calls[0]["intent"]
+    assert submitted_intent.market == "KRW-FLOW"
+    assert float(submitted_intent.price) == 90.5
+
+
+def test_live_model_alpha_runtime_applies_micro_order_policy_to_price_mode(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _StalePriceFlowStrategy())
+
+    settings = _runtime_settings(
+        tmp_path,
+        rollout_mode="canary",
+        canary=True,
+        model_alpha=ModelAlphaSettings(
+            execution=ModelAlphaExecutionSettings(price_mode="JOIN", timeout_bars=2, replace_max=2),
+        ),
+        micro_order_policy=replace(MicroOrderPolicySettings(), enabled=True),
+    )
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-FLOW",
+                side="bid",
+                ord_type="limit",
+                price="90.6",
+                volume="10",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_FlowPublicClient(),
+                public_ws_client=_FlowPublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    submitted_intent = executor.calls[0]["intent"]
+    assert float(submitted_intent.price) == 90.6
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    policy_payload = meta_payload.get("micro_order_policy")
+    assert isinstance(policy_payload, dict)
+    assert policy_payload.get("reason_code") == "MICRO_MISSING_FALLBACK"
+    execution_payload = meta_payload.get("execution")
+    assert isinstance(execution_payload, dict)
+    exec_profile_payload = execution_payload.get("exec_profile")
+    assert isinstance(exec_profile_payload, dict)
+    assert exec_profile_payload.get("price_mode") == "JOIN"
+
+
+def test_live_model_alpha_runtime_applies_trade_gate_duplicate_entry_block(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.0001,
+                avg_entry_price=50_000_000.0,
+                updated_ts=now_ms - 1000,
+            )
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        intents = store.list_intents()
+
+    assert summary["submitted_intents_total"] == 0
+    assert summary["skipped_intents_total"] == 1
+    assert executor.calls == []
+    assert len(intents) == 1
+    meta_payload = intents[0]["meta"]
+    assert meta_payload.get("skip_reason") == "DUPLICATE_ENTRY"

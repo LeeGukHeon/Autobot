@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent
+from autobot.execution.order_supervisor import (
+    OrderExecProfile,
+    build_limit_price_from_mode,
+    make_legacy_exec_profile,
+    order_exec_profile_to_dict,
+)
 from autobot.execution.intent import new_order_intent
 from autobot.models.predictor import ModelPredictor, load_predictor_from_registry
 from autobot.paper.engine import (
@@ -21,14 +27,27 @@ from autobot.paper.live_features_v3 import LiveFeatureProviderV3
 from autobot.paper.live_features_v4 import LiveFeatureProviderV4
 from autobot.risk.live_risk_manager import LiveRiskManager
 from autobot.risk.models import RiskManagerConfig
+from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
+from autobot.strategy.micro_order_policy import MicroOrderPolicySettings, MicroOrderPolicyV1
 from autobot.strategy.micro_snapshot import LiveWsMicroSnapshotProvider, LiveWsProviderSettings
-from autobot.strategy.model_alpha_v1 import ModelAlphaSettings, ModelAlphaStrategyV1
+from autobot.strategy.model_alpha_v1 import (
+    ModelAlphaSettings,
+    ModelAlphaStrategyV1,
+    resolve_runtime_model_alpha_settings,
+)
+from autobot.strategy.operational_overlay_v1 import (
+    compute_micro_quality_composite,
+    resolve_operational_execution_overlay,
+)
+from autobot.strategy.trade_gate_v1 import GateSettings, TradeGateV1
 from autobot.upbit.ws.models import TickerEvent
 
 from .admissibility import (
+    AccountBalanceSnapshot,
     build_live_admissibility_report,
     build_live_order_admissibility_snapshot,
     evaluate_live_limit_order,
+    round_price_to_tick,
 )
 from .breakers import (
     ACTION_FULL_KILL_SWITCH,
@@ -72,12 +91,17 @@ class LiveModelAlphaRuntimeSettings:
     universe_refresh_sec: float = 60.0
     universe_hold_sec: float = 120.0
     per_trade_krw: float = 10_000.0
+    max_positions: int = 2
     min_order_krw: float = 5_000.0
+    max_consecutive_failures: int = 3
+    cooldown_sec_after_fail: int = 60
     model_alpha: ModelAlphaSettings = field(default_factory=ModelAlphaSettings)
     paper_live_parquet_root: str = "data/parquet"
     paper_live_candles_dataset: str = "candles_api_v1"
     paper_live_bootstrap_1m_bars: int = 2_000
     paper_live_micro_max_age_ms: int = 300_000
+    micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
+    micro_order_policy: MicroOrderPolicySettings = field(default_factory=MicroOrderPolicySettings)
     risk_enabled: bool = False
     risk_exit_aggress_bps: float = 8.0
     risk_timeout_sec: int = 20
@@ -163,13 +187,31 @@ async def run_live_model_alpha_runtime(
 
     predictor = _load_predictor_for_runtime(store=store, settings=settings)
     summary["strategy_predictor_run_id"] = predictor.run_dir.name
+    resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
+        predictor=predictor,
+        settings=settings.model_alpha,
+    )
     markets = _load_quote_markets(public_client=public_client, quote=str(settings.quote))
     if not markets:
         raise RuntimeError(f"no quote markets available for quote={settings.quote}")
     instrument_cache = _load_market_instruments(public_client=public_client, markets=markets)
-
     micro_provider = LiveWsMicroSnapshotProvider(
         LiveWsProviderSettings(enabled=True, max_markets=max(len(markets), int(settings.top_n)))
+    )
+    micro_gate = MicroGateV1(settings.micro_gate) if settings.micro_gate.enabled else None
+    trade_gate = TradeGateV1(
+        GateSettings(
+            per_trade_krw=float(settings.per_trade_krw),
+            max_positions=max(_effective_live_trade_gate_max_positions(settings), 1),
+            min_order_krw=max(float(settings.min_order_krw), 0.0),
+            max_consecutive_failures=max(int(settings.max_consecutive_failures), 1),
+            cooldown_sec_after_fail=max(int(settings.cooldown_sec_after_fail), 0),
+        ),
+        micro_gate=micro_gate,
+        micro_snapshot_provider=micro_provider,
+    )
+    micro_order_policy = (
+        MicroOrderPolicyV1(settings.micro_order_policy) if settings.micro_order_policy.enabled else None
     )
     feature_provider = _build_live_feature_provider(
         predictor=predictor,
@@ -250,8 +292,13 @@ async def run_live_model_alpha_runtime(
                             executor_gateway=executor_gateway,
                             settings=settings,
                             predictor=predictor,
+                            model_alpha_settings=resolved_model_alpha_settings,
                             strategy_intent=strategy_intent,
                             instrument_cache=instrument_cache,
+                            latest_prices=market_data.latest_prices(),
+                            micro_snapshot_provider=micro_provider,
+                            micro_order_policy=micro_order_policy,
+                            trade_gate=trade_gate,
                             ts_ms=int(decision_ts_ms),
                         )
                         if submit_result == "shadow":
@@ -699,6 +746,70 @@ def _close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) 
         )
 
 
+@dataclass(frozen=True)
+class _LiveTradeGateBalanceView:
+    free: float
+
+
+class _LiveTradeGateExchangeView:
+    def __init__(
+        self,
+        *,
+        store: LiveStateStore,
+        accounts_payload: Any,
+        quote_currency: str,
+    ) -> None:
+        self._store = store
+        self._quote_currency = str(quote_currency).strip().upper()
+        self._balances: dict[str, AccountBalanceSnapshot] = {}
+        if isinstance(accounts_payload, list):
+            for item in accounts_payload:
+                if not isinstance(item, dict):
+                    continue
+                currency = str(item.get("currency", "")).strip().upper()
+                if not currency:
+                    continue
+                self._balances[currency] = AccountBalanceSnapshot(
+                    currency=currency,
+                    free=_safe_float(item.get("balance"), default=0.0),
+                    locked=_safe_float(item.get("locked"), default=0.0),
+                    avg_buy_price=_safe_optional_float(item.get("avg_buy_price")),
+                )
+
+    def quote_balance(self) -> object:
+        payload = self._balances.get(self._quote_currency)
+        return _LiveTradeGateBalanceView(free=(float(payload.free) if payload is not None else 0.0))
+
+    def coin_balance(self, currency: str) -> object:
+        payload = self._balances.get(str(currency).strip().upper())
+        return _LiveTradeGateBalanceView(free=(float(payload.free) if payload is not None else 0.0))
+
+    def active_position_count(self) -> int:
+        return len(
+            [
+                item
+                for item in self._store.list_positions()
+                if _safe_float(item.get("base_amount"), default=0.0) > 0.0
+            ]
+        )
+
+    def has_position(self, market: str) -> bool:
+        position = self._store.position_by_market(market=str(market).strip().upper())
+        return position is not None and _safe_float(position.get("base_amount"), default=0.0) > 0.0
+
+    def has_open_order(self, market: str, side: str | None = None) -> bool:
+        market_value = str(market).strip().upper()
+        side_value = str(side).strip().lower() if side is not None else None
+        for item in self._store.list_orders(open_only=True):
+            if str(item.get("market", "")).strip().upper() != market_value:
+                continue
+            if side_value is None:
+                return True
+            if str(item.get("side", "")).strip().lower() == side_value:
+                return True
+        return False
+
+
 def _handle_strategy_intent(
     *,
     store: LiveStateStore,
@@ -707,8 +818,13 @@ def _handle_strategy_intent(
     executor_gateway: Any | None,
     settings: LiveModelAlphaRuntimeSettings,
     predictor: ModelPredictor,
+    model_alpha_settings: ModelAlphaSettings,
     strategy_intent: StrategyOrderIntent,
     instrument_cache: dict[str, dict[str, Any]],
+    latest_prices: dict[str, float],
+    micro_snapshot_provider: LiveWsMicroSnapshotProvider,
+    micro_order_policy: MicroOrderPolicyV1 | None,
+    trade_gate: TradeGateV1,
     ts_ms: int,
 ) -> str:
     market = str(strategy_intent.market).strip().upper()
@@ -742,61 +858,6 @@ def _handle_strategy_intent(
         )
         return "skipped"
 
-    requested_price = max(float(strategy_intent.ref_price), 1e-12)
-    sizing_payload: dict[str, Any] | None = None
-    requested_volume = _safe_optional_float(strategy_intent.volume)
-    if side == "bid":
-        fee_rate = _safe_optional_float((chance_payload or {}).get("bid_fee")) or 0.0
-        target_notional_quote = _entry_notional_quote_for_strategy(
-            strategy_mode="model_alpha_v1",
-            per_trade_krw=float(settings.per_trade_krw),
-            min_total_krw=float(settings.min_order_krw),
-            model_alpha_settings=settings.model_alpha,
-            candidate_meta=dict(strategy_intent.meta or {}),
-        )
-        target_notional_quote = _apply_canary_notional_cap(
-            store=store,
-            settings=settings,
-            target_notional_quote=float(target_notional_quote),
-        )
-        sizing = derive_volume_from_target_notional(
-            side="bid",
-            price=requested_price,
-            target_notional_quote=float(target_notional_quote),
-            fee_rate=fee_rate,
-        )
-        sizing_payload = sizing_envelope_to_payload(sizing)
-        requested_volume = max(float(sizing.admissible_volume), 1e-12)
-    else:
-        local_position = store.position_by_market(market=market)
-        if local_position is None:
-            _record_strategy_intent(
-                store=store,
-                market=market,
-                side=side,
-                price=requested_price,
-                volume=None,
-                reason_code=str(strategy_intent.reason_code),
-                meta_payload={"skip_reason": "NO_LOCAL_POSITION"},
-                status="SKIPPED",
-                ts_ms=ts_ms,
-            )
-            return "skipped"
-        requested_volume = max(_safe_float(local_position.get("base_amount"), default=0.0), 0.0)
-        if requested_volume <= 0:
-            _record_strategy_intent(
-                store=store,
-                market=market,
-                side=side,
-                price=requested_price,
-                volume=requested_volume,
-                reason_code=str(strategy_intent.reason_code),
-                meta_payload={"skip_reason": "ZERO_LOCAL_POSITION"},
-                status="SKIPPED",
-                ts_ms=ts_ms,
-            )
-            return "skipped"
-
     snapshot = build_live_order_admissibility_snapshot(
         market=market,
         side=side,
@@ -805,10 +866,43 @@ def _handle_strategy_intent(
         accounts_payload=accounts_payload,
         ts_ms=ts_ms,
     )
+    exchange_view = _LiveTradeGateExchangeView(
+        store=store,
+        accounts_payload=accounts_payload,
+        quote_currency=snapshot.quote_currency,
+    )
+    execution_resolution = _resolve_live_strategy_execution(
+        market=market,
+        side=side,
+        settings=settings,
+        model_alpha_settings=model_alpha_settings,
+        strategy_intent=strategy_intent,
+        snapshot=snapshot,
+        latest_trade_price=max(_safe_float(latest_prices.get(market), default=0.0), 0.0),
+        store=store,
+        exchange_view=exchange_view,
+        ts_ms=ts_ms,
+        micro_snapshot_provider=micro_snapshot_provider,
+        micro_order_policy=micro_order_policy,
+        trade_gate=trade_gate,
+    )
+    if not execution_resolution.allowed:
+        _record_strategy_intent(
+            store=store,
+            market=market,
+            side=side,
+            price=execution_resolution.requested_price,
+            volume=execution_resolution.requested_volume,
+            reason_code=str(strategy_intent.reason_code),
+            meta_payload={**execution_resolution.meta_payload, "skip_reason": execution_resolution.skip_reason},
+            status="SKIPPED",
+            ts_ms=ts_ms,
+        )
+        return "skipped"
     decision = evaluate_live_limit_order(
         snapshot=snapshot,
-        price=requested_price,
-        volume=max(float(requested_volume), 1e-12),
+        price=execution_resolution.requested_price,
+        volume=max(float(execution_resolution.requested_volume), 1e-12),
     )
     record_small_account_decision(
         store=store,
@@ -820,23 +914,14 @@ def _handle_strategy_intent(
     admissibility_report = build_live_admissibility_report(
         snapshot=snapshot,
         decision=decision,
-        sizing_payload=sizing_payload,
+        sizing_payload=execution_resolution.sizing_payload,
     )
-    meta_payload = {
-        "strategy": {
-            "market": market,
-            "side": side,
-            "reason_code": str(strategy_intent.reason_code),
-            "score": strategy_intent.score,
-            "prob": strategy_intent.prob,
-            "meta": dict(strategy_intent.meta or {}),
-        },
-        "runtime": {
-            "live_runtime_model_run_id": predictor.run_dir.name,
-            "model_family": settings.daemon.runtime_model_family,
-        },
-        "admissibility": admissibility_report,
+    meta_payload = dict(execution_resolution.meta_payload)
+    meta_payload["runtime"] = {
+        "live_runtime_model_run_id": predictor.run_dir.name,
+        "model_family": settings.daemon.runtime_model_family,
     }
+    meta_payload["admissibility"] = admissibility_report
     intent = new_order_intent(
         market=market,
         side=side,
@@ -922,6 +1007,7 @@ def _handle_strategy_intent(
         meta_json=json.dumps(meta_payload, ensure_ascii=False, sort_keys=True),
     )
     if bool(getattr(result, "accepted", False)):
+        trade_gate.record_success(market)
         reset_counter(store, counter_name="rate_limit_error", source="live_model_alpha_submit_ok", ts_ms=ts_ms)
         reset_counter(store, counter_name="auth_error", source="live_model_alpha_submit_ok", ts_ms=ts_ms)
         reset_counter(store, counter_name="nonce_error", source="live_model_alpha_submit_ok", ts_ms=ts_ms)
@@ -966,6 +1052,7 @@ def _handle_strategy_intent(
         )
         return "submitted"
 
+    trade_gate.record_failure(market, ts_ms=ts_ms)
     _handle_submit_reject(
         store=store,
         intent=intent,
@@ -1105,6 +1192,355 @@ def _apply_canary_notional_cap(
     if cap_value is None or cap_value <= 0.0:
         return resolved_target
     return min(resolved_target, float(cap_value))
+
+
+@dataclass(frozen=True)
+class _LiveStrategyExecutionResolution:
+    allowed: bool
+    skip_reason: str | None
+    requested_price: float
+    requested_volume: float | None
+    sizing_payload: dict[str, Any] | None
+    meta_payload: dict[str, Any]
+
+
+def _resolve_live_strategy_execution(
+    *,
+    market: str,
+    side: str,
+    settings: LiveModelAlphaRuntimeSettings,
+    model_alpha_settings: ModelAlphaSettings,
+    strategy_intent: StrategyOrderIntent,
+    snapshot: Any,
+    latest_trade_price: float,
+    store: LiveStateStore,
+    exchange_view: _LiveTradeGateExchangeView,
+    ts_ms: int,
+    micro_snapshot_provider: LiveWsMicroSnapshotProvider,
+    micro_order_policy: MicroOrderPolicyV1 | None,
+    trade_gate: TradeGateV1,
+) -> _LiveStrategyExecutionResolution:
+    strategy_meta = dict(strategy_intent.meta or {})
+    initial_ref_price = max(float(strategy_intent.ref_price), 1e-12)
+    effective_ref_price = max(initial_ref_price, float(latest_trade_price), 1e-12)
+    snapshot_for_policy = micro_snapshot_provider.get(market, int(ts_ms))
+    exec_profile = _strategy_live_exec_profile(
+        settings=settings,
+        model_alpha_settings=model_alpha_settings,
+    )
+    operational_payload: dict[str, Any] = {}
+    trade_gate_payload: dict[str, Any] = {"enabled": True}
+    forced_volume = _safe_optional_float(strategy_meta.get("force_volume"))
+    local_position = store.position_by_market(market=market) if side == "ask" else None
+    entry_notional_quote = (
+        _entry_notional_quote_for_strategy(
+            strategy_mode="model_alpha_v1",
+            per_trade_krw=float(settings.per_trade_krw),
+            min_total_krw=max(float(snapshot.min_total), float(settings.min_order_krw)),
+            model_alpha_settings=model_alpha_settings,
+            candidate_meta=strategy_meta,
+        )
+        if side == "bid" and (forced_volume is None or forced_volume <= 0)
+        else None
+    )
+    if entry_notional_quote is not None:
+        entry_notional_quote = _apply_canary_notional_cap(
+            store=store,
+            settings=settings,
+            target_notional_quote=float(entry_notional_quote),
+        )
+
+    if bool(model_alpha_settings.operational.enabled):
+        operational_decision = resolve_operational_execution_overlay(
+            base_profile=exec_profile,
+            settings=model_alpha_settings.operational,
+            micro_quality=compute_micro_quality_composite(
+                micro_snapshot=snapshot_for_policy,
+                now_ts_ms=ts_ms,
+                settings=model_alpha_settings.operational,
+            ),
+            ts_ms=ts_ms,
+        )
+        operational_payload = {
+            "runtime_risk_multiplier": float(operational_decision.risk_multiplier),
+            "exec_overlay_mode": str(operational_decision.diagnostics.get("mode", "neutral")),
+            "micro_quality_score": (
+                float(operational_decision.micro_quality.score)
+                if operational_decision.micro_quality is not None
+                else None
+            ),
+            "diagnostics": dict(operational_decision.diagnostics),
+        }
+        if operational_decision.abort_reason is not None:
+            return _LiveStrategyExecutionResolution(
+                allowed=False,
+                skip_reason=str(operational_decision.abort_reason),
+                requested_price=effective_ref_price,
+                requested_volume=_safe_optional_float(strategy_intent.volume),
+                sizing_payload=None,
+                meta_payload={
+                    "strategy": {
+                        "market": market,
+                        "side": side,
+                        "reason_code": str(strategy_intent.reason_code),
+                        "score": strategy_intent.score,
+                        "prob": strategy_intent.prob,
+                        "meta": strategy_meta,
+                    },
+                    "execution": {
+                        "initial_ref_price": float(initial_ref_price),
+                        "latest_trade_price": float(latest_trade_price),
+                        "effective_ref_price": float(effective_ref_price),
+                        "exec_profile": order_exec_profile_to_dict(exec_profile),
+                    },
+                    "operational_overlay": operational_payload,
+                },
+            )
+        exec_profile = operational_decision.exec_profile
+        if entry_notional_quote is not None:
+            entry_notional_quote *= max(float(operational_decision.risk_multiplier), 0.0)
+
+    if side == "ask":
+        if local_position is None:
+            return _LiveStrategyExecutionResolution(
+                allowed=False,
+                skip_reason="NO_LOCAL_POSITION",
+                requested_price=effective_ref_price,
+                requested_volume=None,
+                sizing_payload=None,
+                meta_payload={"strategy": {"market": market, "side": side, "meta": strategy_meta}},
+            )
+        if exchange_view.has_open_order(market, side="ask"):
+            return _LiveStrategyExecutionResolution(
+                allowed=False,
+                skip_reason="DUPLICATE_EXIT_ORDER",
+                requested_price=effective_ref_price,
+                requested_volume=None,
+                sizing_payload=None,
+                meta_payload={
+                    "strategy": {"market": market, "side": side, "meta": strategy_meta},
+                    "trade_gate": {
+                        **trade_gate_payload,
+                        "reason_code": "DUPLICATE_EXIT_ORDER",
+                        "severity": "BLOCK",
+                        "gate_reasons": ["DUPLICATE_EXIT_ORDER"],
+                        "diagnostics": {},
+                    },
+                },
+            )
+        if forced_volume is None or forced_volume <= 0:
+            forced_volume = max(_safe_float(local_position.get("base_amount"), default=0.0), 0.0)
+
+    gate_price = round_price_to_tick(
+        price=effective_ref_price,
+        tick_size=float(snapshot.tick_size),
+        side=side,
+    )
+    gate_volume = (
+        float(forced_volume)
+        if forced_volume is not None and forced_volume > 0
+        else max(float(entry_notional_quote or settings.per_trade_krw), 1.0) / max(float(gate_price), 1e-12)
+    )
+    if gate_volume <= 0:
+        return _LiveStrategyExecutionResolution(
+            allowed=False,
+            skip_reason="ZERO_VOLUME",
+            requested_price=gate_price,
+            requested_volume=gate_volume,
+            sizing_payload=None,
+            meta_payload={
+                "strategy": {"market": market, "side": side, "meta": strategy_meta},
+                "trade_gate": {
+                    **trade_gate_payload,
+                    "reason_code": "ZERO_VOLUME",
+                    "severity": "BLOCK",
+                    "gate_reasons": ["ZERO_VOLUME"],
+                    "diagnostics": {},
+                },
+            },
+        )
+    fee_rate = float(snapshot.bid_fee if side == "bid" else snapshot.ask_fee)
+    trade_gate_decision = trade_gate.evaluate(
+        ts_ms=ts_ms,
+        market=market,
+        side=side,
+        price=gate_price,
+        volume=gate_volume,
+        fee_rate=fee_rate,
+        exchange=exchange_view,
+        min_total_krw=float(snapshot.min_total),
+    )
+    trade_gate_payload = {
+        **trade_gate_payload,
+        "reason_code": str(trade_gate_decision.reason_code),
+        "severity": str(trade_gate_decision.severity),
+        "gate_reasons": list(trade_gate_decision.gate_reasons),
+        "diagnostics": dict(trade_gate_decision.diagnostics or {}),
+        "gate_price": float(gate_price),
+        "gate_volume": float(gate_volume),
+    }
+    if not trade_gate_decision.allowed:
+        return _LiveStrategyExecutionResolution(
+            allowed=False,
+            skip_reason=str(trade_gate_decision.reason_code),
+            requested_price=gate_price,
+            requested_volume=gate_volume,
+            sizing_payload=None,
+            meta_payload={
+                "strategy": {
+                    "market": market,
+                    "side": side,
+                    "reason_code": str(strategy_intent.reason_code),
+                    "score": strategy_intent.score,
+                    "prob": strategy_intent.prob,
+                    "meta": strategy_meta,
+                },
+                "execution": {
+                    "initial_ref_price": float(initial_ref_price),
+                    "latest_trade_price": float(latest_trade_price),
+                    "effective_ref_price": float(effective_ref_price),
+                    "exec_profile": order_exec_profile_to_dict(exec_profile),
+                },
+                "trade_gate": trade_gate_payload,
+                "operational_overlay": operational_payload,
+            },
+        )
+
+    policy_diagnostics: dict[str, Any] = {}
+    policy_payload = {
+        "enabled": bool(micro_order_policy is not None),
+        "tier": None,
+        "reason_code": "POLICY_DISABLED",
+    }
+    if micro_order_policy is not None:
+        policy_decision = micro_order_policy.evaluate(
+            micro_snapshot=snapshot_for_policy,
+            base_profile=exec_profile,
+            market=market,
+            ref_price=effective_ref_price,
+            tick_size=float(snapshot.tick_size),
+            replace_attempt=0,
+            model_prob=_safe_optional_float(strategy_meta.get("model_prob")),
+            now_ts_ms=ts_ms,
+        )
+        policy_diagnostics = dict(policy_decision.diagnostics or {})
+        policy_payload = {
+            "enabled": True,
+            "tier": str(policy_decision.tier) if policy_decision.tier is not None else None,
+            "reason_code": str(policy_decision.reason_code),
+        }
+        if not policy_decision.allow:
+            return _LiveStrategyExecutionResolution(
+                allowed=False,
+                skip_reason=str(policy_decision.reason_code),
+                requested_price=effective_ref_price,
+                requested_volume=_safe_optional_float(strategy_intent.volume),
+                sizing_payload=None,
+                meta_payload={
+                    "strategy": {
+                        "market": market,
+                        "side": side,
+                        "reason_code": str(strategy_intent.reason_code),
+                        "score": strategy_intent.score,
+                        "prob": strategy_intent.prob,
+                        "meta": strategy_meta,
+                    },
+                    "execution": {
+                        "initial_ref_price": float(initial_ref_price),
+                        "latest_trade_price": float(latest_trade_price),
+                        "effective_ref_price": float(effective_ref_price),
+                        "exec_profile": order_exec_profile_to_dict(exec_profile),
+                    },
+                    "micro_order_policy": policy_payload,
+                    "micro_diagnostics": policy_diagnostics,
+                    "operational_overlay": operational_payload,
+                },
+            )
+        if policy_decision.profile is not None:
+            exec_profile = policy_decision.profile
+
+    requested_price = build_limit_price_from_mode(
+        side=side,
+        ref_price=effective_ref_price,
+        tick_size=float(snapshot.tick_size),
+        price_mode=exec_profile.price_mode,
+    )
+    sizing_payload: dict[str, Any] | None = None
+    requested_volume = _safe_optional_float(strategy_intent.volume)
+    if side == "bid":
+        target_notional_quote = float(entry_notional_quote or settings.per_trade_krw)
+        sizing = derive_volume_from_target_notional(
+            side="bid",
+            price=requested_price,
+            target_notional_quote=float(target_notional_quote),
+            fee_rate=max(float(snapshot.bid_fee), 0.0),
+        )
+        sizing_payload = sizing_envelope_to_payload(sizing)
+        requested_volume = max(float(sizing.admissible_volume), 1e-12)
+    else:
+        requested_volume = max(_safe_float(local_position.get("base_amount"), default=0.0), 0.0)
+        if requested_volume <= 0:
+            return _LiveStrategyExecutionResolution(
+                allowed=False,
+                skip_reason="ZERO_LOCAL_POSITION",
+                requested_price=requested_price,
+                requested_volume=requested_volume,
+                sizing_payload=None,
+                meta_payload={"strategy": {"market": market, "side": side, "meta": strategy_meta}},
+            )
+
+    return _LiveStrategyExecutionResolution(
+        allowed=True,
+        skip_reason=None,
+        requested_price=requested_price,
+        requested_volume=requested_volume,
+        sizing_payload=sizing_payload,
+        meta_payload={
+            "strategy": {
+                "market": market,
+                "side": side,
+                "reason_code": str(strategy_intent.reason_code),
+                "score": strategy_intent.score,
+                "prob": strategy_intent.prob,
+                "meta": strategy_meta,
+            },
+            "execution": {
+                "initial_ref_price": float(initial_ref_price),
+                "latest_trade_price": float(latest_trade_price),
+                "effective_ref_price": float(effective_ref_price),
+                "requested_price": float(requested_price),
+                "exec_profile": order_exec_profile_to_dict(exec_profile),
+            },
+            "micro_order_policy": policy_payload,
+            "micro_diagnostics": policy_diagnostics,
+            "trade_gate": trade_gate_payload,
+            "operational_overlay": operational_payload,
+        },
+    )
+
+
+def _strategy_live_exec_profile(
+    *,
+    settings: LiveModelAlphaRuntimeSettings,
+    model_alpha_settings: ModelAlphaSettings,
+) -> OrderExecProfile:
+    interval_ms = _interval_ms_from_tf(settings.tf)
+    timeout_ms = max(int(model_alpha_settings.execution.timeout_bars), 1) * interval_ms
+    return make_legacy_exec_profile(
+        timeout_ms=timeout_ms,
+        replace_interval_ms=timeout_ms,
+        max_replaces=max(int(model_alpha_settings.execution.replace_max), 0),
+        price_mode=str(model_alpha_settings.execution.price_mode),
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1_500,
+    )
+
+
+def _effective_live_trade_gate_max_positions(settings: LiveModelAlphaRuntimeSettings) -> int:
+    max_positions = max(int(settings.max_positions), 1)
+    if bool(settings.daemon.small_account_canary_enabled):
+        max_positions = min(max_positions, max(int(settings.daemon.small_account_max_positions), 1))
+    return max_positions
 
 
 def _order_emission_allowed(store: LiveStateStore) -> bool:
