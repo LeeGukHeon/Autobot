@@ -1330,6 +1330,7 @@ def build_parser() -> argparse.ArgumentParser:
         "admissibility",
         help="Evaluate exact live-order admissibility using exchange snapshots.",
     )
+    live_admissibility_parser.add_argument("--bot-id", help="Override live.bot_id")
     live_admissibility_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
     live_admissibility_parser.add_argument("--side", required=True, choices=("bid", "ask"))
     live_admissibility_parser.add_argument("--price", required=True, type=float)
@@ -4062,7 +4063,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
     try:
         defaults = _live_defaults(base_config)
         project_root = config_dir.resolve().parent
-        bot_id = str(args.bot_id or defaults["bot_id"]).strip()
+        bot_id = str(getattr(args, "bot_id", None) or defaults["bot_id"]).strip()
         if not bot_id:
             raise ValueError("live.bot_id must not be blank")
         db_path = Path(str(defaults["state_db_path"]))
