@@ -163,6 +163,12 @@ These tickets are the required follow-on family before changing core promotion b
     - `SCOUT_ONLY_BUDGET_EVIDENCE`
   - the daily `v4` wrapper now pins:
     - `RunScope = scheduled_daily`
+- `T21.14` slice 1 landed locally:
+  - `economic_objective_profile.json` is now written for each `v4` run
+  - trainer sweep, walk-forward selection, offline compare, execution compare, and promotion compare now share:
+    - `profile_id = v4_shared_economic_objective_v1`
+  - `decision_surface.json`, `metrics.json`, certification provenance, and acceptance reports now expose that profile id
+  - promotion pareto metric selection now comes from the shared profile artifact rather than a PowerShell-only hardcoded metric list
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

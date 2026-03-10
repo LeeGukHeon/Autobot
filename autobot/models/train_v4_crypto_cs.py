@@ -31,6 +31,10 @@ from .dataset_loader import (
     load_feature_spec,
     load_label_spec,
 )
+from .economic_objective import (
+    build_v4_shared_economic_objective_profile,
+    build_v4_trainer_sweep_sort_key,
+)
 from .cpcv_lite import (
     build_cpcv_lite_plan,
     summarize_cpcv_lite_dsr,
@@ -105,7 +109,6 @@ from .train_v1 import (
     _try_import_xgboost,
     _validate_split_counts,
 )
-from .train_v3_mtf_micro import _fit_booster_sweep_weighted
 
 
 @dataclass(frozen=True)
@@ -191,6 +194,7 @@ class TrainV4CryptoCsResult:
     execution_acceptance_report_path: Path | None = None
     runtime_recommendations_path: Path | None = None
     trainer_research_evidence_path: Path | None = None
+    economic_objective_profile_path: Path | None = None
     decision_surface_path: Path | None = None
     experiment_ledger_path: Path | None = None
     experiment_ledger_summary_path: Path | None = None
@@ -239,6 +243,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
 
     started_at = time.time()
+    economic_objective_profile = build_v4_shared_economic_objective_profile()
     run_id = make_run_id(seed=options.seed)
     request = build_dataset_request(
         dataset_root=options.dataset_root,
@@ -496,6 +501,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_runtime=cpcv_lite_runtime,
         search_budget_decision=search_budget_decision,
+        economic_objective_profile=economic_objective_profile,
     )
     leaderboard_row = _make_v4_leaderboard_row(
         run_id=run_id,
@@ -701,6 +707,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(trainer_research_evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    economic_objective_profile_path = run_dir / "economic_objective_profile.json"
+    economic_objective_profile_path.write_text(
+        json.dumps(economic_objective_profile, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     decision_surface = _build_decision_surface_v4(
         options=options,
         task=task,
@@ -712,6 +723,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         execution_acceptance=execution_acceptance,
         runtime_recommendations=runtime_recommendations,
         promotion=promotion,
+        economic_objective_profile=economic_objective_profile,
     )
     decision_surface_path = run_dir / "decision_surface.json"
     decision_surface_path.write_text(
@@ -739,6 +751,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         promotion=promotion,
         duplicate_candidate=duplicate_candidate,
         run_scope=options.run_scope,
+        economic_objective_profile=economic_objective_profile,
     )
     experiment_ledger_path = append_experiment_ledger_record(
         registry_root=options.registry_root,
@@ -786,6 +799,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "runtime_recommendations": runtime_recommendations,
             "selection_recommendations": selection_recommendations,
             "promotion": promotion,
+            "economic_objective_profile": economic_objective_profile,
             "experiment_ledger_record": experiment_ledger_record,
             "experiment_ledger_summary": experiment_ledger_summary,
         },
@@ -809,6 +823,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         execution_acceptance_report_path=execution_acceptance_report_path,
         runtime_recommendations_path=runtime_recommendations_path,
         trainer_research_evidence_path=trainer_research_evidence_path,
+        economic_objective_profile_path=economic_objective_profile_path,
         decision_surface_path=decision_surface_path,
         experiment_ledger_path=experiment_ledger_path,
         experiment_ledger_summary_path=experiment_ledger_summary_path,
@@ -1685,9 +1700,10 @@ def _fit_walk_forward_weighted_trials(
     w_train_safe = np.clip(w_train_safe, 1e-6, None)
     w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
 
-    best_key: tuple[float, float, float] | None = None
+    best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
     trial_records: list[dict[str, Any]] = []
+    economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
     for trial in range(max(int(sweep_trials), 1)):
         params = _sample_xgb_params(rng)
         estimator = xgb.XGBClassifier(
@@ -1726,13 +1742,7 @@ def _fit_walk_forward_weighted_trials(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
-        valid_cls = valid_metrics.get("classification", {}) if isinstance(valid_metrics, dict) else {}
-        valid_top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
-        key = (
-            float(valid_top5.get("precision", 0.0)),
-            float(valid_cls.get("pr_auc") or 0.0),
-            float(valid_cls.get("roc_auc") or 0.0),
-        )
+        key = build_v4_trainer_sweep_sort_key(valid_metrics, task="cls")
         if best_key is None or key > best_key:
             best_key = key
             best_bundle = {"model_type": "xgboost", "scaler": None, "estimator": estimator}
@@ -1768,6 +1778,7 @@ def _fit_walk_forward_weighted_trials(
             {
                 "trial": int(trial),
                 "params": params,
+                "economic_objective_profile_id": economic_objective_profile_id,
                 "valid_selection_key": _build_trial_selection_key(valid_metrics),
                 "test_metrics": _compact_eval_metrics(test_metrics),
                 "test_oos_periods": test_oos_periods,
@@ -1810,9 +1821,10 @@ def _fit_walk_forward_regression_trials(
     w_train_safe = np.clip(w_train_safe, 1e-6, None)
     w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
 
-    best_key: tuple[float, float, float] | None = None
+    best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
     trial_records: list[dict[str, Any]] = []
+    economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
     for trial in range(max(int(sweep_trials), 1)):
         params = _sample_xgb_params(rng)
         estimator = xgb.XGBRegressor(
@@ -1851,13 +1863,7 @@ def _fit_walk_forward_regression_trials(
             fee_bps_est=options.fee_bps_est,
             safety_bps=options.safety_bps,
         )
-        valid_cls = valid_metrics.get("classification", {}) if isinstance(valid_metrics, dict) else {}
-        valid_top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
-        key = (
-            float(valid_top5.get("precision", 0.0)),
-            float(valid_top5.get("ev_net", 0.0)),
-            float(valid_cls.get("pr_auc") or 0.0),
-        )
+        key = build_v4_trainer_sweep_sort_key(valid_metrics, task="reg")
         if best_key is None or key > best_key:
             best_key = key
             best_bundle = {"model_type": "xgboost_regressor", "scaler": None, "estimator": estimator}
@@ -1893,6 +1899,7 @@ def _fit_walk_forward_regression_trials(
             {
                 "trial": int(trial),
                 "params": params,
+                "economic_objective_profile_id": economic_objective_profile_id,
                 "valid_selection_key": _build_trial_selection_key(valid_metrics),
                 "test_metrics": _compact_eval_metrics(test_metrics),
                 "test_oos_periods": test_oos_periods,
@@ -1940,9 +1947,10 @@ def _fit_walk_forward_ranker_trials(
         w_train_safe = np.ones(y_train_rank.size, dtype=np.float64)
     w_train_safe = np.clip(w_train_safe, 1e-6, None)
 
-    best_key: tuple[float, float, float] | None = None
+    best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
     trial_records: list[dict[str, Any]] = []
+    economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
     for trial in range(max(int(sweep_trials), 1)):
         params = _sample_xgb_params(rng)
         estimator = xgb.XGBRanker(
@@ -1992,13 +2000,7 @@ def _fit_walk_forward_ranker_trials(
             ts_ms=ts_valid_ms,
             scores=valid_scores,
         )
-        ranking = valid_metrics.get("ranking", {}) if isinstance(valid_metrics, dict) else {}
-        valid_top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
-        key = (
-            float(ranking.get("ndcg_at_5_mean", 0.0) or 0.0),
-            float(ranking.get("top1_match_rate", 0.0) or 0.0),
-            float(valid_top5.get("ev_net", 0.0)),
-        )
+        key = build_v4_trainer_sweep_sort_key(valid_metrics, task="rank")
         if best_key is None or key > best_key:
             best_key = key
             best_bundle = {"model_type": "xgboost_ranker", "scaler": None, "estimator": estimator}
@@ -2039,6 +2041,7 @@ def _fit_walk_forward_ranker_trials(
             {
                 "trial": int(trial),
                 "params": params,
+                "economic_objective_profile_id": economic_objective_profile_id,
                 "objective": "rank:pairwise",
                 "grouping": {"query_key": "ts_ms"},
                 "valid_selection_key": _build_trial_selection_key(valid_metrics),
@@ -2589,6 +2592,112 @@ def _build_trial_selection_key(metrics: dict[str, Any]) -> dict[str, float]:
     return selection_key
 
 
+def _fit_booster_sweep_classifier_v4(
+    *,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    w_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    w_valid: np.ndarray,
+    y_reg_valid: np.ndarray,
+    fee_bps_est: float,
+    safety_bps: float,
+    seed: int,
+    nthread: int,
+    trials: int,
+) -> dict[str, Any]:
+    xgb = _try_import_xgboost()
+    if xgb is None:
+        raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
+
+    rng = np.random.default_rng(int(seed))
+    trial_rows: list[dict[str, Any]] = []
+    best_key: tuple[float, ...] | None = None
+    best_bundle: dict[str, Any] | None = None
+    best_params: dict[str, Any] = {}
+    economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
+
+    w_train_safe = np.asarray(w_train, dtype=np.float64)
+    w_valid_safe = np.asarray(w_valid, dtype=np.float64)
+    if w_train_safe.size != y_train.size:
+        w_train_safe = np.ones(y_train.size, dtype=np.float64)
+    if w_valid_safe.size != y_valid.size:
+        w_valid_safe = np.ones(y_valid.size, dtype=np.float64)
+    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+    w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
+
+    for trial in range(max(int(trials), 1)):
+        params = _sample_xgb_params(rng)
+        estimator = xgb.XGBClassifier(
+            objective="binary:logistic",
+            tree_method="hist",
+            n_estimators=1200,
+            learning_rate=params["learning_rate"],
+            max_depth=params["max_depth"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            min_child_weight=params["min_child_weight"],
+            reg_lambda=params["reg_lambda"],
+            reg_alpha=params["reg_alpha"],
+            max_bin=params["max_bin"],
+            random_state=int(seed + trial),
+            nthread=max(int(nthread), 1),
+            eval_metric="logloss",
+        )
+        fit_kwargs = {
+            "sample_weight": w_train_safe,
+            "eval_set": [(x_valid, y_valid)],
+            "sample_weight_eval_set": [w_valid_safe],
+            "verbose": False,
+        }
+        try:
+            estimator.fit(x_train, y_train, early_stopping_rounds=50, **fit_kwargs)
+        except TypeError:
+            estimator.fit(x_train, y_train, sample_weight=w_train_safe, eval_set=[(x_valid, y_valid)], verbose=False)
+
+        valid_scores = estimator.predict_proba(x_valid)[:, 1]
+        valid_metrics = _evaluate_split(
+            y_cls=y_valid,
+            y_reg=y_reg_valid,
+            scores=valid_scores,
+            markets=np.array(["_ALL_"] * int(y_valid.size), dtype=object),
+            fee_bps_est=fee_bps_est,
+            safety_bps=safety_bps,
+        )
+        key = build_v4_trainer_sweep_sort_key(valid_metrics, task="cls")
+        trial_rows.append(
+            {
+                "trial": trial,
+                "backend": "xgboost",
+                "params": params,
+                "economic_objective_profile_id": economic_objective_profile_id,
+                "selection_key": {
+                    "ev_net_top5": float(key[0]) if len(key) > 0 else 0.0,
+                    "precision_top5": float(key[1]) if len(key) > 1 else 0.0,
+                    "pr_auc": float(key[2]) if len(key) > 2 else 0.0,
+                    "roc_auc": float(key[3]) if len(key) > 3 else 0.0,
+                },
+            }
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_params = params
+            best_bundle = {"model_type": "xgboost", "scaler": None, "estimator": estimator}
+
+    if best_bundle is None:
+        raise RuntimeError("booster sweep failed to produce a model")
+    return {
+        "bundle": best_bundle,
+        "best_params": best_params,
+        "backend": "xgboost",
+        "trials": trial_rows,
+    }
+
+
+_fit_booster_sweep_weighted = _fit_booster_sweep_classifier_v4
+
+
 def _fit_booster_sweep_regression(
     *,
     x_train: np.ndarray,
@@ -2610,9 +2719,10 @@ def _fit_booster_sweep_regression(
 
     rng = np.random.default_rng(int(seed))
     trial_rows: list[dict[str, Any]] = []
-    best_key: tuple[float, float, float] | None = None
+    best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
     best_params: dict[str, Any] = {}
+    economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
 
     w_train_safe = np.asarray(w_train, dtype=np.float64)
     w_valid_safe = np.asarray(w_valid, dtype=np.float64)
@@ -2661,22 +2771,18 @@ def _fit_booster_sweep_regression(
             fee_bps_est=fee_bps_est,
             safety_bps=safety_bps,
         )
-        cls = valid_metrics.get("classification", {}) if isinstance(valid_metrics, dict) else {}
-        top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
-        key = (
-            float(top5.get("precision", 0.0)),
-            float(top5.get("ev_net", 0.0)),
-            float(cls.get("pr_auc") or 0.0),
-        )
+        key = build_v4_trainer_sweep_sort_key(valid_metrics, task="reg")
         trial_rows.append(
             {
                 "trial": trial,
                 "backend": "xgboost_regression",
                 "params": params,
+                "economic_objective_profile_id": economic_objective_profile_id,
                 "selection_key": {
-                    "precision_top5": key[0],
-                    "ev_net_top5": key[1],
-                    "pr_auc": key[2],
+                    "ev_net_top5": float(key[0]) if len(key) > 0 else 0.0,
+                    "precision_top5": float(key[1]) if len(key) > 1 else 0.0,
+                    "pr_auc": float(key[2]) if len(key) > 2 else 0.0,
+                    "roc_auc": float(key[3]) if len(key) > 3 else 0.0,
                 },
             }
         )
@@ -2719,9 +2825,10 @@ def _fit_booster_sweep_ranker(
 
     rng = np.random.default_rng(int(seed))
     trial_rows: list[dict[str, Any]] = []
-    best_key: tuple[float, float, float] | None = None
+    best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None
     best_params: dict[str, Any] = {}
+    economic_objective_profile_id = str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip()
 
     train_group = _group_counts_by_ts(ts_train_ms)
     valid_group = _group_counts_by_ts(ts_valid_ms)
@@ -2778,13 +2885,7 @@ def _fit_booster_sweep_ranker(
             ts_ms=ts_valid_ms,
             scores=valid_scores,
         )
-        ranking = valid_metrics.get("ranking", {}) if isinstance(valid_metrics, dict) else {}
-        top5 = (valid_metrics.get("trading", {}) or {}).get("top_5pct", {})
-        key = (
-            float(ranking.get("ndcg_at_5_mean", 0.0) or 0.0),
-            float(ranking.get("top1_match_rate", 0.0) or 0.0),
-            float(top5.get("ev_net", 0.0)),
-        )
+        key = build_v4_trainer_sweep_sort_key(valid_metrics, task="rank")
         trial_rows.append(
             {
                 "trial": trial,
@@ -2792,10 +2893,11 @@ def _fit_booster_sweep_ranker(
                 "objective": "rank:pairwise",
                 "grouping": {"query_key": "ts_ms"},
                 "params": params,
+                "economic_objective_profile_id": economic_objective_profile_id,
                 "selection_key": {
-                    "ndcg_at_5_mean": key[0],
-                    "top1_match_rate": key[1],
-                    "ev_net_top5": key[2],
+                    "ev_net_top5": float(key[0]) if len(key) > 0 else 0.0,
+                    "ndcg_at_5_mean": float(key[1]) if len(key) > 1 else 0.0,
+                    "top1_match_rate": float(key[2]) if len(key) > 2 else 0.0,
                 },
             }
         )
@@ -2981,6 +3083,7 @@ def _build_v4_metrics_doc(
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
     search_budget_decision: dict[str, Any],
+    economic_objective_profile: dict[str, Any],
 ) -> dict[str, Any]:
     backend = "xgboost_ranker" if task == "rank" else "xgboost_regressor" if task == "reg" else "xgboost"
     objective = "rank:pairwise" if task == "rank" else "reg:squarederror" if task == "reg" else "binary:logistic"
@@ -3038,6 +3141,14 @@ def _build_v4_metrics_doc(
             },
         },
         "search_budget": dict(search_budget_decision or {}),
+        "economic_objective": {
+            "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
+            or "v4_shared_economic_objective_v1",
+            "trainer_sweep": dict(((economic_objective_profile or {}).get("trainer_sweep") or {}).get("task_profiles", {}).get(task) or {}),
+            "walk_forward_selection": dict((economic_objective_profile or {}).get("walk_forward_selection") or {}),
+            "offline_compare": dict((economic_objective_profile or {}).get("offline_compare") or {}),
+            "execution_compare": dict((economic_objective_profile or {}).get("execution_compare") or {}),
+        },
         "factor_block_selection": factor_block_selection_summary,
     }
 
@@ -3149,6 +3260,7 @@ def _build_decision_surface_v4(
     execution_acceptance: dict[str, Any],
     runtime_recommendations: dict[str, Any],
     promotion: dict[str, Any],
+    economic_objective_profile: dict[str, Any],
 ) -> dict[str, Any]:
     normalized_run_scope = normalize_factor_block_run_scope(options.run_scope)
     search_applied = dict((search_budget_decision or {}).get("applied") or {})
@@ -3218,6 +3330,20 @@ def _build_decision_surface_v4(
             ).strip(),
             "selection_calibration_method": str((selection_calibration or {}).get("method", "")).strip(),
             "selection_calibration_sample_count": int((selection_calibration or {}).get("sample_count", 0) or 0),
+        },
+        "economic_objective_contract": {
+            "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
+            or "v4_shared_economic_objective_v1",
+            "objective_family": str((economic_objective_profile or {}).get("objective_family", "")).strip()
+            or "economic_return_first",
+            "trainer_sweep": dict(
+                (((economic_objective_profile or {}).get("trainer_sweep") or {}).get("task_profiles") or {}).get(task)
+                or {}
+            ),
+            "walk_forward_selection": dict((economic_objective_profile or {}).get("walk_forward_selection") or {}),
+            "offline_compare": dict((economic_objective_profile or {}).get("offline_compare") or {}),
+            "execution_compare": dict((economic_objective_profile or {}).get("execution_compare") or {}),
+            "promotion_compare": dict((economic_objective_profile or {}).get("promotion_compare") or {}),
         },
         "factor_block_contract": {
             "selection_mode": normalize_factor_block_selection_mode(options.factor_block_selection_mode),

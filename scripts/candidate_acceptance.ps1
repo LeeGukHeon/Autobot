@@ -188,6 +188,34 @@ function Get-PropValue {
     return $DefaultValue
 }
 
+function Convert-ToStringArray {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    if ($Value -is [string]) {
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return @()
+        }
+        return @($Value.Trim())
+    }
+    $items = @()
+    if ($Value -is [System.Array] -or $Value -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Value) {
+            $text = [string]$item
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                $items += $text.Trim()
+            }
+        }
+        return @($items)
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @()
+    }
+    return @($text.Trim())
+}
+
 function To-Double {
     param([Parameter(Mandatory = $false)]$Value, [double]$DefaultValue = 0.0)
     try {
@@ -519,6 +547,7 @@ function New-CertificationArtifact {
         [string]$CandidateRunDir,
         [string]$PromotionDecisionPath,
         [string]$ResearchEvidencePath,
+        [string]$EconomicObjectiveProfilePath,
         [string]$DecisionSurfacePath,
         [string]$TrainStartDate,
         [string]$TrainEndDate,
@@ -529,6 +558,8 @@ function New-CertificationArtifact {
     )
     $decisionSurface = Load-JsonOrEmpty -PathValue $DecisionSurfacePath
     $decisionSurfacePresent = -not (Test-IsEffectivelyEmptyObject -ObjectValue $decisionSurface)
+    $economicObjectiveProfile = Load-JsonOrEmpty -PathValue $EconomicObjectiveProfilePath
+    $economicObjectiveProfilePresent = -not (Test-IsEffectivelyEmptyObject -ObjectValue $economicObjectiveProfile)
     $researchWindowSpec = Resolve-ResearchWindowFromDecisionSurface `
         -DecisionSurface $decisionSurface `
         -FallbackStart $TrainStartDate `
@@ -573,6 +604,9 @@ function New-CertificationArtifact {
             promotion_decision_present = (Test-Path $PromotionDecisionPath)
             research_evidence_path = $ResearchEvidencePath
             research_evidence_present = (Test-Path $ResearchEvidencePath)
+            economic_objective_profile_path = $EconomicObjectiveProfilePath
+            economic_objective_profile_present = $economicObjectiveProfilePresent
+            economic_objective_profile_id = [string](Get-PropValue -ObjectValue $economicObjectiveProfile -Name "profile_id" -DefaultValue "")
             decision_surface_path = $DecisionSurfacePath
             decision_surface_present = $decisionSurfacePresent
             trainer_evidence_mode = $TrainerEvidenceMode
@@ -1454,6 +1488,8 @@ function Build-ReportMarkdown {
     $lines.Add("- champion_run_id_used_for_backtest: $([string](Get-PropValue -ObjectValue $candidate -Name 'champion_run_id_used_for_backtest' -DefaultValue ''))") | Out-Null
     $lines.Add("- research_evidence_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'research_evidence_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- search_budget_decision_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'search_budget_decision_path' -DefaultValue ''))") | Out-Null
+    $lines.Add("- economic_objective_profile_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'economic_objective_profile_path' -DefaultValue ''))") | Out-Null
+    $lines.Add("- economic_objective_profile_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'economic_objective_profile_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_artifact_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'certification_artifact_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- duplicate_candidate: $([string](Get-PropValue -ObjectValue $candidate -Name 'duplicate_candidate' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
@@ -1537,6 +1573,7 @@ function Build-ReportMarkdown {
     $lines.Add("- trainer_evidence_execution_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_execution_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- budget_contract_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_contract_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- budget_lane_class_effective: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_lane_class_effective' -DefaultValue ''))") | Out-Null
+    $lines.Add("- economic_objective_profile_id: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'economic_objective_profile_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_start: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_start' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_end: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_end' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_valid: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_valid' -DefaultValue ''))") | Out-Null
@@ -1878,6 +1915,8 @@ try {
     $researchEvidenceArtifact = if ([string]::IsNullOrWhiteSpace($researchEvidencePath)) { @{} } else { Load-JsonOrEmpty -PathValue $researchEvidencePath }
     $searchBudgetDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "search_budget_decision.json" }
     $searchBudgetDecision = if ([string]::IsNullOrWhiteSpace($searchBudgetDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $searchBudgetDecisionPath }
+    $economicObjectiveProfilePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "economic_objective_profile.json" }
+    $economicObjectiveProfile = if ([string]::IsNullOrWhiteSpace($economicObjectiveProfilePath)) { @{} } else { Load-JsonOrEmpty -PathValue $economicObjectiveProfilePath }
     $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
     $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
     $researchEvidence = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
@@ -1889,6 +1928,7 @@ try {
             -CandidateRunDir $candidateRunDir `
             -PromotionDecisionPath $promotionDecisionPath `
             -ResearchEvidencePath $researchEvidencePath `
+            -EconomicObjectiveProfilePath $economicObjectiveProfilePath `
             -DecisionSurfacePath $decisionSurfacePath `
             -TrainStartDate $trainStartDate `
             -TrainEndDate $trainEndDate `
@@ -1918,6 +1958,7 @@ try {
         candidate_run_dir = $candidateRunDir
         research_evidence_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
+        economic_objective_profile_path = $economicObjectiveProfilePath
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -1942,6 +1983,8 @@ try {
         run_dir = $candidateRunDir
         research_evidence_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
+        economic_objective_profile_path = $economicObjectiveProfilePath
+        economic_objective_profile_id = [string](Get-PropValue -ObjectValue $economicObjectiveProfile -Name "profile_id" -DefaultValue "")
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -2092,6 +2135,8 @@ try {
     $slippageDeteriorationBps = $null
     $slippageGuardPass = $true
     $utilityMetric = "calmar_like"
+    $candidateUtilityScore = $null
+    $championUtilityScore = $null
     $utilityDeltaPct = $null
     $utilityTieBreakPass = $false
     $candidateParetoDominates = $false
@@ -2140,6 +2185,29 @@ try {
     if ($budgetContractApplied -and (-not $budgetContractGatePass)) {
         $budgetContractReasons += "SCOUT_ONLY_BUDGET_EVIDENCE"
     }
+    $economicObjectiveProfileApplied = -not (Test-IsEffectivelyEmptyObject -ObjectValue $economicObjectiveProfile)
+    $economicObjectiveProfileId = if ($economicObjectiveProfileApplied) {
+        [string](Get-PropValue -ObjectValue $economicObjectiveProfile -Name "profile_id" -DefaultValue "")
+    } else {
+        ""
+    }
+    $promotionCompareProfile = if ($economicObjectiveProfileApplied) {
+        Get-PropValue -ObjectValue $economicObjectiveProfile -Name "promotion_compare" -DefaultValue @{}
+    } else {
+        @{}
+    }
+    $promotionParetoHigherMetrics = Convert-ToStringArray (Get-PropValue -ObjectValue $promotionCompareProfile -Name "pareto_higher_is_better" -DefaultValue @())
+    if ($promotionParetoHigherMetrics.Count -le 0) {
+        $promotionParetoHigherMetrics = @("realized_pnl_quote", "fill_rate")
+    }
+    $promotionParetoLowerMetrics = Convert-ToStringArray (Get-PropValue -ObjectValue $promotionCompareProfile -Name "pareto_lower_is_better" -DefaultValue @())
+    if ($promotionParetoLowerMetrics.Count -le 0) {
+        $promotionParetoLowerMetrics = @("max_drawdown_pct", "slippage_bps_mean")
+    }
+    $utilityMetric = [string](Get-PropValue -ObjectValue $promotionCompareProfile -Name "utility_metric" -DefaultValue "calmar_like")
+    if ([string]::IsNullOrWhiteSpace($utilityMetric)) {
+        $utilityMetric = "calmar_like"
+    }
     $decisionBasis = if ($championCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
     if ($championCompareEvaluated) {
         $strictChampionDeltaPass = $championDeltaQuote -ge $BacktestMinPnlDeltaVsChampion
@@ -2170,6 +2238,20 @@ try {
             $slippageDeteriorationBps = $candidateSlippageBpsMean - $championSlippageBpsMean
             $slippageGuardPass = $slippageDeteriorationBps -le [double]$promotionPolicyConfig.backtest_champion_max_slippage_deterioration_bps
         }
+        $candidateCompareMetrics = @{
+            realized_pnl_quote = [double]$candidateRealizedPnl
+            fill_rate = if ($candidateFillRate -ge 0.0) { [double]$candidateFillRate } else { $null }
+            max_drawdown_pct = if ($candidateMaxDrawdownPct -ge 0.0) { [double]$candidateMaxDrawdownPct } else { $null }
+            slippage_bps_mean = $candidateSlippageBpsMean
+            calmar_like = $candidateCalmarLikeScore
+        }
+        $championCompareMetrics = @{
+            realized_pnl_quote = [double]$championRealizedPnl
+            fill_rate = if ($championFillRate -ge 0.0) { [double]$championFillRate } else { $null }
+            max_drawdown_pct = if ($championMaxDrawdownPct -ge 0.0) { [double]$championMaxDrawdownPct } else { $null }
+            slippage_bps_mean = $championSlippageBpsMean
+            calmar_like = $championCalmarLikeScore
+        }
         if ($promotionPolicyConfig.use_pareto) {
             $paretoComparableMetricCount = 0
             $candidateWorseOnAny = $false
@@ -2177,32 +2259,29 @@ try {
             $championWorseOnAny = $false
             $championBetterOnAny = $false
 
-            $paretoComparableMetricCount += 1
-            if ($candidateRealizedPnl -lt $championRealizedPnl) { $candidateWorseOnAny = $true }
-            if ($candidateRealizedPnl -gt $championRealizedPnl) { $candidateBetterOnAny = $true }
-            if ($championRealizedPnl -lt $candidateRealizedPnl) { $championWorseOnAny = $true }
-            if ($championRealizedPnl -gt $candidateRealizedPnl) { $championBetterOnAny = $true }
-
-            if (($candidateMaxDrawdownPct -ge 0.0) -and ($championMaxDrawdownPct -ge 0.0)) {
+            foreach ($metricName in $promotionParetoHigherMetrics) {
+                $candidateMetric = if ($candidateCompareMetrics.ContainsKey($metricName)) { $candidateCompareMetrics[$metricName] } else { $null }
+                $championMetric = if ($championCompareMetrics.ContainsKey($metricName)) { $championCompareMetrics[$metricName] } else { $null }
+                if (($null -eq $candidateMetric) -or ($null -eq $championMetric)) {
+                    continue
+                }
                 $paretoComparableMetricCount += 1
-                if ($candidateMaxDrawdownPct -gt $championMaxDrawdownPct) { $candidateWorseOnAny = $true }
-                if ($candidateMaxDrawdownPct -lt $championMaxDrawdownPct) { $candidateBetterOnAny = $true }
-                if ($championMaxDrawdownPct -gt $candidateMaxDrawdownPct) { $championWorseOnAny = $true }
-                if ($championMaxDrawdownPct -lt $candidateMaxDrawdownPct) { $championBetterOnAny = $true }
+                if ($candidateMetric -lt $championMetric) { $candidateWorseOnAny = $true }
+                if ($candidateMetric -gt $championMetric) { $candidateBetterOnAny = $true }
+                if ($championMetric -lt $candidateMetric) { $championWorseOnAny = $true }
+                if ($championMetric -gt $candidateMetric) { $championBetterOnAny = $true }
             }
-            if (($candidateFillRate -ge 0.0) -and ($championFillRate -ge 0.0)) {
+            foreach ($metricName in $promotionParetoLowerMetrics) {
+                $candidateMetric = if ($candidateCompareMetrics.ContainsKey($metricName)) { $candidateCompareMetrics[$metricName] } else { $null }
+                $championMetric = if ($championCompareMetrics.ContainsKey($metricName)) { $championCompareMetrics[$metricName] } else { $null }
+                if (($null -eq $candidateMetric) -or ($null -eq $championMetric)) {
+                    continue
+                }
                 $paretoComparableMetricCount += 1
-                if ($candidateFillRate -lt $championFillRate) { $candidateWorseOnAny = $true }
-                if ($candidateFillRate -gt $championFillRate) { $candidateBetterOnAny = $true }
-                if ($championFillRate -lt $candidateFillRate) { $championWorseOnAny = $true }
-                if ($championFillRate -gt $candidateFillRate) { $championBetterOnAny = $true }
-            }
-            if (($null -ne $candidateSlippageBpsMean) -and ($null -ne $championSlippageBpsMean)) {
-                $paretoComparableMetricCount += 1
-                if ($candidateSlippageBpsMean -gt $championSlippageBpsMean) { $candidateWorseOnAny = $true }
-                if ($candidateSlippageBpsMean -lt $championSlippageBpsMean) { $candidateBetterOnAny = $true }
-                if ($championSlippageBpsMean -gt $candidateSlippageBpsMean) { $championWorseOnAny = $true }
-                if ($championSlippageBpsMean -lt $candidateSlippageBpsMean) { $championBetterOnAny = $true }
+                if ($candidateMetric -gt $championMetric) { $candidateWorseOnAny = $true }
+                if ($candidateMetric -lt $championMetric) { $candidateBetterOnAny = $true }
+                if ($championMetric -gt $candidateMetric) { $championWorseOnAny = $true }
+                if ($championMetric -lt $candidateMetric) { $championBetterOnAny = $true }
             }
 
             if ($paretoComparableMetricCount -gt 0) {
@@ -2212,13 +2291,15 @@ try {
             }
         }
 
+        $candidateUtilityScore = if ($candidateCompareMetrics.ContainsKey($utilityMetric)) { $candidateCompareMetrics[$utilityMetric] } else { $null }
+        $championUtilityScore = if ($championCompareMetrics.ContainsKey($utilityMetric)) { $championCompareMetrics[$utilityMetric] } else { $null }
         $utilityTieBreakPass = $false
-        if ($promotionPolicyConfig.use_utility_tie_break -and ($null -ne $candidateCalmarLikeScore) -and ($null -ne $championCalmarLikeScore)) {
-            if ((-not [double]::IsInfinity($championCalmarLikeScore)) -and ($championCalmarLikeScore -ne 0.0)) {
-                $utilityDeltaPct = ($candidateCalmarLikeScore - $championCalmarLikeScore) / [Math]::Abs($championCalmarLikeScore)
+        if ($promotionPolicyConfig.use_utility_tie_break -and ($null -ne $candidateUtilityScore) -and ($null -ne $championUtilityScore)) {
+            if ((-not [double]::IsInfinity($championUtilityScore)) -and ($championUtilityScore -ne 0.0)) {
+                $utilityDeltaPct = ($candidateUtilityScore - $championUtilityScore) / [Math]::Abs($championUtilityScore)
                 $utilityTieBreakPass = $utilityDeltaPct -ge [double]$promotionPolicyConfig.backtest_champion_min_utility_edge_pct
             } else {
-                $utilityTieBreakPass = $candidateCalmarLikeScore -ge $championCalmarLikeScore
+                $utilityTieBreakPass = $candidateUtilityScore -ge $championUtilityScore
             }
         }
         $stabilityOverridePass = [bool]$promotionPolicyConfig.backtest_allow_stability_override `
@@ -2342,8 +2423,8 @@ try {
         vs_champion_drawdown_improvement_pct = $drawdownImprovementPct
         vs_champion_drawdown_improvement_pass = $drawdownImprovementPass
         utility_metric = $utilityMetric
-        vs_champion_utility_candidate_score = $candidateCalmarLikeScore
-        vs_champion_utility_champion_score = $championCalmarLikeScore
+        vs_champion_utility_candidate_score = $candidateUtilityScore
+        vs_champion_utility_champion_score = $championUtilityScore
         vs_champion_utility_delta_pct = $utilityDeltaPct
         vs_champion_utility_tie_break_pass = $utilityTieBreakPass
         vs_champion_fill_rate_degradation = $fillRateDegradation
@@ -2351,6 +2432,8 @@ try {
         vs_champion_slippage_deterioration_bps = $slippageDeteriorationBps
         vs_champion_slippage_guard_pass = $slippageGuardPass
         vs_champion_stability_override_pass = $stabilityOverridePass
+        economic_objective_profile_applied = $economicObjectiveProfileApplied
+        economic_objective_profile_id = $economicObjectiveProfileId
         trainer_evidence_applied = $trainerEvidenceApplied
         trainer_evidence_available = $trainerEvidenceAvailable
         trainer_evidence_pass = $trainerEvidencePass

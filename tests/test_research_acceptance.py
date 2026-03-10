@@ -55,6 +55,8 @@ def test_compare_balanced_pareto_prefers_candidate_on_utility_tie_break() -> Non
     assert compare["candidate_dominates"] is False
     assert compare["champion_dominates"] is False
     assert compare["decision"] == "candidate_edge"
+    assert compare["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
+    assert compare["economic_objective_context"] == "offline_compare"
     assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]
 
 
@@ -80,6 +82,8 @@ def test_compare_execution_balanced_pareto_prefers_candidate_on_utility_tie_brea
     assert compare["candidate_dominates"] is False
     assert compare["champion_dominates"] is False
     assert compare["decision"] == "candidate_edge"
+    assert compare["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
+    assert compare["economic_objective_context"] == "execution_compare"
     assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]
 
 

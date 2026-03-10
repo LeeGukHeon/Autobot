@@ -31,6 +31,7 @@ def build_experiment_ledger_record(
     runtime_recommendations: dict[str, Any],
     promotion: dict[str, Any],
     duplicate_candidate: bool,
+    economic_objective_profile: dict[str, Any] | None = None,
     run_scope: str | None = None,
 ) -> dict[str, Any]:
     walk_forward_summary = dict((walk_forward or {}).get("summary") or {})
@@ -73,6 +74,16 @@ def build_experiment_ledger_record(
             "runtime_recommendation_profile": str(search_applied.get("runtime_recommendation_profile", "")).strip() or "full",
             "cpcv_lite_auto_enabled": bool(search_applied.get("cpcv_lite_auto_enabled", False)),
             "markers": [str(item).strip() for item in ((search_budget_decision or {}).get("markers") or []) if str(item).strip()],
+        },
+        "economic_objective": {
+            "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
+            or "v4_shared_economic_objective_v1",
+            "objective_family": str((economic_objective_profile or {}).get("objective_family", "")).strip()
+            or "economic_return_first",
+            "offline_policy": str(((economic_objective_profile or {}).get("offline_compare") or {}).get("policy", "")).strip()
+            or "balanced_pareto_offline",
+            "execution_policy": str(((economic_objective_profile or {}).get("execution_compare") or {}).get("policy", "")).strip()
+            or "balanced_pareto_execution",
         },
         "walk_forward": {
             "windows_run": int(walk_forward_summary.get("windows_run", 0) or 0),

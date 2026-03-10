@@ -5,6 +5,12 @@ from typing import Any
 
 import numpy as np
 
+from .economic_objective import (
+    build_v4_shared_economic_objective_profile,
+    build_v4_walk_forward_grid_sort_key,
+    build_v4_walk_forward_threshold_sort_key,
+)
+
 
 _DEFAULT_TOP_PCT_GRID = (0.05, 0.10, 0.20, 0.33, 0.50, 0.75, 1.00)
 _DEFAULT_MIN_CANDIDATES_GRID = (1, 2, 3, 4, 5)
@@ -35,6 +41,8 @@ def build_window_selection_objectives(
     if score_values.size <= 0 or reg_values.size <= 0 or ts_values.size <= 0:
         return {
             "policy": "walk_forward_selection_objective",
+            "economic_objective_profile_id": str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip(),
+            "economic_objective_context": "walk_forward_selection",
             "comparable": False,
             "reason": "EMPTY_WINDOW",
             "by_threshold_key": {},
@@ -42,11 +50,14 @@ def build_window_selection_objectives(
     if not (score_values.size == reg_values.size == ts_values.size):
         return {
             "policy": "walk_forward_selection_objective",
+            "economic_objective_profile_id": str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip(),
+            "economic_objective_context": "walk_forward_selection",
             "comparable": False,
             "reason": "MISALIGNED_WINDOW_ARRAYS",
             "by_threshold_key": {},
         }
 
+    economic_objective_profile = build_v4_shared_economic_objective_profile()
     fee_frac = float(fee_bps_est + safety_bps) / 10_000.0
     threshold_keys = ("top_1pct", "top_5pct", "top_10pct", "ev_opt")
     by_key: dict[str, Any] = {}
@@ -70,6 +81,9 @@ def build_window_selection_objectives(
         }
     return {
         "policy": "walk_forward_selection_objective",
+        "economic_objective_profile_id": str(economic_objective_profile.get("profile_id", "")).strip(),
+        "economic_objective_context": "walk_forward_selection",
+        "economic_objective_contract": dict(economic_objective_profile.get("walk_forward_selection") or {}),
         "comparable": True,
         "config": {
             "top_pct_grid": [float(value) for value in grid.top_pct_grid],
@@ -93,6 +107,8 @@ def build_selection_recommendations_from_walk_forward(
         "optimizer": {
             "method": "walk_forward_grid_search",
             "objective": "mean_ev_net_selected",
+            "economic_objective_profile_id": str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip(),
+            "economic_objective_context": "walk_forward_selection",
             "fallback_used": False,
         },
         "recommended_threshold_key": "",
@@ -144,6 +160,7 @@ def build_selection_recommendations_from_walk_forward(
                         "threshold": _safe_optional_float(fallback_entry.get("threshold")),
                         "objective_score": _safe_optional_float(fallback_entry.get("objective_score")) or 0.0,
                         "feasible_window_ratio": 0.0,
+                        "positive_active_ts_ratio_mean": 0.0,
                         "active_ts_ratio_mean": _safe_optional_float(fallback_entry.get("recommended_min_candidates_coverage")) or 0.0,
                         "selected_rows_mean": 0.0,
                         "fallback_used": True,
@@ -177,6 +194,7 @@ def build_selection_recommendations_from_walk_forward(
                         "threshold": _safe_optional_float(fallback_entry.get("threshold")),
                         "objective_score": _safe_optional_float(fallback_entry.get("objective_score")) or 0.0,
                         "feasible_window_ratio": 0.0,
+                        "positive_active_ts_ratio_mean": 0.0,
                         "active_ts_ratio_mean": _safe_optional_float(fallback_entry.get("recommended_min_candidates_coverage")) or 0.0,
                         "selected_rows_mean": 0.0,
                         "fallback_used": True,
@@ -223,6 +241,7 @@ def build_selection_recommendations_from_walk_forward(
                 "objective_score": float(chosen["objective_score"]),
                 "feasible_window_ratio": float(chosen["feasible_window_ratio"]),
                 "active_ts_ratio_mean": float(chosen["active_ts_ratio_mean"]),
+                "positive_active_ts_ratio_mean": float(chosen["positive_active_ts_ratio_mean"]),
                 "selected_rows_mean": float(chosen["selected_rows_mean"]),
                 "fallback_used": False,
                 "recommendation_source": "walk_forward_objective_optimizer",
@@ -458,33 +477,13 @@ def _choose_best_grid_result(aggregate: list[dict[str, Any]]) -> dict[str, Any] 
         return None
     feasible = [row for row in aggregate if float(row.get("feasible_window_ratio", 0.0)) >= 0.5]
     candidate_rows = feasible or aggregate
-    return sorted(
-        candidate_rows,
-        key=lambda row: (
-            float(row.get("objective_score", 0.0)),
-            float(row.get("feasible_window_ratio", 0.0)),
-            float(row.get("active_ts_ratio_mean", 0.0)),
-            float(row.get("selected_rows_mean", 0.0)),
-            -float(row.get("top_pct", 1.0)),
-        ),
-        reverse=True,
-    )[0]
+    return sorted(candidate_rows, key=build_v4_walk_forward_grid_sort_key, reverse=True)[0]
 
 
 def _choose_best_threshold_key(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not rows:
         return None
-    return sorted(
-        rows,
-        key=lambda row: (
-            float(row.get("objective_score", 0.0)),
-            float(row.get("feasible_window_ratio", 0.0)),
-            float(row.get("active_ts_ratio_mean", 0.0)),
-            float(row.get("selected_rows_mean", 0.0)),
-            0 if bool(row.get("fallback_used")) else 1,
-        ),
-        reverse=True,
-    )[0]
+    return sorted(rows, key=build_v4_walk_forward_threshold_sort_key, reverse=True)[0]
 
 
 def _build_optimizer_trial_records(
@@ -516,6 +515,7 @@ def _build_optimizer_trial_records(
                 "trial": int(idx),
                 "trial_type": "selection_optimizer",
                 "threshold_key": str(threshold_key),
+                "economic_objective_profile_id": str(build_v4_shared_economic_objective_profile().get("profile_id", "")).strip(),
                 "selection_key": selection_key,
                 "grid_point": {
                     "top_pct": float(row.get("top_pct", 0.0)),

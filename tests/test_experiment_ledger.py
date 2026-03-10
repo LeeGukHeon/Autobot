@@ -72,6 +72,12 @@ def test_experiment_ledger_record_and_summary_capture_duplicate_history(tmp_path
         runtime_recommendations={"status": "ready"},
         promotion={"status": "candidate", "promotion_mode": "manual_gate", "reasons": ["MANUAL_PROMOTION_REQUIRED"]},
         duplicate_candidate=True,
+        economic_objective_profile={
+            "profile_id": "v4_shared_economic_objective_v1",
+            "objective_family": "economic_return_first",
+            "offline_compare": {"policy": "balanced_pareto_offline"},
+            "execution_compare": {"policy": "balanced_pareto_execution"},
+        },
     )
 
     assert record["duplicate_candidate"] is True
@@ -81,6 +87,7 @@ def test_experiment_ledger_record_and_summary_capture_duplicate_history(tmp_path
     assert record["search_budget"]["lane_class_effective"] == "scout"
     assert record["search_budget"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert record["search_budget"]["promotion_eligible_satisfied"] is False
+    assert record["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
 
     history = [record, dict(record, run_id="run-002"), dict(record, run_id="run-003", duplicate_candidate=False)]
     summary = build_recent_experiment_ledger_summary(history_records=history)

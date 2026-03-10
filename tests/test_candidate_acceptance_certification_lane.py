@@ -232,6 +232,20 @@ def _make_fake_python_exe(
                         "reasons": [],
                     }},
                 )
+                write_json(
+                    candidate_dir / "economic_objective_profile.json",
+                    {{
+                        "version": 1,
+                        "policy": "v4_shared_economic_objective_contract",
+                        "profile_id": "v4_shared_economic_objective_v1",
+                        "promotion_compare": {{
+                            "policy": "balanced_pareto_calmar_gate",
+                            "pareto_higher_is_better": ["realized_pnl_quote", "fill_rate"],
+                            "pareto_lower_is_better": ["max_drawdown_pct", "slippage_bps_mean"],
+                            "utility_metric": "calmar_like",
+                        }},
+                    }},
+                )
                 if WRITE_DECISION_SURFACE:
                     write_json(
                         candidate_dir / "decision_surface.json",
@@ -437,6 +451,8 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     assert report["steps"]["train"]["start"] == "2026-03-03"
     assert report["steps"]["train"]["end"] == "2026-03-05"
     assert report["candidate"]["search_budget_decision_path"].endswith("search_budget_decision.json")
+    assert report["candidate"]["economic_objective_profile_path"].endswith("economic_objective_profile.json")
+    assert report["candidate"]["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
     assert report["steps"]["backtest_candidate"]["start"] == "2026-03-06"
     assert report["steps"]["backtest_candidate"]["end"] == "2026-03-07"
     assert report["steps"]["train"]["trainer_evidence"]["source"] == "certification_artifact"
@@ -455,6 +471,8 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
 
     assert certification["provenance"]["trainer_evidence_source"] == "certification_artifact"
     assert certification["provenance"]["research_evidence_source"] == "trainer_research_evidence_artifact"
+    assert certification["provenance"]["economic_objective_profile_present"] is True
+    assert certification["provenance"]["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
     assert certification["windows"]["train_window"]["start"] == "2026-03-03"
     assert certification["windows"]["train_window"]["end"] == "2026-03-05"
     assert certification["windows"]["research_window"]["start"] == "2026-03-03"
@@ -531,6 +549,7 @@ def test_candidate_acceptance_rejects_scout_only_budget_evidence(
     assert report["gates"]["backtest"]["budget_promotion_eligible_satisfied"] is False
     assert report["gates"]["backtest"]["decision_basis"] == "SCOUT_ONLY_BUDGET_EVIDENCE"
     assert report["gates"]["backtest"]["budget_contract_reasons"] == ["SCOUT_ONLY_BUDGET_EVIDENCE"]
+    assert report["gates"]["backtest"]["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
     assert report["reasons"] == ["BACKTEST_ACCEPTANCE_FAILED", "SCOUT_ONLY_BUDGET_EVIDENCE"]
 
     assert certification["valid_window_contract"] is True

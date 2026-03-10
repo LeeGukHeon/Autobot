@@ -179,15 +179,19 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert result.trainer_research_evidence_path is not None
     assert result.trainer_research_evidence_path.exists()
     assert research_evidence_doc["policy"] == "v4_trainer_research_evidence_v1"
+    assert result.economic_objective_profile_path is not None
+    assert result.economic_objective_profile_path.exists()
     assert result.decision_surface_path is not None
     assert result.decision_surface_path.exists()
     assert decision_surface_doc["policy"] == "v4_decision_surface_v1"
     assert decision_surface_doc["trainer_entrypoint"]["task"] == "cls"
     assert decision_surface_doc["selection_runtime_contract"]["selection_policy_mode"] == "rank_effective_quantile"
+    assert decision_surface_doc["economic_objective_contract"]["profile_id"] == "v4_shared_economic_objective_v1"
     assert decision_surface_doc["search_budget_contract"]["lane_class_requested"] == "promotion_eligible"
     assert decision_surface_doc["search_budget_contract"]["lane_class_effective"] == "scout"
     assert decision_surface_doc["search_budget_contract"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert decision_surface_doc["search_budget_contract"]["promotion_eligible_satisfied"] is False
+    assert result.metrics["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
     assert "TRAINER_EVIDENCE_SOURCE_IS_TRAINER_RESEARCH_EVIDENCE_ARTIFACT" in decision_surface_doc["known_methodology_warnings"]
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
