@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Autobot 운영 관제</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <script id="initial-snapshot" type="application/json">__INITIAL_SNAPSHOT__</script>
+  <div class="app-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Autobot 운영 관제</p>
+        <h1>학습, 검증, 페이퍼, 라이브를 한 화면에서 읽는 운영 화면</h1>
+        <p class="hero-text">
+          현재 챔피언과 후보, 라이브 카나리아, WS 수집기, 최근 학습 결과를 JSON 없이 자연스러운 한국어로 요약합니다.
+        </p>
+      </div>
+      <div class="hero-side">
+        <div class="meta-box">
+          <span class="meta-label">마지막 갱신</span>
+          <strong id="generated-at">-</strong>
+        </div>
+        <div class="meta-box">
+          <span class="meta-label">프로젝트 경로</span>
+          <strong id="project-root">-</strong>
+        </div>
+        <div class="meta-box">
+          <span class="meta-label">저장공간</span>
+          <strong id="storage-summary">-</strong>
+        </div>
+        <div class="hero-actions">
+          <button id="refresh-btn" class="primary-button" type="button">지금 새로고침</button>
+          <span class="refresh-note">10초마다 비동기로 새로고침합니다</span>
+        </div>
+      </div>
+    </header>
+
+    <div id="fetch-error" class="error-box" hidden></div>
+
+    <nav class="tab-bar" id="tab-bar" aria-label="운영 화면 섹션">
+      <button class="tab-button active" data-tab="overview" type="button">운영 개요</button>
+      <button class="tab-button" data-tab="training" type="button">학습 / 검증</button>
+      <button class="tab-button" data-tab="paper" type="button">페이퍼</button>
+      <button class="tab-button" data-tab="live" type="button">라이브 / 카나리아</button>
+      <button class="tab-button" data-tab="ws" type="button">WS 수집</button>
+    </nav>
+
+    <main class="pane-wrap">
+      <section class="pane active" data-pane="overview">
+        <div class="summary-grid">
+          <article class="summary-card accent">
+            <p class="summary-label">현재 운영 해석</p>
+            <h2 id="overview-headline">-</h2>
+            <p id="overview-subhead" class="summary-text">-</p>
+          </article>
+          <article class="summary-card">
+            <p class="summary-label">핵심 수치</p>
+            <div id="overview-kpis" class="mini-grid"></div>
+          </article>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>서비스 상태</h3>
+              <p>systemd 유닛과 타이머를 사람 눈에 맞게 요약합니다.</p>
+            </div>
+          </div>
+          <div id="services-grid" class="card-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>운영 메모</h3>
+              <p>지금 바로 읽어야 하는 거절 사유, 브레이커, 참고 메모를 모읍니다.</p>
+            </div>
+          </div>
+          <div id="alerts-grid" class="card-grid"></div>
+        </section>
+      </section>
+
+      <section class="pane" data-pane="training" hidden>
+        <div class="summary-grid">
+          <article class="summary-card">
+            <p class="summary-label">최신 어셉턴스</p>
+            <h2 id="training-headline">-</h2>
+            <p id="training-subhead" class="summary-text">-</p>
+          </article>
+          <article class="summary-card">
+            <p class="summary-label">빠른 요약</p>
+            <div id="training-kpis" class="mini-grid"></div>
+          </article>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>학습 / 어셉턴스</h3>
+              <p>이번 후보가 왜 통과했는지, 왜 탈락했는지와 실제 숫자를 함께 보여줍니다.</p>
+            </div>
+          </div>
+          <div id="training-details" class="detail-stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>챌린저 루프</h3>
+              <p>spawn / promote에서 챌린저가 실제로 생성됐는지와 직접 사유를 보여줍니다.</p>
+            </div>
+          </div>
+          <div id="challenger-details" class="detail-stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>후보 산출물</h3>
+              <p>selection policy, calibration, runtime recommendation, factor 선택 결과를 요약합니다.</p>
+            </div>
+          </div>
+          <div id="artifact-grid" class="card-grid"></div>
+        </section>
+      </section>
+
+      <section class="pane" data-pane="paper" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>최근 페이퍼 런</h3>
+              <p>챔피언과 챌린저 페이퍼 런의 주문, 체결, 손익, 낙폭을 카드형으로 정리합니다.</p>
+            </div>
+          </div>
+          <div id="paper-grid" class="card-grid"></div>
+        </section>
+      </section>
+
+      <section class="pane" data-pane="live" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>라이브 / 카나리아 상태</h3>
+              <p>보유 종목, 미체결 주문, 리스크 플랜, 최근 의도까지 메인과 후보 카나리아별로 분리해 보여줍니다.</p>
+            </div>
+          </div>
+          <div id="live-state-list" class="live-stack"></div>
+        </section>
+      </section>
+
+      <section class="pane" data-pane="ws" hidden>
+        <div class="summary-grid">
+          <article class="summary-card">
+            <p class="summary-label">WS 수집 해석</p>
+            <h2 id="ws-headline">-</h2>
+            <p id="ws-subhead" class="summary-text">-</p>
+          </article>
+          <article class="summary-card">
+            <p class="summary-label">WS 핵심 수치</p>
+            <div id="ws-kpis" class="mini-grid"></div>
+          </article>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>공용 WS 수집 상태</h3>
+              <p>라이브와 학습이 공유하는 데이터 플레인의 연결 상태와 최신 적재 상태를 읽기 쉽게 정리합니다.</p>
+            </div>
+          </div>
+          <div id="ws-details" class="detail-stack"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

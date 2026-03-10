@@ -21,6 +21,7 @@ from autobot.live.order_state import is_open_local_state, normalize_order_state
 
 DEFAULT_DASHBOARD_HOST = "0.0.0.0"
 DEFAULT_DASHBOARD_PORT = 8088
+_DASHBOARD_ASSETS_DIR = Path(__file__).with_name("dashboard_assets")
 
 
 def _utc_now_iso() -> str:
@@ -670,6 +671,17 @@ def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], sta
 
 def _html_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _load_dashboard_asset(name: str, *, binary: bool = False) -> str | bytes:
+    path = _DASHBOARD_ASSETS_DIR / name
+    return path.read_bytes() if binary else path.read_text(encoding="utf-8")
+
+
+def _render_dashboard_index(initial_snapshot: dict[str, Any]) -> bytes:
+    template = str(_load_dashboard_asset("index.html"))
+    html = template.replace("__INITIAL_SNAPSHOT__", _html_json(initial_snapshot))
+    return html.encode("utf-8")
 
 
 INDEX_HTML = """<!doctype html>
@@ -1619,10 +1631,33 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 initial_snapshot = build_dashboard_snapshot(self.project_root)
             except Exception:
                 initial_snapshot = {"generated_at": _utc_now_iso()}
-            html = INDEX_HTML.replace("__INITIAL_SNAPSHOT__", _html_json(initial_snapshot))
-            body = html.encode("utf-8")
+            body = _render_dashboard_index(initial_snapshot)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
+                return
+            return
+        if parsed.path == "/static/dashboard.css":
+            body = bytes(_load_dashboard_asset("dashboard.css", binary=True))
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/css; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
+                return
+            return
+        if parsed.path == "/static/dashboard.js":
+            body = bytes(_load_dashboard_asset("dashboard.js", binary=True))
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store, max-age=0")
             self.end_headers()
