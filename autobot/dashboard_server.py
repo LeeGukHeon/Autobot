@@ -16,7 +16,6 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from autobot.data.collect import load_ws_public_status
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 
 
@@ -69,6 +68,26 @@ def _path_mtime_iso(path: Path | None) -> str | None:
     if path is None or not path.exists():
         return None
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_ws_public_status(*, meta_dir: Path, raw_root: Path) -> dict[str, Any]:
+    health = _load_json(meta_dir / "ws_public_health.json")
+    collect_report = _load_json(meta_dir / "ws_collect_report.json")
+    runs_summary = _load_json(meta_dir / "ws_runs_summary.json")
+    validate_report = _load_json(meta_dir / "ws_validate_report.json")
+    latest_run = None
+    runs = runs_summary.get("runs") if isinstance(runs_summary, dict) else None
+    if isinstance(runs, list) and runs:
+        candidate = runs[-1]
+        latest_run = candidate if isinstance(candidate, dict) else None
+    return {
+        "meta_dir": str(meta_dir),
+        "raw_root": str(raw_root),
+        "health_snapshot": health,
+        "collect_report": collect_report,
+        "validate_report": validate_report,
+        "runs_summary_latest": latest_run,
+    }
 
 
 def _truncate(value: str | None, limit: int = 120) -> str | None:
@@ -408,7 +427,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     challenger_latest = project_root / "logs" / "model_v4_challenger" / "latest.json"
     challenger_state = project_root / "logs" / "model_v4_challenger" / "current_state.json"
     live_rollout_latest = project_root / "logs" / "live_rollout" / "latest.json"
-    ws_status = load_ws_public_status(
+    ws_status = _load_ws_public_status(
         meta_dir=project_root / "data" / "raw_ws" / "upbit" / "_meta",
         raw_root=project_root / "data" / "raw_ws" / "upbit" / "public",
     )
