@@ -11,7 +11,8 @@ from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepR
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
-from autobot.live.state_store import LiveStateStore, PositionRecord
+from autobot.live.state_store import IntentRecord, LiveStateStore, PositionRecord, RiskPlanRecord
+from autobot.risk.live_risk_manager import LiveRiskManager, RiskManagerConfig
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
 from autobot.upbit.ws.models import TickerEvent
@@ -176,6 +177,20 @@ class _StalePriceFlowStrategy:
             scored_rows=1,
             eligible_rows=1,
             selected_rows=1,
+        )
+
+    def on_fill(self, event):  # noqa: ANN201
+        _ = event
+
+
+class _NoIntentStrategy:
+    def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+        _ = ts_ms, active_markets, latest_prices, open_markets
+        return StrategyStepResult(
+            intents=(),
+            scored_rows=0,
+            eligible_rows=0,
+            selected_rows=0,
         )
 
     def on_fill(self, event):  # noqa: ANN201
@@ -670,3 +685,100 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
     assert isinstance(exit_plan, dict)
     assert exit_plan.get("source") == "model_alpha_v1"
     assert int(exit_plan.get("timeout_delta_ms", 0)) > 0
+
+
+def test_live_model_alpha_runtime_backfills_existing_active_plan_from_model_intent(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=13.56787669,
+                avg_entry_price=442.0,
+                updated_ts=now_ms - 1000,
+            )
+        )
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-1",
+                ts_ms=now_ms - 2000,
+                market="KRW-KITE",
+                side="bid",
+                price=442.0,
+                volume=13.56787669,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "submit_result": {"accepted": True},
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1800000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="legacy-plan-kite",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="442",
+                qty_str="13.56787669",
+                tp_enabled=False,
+                tp_pct=0.0,
+                sl_enabled=False,
+                sl_pct=0.0,
+                trailing_enabled=False,
+                trail_pct=0.0,
+                state="ACTIVE",
+                last_eval_ts_ms=now_ms - 1500,
+                last_action_ts_ms=now_ms - 1500,
+                replace_attempt=0,
+                created_ts=now_ms - 2000,
+                updated_ts=now_ms - 1500,
+            )
+        )
+        runtime_module._ensure_live_risk_plan(
+            store=store,
+            risk_manager=LiveRiskManager(
+                store=store,
+                executor_gateway=None,
+                config=RiskManagerConfig(
+                    default_tp_pct=3.0,
+                    default_sl_pct=2.0,
+                    default_trailing_enabled=False,
+                    default_trail_pct=0.01,
+                ),
+            ),
+            market="KRW-KITE",
+            position={
+                "market": "KRW-KITE",
+                "base_amount": 13.56787669,
+                "avg_entry_price": 442.0,
+            },
+            ts_ms=now_ms,
+        )
+        plan = store.risk_plan_by_id(plan_id="legacy-plan-kite")
+
+    assert plan is not None
+    assert plan["timeout_ts_ms"] == (now_ms - 2000) + 1800000
+    assert plan["plan_source"] == "model_alpha_v1"
+    assert plan["source_intent_id"] == "intent-kite-1"
+    assert plan["tp"]["tp_pct"] == 2.0
+    assert plan["sl"]["sl_pct"] == 1.0
+    assert plan["trailing"]["trail_pct"] == 0.015
