@@ -471,6 +471,7 @@ D:\MyApps\Autobot
   - T22.7: live model handoff and ws-public data-plane synchronization
   - T22.6: shadow/canary rollout and explicit promote-to-live hook
   - T22.5 small-account safety is a cross-cutting invariant, not an optional late ticket
+- T23.1: read-only Korean ops dashboard on a dedicated external port for training, paper, live, and ws-public visibility
 
 ## 19) 첫 작업 지시문 요약
 
