@@ -297,7 +297,50 @@ def _build_exit_doc(
                 "risk_recommendation_source": "manual_fallback",
             }
         )
+    payload.update(_resolve_exit_mode_recommendation(best_row, best_risk_row))
     return payload
+
+
+def _resolve_exit_mode_recommendation(
+    best_hold_row: dict[str, Any] | None,
+    best_risk_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(best_hold_row, dict) and isinstance(best_risk_row, dict):
+        compare_doc = compare_execution_balanced_pareto(
+            best_risk_row.get("summary", {}),
+            best_hold_row.get("summary", {}),
+        )
+        decision = str(compare_doc.get("decision", "")).strip().lower()
+        if bool(compare_doc.get("comparable")) and decision == "candidate_edge":
+            return {
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
+                "exit_mode_compare": dict(compare_doc),
+            }
+        return {
+            "recommended_exit_mode": "hold",
+            "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+            "recommended_exit_mode_reason_code": "HOLD_PARETO_WIN_OR_INDETERMINATE",
+            "exit_mode_compare": dict(compare_doc),
+        }
+    if isinstance(best_risk_row, dict):
+        return {
+            "recommended_exit_mode": "risk",
+            "recommended_exit_mode_source": "execution_backtest_grid_search_risk_only",
+            "recommended_exit_mode_reason_code": "ONLY_RISK_AVAILABLE",
+        }
+    if isinstance(best_hold_row, dict):
+        return {
+            "recommended_exit_mode": "hold",
+            "recommended_exit_mode_source": "execution_backtest_grid_search_hold_only",
+            "recommended_exit_mode_reason_code": "ONLY_HOLD_AVAILABLE",
+        }
+    return {
+        "recommended_exit_mode": "hold",
+        "recommended_exit_mode_source": "manual_fallback",
+        "recommended_exit_mode_reason_code": "NO_EXECUTION_EXIT_EVIDENCE",
+    }
 
 
 def _build_execution_doc(

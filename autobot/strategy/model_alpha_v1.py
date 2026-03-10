@@ -46,6 +46,7 @@ class ModelAlphaPositionSettings:
 class ModelAlphaExitSettings:
     mode: str = "hold"  # hold | risk
     hold_bars: int = 6
+    use_learned_exit_mode: bool = True
     use_learned_hold_bars: bool = True
     use_learned_risk_recommendations: bool = True
     risk_scaling_mode: str = "fixed"  # fixed | volatility_scaled
@@ -711,6 +712,7 @@ def resolve_runtime_model_alpha_settings(
     resolved = settings
     state: dict[str, Any] = {
         "runtime_recommendations_available": bool(runtime_recommendations),
+        "exit_mode_source": "manual",
         "exit_hold_bars_source": "manual",
         "execution_source": "manual",
     }
@@ -718,12 +720,34 @@ def resolve_runtime_model_alpha_settings(
         return resolved, state
 
     exit_doc = runtime_recommendations.get("exit")
+    if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_exit_mode):
+        recommended_exit_mode = str(exit_doc.get("recommended_exit_mode", "")).strip().lower()
+        if recommended_exit_mode in {"hold", "risk"}:
+            resolved = replace(
+                resolved,
+                exit=replace(
+                    resolved.exit,
+                    mode=recommended_exit_mode,
+                ),
+            )
+            state["exit_mode_source"] = str(
+                exit_doc.get("recommended_exit_mode_source", "runtime_recommendation")
+            )
+            state["exit_mode_recommendation"] = {
+                "recommended_exit_mode": recommended_exit_mode,
+                "recommended_exit_mode_source": state["exit_mode_source"],
+                "recommended_exit_mode_reason_code": str(
+                    exit_doc.get("recommended_exit_mode_reason_code", "")
+                ).strip(),
+                "exit_mode_compare": dict(exit_doc.get("exit_mode_compare", {}))
+                if isinstance(exit_doc.get("exit_mode_compare"), dict)
+                else {},
+            }
     if isinstance(exit_doc, dict) and bool(settings.exit.use_learned_hold_bars):
         recommended_hold_bars = exit_doc.get("recommended_hold_bars")
         try:
             if (
-                str(settings.exit.mode).strip().lower() == "hold"
-                and recommended_hold_bars is not None
+                recommended_hold_bars is not None
                 and int(recommended_hold_bars) > 0
             ):
                 resolved = replace(
@@ -881,6 +905,7 @@ def build_model_alpha_exit_plan_payload(
         "expected_exit_fee_rate": float(exit_fee_rate),
         "expected_exit_slippage_bps": float(exit_slippage_bps),
         "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
+        "use_learned_exit_mode": bool(settings.exit.use_learned_exit_mode),
         "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
         "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
     }

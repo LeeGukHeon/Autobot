@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from autobot.models.predictor import ModelPredictor
-from autobot.models.runtime_recommendations import _rank_execution_rows
+from autobot.models.runtime_recommendations import _build_exit_doc, _rank_execution_rows
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
@@ -26,10 +26,13 @@ def _dummy_predictor(*, runtime_recommendations: dict[str, object]) -> ModelPred
     )
 
 
-def test_resolve_runtime_model_alpha_settings_applies_learned_hold_and_execution() -> None:
+def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_execution() -> None:
     predictor = _dummy_predictor(
         runtime_recommendations={
             "exit": {
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "recommended_risk_scaling_mode": "volatility_scaled",
@@ -58,6 +61,7 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_hold_and_execution
 
     resolved, state = resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
 
+    assert resolved.exit.mode == "risk"
     assert resolved.exit.hold_bars == 12
     assert resolved.exit.risk_scaling_mode == "volatility_scaled"
     assert resolved.exit.risk_vol_feature == "rv_36"
@@ -67,6 +71,7 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_hold_and_execution
     assert resolved.execution.price_mode == "CROSS_1T"
     assert resolved.execution.timeout_bars == 4
     assert resolved.execution.replace_max == 1
+    assert state["exit_mode_source"] == "execution_backtest_grid_search_compare"
     assert state["exit_hold_bars_source"] == "execution_backtest_grid_search"
     assert state["execution_source"] == "execution_backtest_grid_search"
 
@@ -110,3 +115,40 @@ def test_rank_execution_rows_prefers_pairwise_winner() -> None:
     assert ranked
     assert ranked[0]["grid_point"]["hold_bars"] == 6
     assert ranked[0]["wins"] >= ranked[-1]["wins"]
+
+
+def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
+    exit_doc = _build_exit_doc(
+        {
+            "grid_point": {"hold_bars": 6},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 100.0,
+                "fill_rate": 0.90,
+                "max_drawdown_pct": 2.0,
+                "slippage_bps_mean": 5.0,
+            },
+        },
+        {
+            "grid_point": {
+                "risk_scaling_mode": "volatility_scaled",
+                "risk_vol_feature": "rv_12",
+                "tp_vol_multiplier": 2.0,
+                "sl_vol_multiplier": 1.0,
+                "trailing_vol_multiplier": 0.75,
+            },
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 130.0,
+                "fill_rate": 0.94,
+                "max_drawdown_pct": 1.2,
+                "slippage_bps_mean": 3.2,
+            },
+        },
+        fallback_hold_bars=6,
+        fallback_exit=ModelAlphaExitSettings(mode="hold", hold_bars=6),
+    )
+
+    assert exit_doc["recommended_exit_mode"] == "risk"
+    assert exit_doc["recommended_exit_mode_reason_code"] == "RISK_PARETO_WIN"
+    assert exit_doc["recommended_hold_bars"] == 6

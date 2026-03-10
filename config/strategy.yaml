@@ -91,6 +91,7 @@
     exit:
       mode: hold
       hold_bars: 6
+      use_learned_exit_mode: true
       use_learned_hold_bars: true
       use_learned_risk_recommendations: true
       risk_scaling_mode: fixed

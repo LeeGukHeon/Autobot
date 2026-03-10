@@ -64,6 +64,7 @@ It should not be used for:
 7. `T21.7` White/Hansen Comparable Panel v1
 8. `T21.8` Shared Rank Selection Policy v1
 9. `T21.9` Shared OOS Selection Calibration v1
+10. `T21.10` Learned Exit-Mode Selection v1
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

@@ -366,6 +366,10 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
             run_dir=tmp_path / "registry" / "train_v4_crypto_cs" / "run-v4-test",
             train_report_path=tmp_path / "logs" / "train_report.json",
             walk_forward_report_path=tmp_path / "logs" / "walk_forward.json",
+            cpcv_lite_report_path=None,
+            factor_block_selection_path=None,
+            factor_block_policy_path=None,
+            search_budget_decision_path=None,
             execution_acceptance_report_path=tmp_path / "logs" / "execution_acceptance.json",
             promotion_path=tmp_path / "logs" / "promotion.json",
         )
@@ -380,6 +384,7 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
     assert options.execution_acceptance_model_alpha.selection.min_candidates_per_ts == 1
     assert options.execution_acceptance_model_alpha.selection.use_learned_recommendations is False
     assert options.execution_acceptance_model_alpha.exit.hold_bars == 6
+    assert options.execution_acceptance_model_alpha.exit.use_learned_exit_mode is False
     assert options.execution_acceptance_model_alpha.exit.use_learned_hold_bars is False
     assert options.execution_acceptance_model_alpha.execution.use_learned_recommendations is False
 

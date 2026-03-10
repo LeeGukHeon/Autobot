@@ -167,7 +167,7 @@ class TrainV4CryptoCsOptions:
     run_scope: str = "scheduled_daily"
     execution_acceptance_model_alpha: ModelAlphaSettings = ModelAlphaSettings(
         selection=ModelAlphaSelectionSettings(use_learned_recommendations=False),
-        exit=ModelAlphaExitSettings(use_learned_hold_bars=False),
+        exit=ModelAlphaExitSettings(use_learned_exit_mode=False, use_learned_hold_bars=False),
         execution=ModelAlphaExecutionSettings(use_learned_recommendations=False),
     )
 
@@ -3206,6 +3206,7 @@ def _build_runtime_recommendations_v4(
         )
         exit_settings = replace(
             options.execution_acceptance_model_alpha.exit,
+            use_learned_exit_mode=False,
             use_learned_hold_bars=False,
         )
         execution_settings = replace(

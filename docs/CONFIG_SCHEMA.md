@@ -133,13 +133,17 @@
 - `strategy.model_alpha_v1.position.size_multiplier_max`: number (default: `1.5`)
 - `strategy.model_alpha_v1.exit.mode`: `hold | risk` (default: `hold`)
 - `strategy.model_alpha_v1.exit.hold_bars`: integer (default: `6`)
+- `strategy.model_alpha_v1.exit.use_learned_exit_mode`: bool (default: `true`)
+  - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.recommended_exit_mode`
+  - `hold` and `risk` are compared on the same execution-aware tournament and the winning mode is persisted
+  - when evidence is not comparable or not decisively better for `risk`, runtime keeps `hold`
 - `strategy.model_alpha_v1.exit.use_learned_hold_bars`: bool (default: `true`)
   - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.recommended_hold_bars`
-  - applied only when `exit.mode=hold`
+  - applied to the resolved exit mode and therefore also controls timeout horizon for `risk`
   - if the loaded model has no runtime recommendation artifact, runtime falls back to config/preset `hold_bars`
 - `strategy.model_alpha_v1.exit.use_learned_risk_recommendations`: bool (default: `true`)
   - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.*risk*`
-  - applied only when `exit.mode=risk`
+  - applied after learned exit mode resolution, so they take effect whenever the resolved mode is `risk`
 - `strategy.model_alpha_v1.exit.risk_scaling_mode`: `fixed | volatility_scaled` (default: `fixed`)
 - `strategy.model_alpha_v1.exit.risk_vol_feature`: string (default: `rv_12`)
   - supported built-ins:

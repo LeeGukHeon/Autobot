@@ -638,6 +638,9 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
             "version": 1,
             "status": "ready",
             "exit": {
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {"run_dir": str(hold_exec_run)},
@@ -705,6 +708,7 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert execution_doc["status"] == "compared"
     assert execution_doc["artifacts_cleanup"]["removed_count"] == 5
     assert runtime_doc["artifacts_cleanup"]["removed_count"] == 5
+    assert runtime_doc["exit"]["recommended_exit_mode"] == "risk"
     assert runtime_doc["exit"]["recommended_hold_bars"] == 12
     assert runtime_doc["exit"]["recommended_risk_scaling_mode"] == "volatility_scaled"
     assert runtime_doc["exit"]["recommended_risk_vol_feature"] == "rv_36"

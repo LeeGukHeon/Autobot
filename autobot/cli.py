@@ -2692,6 +2692,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                         exit=ModelAlphaExitSettings(
                             mode=str(model_alpha_exit_defaults.get("mode", "hold")).strip().lower() or "hold",
                             hold_bars=exec_acceptance_hold_bars,
+                            use_learned_exit_mode=False,
                             use_learned_hold_bars=False,
                             use_learned_risk_recommendations=False,
                             risk_scaling_mode="fixed",
@@ -3344,6 +3345,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             model_alpha_exit_defaults.get("expected_exit_slippage_bps")
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
+        exit_use_learned_exit_mode = bool(model_alpha_exit_defaults.get("use_learned_exit_mode", True))
         exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
         exit_use_learned_risk_recommendations = bool(
             model_alpha_exit_defaults.get("use_learned_risk_recommendations", True)
@@ -3449,6 +3451,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 exit=ModelAlphaExitSettings(
                     mode=exit_mode,
                     hold_bars=max(hold_bars_value, 0),
+                    use_learned_exit_mode=exit_use_learned_exit_mode,
                     use_learned_hold_bars=exit_use_learned_hold_bars,
                     use_learned_risk_recommendations=exit_use_learned_risk_recommendations,
                     risk_scaling_mode=exit_risk_scaling_mode,
@@ -3757,6 +3760,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             model_alpha_exit_defaults.get("expected_exit_slippage_bps")
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
+        exit_use_learned_exit_mode = bool(model_alpha_exit_defaults.get("use_learned_exit_mode", True))
         exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
         exit_use_learned_risk_recommendations = bool(
             model_alpha_exit_defaults.get("use_learned_risk_recommendations", True)
@@ -3905,6 +3909,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 exit=ModelAlphaExitSettings(
                     mode=exit_mode,
                     hold_bars=max(hold_bars_value, 0),
+                    use_learned_exit_mode=exit_use_learned_exit_mode,
                     use_learned_hold_bars=exit_use_learned_hold_bars,
                     use_learned_risk_recommendations=exit_use_learned_risk_recommendations,
                     risk_scaling_mode=exit_risk_scaling_mode,
@@ -5801,6 +5806,7 @@ def _build_model_alpha_settings_from_defaults(defaults: dict[str, Any]) -> Model
         exit=ModelAlphaExitSettings(
             mode=str(exit_defaults.get("mode", "hold")).strip().lower() or "hold",
             hold_bars=max(int(exit_defaults.get("hold_bars", 6)), 0),
+            use_learned_exit_mode=bool(exit_defaults.get("use_learned_exit_mode", True)),
             use_learned_hold_bars=bool(exit_defaults.get("use_learned_hold_bars", True)),
             use_learned_risk_recommendations=bool(exit_defaults.get("use_learned_risk_recommendations", True)),
             risk_scaling_mode=str(exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
