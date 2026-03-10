@@ -50,6 +50,8 @@ autobot/models/**/__pycache__/
 autobot/models/**/*.py[cod]
 autobot/models/**/*.pyo
 logs/
+_quarantine/
+docs/reports/DAILY_MICRO_REPORT_*.md
 
 # IDE / OS
 .vscode/
