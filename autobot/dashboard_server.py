@@ -993,9 +993,16 @@ def _load_dashboard_asset(name: str, *, binary: bool = False) -> str | bytes:
     return path.read_bytes() if binary else path.read_text(encoding="utf-8")
 
 
+def _dashboard_asset_version() -> str:
+    paths = [_DASHBOARD_ASSETS_DIR / "index.html", _DASHBOARD_ASSETS_DIR / "dashboard.css", _DASHBOARD_ASSETS_DIR / "dashboard.js"]
+    latest = max((int(path.stat().st_mtime_ns) for path in paths if path.exists()), default=0)
+    return str(latest)
+
+
 def _render_dashboard_index(initial_snapshot: dict[str, Any]) -> bytes:
     template = str(_load_dashboard_asset("index.html"))
     html = template.replace("__INITIAL_SNAPSHOT__", _html_json(initial_snapshot))
+    html = html.replace("__ASSET_VERSION__", _dashboard_asset_version())
     return html.encode("utf-8")
 
 
