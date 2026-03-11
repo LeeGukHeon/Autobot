@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +23,7 @@ from autobot.models.runtime_recommendation_contract import normalize_runtime_rec
 DEFAULT_DASHBOARD_HOST = "0.0.0.0"
 DEFAULT_DASHBOARD_PORT = 8088
 _DASHBOARD_ASSETS_DIR = Path(__file__).with_name("dashboard_assets")
+_KST = timezone(timedelta(hours=9), name="KST")
 
 
 def _utc_now_iso() -> str:
@@ -566,6 +567,59 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> dict[str, Any]:
+    now_dt = datetime.fromtimestamp(now_ts_ms / 1000.0, tz=_KST)
+    start_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_dt = start_dt + timedelta(days=1)
+    start_ts_ms = int(start_dt.timestamp() * 1000)
+    end_ts_ms = int(end_dt.timestamp() * 1000)
+    summary = {
+        "date_label": start_dt.strftime("%Y-%m-%d"),
+        "timezone": "KST",
+        "closed_count": 0,
+        "open_count": 0,
+        "pending_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "flats": 0,
+        "win_rate_pct": None,
+        "net_pnl_quote_total": 0.0,
+        "gross_pnl_quote_total": 0.0,
+        "fee_quote_total": 0.0,
+    }
+    for row in rows:
+        item = _summarize_live_trade_journal(row)
+        status = str(item.get("status") or "").strip().upper()
+        entry_ts_ms = _coerce_int(item.get("entry_ts_ms"))
+        exit_ts_ms = _coerce_int(item.get("exit_ts_ms"))
+        if status == "CLOSED":
+            if exit_ts_ms is None or exit_ts_ms < start_ts_ms or exit_ts_ms >= end_ts_ms:
+                continue
+            summary["closed_count"] += 1
+            pnl = _coerce_float(item.get("realized_pnl_quote")) or 0.0
+            gross = _coerce_float(item.get("gross_pnl_quote")) or 0.0
+            fee = _coerce_float(item.get("total_fee_quote")) or 0.0
+            summary["net_pnl_quote_total"] += pnl
+            summary["gross_pnl_quote_total"] += gross
+            summary["fee_quote_total"] += fee
+            if pnl > 0.0:
+                summary["wins"] += 1
+            elif pnl < 0.0:
+                summary["losses"] += 1
+            else:
+                summary["flats"] += 1
+        elif status == "OPEN":
+            if entry_ts_ms is not None and start_ts_ms <= entry_ts_ms < end_ts_ms:
+                summary["open_count"] += 1
+        elif status == "PENDING_ENTRY":
+            if entry_ts_ms is not None and start_ts_ms <= entry_ts_ms < end_ts_ms:
+                summary["pending_count"] += 1
+    closed_count = int(summary["closed_count"])
+    if closed_count > 0:
+        summary["win_rate_pct"] = (float(summary["wins"]) / float(closed_count)) * 100.0
+    return summary
+
+
 def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict[str, Any]:
     if not db_path.exists():
         return {"label": label, "db_path": str(db_path), "exists": False}
@@ -582,7 +636,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         trade_journal = (
             _query_all(
                 conn,
-                "SELECT * FROM trade_journal ORDER BY COALESCE(exit_ts_ms, entry_filled_ts_ms, entry_submitted_ts_ms, updated_ts) DESC LIMIT 12",
+                "SELECT * FROM trade_journal ORDER BY COALESCE(exit_ts_ms, entry_filled_ts_ms, entry_submitted_ts_ms, updated_ts) DESC",
             )
             if "trade_journal" in tables
             else []
@@ -656,6 +710,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
             "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
             "recent_trades": [_summarize_live_trade_journal(row) for row in trade_journal[:8]],
+            "today_trade_summary": _summarize_kst_trade_day(trade_journal, now_ts_ms=now_ts_ms),
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {

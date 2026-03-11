@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 from autobot.dashboard_server import build_dashboard_snapshot
 
@@ -13,6 +14,7 @@ def _write_json(path: Path, payload: dict) -> None:
 def _init_live_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    now_ms = int(time.time() * 1000)
     with conn:
         conn.execute("CREATE TABLE positions (market TEXT PRIMARY KEY, base_currency TEXT, base_amount REAL, avg_entry_price REAL, updated_ts INTEGER, tp_json TEXT, sl_json TEXT, trailing_json TEXT, managed INTEGER)")
         conn.execute("CREATE TABLE orders (uuid TEXT PRIMARY KEY, identifier TEXT, market TEXT, side TEXT, ord_type TEXT, price REAL, volume_req REAL, volume_filled REAL, state TEXT, created_ts INTEGER, updated_ts INTEGER, intent_id TEXT, tp_sl_link TEXT, local_state TEXT, raw_exchange_state TEXT, last_event_name TEXT, event_source TEXT, replace_seq INTEGER, root_order_uuid TEXT, prev_order_uuid TEXT, prev_order_identifier TEXT)")
@@ -66,9 +68,9 @@ def _init_live_db(path: Path) -> None:
                 "order-1",
                 "order-2",
                 "plan-1",
-                1,
-                2,
-                9,
+                now_ms - 60_000,
+                now_ms - 55_000,
+                now_ms - 5_000,
                 100.0,
                 103.0,
                 1.0,
@@ -88,7 +90,7 @@ def _init_live_db(path: Path) -> None:
                 1.2,
                 json.dumps({"strategy": "model_alpha_v1"}, ensure_ascii=False),
                 json.dumps({"close_mode": "managed_exit_order"}, ensure_ascii=False),
-                9,
+                now_ms - 5_000,
             ),
         )
         conn.execute("INSERT INTO checkpoints VALUES (?, ?, ?)", ("live_runtime_health", 1, json.dumps({"live_runtime_model_run_id": "run-123", "ws_public_stale": False})))
@@ -182,6 +184,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     runtime_recommendations = runtime_artifacts["runtime_recommendations"]
     exit_compare = runtime_recommendations["exit_mode_compare"]
     recent_intent = snapshot["live"]["states"][0]["recent_intents"][0]
+    today_summary = snapshot["live"]["states"][0]["today_trade_summary"]
 
     assert snapshot["training"]["acceptance"]["candidate_run_id"] == "run-abc"
     assert snapshot["training"]["rank_shadow"]["status"] == "shadow_pass"
@@ -192,6 +195,9 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["open_orders_count"] == 1
     assert snapshot["live"]["states"][0]["active_risk_plans_count"] == 1
     assert snapshot["live"]["states"][0]["recent_trades"][0]["realized_pnl_quote"] == 3.0
+    assert today_summary["closed_count"] == 1
+    assert today_summary["wins"] == 1
+    assert today_summary["net_pnl_quote_total"] == 3.0
     assert runtime_artifacts["exists"] is True
     assert runtime_recommendations["recommended_exit_mode"] == "hold"
     assert runtime_recommendations["hold_grid_point"]["hold_bars"] == 6
