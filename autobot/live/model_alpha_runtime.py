@@ -644,6 +644,24 @@ def _bootstrap_strategy_positions(
         entry_ts_ms = _resolve_strategy_entry_ts_ms(store=store, market=market, position=payload, default_ts_ms=ts_ms)
         _strategy_bid_fill(strategy=strategy, market=market, position=payload, ts_ms=entry_ts_ms)
         _ensure_live_risk_plan(store=store, risk_manager=risk_manager, market=market, position=payload, ts_ms=ts_ms)
+        entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=payload)
+        active_plan = max(
+            store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING")),
+            key=lambda item: (
+                int(item.get("updated_ts") or 0),
+                int(item.get("created_ts") or 0),
+                str(item.get("plan_id") or ""),
+            ),
+            default=None,
+        )
+        activate_trade_journal_for_position(
+            store=store,
+            market=market,
+            position=payload,
+            ts_ms=ts_ms,
+            entry_intent=entry_intent,
+            plan_id=_as_optional_str((active_plan or {}).get("plan_id")),
+        )
 
 
 def _apply_position_sync_to_strategy(

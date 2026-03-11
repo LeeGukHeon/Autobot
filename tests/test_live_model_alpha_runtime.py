@@ -1070,6 +1070,119 @@ def test_find_latest_model_entry_intent_prefers_filled_order_match_over_newer_un
     assert entry_intent["intent_id"] == "intent-old-filled"
 
 
+def test_bootstrap_strategy_positions_opens_trade_journal_for_existing_position(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _BootstrapStrategy:
+        def __init__(self) -> None:
+            self.fills = []
+
+        def on_fill(self, event):  # noqa: ANN001, ANN201
+            self.fills.append(event)
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-bootstrap-1",
+                ts_ms=1_000,
+                market="KRW-ION",
+                side="bid",
+                price=100.0,
+                volume=5.0,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-bootstrap-1"},
+                        "strategy": {
+                            "meta": {
+                                "model_prob": 0.88,
+                                "selection_policy_mode": "rank_effective_quantile",
+                                "trade_action": {
+                                    "recommended_action": "hold",
+                                    "expected_edge": 0.0091,
+                                    "expected_downside_deviation": 0.0034,
+                                    "recommended_notional_multiplier": 1.1,
+                                },
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1800000,
+                                    "tp_pct": 0.0,
+                                    "sl_pct": 0.0,
+                                    "trailing_pct": 0.0,
+                                },
+                            }
+                        },
+                        "admissibility": {"decision": {"expected_net_edge_bps": 70.0}},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-bootstrap-1",
+                identifier="AUTOBOT-autobot-001-intent-bootstrap-1-1000-a",
+                market="KRW-ION",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=5.0,
+                volume_filled=5.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-bootstrap-1",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-bootstrap-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-bootstrap-1",
+                market="KRW-ION",
+                side="long",
+                entry_price_str="100",
+                qty_str="5",
+                state="ACTIVE",
+                created_ts=1_000,
+                updated_ts=1_200,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-bootstrap-1",
+            )
+        )
+        strategy = _BootstrapStrategy()
+        runtime_module._bootstrap_strategy_positions(
+            store=store,
+            strategy=strategy,
+            risk_manager=None,
+            known_positions={
+                "KRW-ION": {
+                    "market": "KRW-ION",
+                    "base_amount": 5.0,
+                    "avg_entry_price": 100.0,
+                    "updated_ts": 1_200,
+                }
+            },
+            ts_ms=1_500,
+        )
+        journals = store.list_trade_journal()
+
+    assert len(strategy.fills) == 1
+    assert len(journals) == 1
+    assert journals[0]["status"] == "OPEN"
+    assert journals[0]["entry_intent_id"] == "intent-bootstrap-1"
+    assert journals[0]["plan_id"] == "plan-bootstrap-1"
+    assert journals[0]["expected_net_edge_bps"] == 70.0
+
+
 def test_live_model_alpha_runtime_uses_default_risk_when_position_intent_match_is_ambiguous(tmp_path: Path) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
