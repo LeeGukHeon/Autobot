@@ -27,7 +27,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultWrapperScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/daily_candidate_acceptance_for_server.ps1")
+    return (Join-Path $Root "scripts/daily_rank_shadow_cycle_for_server.ps1")
 }
 
 function Resolve-DefaultAcceptanceScript {

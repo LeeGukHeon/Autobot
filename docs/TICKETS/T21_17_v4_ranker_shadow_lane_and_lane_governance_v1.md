@@ -60,5 +60,14 @@ Out of scope:
 - optional server automation hook now exists:
   - `scripts/install_server_rank_shadow_service.ps1`
   - installs an isolated `rank_shadow` timer/service without changing the primary `cls` challenger lane
+  - the server timer now uses a dedicated cycle wrapper:
+    - `scripts/daily_rank_shadow_cycle_for_server.ps1`
+  - post-evaluation handling is automated into explicit governance outcomes:
+    - `shadow_pass`
+    - `shadow_hold`
+    - `fatal_error`
+    - `skipped`
+  - each run writes a compact cycle artifact under:
+    - `logs/model_v4_rank_shadow_cycle/latest.json`
 - non-promotable manual/scout runs no longer rely on the global `latest_candidate` pointer after train
   - acceptance resolves the fresh run from trainer stdout first, preventing stale-pointer reuse
