@@ -519,6 +519,7 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
+    exit_meta = _normalize_json_text(row.get("exit_meta_json")) or {}
     entry_ts_ms = _coerce_int(row.get("entry_filled_ts_ms")) or _coerce_int(row.get("entry_submitted_ts_ms"))
     exit_ts_ms = _coerce_int(row.get("exit_ts_ms"))
     hold_minutes = None
@@ -542,6 +543,14 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         "exit_notional_quote": _coerce_float(row.get("exit_notional_quote")),
         "realized_pnl_quote": _coerce_float(row.get("realized_pnl_quote")),
         "realized_pnl_pct": _coerce_float(row.get("realized_pnl_pct")),
+        "gross_pnl_quote": _coerce_float(exit_meta.get("gross_pnl_quote")),
+        "gross_pnl_pct": _coerce_float(exit_meta.get("gross_pnl_pct")),
+        "total_fee_quote": _coerce_float(exit_meta.get("total_fee_quote")),
+        "entry_fee_quote": _coerce_float(exit_meta.get("entry_fee_quote")),
+        "exit_fee_quote": _coerce_float(exit_meta.get("exit_fee_quote")),
+        "entry_realized_slippage_bps": _coerce_float(exit_meta.get("entry_realized_slippage_bps")),
+        "exit_expected_slippage_bps": _coerce_float(exit_meta.get("exit_expected_slippage_bps")),
+        "pnl_basis": exit_meta.get("pnl_basis"),
         "entry_reason_code": row.get("entry_reason_code"),
         "close_reason_code": row.get("close_reason_code"),
         "close_mode": row.get("close_mode"),
@@ -553,7 +562,7 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         "expected_net_edge_bps": _coerce_float(row.get("expected_net_edge_bps")),
         "notional_multiplier": _coerce_float(row.get("notional_multiplier")),
         "entry_meta": _normalize_json_text(row.get("entry_meta_json")) or {},
-        "exit_meta": _normalize_json_text(row.get("exit_meta_json")) or {},
+        "exit_meta": exit_meta,
     }
 
 

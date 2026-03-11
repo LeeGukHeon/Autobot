@@ -80,7 +80,12 @@ from .small_account import (
     sizing_envelope_to_payload,
 )
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord
-from .trade_journal import activate_trade_journal_for_position, close_trade_journal_for_market, record_entry_submission
+from .trade_journal import (
+    activate_trade_journal_for_position,
+    close_trade_journal_for_market,
+    recompute_trade_journal_records,
+    record_entry_submission,
+)
 
 
 @dataclass(frozen=True)
@@ -241,6 +246,7 @@ async def run_live_model_alpha_runtime(
         hold_sec=max(float(settings.universe_hold_sec), 0.0),
     )
     known_positions = _snapshot_position_state(store)
+    summary["trade_journal_backfill"] = recompute_trade_journal_records(store=store)
     _bootstrap_strategy_positions(
         store=store,
         strategy=strategy,

@@ -20,6 +20,10 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
                 "model_prob": 0.91,
                 "selection_policy_mode": "rank_effective_quantile",
                 "notional_multiplier": 1.2,
+                "model_exit_plan": {
+                    "expected_exit_fee_rate": 0.0005,
+                    "expected_exit_slippage_bps": 2.5,
+                },
                 "trade_action": {
                     "recommended_action": "risk",
                     "expected_edge": 0.0123,
@@ -29,9 +33,17 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
             }
         },
         "admissibility": {
+            "snapshot": {
+                "bid_fee": 0.0005,
+                "ask_fee": 0.0005,
+            },
             "decision": {
                 "expected_net_edge_bps": 98.7,
             }
+        },
+        "execution": {
+            "initial_ref_price": 99.8,
+            "requested_price": 100.0,
         },
         "submit_result": {"accepted": True, "order_uuid": "entry-order-1"},
     }
@@ -124,6 +136,10 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
     assert row["expected_edge_bps"] == 123.0
     assert row["expected_downside_bps"] == 45.0
     assert row["expected_net_edge_bps"] == 98.7
-    assert row["realized_pnl_quote"] == 3.0
-    assert row["realized_pnl_pct"] == pytest.approx(3.0)
+    assert row["realized_pnl_quote"] == pytest.approx(2.8985)
+    assert row["realized_pnl_pct"] == pytest.approx(2.8970514742628906)
     assert row["close_mode"] == "managed_exit_order"
+    assert row["entry_meta"]["execution"]["initial_ref_price"] == 99.8
+    assert row["exit_meta"]["gross_pnl_quote"] == pytest.approx(3.0)
+    assert row["exit_meta"]["total_fee_quote"] == pytest.approx(0.1015)
+    assert row["exit_meta"]["entry_realized_slippage_bps"] == pytest.approx(20.04008016032014)

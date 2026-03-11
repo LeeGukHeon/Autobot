@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from autobot.execution.order_supervisor import slippage_bps
+
 from .state_store import LiveStateStore, TradeJournalRecord
 
 TRADE_JOURNAL_STATUS_PENDING = "PENDING_ENTRY"
@@ -28,8 +30,9 @@ def record_entry_submission(
     if intent_id_value is None or not market_value:
         raise ValueError("intent_id and market are required")
     meta_dict = dict(meta_payload or {})
+    meta_summary = _build_entry_meta_summary(meta_dict)
     existing = store.trade_journal_by_entry_intent(entry_intent_id=intent_id_value)
-    entry_details = _extract_entry_details(meta_dict)
+    entry_details = _extract_entry_details(meta_summary)
     journal_id = _resolve_journal_id(existing=existing, entry_intent_id=intent_id_value, market=market_value, ts_ms=ts_ms)
     requested_price_value = _as_optional_float(requested_price)
     requested_volume_value = _as_optional_float(requested_volume)
@@ -82,7 +85,7 @@ def record_entry_submission(
                 _as_optional_float((existing or {}).get("notional_multiplier")),
                 entry_details["notional_multiplier"],
             ),
-            entry_meta_json=_json_dumps(meta_dict) if meta_dict else _json_dumps((existing or {}).get("entry_meta")),
+            entry_meta_json=_json_dumps(meta_summary) if meta_summary else _json_dumps((existing or {}).get("entry_meta")),
             exit_meta_json=_json_dumps((existing or {}).get("exit_meta")),
             updated_ts=int(ts_ms),
         )
@@ -108,7 +111,8 @@ def activate_trade_journal_for_position(
     if existing is None:
         existing = _latest_live_trade_journal(store=store, market=market_value)
     meta_dict = dict((intent_record or {}).get("meta") or {})
-    entry_details = _extract_entry_details(meta_dict)
+    meta_summary = _build_entry_meta_summary(meta_dict)
+    entry_details = _extract_entry_details(meta_summary)
     entry_order_uuid = _coalesce_str(
         _as_optional_str((entry_intent or {}).get("order_uuid")),
         _as_optional_str((existing or {}).get("entry_order_uuid")),
@@ -175,7 +179,7 @@ def activate_trade_journal_for_position(
                 _as_optional_float((existing or {}).get("notional_multiplier")),
                 entry_details["notional_multiplier"],
             ),
-            entry_meta_json=_json_dumps(meta_dict) if meta_dict else _json_dumps((existing or {}).get("entry_meta")),
+            entry_meta_json=_json_dumps(meta_summary) if meta_summary else _json_dumps((existing or {}).get("entry_meta")),
             exit_meta_json=_json_dumps((existing or {}).get("exit_meta")),
             updated_ts=int(ts_ms),
         )
@@ -202,7 +206,14 @@ def close_trade_journal_for_market(
         _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
         _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
     )
-    latest_done_exit = _latest_done_exit_order(store=store, market=market_value, min_updated_ts=min_exit_order_ts)
+    latest_done_exit = _resolve_exit_order_for_journal(
+        store=store,
+        market=market_value,
+        plan_id=_as_optional_str((existing or {}).get("plan_id")),
+        exit_order_uuid=_as_optional_str((existing or {}).get("exit_order_uuid")),
+        min_updated_ts=min_exit_order_ts,
+        target_exit_ts=_as_optional_int((existing or {}).get("exit_ts_ms")),
+    )
     if existing is None:
         risk_plan = _latest_plan_for_market(store=store, market=market_value)
         fallback_intent_id = _as_optional_str((risk_plan or {}).get("source_intent_id"))
@@ -290,7 +301,27 @@ def close_trade_journal_for_market(
         )
     exit_meta_payload.setdefault("close_mode", resolved_close_mode)
     exit_meta_payload.setdefault("close_reason_code", resolved_close_reason)
-    exit_meta_payload.setdefault("pnl_basis", "gross_no_fee")
+    entry_meta_summary = _build_entry_meta_summary((existing or {}).get("entry_meta"))
+    cost_metrics = _compute_cost_metrics(
+        entry_meta=entry_meta_summary,
+        entry_price=entry_price,
+        exit_price=resolved_exit_price,
+        qty=qty,
+    )
+    exit_meta_payload.update(
+        {
+            "gross_pnl_quote": cost_metrics["gross_pnl_quote"],
+            "gross_pnl_pct": cost_metrics["gross_pnl_pct"],
+            "entry_fee_quote": cost_metrics["entry_fee_quote"],
+            "exit_fee_quote": cost_metrics["exit_fee_quote"],
+            "total_fee_quote": cost_metrics["total_fee_quote"],
+            "entry_fee_bps": cost_metrics["entry_fee_bps"],
+            "exit_fee_bps": cost_metrics["exit_fee_bps"],
+            "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
+            "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
+            "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
+        }
+    )
     store.upsert_trade_journal(
         TradeJournalRecord(
             journal_id=str((existing or {}).get("journal_id") or f"imported-{market_value}-{exit_ts}"),
@@ -308,8 +339,8 @@ def close_trade_journal_for_market(
             qty=qty,
             entry_notional_quote=_as_optional_float((existing or {}).get("entry_notional_quote")),
             exit_notional_quote=resolved_exit_price * qty if resolved_exit_price is not None and qty is not None else None,
-            realized_pnl_quote=realized_pnl_quote,
-            realized_pnl_pct=realized_pnl_pct,
+            realized_pnl_quote=cost_metrics["net_pnl_quote"],
+            realized_pnl_pct=cost_metrics["net_pnl_pct"],
             entry_reason_code=_as_optional_str((existing or {}).get("entry_reason_code")),
             close_reason_code=resolved_close_reason,
             close_mode=resolved_close_mode,
@@ -320,12 +351,131 @@ def close_trade_journal_for_market(
             expected_downside_bps=_as_optional_float((existing or {}).get("expected_downside_bps")),
             expected_net_edge_bps=_as_optional_float((existing or {}).get("expected_net_edge_bps")),
             notional_multiplier=_as_optional_float((existing or {}).get("notional_multiplier")),
-            entry_meta_json=_json_dumps((existing or {}).get("entry_meta")),
+            entry_meta_json=_json_dumps(entry_meta_summary),
             exit_meta_json=_json_dumps(exit_meta_payload),
             updated_ts=exit_ts,
         )
     )
     return str((existing or {}).get("journal_id") or f"imported-{market_value}-{exit_ts}")
+
+
+def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
+    rows = store.list_trade_journal()
+    updated = 0
+    compacted = 0
+    for row in rows:
+        market = str(row.get("market") or "").strip().upper()
+        if not market:
+            continue
+        entry_intent_id = _as_optional_str(row.get("entry_intent_id"))
+        intent_record = store.intent_by_id(intent_id=entry_intent_id) if entry_intent_id else None
+        entry_meta_raw = (intent_record or {}).get("meta") if isinstance((intent_record or {}).get("meta"), dict) else row.get("entry_meta")
+        entry_meta_summary = _build_entry_meta_summary(entry_meta_raw)
+        exit_meta_payload = _build_exit_meta_summary(row.get("exit_meta"))
+        if str(row.get("status") or "").strip().upper() == TRADE_JOURNAL_STATUS_CLOSED:
+            entry_ts = _coalesce_int(_as_optional_int(row.get("entry_filled_ts_ms")), _as_optional_int(row.get("entry_submitted_ts_ms")))
+            exit_order = _resolve_exit_order_for_journal(
+                store=store,
+                market=market,
+                plan_id=_as_optional_str(row.get("plan_id")),
+                exit_order_uuid=_as_optional_str(row.get("exit_order_uuid")),
+                min_updated_ts=entry_ts,
+                target_exit_ts=_as_optional_int(row.get("exit_ts_ms")),
+            )
+            exit_price = _coalesce_float(_as_optional_float((exit_order or {}).get("price")), _as_optional_float(row.get("exit_price")))
+            exit_ts = _coalesce_int(_as_optional_int((exit_order or {}).get("updated_ts")), _as_optional_int(row.get("exit_ts_ms")))
+            cost_metrics = _compute_cost_metrics(
+                entry_meta=entry_meta_summary,
+                entry_price=_as_optional_float(row.get("entry_price")),
+                exit_price=exit_price,
+                qty=_as_optional_float(row.get("qty")),
+            )
+            exit_meta_payload.update(
+                {
+                    "gross_pnl_quote": cost_metrics["gross_pnl_quote"],
+                    "gross_pnl_pct": cost_metrics["gross_pnl_pct"],
+                    "entry_fee_quote": cost_metrics["entry_fee_quote"],
+                    "exit_fee_quote": cost_metrics["exit_fee_quote"],
+                    "total_fee_quote": cost_metrics["total_fee_quote"],
+                    "entry_fee_bps": cost_metrics["entry_fee_bps"],
+                    "exit_fee_bps": cost_metrics["exit_fee_bps"],
+                    "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
+                    "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
+                    "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
+                }
+            )
+            store.upsert_trade_journal(
+                TradeJournalRecord(
+                    journal_id=str(row.get("journal_id")),
+                    market=market,
+                    status=str(row.get("status")),
+                    entry_intent_id=entry_intent_id,
+                    entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
+                    exit_order_uuid=_coalesce_str(_as_optional_str((exit_order or {}).get("uuid")), _as_optional_str(row.get("exit_order_uuid"))),
+                    plan_id=_as_optional_str(row.get("plan_id")),
+                    entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
+                    entry_filled_ts_ms=_as_optional_int(row.get("entry_filled_ts_ms")),
+                    exit_ts_ms=exit_ts,
+                    entry_price=_as_optional_float(row.get("entry_price")),
+                    exit_price=exit_price,
+                    qty=_as_optional_float(row.get("qty")),
+                    entry_notional_quote=_as_optional_float(row.get("entry_notional_quote")),
+                    exit_notional_quote=exit_price * _as_optional_float(row.get("qty")) if exit_price is not None and _as_optional_float(row.get("qty")) is not None else None,
+                    realized_pnl_quote=cost_metrics["net_pnl_quote"],
+                    realized_pnl_pct=cost_metrics["net_pnl_pct"],
+                    entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
+                    close_reason_code=_coalesce_str(_as_optional_str(row.get("close_reason_code")), _as_optional_str((exit_order or {}).get("last_event_name"))),
+                    close_mode=_coalesce_str(_as_optional_str(row.get("close_mode")), _derive_close_mode(order=exit_order)),
+                    model_prob=_as_optional_float(row.get("model_prob")),
+                    selection_policy_mode=_as_optional_str(row.get("selection_policy_mode")),
+                    trade_action=_as_optional_str(row.get("trade_action")),
+                    expected_edge_bps=_as_optional_float(row.get("expected_edge_bps")),
+                    expected_downside_bps=_as_optional_float(row.get("expected_downside_bps")),
+                    expected_net_edge_bps=_as_optional_float(row.get("expected_net_edge_bps")),
+                    notional_multiplier=_as_optional_float(row.get("notional_multiplier")),
+                    entry_meta_json=_json_dumps(entry_meta_summary),
+                    exit_meta_json=_json_dumps(exit_meta_payload),
+                    updated_ts=_coalesce_int(exit_ts, _as_optional_int(row.get("updated_ts")), 0) or 0,
+                )
+            )
+            updated += 1
+        else:
+            store.upsert_trade_journal(
+                TradeJournalRecord(
+                    journal_id=str(row.get("journal_id")),
+                    market=market,
+                    status=str(row.get("status")),
+                    entry_intent_id=entry_intent_id,
+                    entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
+                    exit_order_uuid=_as_optional_str(row.get("exit_order_uuid")),
+                    plan_id=_as_optional_str(row.get("plan_id")),
+                    entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
+                    entry_filled_ts_ms=_as_optional_int(row.get("entry_filled_ts_ms")),
+                    exit_ts_ms=_as_optional_int(row.get("exit_ts_ms")),
+                    entry_price=_as_optional_float(row.get("entry_price")),
+                    exit_price=_as_optional_float(row.get("exit_price")),
+                    qty=_as_optional_float(row.get("qty")),
+                    entry_notional_quote=_as_optional_float(row.get("entry_notional_quote")),
+                    exit_notional_quote=_as_optional_float(row.get("exit_notional_quote")),
+                    realized_pnl_quote=_as_optional_float(row.get("realized_pnl_quote")),
+                    realized_pnl_pct=_as_optional_float(row.get("realized_pnl_pct")),
+                    entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
+                    close_reason_code=_as_optional_str(row.get("close_reason_code")),
+                    close_mode=_as_optional_str(row.get("close_mode")),
+                    model_prob=_as_optional_float(row.get("model_prob")),
+                    selection_policy_mode=_as_optional_str(row.get("selection_policy_mode")),
+                    trade_action=_as_optional_str(row.get("trade_action")),
+                    expected_edge_bps=_as_optional_float(row.get("expected_edge_bps")),
+                    expected_downside_bps=_as_optional_float(row.get("expected_downside_bps")),
+                    expected_net_edge_bps=_as_optional_float(row.get("expected_net_edge_bps")),
+                    notional_multiplier=_as_optional_float(row.get("notional_multiplier")),
+                    entry_meta_json=_json_dumps(entry_meta_summary),
+                    exit_meta_json=_json_dumps(exit_meta_payload),
+                    updated_ts=_as_optional_int(row.get("updated_ts")) or 0,
+                )
+            )
+        compacted += 1
+    return {"rows_total": len(rows), "rows_updated": updated, "rows_compacted": compacted}
 
 
 def _latest_live_trade_journal(*, store: LiveStateStore, market: str) -> dict[str, Any] | None:
@@ -337,13 +487,21 @@ def _latest_live_trade_journal(*, store: LiveStateStore, market: str) -> dict[st
     return rows[0] if rows else None
 
 
-def _latest_done_exit_order(
+def _resolve_exit_order_for_journal(
     *,
     store: LiveStateStore,
     market: str,
+    plan_id: str | None = None,
+    exit_order_uuid: str | None = None,
     min_updated_ts: int | None = None,
+    target_exit_ts: int | None = None,
 ) -> dict[str, Any] | None:
-    best: dict[str, Any] | None = None
+    if exit_order_uuid:
+        direct = next((item for item in store.list_orders(open_only=False) if str(item.get("uuid") or "") == str(exit_order_uuid)), None)
+        if direct is not None and str(direct.get("local_state") or "").strip().upper() == "DONE":
+            if min_updated_ts is None or int(direct.get("updated_ts") or 0) >= int(min_updated_ts):
+                return direct
+    candidates: list[dict[str, Any]] = []
     for order in store.list_orders(open_only=False):
         if str(order.get("market") or "").strip().upper() != market:
             continue
@@ -353,9 +511,20 @@ def _latest_done_exit_order(
             continue
         if min_updated_ts is not None and int(order.get("updated_ts") or 0) < int(min_updated_ts):
             continue
-        if best is None or int(order.get("updated_ts") or 0) > int(best.get("updated_ts") or 0):
-            best = order
-    return best
+        candidates.append(order)
+    if not candidates:
+        return None
+    preferred = [item for item in candidates if plan_id and _as_optional_str(item.get("tp_sl_link")) == plan_id]
+    pool = preferred or candidates
+    if target_exit_ts is not None:
+        return min(
+            pool,
+            key=lambda item: (
+                abs(int(item.get("updated_ts") or 0) - int(target_exit_ts)),
+                int(item.get("updated_ts") or 0),
+            ),
+        )
+    return min(pool, key=lambda item: int(item.get("updated_ts") or 0))
 
 
 def _latest_plan_for_market(*, store: LiveStateStore, market: str) -> dict[str, Any] | None:
@@ -386,6 +555,212 @@ def _extract_entry_details(meta_payload: dict[str, Any] | None) -> dict[str, Any
             _as_optional_float(trade_action.get("recommended_notional_multiplier")),
         ),
     }
+
+
+def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
+    payload = dict(meta_payload or {}) if isinstance(meta_payload, dict) else {}
+    strategy = dict(payload.get("strategy") or {}) if isinstance(payload.get("strategy"), dict) else {}
+    strategy_meta = dict(strategy.get("meta") or {}) if isinstance(strategy.get("meta"), dict) else {}
+    trade_action = dict(strategy_meta.get("trade_action") or {}) if isinstance(strategy_meta.get("trade_action"), dict) else {}
+    model_exit_plan = dict(strategy_meta.get("model_exit_plan") or {}) if isinstance(strategy_meta.get("model_exit_plan"), dict) else {}
+    admissibility = dict(payload.get("admissibility") or {}) if isinstance(payload.get("admissibility"), dict) else {}
+    decision = dict(admissibility.get("decision") or {}) if isinstance(admissibility.get("decision"), dict) else {}
+    snapshot = dict(admissibility.get("snapshot") or {}) if isinstance(admissibility.get("snapshot"), dict) else {}
+    sizing = dict(admissibility.get("sizing") or {}) if isinstance(admissibility.get("sizing"), dict) else {}
+    execution = dict(payload.get("execution") or {}) if isinstance(payload.get("execution"), dict) else {}
+    runtime = dict(payload.get("runtime") or {}) if isinstance(payload.get("runtime"), dict) else {}
+    return {
+        "strategy": {
+            "market": strategy.get("market"),
+            "side": strategy.get("side"),
+            "reason_code": strategy.get("reason_code"),
+            "prob": strategy.get("prob"),
+            "score": strategy.get("score"),
+            "meta": {
+                "model_prob": strategy_meta.get("model_prob"),
+                "model_prob_raw": strategy_meta.get("model_prob_raw"),
+                "selection_policy_mode": strategy_meta.get("selection_policy_mode"),
+                "notional_multiplier": strategy_meta.get("notional_multiplier"),
+                "notional_multiplier_source": strategy_meta.get("notional_multiplier_source"),
+                "trade_action": {
+                    "recommended_action": trade_action.get("recommended_action"),
+                    "expected_edge": trade_action.get("expected_edge"),
+                    "expected_downside_deviation": trade_action.get("expected_downside_deviation"),
+                    "expected_objective_score": trade_action.get("expected_objective_score"),
+                    "recommended_notional_multiplier": trade_action.get("recommended_notional_multiplier"),
+                },
+                "model_exit_plan": {
+                    "mode": model_exit_plan.get("mode"),
+                    "hold_bars": model_exit_plan.get("hold_bars"),
+                    "timeout_delta_ms": model_exit_plan.get("timeout_delta_ms"),
+                    "tp_pct": model_exit_plan.get("tp_pct"),
+                    "sl_pct": model_exit_plan.get("sl_pct"),
+                    "trailing_pct": model_exit_plan.get("trailing_pct"),
+                    "expected_exit_fee_rate": model_exit_plan.get("expected_exit_fee_rate"),
+                    "expected_exit_slippage_bps": model_exit_plan.get("expected_exit_slippage_bps"),
+                },
+            },
+        },
+        "admissibility": {
+            "decision": {
+                "adjusted_price": decision.get("adjusted_price"),
+                "adjusted_volume": decision.get("adjusted_volume"),
+                "adjusted_notional": decision.get("adjusted_notional"),
+                "fee_reserve_quote": decision.get("fee_reserve_quote"),
+                "fee_cost_bps": decision.get("fee_cost_bps"),
+                "tick_proxy_bps": decision.get("tick_proxy_bps"),
+                "replace_risk_budget_bps": decision.get("replace_risk_budget_bps"),
+                "estimated_total_cost_bps": decision.get("estimated_total_cost_bps"),
+                "expected_edge_bps": decision.get("expected_edge_bps"),
+                "expected_net_edge_bps": decision.get("expected_net_edge_bps"),
+            },
+            "snapshot": {
+                "bid_fee": snapshot.get("bid_fee"),
+                "ask_fee": snapshot.get("ask_fee"),
+                "tick_size": snapshot.get("tick_size"),
+                "min_total": snapshot.get("min_total"),
+            },
+            "sizing": {
+                "target_notional_quote": sizing.get("target_notional_quote"),
+                "admissible_notional_quote": sizing.get("admissible_notional_quote"),
+                "fee_rate": sizing.get("fee_rate"),
+            },
+        },
+        "execution": {
+            "initial_ref_price": execution.get("initial_ref_price"),
+            "effective_ref_price": execution.get("effective_ref_price"),
+            "requested_price": execution.get("requested_price"),
+            "latest_trade_price": execution.get("latest_trade_price"),
+            "exec_profile": dict(execution.get("exec_profile") or {}) if isinstance(execution.get("exec_profile"), dict) else {},
+        },
+        "runtime": {
+            "live_runtime_model_run_id": runtime.get("live_runtime_model_run_id"),
+            "model_family": runtime.get("model_family"),
+        },
+    }
+
+
+def _build_exit_meta_summary(exit_meta: Any) -> dict[str, Any]:
+    payload = dict(exit_meta or {}) if isinstance(exit_meta, dict) else {}
+    exit_order = dict(payload.get("exit_order") or {}) if isinstance(payload.get("exit_order"), dict) else {}
+    return {
+        "close_mode": payload.get("close_mode"),
+        "close_reason_code": payload.get("close_reason_code"),
+        "pnl_basis": payload.get("pnl_basis"),
+        "gross_pnl_quote": payload.get("gross_pnl_quote"),
+        "gross_pnl_pct": payload.get("gross_pnl_pct"),
+        "entry_fee_quote": payload.get("entry_fee_quote"),
+        "exit_fee_quote": payload.get("exit_fee_quote"),
+        "total_fee_quote": payload.get("total_fee_quote"),
+        "entry_fee_bps": payload.get("entry_fee_bps"),
+        "exit_fee_bps": payload.get("exit_fee_bps"),
+        "entry_realized_slippage_bps": payload.get("entry_realized_slippage_bps"),
+        "exit_expected_slippage_bps": payload.get("exit_expected_slippage_bps"),
+        "exit_order": {
+            "uuid": exit_order.get("uuid"),
+            "identifier": exit_order.get("identifier"),
+            "price": exit_order.get("price"),
+            "state": exit_order.get("state"),
+            "local_state": exit_order.get("local_state"),
+            "last_event_name": exit_order.get("last_event_name"),
+            "updated_ts": exit_order.get("updated_ts"),
+        },
+    }
+
+
+def _compute_cost_metrics(
+    *,
+    entry_meta: dict[str, Any] | None,
+    entry_price: float | None,
+    exit_price: float | None,
+    qty: float | None,
+) -> dict[str, float | None]:
+    entry_price_value = _as_optional_float(entry_price)
+    exit_price_value = _as_optional_float(exit_price)
+    qty_value = _as_optional_float(qty)
+    entry_notional = entry_price_value * qty_value if entry_price_value is not None and qty_value is not None else None
+    exit_notional = exit_price_value * qty_value if exit_price_value is not None and qty_value is not None else None
+    entry_fee_rate = _resolve_entry_fee_rate(entry_meta)
+    exit_fee_rate = _resolve_exit_fee_rate(entry_meta, entry_fee_rate=entry_fee_rate)
+    entry_fee_quote = entry_notional * entry_fee_rate if entry_notional is not None else None
+    exit_fee_quote = exit_notional * exit_fee_rate if exit_notional is not None else None
+    gross_pnl_quote = (
+        (exit_price_value - entry_price_value) * qty_value
+        if entry_price_value is not None and exit_price_value is not None and qty_value is not None
+        else None
+    )
+    gross_pnl_pct = (
+        ((exit_price_value / entry_price_value) - 1.0) * 100.0
+        if entry_price_value is not None and exit_price_value is not None and entry_price_value > 0.0
+        else None
+    )
+    total_fee_quote = (
+        (entry_fee_quote or 0.0) + (exit_fee_quote or 0.0)
+        if entry_fee_quote is not None or exit_fee_quote is not None
+        else None
+    )
+    net_pnl_quote = (
+        gross_pnl_quote - total_fee_quote
+        if gross_pnl_quote is not None and total_fee_quote is not None
+        else gross_pnl_quote
+    )
+    net_pnl_pct = (
+        (((exit_notional * (1.0 - exit_fee_rate)) / (entry_notional * (1.0 + entry_fee_rate))) - 1.0) * 100.0
+        if entry_notional is not None and exit_notional is not None and entry_notional > 0.0
+        else gross_pnl_pct
+    )
+    entry_ref_price = _coalesce_float(
+        _dig_float(entry_meta, "execution", "initial_ref_price"),
+        _dig_float(entry_meta, "execution", "effective_ref_price"),
+        _dig_float(entry_meta, "execution", "requested_price"),
+    )
+    entry_realized_slippage = (
+        slippage_bps(side="bid", fill_price=entry_price_value, ref_price=entry_ref_price)
+        if entry_price_value is not None and entry_ref_price is not None
+        else None
+    )
+    exit_expected_slippage = _dig_float(entry_meta, "strategy", "meta", "model_exit_plan", "expected_exit_slippage_bps")
+    return {
+        "entry_fee_rate": entry_fee_rate,
+        "exit_fee_rate": exit_fee_rate,
+        "entry_fee_bps": entry_fee_rate * 10_000.0 if entry_fee_rate is not None else None,
+        "exit_fee_bps": exit_fee_rate * 10_000.0 if exit_fee_rate is not None else None,
+        "entry_fee_quote": entry_fee_quote,
+        "exit_fee_quote": exit_fee_quote,
+        "total_fee_quote": total_fee_quote,
+        "gross_pnl_quote": gross_pnl_quote,
+        "gross_pnl_pct": gross_pnl_pct,
+        "net_pnl_quote": net_pnl_quote,
+        "net_pnl_pct": net_pnl_pct,
+        "entry_realized_slippage_bps": entry_realized_slippage,
+        "exit_expected_slippage_bps": exit_expected_slippage,
+    }
+
+
+def _resolve_entry_fee_rate(entry_meta: dict[str, Any] | None) -> float:
+    fee_rate = _coalesce_float(
+        _dig_float(entry_meta, "admissibility", "sizing", "fee_rate"),
+        _dig_float(entry_meta, "admissibility", "snapshot", "bid_fee"),
+    )
+    return max(float(fee_rate or 0.0), 0.0)
+
+
+def _resolve_exit_fee_rate(entry_meta: dict[str, Any] | None, *, entry_fee_rate: float) -> float:
+    fee_rate = _coalesce_float(
+        _dig_float(entry_meta, "strategy", "meta", "model_exit_plan", "expected_exit_fee_rate"),
+        _dig_float(entry_meta, "admissibility", "snapshot", "ask_fee"),
+        entry_fee_rate,
+    )
+    return max(float(fee_rate or 0.0), 0.0)
+
+
+def _dig_float(payload: dict[str, Any] | None, *keys: str) -> float | None:
+    current: Any = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return _as_optional_float(current)
 
 
 def _derive_close_mode(*, order: dict[str, Any] | None) -> str | None:

@@ -572,10 +572,13 @@
         const pnlText = trade.realized_pnl_quote == null
           ? "손익 계산 전"
           : `${fmtMoney(trade.realized_pnl_quote)} / ${fmtPct(trade.realized_pnl_pct)}`;
+        const grossText = trade.gross_pnl_quote == null
+          ? "계산 전"
+          : `${fmtMoney(trade.gross_pnl_quote)} / ${fmtPct(trade.gross_pnl_pct)}`;
         const durationText = trade.hold_minutes == null ? "보유 시간 계산 전" : `${trade.hold_minutes}분 보유`;
         return card(
           `${trade.market || "-"} · ${direction}`,
-          `<p class="section-brief">${esc(`${translate(trade.entry_reason_code)}로 진입했고, ${translate(trade.close_mode)} 방식으로 ${translate(trade.close_reason_code)}에 종료됐습니다.`)}</p><div class="kv-grid">${kv("진입 시각", fmtDateTime(trade.entry_ts_ms))}${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("수량", fmtNumber(trade.qty, 8))}${kv("실현 손익", pnlText)}${kv("예상 순엣지", fmtBps(trade.expected_net_edge_bps))}${kv("Trade 액션", translate(trade.trade_action))}${kv("Trade 엣지", fmtBps(trade.expected_edge_bps))}${kv("Trade 하방", fmtBps(trade.expected_downside_bps))}${kv("사이징 배수", fmtNumber(trade.notional_multiplier, 2))}</div>`,
+          `<p class="section-brief">${esc(`${translate(trade.entry_reason_code)}로 진입했고, ${translate(trade.close_mode)} 방식으로 ${translate(trade.close_reason_code)}에 종료됐습니다.`)}</p><div class="kv-grid">${kv("진입 시각", fmtDateTime(trade.entry_ts_ms))}${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("수량", fmtNumber(trade.qty, 8))}${kv("순손익", pnlText)}${kv("총손익", grossText)}${kv("총수수료", fmtMoney(trade.total_fee_quote))}${kv("진입 슬리피지", fmtBps(trade.entry_realized_slippage_bps))}${kv("예상 종료 슬리피지", fmtBps(trade.exit_expected_slippage_bps))}${kv("예상 순엣지", fmtBps(trade.expected_net_edge_bps))}${kv("Trade 액션", translate(trade.trade_action))}${kv("Trade 엣지", fmtBps(trade.expected_edge_bps))}${kv("Trade 하방", fmtBps(trade.expected_downside_bps))}${kv("사이징 배수", fmtNumber(trade.notional_multiplier, 2))}</div>`,
           "mini-card"
         );
       }).join("")
