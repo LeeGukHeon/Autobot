@@ -606,7 +606,12 @@ def test_candidate_acceptance_ramps_train_window_from_available_micro_history(tm
 
     python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
     daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
-    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+    result = _run_acceptance(
+        project_root,
+        python_exe,
+        daily_pipeline_script,
+        extra_args=["-TrainLookbackRampMinMarketsPerDate", "1"],
+    )
 
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
 
@@ -627,8 +632,43 @@ def test_candidate_acceptance_ramps_train_window_from_available_micro_history(tm
     assert report["config"]["train_lookback_days_effective"] == 2
     assert report["config"]["train_window_ramp_active"] is True
     assert report["config"]["train_window_ramp_reason"] == "RAMP_ACTIVE"
+    assert report["config"]["train_window_ramp_min_markets_per_date_requested"] == 1
     assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+
+
+def test_candidate_acceptance_auto_ramp_requires_train_top_n_market_breadth(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(
+        project_root,
+        python_exe,
+        daily_pipeline_script,
+        extra_args=["-TrainTopN", "3"],
+    )
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["reasons"] == ["INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"]
+    assert report["config"]["train_window_ramp_min_markets_per_date_requested"] == 0
+    assert report["config"]["train_window_ramp_min_markets_per_date"] == 3
+    assert report["steps"]["features_build"]["attempted"] is False
+    assert report["steps"]["features_build"]["reason"] == "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"
+    assert report["steps"]["train"]["attempted"] is False
 
 
 def test_candidate_acceptance_writes_certification_artifact_and_separates_windows(
