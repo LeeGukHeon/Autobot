@@ -137,6 +137,43 @@ def build_model_derived_risk_records(
     )
 
 
+def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(position, dict):
+        return None
+    tp = dict(position.get("tp") or {})
+    sl = dict(position.get("sl") or {})
+    trailing = dict(position.get("trailing") or {})
+    shared = next(
+        (
+            source
+            for source in (tp, sl, trailing)
+            if str(source.get("source", "")).strip().lower() == "model_alpha_v1"
+        ),
+        None,
+    )
+    if not isinstance(shared, dict):
+        return None
+    hold_bars = max(_as_int(shared.get("hold_bars")) or 0, 0)
+    timeout_delta_ms = max(_as_int(shared.get("timeout_delta_ms")) or 0, 0)
+    interval_ms = int(timeout_delta_ms / hold_bars) if hold_bars > 0 and timeout_delta_ms > 0 else 0
+    tp_pct = _from_percent_points(_as_float(tp.get("tp_pct")))
+    sl_pct = _from_percent_points(_as_float(sl.get("sl_pct")))
+    trailing_pct = max(_as_float(trailing.get("trail_pct")) or 0.0, 0.0)
+    return {
+        "source": "model_alpha_v1",
+        "version": 1,
+        "mode": str(shared.get("mode", "hold")).strip().lower() or "hold",
+        "hold_bars": hold_bars,
+        "interval_ms": interval_ms,
+        "timeout_delta_ms": timeout_delta_ms,
+        "tp_pct": float(tp_pct or 0.0),
+        "sl_pct": float(sl_pct or 0.0),
+        "trailing_pct": float(trailing_pct),
+        "expected_exit_fee_rate": 0.0,
+        "expected_exit_slippage_bps": 0.0,
+    }
+
+
 def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str, str]:
     mode = str(plan_payload.get("mode", "hold")).strip().lower() or "hold"
     hold_bars = max(_as_int(plan_payload.get("hold_bars")) or 0, 0)
@@ -192,6 +229,12 @@ def _to_percent_points(value: float | None) -> float | None:
     if value is None:
         return None
     return max(float(value) * 100.0, 0.0)
+
+
+def _from_percent_points(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(float(value) / 100.0, 0.0)
 
 
 def _as_float(value: Any) -> float | None:

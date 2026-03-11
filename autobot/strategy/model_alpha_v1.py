@@ -14,6 +14,7 @@ from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.predictor import ModelPredictor
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.models.selection_policy import DEFAULT_SELECTION_POLICY_MODE, normalize_selection_policy
+from autobot.models.trade_action_policy import normalize_trade_action_policy, resolve_trade_action
 from autobot.strategy.operational_overlay_v1 import (
     ModelAlphaOperationalSettings,
     build_regime_snapshot_from_scored_frame,
@@ -50,6 +51,7 @@ class ModelAlphaExitSettings:
     use_learned_exit_mode: bool = True
     use_learned_hold_bars: bool = True
     use_learned_risk_recommendations: bool = True
+    use_trade_level_action_policy: bool = True
     risk_scaling_mode: str = "fixed"  # fixed | volatility_scaled
     risk_vol_feature: str = "rv_12"
     tp_vol_multiplier: float | None = None
@@ -88,6 +90,7 @@ class _PositionState:
     entry_price: float
     peak_price: float
     entry_fee_rate: float
+    exit_plan: dict[str, Any] = field(default_factory=dict)
 
 
 class ModelAlphaStrategyV1(BacktestStrategyAdapter):
@@ -106,6 +109,15 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         self._settings, self._runtime_recommendation_state = resolve_runtime_model_alpha_settings(
             predictor=predictor,
             settings=settings,
+        )
+        self._trade_action_policy = normalize_trade_action_policy(
+            (getattr(predictor, "runtime_recommendations", {}) or {}).get("trade_action")
+        )
+        self._runtime_recommendation_state["trade_action_policy_status"] = str(
+            self._trade_action_policy.get("status", "missing")
+        )
+        self._runtime_recommendation_state["trade_action_risk_feature_name"] = str(
+            self._trade_action_policy.get("risk_feature_name", "")
         )
         self._interval_ms = max(int(interval_ms), 1)
         self._pending_group: FeatureTsGroup | None = None
@@ -369,6 +381,26 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             if ref_price is None:
                 _inc_reason(skipped_reasons, "ENTRY_REF_PRICE_MISSING")
                 continue
+            base_notional_multiplier = _resolve_entry_notional_multiplier(
+                prob=float(row.get("model_prob", 0.0)),
+                threshold=float(min_prob_used),
+                settings=self._settings.position,
+            )
+            trade_action_decision = _resolve_trade_action_decision(
+                policy=self._trade_action_policy,
+                row=row,
+                selection_score=float(row.get("model_prob", 0.0)),
+                enabled=bool(self._settings.exit.use_trade_level_action_policy),
+            )
+            effective_exit_settings = _resolve_trade_action_exit_settings(
+                base_settings=self._settings,
+                decision=trade_action_decision,
+            )
+            notional_multiplier = (
+                float(trade_action_decision.get("recommended_notional_multiplier", base_notional_multiplier))
+                if isinstance(trade_action_decision, dict)
+                else float(base_notional_multiplier)
+            )
             intents.append(
                 StrategyOrderIntent(
                     market=market,
@@ -389,18 +421,25 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "selection_min_candidates_source": str(min_candidates_source),
                         "selection_policy_mode": str(selection_mode),
                         "selection_policy_source": str(selection_policy_source),
-                        "sizing_mode": str(self._settings.position.sizing_mode),
-                        "notional_multiplier": _resolve_entry_notional_multiplier(
-                            prob=float(row.get("model_prob", 0.0)),
-                            threshold=float(min_prob_used),
-                            settings=self._settings.position,
-                        ) * float(operational_risk_multiplier),
+                        "sizing_mode": (
+                            "trade_action_policy"
+                            if isinstance(trade_action_decision, dict)
+                            else str(self._settings.position.sizing_mode)
+                        ),
+                        "base_notional_multiplier": float(base_notional_multiplier),
+                        "notional_multiplier": float(notional_multiplier) * float(operational_risk_multiplier),
+                        "notional_multiplier_source": (
+                            "trade_action_policy"
+                            if isinstance(trade_action_decision, dict)
+                            else str(self._settings.position.sizing_mode)
+                        ),
                         "model_exit_plan": build_model_alpha_exit_plan_payload(
-                            settings=self._settings,
+                            settings=effective_exit_settings,
                             row=row,
                             interval_ms=self._interval_ms,
                             observed_entry_fee_rate=0.0,
                         ),
+                        "trade_action": dict(trade_action_decision or {}),
                         "operational_overlay": dict(operational_state),
                     },
                 )
@@ -440,11 +479,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             price = max(float(event.price), 1e-12)
             notional = max(float(event.price) * float(event.volume), 1e-12)
             fee_rate = max(float(event.fee_quote), 0.0) / notional
+            exit_plan = _extract_model_exit_plan_from_fill_meta(event.meta)
             self._positions[market] = _PositionState(
                 entry_ts_ms=int(event.ts_ms),
                 entry_price=price,
                 peak_price=price,
                 entry_fee_rate=fee_rate,
+                exit_plan=exit_plan,
             )
             return
 
@@ -463,19 +504,22 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         ref_price: float,
         row: dict[str, Any] | None,
     ) -> str | None:
-        mode = str(self._settings.exit.mode).strip().lower() or "hold"
-        hold_ms = max(int(self._settings.exit.hold_bars), 0) * self._interval_ms
+        plan = _resolve_position_exit_plan(
+            state=state,
+            settings=self._settings,
+            row=row,
+            interval_ms=self._interval_ms,
+        )
+        mode = str(plan.get("mode", "hold")).strip().lower() or "hold"
+        hold_ms = max(int(plan.get("timeout_delta_ms", 0) or 0), 0)
+        tp_pct = max(float(plan.get("tp_pct", 0.0) or 0.0), 0.0)
+        sl_pct = max(float(plan.get("sl_pct", 0.0) or 0.0), 0.0)
+        trailing_pct = max(float(plan.get("trailing_pct", 0.0) or 0.0), 0.0)
+        exit_fee_rate = max(float(plan.get("expected_exit_fee_rate", 0.0) or 0.0), 0.0)
+        exit_slippage_bps = max(float(plan.get("expected_exit_slippage_bps", 0.0) or 0.0), 0.0)
         if mode == "hold":
             entry_price = max(float(state.entry_price), 1e-12)
-            _, sl_pct, _ = _resolve_runtime_risk_exit_thresholds(
-                settings=self._settings,
-                row=row,
-            )
             if sl_pct > 0:
-                exit_fee_rate, exit_slippage_bps = _resolve_expected_exit_costs(
-                    settings=self._settings,
-                    observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
-                )
                 net_return = _net_return_after_costs(
                     entry_price=entry_price,
                     exit_price=float(ref_price),
@@ -492,14 +536,6 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         # risk mode
         state.peak_price = max(float(state.peak_price), float(ref_price))
         entry_price = max(float(state.entry_price), 1e-12)
-        tp_pct, sl_pct, trailing_pct = _resolve_runtime_risk_exit_thresholds(
-            settings=self._settings,
-            row=row,
-        )
-        exit_fee_rate, exit_slippage_bps = _resolve_expected_exit_costs(
-            settings=self._settings,
-            observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
-        )
         net_return = _net_return_after_costs(
             entry_price=entry_price,
             exit_price=float(ref_price),
@@ -871,6 +907,109 @@ def resolve_runtime_model_alpha_settings(
     return resolved, state
 
 
+def _resolve_trade_action_decision(
+    *,
+    policy: dict[str, Any] | None,
+    row: dict[str, Any] | None,
+    selection_score: float,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    decision = resolve_trade_action(
+        policy,
+        selection_score=float(selection_score),
+        row=row,
+    )
+    if not isinstance(decision, dict) or not decision:
+        return None
+    return decision
+
+
+def _resolve_trade_action_exit_settings(
+    *,
+    base_settings: ModelAlphaSettings,
+    decision: dict[str, Any] | None,
+) -> ModelAlphaSettings:
+    if not isinstance(decision, dict):
+        return base_settings
+    template = dict(decision.get("exit_policy_template") or {})
+    action = str(decision.get("recommended_action", "")).strip().lower()
+    if action not in {"hold", "risk"} or not template:
+        return base_settings
+    resolved_exit = replace(
+        base_settings.exit,
+        mode=action,
+        hold_bars=max(int(template.get("hold_bars", base_settings.exit.hold_bars) or base_settings.exit.hold_bars), 1),
+        risk_scaling_mode=str(template.get("risk_scaling_mode", base_settings.exit.risk_scaling_mode)).strip().lower()
+        or str(base_settings.exit.risk_scaling_mode),
+        risk_vol_feature=str(template.get("risk_vol_feature", base_settings.exit.risk_vol_feature)).strip()
+        or str(base_settings.exit.risk_vol_feature),
+        tp_vol_multiplier=_safe_optional_float(template.get("tp_vol_multiplier", base_settings.exit.tp_vol_multiplier)),
+        sl_vol_multiplier=_safe_optional_float(template.get("sl_vol_multiplier", base_settings.exit.sl_vol_multiplier)),
+        trailing_vol_multiplier=_safe_optional_float(
+            template.get("trailing_vol_multiplier", base_settings.exit.trailing_vol_multiplier)
+        ),
+        tp_pct=(
+            float(template.get("tp_pct"))
+            if template.get("tp_pct") is not None
+            else float(base_settings.exit.tp_pct)
+        ),
+        sl_pct=(
+            float(template.get("sl_pct"))
+            if template.get("sl_pct") is not None
+            else float(base_settings.exit.sl_pct)
+        ),
+        trailing_pct=(
+            float(template.get("trailing_pct"))
+            if template.get("trailing_pct") is not None
+            else float(base_settings.exit.trailing_pct)
+        ),
+        expected_exit_fee_bps=(
+            float(template.get("expected_exit_fee_rate", 0.0) or 0.0) * 10_000.0
+            if template.get("expected_exit_fee_rate") is not None
+            else base_settings.exit.expected_exit_fee_bps
+        ),
+        expected_exit_slippage_bps=(
+            float(template.get("expected_exit_slippage_bps", 0.0) or 0.0)
+            if template.get("expected_exit_slippage_bps") is not None
+            else base_settings.exit.expected_exit_slippage_bps
+        ),
+    )
+    return replace(base_settings, exit=resolved_exit)
+
+
+def _extract_model_exit_plan_from_fill_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(meta, dict):
+        return {}
+    payload = meta.get("model_exit_plan")
+    if isinstance(payload, dict):
+        return dict(payload)
+    strategy_meta = meta.get("strategy")
+    if isinstance(strategy_meta, dict):
+        nested = strategy_meta.get("meta")
+        if isinstance(nested, dict) and isinstance(nested.get("model_exit_plan"), dict):
+            return dict(nested.get("model_exit_plan") or {})
+    return {}
+
+
+def _resolve_position_exit_plan(
+    *,
+    state: _PositionState,
+    settings: ModelAlphaSettings,
+    row: dict[str, Any] | None,
+    interval_ms: int,
+) -> dict[str, Any]:
+    if isinstance(state.exit_plan, dict) and state.exit_plan:
+        return dict(state.exit_plan)
+    return build_model_alpha_exit_plan_payload(
+        settings=settings,
+        row=row,
+        interval_ms=interval_ms,
+        observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
+    )
+
+
 def _resolve_entry_notional_multiplier(
     *,
     prob: float,
@@ -941,6 +1080,7 @@ def build_model_alpha_exit_plan_payload(
         "use_learned_exit_mode": bool(settings.exit.use_learned_exit_mode),
         "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
         "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
+        "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
     }
 
 

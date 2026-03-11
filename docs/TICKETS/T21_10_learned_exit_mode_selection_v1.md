@@ -66,3 +66,10 @@
   - Sortino / lower-partial-moment fold scores
   - exact paired sign-flip validation over aligned folds
 - if that validation is not comparable, the contract emits explicit insufficient-evidence status instead of silently treating the compare as a normal hold win.
+
+## 2026-03-11 Trade-Level Extension
+- `T21.10` now acts as the global fallback layer.
+- trade-level entry-time `hold | risk` resolution moved to:
+  - `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
+- the new layer does not replace the learned global compare artifact.
+- it uses that artifact's best `hold` and best `risk` templates as the compact runtime action set, then resolves them conditionally per trade from walk-forward OOS replay evidence.

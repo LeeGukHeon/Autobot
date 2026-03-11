@@ -51,6 +51,7 @@ class StrategyFillEvent:
     price: float
     volume: float
     fee_quote: float = 0.0
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 class BacktestStrategyAdapter(Protocol):

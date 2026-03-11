@@ -65,6 +65,7 @@ It should not be used for:
 8. `T21.8` Shared Rank Selection Policy v1
 9. `T21.9` Shared OOS Selection Calibration v1
 10. `T21.10` Learned Exit-Mode Selection v1
+11. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
 
 ## 2026-03-11 Global Audit Update
 
@@ -133,6 +134,7 @@ These tickets are the required follow-on family before changing core promotion b
 5. `T21.15` V4 Refit-Based Factor Block Certification v1
 6. `T21.16` V4 Comparable Panel And Multiple-Testing Hardening v1
 7. `T21.17` V4 Ranker Shadow Lane And Lane Governance v1
+8. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
 
 ### Implementation Rule
 - `T21.11` must land first and write an auditable decision-surface artifact for every `v4` run.
@@ -141,6 +143,7 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.15` may not auto-prune from one-run ablation evidence.
 - `T21.16` must keep `INSUFFICIENT_EVIDENCE` and `NOT_COMPARABLE` explicit.
 - `T21.17` is shadow-lane only until the earlier tickets freeze the certification contract.
+- `T21.18` may not map model score directly into TP/SL multipliers; it must learn trade-level action and sizing from OOS replay evidence.
 
 ### Implementation Progress
 - `T21.11` landed:
@@ -227,6 +230,16 @@ These tickets are the required follow-on family before changing core promotion b
   - manual `model daily-v4` now supports an explicit `rank_shadow` lane wrapper
   - non-promotable manual/scout acceptance no longer depends on a stale global `latest_candidate` pointer
   - `rank_shadow` cycle automation now writes a governance-action artifact that can auto-select the next promotable lane without manual review
+- `T21.18` landed locally:
+  - `runtime_recommendations.json` now carries a compact `trade_action` artifact learned from walk-forward OOS trade replay
+  - the policy conditions on:
+    - calibrated selection score
+    - chosen downside-risk proxy feature
+  - it resolves per-bin:
+    - `hold | risk` action
+    - risk-adjusted notional multiplier
+  - `model_alpha_v1` now consumes that artifact at entry time and writes a per-trade `model_exit_plan`
+  - backtest/paper/live strategy bookkeeping now uses the stored entry plan rather than re-reading one global exit configuration
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

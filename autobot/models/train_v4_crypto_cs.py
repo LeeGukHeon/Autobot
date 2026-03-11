@@ -27,6 +27,7 @@ from .dataset_loader import (
     build_data_fingerprint,
     build_dataset_request,
     feature_columns_from_spec,
+    load_feature_aux_frame,
     load_feature_dataset,
     load_feature_spec,
     load_label_spec,
@@ -88,6 +89,7 @@ from .selection_optimizer import (
     build_selection_recommendations_from_walk_forward,
     build_window_selection_objectives,
 )
+from .trade_action_policy import build_trade_action_policy_from_oos_rows
 from .registry import (
     RegistrySavePayload,
     load_json,
@@ -358,6 +360,38 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         y_reg_column="y_reg_net_12",
         y_rank_column="y_rank_cs_12",
     )
+    try:
+        action_aux_frame = load_feature_aux_frame(
+            request,
+            columns=("close", "rv_12", "rv_36", "atr_14", "atr_pct_14"),
+            y_cls_column="y_cls_topq_12",
+            y_reg_column="y_reg_net_12",
+            y_rank_column="y_rank_cs_12",
+        )
+        if action_aux_frame.height != dataset.rows:
+            raise ValueError(
+                "ACTION_AUX_FRAME_ROW_MISMATCH: "
+                f"aux_rows={action_aux_frame.height} dataset_rows={dataset.rows}"
+            )
+        aux_ts_ms = action_aux_frame.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
+        aux_markets = action_aux_frame.get_column("market").to_numpy()
+        if not np.array_equal(aux_ts_ms, dataset.ts_ms) or not np.array_equal(aux_markets, dataset.markets):
+            raise ValueError("ACTION_AUX_FRAME_ALIGNMENT_FAILED")
+        action_aux_arrays = {
+            "close": action_aux_frame.get_column("close").to_numpy().astype(np.float64, copy=False),
+            "rv_12": action_aux_frame.get_column("rv_12").to_numpy().astype(np.float64, copy=False),
+            "rv_36": action_aux_frame.get_column("rv_36").to_numpy().astype(np.float64, copy=False),
+            "atr_14": action_aux_frame.get_column("atr_14").to_numpy().astype(np.float64, copy=False),
+            "atr_pct_14": action_aux_frame.get_column("atr_pct_14").to_numpy().astype(np.float64, copy=False),
+        }
+    except Exception:
+        action_aux_arrays = {
+            "close": np.full(dataset.rows, np.nan, dtype=np.float64),
+            "rv_12": np.full(dataset.rows, np.nan, dtype=np.float64),
+            "rv_36": np.full(dataset.rows, np.nan, dtype=np.float64),
+            "atr_14": np.full(dataset.rows, np.nan, dtype=np.float64),
+            "atr_pct_14": np.full(dataset.rows, np.nan, dtype=np.float64),
+        }
     if dataset.rows < int(options.min_rows_for_train):
         raise ValueError(
             f"NEED_MORE_MICRO_DAYS_OR_LOOSEN_UNIVERSE: rows={dataset.rows} < min_rows_for_train={int(options.min_rows_for_train)}"
@@ -515,6 +549,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         options=options,
         task=task,
         dataset=dataset,
+        action_aux_arrays=action_aux_arrays,
         interval_ms=interval_ms,
         thresholds=thresholds,
         feature_names=dataset.feature_names,
@@ -723,6 +758,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         run_id=run_id,
         run_dir=run_dir,
     )
+    trade_action_oos_rows = walk_forward.pop("_trade_action_oos_rows", [])
     duplicate_candidate = bool(duplicate_artifacts.get("duplicate", False))
     if duplicate_candidate:
         execution_acceptance = _build_duplicate_candidate_execution_acceptance(
@@ -744,6 +780,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             options=options,
             run_id=run_id,
             search_budget_decision=search_budget_decision,
+        )
+        runtime_recommendations["trade_action"] = _build_trade_action_policy_v4(
+            options=options,
+            runtime_recommendations=runtime_recommendations,
+            selection_calibration=selection_calibration,
+            oos_rows=trade_action_oos_rows,
         )
     execution_artifact_cleanup = _purge_execution_artifact_run_dirs(
         output_root=options.execution_acceptance_output_root,
@@ -930,6 +972,7 @@ def _run_walk_forward_v4(
     options: TrainV4CryptoCsOptions,
     task: str,
     dataset: Any,
+    action_aux_arrays: dict[str, np.ndarray],
     interval_ms: int,
     thresholds: dict[str, Any],
     feature_names: Sequence[str],
@@ -948,6 +991,7 @@ def _run_walk_forward_v4(
         "selected_threshold_key_source": "manual_fallback",
         "_factor_block_window_rows": [],
         "_selection_calibration_rows": [],
+        "_trade_action_oos_rows": [],
         "factor_block_refit_windows": [],
     }
     if not bool(options.walk_forward_enabled):
@@ -1086,6 +1130,19 @@ def _run_walk_forward_v4(
                 "window_index": int(info.window_index),
                 "scores": np.asarray(scores, dtype=np.float64).tolist(),
                 "y_cls": np.asarray(dataset.y_cls[test_mask], dtype=np.int64).tolist(),
+            }
+        )
+        report["_trade_action_oos_rows"].append(
+            {
+                "window_index": int(info.window_index),
+                "raw_scores": np.asarray(scores, dtype=np.float64).tolist(),
+                "markets": np.asarray(dataset.markets[test_mask], dtype=object).tolist(),
+                "ts_ms": np.asarray(dataset.ts_ms[test_mask], dtype=np.int64).tolist(),
+                "close": np.asarray(action_aux_arrays.get("close", np.array([]))[test_mask], dtype=np.float64).tolist(),
+                "rv_12": np.asarray(action_aux_arrays.get("rv_12", np.array([]))[test_mask], dtype=np.float64).tolist(),
+                "rv_36": np.asarray(action_aux_arrays.get("rv_36", np.array([]))[test_mask], dtype=np.float64).tolist(),
+                "atr_14": np.asarray(action_aux_arrays.get("atr_14", np.array([]))[test_mask], dtype=np.float64).tolist(),
+                "atr_pct_14": np.asarray(action_aux_arrays.get("atr_pct_14", np.array([]))[test_mask], dtype=np.float64).tolist(),
             }
         )
         report["_factor_block_window_rows"].extend(
@@ -2828,6 +2885,108 @@ def _build_duplicate_candidate_runtime_recommendations(
     }
 
 
+def _build_trade_action_policy_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    runtime_recommendations: dict[str, Any],
+    selection_calibration: dict[str, Any],
+    oos_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    exit_doc = dict((runtime_recommendations or {}).get("exit") or {})
+    hold_grid_point = dict(exit_doc.get("grid_point") or {})
+    risk_grid_point = dict(exit_doc.get("risk_grid_point") or {})
+    if not hold_grid_point or not risk_grid_point:
+        return {
+            "version": 1,
+            "policy": "trade_level_hold_risk_oos_bins_v1",
+            "status": "skipped",
+            "reason": "MISSING_EXIT_GRID_POINTS",
+        }
+
+    base_exit = options.execution_acceptance_model_alpha.exit
+    base_execution = options.execution_acceptance_model_alpha.execution
+    hold_bars = max(
+        int(hold_grid_point.get("hold_bars", exit_doc.get("recommended_hold_bars", base_exit.hold_bars)) or base_exit.hold_bars),
+        1,
+    )
+    risk_hold_bars = max(int(risk_grid_point.get("hold_bars", hold_bars) or hold_bars), 1)
+    expected_exit_fee_rate = _resolve_trade_action_expected_exit_fee_rate(base_exit)
+    expected_exit_slippage_bps = _resolve_trade_action_expected_exit_slippage_bps(
+        exit_settings=base_exit,
+        execution_settings=base_execution,
+    )
+    hold_policy_template = {
+        "mode": "hold",
+        "hold_bars": int(hold_bars),
+        "risk_scaling_mode": str(base_exit.risk_scaling_mode),
+        "risk_vol_feature": str(base_exit.risk_vol_feature),
+        "tp_vol_multiplier": base_exit.tp_vol_multiplier,
+        "sl_vol_multiplier": base_exit.sl_vol_multiplier,
+        "trailing_vol_multiplier": base_exit.trailing_vol_multiplier,
+        "tp_pct": float(base_exit.tp_pct),
+        "sl_pct": float(base_exit.sl_pct),
+        "trailing_pct": float(base_exit.trailing_pct),
+        "expected_exit_fee_rate": float(expected_exit_fee_rate),
+        "expected_exit_slippage_bps": float(expected_exit_slippage_bps),
+    }
+    risk_policy_template = {
+        "mode": "risk",
+        "hold_bars": int(risk_hold_bars),
+        "risk_scaling_mode": str(
+            risk_grid_point.get("risk_scaling_mode", exit_doc.get("recommended_risk_scaling_mode", base_exit.risk_scaling_mode))
+        ),
+        "risk_vol_feature": str(
+            risk_grid_point.get("risk_vol_feature", exit_doc.get("recommended_risk_vol_feature", base_exit.risk_vol_feature))
+        ),
+        "tp_vol_multiplier": risk_grid_point.get(
+            "tp_vol_multiplier",
+            exit_doc.get("recommended_tp_vol_multiplier", base_exit.tp_vol_multiplier),
+        ),
+        "sl_vol_multiplier": risk_grid_point.get(
+            "sl_vol_multiplier",
+            exit_doc.get("recommended_sl_vol_multiplier", base_exit.sl_vol_multiplier),
+        ),
+        "trailing_vol_multiplier": risk_grid_point.get(
+            "trailing_vol_multiplier",
+            exit_doc.get("recommended_trailing_vol_multiplier", base_exit.trailing_vol_multiplier),
+        ),
+        "tp_pct": float(base_exit.tp_pct),
+        "sl_pct": float(base_exit.sl_pct),
+        "trailing_pct": float(base_exit.trailing_pct),
+        "expected_exit_fee_rate": float(expected_exit_fee_rate),
+        "expected_exit_slippage_bps": float(expected_exit_slippage_bps),
+    }
+    return build_trade_action_policy_from_oos_rows(
+        oos_rows=list(oos_rows or []),
+        selection_calibration=selection_calibration,
+        hold_policy_template=hold_policy_template,
+        risk_policy_template=risk_policy_template,
+        size_multiplier_min=float(options.execution_acceptance_model_alpha.position.size_multiplier_min),
+        size_multiplier_max=float(options.execution_acceptance_model_alpha.position.size_multiplier_max),
+    )
+
+
+def _resolve_trade_action_expected_exit_fee_rate(exit_settings: ModelAlphaExitSettings) -> float:
+    if exit_settings.expected_exit_fee_bps is not None:
+        return max(float(exit_settings.expected_exit_fee_bps), 0.0) / 10_000.0
+    return 0.0
+
+
+def _resolve_trade_action_expected_exit_slippage_bps(
+    *,
+    exit_settings: ModelAlphaExitSettings,
+    execution_settings: ModelAlphaExecutionSettings,
+) -> float:
+    if exit_settings.expected_exit_slippage_bps is not None:
+        return max(float(exit_settings.expected_exit_slippage_bps), 0.0)
+    price_mode = str(execution_settings.price_mode).strip().upper()
+    if price_mode == "PASSIVE_MAKER":
+        return 0.0
+    if price_mode == "CROSS_1T":
+        return 6.0
+    return 2.5
+
+
 def _purge_execution_artifact_run_dirs(
     *,
     output_root: Path,
@@ -3742,6 +3901,7 @@ def _build_decision_surface_v4(
     search_applied = dict((search_budget_decision or {}).get("applied") or {})
     execution_compare = dict((execution_acceptance or {}).get("compare_to_champion") or {})
     runtime_exit = dict((runtime_recommendations or {}).get("exit") or {})
+    runtime_trade_action = dict((runtime_recommendations or {}).get("trade_action") or {})
     factor_block_refit_support = dict((factor_block_selection or {}).get("refit_support") or {})
     factor_block_refit_summary = dict(factor_block_refit_support.get("summary") or {})
     research_support_summary = dict((research_support_lane or {}).get("summary") or {})
@@ -3899,6 +4059,9 @@ def _build_decision_surface_v4(
             "status": str((runtime_recommendations or {}).get("status", "")).strip() or "unknown",
             "recommended_exit_mode": str(runtime_exit.get("recommended_exit_mode", "")).strip(),
             "recommended_hold_bars": int(runtime_exit.get("recommended_hold_bars", 0) or 0),
+            "trade_action_policy_status": str(runtime_trade_action.get("status", "")).strip() or "missing",
+            "trade_action_policy_source": str(runtime_trade_action.get("source", "")).strip(),
+            "trade_action_risk_feature_name": str(runtime_trade_action.get("risk_feature_name", "")).strip(),
         },
         "promotion_contract": {
             "promotion_mode": str((promotion or {}).get("promotion_mode", "")).strip() or "candidate",

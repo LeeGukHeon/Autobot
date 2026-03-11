@@ -260,6 +260,37 @@ def load_feature_dataset(
     )
 
 
+def load_feature_aux_frame(
+    request: DatasetRequest,
+    *,
+    columns: tuple[str, ...],
+    y_cls_column: str = "y_cls",
+    y_reg_column: str = "y_reg",
+    y_rank_column: str = "y_rank",
+) -> pl.DataFrame:
+    selected_markets = select_markets(request)
+    normalized_columns = tuple(str(col).strip() for col in columns if str(col).strip())
+    frames: list[pl.DataFrame] = []
+    for market in selected_markets:
+        frame = _scan_market_aux_frame(
+            request=request,
+            market=market,
+            columns=normalized_columns,
+            y_cls_column=y_cls_column,
+            y_reg_column=y_reg_column,
+            y_rank_column=y_rank_column,
+        )
+        if frame.height <= 0:
+            continue
+        frame = frame.drop_nulls(subset=["y_cls"])
+        if frame.height <= 0:
+            continue
+        frames.append(frame)
+    if not frames:
+        raise ValueError("no auxiliary feature rows found for the requested train dataset")
+    return pl.concat(frames, how="vertical").sort(["ts_ms", "market"])
+
+
 def iter_feature_rows_grouped_by_ts(
     request: DatasetRequest,
     *,
@@ -432,6 +463,66 @@ def _scan_market_rows(
         selected = selected.filter(pl.col("ts_ms") <= int(request.end_ts_ms))
     selected = selected.sort("ts_ms")
     return _collect_lazy(selected)
+
+
+def _scan_market_aux_frame(
+    *,
+    request: DatasetRequest,
+    market: str,
+    columns: tuple[str, ...],
+    y_cls_column: str,
+    y_reg_column: str,
+    y_rank_column: str,
+) -> pl.DataFrame:
+    market_files = _market_files(request.dataset_root, request.tf, market)
+    if not market_files:
+        return pl.DataFrame()
+
+    lazy = pl.scan_parquet([str(path) for path in market_files])
+    schema = lazy.collect_schema()
+    names = set(schema.names())
+    required_missing = [name for name in ("ts_ms", y_cls_column) if name not in names]
+    if required_missing:
+        raise ValueError(f"missing required columns in {market}: {required_missing}")
+
+    expressions: list[pl.Expr] = [
+        pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+        pl.lit(market).alias("market"),
+        pl.col(y_cls_column).cast(pl.Int8).alias("y_cls"),
+    ]
+    if y_reg_column in names:
+        expressions.append(pl.col(y_reg_column).cast(pl.Float32).alias("y_reg"))
+    else:
+        expressions.append(pl.lit(np.nan, dtype=pl.Float32).alias("y_reg"))
+    if y_rank_column in names:
+        expressions.append(pl.col(y_rank_column).cast(pl.Float32).alias("y_rank"))
+    else:
+        expressions.append(pl.lit(np.nan, dtype=pl.Float32).alias("y_rank"))
+    if "sample_weight" in names:
+        expressions.append(pl.col("sample_weight").cast(pl.Float32).fill_null(1.0).alias("sample_weight"))
+    else:
+        expressions.append(pl.lit(1.0, dtype=pl.Float32).alias("sample_weight"))
+
+    seen: set[str] = set()
+    for col in columns:
+        if col in seen:
+            continue
+        seen.add(col)
+        if col in names:
+            dtype = schema.get(col)
+            if dtype == pl.Boolean:
+                expressions.append(pl.col(col).cast(pl.Int8).cast(pl.Float64).alias(col))
+            else:
+                expressions.append(pl.col(col).cast(pl.Float64, strict=False).alias(col))
+        else:
+            expressions.append(pl.lit(None, dtype=pl.Float64).alias(col))
+
+    selected = lazy.select(expressions)
+    if request.start_ts_ms is not None:
+        selected = selected.filter(pl.col("ts_ms") >= int(request.start_ts_ms))
+    if request.end_ts_ms is not None:
+        selected = selected.filter(pl.col("ts_ms") <= int(request.end_ts_ms))
+    return _collect_lazy(selected.sort("ts_ms"))
 
 
 def _market_files(dataset_root: Path, tf: str, market: str) -> list[Path]:

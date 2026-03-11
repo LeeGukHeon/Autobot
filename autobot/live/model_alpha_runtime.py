@@ -70,7 +70,7 @@ from .daemon import (
     _runtime_model_binding_after_resume,
 )
 from .identifier import new_order_identifier
-from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
+from .model_risk_plan import build_model_derived_risk_records, build_model_exit_plan_from_position, extract_model_exit_plan
 from .reconcile import resume_risk_plans_after_reconcile
 from .risk_loop import apply_ticker_event
 from .small_account import (
@@ -699,6 +699,7 @@ def _strategy_bid_fill(
             price=max(_safe_float(position.get("avg_entry_price"), default=0.0), 1e-12),
             volume=max(_safe_float(position.get("base_amount"), default=0.0), 1e-12),
             fee_quote=0.0,
+            meta={"model_exit_plan": build_model_exit_plan_from_position(position)},
         )
     )
 
@@ -719,6 +720,7 @@ def _strategy_ask_fill(
             price=max(float(exit_price), 1e-12),
             volume=max(_safe_float(position.get("base_amount"), default=0.0), 1e-12),
             fee_quote=0.0,
+            meta={},
         )
     )
 

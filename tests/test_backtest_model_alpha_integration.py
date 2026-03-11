@@ -9,6 +9,7 @@ import polars as pl
 from autobot.backtest.engine import BacktestRunEngine, BacktestRunSettings
 from autobot.models.predictor import ModelPredictor
 from autobot.models.registry import RegistrySavePayload, save_run
+from autobot.models.trade_action_policy import TRADE_ACTION_POLICY_ID
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
@@ -50,6 +51,7 @@ def _build_strategy(
     selection_recommendations: dict[str, object] | None = None,
     selection_policy: dict[str, object] | None = None,
     selection_calibration: dict[str, object] | None = None,
+    runtime_recommendations: dict[str, object] | None = None,
 ) -> ModelAlphaStrategyV1:
     predictor = ModelPredictor(
         run_dir=Path("."),
@@ -60,6 +62,7 @@ def _build_strategy(
         train_config={"dataset_root": "unused"},
         thresholds=thresholds or {},
         selection_recommendations=selection_recommendations or {},
+        runtime_recommendations=runtime_recommendations or {},
         selection_policy=selection_policy or {},
         selection_calibration=selection_calibration or {},
     )
@@ -526,6 +529,111 @@ def test_model_alpha_prob_ramp_sets_notional_multiplier_from_conviction() -> Non
     assert 0.5 < eth_multiplier < 1.5
     assert eth_multiplier >= 0.5
     assert btc_multiplier <= 1.5
+
+
+def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizing() -> None:
+    frame0 = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [4.0],
+            "close": [100.0],
+            "rv_36": [0.1],
+        }
+    )
+    frame1 = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [4.0],
+            "close": [101.5],
+            "rv_36": [0.1],
+        }
+    )
+    runtime_recommendations = {
+        "trade_action": {
+            "version": 1,
+            "policy": TRADE_ACTION_POLICY_ID,
+            "status": "ready",
+            "risk_feature_name": "rv_36",
+            "edge_bounds": [0.0, 0.5, 1.0],
+            "risk_bounds": [0.0, 0.2, 1.0],
+            "min_bin_samples": 1,
+            "hold_policy_template": {
+                "mode": "hold",
+                "hold_bars": 6,
+                "risk_scaling_mode": "fixed",
+                "risk_vol_feature": "rv_36",
+                "tp_pct": 0.0,
+                "sl_pct": 0.02,
+                "trailing_pct": 0.0,
+            },
+            "risk_policy_template": {
+                "mode": "risk",
+                "hold_bars": 3,
+                "risk_scaling_mode": "fixed",
+                "risk_vol_feature": "rv_36",
+                "tp_pct": 0.01,
+                "sl_pct": 0.02,
+                "trailing_pct": 0.0,
+            },
+            "by_bin": [
+                {
+                    "edge_bin": 1,
+                    "risk_bin": 0,
+                    "sample_count": 5,
+                    "comparable": True,
+                    "recommended_action": "risk",
+                    "recommended_notional_multiplier": 1.25,
+                    "expected_edge": 0.01,
+                    "expected_downside_deviation": 0.005,
+                    "expected_objective_score": 1.0,
+                }
+            ],
+        }
+    }
+    strategy = _build_strategy(
+        groups=[(1_000, frame0), (301_000, frame1)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=6, tp_pct=0.05, sl_pct=0.03),
+        ),
+        runtime_recommendations=runtime_recommendations,
+    )
+
+    first = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+    bid_intent = next(intent for intent in first.intents if intent.side == "bid")
+    assert float((bid_intent.meta or {}).get("notional_multiplier", 0.0)) == 1.25
+    assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "trade_action_policy"
+    exit_plan = dict((bid_intent.meta or {}).get("model_exit_plan") or {})
+    assert exit_plan["mode"] == "risk"
+    assert exit_plan["hold_bars"] == 3
+    assert exit_plan["tp_pct"] == 0.01
+
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            meta=dict(bid_intent.meta or {}),
+        )
+    )
+    second = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 101.5},
+        open_markets={"KRW-BTC"},
+    )
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in second.intents)
 
 
 def test_model_alpha_cooldown_and_hold_exit() -> None:

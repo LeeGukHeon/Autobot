@@ -2129,6 +2129,7 @@ class PaperRunEngine:
                 "initial_ref_price": float(ref_price),
                 "side": intent.side,
                 "reason_code": intent.reason_code,
+                "strategy_meta": dict(intent.meta) if isinstance(intent.meta, dict) else {},
                 "exec_profile": profile_payload,
                 "micro_diagnostics": policy_diagnostics,
                 "micro_order_policy": policy_payload,
@@ -2326,6 +2327,11 @@ class PaperRunEngine:
                 )
             if order is not None and strategy_adapter is not None:
                 try:
+                    fill_meta = {}
+                    if isinstance(intent_context, dict):
+                        context = intent_context.get(order.intent_id)
+                        if isinstance(context, dict) and isinstance(context.get("strategy_meta"), dict):
+                            fill_meta = dict(context.get("strategy_meta") or {})
                     strategy_adapter.on_fill(
                         StrategyFillEvent(
                             ts_ms=int(fill.ts_ms),
@@ -2334,6 +2340,7 @@ class PaperRunEngine:
                             price=float(fill.price),
                             volume=float(fill.volume),
                             fee_quote=float(fill.fee_quote),
+                            meta=fill_meta,
                         )
                     )
                 except Exception:

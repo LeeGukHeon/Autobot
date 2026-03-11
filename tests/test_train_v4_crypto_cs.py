@@ -941,12 +941,21 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {"run_dir": str(hold_exec_run)},
+                "grid_point": {"hold_bars": 12},
                 "recommended_risk_scaling_mode": "volatility_scaled",
                 "recommended_risk_vol_feature": "rv_36",
                 "recommended_tp_vol_multiplier": 2.5,
                 "recommended_sl_vol_multiplier": 1.5,
                 "recommended_trailing_vol_multiplier": 0.75,
                 "risk_summary": {"run_dir": str(risk_exec_run)},
+                "risk_grid_point": {
+                    "hold_bars": 12,
+                    "risk_scaling_mode": "volatility_scaled",
+                    "risk_vol_feature": "rv_36",
+                    "tp_vol_multiplier": 2.5,
+                    "sl_vol_multiplier": 1.5,
+                    "trailing_vol_multiplier": 0.75,
+                },
             },
             "execution": {
                 "recommended_price_mode": "JOIN",
@@ -955,6 +964,17 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {"run_dir": str(execution_exec_run)},
             },
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.build_trade_action_policy_from_oos_rows",
+        lambda **kwargs: {
+            "version": 1,
+            "policy": "trade_level_hold_risk_oos_bins_v1",
+            "status": "ready",
+            "source": "walk_forward_oos_trade_replay",
+            "risk_feature_name": "rv_36",
+            "by_bin": [],
         },
     )
 
@@ -1018,6 +1038,8 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert runtime_doc["exit"]["recommended_tp_vol_multiplier"] == 2.5
     assert runtime_doc["exit"]["recommended_sl_vol_multiplier"] == 1.5
     assert runtime_doc["exit"]["recommended_trailing_vol_multiplier"] == 0.75
+    assert runtime_doc["trade_action"]["status"] == "ready"
+    assert runtime_doc["trade_action"]["risk_feature_name"] == "rv_36"
     assert candidate_exec_run.exists() is False
     assert champion_exec_run.exists() is False
     assert hold_exec_run.exists() is False
@@ -1030,6 +1052,8 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert "RUNTIME_RECOMMENDATIONS_REUSE_TRAIN_WINDOW" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["execution_acceptance_contract"]["selection_use_learned_recommendations"] is False
     assert decision_surface_doc["runtime_recommendation_contract"]["selection_use_learned_recommendations"] is True
+    assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_policy_status"] == "ready"
+    assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_risk_feature_name"] == "rv_36"
     assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
     assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
     execution_options = captured["options"]
