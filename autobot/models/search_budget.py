@@ -44,11 +44,14 @@ def resolve_v4_search_budget(
     policy: V4SearchBudgetPolicy | None = None,
     promotion_contract: V4PromotionEligibleBudgetContract | None = None,
 ) -> dict[str, Any]:
+    normalized_run_scope = _normalize_run_scope(run_scope)
     active_policy = policy or V4SearchBudgetPolicy()
     active_contract = promotion_contract or V4PromotionEligibleBudgetContract()
+    baseline_runtime_profile = _baseline_runtime_profile_for_run_scope(normalized_run_scope)
+    effective_contract = _promotion_contract_for_run_scope(active_contract, normalized_run_scope)
     requested_trials = max(int(requested_booster_sweep_trials), 1)
     applied_trials = requested_trials
-    runtime_profile = "full"
+    runtime_profile = baseline_runtime_profile
     markers: list[str] = []
     reasons: list[str] = []
 
@@ -134,23 +137,23 @@ def resolve_v4_search_budget(
     status = "default"
     if runtime_profile == "tiny" or int(applied_trials) < int(requested_trials):
         status = "throttled"
-    elif runtime_profile != "full":
+    elif str(runtime_profile).strip().lower() != str(baseline_runtime_profile).strip().lower():
         status = "adjusted"
 
-    lane_class_requested = _resolve_budget_lane_class(run_scope)
+    lane_class_requested = _resolve_budget_lane_class(normalized_run_scope)
     promotion_eligible_requested = lane_class_requested == "promotion_eligible"
     promotion_eligible_satisfied = (
         promotion_eligible_requested
-        and int(applied_trials) >= int(active_contract.min_booster_sweep_trials)
-        and str(runtime_profile).strip().lower() == str(active_contract.required_runtime_recommendation_profile).strip().lower()
+        and int(applied_trials) >= int(effective_contract.min_booster_sweep_trials)
+        and str(runtime_profile).strip().lower() == str(effective_contract.required_runtime_recommendation_profile).strip().lower()
         and (
-            (not bool(active_contract.require_cpcv_lite_auto_disabled))
+            (not bool(effective_contract.require_cpcv_lite_auto_disabled))
             or (not bool(cpcv_auto_enabled))
         )
     )
     lane_class_effective = "promotion_eligible" if promotion_eligible_satisfied else "scout"
     budget_contract_id = (
-        str(active_contract.contract_id).strip() if promotion_eligible_requested else "v4_scout_budget_v1"
+        str(effective_contract.contract_id).strip() if promotion_eligible_requested else "v4_scout_budget_v1"
     )
 
     return {
@@ -181,11 +184,11 @@ def resolve_v4_search_budget(
         "promotion_eligible_contract": {
             "requested": bool(promotion_eligible_requested),
             "satisfied": bool(promotion_eligible_satisfied),
-            "contract_id": str(active_contract.contract_id).strip(),
-            "min_booster_sweep_trials": int(active_contract.min_booster_sweep_trials),
-            "required_runtime_recommendation_profile": str(active_contract.required_runtime_recommendation_profile).strip()
+            "contract_id": str(effective_contract.contract_id).strip(),
+            "min_booster_sweep_trials": int(effective_contract.min_booster_sweep_trials),
+            "required_runtime_recommendation_profile": str(effective_contract.required_runtime_recommendation_profile).strip()
             or "full",
-            "require_cpcv_lite_auto_disabled": bool(active_contract.require_cpcv_lite_auto_disabled),
+            "require_cpcv_lite_auto_disabled": bool(effective_contract.require_cpcv_lite_auto_disabled),
         },
         "factor_block_context": {
             "applied": bool((factor_block_selection_context or {}).get("applied", False)),
@@ -242,6 +245,32 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _normalize_run_scope(value: str | None) -> str:
+    return str(value or "").strip().lower() or "scheduled_daily"
+
+
+def _baseline_runtime_profile_for_run_scope(run_scope: str) -> str:
+    normalized = _normalize_run_scope(run_scope)
+    if normalized == "scheduled_daily":
+        return "compact"
+    return "full"
+
+
+def _promotion_contract_for_run_scope(
+    contract: V4PromotionEligibleBudgetContract,
+    run_scope: str,
+) -> V4PromotionEligibleBudgetContract:
+    normalized = _normalize_run_scope(run_scope)
+    if normalized == "scheduled_daily":
+        return V4PromotionEligibleBudgetContract(
+            contract_id=str(contract.contract_id),
+            min_booster_sweep_trials=int(contract.min_booster_sweep_trials),
+            required_runtime_recommendation_profile="compact",
+            require_cpcv_lite_auto_disabled=bool(contract.require_cpcv_lite_auto_disabled),
+        )
+    return contract
 
 
 def _directory_size_bytes(root: Path) -> int:

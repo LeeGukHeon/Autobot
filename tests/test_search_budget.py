@@ -6,7 +6,7 @@ from pathlib import Path
 from autobot.models.search_budget import V4SearchBudgetPolicy, resolve_v4_search_budget
 
 
-def test_resolve_v4_search_budget_defaults_to_full_profile(tmp_path: Path) -> None:
+def test_resolve_v4_search_budget_defaults_to_compact_profile_for_scheduled_daily(tmp_path: Path) -> None:
     logs_root = tmp_path / "logs"
     logs_root.mkdir(parents=True, exist_ok=True)
 
@@ -31,8 +31,9 @@ def test_resolve_v4_search_budget_defaults_to_full_profile(tmp_path: Path) -> No
     assert decision["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert decision["promotion_eligible_contract"]["requested"] is True
     assert decision["promotion_eligible_contract"]["satisfied"] is True
+    assert decision["promotion_eligible_contract"]["required_runtime_recommendation_profile"] == "compact"
     assert decision["applied"]["booster_sweep_trials"] == 10
-    assert decision["applied"]["runtime_recommendation_profile"] == "full"
+    assert decision["applied"]["runtime_recommendation_profile"] == "compact"
     assert decision["markers"] == []
     assert decision["resource_state"]["project_used_gb"] >= 0.0
 
@@ -190,4 +191,5 @@ def test_resolve_v4_search_budget_uses_scope_specific_train_report(tmp_path: Pat
     assert decision["budget_contract_id"] == "v4_scout_budget_v1"
     assert decision["promotion_eligible_contract"]["requested"] is False
     assert decision["promotion_eligible_contract"]["satisfied"] is False
+    assert decision["applied"]["runtime_recommendation_profile"] == "compact"
     assert "SOFT_WALL_TIME_PRESSURE" in decision["markers"]

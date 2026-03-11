@@ -201,6 +201,9 @@ These tickets are the required follow-on family before changing core promotion b
     - effective train lookback
     - contiguous micro days available
     - whether ramp mode was active
+- `T21.13` runtime-budget policy updated locally:
+  - `scheduled_daily` now treats `compact` as the default promotable runtime-recommendation profile
+  - this keeps auto-promotion active while avoiding `full`-profile temporary backtest explosion on the current server
 - `T21.15` slice 1 landed locally:
   - walk-forward factor-block evidence now stores bounded `refit_drop_block` certification rows
   - median ablation is now diagnostic-only and cannot reject optional blocks by itself
