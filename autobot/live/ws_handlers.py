@@ -50,6 +50,12 @@ def _apply_my_order_event(
         event_name=event_name,
         executed_volume=event.executed_volume,
     )
+    executed_funds = _as_optional_float(raw.get("executed_funds") or raw.get("ef"))
+    if executed_funds is None and isinstance(raw.get("trades"), list):
+        funds = [_as_optional_float(item.get("funds")) for item in raw.get("trades") if isinstance(item, dict)]
+        funds = [value for value in funds if value is not None]
+        if funds:
+            executed_funds = float(sum(funds))
 
     order_record = OrderRecord(
         uuid=event.uuid,
@@ -73,7 +79,7 @@ def _apply_my_order_event(
         root_order_uuid=_as_optional_str(existing.get("root_order_uuid")) if existing else event.uuid,
         prev_order_uuid=_as_optional_str(existing.get("prev_order_uuid")) if existing else None,
         prev_order_identifier=_as_optional_str(existing.get("prev_order_identifier")) if existing else None,
-        executed_funds=_as_optional_float(raw.get("executed_funds") or raw.get("ef")),
+        executed_funds=executed_funds,
         paid_fee=_as_optional_float(raw.get("paid_fee") or raw.get("pf")),
         reserved_fee=_as_optional_float(raw.get("reserved_fee") or raw.get("rf")),
         remaining_fee=_as_optional_float(raw.get("remaining_fee") or raw.get("rmf")),

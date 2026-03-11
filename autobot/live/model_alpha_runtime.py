@@ -351,6 +351,7 @@ async def run_live_model_alpha_runtime(
                 )
                 known_positions = _apply_position_sync_to_strategy(
                     store=store,
+                    client=client,
                     strategy=strategy,
                     risk_manager=risk_manager,
                     previous_positions=previous_positions,
@@ -675,6 +676,7 @@ def _bootstrap_strategy_positions(
 def _apply_position_sync_to_strategy(
     *,
     store: LiveStateStore,
+    client: Any,
     strategy: ModelAlphaStrategyV1,
     risk_manager: LiveRiskManager | None,
     previous_positions: dict[str, dict[str, Any]],
@@ -714,6 +716,12 @@ def _apply_position_sync_to_strategy(
         exit_price = _safe_float(latest_prices.get(market), default=0.0)
         if exit_price <= 0:
             exit_price = _safe_float(previous.get("avg_entry_price"), default=1.0)
+        backfill_order_execution_details(
+            store=store,
+            client=client,
+            max_orders=16,
+            target_markets={market},
+        )
         close_trade_journal_for_market(
             store=store,
             market=market,

@@ -519,12 +519,18 @@ def backfill_order_execution_details(
     store: LiveStateStore,
     client: Any,
     max_orders: int | None = 64,
+    target_markets: set[str] | None = None,
+    target_order_uuids: set[str] | None = None,
 ) -> dict[str, Any]:
     scanned = 0
     updated = 0
     failed = 0
     for order in store.list_orders(open_only=False):
         if str(order.get("local_state") or "").strip().upper() != "DONE":
+            continue
+        if target_markets is not None and str(order.get("market") or "").strip().upper() not in target_markets:
+            continue
+        if target_order_uuids is not None and str(order.get("uuid") or "").strip() not in target_order_uuids:
             continue
         if max_orders is not None and scanned >= int(max_orders):
             break
@@ -893,6 +899,21 @@ def _filled_qty_from_order(order: dict[str, Any] | None) -> float | None:
     return _coalesce_float(_as_optional_float(order.get("volume_filled")), _as_optional_float(order.get("volume_req")))
 
 
+def _extract_executed_funds_from_payload(payload: dict[str, Any] | None) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    direct = _as_optional_float(payload.get("executed_funds"))
+    if direct is not None:
+        return direct
+    trades = payload.get("trades")
+    if isinstance(trades, list):
+        funds_values = [_as_optional_float(item.get("funds")) for item in trades if isinstance(item, dict)]
+        funds_values = [value for value in funds_values if value is not None]
+        if funds_values:
+            return float(sum(funds_values))
+    return None
+
+
 def _filled_price_from_order(order: dict[str, Any] | None) -> float | None:
     if not isinstance(order, dict):
         return None
@@ -929,7 +950,7 @@ def _order_record_with_execution_details(*, order: dict[str, Any], payload: dict
         root_order_uuid=_as_optional_str(order.get("root_order_uuid")),
         prev_order_uuid=_as_optional_str(order.get("prev_order_uuid")),
         prev_order_identifier=_as_optional_str(order.get("prev_order_identifier")),
-        executed_funds=_coalesce_float(_as_optional_float(payload.get("executed_funds")), _as_optional_float(order.get("executed_funds"))),
+        executed_funds=_coalesce_float(_extract_executed_funds_from_payload(payload), _as_optional_float(order.get("executed_funds"))),
         paid_fee=_coalesce_float(_as_optional_float(payload.get("paid_fee")), _as_optional_float(order.get("paid_fee"))),
         reserved_fee=_coalesce_float(_as_optional_float(payload.get("reserved_fee")), _as_optional_float(order.get("reserved_fee"))),
         remaining_fee=_coalesce_float(_as_optional_float(payload.get("remaining_fee")), _as_optional_float(order.get("remaining_fee"))),

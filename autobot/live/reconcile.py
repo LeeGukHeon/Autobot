@@ -857,6 +857,12 @@ def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | Non
     if not uuid or not market:
         return None
     created_ts = _parse_created_ts(payload.get("created_at"), fallback_ts=ts_ms)
+    executed_funds = _as_optional_float(payload.get("executed_funds"))
+    if executed_funds is None and isinstance(payload.get("trades"), list):
+        funds = [_as_optional_float(item.get("funds")) for item in payload.get("trades") if isinstance(item, dict)]
+        funds = [value for value in funds if value is not None]
+        if funds:
+            executed_funds = float(sum(funds))
     normalized = normalize_order_state(
         exchange_state=_as_optional_str(payload.get("state")),
         event_name="EXCHANGE_SNAPSHOT",
@@ -879,7 +885,7 @@ def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | Non
         last_event_name=normalized.event_name,
         event_source="reconcile_snapshot",
         root_order_uuid=uuid,
-        executed_funds=_as_optional_float(payload.get("executed_funds")),
+        executed_funds=executed_funds,
         paid_fee=_as_optional_float(payload.get("paid_fee")),
         reserved_fee=_as_optional_float(payload.get("reserved_fee")),
         remaining_fee=_as_optional_float(payload.get("remaining_fee")),

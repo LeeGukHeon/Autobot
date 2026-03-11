@@ -183,10 +183,10 @@ def test_backfill_order_execution_details_updates_done_order_settlement_fields(t
                 "price": "100",
                 "volume": "1",
                 "executed_volume": "1",
-                "executed_funds": "100",
                 "paid_fee": "0.05",
                 "reserved_fee": "0.05",
                 "remaining_fee": "0",
+                "trades": [{"funds": "100"}],
             }
 
     with LiveStateStore(tmp_path / "live_state.db") as store:
