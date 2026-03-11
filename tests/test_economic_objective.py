@@ -48,6 +48,38 @@ def test_compare_v4_profiled_pareto_emits_profile_metadata() -> None:
     assert compare["economic_objective_profile_id"] == profile["profile_id"]
     assert compare["economic_objective_context"] == "execution_compare"
     assert compare["metric_order"]["higher_is_better"] == ["realized_pnl_quote", "fill_rate"]
+    assert compare["primary_metric_order"]["higher_is_better"] == ["realized_pnl_quote"]
+    assert compare["primary_metric_order"]["lower_is_better"] == ["max_drawdown_pct"]
+    assert compare["implementation_metric_order"]["higher_is_better"] == ["fill_rate"]
+    assert compare["implementation_metric_order"]["lower_is_better"] == ["slippage_bps_mean"]
+
+
+def test_compare_v4_profiled_pareto_prefers_downside_edge_before_execution_friction_tie_break() -> None:
+    compare = compare_v4_profiled_pareto(
+        {
+            "orders_filled": 12,
+            "realized_pnl_quote": 980.0,
+            "fill_rate": 0.90,
+            "max_drawdown_pct": 0.50,
+            "slippage_bps_mean": 4.2,
+        },
+        {
+            "orders_filled": 11,
+            "realized_pnl_quote": 1000.0,
+            "fill_rate": 0.91,
+            "max_drawdown_pct": 0.81,
+            "slippage_bps_mean": 3.8,
+        },
+        context="execution_compare",
+    )
+
+    assert compare["comparable"] is True
+    assert compare["candidate_dominates"] is False
+    assert compare["champion_dominates"] is False
+    assert compare["decision"] == "candidate_edge"
+    assert compare["primary_utility_score"] > 0.0
+    assert compare["implementation_utility_score"] < 0.0
+    assert compare["reasons"] == ["PRIMARY_RETURN_DOWNSIDE_UTILITY_PASS"]
 
 
 def test_resolve_v4_promotion_compare_contract_exposes_thresholds_and_policy_variants() -> None:
@@ -56,7 +88,7 @@ def test_resolve_v4_promotion_compare_contract_exposes_thresholds_and_policy_var
         overrides={"candidate_min_orders_filled": 45},
     )
 
-    assert resolved["profile_id"] == "v4_shared_economic_objective_v1"
+    assert resolved["profile_id"] == "v4_shared_economic_objective_v3"
     assert resolved["policy_name_requested"] == "conservative_pareto"
     assert resolved["policy_name_effective"] == "conservative_pareto"
     assert resolved["candidate_min_orders_filled"] == 45

@@ -17,17 +17,24 @@ def resolve_exit_mode_recommendation(
             best_hold_row.get("summary", {}),
         )
         decision = str(compare_doc.get("decision", "")).strip().lower()
-        if bool(compare_doc.get("comparable")) and decision == "candidate_edge":
+        comparable = bool(compare_doc.get("comparable"))
+        if comparable and decision == "candidate_edge":
             return {
                 "recommended_exit_mode": "risk",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
-                "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
+                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
                 "exit_mode_compare": dict(compare_doc),
             }
+        if comparable and decision == "champion_edge":
+            reason_code = "HOLD_EXECUTION_COMPARE_EDGE"
+        elif comparable:
+            reason_code = "HOLD_EXECUTION_COMPARE_INDETERMINATE"
+        else:
+            reason_code = "HOLD_EXECUTION_COMPARE_INSUFFICIENT_EVIDENCE"
         return {
             "recommended_exit_mode": "hold",
             "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
-            "recommended_exit_mode_reason_code": "HOLD_PARETO_WIN_OR_INDETERMINATE",
+            "recommended_exit_mode_reason_code": reason_code,
             "exit_mode_compare": dict(compare_doc),
         }
     if isinstance(best_risk_row, dict):

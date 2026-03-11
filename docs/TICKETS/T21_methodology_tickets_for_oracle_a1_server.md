@@ -177,12 +177,22 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.14` slice 1 landed locally:
   - `economic_objective_profile.json` is now written for each `v4` run
   - trainer sweep, walk-forward selection, offline compare, execution compare, and promotion compare now share:
-    - `profile_id = v4_shared_economic_objective_v1`
+    - `profile_id = v4_shared_economic_objective_v3`
   - `decision_surface.json`, `metrics.json`, certification provenance, and acceptance reports now expose that profile id
   - promotion pareto metric selection now comes from the shared profile artifact rather than a PowerShell-only hardcoded metric list
 - `T21.14` slice 2 landed locally:
   - promotion gate thresholds and policy variants now come from `economic_objective_profile.json`
   - `candidate_acceptance.ps1` records when CLI flags override the shared promotion contract
+- `T21.14` slice 3 landed locally:
+  - `execution_compare` is now versioned under `profile_id = v4_shared_economic_objective_v3`
+  - runtime exit comparison now treats realized return plus downside control as the primary utility
+  - fill-rate / slippage remain visible but only as execution tie-breaks
+  - compare artifacts now expose when hold won on edge, indeterminate outcome, or insufficient evidence
+- `T21.14` slice 4 landed locally:
+  - runtime execution comparison now uses rolling-window `Sortino / LPM` fold validation rather than summary-only utility
+  - pairwise hold-vs-risk decisions are validated with an exact sign-flip test over aligned fold scores
+  - runtime grid ranking now sorts by validated downside-risk objective and fold stability instead of a quadratic pairwise tournament
+  - legacy summary-only artifacts are still readable, but new runs require explicit comparable validation evidence
 - `T21.15` slice 1 landed locally:
   - walk-forward factor-block evidence now stores bounded `refit_drop_block` certification rows
   - median ablation is now diagnostic-only and cannot reject optional blocks by itself

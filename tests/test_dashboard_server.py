@@ -48,7 +48,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
             "exit": {
                 "recommended_exit_mode": "hold",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
-                "recommended_exit_mode_reason_code": "HOLD_PARETO_WIN_OR_INDETERMINATE",
+                "recommended_exit_mode_reason_code": "HOLD_EXECUTION_COMPARE_EDGE",
                 "recommended_hold_bars": 6,
                 "objective_score": 0.15,
                 "grid_point": {"hold_bars": 6},
@@ -154,7 +154,7 @@ def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path
     runtime_recommendations = snapshot["live"]["states"][0]["runtime_artifacts"]["runtime_recommendations"]
 
     assert runtime_recommendations["recommended_exit_mode"] == "hold"
-    assert runtime_recommendations["recommended_exit_mode_reason_code"] == "HOLD_PARETO_WIN_OR_INDETERMINATE"
+    assert runtime_recommendations["recommended_exit_mode_reason_code"] == "HOLD_EXECUTION_COMPARE_EDGE"
     assert runtime_recommendations["contract_status"] == "backfilled"
     assert runtime_recommendations["contract_issues"] == []
     assert runtime_recommendations["exit_mode_compare"]["decision"] == "champion_edge"

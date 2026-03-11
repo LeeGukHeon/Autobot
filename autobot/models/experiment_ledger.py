@@ -79,13 +79,13 @@ def build_experiment_ledger_record(
         },
         "economic_objective": {
             "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
-            or "v4_shared_economic_objective_v1",
+            or "v4_shared_economic_objective_v3",
             "objective_family": str((economic_objective_profile or {}).get("objective_family", "")).strip()
             or "economic_return_first",
             "offline_policy": str(((economic_objective_profile or {}).get("offline_compare") or {}).get("policy", "")).strip()
             or "balanced_pareto_offline",
             "execution_policy": str(((economic_objective_profile or {}).get("execution_compare") or {}).get("policy", "")).strip()
-            or "balanced_pareto_execution",
+            or "paired_sortino_lpm_execution_v1",
         },
         "lane_governance": {
             "lane_id": str((lane_governance or {}).get("lane_id", "")).strip() or "cls_primary",

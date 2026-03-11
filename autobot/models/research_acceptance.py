@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .economic_objective import compare_v4_profiled_pareto
+from .economic_objective import compare_v4_profiled_pareto, resolve_v4_execution_compare_contract
+from .execution_validation import build_execution_validation_summary, compare_execution_validation_folds
 
 
 def compare_balanced_pareto(
@@ -67,11 +68,93 @@ def compare_execution_balanced_pareto(
     candidate_summary: dict[str, Any] | None,
     champion_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    return compare_v4_profiled_pareto(
-        candidate_summary,
-        champion_summary,
+    candidate_payload = dict(candidate_summary or {})
+    champion_payload = dict(champion_summary or {})
+    summary_compare = compare_v4_profiled_pareto(
+        candidate_payload,
+        champion_payload,
         context="execution_compare",
     )
+    contract = resolve_v4_execution_compare_contract()
+    candidate_validation = build_execution_validation_summary(
+        candidate_payload,
+        window_minutes=int(contract.get("validation_window_minutes", 60) or 60),
+        fold_count=int(contract.get("validation_fold_count", 6) or 6),
+        min_active_windows=int(contract.get("validation_min_active_windows", 12) or 12),
+        target_return=float(contract.get("validation_target_return", 0.0) or 0.0),
+        lpm_order=int(contract.get("validation_lpm_order", 2) or 2),
+    )
+    champion_validation = build_execution_validation_summary(
+        champion_payload,
+        window_minutes=int(contract.get("validation_window_minutes", 60) or 60),
+        fold_count=int(contract.get("validation_fold_count", 6) or 6),
+        min_active_windows=int(contract.get("validation_min_active_windows", 12) or 12),
+        target_return=float(contract.get("validation_target_return", 0.0) or 0.0),
+        lpm_order=int(contract.get("validation_lpm_order", 2) or 2),
+    )
+    validation_compare = compare_execution_validation_folds(
+        candidate_validation,
+        champion_validation,
+        alpha=float(contract.get("validation_alpha", 0.10) or 0.10),
+    )
+    result = dict(summary_compare)
+    result["policy"] = str(contract.get("policy", "")).strip() or str(result.get("policy", "")).strip()
+    result["decision_order"] = list(contract.get("decision_order") or result.get("decision_order") or [])
+    result["execution_validation_method"] = str(contract.get("validation_method", "")).strip()
+    result["execution_validation"] = {
+        "candidate": candidate_validation,
+        "champion": champion_validation,
+        "compare": validation_compare,
+    }
+    result["utility_score"] = float(validation_compare.get("mean_diff", result.get("utility_score", 0.0)) or 0.0)
+
+    if not bool(summary_compare.get("comparable")):
+        result["comparable"] = False
+        return result
+    if not bool(validation_compare.get("comparable")):
+        legacy_summary_only = all(
+            not str(payload.get("run_dir", "")).strip() and not isinstance(payload.get("execution_validation"), dict)
+            for payload in (candidate_payload, champion_payload)
+        )
+        if legacy_summary_only:
+            result["comparable"] = bool(summary_compare.get("comparable"))
+            result["decision"] = str(summary_compare.get("decision", "")).strip() or "indeterminate"
+            result["reasons"] = [
+                *[str(item).strip() for item in (summary_compare.get("reasons") or []) if str(item).strip()],
+                "LEGACY_SUMMARY_ONLY_FALLBACK",
+            ]
+            return result
+        reasons = [
+            *[str(item).strip() for item in (summary_compare.get("reasons") or []) if str(item).strip()],
+            *[str(item).strip() for item in (validation_compare.get("reasons") or []) if str(item).strip()],
+        ]
+        result["comparable"] = False
+        result["decision"] = "insufficient_evidence"
+        result["reasons"] = reasons or ["INSUFFICIENT_EXECUTION_VALIDATION"]
+        return result
+
+    summary_candidate_dominates = bool(summary_compare.get("candidate_dominates"))
+    summary_champion_dominates = bool(summary_compare.get("champion_dominates"))
+    validation_decision = str(validation_compare.get("decision", "")).strip().lower()
+    if summary_candidate_dominates and validation_decision == "champion_edge":
+        result["decision"] = "indeterminate"
+        result["reasons"] = ["SUMMARY_VALIDATION_CONFLICT"]
+    elif summary_champion_dominates and validation_decision == "candidate_edge":
+        result["decision"] = "indeterminate"
+        result["reasons"] = ["SUMMARY_VALIDATION_CONFLICT"]
+    elif summary_candidate_dominates and validation_decision == "candidate_edge":
+        result["decision"] = "candidate_edge"
+        result["reasons"] = ["PARETO_DOMINANCE", "DOWNSIDE_VALIDATED_CV_PASS"]
+    elif summary_champion_dominates and validation_decision == "champion_edge":
+        result["decision"] = "champion_edge"
+        result["reasons"] = ["CHAMPION_PARETO_DOMINANCE", "DOWNSIDE_VALIDATED_CV_FAIL"]
+    else:
+        result["decision"] = str(validation_compare.get("decision", "")).strip() or "indeterminate"
+        result["reasons"] = [
+            str(item).strip() for item in (validation_compare.get("reasons") or []) if str(item).strip()
+        ] or ["DOWNSIDE_VALIDATED_CV_HOLD"]
+    result["comparable"] = True
+    return result
 
 
 def compare_spa_like_window_test(

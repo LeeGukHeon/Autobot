@@ -13,7 +13,9 @@ from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSelectionSettings,
 )
 
+from .economic_objective import resolve_v4_execution_compare_contract
 from .execution_acceptance import ExecutionAcceptanceOptions, run_model_execution_backtest
+from .execution_validation import build_execution_validation_summary
 from .research_acceptance import compare_execution_balanced_pareto
 from .runtime_recommendation_contract import (
     normalize_runtime_recommendations_payload,
@@ -67,6 +69,7 @@ def optimize_runtime_recommendations(
     grid: RuntimeRecommendationGrid | None = None,
 ) -> dict[str, Any]:
     active_grid = grid or RuntimeRecommendationGrid()
+    execution_compare_contract = resolve_v4_execution_compare_contract()
     candidate_id = str(candidate_ref).strip()
     if not candidate_id:
         return {
@@ -117,61 +120,66 @@ def optimize_runtime_recommendations(
 
     ranked_holds = _rank_execution_rows(hold_rows)
     best_hold = ranked_holds[0] if ranked_holds else None
-    selected_hold_bars = (
-        int(best_hold["grid_point"]["hold_bars"])
-        if best_hold is not None
-        else int(base_settings.exit.hold_bars)
-    )
 
     risk_exit_rows: list[dict[str, Any]] = []
-    for vol_feature in _dedupe_texts(active_grid.risk_vol_feature_grid):
-        for tp_mult in _dedupe_positive_floats(active_grid.tp_vol_multiplier_grid):
-            for sl_mult in _dedupe_positive_floats(active_grid.sl_vol_multiplier_grid):
-                for trailing_mult in _dedupe_nonnegative_floats(active_grid.trailing_vol_multiplier_grid):
-                    candidate_settings = replace(
-                        base_settings,
-                        exit=ModelAlphaExitSettings(
-                            mode="risk",
-                            hold_bars=int(selected_hold_bars),
-                            use_learned_hold_bars=False,
-                            use_learned_risk_recommendations=False,
-                            risk_scaling_mode="volatility_scaled",
-                            risk_vol_feature=str(vol_feature),
-                            tp_vol_multiplier=float(tp_mult),
-                            sl_vol_multiplier=float(sl_mult),
-                            trailing_vol_multiplier=float(trailing_mult),
-                            tp_pct=float(base_settings.exit.tp_pct),
-                            sl_pct=float(base_settings.exit.sl_pct),
-                            trailing_pct=float(base_settings.exit.trailing_pct),
-                            expected_exit_slippage_bps=base_settings.exit.expected_exit_slippage_bps,
-                            expected_exit_fee_bps=base_settings.exit.expected_exit_fee_bps,
-                        ),
-                        execution=replace(
-                            base_settings.execution,
-                            use_learned_recommendations=False,
-                        ),
-                    )
-                    summary = run_model_execution_backtest(
-                        options=options,
-                        model_ref=candidate_id,
-                        model_alpha_settings=candidate_settings,
-                    )
-                    risk_exit_rows.append(
-                        {
-                            "kind": "risk_exit",
-                            "grid_point": {
-                                "risk_scaling_mode": "volatility_scaled",
-                                "risk_vol_feature": str(vol_feature),
-                                "tp_vol_multiplier": float(tp_mult),
-                                "sl_vol_multiplier": float(sl_mult),
-                                "trailing_vol_multiplier": float(trailing_mult),
-                            },
-                            "summary": summary,
-                        }
-                    )
+    for hold_bars in _dedupe_positive_ints(active_grid.hold_bars_grid):
+        for vol_feature in _dedupe_texts(active_grid.risk_vol_feature_grid):
+            for tp_mult in _dedupe_positive_floats(active_grid.tp_vol_multiplier_grid):
+                for sl_mult in _dedupe_positive_floats(active_grid.sl_vol_multiplier_grid):
+                    for trailing_mult in _dedupe_nonnegative_floats(active_grid.trailing_vol_multiplier_grid):
+                        candidate_settings = replace(
+                            base_settings,
+                            exit=ModelAlphaExitSettings(
+                                mode="risk",
+                                hold_bars=int(hold_bars),
+                                use_learned_exit_mode=False,
+                                use_learned_hold_bars=False,
+                                use_learned_risk_recommendations=False,
+                                risk_scaling_mode="volatility_scaled",
+                                risk_vol_feature=str(vol_feature),
+                                tp_vol_multiplier=float(tp_mult),
+                                sl_vol_multiplier=float(sl_mult),
+                                trailing_vol_multiplier=float(trailing_mult),
+                                tp_pct=float(base_settings.exit.tp_pct),
+                                sl_pct=float(base_settings.exit.sl_pct),
+                                trailing_pct=float(base_settings.exit.trailing_pct),
+                                expected_exit_slippage_bps=base_settings.exit.expected_exit_slippage_bps,
+                                expected_exit_fee_bps=base_settings.exit.expected_exit_fee_bps,
+                            ),
+                            execution=replace(
+                                base_settings.execution,
+                                use_learned_recommendations=False,
+                            ),
+                        )
+                        summary = run_model_execution_backtest(
+                            options=options,
+                            model_ref=candidate_id,
+                            model_alpha_settings=candidate_settings,
+                        )
+                        risk_exit_rows.append(
+                            {
+                                "kind": "risk_exit",
+                                "grid_point": {
+                                    "hold_bars": int(hold_bars),
+                                    "risk_scaling_mode": "volatility_scaled",
+                                    "risk_vol_feature": str(vol_feature),
+                                    "tp_vol_multiplier": float(tp_mult),
+                                    "sl_vol_multiplier": float(sl_mult),
+                                    "trailing_vol_multiplier": float(trailing_mult),
+                                },
+                                "summary": summary,
+                            }
+                        )
 
     ranked_risk_exit = _rank_execution_rows(risk_exit_rows)
     best_risk_exit = ranked_risk_exit[0] if ranked_risk_exit else None
+    exit_recommendation = resolve_exit_mode_recommendation(best_hold, best_risk_exit)
+    execution_exit_settings = _resolve_execution_backtest_exit_settings(
+        base_exit=base_settings.exit,
+        best_hold_row=best_hold,
+        best_risk_row=best_risk_exit,
+        exit_recommendation=exit_recommendation,
+    )
 
     execution_rows: list[dict[str, Any]] = []
     for price_mode in _dedupe_price_modes(active_grid.price_mode_grid):
@@ -179,12 +187,7 @@ def optimize_runtime_recommendations(
             for replace_max in _dedupe_nonnegative_ints(active_grid.replace_max_grid):
                 candidate_settings = replace(
                     base_settings,
-                    exit=replace(
-                        base_settings.exit,
-                        mode="hold",
-                        hold_bars=int(selected_hold_bars),
-                        use_learned_hold_bars=False,
-                    ),
+                    exit=execution_exit_settings,
                     execution=ModelAlphaExecutionSettings(
                         price_mode=str(price_mode),
                         timeout_bars=int(timeout_bars),
@@ -222,7 +225,7 @@ def optimize_runtime_recommendations(
         "status": "ready" if best_hold is not None and best_execution is not None else "fallback",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "recommendation_source": "execution_backtest_grid_search_v1",
-        "objective": "balanced_pareto_execution_tournament",
+        "objective": str(execution_compare_contract.get("policy", "")).strip() or "paired_sortino_lpm_execution_v1",
         "candidate_ref": candidate_id,
         "selection_context": {
             "use_learned_recommendations": bool(base_settings.selection.use_learned_recommendations),
@@ -234,6 +237,7 @@ def optimize_runtime_recommendations(
             best_risk_exit,
             fallback_hold_bars=int(base_settings.exit.hold_bars),
             fallback_exit=base_settings.exit,
+            resolved_exit_recommendation=exit_recommendation,
         ),
         "execution": _build_execution_doc(best_execution, fallback_settings=base_settings.execution),
         "hold_grid_results": ranked_holds,
@@ -249,17 +253,15 @@ def _build_exit_doc(
     *,
     fallback_hold_bars: int,
     fallback_exit: ModelAlphaExitSettings,
+    resolved_exit_recommendation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload: dict[str, Any]
-    if not isinstance(best_row, dict):
+    payload: dict[str, Any] = {
+        "mode": "hold",
+        "recommended_hold_bars": int(fallback_hold_bars),
+        "recommendation_source": "manual_fallback",
+    }
+    if isinstance(best_row, dict):
         payload = {
-            "mode": "hold",
-            "recommended_hold_bars": int(fallback_hold_bars),
-            "recommendation_source": "manual_fallback",
-        }
-    else:
-        payload = {
-            "mode": "hold",
             "recommended_hold_bars": int(best_row["grid_point"]["hold_bars"]),
             "recommendation_source": "execution_backtest_grid_search",
             "objective_score": float(best_row.get("utility_total", 0.0)),
@@ -303,7 +305,25 @@ def _build_exit_doc(
                 "risk_recommendation_source": "manual_fallback",
             }
         )
-    payload.update(resolve_exit_mode_recommendation(best_row, best_risk_row))
+    exit_recommendation = dict(resolved_exit_recommendation or resolve_exit_mode_recommendation(best_row, best_risk_row))
+    payload.update(exit_recommendation)
+    payload["mode"] = str(payload.get("recommended_exit_mode") or payload.get("mode") or "hold").strip().lower() or "hold"
+    selected_row = _select_resolved_exit_row(best_row, best_risk_row, exit_recommendation)
+    payload["recommended_hold_bars"] = _resolve_recommended_hold_bars(
+        selected_row=selected_row,
+        best_hold_row=best_row,
+        fallback_hold_bars=fallback_hold_bars,
+    )
+    if isinstance(selected_row, dict):
+        payload["selected_policy_kind"] = _resolved_exit_row_kind(
+            selected_row=selected_row,
+            best_hold_row=best_row,
+            best_risk_row=best_risk_row,
+            exit_recommendation=exit_recommendation,
+        )
+        payload["selected_objective_score"] = float(selected_row.get("utility_total", 0.0))
+        payload["selected_summary"] = dict(selected_row.get("summary", {}))
+        payload["selected_grid_point"] = dict(selected_row.get("grid_point", {}))
     return payload
 
 
@@ -336,35 +356,44 @@ def _build_execution_doc(
 
 def _rank_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = [dict(item) for item in rows if isinstance(item, dict) and isinstance(item.get("summary"), dict)]
+    compare_contract = resolve_v4_execution_compare_contract()
     for row in normalized:
         row.setdefault("wins", 0)
         row.setdefault("losses", 0)
         row.setdefault("holds", 0)
         row.setdefault("comparable_pairs", 0)
         row.setdefault("utility_total", 0.0)
-
-    for index, left in enumerate(normalized):
-        for other_index, right in enumerate(normalized):
-            if index == other_index:
-                continue
-            compare_doc = compare_execution_balanced_pareto(left.get("summary", {}), right.get("summary", {}))
-            if not bool(compare_doc.get("comparable")):
-                continue
-            left["comparable_pairs"] = int(left.get("comparable_pairs", 0)) + 1
-            decision = str(compare_doc.get("decision", "")).strip().lower()
-            if decision == "candidate_edge":
-                left["wins"] = int(left.get("wins", 0)) + 1
-            elif decision == "champion_edge":
-                left["losses"] = int(left.get("losses", 0)) + 1
-            else:
-                left["holds"] = int(left.get("holds", 0)) + 1
-            left["utility_total"] = float(left.get("utility_total", 0.0)) + float(compare_doc.get("utility_score", 0.0))
+        row.setdefault("implementation_utility_total", 0.0)
+        summary = dict(row.get("summary", {}))
+        validation = summary.get("execution_validation")
+        if not isinstance(validation, dict) or not validation:
+            validation = build_execution_validation_summary(
+                summary,
+                window_minutes=int(compare_contract.get("validation_window_minutes", 60) or 60),
+                fold_count=int(compare_contract.get("validation_fold_count", 6) or 6),
+                min_active_windows=int(compare_contract.get("validation_min_active_windows", 12) or 12),
+                target_return=float(compare_contract.get("validation_target_return", 0.0) or 0.0),
+                lpm_order=int(compare_contract.get("validation_lpm_order", 2) or 2),
+            )
+            summary["execution_validation"] = validation
+            row["summary"] = summary
+        row["validation"] = dict(validation)
+        row["comparable_pairs"] = int(validation.get("comparable_fold_count", 0) or 0)
+        row["utility_total"] = float(validation.get("objective_score", 0.0) or 0.0)
+        row["implementation_utility_total"] = -float(validation.get("objective_std", 0.0) or 0.0)
+        row["validation_nonnegative_ratio_mean"] = float(validation.get("nonnegative_ratio_mean", 0.0) or 0.0)
+        row["validation_max_window_drawdown_pct"] = float(validation.get("max_window_drawdown_pct", 0.0) or 0.0)
+        row["validation_worst_window_return"] = float(validation.get("worst_window_return", 0.0) or 0.0)
+        row["validation_comparable"] = bool(validation.get("comparable", False))
 
     normalized.sort(
         key=lambda item: (
-            int(item.get("wins", 0)),
-            -int(item.get("losses", 0)),
+            1 if bool(item.get("validation_comparable", False)) else 0,
             float(item.get("utility_total", 0.0)),
+            float(item.get("implementation_utility_total", 0.0)),
+            float(item.get("validation_nonnegative_ratio_mean", 0.0)),
+            -float(item.get("validation_max_window_drawdown_pct", 0.0)),
+            float(item.get("validation_worst_window_return", 0.0)),
             float((item.get("summary") or {}).get("realized_pnl_quote", 0.0)),
             float((item.get("summary") or {}).get("fill_rate", 0.0)),
             -float((item.get("summary") or {}).get("max_drawdown_pct", 0.0)),
@@ -459,3 +488,103 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_execution_backtest_exit_settings(
+    *,
+    base_exit: ModelAlphaExitSettings,
+    best_hold_row: dict[str, Any] | None,
+    best_risk_row: dict[str, Any] | None,
+    exit_recommendation: dict[str, Any],
+) -> ModelAlphaExitSettings:
+    selected_row = _select_resolved_exit_row(best_hold_row, best_risk_row, exit_recommendation)
+    resolved_hold_bars = _resolve_recommended_hold_bars(
+        selected_row=selected_row,
+        best_hold_row=best_hold_row,
+        fallback_hold_bars=int(base_exit.hold_bars),
+    )
+    recommended_mode = str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip().lower()
+    if recommended_mode == "risk" and isinstance(best_risk_row, dict):
+        grid_point = dict(best_risk_row.get("grid_point", {}))
+        return ModelAlphaExitSettings(
+            mode="risk",
+            hold_bars=int(resolved_hold_bars),
+            use_learned_exit_mode=False,
+            use_learned_hold_bars=False,
+            use_learned_risk_recommendations=False,
+            risk_scaling_mode=str(grid_point.get("risk_scaling_mode", "volatility_scaled")),
+            risk_vol_feature=str(grid_point.get("risk_vol_feature", base_exit.risk_vol_feature)).strip()
+            or str(base_exit.risk_vol_feature),
+            tp_vol_multiplier=_safe_optional_float(grid_point.get("tp_vol_multiplier", base_exit.tp_vol_multiplier)),
+            sl_vol_multiplier=_safe_optional_float(grid_point.get("sl_vol_multiplier", base_exit.sl_vol_multiplier)),
+            trailing_vol_multiplier=_safe_optional_float(
+                grid_point.get("trailing_vol_multiplier", base_exit.trailing_vol_multiplier)
+            ),
+            tp_pct=float(base_exit.tp_pct),
+            sl_pct=float(base_exit.sl_pct),
+            trailing_pct=float(base_exit.trailing_pct),
+            expected_exit_slippage_bps=base_exit.expected_exit_slippage_bps,
+            expected_exit_fee_bps=base_exit.expected_exit_fee_bps,
+        )
+    return replace(
+        base_exit,
+        mode="hold",
+        hold_bars=int(resolved_hold_bars),
+        use_learned_exit_mode=False,
+        use_learned_hold_bars=False,
+        use_learned_risk_recommendations=False,
+    )
+
+
+def _select_resolved_exit_row(
+    best_hold_row: dict[str, Any] | None,
+    best_risk_row: dict[str, Any] | None,
+    exit_recommendation: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    recommended_mode = str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip().lower()
+    if recommended_mode == "risk" and isinstance(best_risk_row, dict):
+        return best_risk_row
+    if isinstance(best_hold_row, dict):
+        return best_hold_row
+    if isinstance(best_risk_row, dict):
+        return best_risk_row
+    return None
+
+
+def _resolved_exit_row_kind(
+    *,
+    selected_row: dict[str, Any],
+    best_hold_row: dict[str, Any] | None,
+    best_risk_row: dict[str, Any] | None,
+    exit_recommendation: dict[str, Any] | None,
+) -> str:
+    explicit_kind = str(selected_row.get("kind", "")).strip()
+    if explicit_kind:
+        return explicit_kind
+    recommended_mode = str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip().lower()
+    if recommended_mode == "risk" and selected_row is best_risk_row:
+        return "risk_exit"
+    if selected_row is best_hold_row:
+        return "hold"
+    if selected_row is best_risk_row:
+        return "risk_exit"
+    return recommended_mode or "hold"
+
+
+def _resolve_recommended_hold_bars(
+    *,
+    selected_row: dict[str, Any] | None,
+    best_hold_row: dict[str, Any] | None,
+    fallback_hold_bars: int,
+) -> int:
+    for row in (selected_row, best_hold_row):
+        if not isinstance(row, dict):
+            continue
+        grid_point = dict(row.get("grid_point", {}))
+        try:
+            hold_bars = int(grid_point.get("hold_bars", 0) or 0)
+        except (TypeError, ValueError):
+            hold_bars = 0
+        if hold_bars > 0:
+            return hold_bars
+    return max(int(fallback_hold_bars), 1)

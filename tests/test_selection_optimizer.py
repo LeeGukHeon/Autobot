@@ -31,7 +31,7 @@ def test_build_window_selection_objectives_evaluates_grid() -> None:
     )
 
     assert result["comparable"] is True
-    assert result["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
+    assert result["economic_objective_profile_id"] == "v4_shared_economic_objective_v3"
     assert result["economic_objective_context"] == "walk_forward_selection"
     top5 = result["by_threshold_key"]["top_5pct"]
     assert top5["objective"] == "walk_forward_mean_ev_net_selected"
@@ -123,7 +123,7 @@ def test_build_selection_recommendations_from_walk_forward_prefers_best_grid_poi
 
     entry = doc["by_threshold_key"]["top_5pct"]
     assert doc["version"] == 2
-    assert doc["optimizer"]["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
+    assert doc["optimizer"]["economic_objective_profile_id"] == "v4_shared_economic_objective_v3"
     assert doc["recommended_threshold_key"] == "top_5pct"
     assert entry["recommended_top_pct"] == 0.5
     assert entry["recommended_min_candidates_per_ts"] == 1

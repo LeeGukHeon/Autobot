@@ -308,7 +308,7 @@ def test_build_lane_governance_allows_rank_governed_primary_after_shadow_pass() 
     governance = _build_lane_governance_v4(
         task="rank",
         run_scope="scheduled_daily_rank_governed",
-        economic_objective_profile={"profile_id": "v4_shared_economic_objective_v1"},
+        economic_objective_profile={"profile_id": "v4_shared_economic_objective_v3"},
     )
 
     assert governance["lane_id"] == "rank_governed_primary"
@@ -449,14 +449,14 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert decision_surface_doc["policy"] == "v4_decision_surface_v1"
     assert decision_surface_doc["trainer_entrypoint"]["task"] == "cls"
     assert decision_surface_doc["selection_runtime_contract"]["selection_policy_mode"] == "rank_effective_quantile"
-    assert decision_surface_doc["economic_objective_contract"]["profile_id"] == "v4_shared_economic_objective_v1"
+    assert decision_surface_doc["economic_objective_contract"]["profile_id"] == "v4_shared_economic_objective_v3"
     assert decision_surface_doc["search_budget_contract"]["lane_class_requested"] == "promotion_eligible"
     assert decision_surface_doc["search_budget_contract"]["lane_class_effective"] == "scout"
     assert decision_surface_doc["search_budget_contract"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert decision_surface_doc["search_budget_contract"]["promotion_eligible_satisfied"] is False
     assert decision_surface_doc["factor_block_contract"]["refit_support_status"] == "not_applicable"
     assert decision_surface_doc["research_support_contract"]["policy"] == "v4_certification_support_lane_v1"
-    assert result.metrics["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
+    assert result.metrics["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v3"
     assert "TRAINER_RESEARCH_PRIOR_IS_TRAIN_PRODUCED" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
     assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
@@ -937,7 +937,7 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
             "exit": {
                 "recommended_exit_mode": "risk",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
-                "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
+                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {"run_dir": str(hold_exec_run)},

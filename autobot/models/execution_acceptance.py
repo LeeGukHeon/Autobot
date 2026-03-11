@@ -11,6 +11,8 @@ from autobot.strategy.micro_gate_v1 import MicroGateSettings
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.strategy.model_alpha_v1 import ModelAlphaSettings
 
+from .economic_objective import resolve_v4_execution_compare_contract
+from .execution_validation import build_execution_validation_summary
 from .research_acceptance import compare_execution_balanced_pareto
 
 if TYPE_CHECKING:
@@ -46,8 +48,9 @@ class ExecutionAcceptanceOptions:
 
 
 def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, Any]:
+    compare_contract = resolve_v4_execution_compare_contract()
     report: dict[str, Any] = {
-        "policy": "balanced_pareto_execution",
+        "policy": str(compare_contract.get("policy", "")).strip() or "paired_sortino_lpm_execution_v1",
         "enabled": True,
         "candidate_ref": str(options.candidate_ref).strip(),
         "candidate_summary": {},
@@ -90,6 +93,7 @@ def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, A
     compare_doc = compare_execution_balanced_pareto(candidate_summary, champion_summary)
     report["champion_summary"] = champion_summary
     report["compare_to_champion"] = compare_doc
+    report["policy"] = str(compare_doc.get("policy", report["policy"])).strip() or report["policy"]
     report["status"] = "compared"
     return report
 
@@ -150,6 +154,15 @@ def _run_model_backtest(*, options: ExecutionAcceptanceOptions, model_ref: str) 
 def _summary_to_doc(summary: BacktestRunSummary) -> dict[str, Any]:
     payload = asdict(summary)
     payload["run_dir"] = str(payload.get("run_dir", ""))
+    compare_contract = resolve_v4_execution_compare_contract()
+    payload["execution_validation"] = build_execution_validation_summary(
+        payload,
+        window_minutes=int(compare_contract.get("validation_window_minutes", 60) or 60),
+        fold_count=int(compare_contract.get("validation_fold_count", 6) or 6),
+        min_active_windows=int(compare_contract.get("validation_min_active_windows", 12) or 12),
+        target_return=float(compare_contract.get("validation_target_return", 0.0) or 0.0),
+        lpm_order=int(compare_contract.get("validation_lpm_order", 2) or 2),
+    )
     return payload
 
 

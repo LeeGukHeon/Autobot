@@ -8,6 +8,28 @@ from autobot.models.research_acceptance import (
 )
 
 
+def _execution_validation(*fold_scores: float) -> dict[str, object]:
+    scores = [float(value) for value in fold_scores]
+    return {
+        "method": "rolling_window_sortino_lpm_cv_v1",
+        "comparable": True,
+        "objective_score": sum(scores) / float(len(scores)),
+        "objective_std": 0.05,
+        "nonnegative_ratio_mean": 0.75,
+        "max_window_drawdown_pct": 0.8,
+        "worst_window_return": -0.01,
+        "comparable_fold_count": len(scores),
+        "folds": [
+            {
+                "fold_index": index,
+                "comparable": True,
+                "sortino_score": float(score),
+            }
+            for index, score in enumerate(scores)
+        ],
+    }
+
+
 def test_summarize_walk_forward_windows_aggregates_expected_fields() -> None:
     summary = summarize_walk_forward_windows(
         [
@@ -55,7 +77,7 @@ def test_compare_balanced_pareto_prefers_candidate_on_utility_tie_break() -> Non
     assert compare["candidate_dominates"] is False
     assert compare["champion_dominates"] is False
     assert compare["decision"] == "candidate_edge"
-    assert compare["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
+    assert compare["economic_objective_profile_id"] == "v4_shared_economic_objective_v3"
     assert compare["economic_objective_context"] == "offline_compare"
     assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]
 
@@ -64,9 +86,10 @@ def test_compare_execution_balanced_pareto_prefers_candidate_on_utility_tie_brea
     candidate = {
         "orders_filled": 12,
         "realized_pnl_quote": 980.0,
-        "fill_rate": 0.94,
-        "max_drawdown_pct": 0.72,
-        "slippage_bps_mean": 3.2,
+        "fill_rate": 0.90,
+        "max_drawdown_pct": 0.50,
+        "slippage_bps_mean": 4.2,
+        "execution_validation": _execution_validation(0.62, 0.71, 0.68, 0.74, 0.70, 0.77),
     }
     champion = {
         "orders_filled": 11,
@@ -74,6 +97,7 @@ def test_compare_execution_balanced_pareto_prefers_candidate_on_utility_tie_brea
         "fill_rate": 0.91,
         "max_drawdown_pct": 0.81,
         "slippage_bps_mean": 3.8,
+        "execution_validation": _execution_validation(0.21, 0.18, 0.25, 0.20, 0.17, 0.22),
     }
 
     compare = compare_execution_balanced_pareto(candidate, champion)
@@ -82,9 +106,11 @@ def test_compare_execution_balanced_pareto_prefers_candidate_on_utility_tie_brea
     assert compare["candidate_dominates"] is False
     assert compare["champion_dominates"] is False
     assert compare["decision"] == "candidate_edge"
-    assert compare["economic_objective_profile_id"] == "v4_shared_economic_objective_v1"
+    assert compare["economic_objective_profile_id"] == "v4_shared_economic_objective_v3"
     assert compare["economic_objective_context"] == "execution_compare"
-    assert "UTILITY_TIE_BREAK_PASS" in compare["reasons"]
+    assert compare["reasons"] == ["DOWNSIDE_VALIDATED_CV_PASS"]
+    assert compare["execution_validation"]["compare"]["comparable"] is True
+    assert compare["execution_validation"]["compare"]["fold_count"] == 6
 
 
 def test_compare_spa_like_window_test_prefers_candidate_when_all_window_edges_are_positive() -> None:

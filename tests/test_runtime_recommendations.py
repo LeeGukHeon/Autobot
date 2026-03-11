@@ -33,7 +33,7 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_exec
             "exit": {
                 "recommended_exit_mode": "risk",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
-                "recommended_exit_mode_reason_code": "RISK_PARETO_WIN",
+                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {
@@ -130,7 +130,7 @@ def test_normalize_runtime_recommendations_backfills_legacy_exit_mode_compare() 
     exit_doc = payload["exit"]
     assert exit_doc["recommended_exit_mode"] == "hold"
     assert exit_doc["recommended_exit_mode_source"] == "execution_backtest_grid_search_compare"
-    assert exit_doc["recommended_exit_mode_reason_code"] == "HOLD_PARETO_WIN_OR_INDETERMINATE"
+    assert exit_doc["recommended_exit_mode_reason_code"] == "HOLD_EXECUTION_COMPARE_EDGE"
     assert exit_doc["exit_mode_compare"]["decision"] == "champion_edge"
     assert exit_doc["contract_status"] == "backfilled"
     assert "recommended_exit_mode" in exit_doc["contract_backfilled_fields"]
@@ -235,6 +235,7 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
         },
         {
             "grid_point": {
+                "hold_bars": 9,
                 "risk_scaling_mode": "volatility_scaled",
                 "risk_vol_feature": "rv_12",
                 "tp_vol_multiplier": 2.0,
@@ -243,10 +244,10 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
             },
             "summary": {
                 "orders_filled": 12,
-                "realized_pnl_quote": 130.0,
-                "fill_rate": 0.94,
-                "max_drawdown_pct": 1.2,
-                "slippage_bps_mean": 3.2,
+                "realized_pnl_quote": 98.0,
+                "fill_rate": 0.89,
+                "max_drawdown_pct": 0.8,
+                "slippage_bps_mean": 4.2,
             },
         },
         fallback_hold_bars=6,
@@ -254,5 +255,7 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
     )
 
     assert exit_doc["recommended_exit_mode"] == "risk"
-    assert exit_doc["recommended_exit_mode_reason_code"] == "RISK_PARETO_WIN"
-    assert exit_doc["recommended_hold_bars"] == 6
+    assert exit_doc["recommended_exit_mode_reason_code"] == "RISK_EXECUTION_COMPARE_EDGE"
+    assert exit_doc["recommended_hold_bars"] == 9
+    assert exit_doc["selected_policy_kind"] == "risk_exit"
+    assert exit_doc["selected_grid_point"]["hold_bars"] == 9

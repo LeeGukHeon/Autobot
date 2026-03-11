@@ -34,6 +34,7 @@ from .dataset_loader import (
 from .economic_objective import (
     build_v4_shared_economic_objective_profile,
     build_v4_trainer_sweep_sort_key,
+    resolve_v4_execution_compare_contract,
 )
 from .cpcv_lite import (
     build_cpcv_lite_plan,
@@ -290,7 +291,7 @@ def _build_lane_governance_v4(
         "certification_contract_frozen": True,
         "frozen_contract_family": "t21_11_to_t21_16",
         "economic_objective_profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
-        or "v4_shared_economic_objective_v1",
+        or "v4_shared_economic_objective_v3",
         "governance_reasons": list(governance_reasons),
     }
 
@@ -3609,7 +3610,7 @@ def _build_v4_metrics_doc(
         "lane_governance": dict(lane_governance or {}),
         "economic_objective": {
             "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
-            or "v4_shared_economic_objective_v1",
+            or "v4_shared_economic_objective_v3",
             "trainer_sweep": dict(((economic_objective_profile or {}).get("trainer_sweep") or {}).get("task_profiles", {}).get(task) or {}),
             "walk_forward_selection": dict((economic_objective_profile or {}).get("walk_forward_selection") or {}),
             "offline_compare": dict((economic_objective_profile or {}).get("offline_compare") or {}),
@@ -3830,7 +3831,7 @@ def _build_decision_surface_v4(
         "lane_governance": dict(lane_governance or {}),
         "economic_objective_contract": {
             "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
-            or "v4_shared_economic_objective_v1",
+            or "v4_shared_economic_objective_v3",
             "objective_family": str((economic_objective_profile or {}).get("objective_family", "")).strip()
             or "economic_return_first",
             "trainer_sweep": dict(
@@ -4222,9 +4223,10 @@ def _run_execution_acceptance_v4(
     options: TrainV4CryptoCsOptions,
     run_id: str,
 ) -> dict[str, Any]:
+    execution_compare_contract = resolve_v4_execution_compare_contract()
     if not bool(options.execution_acceptance_enabled):
         return {
-            "policy": "balanced_pareto_execution",
+            "policy": str(execution_compare_contract.get("policy", "")).strip() or "paired_sortino_lpm_execution_v1",
             "enabled": False,
             "status": "skipped",
             "skip_reason": "DISABLED",
@@ -4272,7 +4274,7 @@ def _run_execution_acceptance_v4(
         )
     except Exception as exc:
         return {
-            "policy": "balanced_pareto_execution",
+            "policy": str(execution_compare_contract.get("policy", "")).strip() or "paired_sortino_lpm_execution_v1",
             "enabled": True,
             "status": "skipped",
             "skip_reason": f"{type(exc).__name__}: {exc}",

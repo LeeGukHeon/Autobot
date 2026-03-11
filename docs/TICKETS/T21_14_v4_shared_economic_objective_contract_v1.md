@@ -1,7 +1,7 @@
 # T21.14 V4 Shared Economic Objective Contract v1
 
 - Date: 2026-03-11
-- Status: slice 2 landed locally
+- Status: slice 4 landed locally
 
 ## Goal
 - Replace the current stack of mixed local objectives with one auditable economic objective contract
@@ -47,7 +47,7 @@ Out of scope:
 
 ## 2026-03-11 Slice 1 Implementation
 - added `autobot/models/economic_objective.py` with:
-  - `profile_id = v4_shared_economic_objective_v1`
+  - `profile_id = v4_shared_economic_objective_v3`
   - explicit contracts for:
     - `trainer_sweep`
     - `walk_forward_selection`
@@ -105,6 +105,50 @@ Out of scope:
   - explicit CLI override can relax a profile threshold and is recorded
 - `tests/test_economic_objective.py`
   - resolved promotion contract exposes policy-variant thresholds and override keys
+
+## 2026-03-11 Slice 3 Implementation
+- versioned the shared profile to:
+  - `profile_id = v4_shared_economic_objective_v3`
+- hardened `execution_compare` so it now declares:
+  - primary higher-is-better metrics:
+    - `realized_pnl_quote`
+  - primary lower-is-better metrics:
+    - `max_drawdown_pct`
+  - implementation tie-break metrics:
+    - `fill_rate`
+    - `slippage_bps_mean`
+- `compare_v4_profiled_pareto()` now:
+  - preserves Pareto domination as the first decision rule
+  - uses return-plus-downside utility before execution-friction tie-breaks for runtime exit comparisons
+  - exposes primary/implementation utility components in the compare document for audit
+
+## Slice 3 Regression Coverage
+- `tests/test_research_acceptance.py`
+  - a lower-PnL candidate can still win `execution_compare` when downside improvement is large enough and execution friction is only worse on the tie-break axis
+- `tests/test_runtime_recommendations.py`
+  - selected `risk` exit now carries its own `hold_bars` into the runtime artifact
+
+## 2026-03-11 Slice 4 Implementation
+- versioned the shared profile again to:
+  - `profile_id = v4_shared_economic_objective_v3`
+- replaced summary-only runtime execution comparison with a validated execution contract:
+  - policy: `paired_sortino_lpm_execution_v1`
+  - validation method: `rolling_window_sortino_lpm_cv_v1`
+  - rolling window size: `60m`
+  - contiguous validation folds: `6`
+  - minimum active windows: `12`
+  - paired decision rule: exact sign-flip test on aligned fold-level Sortino scores
+- runtime grid ranking is no longer an O(`n^2`) pairwise tournament.
+  - each row is ranked by its own validated downside-risk objective and stability summary
+- the final hold-vs-risk decision now requires comparable validated evidence unless the artifact is an older legacy summary-only payload
+
+## Slice 4 Regression Coverage
+- `tests/test_execution_validation.py`
+  - backtest run artifacts can be converted into rolling-window Sortino/LPM validation folds
+- `tests/test_research_acceptance.py`
+  - execution compare can pass on validated downside-fold evidence
+- `tests/test_train_v4_crypto_cs.py`
+  - trainer artifacts still expose the shared profile under the updated versioned contract
 
 ## Remaining Work
 - `BacktestMinProb` and `BacktestMinCandidatesPerTs` still live outside `promotion_compare`
