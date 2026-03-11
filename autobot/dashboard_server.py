@@ -498,9 +498,15 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "selection_policy_mode": strategy_meta.get("selection_policy_mode"),
         "prob": _coerce_float(strategy_meta.get("model_prob")),
-        "skip_reason": meta_dict.get("skip_reason")
-        or trade_gate.get("reason_code")
-        or admissibility.get("reject_code"),
+        "skip_reason": (
+            meta_dict.get("skip_reason")
+            or admissibility.get("reject_code")
+            or (
+                trade_gate.get("reason_code")
+                if str(trade_gate.get("reason_code") or "").strip().upper() not in {"ALLOW", "POLICY_OK"}
+                else None
+            )
+        ),
         "estimated_total_cost_bps": _coerce_float(admissibility.get("estimated_total_cost_bps")),
         "expected_net_edge_bps": _coerce_float(admissibility.get("expected_net_edge_bps")),
         "trade_action_recommended_action": trade_action.get("recommended_action"),

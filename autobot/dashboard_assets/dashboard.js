@@ -18,6 +18,7 @@
     LOCAL_POSITION_MISSING_ON_EXCHANGE: "거래소 잔고와 불일치",
     SKIPPED_SINGLE_SLOT_ACTIVE_ORDER: "이미 열린 주문이 있어 건너뜀",
     REJECT_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST: "비용 차감 후 기대 우위 없음",
+    EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST: "비용을 빼면 기대수익이 부족함",
     INSUFFICIENT_FREE_BALANCE: "가용 잔고 부족",
     FEE_RESERVE_INSUFFICIENT: "수수료 여유 부족",
     DUST_REMAINDER: "잔량이 너무 작음",
@@ -68,7 +69,8 @@
     MODEL_ALPHA_EXIT_SL: "손절",
     MODEL_ALPHA_EXIT_TRAILING: "추적 매도",
     SUBMITTED: "제출됨",
-    SKIPPED: "건너뜀"
+    SKIPPED: "건너뜀",
+    REJECTED_ADMISSIBILITY: "주문 조건 거절"
   };
 
   const SERVICE_LABELS = {
@@ -243,6 +245,10 @@
     const market = intent.market || "이 종목";
     const side = translate(intent.side);
     const status = translate(intent.status);
+    if (intent.status === "REJECTED_ADMISSIBILITY") {
+      const reason = translate(intent.skip_reason) || "주문 조건";
+      return `${market} ${side} 주문은 ${reason} 때문에 거절됐습니다.`;
+    }
     if (intent.skip_reason) {
       return `${market} ${side} 주문은 ${translate(intent.skip_reason)} 때문에 보내지지 않았습니다.`;
     }

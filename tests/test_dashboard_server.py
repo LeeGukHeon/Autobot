@@ -48,7 +48,11 @@ def _init_live_db(path: Path) -> None:
                         "admissibility": {
                             "decision": {
                                 "expected_net_edge_bps": 98.7,
+                                "reject_code": "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST",
                             }
+                        },
+                        "trade_gate": {
+                            "reason_code": "ALLOW",
                         },
                     },
                     ensure_ascii=False,
@@ -210,6 +214,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert recent_intent["trade_action_recommended_action"] == "risk"
     assert recent_intent["trade_action_expected_edge_bps"] == 123.0
     assert recent_intent["expected_net_edge_bps"] == 98.7
+    assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 
 
 def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path: Path) -> None:
