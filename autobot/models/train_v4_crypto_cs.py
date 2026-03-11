@@ -246,12 +246,20 @@ def _build_lane_governance_v4(
     task_name = str(task).strip().lower() or "cls"
     normalized_run_scope = normalize_factor_block_run_scope(run_scope)
     if task_name == "rank":
-        lane_id = "rank_shadow"
-        lane_role = "shadow"
-        shadow_only = True
-        promotion_allowed = False
-        live_replacement_allowed = False
-        governance_reasons = ["RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED"]
+        if "rank_governed" in normalized_run_scope or "rank_promotable" in normalized_run_scope:
+            lane_id = "rank_governed_primary"
+            lane_role = "production_candidate"
+            shadow_only = False
+            promotion_allowed = True
+            live_replacement_allowed = False
+            governance_reasons = ["AUTO_GOVERNED_FROM_RANK_SHADOW_PASS"]
+        else:
+            lane_id = "rank_shadow"
+            lane_role = "shadow"
+            shadow_only = True
+            promotion_allowed = False
+            live_replacement_allowed = False
+            governance_reasons = ["RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED"]
     elif task_name == "cls":
         lane_id = "cls_primary"
         lane_role = "primary"

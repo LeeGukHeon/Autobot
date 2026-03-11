@@ -69,5 +69,17 @@ Out of scope:
     - `skipped`
   - each run writes a compact cycle artifact under:
     - `logs/model_v4_rank_shadow_cycle/latest.json`
+- no human review is required for lane selection anymore:
+  - `shadow_pass` now writes `latest_governance_action.json` with:
+    - `selected_lane_id = rank_governed_primary`
+    - `selected_acceptance_script = v4_rank_governed_candidate_acceptance.ps1`
+  - `shadow_hold` / `fatal_error` automatically revert or retain:
+    - `selected_lane_id = cls_primary`
+    - `selected_acceptance_script = v4_promotable_candidate_acceptance.ps1`
+  - the primary challenger spawn path now defaults to:
+    - `scripts/v4_governed_candidate_acceptance.ps1`
+  - that governed wrapper reads the latest rank-shadow governance action and automatically chooses:
+    - `cls_primary`
+    - or `rank_governed_primary`
 - non-promotable manual/scout runs no longer rely on the global `latest_candidate` pointer after train
   - acceptance resolves the fresh run from trainer stdout first, preventing stale-pointer reuse

@@ -202,23 +202,23 @@ function Build-RankShadowCycleReport {
     $decisionBasis = [string](Get-PropValue -ObjectValue $backtestGate -Name "decision_basis" -DefaultValue "")
 
     $status = "shadow_hold"
-    $nextAction = "inspect_acceptance_report"
+    $nextAction = "use_cls_primary_lane"
     $actionReason = if ([string]::IsNullOrWhiteSpace($decisionBasis)) { "ACCEPTANCE_NOT_PASSING" } else { $decisionBasis }
     if ($SkippedBecauseBlocked) {
         $status = "skipped"
-        $nextAction = "retry_next_timer"
+        $nextAction = "preserve_previous_lane_action"
         $actionReason = "PRIMARY_LANE_ACTIVE"
     } elseif ($fatal) {
         $status = "fatal_error"
-        $nextAction = "investigate_failure"
+        $nextAction = "use_cls_primary_lane"
         $actionReason = "FATAL_ACCEPTANCE_FAILURE"
     } elseif ($overallPass -and $laneShadowOnly) {
         $status = "shadow_pass"
-        $nextAction = "manual_governance_review"
+        $nextAction = "use_rank_governed_lane"
         $actionReason = "SHADOW_EVIDENCE_READY"
     } elseif ($overallPass) {
         $status = "pass_without_shadow_guard"
-        $nextAction = "manual_review"
+        $nextAction = "use_cls_primary_lane"
         $actionReason = "NONSTANDARD_PASS"
     }
 
@@ -250,6 +250,47 @@ function Build-RankShadowCycleReport {
     }
 }
 
+function Build-GovernanceActionArtifact {
+    param(
+        [Parameter(Mandatory = $true)]$CycleReport,
+        [Parameter(Mandatory = $false)]$PreviousAction
+    )
+    $cycleStatus = [string](Get-PropValue -ObjectValue $CycleReport -Name "status" -DefaultValue "")
+    $nextAction = [string](Get-PropValue -ObjectValue $CycleReport -Name "next_action" -DefaultValue "")
+    $reason = [string](Get-PropValue -ObjectValue $CycleReport -Name "action_reason" -DefaultValue "")
+    $selectedLaneId = "cls_primary"
+    $selectedScript = "v4_promotable_candidate_acceptance.ps1"
+    $automationMode = "default_cls"
+
+    if ($nextAction -eq "use_rank_governed_lane") {
+        $selectedLaneId = "rank_governed_primary"
+        $selectedScript = "v4_rank_governed_candidate_acceptance.ps1"
+        $automationMode = "rank_shadow_auto_pass"
+    } elseif ($nextAction -eq "preserve_previous_lane_action" -and (Test-ObjectHasValues -ObjectValue $PreviousAction)) {
+        $selectedLaneId = [string](Get-PropValue -ObjectValue $PreviousAction -Name "selected_lane_id" -DefaultValue "cls_primary")
+        $selectedScript = [string](Get-PropValue -ObjectValue $PreviousAction -Name "selected_acceptance_script" -DefaultValue "v4_promotable_candidate_acceptance.ps1")
+        $automationMode = "preserved_previous_action"
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = "PRIMARY_LANE_ACTIVE"
+        }
+    }
+
+    return [ordered]@{
+        version = 1
+        policy = "v4_rank_shadow_governance_action_v1"
+        generated_at = (Get-Date).ToString("o")
+        source_cycle_status = $cycleStatus
+        source_cycle_action = $nextAction
+        source_cycle_report_path = [string](Get-PropValue -ObjectValue $CycleReport -Name "acceptance_report_path" -DefaultValue "")
+        source_rank_shadow_cycle_path = ""
+        selected_lane_id = $selectedLaneId
+        selected_acceptance_script = $selectedScript
+        automation_mode = $automationMode
+        reason = $reason
+        candidate_run_id = [string](Get-PropValue -ObjectValue $CycleReport -Name "candidate_run_id" -DefaultValue "")
+    }
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -258,7 +299,9 @@ $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $cycleRoot = Join-Path $resolvedProjectRoot "logs/model_v4_rank_shadow_cycle"
 $runReportPath = Join-Path $cycleRoot ("rank_shadow_cycle_" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".json")
 $latestReportPath = Join-Path $cycleRoot "latest.json"
-$reviewCandidatePath = Join-Path $cycleRoot "latest_review_candidate.json"
+$governedCandidatePath = Join-Path $cycleRoot "latest_governed_candidate.json"
+$governanceActionPath = Join-Path $cycleRoot "latest_governance_action.json"
+$previousGovernanceAction = Load-JsonOrEmpty -PathValue $governanceActionPath
 
 $activeBlockUnits = @()
 foreach ($unit in @($BlockOnActiveUnits)) {
@@ -282,8 +325,11 @@ if ($activeBlockUnits.Count -gt 0) {
         -BlockingUnits $activeBlockUnits `
         -SkippedBecauseBlocked $true
     if (-not $DryRun) {
+        $governanceAction = Build-GovernanceActionArtifact -CycleReport $blockedReport -PreviousAction $previousGovernanceAction
+        $governanceAction.source_rank_shadow_cycle_path = $runReportPath
         Write-JsonFile -PathValue $runReportPath -Payload $blockedReport
         Write-JsonFile -PathValue $latestReportPath -Payload $blockedReport
+        Write-JsonFile -PathValue $governanceActionPath -Payload $governanceAction
     }
     Write-Host ("[rank-shadow-cycle] status=skipped")
     Write-Host ("[rank-shadow-cycle] blocked_units={0}" -f ($activeBlockUnits -join ","))
@@ -327,17 +373,21 @@ $cycleReport = Build-RankShadowCycleReport `
     -AcceptanceExitCode ([int]$exec.ExitCode) `
     -AcceptanceCommand $exec.Command `
     -AcceptanceReport $acceptanceReport
+$governanceAction = Build-GovernanceActionArtifact -CycleReport $cycleReport -PreviousAction $previousGovernanceAction
+$governanceAction.source_rank_shadow_cycle_path = $runReportPath
 
 if (-not $DryRun) {
     Write-JsonFile -PathValue $runReportPath -Payload $cycleReport
     Write-JsonFile -PathValue $latestReportPath -Payload $cycleReport
+    Write-JsonFile -PathValue $governanceActionPath -Payload $governanceAction
     if ([string](Get-PropValue -ObjectValue $cycleReport -Name "status" -DefaultValue "") -eq "shadow_pass") {
-        Write-JsonFile -PathValue $reviewCandidatePath -Payload $cycleReport
+        Write-JsonFile -PathValue $governedCandidatePath -Payload $cycleReport
     }
 }
 
 Write-Host ("[rank-shadow-cycle] status={0}" -f ([string](Get-PropValue -ObjectValue $cycleReport -Name "status" -DefaultValue "")))
 Write-Host ("[rank-shadow-cycle] next_action={0}" -f ([string](Get-PropValue -ObjectValue $cycleReport -Name "next_action" -DefaultValue "")))
+Write-Host ("[rank-shadow-cycle] governance_action={0}" -f ([string](Get-PropValue -ObjectValue $governanceAction -Name "selected_lane_id" -DefaultValue "")))
 Write-Host ("[rank-shadow-cycle] report={0}" -f $runReportPath)
 Write-Host ("[rank-shadow-cycle] latest={0}" -f $latestReportPath)
 

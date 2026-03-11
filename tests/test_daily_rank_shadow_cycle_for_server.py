@@ -106,13 +106,16 @@ def test_rank_shadow_cycle_marks_shadow_pass_ready_for_manual_governance(tmp_pat
 
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
     latest = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json").read_text(encoding="utf-8-sig"))
-    review = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_review_candidate.json").read_text(encoding="utf-8-sig"))
+    governed = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governed_candidate.json").read_text(encoding="utf-8-sig"))
+    governance = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json").read_text(encoding="utf-8-sig"))
 
     assert latest["status"] == "shadow_pass"
-    assert latest["next_action"] == "manual_governance_review"
+    assert latest["next_action"] == "use_rank_governed_lane"
     assert latest["candidate_run_id"] == "rank-run-001"
     assert latest["lane_id"] == "rank_shadow"
-    assert review["status"] == "shadow_pass"
+    assert governed["status"] == "shadow_pass"
+    assert governance["selected_lane_id"] == "rank_governed_primary"
+    assert governance["selected_acceptance_script"] == "v4_rank_governed_candidate_acceptance.ps1"
 
 
 def test_rank_shadow_cycle_preserves_fatal_acceptance_failure_and_writes_cycle_report(tmp_path: Path) -> None:
@@ -156,6 +159,9 @@ def test_rank_shadow_cycle_preserves_fatal_acceptance_failure_and_writes_cycle_r
 
     assert completed.returncode == 2
     latest = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json").read_text(encoding="utf-8-sig"))
+    governance = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json").read_text(encoding="utf-8-sig"))
 
     assert latest["status"] == "fatal_error"
-    assert latest["next_action"] == "investigate_failure"
+    assert latest["next_action"] == "use_cls_primary_lane"
+    assert governance["selected_lane_id"] == "cls_primary"
+    assert governance["selected_acceptance_script"] == "v4_promotable_candidate_acceptance.ps1"

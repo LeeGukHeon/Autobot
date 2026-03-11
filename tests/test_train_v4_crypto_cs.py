@@ -10,6 +10,7 @@ from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
 from autobot.models.train_v4_crypto_cs import (
     TrainV4CryptoCsOptions,
+    _build_lane_governance_v4,
     _build_research_support_lane_v4,
     _evaluate_factor_block_refit_window_evidence,
     _evaluate_factor_block_refit_window_rows,
@@ -301,6 +302,19 @@ def test_build_research_support_lane_summarizes_multiple_testing_and_cpcv() -> N
     assert support_lane["summary"]["cpcv_lite_status"] == "partial"
     assert support_lane["white_rc"]["panel_diagnostics"]["common_panel_key_count"] == 3
     assert "BUDGET_CUT" in support_lane["cpcv_lite"]["insufficiency_reasons"]
+
+
+def test_build_lane_governance_allows_rank_governed_primary_after_shadow_pass() -> None:
+    governance = _build_lane_governance_v4(
+        task="rank",
+        run_scope="scheduled_daily_rank_governed",
+        economic_objective_profile={"profile_id": "v4_shared_economic_objective_v1"},
+    )
+
+    assert governance["lane_id"] == "rank_governed_primary"
+    assert governance["shadow_only"] is False
+    assert governance["promotion_allowed"] is True
+    assert governance["governance_reasons"] == ["AUTO_GOVERNED_FROM_RANK_SHADOW_PASS"]
 
 
 def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monkeypatch) -> None:

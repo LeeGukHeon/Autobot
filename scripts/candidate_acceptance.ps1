@@ -2238,18 +2238,20 @@ try {
     if (Test-IsEffectivelyEmptyObject -ObjectValue $laneGovernance) {
         $normalizedTask = [string]$Task
         $normalizedTask = $normalizedTask.Trim().ToLowerInvariant()
+        $normalizedRunScope = [string]$RunScope
+        $normalizedRunScope = $normalizedRunScope.Trim().ToLowerInvariant()
         $laneGovernance = [ordered]@{
             policy = "v4_lane_governance_v1"
-            lane_id = if ($normalizedTask -eq "rank") { "rank_shadow" } elseif ($normalizedTask -eq "cls") { "cls_primary" } else { "$normalizedTask`_research" }
+            lane_id = if ($normalizedTask -eq "rank" -and ($normalizedRunScope.Contains("rank_governed") -or $normalizedRunScope.Contains("rank_promotable"))) { "rank_governed_primary" } elseif ($normalizedTask -eq "rank") { "rank_shadow" } elseif ($normalizedTask -eq "cls") { "cls_primary" } else { "$normalizedTask`_research" }
             task = if ([string]::IsNullOrWhiteSpace($normalizedTask)) { "cls" } else { $normalizedTask }
             run_scope = [string]$RunScope
-            lane_role = if ($normalizedTask -eq "rank") { "shadow" } elseif ($normalizedTask -eq "cls") { "primary" } else { "research" }
-            shadow_only = ($normalizedTask -eq "rank")
+            lane_role = if ($normalizedTask -eq "rank" -and ($normalizedRunScope.Contains("rank_governed") -or $normalizedRunScope.Contains("rank_promotable"))) { "production_candidate" } elseif ($normalizedTask -eq "rank") { "shadow" } elseif ($normalizedTask -eq "cls") { "primary" } else { "research" }
+            shadow_only = ($normalizedTask -eq "rank" -and (-not ($normalizedRunScope.Contains("rank_governed") -or $normalizedRunScope.Contains("rank_promotable"))))
             production_lane_id = "cls_primary"
             production_task = "cls"
-            promotion_allowed = ($normalizedTask -eq "cls")
+            promotion_allowed = ($normalizedTask -eq "cls" -or ($normalizedTask -eq "rank" -and ($normalizedRunScope.Contains("rank_governed") -or $normalizedRunScope.Contains("rank_promotable"))))
             live_replacement_allowed = ($normalizedTask -eq "cls")
-            governance_reasons = if ($normalizedTask -eq "rank") { @("RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED") } elseif ($normalizedTask -eq "cls") { @("PRIMARY_LANE_ELIGIBLE") } else { @("NON_PRIMARY_LANE_REQUIRES_EXPLICIT_GOVERNANCE") }
+            governance_reasons = if ($normalizedTask -eq "rank" -and ($normalizedRunScope.Contains("rank_governed") -or $normalizedRunScope.Contains("rank_promotable"))) { @("AUTO_GOVERNED_FROM_RANK_SHADOW_PASS") } elseif ($normalizedTask -eq "rank") { @("RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED") } elseif ($normalizedTask -eq "cls") { @("PRIMARY_LANE_ELIGIBLE") } else { @("NON_PRIMARY_LANE_REQUIRES_EXPLICIT_GOVERNANCE") }
         }
     }
     $laneId = [string](Get-PropValue -ObjectValue $laneGovernance -Name "lane_id" -DefaultValue "")

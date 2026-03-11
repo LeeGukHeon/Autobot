@@ -205,6 +205,7 @@ These tickets are the required follow-on family before changing core promotion b
   - acceptance and certification artifacts now record which lane was evaluated and why
   - manual `model daily-v4` now supports an explicit `rank_shadow` lane wrapper
   - non-promotable manual/scout acceptance no longer depends on a stale global `latest_candidate` pointer
+  - `rank_shadow` cycle automation now writes a governance-action artifact that can auto-select the next promotable lane without manual review
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

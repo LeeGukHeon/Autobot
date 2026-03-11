@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_scout_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v4_governed_candidate_acceptance.ps1")
 }
 
 function Resolve-ReportedJsonPath {
