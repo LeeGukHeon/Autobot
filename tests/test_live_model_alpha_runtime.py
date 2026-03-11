@@ -780,6 +780,12 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
                         prob=0.9,
                         meta={
                             "model_prob": 0.9,
+                            "trade_action": {
+                                "recommended_action": "risk",
+                                "expected_edge": 0.0123,
+                                "expected_downside_deviation": 0.0045,
+                                "recommended_notional_multiplier": 1.2,
+                            },
                             "model_exit_plan": {
                                 "source": "model_alpha_v1",
                                 "mode": "risk",
@@ -860,6 +866,14 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
     assert isinstance(exit_plan, dict)
     assert exit_plan.get("source") == "model_alpha_v1"
     assert int(exit_plan.get("timeout_delta_ms", 0)) > 0
+    trade_action = strategy_meta.get("trade_action")
+    assert isinstance(trade_action, dict)
+    assert trade_action.get("recommended_action") == "risk"
+    admissibility = meta_payload.get("admissibility")
+    assert isinstance(admissibility, dict)
+    decision = admissibility.get("decision")
+    assert isinstance(decision, dict)
+    assert float(decision.get("expected_edge_bps", 0.0)) == 123.0
 
 
 def test_live_model_alpha_runtime_backfills_existing_active_plan_from_model_intent(tmp_path: Path, monkeypatch) -> None:

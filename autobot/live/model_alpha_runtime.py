@@ -1184,6 +1184,7 @@ def _handle_strategy_intent(
         snapshot=snapshot,
         price=execution_resolution.requested_price,
         volume=max(float(execution_resolution.requested_volume), 1e-12),
+        expected_edge_bps=_resolve_live_expected_edge_bps(execution_resolution.meta_payload),
     )
     record_small_account_decision(
         store=store,
@@ -1836,6 +1837,25 @@ def _effective_live_trade_gate_max_positions(settings: LiveModelAlphaRuntimeSett
 def _order_emission_allowed(store: LiveStateStore) -> bool:
     rollout_status = store.live_rollout_status() or {}
     return bool(rollout_status.get("order_emission_allowed")) and bool(new_intents_allowed(store))
+
+
+def _resolve_live_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:
+    if not isinstance(meta_payload, dict):
+        return None
+    strategy_meta = (
+        ((meta_payload.get("strategy") or {}).get("meta"))
+        if isinstance(meta_payload.get("strategy"), dict)
+        else None
+    )
+    if not isinstance(strategy_meta, dict):
+        return None
+    trade_action = strategy_meta.get("trade_action")
+    if not isinstance(trade_action, dict):
+        return None
+    raw_edge = _safe_optional_float(trade_action.get("expected_edge"))
+    if raw_edge is None:
+        return None
+    return float(raw_edge) * 10_000.0
 
 
 def _ingest_live_micro_from_ticker(

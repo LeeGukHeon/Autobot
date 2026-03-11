@@ -424,6 +424,10 @@ def _resolve_row_risk_feature_value(*, row: dict[str, Any] | None, feature_name:
     feature = str(feature_name).strip()
     if not feature:
         return None
+    if feature == "rv_12":
+        feature = "vol_12" if "vol_12" in row else "rv_12"
+    elif feature == "rv_36":
+        feature = "vol_36" if "vol_36" in row else "rv_36"
     if feature == "atr_pct_14":
         value = _safe_optional_float(row.get("atr_pct_14"))
         if value is not None:

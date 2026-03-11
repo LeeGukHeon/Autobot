@@ -636,6 +636,61 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in second.intents)
 
 
+def test_model_alpha_trade_action_policy_uses_volatility_alias_columns() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [4.0],
+            "close": [100.0],
+            "vol_36": [0.1],
+        }
+    )
+    runtime_recommendations = {
+        "trade_action": {
+            "version": 1,
+            "policy": TRADE_ACTION_POLICY_ID,
+            "status": "ready",
+            "risk_feature_name": "rv_36",
+            "edge_bounds": [0.0, 0.5, 1.0],
+            "risk_bounds": [0.0, 0.2, 1.0],
+            "min_bin_samples": 1,
+            "hold_policy_template": {"mode": "hold", "hold_bars": 6, "risk_vol_feature": "rv_36", "sl_pct": 0.02},
+            "risk_policy_template": {"mode": "risk", "hold_bars": 3, "risk_vol_feature": "rv_36", "tp_pct": 0.01},
+            "by_bin": [
+                {
+                    "edge_bin": 1,
+                    "risk_bin": 0,
+                    "sample_count": 5,
+                    "comparable": True,
+                    "recommended_action": "risk",
+                    "recommended_notional_multiplier": 1.25,
+                    "expected_edge": 0.01,
+                    "expected_downside_deviation": 0.005,
+                    "expected_objective_score": 1.0,
+                }
+            ],
+        }
+    }
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=6, tp_pct=0.05, sl_pct=0.03),
+        ),
+        runtime_recommendations=runtime_recommendations,
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    assert dict((bid_intent.meta or {}).get("trade_action") or {})["recommended_action"] == "risk"
+    assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "trade_action_policy"
+
+
 def test_model_alpha_cooldown_and_hold_exit() -> None:
     frame0 = pl.DataFrame({"ts_ms": [1_000], "market": ["KRW-BTC"], "f1": [5.0], "close": [100.0]})
     frame1 = pl.DataFrame({"ts_ms": [301_000], "market": ["KRW-BTC"], "f1": [5.0], "close": [102.0]})

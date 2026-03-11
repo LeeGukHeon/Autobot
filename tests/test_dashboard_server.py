@@ -20,7 +20,39 @@ def _init_live_db(path: Path) -> None:
         conn.execute("CREATE TABLE risk_plans (plan_id TEXT PRIMARY KEY, market TEXT, side TEXT, entry_price_str TEXT, qty_str TEXT, tp_enabled INTEGER, tp_price_str TEXT, tp_pct REAL, sl_enabled INTEGER, sl_price_str TEXT, sl_pct REAL, trailing_enabled INTEGER, trail_pct REAL, high_watermark_price_str TEXT, armed_ts_ms INTEGER, timeout_ts_ms INTEGER, state TEXT, last_eval_ts_ms INTEGER, last_action_ts_ms INTEGER, current_exit_order_uuid TEXT, current_exit_order_identifier TEXT, replace_attempt INTEGER, created_ts INTEGER, updated_ts INTEGER, plan_source TEXT, source_intent_id TEXT)")
         conn.execute("CREATE TABLE checkpoints (name TEXT PRIMARY KEY, ts_ms INTEGER, payload_json TEXT)")
         conn.execute("CREATE TABLE breaker_states (breaker_key TEXT PRIMARY KEY, active INTEGER, action TEXT, source TEXT, reason_codes_json TEXT, details_json TEXT, updated_ts INTEGER, armed_ts INTEGER)")
-        conn.execute("INSERT INTO intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("intent-1", 1, "KRW-BTC", "bid", 100.0, 1.0, "MODEL_ALPHA_ENTRY_V1", "{}", "SUBMITTED"))
+        conn.execute(
+            "INSERT INTO intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "intent-1",
+                1,
+                "KRW-BTC",
+                "bid",
+                100.0,
+                1.0,
+                "MODEL_ALPHA_ENTRY_V1",
+                json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "trade_action": {
+                                    "recommended_action": "risk",
+                                    "expected_edge": 0.0123,
+                                    "expected_downside_deviation": 0.0045,
+                                    "recommended_notional_multiplier": 1.2,
+                                }
+                            }
+                        },
+                        "admissibility": {
+                            "decision": {
+                                "expected_net_edge_bps": 98.7,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "SUBMITTED",
+            ),
+        )
         conn.execute("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("order-1", "id-1", "KRW-BTC", "bid", "limit", 100.0, 1.0, 0.0, "wait", 1, 2, "intent-1", None, "OPEN", "wait", None, "runtime", 0, None, None, None))
         conn.execute("INSERT INTO risk_plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("plan-1", "KRW-BTC", "ask", "100", "1", 0, None, None, 0, None, None, 0, None, None, None, 10, "ACTIVE", 0, 0, None, None, 0, 1, 2, "model_alpha_v1", "intent-1"))
         conn.execute("INSERT INTO checkpoints VALUES (?, ?, ?)", ("live_runtime_health", 1, json.dumps({"live_runtime_model_run_id": "run-123", "ws_public_stale": False})))
@@ -85,7 +117,27 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
                     "utility_score": -0.05,
                     "comparable": True,
                 },
-            }
+            },
+            "trade_action": {
+                "status": "ready",
+                "source": "walk_forward_oos_trade_replay",
+                "risk_feature_name": "rv_12",
+                "summary": {
+                    "hold_bins_recommended": 5,
+                    "risk_bins_recommended": 1,
+                },
+                "by_bin": [
+                    {
+                        "edge_bin": 3,
+                        "risk_bin": 0,
+                        "recommended_action": "risk",
+                        "expected_edge": 0.0123,
+                        "expected_downside_deviation": 0.0045,
+                        "recommended_notional_multiplier": 1.2,
+                        "sample_count": 42,
+                    }
+                ],
+            },
         },
     )
 
@@ -93,6 +145,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     runtime_artifacts = snapshot["live"]["states"][0]["runtime_artifacts"]
     runtime_recommendations = runtime_artifacts["runtime_recommendations"]
     exit_compare = runtime_recommendations["exit_mode_compare"]
+    recent_intent = snapshot["live"]["states"][0]["recent_intents"][0]
 
     assert snapshot["training"]["acceptance"]["candidate_run_id"] == "run-abc"
     assert snapshot["training"]["rank_shadow"]["status"] == "shadow_pass"
@@ -106,9 +159,14 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert runtime_recommendations["recommended_exit_mode"] == "hold"
     assert runtime_recommendations["hold_grid_point"]["hold_bars"] == 6
     assert runtime_recommendations["recommended_risk_vol_feature"] == "atr_14"
+    assert runtime_recommendations["trade_action"]["status"] == "ready"
+    assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_edge_bps"] == 123.0
     assert exit_compare["hold"]["orders_filled"] == 8
     assert exit_compare["risk"]["slippage_bps_mean"] == 13.5
     assert exit_compare["summary_ko"]
+    assert recent_intent["trade_action_recommended_action"] == "risk"
+    assert recent_intent["trade_action_expected_edge_bps"] == 123.0
+    assert recent_intent["expected_net_edge_bps"] == 98.7
 
 
 def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path: Path) -> None:

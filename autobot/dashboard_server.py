@@ -476,6 +476,7 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
     admissibility = _dig(meta_dict, "admissibility", "decision", default={}) or {}
     sizing = _dig(meta_dict, "admissibility", "sizing", default={}) or {}
     strategy_meta = _dig(meta_dict, "strategy", "meta", default={}) or {}
+    trade_action = strategy_meta.get("trade_action") if isinstance(strategy_meta.get("trade_action"), dict) else {}
     trade_gate = _dig(meta_dict, "trade_gate", default={}) or {}
     requested_price = _coerce_float(row.get("price"))
     requested_volume = _coerce_float(row.get("volume"))
@@ -501,6 +502,19 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
         or admissibility.get("reject_code"),
         "estimated_total_cost_bps": _coerce_float(admissibility.get("estimated_total_cost_bps")),
         "expected_net_edge_bps": _coerce_float(admissibility.get("expected_net_edge_bps")),
+        "trade_action_recommended_action": trade_action.get("recommended_action"),
+        "trade_action_expected_edge_bps": (
+            (_coerce_float(trade_action.get("expected_edge")) or 0.0) * 10_000.0
+            if _coerce_float(trade_action.get("expected_edge")) is not None
+            else None
+        ),
+        "trade_action_expected_downside_bps": (
+            (_coerce_float(trade_action.get("expected_downside_deviation")) or 0.0) * 10_000.0
+            if _coerce_float(trade_action.get("expected_downside_deviation")) is not None
+            else None
+        ),
+        "trade_action_objective_score": _coerce_float(trade_action.get("expected_objective_score")),
+        "trade_action_notional_multiplier": _coerce_float(trade_action.get("recommended_notional_multiplier")),
     }
 
 
@@ -624,6 +638,39 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
     exit_payload = dict(_dig(normalized, "exit") or {})
     hold_grid_point = dict(exit_payload.get("grid_point") or {})
     risk_grid_point = dict(exit_payload.get("risk_grid_point") or {})
+    trade_action = dict(normalized.get("trade_action") or {})
+    trade_action_summary = {
+        "status": trade_action.get("status"),
+        "source": trade_action.get("source"),
+        "risk_feature_name": trade_action.get("risk_feature_name"),
+        "hold_bins_recommended": _dig(trade_action, "summary", "hold_bins_recommended"),
+        "risk_bins_recommended": _dig(trade_action, "summary", "risk_bins_recommended"),
+        "rows_total": trade_action.get("rows_total"),
+        "windows_covered": trade_action.get("windows_covered"),
+        "sample_bins": [],
+    }
+    for item in (trade_action.get("by_bin") or [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        trade_action_summary["sample_bins"].append(
+            {
+                "edge_bin": item.get("edge_bin"),
+                "risk_bin": item.get("risk_bin"),
+                "recommended_action": item.get("recommended_action"),
+                "expected_edge_bps": (
+                    (_coerce_float(item.get("expected_edge")) or 0.0) * 10_000.0
+                    if _coerce_float(item.get("expected_edge")) is not None
+                    else None
+                ),
+                "expected_downside_bps": (
+                    (_coerce_float(item.get("expected_downside_deviation")) or 0.0) * 10_000.0
+                    if _coerce_float(item.get("expected_downside_deviation")) is not None
+                    else None
+                ),
+                "notional_multiplier": _coerce_float(item.get("recommended_notional_multiplier")),
+                "sample_count": _coerce_int(item.get("sample_count")),
+            }
+        )
     return {
         "recommended_exit_mode": _dig(normalized, "exit", "recommended_exit_mode") or _dig(normalized, "exit", "mode"),
         "recommended_exit_mode_reason_code": _dig(normalized, "exit", "recommended_exit_mode_reason_code"),
@@ -643,6 +690,7 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
         "contract_status": _dig(normalized, "exit", "contract_status"),
         "contract_issues": list(_dig(normalized, "exit", "contract_issues") or []),
         "exit_mode_compare": _summarize_exit_mode_compare(exit_payload),
+        "trade_action": trade_action_summary,
     }
 
 

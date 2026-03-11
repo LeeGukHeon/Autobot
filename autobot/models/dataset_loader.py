@@ -508,12 +508,13 @@ def _scan_market_aux_frame(
         if col in seen:
             continue
         seen.add(col)
-        if col in names:
-            dtype = schema.get(col)
+        source_name = _aux_column_source_name(column=col, available_names=names)
+        if source_name in names:
+            dtype = schema.get(source_name)
             if dtype == pl.Boolean:
-                expressions.append(pl.col(col).cast(pl.Int8).cast(pl.Float64).alias(col))
+                expressions.append(pl.col(source_name).cast(pl.Int8).cast(pl.Float64).alias(col))
             else:
-                expressions.append(pl.col(col).cast(pl.Float64, strict=False).alias(col))
+                expressions.append(pl.col(source_name).cast(pl.Float64, strict=False).alias(col))
         else:
             expressions.append(pl.lit(None, dtype=pl.Float64).alias(col))
 
@@ -523,6 +524,15 @@ def _scan_market_aux_frame(
     if request.end_ts_ms is not None:
         selected = selected.filter(pl.col("ts_ms") <= int(request.end_ts_ms))
     return _collect_lazy(selected.sort("ts_ms"))
+
+
+def _aux_column_source_name(*, column: str, available_names: set[str]) -> str:
+    text = str(column).strip()
+    if text == "rv_12" and "vol_12" in available_names:
+        return "vol_12"
+    if text == "rv_36" and "vol_36" in available_names:
+        return "vol_36"
+    return text
 
 
 def _market_files(dataset_root: Path, tf: str, market: str) -> list[Path]:

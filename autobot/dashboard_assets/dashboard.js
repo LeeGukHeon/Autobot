@@ -480,7 +480,7 @@
     const intentSection = intents.length
       ? intents.slice(0, 4).map((intent) => card(
         `${intent.market || "-"} · ${translate(intent.side)} · ${translate(intent.status)}`,
-        `<div class="kv-grid">${kv("사유", translate(intent.reason_code))}${kv("예상 금액", fmtMoney(intent.notional_quote))}${kv("건너뜀", translate(intent.skip_reason))}${kv("예상 순엣지", fmtBps(intent.expected_net_edge_bps))}${kv("생성 시각", fmtDateTime(intent.ts_ms))}</div>`,
+        `<div class="kv-grid">${kv("사유", translate(intent.reason_code))}${kv("예상 금액", fmtMoney(intent.notional_quote))}${kv("건너뜀", translate(intent.skip_reason))}${kv("예상 순엣지", fmtBps(intent.expected_net_edge_bps))}${kv("Trade 액션", translate(intent.trade_action_recommended_action))}${kv("Trade 엣지", fmtBps(intent.trade_action_expected_edge_bps))}${kv("Trade 하방", fmtBps(intent.trade_action_expected_downside_bps))}${kv("사이징 배수", fmtNumber(intent.trade_action_notional_multiplier, 2))}${kv("생성 시각", fmtDateTime(intent.ts_ms))}</div>`,
         "mini-card"
       )).join("")
       : empty("최근 의도가 없습니다.");
