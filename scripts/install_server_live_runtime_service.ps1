@@ -29,6 +29,24 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $effectiveTargetUnit = if ([string]::IsNullOrWhiteSpace($RolloutTargetUnit)) { $UnitName } else { $RolloutTargetUnit }
+$trimmedUnitName = [string]$UnitName
+$trimmedUnitName = $trimmedUnitName.Trim()
+$isCandidateUnit = $trimmedUnitName.ToLowerInvariant().Contains("candidate")
+$effectiveModelRefSource = if ([string]::IsNullOrWhiteSpace($ModelRefSource)) {
+    if ($isCandidateUnit) { "latest_candidate_v4" } else { "champion_v4" }
+} else {
+    $ModelRefSource
+}
+$effectiveModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) {
+    "train_v4_crypto_cs"
+} else {
+    $ModelFamily
+}
+$effectiveModelRegistryRoot = if ([string]::IsNullOrWhiteSpace($ModelRegistryRoot)) {
+    "models/registry"
+} else {
+    $ModelRegistryRoot
+}
 
 $liveArgList = @(
     "-m", "autobot.cli",
@@ -69,9 +87,9 @@ WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 Environment=AUTOBOT_LIVE_BOT_ID=$BotId
 Environment=AUTOBOT_LIVE_STATE_DB_PATH=$StateDbPath
-Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=$ModelRefSource
-Environment=AUTOBOT_LIVE_MODEL_FAMILY=$ModelFamily
-Environment=AUTOBOT_LIVE_MODEL_REGISTRY_ROOT=$ModelRegistryRoot
+Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=$effectiveModelRefSource
+Environment=AUTOBOT_LIVE_MODEL_FAMILY=$effectiveModelFamily
+Environment=AUTOBOT_LIVE_MODEL_REGISTRY_ROOT=$effectiveModelRegistryRoot
 Environment=AUTOBOT_LIVE_ROLLOUT_MODE=$RolloutMode
 Environment=AUTOBOT_LIVE_TARGET_UNIT=$effectiveTargetUnit
 Environment=AUTOBOT_LIVE_SYNC_MODE=$SyncMode
@@ -92,8 +110,8 @@ if ($DryRun) {
     Write-Host ("[live-install][dry-run] unit={0}" -f $UnitName)
     Write-Host ("[live-install][dry-run] bot_id={0}" -f $BotId)
     Write-Host ("[live-install][dry-run] state_db_path={0}" -f $StateDbPath)
-    Write-Host ("[live-install][dry-run] model_ref_source={0}" -f $ModelRefSource)
-    Write-Host ("[live-install][dry-run] model_family={0}" -f $ModelFamily)
+    Write-Host ("[live-install][dry-run] model_ref_source={0}" -f $effectiveModelRefSource)
+    Write-Host ("[live-install][dry-run] model_family={0}" -f $effectiveModelFamily)
     Write-Host $unitContent
     exit 0
 }

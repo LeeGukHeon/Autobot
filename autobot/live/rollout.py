@@ -73,8 +73,20 @@ def rollout_artifact_root(project_root: Path) -> Path:
     return Path(project_root) / "logs" / "live_rollout"
 
 
-def rollout_latest_artifact_path(project_root: Path) -> Path:
-    return rollout_artifact_root(project_root) / "latest.json"
+def _rollout_target_slug(target_unit: str | None) -> str:
+    text = str(target_unit or "").strip().lower()
+    if not text:
+        return ""
+    slug = "".join(ch if ch.isalnum() else "_" for ch in text).strip("_")
+    return slug
+
+
+def rollout_latest_artifact_path(project_root: Path, *, target_unit: str | None = None) -> Path:
+    root = rollout_artifact_root(project_root)
+    slug = _rollout_target_slug(target_unit)
+    if not slug:
+        return root / "latest.json"
+    return root / f"latest.{slug}.json"
 
 
 def hash_arm_token(value: str | None) -> str | None:
@@ -240,8 +252,10 @@ def rollout_gate_to_payload(value: LiveRolloutGate) -> dict[str, Any]:
     }
 
 
-def load_rollout_latest(project_root: Path) -> dict[str, Any]:
-    path = rollout_latest_artifact_path(project_root)
+def load_rollout_latest(project_root: Path, *, target_unit: str | None = None) -> dict[str, Any]:
+    path = rollout_latest_artifact_path(project_root, target_unit=target_unit)
+    if not path.exists() and str(target_unit or "").strip():
+        path = rollout_latest_artifact_path(project_root)
     if not path.exists():
         return {}
     raw = path.read_text(encoding="utf-8").strip()
@@ -262,20 +276,35 @@ def write_rollout_latest(
     test_order: dict[str, Any] | None,
     status: dict[str, Any] | None,
     ts_ms: int,
+    target_unit: str | None = None,
 ) -> Path:
     root = rollout_artifact_root(project_root)
     root.mkdir(parents=True, exist_ok=True)
+    resolved_target_unit = (
+        str(target_unit or "").strip()
+        or str((status or {}).get("target_unit") or "").strip()
+        or str((contract or {}).get("target_unit") or "").strip()
+    )
     latest = {
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000.0)),
         "ts_ms": int(ts_ms),
         "event_kind": str(event_kind).strip().upper(),
+        "target_unit": resolved_target_unit or None,
         "contract": dict(contract or {}),
         "test_order": dict(test_order or {}),
         "status": dict(status or {}),
     }
     latest_path = rollout_latest_artifact_path(project_root)
     latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    archive_name = f"{latest['event_kind'].lower()}_{int(ts_ms)}.json"
+    scoped_latest_path = rollout_latest_artifact_path(project_root, target_unit=resolved_target_unit)
+    if scoped_latest_path != latest_path:
+        scoped_latest_path.write_text(
+            json.dumps(latest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    slug = _rollout_target_slug(resolved_target_unit)
+    archive_prefix = f"{slug}_" if slug else ""
+    archive_name = f"{archive_prefix}{latest['event_kind'].lower()}_{int(ts_ms)}.json"
     (root / archive_name).write_text(
         json.dumps(latest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

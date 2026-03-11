@@ -107,6 +107,7 @@ from .live import (
     resolve_rollout_gate_inputs,
     resolve_live_runtime_model_contract,
     rollout_gate_to_payload,
+    rollout_latest_artifact_path,
     write_rollout_latest,
     run_live_model_alpha_runtime,
     run_live_sync_daemon,
@@ -4247,7 +4248,9 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         "contract": store.live_rollout_contract(),
                         "test_order": store.live_test_order(),
                         "status": rollout_gate_to_payload(gate),
-                        "artifact_path": str((project_root / "logs" / "live_rollout" / "latest.json")),
+                        "artifact_path": str(
+                            rollout_latest_artifact_path(project_root, target_unit=effective_rollout_target_unit)
+                        ),
                     }
                     _print_json(payload)
                     return 0

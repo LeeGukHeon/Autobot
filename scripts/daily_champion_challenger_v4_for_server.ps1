@@ -111,8 +111,22 @@ function Load-JsonOrEmpty {
 }
 
 function Resolve-LiveRolloutLatestPath {
-    param([string]$Root)
-    return (Join-Path $Root "logs/live_rollout/latest.json")
+    param(
+        [string]$Root,
+        [string]$UnitName = ""
+    )
+    $baseDir = Join-Path $Root "logs/live_rollout"
+    $trimmedUnit = [string]$UnitName
+    if (-not [string]::IsNullOrWhiteSpace($trimmedUnit)) {
+        $slug = (($trimmedUnit.Trim().ToLowerInvariant()) -replace '[^a-z0-9]+', '_').Trim('_')
+        if (-not [string]::IsNullOrWhiteSpace($slug)) {
+            $scopedPath = Join-Path $baseDir ("latest." + $slug + ".json")
+            if (Test-Path $scopedPath) {
+                return $scopedPath
+            }
+        }
+    }
+    return (Join-Path $baseDir "latest.json")
 }
 
 function Get-PropValue {
@@ -151,7 +165,7 @@ function Resolve-PromotionTargetPolicy {
         }
     }
     $trimmedUnit = $trimmedUnit.Trim()
-    $rolloutLatest = Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $Root)
+    $rolloutLatest = Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $Root -UnitName $trimmedUnit)
     $contract = Get-PropValue -ObjectValue $rolloutLatest -Name "contract" -DefaultValue @{}
     $contractTargetUnit = [string](Get-PropValue -ObjectValue $contract -Name "target_unit" -DefaultValue "")
     $contractMode = [string](Get-PropValue -ObjectValue $contract -Name "mode" -DefaultValue "")
@@ -486,6 +500,11 @@ if ($runPromotionPhase) {
                         }) | Out-Null
                     }
                 }
+                $primaryLiveTargetUnit = @(
+                    @($PromotionTargetUnits) |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Trim().StartsWith("autobot-live") } |
+                        Select-Object -First 1
+                )
                 $promoteCutover = [ordered]@{
                     batch_date = $resolvedBatchDate
                     previous_champion_run_id = $championRunIdAtStart
@@ -496,7 +515,7 @@ if ($runPromotionPhase) {
                     target_units = @($restartedUnits)
                     configured_target_units = @($PromotionTargetUnits)
                     skipped_target_units = @($skippedUnits)
-                    live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot)) -Name "contract" -DefaultValue @{})
+                    live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot -UnitName ([string]$primaryLiveTargetUnit))) -Name "contract" -DefaultValue @{})
                 }
                 New-Item -ItemType Directory -Force -Path $promoteCutoverArchiveRoot | Out-Null
                 $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")

@@ -15,7 +15,10 @@ from autobot.live.rollout import (
     build_rollout_contract,
     build_rollout_test_order_record,
     evaluate_live_rollout_gate,
+    load_rollout_latest,
     resolve_rollout_gate_inputs,
+    rollout_latest_artifact_path,
+    write_rollout_latest,
 )
 from autobot.live.state_store import LiveStateStore
 
@@ -173,6 +176,55 @@ def test_resolve_rollout_gate_inputs_falls_back_to_defaults_without_contract() -
     assert target_unit == "autobot-live-alpha.service"
 
 
+def test_write_rollout_latest_writes_scoped_and_global_artifacts(tmp_path: Path) -> None:
+    contract = build_rollout_contract(
+        mode="canary",
+        target_unit="autobot-live-alpha.service",
+        arm_token="demo-token",
+        ts_ms=5_000,
+    )
+    test_order = build_rollout_test_order_record(
+        market="KRW-BTC",
+        side="bid",
+        ord_type="limit",
+        price="5000",
+        volume="1",
+        ok=True,
+        response_payload={"ok": True},
+        ts_ms=9_500,
+    )
+    path = write_rollout_latest(
+        project_root=tmp_path,
+        event_kind="ARM",
+        contract=contract,
+        test_order=test_order,
+        status={"target_unit": "autobot-live-alpha.service", "mode": "canary"},
+        ts_ms=10_000,
+    )
+
+    global_doc = json.loads(path.read_text(encoding="utf-8"))
+    scoped_path = rollout_latest_artifact_path(tmp_path, target_unit="autobot-live-alpha.service")
+    scoped_doc = json.loads(scoped_path.read_text(encoding="utf-8"))
+
+    assert global_doc["target_unit"] == "autobot-live-alpha.service"
+    assert scoped_doc["target_unit"] == "autobot-live-alpha.service"
+    assert scoped_path.name.startswith("latest.autobot_live_alpha_service")
+
+
+def test_load_rollout_latest_prefers_scoped_target_artifact(tmp_path: Path) -> None:
+    root = tmp_path / "logs" / "live_rollout"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "latest.json").write_text(json.dumps({"target_unit": "autobot-live-alpha-candidate.service"}), encoding="utf-8")
+    (root / "latest.autobot_live_alpha_service.json").write_text(
+        json.dumps({"target_unit": "autobot-live-alpha.service", "status": {"mode": "canary"}}),
+        encoding="utf-8",
+    )
+
+    loaded = load_rollout_latest(tmp_path, target_unit="autobot-live-alpha.service")
+
+    assert loaded["target_unit"] == "autobot-live-alpha.service"
+
+
 def test_live_daemon_halts_when_canary_rollout_is_not_armed(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
@@ -310,6 +362,8 @@ def test_live_installer_dry_run_exposes_rollout_mode() -> None:
     assert "'run'" in stdout or '"run"' in stdout
     assert "--rollout-mode" in stdout
     assert "--use-private-ws" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion_v4" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
 
 
 def test_live_installer_dry_run_supports_strategy_runtime() -> None:
@@ -388,6 +442,41 @@ def test_live_installer_dry_run_supports_candidate_specific_overrides() -> None:
     assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=20260310T011523Z-s42-fc53106c" in stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
     assert "Environment=AUTOBOT_LIVE_TARGET_UNIT=autobot-live-alpha-candidate.service" in stdout
+
+
+def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_source_blank() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-UnitName",
+            "autobot-live-alpha-candidate.service",
+            "-RolloutMode",
+            "canary",
+            "-RolloutTargetUnit",
+            "autobot-live-alpha-candidate.service",
+            "-SyncMode",
+            "poll",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate_v4" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
 
 
 def test_live_defaults_accept_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
