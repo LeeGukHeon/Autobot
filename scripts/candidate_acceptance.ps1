@@ -9,7 +9,7 @@ param(
     [int]$BacktestLookbackDays = 8,
     [bool]$TrainLookbackRampEnabled = $true,
     [string]$TrainLookbackRampMicroRoot = "data/parquet/micro_v1",
-    [int]$TrainLookbackRampMinMarketsPerDate = 0,
+    [int]$TrainLookbackRampMinMarketsPerDate = 1,
     [string]$Tf = "5m",
     [string]$Quote = "KRW",
     [int]$TrainTopN = 50,
@@ -248,17 +248,6 @@ function Resolve-TrainWindowRamp {
         certification_start_date = $certificationStartDate
         certification_end_date = $batchDateValue
     }
-}
-
-function Resolve-TrainLookbackRampMinMarketsPerDate {
-    param(
-        [int]$RequestedMinMarketsPerDate,
-        [int]$TrainTopN
-    )
-    if ([int]$RequestedMinMarketsPerDate -gt 0) {
-        return [Math]::Max([int]$RequestedMinMarketsPerDate, 1)
-    }
-    return [Math]::Max([int]$TrainTopN, 1)
 }
 
 function Load-JsonOrEmpty {
@@ -2076,9 +2065,6 @@ New-Item -ItemType Directory -Path $resolvedPaperSmokeOutDir -Force | Out-Null
 
 $effectiveBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) { (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd") } else { $BatchDate }
 $effectiveBatchDate = Resolve-DateToken -DateText $effectiveBatchDate -LabelForError "batch_date"
-$effectiveTrainLookbackRampMinMarketsPerDate = Resolve-TrainLookbackRampMinMarketsPerDate `
-    -RequestedMinMarketsPerDate $TrainLookbackRampMinMarketsPerDate `
-    -TrainTopN $TrainTopN
 $windowRamp = Resolve-TrainWindowRamp `
     -ProjectRoot $resolvedProjectRoot `
     -BatchDate $effectiveBatchDate `
@@ -2087,7 +2073,7 @@ $windowRamp = Resolve-TrainWindowRamp `
     -RequestedBacktestLookbackDays $BacktestLookbackDays `
     -RampEnabled $TrainLookbackRampEnabled `
     -MicroRoot $TrainLookbackRampMicroRoot `
-    -MinMarketsPerDate $effectiveTrainLookbackRampMinMarketsPerDate
+    -MinMarketsPerDate $TrainLookbackRampMinMarketsPerDate
 $certificationStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "certification_start_date" -DefaultValue "")
 $trainEndDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_end_date" -DefaultValue "")
 $trainStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_start_date" -DefaultValue "")
@@ -2115,7 +2101,6 @@ $report = [ordered]@{
         train_window_ramp_active = [bool](Get-PropValue -ObjectValue $windowRamp -Name "ramp_active" -DefaultValue $false)
         train_window_ramp_reason = [string](Get-PropValue -ObjectValue $windowRamp -Name "reason" -DefaultValue "")
         train_window_ramp_micro_root = [string](Get-PropValue -ObjectValue $windowRamp -Name "micro_root" -DefaultValue "")
-        train_window_ramp_min_markets_per_date_requested = [int]$TrainLookbackRampMinMarketsPerDate
         train_window_ramp_min_markets_per_date = [int](Get-PropValue -ObjectValue $windowRamp -Name "min_markets_per_date" -DefaultValue 1)
         train_window_ramp_available_contiguous_micro_days = [int](Get-PropValue -ObjectValue $windowRamp -Name "available_contiguous_micro_days" -DefaultValue 0)
         train_window_ramp_first_available_micro_date = [string](Get-PropValue -ObjectValue $windowRamp -Name "first_available_micro_date" -DefaultValue "")
