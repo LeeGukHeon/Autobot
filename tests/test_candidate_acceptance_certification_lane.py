@@ -31,6 +31,7 @@ def _make_fake_python_exe(
     *,
     write_decision_surface: bool,
     write_trainer_research_evidence: bool = True,
+    write_latest_candidate_pointer: bool = True,
     budget_lane_class_requested: str = "promotion_eligible",
     budget_lane_class_effective: str = "promotion_eligible",
     budget_contract_id: str = "v4_promotion_eligible_budget_v1",
@@ -51,6 +52,7 @@ def _make_fake_python_exe(
             CHAMPION_RUN_ID = "champion-run-000"
             WRITE_DECISION_SURFACE = {str(write_decision_surface)}
             WRITE_TRAINER_RESEARCH_EVIDENCE = {str(write_trainer_research_evidence)}
+            WRITE_LATEST_CANDIDATE_POINTER = {str(write_latest_candidate_pointer)}
             BUDGET_LANE_CLASS_REQUESTED = {budget_lane_class_requested!r}
             BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
             BUDGET_CONTRACT_ID = {budget_contract_id!r}
@@ -85,6 +87,8 @@ def _make_fake_python_exe(
 
             if command_key == ("-m", "autobot.cli", "model", "train"):
                 family = arg_value("--model-family", "train_v4_crypto_cs")
+                task = arg_value("--task", "cls").strip().lower() or "cls"
+                run_scope = arg_value("--run-scope", "scheduled_daily")
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
                 append_log(
@@ -94,7 +98,8 @@ def _make_fake_python_exe(
                         "end": arg_value("--end"),
                     }}
                 )
-                write_json(registry_dir / "latest_candidate.json", {{"run_id": CANDIDATE_RUN_ID}})
+                if WRITE_LATEST_CANDIDATE_POINTER:
+                    write_json(registry_dir / "latest_candidate.json", {{"run_id": CANDIDATE_RUN_ID}})
                 write_json(
                     candidate_dir / "promotion_decision.json",
                     {{
@@ -356,6 +361,44 @@ def _make_fake_python_exe(
                         }},
                     }},
                 )
+                if task == "rank":
+                    lane_id = "rank_shadow"
+                    lane_role = "shadow"
+                    shadow_only = True
+                    promotion_allowed = False
+                    live_replacement_allowed = False
+                    governance_reasons = ["RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED"]
+                elif task == "cls":
+                    lane_id = "cls_primary"
+                    lane_role = "primary"
+                    shadow_only = False
+                    promotion_allowed = True
+                    live_replacement_allowed = True
+                    governance_reasons = ["PRIMARY_LANE_ELIGIBLE"]
+                else:
+                    lane_id = task + "_research"
+                    lane_role = "research"
+                    shadow_only = False
+                    promotion_allowed = False
+                    live_replacement_allowed = False
+                    governance_reasons = ["NON_PRIMARY_LANE_REQUIRES_EXPLICIT_GOVERNANCE"]
+                write_json(
+                    candidate_dir / "lane_governance.json",
+                    {{
+                        "version": 1,
+                        "policy": "v4_lane_governance_v1",
+                        "lane_id": lane_id,
+                        "task": task,
+                        "run_scope": run_scope,
+                        "lane_role": lane_role,
+                        "shadow_only": shadow_only,
+                        "production_lane_id": "cls_primary",
+                        "production_task": "cls",
+                        "promotion_allowed": promotion_allowed,
+                        "live_replacement_allowed": live_replacement_allowed,
+                        "governance_reasons": governance_reasons,
+                    }},
+                )
                 if WRITE_DECISION_SURFACE:
                     write_json(
                         candidate_dir / "decision_surface.json",
@@ -368,7 +411,7 @@ def _make_fake_python_exe(
                             }}
                         }},
                     )
-                print("train_ok")
+                print(json.dumps({{"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}}))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "features", "build"):
@@ -608,6 +651,36 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     assert certification["research_evidence"]["support_lane"]["cpcv_lite"]["status"] == "partial"
 
 
+def test_candidate_acceptance_resolves_fresh_run_from_train_stdout_when_candidate_pointer_is_not_updated(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        write_latest_candidate_pointer=False,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    certification_path = Path(report["candidate"]["certification_artifact_path"])
+    certification = json.loads(certification_path.read_text(encoding="utf-8-sig"))
+
+    assert report["candidate"]["run_id"] == "candidate-run-001"
+    assert Path(report["candidate"]["run_dir"]).name == "candidate-run-001"
+    assert report["gates"]["backtest"]["pass"] is True
+    assert certification["candidate_run_id"] == "candidate-run-001"
+
+
 def test_candidate_acceptance_required_trainer_evidence_fails_without_decision_surface(
     tmp_path: Path,
 ) -> None:
@@ -744,6 +817,43 @@ def test_candidate_acceptance_uses_profile_governed_backtest_thresholds(
     assert report["gates"]["backtest"]["candidate_min_orders_pass"] is False
     assert report["gates"]["backtest"]["pass"] is False
     assert report["reasons"][0] == "BACKTEST_ACCEPTANCE_FAILED"
+
+
+def test_candidate_acceptance_reports_rank_shadow_lane_governance(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(
+        project_root,
+        python_exe,
+        daily_pipeline_script,
+        extra_args=["-Task", "rank", "-RunScope", "manual_daily_rank_shadow_scout"],
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    certification_path = Path(report["candidate"]["certification_artifact_path"])
+    certification = json.loads(certification_path.read_text(encoding="utf-8-sig"))
+
+    assert report["config"]["task"] == "rank"
+    assert report["config"]["lane_id"] == "rank_shadow"
+    assert report["config"]["lane_shadow_only"] is True
+    assert report["candidate"]["lane_id"] == "rank_shadow"
+    assert report["candidate"]["lane_shadow_only"] is True
+    assert report["gates"]["backtest"]["lane_shadow_only"] is True
+    assert "SHADOW_LANE_ONLY" in report["notes"]
+    assert certification["provenance"]["lane_id"] == "rank_shadow"
+    assert certification["provenance"]["lane_shadow_only"] is True
+    assert certification["lane_governance"]["shadow_only"] is True
 
 
 def test_candidate_acceptance_cli_override_can_relax_profile_thresholds(

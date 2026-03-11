@@ -199,6 +199,12 @@ These tickets are the required follow-on family before changing core promotion b
   - trainer research artifacts now preserve a support-only multiple-testing / `cpcv_lite` lane with explicit reasons
   - certification artifacts now carry that support provenance forward without reintroducing trainer-prior gating
   - `decision_surface.json` and `train_config.yaml` now surface when the research support lane is only partial or insufficient
+- `T21.17` landed locally:
+  - each `v4` run now writes `lane_governance.json`
+  - `rank` runs are explicitly marked as shadow-only and non-promotable by default
+  - acceptance and certification artifacts now record which lane was evaluated and why
+  - manual `model daily-v4` now supports an explicit `rank_shadow` lane wrapper
+  - non-promotable manual/scout acceptance no longer depends on a stale global `latest_candidate` pointer
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

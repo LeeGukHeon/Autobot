@@ -945,6 +945,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="spawn_only",
         help="Orchestration mode. Default spawn_only.",
     )
+    model_daily_v4_parser.add_argument(
+        "--lane",
+        choices=("cls_scout", "rank_shadow"),
+        default="cls_scout",
+        help="Explicit lane wrapper to run. Default cls_scout.",
+    )
     model_daily_v4_parser.add_argument("--batch-date", help="Batch date YYYY-MM-DD. Default: yesterday.")
     model_daily_v4_parser.add_argument(
         "--run-paper-soak",
@@ -2466,11 +2472,16 @@ def _run_manual_v4_daily_pipeline(args: argparse.Namespace, config_dir: Path) ->
     if mode != "spawn_only":
         raise ValueError("model daily-v4 currently supports only --mode spawn_only to avoid runtime mutation")
     project_root = config_dir.parent.resolve()
-    wrapper_script = project_root / "scripts" / "v4_scout_candidate_acceptance.ps1"
+    lane = str(getattr(args, "lane", "cls_scout")).strip().lower() or "cls_scout"
+    if lane == "rank_shadow":
+        wrapper_script = project_root / "scripts" / "v4_rank_shadow_candidate_acceptance.ps1"
+        out_dir = "logs/model_v4_acceptance_rank_shadow"
+    else:
+        wrapper_script = project_root / "scripts" / "v4_scout_candidate_acceptance.ps1"
+        out_dir = "logs/model_v4_acceptance_manual"
     if not wrapper_script.exists():
         raise FileNotFoundError(f"missing wrapper script: {wrapper_script}")
     pwsh_exe = _resolve_powershell_exe()
-    out_dir = "logs/model_v4_acceptance_manual"
     command = [
         pwsh_exe,
         "-NoProfile",

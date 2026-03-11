@@ -804,8 +804,17 @@ def test_train_v4_rank_registers_candidate_without_runtime_contract_change(tmp_p
     assert result.leaderboard_row["task"] == "rank"
     assert result.leaderboard_row["champion_backend"] == "xgboost_ranker"
     assert result.leaderboard_row["test_ndcg_at5"] is not None
+    assert result.lane_governance_path is not None
+    assert result.lane_governance_path.exists()
     selection_doc = load_json(result.run_dir / "selection_recommendations.json")
+    lane_governance_doc = load_json(result.lane_governance_path)
+    decision_surface_doc = load_json(result.run_dir / "decision_surface.json")
     assert selection_doc["recommended_threshold_key"] == "top_5pct"
+    assert lane_governance_doc["lane_id"] == "rank_shadow"
+    assert lane_governance_doc["shadow_only"] is True
+    assert lane_governance_doc["promotion_allowed"] is False
+    assert decision_surface_doc["lane_governance"]["lane_id"] == "rank_shadow"
+    assert "LANE_GOVERNANCE_SHADOW_ONLY" in decision_surface_doc["known_methodology_warnings"]
     reasons = load_json(result.promotion_path)["reasons"]
     assert "MANUAL_PROMOTION_REQUIRED" in reasons
 

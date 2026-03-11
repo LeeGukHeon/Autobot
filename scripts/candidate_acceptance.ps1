@@ -1792,6 +1792,9 @@ function Build-ReportMarkdown {
     $lines.Add("- search_budget_decision_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'search_budget_decision_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- economic_objective_profile_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'economic_objective_profile_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- economic_objective_profile_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'economic_objective_profile_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- lane_id: $([string](Get-PropValue -ObjectValue $candidate -Name 'lane_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- lane_role: $([string](Get-PropValue -ObjectValue $candidate -Name 'lane_role' -DefaultValue ''))") | Out-Null
+    $lines.Add("- lane_shadow_only: $([string](Get-PropValue -ObjectValue $candidate -Name 'lane_shadow_only' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_artifact_path: $([string](Get-PropValue -ObjectValue $candidate -Name 'certification_artifact_path' -DefaultValue ''))") | Out-Null
     $lines.Add("- duplicate_candidate: $([string](Get-PropValue -ObjectValue $candidate -Name 'duplicate_candidate' -DefaultValue ''))") | Out-Null
     $lines.Add("") | Out-Null
@@ -1822,6 +1825,8 @@ function Build-ReportMarkdown {
     $lines.Add("- label_set: $([string](Get-PropValue -ObjectValue $config -Name 'label_set' -DefaultValue ''))") | Out-Null
     $lines.Add("- promotion_policy: $([string](Get-PropValue -ObjectValue $config -Name 'promotion_policy' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_mode: $([string](Get-PropValue -ObjectValue $config -Name 'trainer_evidence_mode' -DefaultValue ''))") | Out-Null
+    $lines.Add("- lane_id: $([string](Get-PropValue -ObjectValue $config -Name 'lane_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- lane_role: $([string](Get-PropValue -ObjectValue $config -Name 'lane_role' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_orders_filled: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_fill_rate: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'fill_rate' -DefaultValue ''))") | Out-Null
@@ -1875,6 +1880,7 @@ function Build-ReportMarkdown {
     $lines.Add("- trainer_evidence_execution_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_execution_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- budget_contract_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_contract_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- budget_lane_class_effective: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_lane_class_effective' -DefaultValue ''))") | Out-Null
+    $lines.Add("- lane_shadow_only: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'lane_shadow_only' -DefaultValue ''))") | Out-Null
     $lines.Add("- economic_objective_profile_id: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'economic_objective_profile_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_start: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_start' -DefaultValue ''))") | Out-Null
     $lines.Add("- certification_window_end: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'certification_window_end' -DefaultValue ''))") | Out-Null
@@ -2212,9 +2218,13 @@ try {
         "--execution-acceptance-hold-bars", $HoldBars
     )
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
-    $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
-    $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
-    $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
+    $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
+    $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
+    if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
+        $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
+        $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
+        $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
+    }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
     $researchEvidencePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "trainer_research_evidence.json" }
@@ -2223,8 +2233,38 @@ try {
     $searchBudgetDecision = if ([string]::IsNullOrWhiteSpace($searchBudgetDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $searchBudgetDecisionPath }
     $economicObjectiveProfilePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "economic_objective_profile.json" }
     $economicObjectiveProfile = if ([string]::IsNullOrWhiteSpace($economicObjectiveProfilePath)) { @{} } else { Load-JsonOrEmpty -PathValue $economicObjectiveProfilePath }
+    $laneGovernancePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "lane_governance.json" }
+    $laneGovernance = if ([string]::IsNullOrWhiteSpace($laneGovernancePath)) { @{} } else { Load-JsonOrEmpty -PathValue $laneGovernancePath }
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $laneGovernance) {
+        $normalizedTask = [string]$Task
+        $normalizedTask = $normalizedTask.Trim().ToLowerInvariant()
+        $laneGovernance = [ordered]@{
+            policy = "v4_lane_governance_v1"
+            lane_id = if ($normalizedTask -eq "rank") { "rank_shadow" } elseif ($normalizedTask -eq "cls") { "cls_primary" } else { "$normalizedTask`_research" }
+            task = if ([string]::IsNullOrWhiteSpace($normalizedTask)) { "cls" } else { $normalizedTask }
+            run_scope = [string]$RunScope
+            lane_role = if ($normalizedTask -eq "rank") { "shadow" } elseif ($normalizedTask -eq "cls") { "primary" } else { "research" }
+            shadow_only = ($normalizedTask -eq "rank")
+            production_lane_id = "cls_primary"
+            production_task = "cls"
+            promotion_allowed = ($normalizedTask -eq "cls")
+            live_replacement_allowed = ($normalizedTask -eq "cls")
+            governance_reasons = if ($normalizedTask -eq "rank") { @("RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED") } elseif ($normalizedTask -eq "cls") { @("PRIMARY_LANE_ELIGIBLE") } else { @("NON_PRIMARY_LANE_REQUIRES_EXPLICIT_GOVERNANCE") }
+        }
+    }
+    $laneId = [string](Get-PropValue -ObjectValue $laneGovernance -Name "lane_id" -DefaultValue "")
+    $laneRole = [string](Get-PropValue -ObjectValue $laneGovernance -Name "lane_role" -DefaultValue "")
+    $laneShadowOnly = To-Bool (Get-PropValue -ObjectValue $laneGovernance -Name "shadow_only" -DefaultValue $false) $false
+    $lanePromotionAllowed = To-Bool (Get-PropValue -ObjectValue $laneGovernance -Name "promotion_allowed" -DefaultValue (-not $laneShadowOnly)) (-not $laneShadowOnly)
+    $laneGovernanceReasons = @((Get-PropValue -ObjectValue $laneGovernance -Name "governance_reasons" -DefaultValue @()))
     $promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPolicy -BoundParams $PSBoundParameters -EconomicObjectiveProfile $economicObjectiveProfile
     Sync-PromotionPolicyConfigToReport -ReportValue $report -PromotionPolicyConfig $promotionPolicyConfig
+    $report.config.lane_governance_path = $laneGovernancePath
+    $report.config.lane_id = $laneId
+    $report.config.lane_role = $laneRole
+    $report.config.lane_shadow_only = $laneShadowOnly
+    $report.config.lane_promotion_allowed = $lanePromotionAllowed
+    $report.config.lane_governance_reasons = @($laneGovernanceReasons)
     $decisionSurfacePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "decision_surface.json" }
     $certificationArtifactPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "certification_report.json" }
     $trainerResearchPrior = Resolve-ResearchEvidenceFromArtifact -ResearchEvidenceArtifact $researchEvidenceArtifact -Mode $TrainerEvidenceMode
@@ -2246,6 +2286,13 @@ try {
             -TrainerResearchPrior $trainerResearchPrior
     }
     if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+        $certificationArtifact.provenance.lane_governance_path = $laneGovernancePath
+        $certificationArtifact.provenance.lane_governance_present = -not (Test-IsEffectivelyEmptyObject -ObjectValue $laneGovernance)
+        $certificationArtifact.provenance.lane_id = $laneId
+        $certificationArtifact.provenance.lane_role = $laneRole
+        $certificationArtifact.provenance.lane_shadow_only = $laneShadowOnly
+        $certificationArtifact.provenance.lane_promotion_allowed = $lanePromotionAllowed
+        $certificationArtifact.lane_governance = $laneGovernance
         Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
     }
     $report.windows_by_step.research = (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $certificationArtifact -Name "windows" -DefaultValue @{}) -Name "research_window" -DefaultValue $report.windows_by_step.research)
@@ -2285,6 +2332,12 @@ try {
         trainer_research_prior_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
         economic_objective_profile_path = $economicObjectiveProfilePath
+        lane_governance_path = $laneGovernancePath
+        lane_id = $laneId
+        lane_role = $laneRole
+        lane_shadow_only = $laneShadowOnly
+        lane_promotion_allowed = $lanePromotionAllowed
+        lane_governance_reasons = @($laneGovernanceReasons)
         promotion_policy_contract_source = [string]$promotionPolicyConfig.threshold_source
         promotion_policy_contract_profile_id = [string]$promotionPolicyConfig.profile_id
         promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
@@ -2315,6 +2368,12 @@ try {
         search_budget_decision_path = $searchBudgetDecisionPath
         economic_objective_profile_path = $economicObjectiveProfilePath
         economic_objective_profile_id = [string](Get-PropValue -ObjectValue $economicObjectiveProfile -Name "profile_id" -DefaultValue "")
+        lane_governance_path = $laneGovernancePath
+        lane_id = $laneId
+        lane_role = $laneRole
+        lane_shadow_only = $laneShadowOnly
+        lane_promotion_allowed = $lanePromotionAllowed
+        lane_governance_reasons = @($laneGovernanceReasons)
         promotion_decision_path = $promotionDecisionPath
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
@@ -2812,6 +2871,12 @@ try {
         budget_promotion_eligible_satisfied = $budgetPromotionEligibleSatisfied
         budget_contract_gate_pass = $budgetContractGatePass
         budget_contract_reasons = @($budgetContractReasons)
+        lane_governance_path = $laneGovernancePath
+        lane_id = $laneId
+        lane_role = $laneRole
+        lane_shadow_only = $laneShadowOnly
+        lane_promotion_allowed = $lanePromotionAllowed
+        lane_governance_reasons = @($laneGovernanceReasons)
         certification_artifact_path = $certificationArtifactPath
         certification_window_start = $certificationStartDate
         certification_window_end = $effectiveBatchDate
@@ -3065,6 +3130,9 @@ try {
     if (-not $budgetContractGatePass) {
         $reasons += "SCOUT_ONLY_BUDGET_EVIDENCE"
     }
+    if ($laneShadowOnly -or (-not $lanePromotionAllowed)) {
+        $notes += "SHADOW_LANE_ONLY"
+    }
     if ($SkipPaperSoak) {
         $notes += "PAPER_SOAK_SKIPPED"
     } elseif (-not $paperPass) {
@@ -3086,6 +3154,13 @@ try {
     $promoteStep = [ordered]@{ attempted = $false; promoted = $false }
     if ($SkipPaperSoak) {
         $promoteStep.reason = "SKIPPED_PAPER_SOAK_REQUIRES_MANUAL_PROMOTE"
+    } elseif ($overallPass -and ($laneShadowOnly -or (-not $lanePromotionAllowed))) {
+        $promoteStep.reason = "SHADOW_LANE_GOVERNANCE_BLOCK"
+        $promoteStep.lane_id = $laneId
+        $promoteStep.lane_role = $laneRole
+        $promoteStep.shadow_only = $laneShadowOnly
+        $promoteStep.promotion_allowed = $lanePromotionAllowed
+        $promoteStep.governance_reasons = @($laneGovernanceReasons)
     } elseif ($overallPass -and (-not $SkipPromote)) {
         $promoteArgs = @(
             "-m", "autobot.cli",

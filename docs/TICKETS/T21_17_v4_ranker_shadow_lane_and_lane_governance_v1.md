@@ -1,6 +1,7 @@
 # T21.17 V4 Ranker Shadow Lane And Lane Governance v1
 
 - Date: 2026-03-11
+- Status: landed locally
 
 ## Goal
 - Evaluate the `rank` lane under the same frozen methodology contract as the current `cls` lane,
@@ -36,3 +37,25 @@ Out of scope:
 - `rank` can accumulate evidence without silently hijacking the live lane
 - lane changes become explicit governance decisions, not hidden CLI flips
 
+## 2026-03-11 Implementation
+- `train_v4_crypto_cs.py` now writes `lane_governance.json` for each `v4` run
+  - `rank` runs are marked as:
+    - `lane_id = rank_shadow`
+    - `shadow_only = true`
+    - `promotion_allowed = false`
+  - the same governance metadata is surfaced in:
+    - `metrics.json`
+    - `train_config.yaml`
+    - `decision_surface.json`
+    - experiment ledger records
+- `candidate_acceptance.ps1` now:
+  - loads `lane_governance.json`
+  - records lane governance in acceptance and certification artifacts
+  - explains shadow-only evaluation explicitly without relying on hidden CLI behavior
+- added explicit manual wrapper:
+  - `scripts/v4_rank_shadow_candidate_acceptance.ps1`
+- `autobot.cli model daily-v4` now supports:
+  - `--lane cls_scout`
+  - `--lane rank_shadow`
+- non-promotable manual/scout runs no longer rely on the global `latest_candidate` pointer after train
+  - acceptance resolves the fresh run from trainer stdout first, preventing stale-pointer reuse

@@ -27,6 +27,7 @@ def test_run_manual_v4_daily_pipeline_defaults_to_skip_paper_soak(tmp_path, monk
 
     args = argparse.Namespace(
         mode="spawn_only",
+        lane="cls_scout",
         batch_date="2026-03-08",
         run_paper_soak=False,
         paper_soak_duration_sec=None,
@@ -66,6 +67,7 @@ def test_run_manual_v4_daily_pipeline_enables_paper_soak_when_duration_set(tmp_p
 
     args = argparse.Namespace(
         mode="spawn_only",
+        lane="cls_scout",
         batch_date=None,
         run_paper_soak=False,
         paper_soak_duration_sec=120,
@@ -104,6 +106,7 @@ def test_run_manual_v4_daily_pipeline_treats_scout_only_budget_rejection_as_succ
 
     args = argparse.Namespace(
         mode="spawn_only",
+        lane="cls_scout",
         batch_date="2026-03-08",
         run_paper_soak=False,
         paper_soak_duration_sec=None,
@@ -136,6 +139,7 @@ def test_run_manual_v4_daily_pipeline_preserves_fatal_acceptance_exit(tmp_path, 
 
     args = argparse.Namespace(
         mode="spawn_only",
+        lane="cls_scout",
         batch_date="2026-03-08",
         run_paper_soak=False,
         paper_soak_duration_sec=None,
@@ -153,6 +157,7 @@ def test_run_manual_v4_daily_pipeline_rejects_non_spawn_mode(tmp_path) -> None:
 
     args = argparse.Namespace(
         mode="combined",
+        lane="cls_scout",
         batch_date=None,
         run_paper_soak=False,
         paper_soak_duration_sec=None,
@@ -165,3 +170,38 @@ def test_run_manual_v4_daily_pipeline_rejects_non_spawn_mode(tmp_path) -> None:
         assert "spawn_only" in str(exc)
     else:
         raise AssertionError("expected ValueError for non-spawn manual mode")
+
+
+def test_run_manual_v4_daily_pipeline_can_target_rank_shadow_wrapper(tmp_path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_script = tmp_path / "scripts" / "v4_rank_shadow_candidate_acceptance.ps1"
+    wrapper_script.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_script.write_text("# noop\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, cwd=None, text=None):
+        captured["command"] = list(command)
+        captured["cwd"] = cwd
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli_mod, "_resolve_powershell_exe", lambda: "pwsh")
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+
+    args = argparse.Namespace(
+        mode="spawn_only",
+        lane="rank_shadow",
+        batch_date="2026-03-08",
+        run_paper_soak=False,
+        paper_soak_duration_sec=None,
+        dry_run=False,
+    )
+
+    exit_code = cli_mod._run_manual_v4_daily_pipeline(args, config_dir)
+
+    assert exit_code == 0
+    assert captured["cwd"] == tmp_path.resolve()
+    command = captured["command"]
+    assert command[:6] == ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper_script)]
+    assert command[command.index("-OutDir") + 1] == "logs/model_v4_acceptance_rank_shadow"

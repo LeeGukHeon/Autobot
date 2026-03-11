@@ -32,6 +32,7 @@ def build_experiment_ledger_record(
     promotion: dict[str, Any],
     duplicate_candidate: bool,
     economic_objective_profile: dict[str, Any] | None = None,
+    lane_governance: dict[str, Any] | None = None,
     run_scope: str | None = None,
 ) -> dict[str, Any]:
     walk_forward_summary = dict((walk_forward or {}).get("summary") or {})
@@ -85,6 +86,12 @@ def build_experiment_ledger_record(
             or "balanced_pareto_offline",
             "execution_policy": str(((economic_objective_profile or {}).get("execution_compare") or {}).get("policy", "")).strip()
             or "balanced_pareto_execution",
+        },
+        "lane_governance": {
+            "lane_id": str((lane_governance or {}).get("lane_id", "")).strip() or "cls_primary",
+            "lane_role": str((lane_governance or {}).get("lane_role", "")).strip() or "primary",
+            "shadow_only": bool((lane_governance or {}).get("shadow_only", False)),
+            "promotion_allowed": bool((lane_governance or {}).get("promotion_allowed", True)),
         },
         "walk_forward": {
             "windows_run": int(walk_forward_summary.get("windows_run", 0) or 0),

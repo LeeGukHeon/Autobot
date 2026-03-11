@@ -200,6 +200,7 @@ class TrainV4CryptoCsResult:
     runtime_recommendations_path: Path | None = None
     trainer_research_evidence_path: Path | None = None
     economic_objective_profile_path: Path | None = None
+    lane_governance_path: Path | None = None
     decision_surface_path: Path | None = None
     experiment_ledger_path: Path | None = None
     experiment_ledger_summary_path: Path | None = None
@@ -236,6 +237,56 @@ def _resolve_cpcv_lite_runtime_config(
     }
 
 
+def _build_lane_governance_v4(
+    *,
+    task: str,
+    run_scope: str,
+    economic_objective_profile: dict[str, Any],
+) -> dict[str, Any]:
+    task_name = str(task).strip().lower() or "cls"
+    normalized_run_scope = normalize_factor_block_run_scope(run_scope)
+    if task_name == "rank":
+        lane_id = "rank_shadow"
+        lane_role = "shadow"
+        shadow_only = True
+        promotion_allowed = False
+        live_replacement_allowed = False
+        governance_reasons = ["RANK_LANE_SHADOW_EVALUATION_ONLY", "EXPLICIT_GOVERNANCE_DECISION_REQUIRED"]
+    elif task_name == "cls":
+        lane_id = "cls_primary"
+        lane_role = "primary"
+        shadow_only = False
+        promotion_allowed = True
+        live_replacement_allowed = True
+        governance_reasons = ["PRIMARY_LANE_ELIGIBLE"]
+    else:
+        lane_id = f"{task_name}_research"
+        lane_role = "research"
+        shadow_only = False
+        promotion_allowed = False
+        live_replacement_allowed = False
+        governance_reasons = ["NON_PRIMARY_LANE_REQUIRES_EXPLICIT_GOVERNANCE"]
+    return {
+        "version": 1,
+        "policy": "v4_lane_governance_v1",
+        "lane_id": lane_id,
+        "task": task_name,
+        "run_scope": normalized_run_scope,
+        "lane_role": lane_role,
+        "shadow_only": bool(shadow_only),
+        "production_lane_id": "cls_primary",
+        "production_task": "cls",
+        "comparison_lane_id": "cls_primary" if task_name == "rank" else "",
+        "promotion_allowed": bool(promotion_allowed),
+        "live_replacement_allowed": bool(live_replacement_allowed),
+        "certification_contract_frozen": True,
+        "frozen_contract_family": "t21_11_to_t21_16",
+        "economic_objective_profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
+        or "v4_shared_economic_objective_v1",
+        "governance_reasons": list(governance_reasons),
+    }
+
+
 def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4CryptoCsResult:
     task = str(options.task).strip().lower() or "cls"
     if task not in {"cls", "reg", "rank"}:
@@ -249,6 +300,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
 
     started_at = time.time()
     economic_objective_profile = build_v4_shared_economic_objective_profile()
+    lane_governance = _build_lane_governance_v4(
+        task=task,
+        run_scope=options.run_scope,
+        economic_objective_profile=economic_objective_profile,
+    )
     run_id = make_run_id(seed=options.seed)
     request = build_dataset_request(
         dataset_root=options.dataset_root,
@@ -516,6 +572,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         cpcv_lite_runtime=cpcv_lite_runtime,
         search_budget_decision=search_budget_decision,
         economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
     )
     leaderboard_row = _make_v4_leaderboard_row(
         run_id=run_id,
@@ -561,6 +618,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         factor_block_selection_context=factor_block_selection_context,
         cpcv_lite_runtime=cpcv_lite_runtime,
         search_budget_decision=search_budget_decision,
+        lane_governance=lane_governance,
     )
 
     run_dir = save_run(
@@ -730,6 +788,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(economic_objective_profile, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    lane_governance_path = run_dir / "lane_governance.json"
+    lane_governance_path.write_text(
+        json.dumps(lane_governance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     decision_surface = _build_decision_surface_v4(
         options=options,
         task=task,
@@ -744,6 +807,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         runtime_recommendations=runtime_recommendations,
         promotion=promotion,
         economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
     )
     decision_surface_path = run_dir / "decision_surface.json"
     decision_surface_path.write_text(
@@ -772,6 +836,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         duplicate_candidate=duplicate_candidate,
         run_scope=options.run_scope,
         economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
     )
     experiment_ledger_path = append_experiment_ledger_record(
         registry_root=options.registry_root,
@@ -844,6 +909,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         runtime_recommendations_path=runtime_recommendations_path,
         trainer_research_evidence_path=trainer_research_evidence_path,
         economic_objective_profile_path=economic_objective_profile_path,
+        lane_governance_path=lane_governance_path,
         decision_surface_path=decision_surface_path,
         experiment_ledger_path=experiment_ledger_path,
         experiment_ledger_summary_path=experiment_ledger_summary_path,
@@ -3474,6 +3540,7 @@ def _build_v4_metrics_doc(
     cpcv_lite_runtime: dict[str, Any],
     search_budget_decision: dict[str, Any],
     economic_objective_profile: dict[str, Any],
+    lane_governance: dict[str, Any],
 ) -> dict[str, Any]:
     backend = "xgboost_ranker" if task == "rank" else "xgboost_regressor" if task == "reg" else "xgboost"
     objective = "rank:pairwise" if task == "rank" else "reg:squarederror" if task == "reg" else "binary:logistic"
@@ -3531,6 +3598,7 @@ def _build_v4_metrics_doc(
             },
         },
         "search_budget": dict(search_budget_decision or {}),
+        "lane_governance": dict(lane_governance or {}),
         "economic_objective": {
             "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
             or "v4_shared_economic_objective_v1",
@@ -3594,6 +3662,7 @@ def _train_config_snapshot_v4(
     factor_block_selection_context: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
     search_budget_decision: dict[str, Any],
+    lane_governance: dict[str, Any],
 ) -> dict[str, Any]:
     payload = asdict(options)
     payload["dataset_root"] = str(options.dataset_root)
@@ -3635,6 +3704,7 @@ def _train_config_snapshot_v4(
         "resolution_context": dict(factor_block_selection_context or {}),
     }
     payload["search_budget"] = dict(search_budget_decision or {})
+    payload["lane_governance"] = dict(lane_governance or {})
     payload["research_support_lane"] = dict(research_support_lane or {})
     payload["selection_recommendations"] = selection_recommendations
     payload["selection_policy"] = dict(selection_policy or {})
@@ -3657,6 +3727,7 @@ def _build_decision_surface_v4(
     runtime_recommendations: dict[str, Any],
     promotion: dict[str, Any],
     economic_objective_profile: dict[str, Any],
+    lane_governance: dict[str, Any],
 ) -> dict[str, Any]:
     normalized_run_scope = normalize_factor_block_run_scope(options.run_scope)
     search_applied = dict((search_budget_decision or {}).get("applied") or {})
@@ -3688,6 +3759,8 @@ def _build_decision_surface_v4(
         warnings.append("FACTOR_BLOCK_REFIT_SUPPORT_NOT_FULLY_AVAILABLE")
     if str(research_support_summary.get("status", "")).strip().lower() in {"insufficient", "partial", "disabled"}:
         warnings.append("RESEARCH_SUPPORT_LANE_NOT_FULLY_SUPPORTED")
+    if bool((lane_governance or {}).get("shadow_only", False)):
+        warnings.append("LANE_GOVERNANCE_SHADOW_ONLY")
 
     return {
         "version": 1,
@@ -3746,6 +3819,7 @@ def _build_decision_surface_v4(
             "cpcv_lite_status": str(research_support_summary.get("cpcv_lite_status", "")).strip() or "unknown",
             "support_only": True,
         },
+        "lane_governance": dict(lane_governance or {}),
         "economic_objective_contract": {
             "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
             or "v4_shared_economic_objective_v1",
