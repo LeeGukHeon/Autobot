@@ -121,6 +121,9 @@ def test_rank_shadow_cycle_marks_shadow_pass_ready_for_manual_governance(tmp_pat
 def test_rank_shadow_cycle_preserves_fatal_acceptance_failure_and_writes_cycle_report(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    governed_candidate_path = project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governed_candidate.json"
+    governed_candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    governed_candidate_path.write_text(json.dumps({"status": "shadow_pass"}), encoding="utf-8")
     acceptance_script = _make_fake_acceptance_script(
         tmp_path,
         payload={
@@ -165,3 +168,5 @@ def test_rank_shadow_cycle_preserves_fatal_acceptance_failure_and_writes_cycle_r
     assert latest["next_action"] == "use_cls_primary_lane"
     assert governance["selected_lane_id"] == "cls_primary"
     assert governance["selected_acceptance_script"] == "v4_promotable_candidate_acceptance.ps1"
+    assert latest["governance_action"]["selected_lane_id"] == "cls_primary"
+    assert not governed_candidate_path.exists()

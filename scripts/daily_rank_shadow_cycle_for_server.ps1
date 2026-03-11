@@ -377,11 +377,14 @@ $governanceAction = Build-GovernanceActionArtifact -CycleReport $cycleReport -Pr
 $governanceAction.source_rank_shadow_cycle_path = $runReportPath
 
 if (-not $DryRun) {
+    $cycleReport.governance_action = $governanceAction
     Write-JsonFile -PathValue $runReportPath -Payload $cycleReport
     Write-JsonFile -PathValue $latestReportPath -Payload $cycleReport
     Write-JsonFile -PathValue $governanceActionPath -Payload $governanceAction
     if ([string](Get-PropValue -ObjectValue $cycleReport -Name "status" -DefaultValue "") -eq "shadow_pass") {
         Write-JsonFile -PathValue $governedCandidatePath -Payload $cycleReport
+    } elseif (Test-Path $governedCandidatePath) {
+        Remove-Item -Path $governedCandidatePath -Force -ErrorAction SilentlyContinue
     }
 }
 
