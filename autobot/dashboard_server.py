@@ -518,6 +518,45 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
+    entry_ts_ms = _coerce_int(row.get("entry_filled_ts_ms")) or _coerce_int(row.get("entry_submitted_ts_ms"))
+    exit_ts_ms = _coerce_int(row.get("exit_ts_ms"))
+    hold_minutes = None
+    if entry_ts_ms is not None and exit_ts_ms is not None and exit_ts_ms >= entry_ts_ms:
+        hold_minutes = max(0, int(round((exit_ts_ms - entry_ts_ms) / 60000)))
+    return {
+        "journal_id": row.get("journal_id"),
+        "market": row.get("market"),
+        "status": row.get("status"),
+        "entry_intent_id": row.get("entry_intent_id"),
+        "entry_order_uuid": row.get("entry_order_uuid"),
+        "exit_order_uuid": row.get("exit_order_uuid"),
+        "plan_id": row.get("plan_id"),
+        "entry_ts_ms": entry_ts_ms,
+        "exit_ts_ms": exit_ts_ms,
+        "hold_minutes": hold_minutes,
+        "entry_price": _coerce_float(row.get("entry_price")),
+        "exit_price": _coerce_float(row.get("exit_price")),
+        "qty": _coerce_float(row.get("qty")),
+        "entry_notional_quote": _coerce_float(row.get("entry_notional_quote")),
+        "exit_notional_quote": _coerce_float(row.get("exit_notional_quote")),
+        "realized_pnl_quote": _coerce_float(row.get("realized_pnl_quote")),
+        "realized_pnl_pct": _coerce_float(row.get("realized_pnl_pct")),
+        "entry_reason_code": row.get("entry_reason_code"),
+        "close_reason_code": row.get("close_reason_code"),
+        "close_mode": row.get("close_mode"),
+        "model_prob": _coerce_float(row.get("model_prob")),
+        "selection_policy_mode": row.get("selection_policy_mode"),
+        "trade_action": row.get("trade_action"),
+        "expected_edge_bps": _coerce_float(row.get("expected_edge_bps")),
+        "expected_downside_bps": _coerce_float(row.get("expected_downside_bps")),
+        "expected_net_edge_bps": _coerce_float(row.get("expected_net_edge_bps")),
+        "notional_multiplier": _coerce_float(row.get("notional_multiplier")),
+        "entry_meta": _normalize_json_text(row.get("entry_meta_json")) or {},
+        "exit_meta": _normalize_json_text(row.get("exit_meta_json")) or {},
+    }
+
+
 def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict[str, Any]:
     if not db_path.exists():
         return {"label": label, "db_path": str(db_path), "exists": False}
@@ -531,6 +570,14 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         intents = _query_all(conn, "SELECT * FROM intents ORDER BY ts_ms DESC, intent_id DESC LIMIT 12") if "intents" in tables else []
         positions = _query_all(conn, "SELECT * FROM positions ORDER BY market") if "positions" in tables else []
         risk_plans = _query_all(conn, "SELECT * FROM risk_plans ORDER BY updated_ts DESC LIMIT 12") if "risk_plans" in tables else []
+        trade_journal = (
+            _query_all(
+                conn,
+                "SELECT * FROM trade_journal ORDER BY COALESCE(exit_ts_ms, entry_filled_ts_ms, entry_submitted_ts_ms, updated_ts) DESC LIMIT 12",
+            )
+            if "trade_journal" in tables
+            else []
+        )
         breaker_states = _query_all(conn, "SELECT * FROM breaker_states ORDER BY updated_ts DESC") if "breaker_states" in tables else []
         source_intent_lookup: dict[str, dict[str, Any]] = {}
         if "intents" in tables and risk_plans:
@@ -599,6 +646,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             "positions": [_summarize_live_position(row) for row in positions[:8]],
             "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
             "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
+            "recent_trades": [_summarize_live_trade_journal(row) for row in trade_journal[:8]],
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {

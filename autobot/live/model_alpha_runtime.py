@@ -80,6 +80,7 @@ from .small_account import (
     sizing_envelope_to_payload,
 )
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord
+from .trade_journal import activate_trade_journal_for_position, close_trade_journal_for_market, record_entry_submission
 
 
 @dataclass(frozen=True)
@@ -663,12 +664,37 @@ def _apply_position_sync_to_strategy(
         entry_ts_ms = _resolve_strategy_entry_ts_ms(store=store, market=market, position=payload, default_ts_ms=ts_ms)
         _strategy_bid_fill(strategy=strategy, market=market, position=payload, ts_ms=entry_ts_ms)
         _ensure_live_risk_plan(store=store, risk_manager=risk_manager, market=market, position=payload, ts_ms=ts_ms)
+        entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=payload)
+        active_plan = max(
+            store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING")),
+            key=lambda item: (
+                int(item.get("updated_ts") or 0),
+                int(item.get("created_ts") or 0),
+                str(item.get("plan_id") or ""),
+            ),
+            default=None,
+        )
+        activate_trade_journal_for_position(
+            store=store,
+            market=market,
+            position=payload,
+            ts_ms=ts_ms,
+            entry_intent=entry_intent,
+            plan_id=_as_optional_str((active_plan or {}).get("plan_id")),
+        )
 
     for market in sorted(previous_markets - current_markets):
         previous = previous_positions[market]
         exit_price = _safe_float(latest_prices.get(market), default=0.0)
         if exit_price <= 0:
             exit_price = _safe_float(previous.get("avg_entry_price"), default=1.0)
+        close_trade_journal_for_market(
+            store=store,
+            market=market,
+            position=previous,
+            exit_price=exit_price,
+            ts_ms=ts_ms,
+        )
         _strategy_ask_fill(strategy=strategy, market=market, position=previous, exit_price=exit_price, ts_ms=ts_ms)
         _close_market_risk_plans(store=store, market=market, ts_ms=ts_ms)
 
@@ -963,6 +989,10 @@ def _find_latest_model_entry_intent(
             "intent_id": intent_id,
             "created_ts": int(item.get("ts_ms") or 0),
             "plan_payload": plan_payload,
+            "meta": dict(meta),
+            "reason_code": str(item.get("reason_code") or ""),
+            "submitted_price": _safe_optional_float(item.get("price")),
+            "submitted_volume": _safe_optional_float(item.get("volume")),
         }
     if not intents_by_id:
         return None
@@ -997,7 +1027,16 @@ def _find_latest_model_entry_intent(
             int(order.get("updated_ts") or candidate["created_ts"] or 0),
         )
         if best is None or sort_key > best[0]:
-            best = (sort_key, candidate)
+            best = (
+                sort_key,
+                {
+                    **candidate,
+                    "order_uuid": str(order.get("uuid") or "").strip() or None,
+                    "order_identifier": str(order.get("identifier") or "").strip() or None,
+                    "matched_entry_price": matched_price,
+                    "matched_qty": matched_qty,
+                },
+            )
     if best is not None:
         return best[1]
     if position is not None:
@@ -1341,6 +1380,19 @@ def _handle_strategy_intent(
             ts_ms=ts_ms,
             intent_id=intent.intent_id,
         )
+        if side == "bid":
+            record_entry_submission(
+                store=store,
+                market=market,
+                intent_id=str(intent.intent_id),
+                requested_price=float(decision.adjusted_price),
+                requested_volume=float(decision.adjusted_volume),
+                reason_code=str(strategy_intent.reason_code),
+                meta_payload={**meta_payload, "submit_result": {"accepted": True, "order_uuid": order_uuid}},
+                ts_ms=ts_ms,
+                order_uuid=order_uuid,
+                plan_id=linked_plan_id,
+            )
         return "submitted"
 
     trade_gate.record_failure(market, ts_ms=ts_ms)

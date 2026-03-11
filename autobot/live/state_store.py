@@ -110,6 +110,40 @@ class RiskPlanRecord:
 
 
 @dataclass(frozen=True)
+class TradeJournalRecord:
+    journal_id: str
+    market: str
+    status: str
+    entry_intent_id: str | None = None
+    entry_order_uuid: str | None = None
+    exit_order_uuid: str | None = None
+    plan_id: str | None = None
+    entry_submitted_ts_ms: int | None = None
+    entry_filled_ts_ms: int | None = None
+    exit_ts_ms: int | None = None
+    entry_price: float | None = None
+    exit_price: float | None = None
+    qty: float | None = None
+    entry_notional_quote: float | None = None
+    exit_notional_quote: float | None = None
+    realized_pnl_quote: float | None = None
+    realized_pnl_pct: float | None = None
+    entry_reason_code: str | None = None
+    close_reason_code: str | None = None
+    close_mode: str | None = None
+    model_prob: float | None = None
+    selection_policy_mode: str | None = None
+    trade_action: str | None = None
+    expected_edge_bps: float | None = None
+    expected_downside_bps: float | None = None
+    expected_net_edge_bps: float | None = None
+    notional_multiplier: float | None = None
+    entry_meta_json: str = "{}"
+    exit_meta_json: str = "{}"
+    updated_ts: int = 0
+
+
+@dataclass(frozen=True)
 class OrderLineageRecord:
     ts_ms: int
     event_source: str
@@ -442,6 +476,12 @@ class LiveStateStore:
         rows = self._conn.execute("SELECT * FROM intents ORDER BY ts_ms DESC, intent_id").fetchall()
         return [_row_to_intent(row) for row in rows]
 
+    def intent_by_id(self, *, intent_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM intents WHERE intent_id = ?", (intent_id,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_intent(row)
+
     def upsert_risk_plan(self, record: RiskPlanRecord) -> None:
         with self._conn:
             self._conn.execute(
@@ -512,6 +552,128 @@ class LiveStateStore:
                     record.source_intent_id,
                 ),
             )
+
+    def upsert_trade_journal(self, record: TradeJournalRecord) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO trade_journal (
+                    journal_id, market, status, entry_intent_id, entry_order_uuid, exit_order_uuid, plan_id,
+                    entry_submitted_ts_ms, entry_filled_ts_ms, exit_ts_ms,
+                    entry_price, exit_price, qty, entry_notional_quote, exit_notional_quote,
+                    realized_pnl_quote, realized_pnl_pct,
+                    entry_reason_code, close_reason_code, close_mode,
+                    model_prob, selection_policy_mode, trade_action,
+                    expected_edge_bps, expected_downside_bps, expected_net_edge_bps, notional_multiplier,
+                    entry_meta_json, exit_meta_json, updated_ts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(journal_id) DO UPDATE SET
+                    market=excluded.market,
+                    status=excluded.status,
+                    entry_intent_id=excluded.entry_intent_id,
+                    entry_order_uuid=excluded.entry_order_uuid,
+                    exit_order_uuid=excluded.exit_order_uuid,
+                    plan_id=excluded.plan_id,
+                    entry_submitted_ts_ms=excluded.entry_submitted_ts_ms,
+                    entry_filled_ts_ms=excluded.entry_filled_ts_ms,
+                    exit_ts_ms=excluded.exit_ts_ms,
+                    entry_price=excluded.entry_price,
+                    exit_price=excluded.exit_price,
+                    qty=excluded.qty,
+                    entry_notional_quote=excluded.entry_notional_quote,
+                    exit_notional_quote=excluded.exit_notional_quote,
+                    realized_pnl_quote=excluded.realized_pnl_quote,
+                    realized_pnl_pct=excluded.realized_pnl_pct,
+                    entry_reason_code=excluded.entry_reason_code,
+                    close_reason_code=excluded.close_reason_code,
+                    close_mode=excluded.close_mode,
+                    model_prob=excluded.model_prob,
+                    selection_policy_mode=excluded.selection_policy_mode,
+                    trade_action=excluded.trade_action,
+                    expected_edge_bps=excluded.expected_edge_bps,
+                    expected_downside_bps=excluded.expected_downside_bps,
+                    expected_net_edge_bps=excluded.expected_net_edge_bps,
+                    notional_multiplier=excluded.notional_multiplier,
+                    entry_meta_json=excluded.entry_meta_json,
+                    exit_meta_json=excluded.exit_meta_json,
+                    updated_ts=excluded.updated_ts
+                """,
+                (
+                    record.journal_id,
+                    record.market,
+                    record.status,
+                    record.entry_intent_id,
+                    record.entry_order_uuid,
+                    record.exit_order_uuid,
+                    record.plan_id,
+                    record.entry_submitted_ts_ms,
+                    record.entry_filled_ts_ms,
+                    record.exit_ts_ms,
+                    record.entry_price,
+                    record.exit_price,
+                    record.qty,
+                    record.entry_notional_quote,
+                    record.exit_notional_quote,
+                    record.realized_pnl_quote,
+                    record.realized_pnl_pct,
+                    record.entry_reason_code,
+                    record.close_reason_code,
+                    record.close_mode,
+                    record.model_prob,
+                    record.selection_policy_mode,
+                    record.trade_action,
+                    record.expected_edge_bps,
+                    record.expected_downside_bps,
+                    record.expected_net_edge_bps,
+                    record.notional_multiplier,
+                    record.entry_meta_json,
+                    record.exit_meta_json,
+                    int(record.updated_ts),
+                ),
+            )
+
+    def trade_journal_by_id(self, *, journal_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM trade_journal WHERE journal_id = ?", (journal_id,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_trade_journal(row)
+
+    def trade_journal_by_entry_intent(self, *, entry_intent_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM trade_journal WHERE entry_intent_id = ? ORDER BY updated_ts DESC LIMIT 1",
+            (entry_intent_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_trade_journal(row)
+
+    def list_trade_journal(
+        self,
+        *,
+        statuses: tuple[str, ...] | None = None,
+        market: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if market:
+            clauses.append("market = ?")
+            params.append(market)
+
+        query = "SELECT * FROM trade_journal"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY COALESCE(exit_ts_ms, entry_filled_ts_ms, entry_submitted_ts_ms, updated_ts) DESC, updated_ts DESC"
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_row_to_trade_journal(row) for row in rows]
 
     def risk_plan_by_id(self, *, plan_id: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM risk_plans WHERE plan_id = ?", (plan_id,)).fetchone()
@@ -726,6 +888,7 @@ class LiveStateStore:
             "orders": self.list_orders(open_only=False),
             "intents": self.list_intents(),
             "risk_plans": self.list_risk_plans(),
+            "trade_journal": self.list_trade_journal(),
             "checkpoints": [
                 _row_to_checkpoint(row) for row in self._conn.execute("SELECT * FROM checkpoints ORDER BY name").fetchall()
             ],
@@ -834,6 +997,39 @@ class LiveStateStore:
 
                 CREATE INDEX IF NOT EXISTS idx_risk_plans_market_state ON risk_plans (market, state);
 
+                CREATE TABLE IF NOT EXISTS trade_journal (
+                    journal_id TEXT PRIMARY KEY,
+                    market TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    entry_intent_id TEXT,
+                    entry_order_uuid TEXT,
+                    exit_order_uuid TEXT,
+                    plan_id TEXT,
+                    entry_submitted_ts_ms INTEGER,
+                    entry_filled_ts_ms INTEGER,
+                    exit_ts_ms INTEGER,
+                    entry_price REAL,
+                    exit_price REAL,
+                    qty REAL,
+                    entry_notional_quote REAL,
+                    exit_notional_quote REAL,
+                    realized_pnl_quote REAL,
+                    realized_pnl_pct REAL,
+                    entry_reason_code TEXT,
+                    close_reason_code TEXT,
+                    close_mode TEXT,
+                    model_prob REAL,
+                    selection_policy_mode TEXT,
+                    trade_action TEXT,
+                    expected_edge_bps REAL,
+                    expected_downside_bps REAL,
+                    expected_net_edge_bps REAL,
+                    notional_multiplier REAL,
+                    entry_meta_json TEXT NOT NULL DEFAULT '{}',
+                    exit_meta_json TEXT NOT NULL DEFAULT '{}',
+                    updated_ts INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     name TEXT PRIMARY KEY,
                     ts_ms INTEGER NOT NULL,
@@ -893,6 +1089,12 @@ class LiveStateStore:
         self._ensure_column("risk_plans", "plan_source", "TEXT")
         self._ensure_column("risk_plans", "source_intent_id", "TEXT")
         with self._conn:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_journal_market_status ON trade_journal (market, status, updated_ts)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_journal_entry_intent_id ON trade_journal (entry_intent_id)"
+            )
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_breaker_events_key_ts ON breaker_events (breaker_key, ts_ms)")
@@ -1013,6 +1215,41 @@ def _row_to_risk_plan(row: sqlite3.Row) -> dict[str, Any]:
         "updated_ts": int(row["updated_ts"]),
         "plan_source": row["plan_source"],
         "source_intent_id": row["source_intent_id"],
+    }
+
+
+def _row_to_trade_journal(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "journal_id": row["journal_id"],
+        "market": row["market"],
+        "status": row["status"],
+        "entry_intent_id": row["entry_intent_id"],
+        "entry_order_uuid": row["entry_order_uuid"],
+        "exit_order_uuid": row["exit_order_uuid"],
+        "plan_id": row["plan_id"],
+        "entry_submitted_ts_ms": int(row["entry_submitted_ts_ms"]) if row["entry_submitted_ts_ms"] is not None else None,
+        "entry_filled_ts_ms": int(row["entry_filled_ts_ms"]) if row["entry_filled_ts_ms"] is not None else None,
+        "exit_ts_ms": int(row["exit_ts_ms"]) if row["exit_ts_ms"] is not None else None,
+        "entry_price": float(row["entry_price"]) if row["entry_price"] is not None else None,
+        "exit_price": float(row["exit_price"]) if row["exit_price"] is not None else None,
+        "qty": float(row["qty"]) if row["qty"] is not None else None,
+        "entry_notional_quote": float(row["entry_notional_quote"]) if row["entry_notional_quote"] is not None else None,
+        "exit_notional_quote": float(row["exit_notional_quote"]) if row["exit_notional_quote"] is not None else None,
+        "realized_pnl_quote": float(row["realized_pnl_quote"]) if row["realized_pnl_quote"] is not None else None,
+        "realized_pnl_pct": float(row["realized_pnl_pct"]) if row["realized_pnl_pct"] is not None else None,
+        "entry_reason_code": row["entry_reason_code"],
+        "close_reason_code": row["close_reason_code"],
+        "close_mode": row["close_mode"],
+        "model_prob": float(row["model_prob"]) if row["model_prob"] is not None else None,
+        "selection_policy_mode": row["selection_policy_mode"],
+        "trade_action": row["trade_action"],
+        "expected_edge_bps": float(row["expected_edge_bps"]) if row["expected_edge_bps"] is not None else None,
+        "expected_downside_bps": float(row["expected_downside_bps"]) if row["expected_downside_bps"] is not None else None,
+        "expected_net_edge_bps": float(row["expected_net_edge_bps"]) if row["expected_net_edge_bps"] is not None else None,
+        "notional_multiplier": float(row["notional_multiplier"]) if row["notional_multiplier"] is not None else None,
+        "entry_meta": _parse_json(row["entry_meta_json"]),
+        "exit_meta": _parse_json(row["exit_meta_json"]),
+        "updated_ts": int(row["updated_ts"]),
     }
 
 

@@ -15,6 +15,7 @@ from .admissibility import extract_min_total
 from .order_state import is_open_local_state, normalize_order_state
 from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
+from .trade_journal import activate_trade_journal_for_position, close_trade_journal_for_market
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
 UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk"]
@@ -337,6 +338,19 @@ def reconcile_exchange_snapshot(
                         )
                 store.upsert_position(matched_import["position_record"])
                 store.upsert_risk_plan(risk_plan_record)
+                activate_trade_journal_for_position(
+                    store=store,
+                    market=market,
+                    position={
+                        "market": matched_import["position_record"].market,
+                        "base_amount": matched_import["position_record"].base_amount,
+                        "avg_entry_price": matched_import["position_record"].avg_entry_price,
+                        "updated_ts": matched_import["position_record"].updated_ts,
+                    },
+                    ts_ms=now_ts,
+                    entry_intent=intents_by_id.get(matched_import["intent_id"]),
+                    plan_id=risk_plan_record.plan_id,
+                )
                 order_uuid = matched_import.get("order_uuid")
                 if isinstance(order_uuid, str) and order_uuid.strip():
                     store.mark_order_state(uuid=order_uuid, state="done", updated_ts=now_ts)
@@ -371,6 +385,19 @@ def reconcile_exchange_snapshot(
         )
         if matched_close is not None:
             if not dry_run:
+                close_trade_journal_for_market(
+                    store=store,
+                    market=market,
+                    position=local_position,
+                    ts_ms=now_ts,
+                    close_mode=_as_optional_str(matched_close.get("close_mode")),
+                    exit_order_uuid=_as_optional_str(matched_close.get("order_uuid")),
+                    exit_meta={
+                        "order_identifier": matched_close.get("order_identifier"),
+                        "close_mode": matched_close.get("close_mode"),
+                        "source": "reconcile_exchange_snapshot",
+                    },
+                )
                 store.delete_position(market=market)
                 for row in store.list_risk_plans(market=market):
                     store.upsert_risk_plan(

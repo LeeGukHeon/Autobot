@@ -18,6 +18,7 @@ def _init_live_db(path: Path) -> None:
         conn.execute("CREATE TABLE orders (uuid TEXT PRIMARY KEY, identifier TEXT, market TEXT, side TEXT, ord_type TEXT, price REAL, volume_req REAL, volume_filled REAL, state TEXT, created_ts INTEGER, updated_ts INTEGER, intent_id TEXT, tp_sl_link TEXT, local_state TEXT, raw_exchange_state TEXT, last_event_name TEXT, event_source TEXT, replace_seq INTEGER, root_order_uuid TEXT, prev_order_uuid TEXT, prev_order_identifier TEXT)")
         conn.execute("CREATE TABLE intents (intent_id TEXT PRIMARY KEY, ts_ms INTEGER, market TEXT, side TEXT, price REAL, volume REAL, reason_code TEXT, meta_json TEXT, status TEXT)")
         conn.execute("CREATE TABLE risk_plans (plan_id TEXT PRIMARY KEY, market TEXT, side TEXT, entry_price_str TEXT, qty_str TEXT, tp_enabled INTEGER, tp_price_str TEXT, tp_pct REAL, sl_enabled INTEGER, sl_price_str TEXT, sl_pct REAL, trailing_enabled INTEGER, trail_pct REAL, high_watermark_price_str TEXT, armed_ts_ms INTEGER, timeout_ts_ms INTEGER, state TEXT, last_eval_ts_ms INTEGER, last_action_ts_ms INTEGER, current_exit_order_uuid TEXT, current_exit_order_identifier TEXT, replace_attempt INTEGER, created_ts INTEGER, updated_ts INTEGER, plan_source TEXT, source_intent_id TEXT)")
+        conn.execute("CREATE TABLE trade_journal (journal_id TEXT PRIMARY KEY, market TEXT, status TEXT, entry_intent_id TEXT, entry_order_uuid TEXT, exit_order_uuid TEXT, plan_id TEXT, entry_submitted_ts_ms INTEGER, entry_filled_ts_ms INTEGER, exit_ts_ms INTEGER, entry_price REAL, exit_price REAL, qty REAL, entry_notional_quote REAL, exit_notional_quote REAL, realized_pnl_quote REAL, realized_pnl_pct REAL, entry_reason_code TEXT, close_reason_code TEXT, close_mode TEXT, model_prob REAL, selection_policy_mode TEXT, trade_action TEXT, expected_edge_bps REAL, expected_downside_bps REAL, expected_net_edge_bps REAL, notional_multiplier REAL, entry_meta_json TEXT, exit_meta_json TEXT, updated_ts INTEGER)")
         conn.execute("CREATE TABLE checkpoints (name TEXT PRIMARY KEY, ts_ms INTEGER, payload_json TEXT)")
         conn.execute("CREATE TABLE breaker_states (breaker_key TEXT PRIMARY KEY, active INTEGER, action TEXT, source TEXT, reason_codes_json TEXT, details_json TEXT, updated_ts INTEGER, armed_ts INTEGER)")
         conn.execute(
@@ -55,6 +56,41 @@ def _init_live_db(path: Path) -> None:
         )
         conn.execute("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("order-1", "id-1", "KRW-BTC", "bid", "limit", 100.0, 1.0, 0.0, "wait", 1, 2, "intent-1", None, "OPEN", "wait", None, "runtime", 0, None, None, None))
         conn.execute("INSERT INTO risk_plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("plan-1", "KRW-BTC", "ask", "100", "1", 0, None, None, 0, None, None, 0, None, None, None, 10, "ACTIVE", 0, 0, None, None, 0, 1, 2, "model_alpha_v1", "intent-1"))
+        conn.execute(
+            "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "journal-1",
+                "KRW-BTC",
+                "CLOSED",
+                "intent-1",
+                "order-1",
+                "order-2",
+                "plan-1",
+                1,
+                2,
+                9,
+                100.0,
+                103.0,
+                1.0,
+                100.0,
+                103.0,
+                3.0,
+                3.0,
+                "MODEL_ALPHA_ENTRY_V1",
+                "ORDER_STATE",
+                "managed_exit_order",
+                0.91,
+                "rank_effective_quantile",
+                "risk",
+                123.0,
+                45.0,
+                98.7,
+                1.2,
+                json.dumps({"strategy": "model_alpha_v1"}, ensure_ascii=False),
+                json.dumps({"close_mode": "managed_exit_order"}, ensure_ascii=False),
+                9,
+            ),
+        )
         conn.execute("INSERT INTO checkpoints VALUES (?, ?, ?)", ("live_runtime_health", 1, json.dumps({"live_runtime_model_run_id": "run-123", "ws_public_stale": False})))
         conn.execute("INSERT INTO checkpoints VALUES (?, ?, ?)", ("live_rollout_status", 1, json.dumps({"mode": "canary", "order_emission_allowed": True})))
     conn.close()
@@ -155,6 +191,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["positions_count"] == 0
     assert snapshot["live"]["states"][0]["open_orders_count"] == 1
     assert snapshot["live"]["states"][0]["active_risk_plans_count"] == 1
+    assert snapshot["live"]["states"][0]["recent_trades"][0]["realized_pnl_quote"] == 3.0
     assert runtime_artifacts["exists"] is True
     assert runtime_recommendations["recommended_exit_mode"] == "hold"
     assert runtime_recommendations["hold_grid_point"]["hold_bars"] == 6
