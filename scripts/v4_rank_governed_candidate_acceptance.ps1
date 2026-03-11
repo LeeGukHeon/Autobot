@@ -8,6 +8,7 @@ $knownRuntimeUnits = @("autobot-paper-v4.service", "autobot-live-alpha.service")
     -LabelSet "v2" `
     -Task "rank" `
     -RunScope "scheduled_daily_rank_governed" `
+    -TrainStartFloorDate "2026-03-04" `
     -CandidateModelRef "latest_candidate_v4" `
     -ChampionModelRef "champion_v4" `
     -PaperFeatureProvider "live_v4" `

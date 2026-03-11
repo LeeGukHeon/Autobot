@@ -631,6 +631,81 @@ def test_candidate_acceptance_ramps_train_window_from_available_micro_history(tm
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
 
 
+def test_candidate_acceptance_applies_train_start_floor_date(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-07",
+            "-TrainLookbackDays",
+            "5",
+            "-BacktestLookbackDays",
+            "1",
+            "-TrainStartFloorDate",
+            "2026-03-04",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert [entry for entry in invocations if entry["command"] == "features build"] == [
+        {"command": "features build", "start": "2026-03-04", "end": "2026-03-06"}
+    ]
+    assert [entry for entry in invocations if entry["command"] == "model train"] == [
+        {"command": "model train", "start": "2026-03-04", "end": "2026-03-06"}
+    ]
+    assert report["config"]["train_start_floor_date"] == "2026-03-04"
+    assert report["config"]["train_start_floor_applied"] is True
+    assert report["config"]["train_lookback_days_effective"] == 3
+    assert report["config"]["train_window_ramp_reason"] == "TRAIN_START_FLOOR_ACTIVE"
+    assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
+    assert report["windows_by_step"]["train"]["end"] == "2026-03-06"
+
+
 def test_candidate_acceptance_writes_certification_artifact_and_separates_windows(
     tmp_path: Path,
 ) -> None:

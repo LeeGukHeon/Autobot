@@ -10,6 +10,7 @@ param(
     [bool]$TrainLookbackRampEnabled = $true,
     [string]$TrainLookbackRampMicroRoot = "data/parquet/micro_v1",
     [int]$TrainLookbackRampMinMarketsPerDate = 1,
+    [string]$TrainStartFloorDate = "",
     [string]$Tf = "5m",
     [string]$Quote = "KRW",
     [int]$TrainTopN = 50,
@@ -176,11 +177,22 @@ function Resolve-TrainWindowRamp {
         [int]$RequestedBacktestLookbackDays,
         [bool]$RampEnabled,
         [string]$MicroRoot,
-        [int]$MinMarketsPerDate
+        [int]$MinMarketsPerDate,
+        [string]$TrainStartFloorDate
     )
     $resolvedMicroRoot = Resolve-PathFromProjectRoot -Root $ProjectRoot -PathValue $MicroRoot
     $batchDateValue = Resolve-DateToken -DateText $BatchDate -LabelForError "batch_date"
     $batchDateObj = [DateTime]::ParseExact($batchDateValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $trainStartFloorDateValue = if ([string]::IsNullOrWhiteSpace($TrainStartFloorDate)) {
+        ""
+    } else {
+        Resolve-DateToken -DateText $TrainStartFloorDate -LabelForError "train_start_floor_date"
+    }
+    $trainStartFloorObj = if ([string]::IsNullOrWhiteSpace($trainStartFloorDateValue)) {
+        $null
+    } else {
+        [DateTime]::ParseExact($trainStartFloorDateValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    }
     $requestedTrainDays = [Math]::Max([int]$RequestedTrainLookbackDays, 1)
     $requestedBacktestDays = [Math]::Max([int]$RequestedBacktestLookbackDays, 1)
     $minMarkets = [Math]::Max([int]$MinMarketsPerDate, 1)
@@ -224,9 +236,25 @@ function Resolve-TrainWindowRamp {
     $certificationStartDate = $batchDateObj.AddDays(-1 * [Math]::Max($requestedBacktestDays - 1, 0)).ToString("yyyy-MM-dd")
     $trainEndDate = $batchDateObj.AddDays(-1 * [Math]::Max($requestedBacktestDays, 0)).ToString("yyyy-MM-dd")
     $trainStartDate = ""
+    $trainStartFloorApplied = $false
     if ($effectiveTrainDays -gt 0) {
         $trainEndObj = [DateTime]::ParseExact($trainEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
         $trainStartDate = $trainEndObj.AddDays(-1 * [Math]::Max($effectiveTrainDays - 1, 0)).ToString("yyyy-MM-dd")
+        if ($null -ne $trainStartFloorObj) {
+            $trainStartObj = [DateTime]::ParseExact($trainStartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+            if ($trainStartObj -lt $trainStartFloorObj) {
+                $trainStartFloorApplied = $true
+                if ($trainEndObj -lt $trainStartFloorObj) {
+                    $trainStartDate = ""
+                    $effectiveTrainDays = 0
+                    $reason = "TRAIN_START_FLOOR_AFTER_TRAIN_END"
+                } else {
+                    $trainStartDate = $trainStartFloorDateValue
+                    $effectiveTrainDays = [int](($trainEndObj - $trainStartFloorObj).TotalDays) + 1
+                    $reason = "TRAIN_START_FLOOR_ACTIVE"
+                }
+            }
+        }
     }
     return [ordered]@{
         enabled = [bool]$RampEnabled
@@ -240,13 +268,15 @@ function Resolve-TrainWindowRamp {
         available_market_dates = @($availableDates)
         first_available_micro_date = if ($availableDates.Count -gt 0) { [string]$availableDates[0] } else { "" }
         last_available_micro_date = if ($availableDates.Count -gt 0) { [string]$availableDates[-1] } else { "" }
-        ramp_active = ([bool]$RampEnabled) -and ($coveragePresent) -and ($effectiveTrainDays -lt $requestedTrainDays)
+        ramp_active = (([bool]$RampEnabled) -and ($coveragePresent) -and ($effectiveTrainDays -lt $requestedTrainDays)) -or $trainStartFloorApplied
         comparable_window_available = ($effectiveTrainDays -gt 0)
         reason = $reason
         train_start_date = $trainStartDate
         train_end_date = $trainEndDate
         certification_start_date = $certificationStartDate
         certification_end_date = $batchDateValue
+        train_start_floor_date = $trainStartFloorDateValue
+        train_start_floor_applied = $trainStartFloorApplied
     }
 }
 
@@ -2073,7 +2103,8 @@ $windowRamp = Resolve-TrainWindowRamp `
     -RequestedBacktestLookbackDays $BacktestLookbackDays `
     -RampEnabled $TrainLookbackRampEnabled `
     -MicroRoot $TrainLookbackRampMicroRoot `
-    -MinMarketsPerDate $TrainLookbackRampMinMarketsPerDate
+    -MinMarketsPerDate $TrainLookbackRampMinMarketsPerDate `
+    -TrainStartFloorDate $TrainStartFloorDate
 $certificationStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "certification_start_date" -DefaultValue "")
 $trainEndDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_end_date" -DefaultValue "")
 $trainStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_start_date" -DefaultValue "")
@@ -2105,6 +2136,8 @@ $report = [ordered]@{
         train_window_ramp_available_contiguous_micro_days = [int](Get-PropValue -ObjectValue $windowRamp -Name "available_contiguous_micro_days" -DefaultValue 0)
         train_window_ramp_first_available_micro_date = [string](Get-PropValue -ObjectValue $windowRamp -Name "first_available_micro_date" -DefaultValue "")
         train_window_ramp_last_available_micro_date = [string](Get-PropValue -ObjectValue $windowRamp -Name "last_available_micro_date" -DefaultValue "")
+        train_start_floor_date = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_start_floor_date" -DefaultValue "")
+        train_start_floor_applied = [bool](Get-PropValue -ObjectValue $windowRamp -Name "train_start_floor_applied" -DefaultValue $false)
         tf = $Tf
         quote = $Quote
         trainer = $Trainer
@@ -2313,15 +2346,19 @@ try {
         -and (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "micro_coverage_present" -DefaultValue $false) $false) `
         -and (-not (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "comparable_window_available" -DefaultValue $false) $false))
     ) {
-        $report.reasons = @("INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY")
+        $windowRampReason = [string](Get-PropValue -ObjectValue $windowRamp -Name "reason" -DefaultValue "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY")
+        if ([string]::IsNullOrWhiteSpace($windowRampReason)) {
+            $windowRampReason = "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"
+        }
+        $report.reasons = @($windowRampReason)
         $report.gates.overall_pass = $false
         $report.steps.features_build = [ordered]@{
             attempted = $false
-            reason = "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"
+            reason = $windowRampReason
         }
         $report.steps.train = [ordered]@{
             attempted = $false
-            reason = "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"
+            reason = $windowRampReason
             start = $trainStartDate
             end = $trainEndDate
         }
