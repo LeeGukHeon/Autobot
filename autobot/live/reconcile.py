@@ -392,6 +392,7 @@ def reconcile_exchange_snapshot(
                     ts_ms=now_ts,
                     close_mode=_as_optional_str(matched_close.get("close_mode")),
                     exit_order_uuid=_as_optional_str(matched_close.get("order_uuid")),
+                    plan_id=_as_optional_str(matched_close.get("plan_id")),
                     exit_meta={
                         "order_identifier": matched_close.get("order_identifier"),
                         "close_mode": matched_close.get("close_mode"),
@@ -1153,11 +1154,25 @@ def _match_model_managed_position_close(
         pass
     else:
         if int(latest_done_ask_order.get("updated_ts") or 0) >= int(local_position.get("updated_ts") or 0):
+            selected_plan_id = None
+            if active_live_plans:
+                selected_plan_id = str(
+                    max(
+                        active_live_plans,
+                        key=lambda item: (
+                            int(item.get("updated_ts") or 0),
+                            int(item.get("created_ts") or 0),
+                            str(item.get("plan_id") or ""),
+                        ),
+                    ).get("plan_id")
+                    or ""
+                ).strip() or None
             return {
                 "market": market,
                 "order_uuid": _as_optional_str(latest_done_ask_order.get("uuid")),
                 "order_identifier": _as_optional_str(latest_done_ask_order.get("identifier")),
                 "close_mode": "done_ask_order",
+                "plan_id": selected_plan_id,
             }
 
     if exchange_bot_open_orders:
@@ -1198,6 +1213,7 @@ def _match_model_managed_position_close(
         "order_uuid": _as_optional_str(selected_plan.get("current_exit_order_uuid")),
         "order_identifier": _as_optional_str(selected_plan.get("current_exit_order_identifier")),
         "close_mode": "missing_on_exchange_after_exit_plan",
+        "plan_id": _as_optional_str(selected_plan.get("plan_id")),
     }
 
 

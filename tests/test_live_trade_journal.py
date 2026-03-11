@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord
+from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord, TradeJournalRecord
 from autobot.live.trade_journal import (
     activate_trade_journal_for_position,
     backfill_order_execution_details,
@@ -218,3 +218,64 @@ def test_backfill_order_execution_details_updates_done_order_settlement_fields(t
     assert order["executed_funds"] == 100.0
     assert order["paid_fee"] == 0.05
     assert order["reserved_fee"] == 0.05
+
+
+def test_activate_trade_journal_does_not_reuse_other_open_journal_on_same_market(tmp_path) -> None:
+    meta_payload = {
+        "strategy": {
+            "meta": {
+                "model_prob": 0.77,
+                "selection_policy_mode": "rank_effective_quantile",
+                "trade_action": {"recommended_action": "hold"},
+            }
+        }
+    }
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-old",
+                market="KRW-BSV",
+                status="OPEN",
+                entry_intent_id="intent-old",
+                entry_order_uuid="order-old",
+                plan_id="plan-old",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                entry_price=22000.0,
+                qty=0.2,
+                entry_notional_quote=4400.0,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                updated_ts=1_100,
+            )
+        )
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-new",
+                ts_ms=2_000,
+                market="KRW-BSV",
+                side="bid",
+                price=22100.0,
+                volume=0.25,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(meta_payload, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        activate_trade_journal_for_position(
+            store=store,
+            market="KRW-BSV",
+            position={"market": "KRW-BSV", "base_amount": 0.25, "avg_entry_price": 22100.0, "updated_ts": 2_100},
+            ts_ms=2_100,
+            entry_intent={"intent_id": "intent-new", "created_ts": 2_000, "order_uuid": "order-new"},
+            plan_id="plan-new",
+        )
+        rows = sorted(store.list_trade_journal(), key=lambda item: str(item["journal_id"]))
+
+    assert len(rows) == 2
+    assert rows[0]["journal_id"] == "intent-new"
+    assert rows[0]["plan_id"] == "plan-new"
+    assert rows[0]["entry_intent_id"] == "intent-new"
+    assert rows[1]["journal_id"] == "journal-old"
+    assert rows[1]["plan_id"] == "plan-old"
+    assert rows[1]["entry_intent_id"] == "intent-old"

@@ -107,14 +107,18 @@ def activate_trade_journal_for_position(
     position_entry_price = _as_optional_float(position.get("avg_entry_price"))
     entry_intent_id = _as_optional_str((entry_intent or {}).get("intent_id"))
     intent_record = store.intent_by_id(intent_id=entry_intent_id) if entry_intent_id else None
+    plan_id_value = _coalesce_str(_as_optional_str(plan_id), _as_optional_str((entry_intent or {}).get("plan_id")))
+    entry_order_uuid_value = _as_optional_str((entry_intent or {}).get("order_uuid"))
     existing = store.trade_journal_by_entry_intent(entry_intent_id=entry_intent_id) if entry_intent_id else None
-    if existing is None:
-        existing = _latest_live_trade_journal(store=store, market=market_value)
+    if existing is None and plan_id_value is not None:
+        existing = store.trade_journal_by_plan_id(plan_id=plan_id_value)
+    if existing is None and entry_order_uuid_value is not None:
+        existing = store.trade_journal_by_entry_order_uuid(entry_order_uuid=entry_order_uuid_value)
     meta_dict = dict((intent_record or {}).get("meta") or {})
     meta_summary = _build_entry_meta_summary(meta_dict)
     entry_details = _extract_entry_details(meta_summary)
     entry_order_uuid = _coalesce_str(
-        _as_optional_str((entry_intent or {}).get("order_uuid")),
+        entry_order_uuid_value,
         _as_optional_str((existing or {}).get("entry_order_uuid")),
     )
     submitted_ts = _coalesce_int(
@@ -133,8 +137,7 @@ def activate_trade_journal_for_position(
             entry_order_uuid=entry_order_uuid,
             exit_order_uuid=_as_optional_str((existing or {}).get("exit_order_uuid")),
             plan_id=_coalesce_str(
-                _as_optional_str(plan_id),
-                _as_optional_str((entry_intent or {}).get("plan_id")),
+                plan_id_value,
                 _as_optional_str((existing or {}).get("plan_id")),
             ),
             entry_submitted_ts_ms=submitted_ts,
@@ -201,7 +204,17 @@ def close_trade_journal_for_market(
     exit_meta: dict[str, Any] | None = None,
 ) -> str | None:
     market_value = str(market).strip().upper()
-    existing = _latest_live_trade_journal(store=store, market=market_value)
+    resolved_plan = _as_optional_str(plan_id)
+    existing = store.trade_journal_by_plan_id(plan_id=resolved_plan) if resolved_plan is not None else None
+    if existing is None and exit_order_uuid is not None:
+        exit_order_direct = next(
+            (item for item in store.list_orders(open_only=False) if str(item.get("uuid") or "").strip() == str(exit_order_uuid).strip()),
+            None,
+        )
+        plan_from_order = _as_optional_str((exit_order_direct or {}).get("tp_sl_link"))
+        if plan_from_order is not None:
+            resolved_plan = resolved_plan or plan_from_order
+            existing = store.trade_journal_by_plan_id(plan_id=plan_from_order)
     min_exit_order_ts = _coalesce_int(
         _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
         _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
@@ -215,8 +228,10 @@ def close_trade_journal_for_market(
         target_exit_ts=_as_optional_int((existing or {}).get("exit_ts_ms")),
     )
     if existing is None:
-        risk_plan = _latest_plan_for_market(store=store, market=market_value)
+        risk_plan = _risk_plan_for_close(store=store, market=market_value, plan_id=resolved_plan)
         fallback_intent_id = _as_optional_str((risk_plan or {}).get("source_intent_id"))
+        if resolved_plan is None:
+            resolved_plan = _as_optional_str((risk_plan or {}).get("plan_id"))
         if fallback_intent_id:
             existing = store.trade_journal_by_entry_intent(entry_intent_id=fallback_intent_id)
         if existing is None:
@@ -284,9 +299,9 @@ def close_trade_journal_for_market(
         "position_sync",
     )
     resolved_plan = _coalesce_str(
-        _as_optional_str(plan_id),
+        resolved_plan,
         _as_optional_str((existing or {}).get("plan_id")),
-        _as_optional_str((_latest_plan_for_market(store=store, market=market_value) or {}).get("plan_id")),
+        _as_optional_str((_risk_plan_for_close(store=store, market=market_value, plan_id=resolved_plan) or {}).get("plan_id")),
     )
     realized_pnl_quote = (
         (resolved_exit_price - entry_price) * qty
@@ -561,6 +576,22 @@ def _latest_live_trade_journal(*, store: LiveStateStore, market: str) -> dict[st
         limit=1,
     )
     return rows[0] if rows else None
+
+
+def _risk_plan_for_close(
+    *,
+    store: LiveStateStore,
+    market: str,
+    plan_id: str | None,
+) -> dict[str, Any] | None:
+    if plan_id:
+        direct = store.risk_plan_by_id(plan_id=plan_id)
+        if direct is not None:
+            return direct
+    active_rows = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
+    if len(active_rows) == 1:
+        return active_rows[0]
+    return None
 
 
 def _resolve_entry_order_for_journal(

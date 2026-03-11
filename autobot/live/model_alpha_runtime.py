@@ -713,6 +713,15 @@ def _apply_position_sync_to_strategy(
 
     for market in sorted(previous_markets - current_markets):
         previous = previous_positions[market]
+        active_plan = max(
+            store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING")),
+            key=lambda item: (
+                int(item.get("updated_ts") or 0),
+                int(item.get("created_ts") or 0),
+                str(item.get("plan_id") or ""),
+            ),
+            default=None,
+        )
         exit_price = _safe_float(latest_prices.get(market), default=0.0)
         if exit_price <= 0:
             exit_price = _safe_float(previous.get("avg_entry_price"), default=1.0)
@@ -728,6 +737,7 @@ def _apply_position_sync_to_strategy(
             position=previous,
             exit_price=exit_price,
             ts_ms=ts_ms,
+            plan_id=_as_optional_str((active_plan or {}).get("plan_id")),
         )
         _strategy_ask_fill(strategy=strategy, market=market, position=previous, exit_price=exit_price, ts_ms=ts_ms)
         _close_market_risk_plans(store=store, market=market, ts_ms=ts_ms)

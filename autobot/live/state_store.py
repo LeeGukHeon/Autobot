@@ -667,6 +667,24 @@ class LiveStateStore:
             return None
         return _row_to_trade_journal(row)
 
+    def trade_journal_by_plan_id(self, *, plan_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM trade_journal WHERE plan_id = ? ORDER BY updated_ts DESC LIMIT 1",
+            (plan_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_trade_journal(row)
+
+    def trade_journal_by_entry_order_uuid(self, *, entry_order_uuid: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM trade_journal WHERE entry_order_uuid = ? ORDER BY updated_ts DESC LIMIT 1",
+            (entry_order_uuid,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_trade_journal(row)
+
     def list_trade_journal(
         self,
         *,
