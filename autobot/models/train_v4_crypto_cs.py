@@ -486,6 +486,10 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         enabled=bool(cpcv_lite_runtime["enabled"]),
         trigger=str(cpcv_lite_runtime["trigger"]),
     )
+    research_support_lane = _build_research_support_lane_v4(
+        walk_forward=walk_forward,
+        cpcv_lite=cpcv_lite,
+    )
     factor_block_selection = build_factor_block_selection_report(
         block_registry=factor_block_registry,
         window_rows=walk_forward.pop("_factor_block_window_rows", []),
@@ -550,6 +554,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_recommendations=selection_recommendations,
         selection_policy=selection_policy,
         selection_calibration=selection_calibration,
+        research_support_lane=research_support_lane,
         ranker_budget_profile=ranker_budget_profile,
         cpcv_lite_summary=cpcv_lite.get("summary", {}),
         factor_block_selection=factor_block_selection,
@@ -711,7 +716,10 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         json.dumps(promotion, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    trainer_research_evidence = _build_trainer_research_evidence_from_promotion_v4(promotion=promotion)
+    trainer_research_evidence = _build_trainer_research_evidence_from_promotion_v4(
+        promotion=promotion,
+        support_lane=research_support_lane,
+    )
     trainer_research_evidence_path = run_dir / "trainer_research_evidence.json"
     trainer_research_evidence_path.write_text(
         json.dumps(trainer_research_evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -728,6 +736,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         selection_policy=selection_policy,
         selection_calibration=selection_calibration,
         factor_block_selection=factor_block_selection,
+        research_support_lane=research_support_lane,
         factor_block_selection_context=factor_block_selection_context,
         cpcv_lite_runtime=cpcv_lite_runtime,
         search_budget_decision=search_budget_decision,
@@ -3578,6 +3587,7 @@ def _train_config_snapshot_v4(
     selection_recommendations: dict[str, Any],
     selection_policy: dict[str, Any],
     selection_calibration: dict[str, Any],
+    research_support_lane: dict[str, Any],
     ranker_budget_profile: dict[str, Any],
     cpcv_lite_summary: dict[str, Any],
     factor_block_selection: dict[str, Any],
@@ -3625,6 +3635,7 @@ def _train_config_snapshot_v4(
         "resolution_context": dict(factor_block_selection_context or {}),
     }
     payload["search_budget"] = dict(search_budget_decision or {})
+    payload["research_support_lane"] = dict(research_support_lane or {})
     payload["selection_recommendations"] = selection_recommendations
     payload["selection_policy"] = dict(selection_policy or {})
     payload["selection_calibration"] = dict(selection_calibration or {})
@@ -3638,6 +3649,7 @@ def _build_decision_surface_v4(
     selection_policy: dict[str, Any],
     selection_calibration: dict[str, Any],
     factor_block_selection: dict[str, Any],
+    research_support_lane: dict[str, Any],
     factor_block_selection_context: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
     search_budget_decision: dict[str, Any],
@@ -3652,6 +3664,7 @@ def _build_decision_surface_v4(
     runtime_exit = dict((runtime_recommendations or {}).get("exit") or {})
     factor_block_refit_support = dict((factor_block_selection or {}).get("refit_support") or {})
     factor_block_refit_summary = dict(factor_block_refit_support.get("summary") or {})
+    research_support_summary = dict((research_support_lane or {}).get("summary") or {})
     promotion_reasons = [
         str(item).strip()
         for item in ((promotion or {}).get("reasons") or [])
@@ -3673,6 +3686,8 @@ def _build_decision_surface_v4(
         warnings.append("GUARDED_FACTOR_POLICY_NOT_ACTIVE")
     if str(factor_block_refit_summary.get("status", "")).strip().lower() in {"insufficient", "partial"}:
         warnings.append("FACTOR_BLOCK_REFIT_SUPPORT_NOT_FULLY_AVAILABLE")
+    if str(research_support_summary.get("status", "")).strip().lower() in {"insufficient", "partial", "disabled"}:
+        warnings.append("RESEARCH_SUPPORT_LANE_NOT_FULLY_SUPPORTED")
 
     return {
         "version": 1,
@@ -3717,6 +3732,19 @@ def _build_decision_surface_v4(
             ).strip(),
             "selection_calibration_method": str((selection_calibration or {}).get("method", "")).strip(),
             "selection_calibration_sample_count": int((selection_calibration or {}).get("sample_count", 0) or 0),
+        },
+        "research_support_contract": {
+            "policy": str((research_support_lane or {}).get("policy", "")).strip()
+            or "v4_certification_support_lane_v1",
+            "status": str(research_support_summary.get("status", "")).strip() or "unknown",
+            "reasons": [
+                str(item).strip()
+                for item in (research_support_summary.get("reasons") or [])
+                if str(item).strip()
+            ],
+            "multiple_testing_supported": bool(research_support_summary.get("multiple_testing_supported", False)),
+            "cpcv_lite_status": str(research_support_summary.get("cpcv_lite_status", "")).strip() or "unknown",
+            "support_only": True,
         },
         "economic_objective_contract": {
             "profile_id": str((economic_objective_profile or {}).get("profile_id", "")).strip()
@@ -3802,9 +3830,149 @@ def _build_decision_surface_v4(
     }
 
 
+def _build_research_support_lane_v4(
+    *,
+    walk_forward: dict[str, Any],
+    cpcv_lite: dict[str, Any],
+) -> dict[str, Any]:
+    walk_summary = dict((walk_forward or {}).get("summary") or {})
+    panel_diagnostics = dict((walk_forward or {}).get("multiple_testing_panel_diagnostics") or {})
+    spa_like_doc = dict((walk_forward or {}).get("spa_like_window_test") or {})
+    white_rc_doc = dict((walk_forward or {}).get("white_reality_check") or {})
+    hansen_spa_doc = dict((walk_forward or {}).get("hansen_spa") or {})
+    cpcv_summary = dict((cpcv_lite or {}).get("summary") or {})
+
+    def _reason_list(*sources: Any) -> list[str]:
+        reasons: list[str] = []
+        for source in sources:
+            for item in source or []:
+                text = str(item).strip()
+                if text and text not in reasons:
+                    reasons.append(text)
+        return reasons
+
+    def _support_status(doc: dict[str, Any]) -> str:
+        if not doc:
+            return "missing"
+        return "supported" if bool(doc.get("comparable", False)) else "insufficient"
+
+    spa_like_reasons = _reason_list(spa_like_doc.get("reasons"))
+    white_rc_reasons = _reason_list(white_rc_doc.get("reasons"), (white_rc_doc.get("panel_diagnostics") or {}).get("reasons"))
+    hansen_spa_reasons = _reason_list(
+        hansen_spa_doc.get("reasons"),
+        (hansen_spa_doc.get("panel_diagnostics") or {}).get("reasons"),
+    )
+    cpcv_reasons = _reason_list(
+        cpcv_summary.get("reasons"),
+        (cpcv_lite or {}).get("insufficiency_reasons"),
+        [str(cpcv_summary.get("budget_reason", "")).strip()] if str(cpcv_summary.get("budget_reason", "")).strip() else [],
+    )
+
+    spa_like_status = _support_status(spa_like_doc)
+    white_rc_status = _support_status(white_rc_doc)
+    hansen_spa_status = _support_status(hansen_spa_doc)
+    cpcv_status_raw = str(cpcv_summary.get("status", "")).strip().lower()
+    if not cpcv_status_raw:
+        cpcv_status_raw = "disabled" if not bool((cpcv_lite or {}).get("enabled", False)) else "unknown"
+    if cpcv_status_raw == "trusted":
+        cpcv_support_status = "supported"
+    elif cpcv_status_raw in {"partial", "default"}:
+        cpcv_support_status = "partial"
+    elif cpcv_status_raw == "disabled":
+        cpcv_support_status = "disabled"
+    else:
+        cpcv_support_status = "insufficient"
+
+    windows_run = int(walk_summary.get("windows_run", 0) or 0)
+    comparable_components = (
+        spa_like_status == "supported"
+        and white_rc_status == "supported"
+        and hansen_spa_status == "supported"
+    )
+    cpcv_usable = cpcv_support_status in {"supported", "partial"}
+    any_support_evidence = bool(
+        windows_run > 0
+        or panel_diagnostics
+        or spa_like_doc
+        or white_rc_doc
+        or hansen_spa_doc
+        or cpcv_lite
+    )
+    if comparable_components and cpcv_usable:
+        status = "supported"
+    elif any_support_evidence and (spa_like_status == "supported" or white_rc_status == "supported" or hansen_spa_status == "supported" or cpcv_usable):
+        status = "partial"
+    elif cpcv_support_status == "disabled" and windows_run > 0:
+        status = "partial"
+    else:
+        status = "insufficient"
+
+    summary_reasons = _reason_list(
+        ["NO_WALK_FORWARD_EVIDENCE"] if windows_run <= 0 else [],
+        panel_diagnostics.get("reasons"),
+        spa_like_reasons,
+        white_rc_reasons,
+        hansen_spa_reasons,
+        cpcv_reasons,
+        ["CPCV_LITE_DISABLED"] if cpcv_support_status == "disabled" else [],
+    )
+    if status == "supported" and not summary_reasons:
+        summary_reasons = ["SUPPORT_LANE_AVAILABLE"]
+
+    return {
+        "version": 1,
+        "policy": "v4_certification_support_lane_v1",
+        "source": "train_v4_crypto_cs",
+        "support_only": True,
+        "summary": {
+            "status": status,
+            "windows_run": windows_run,
+            "multiple_testing_supported": bool(comparable_components),
+            "cpcv_lite_status": cpcv_status_raw,
+            "reasons": summary_reasons,
+        },
+        "multiple_testing_panel_diagnostics": panel_diagnostics,
+        "spa_like": {
+            "policy": str(spa_like_doc.get("policy", "")).strip(),
+            "decision": str(spa_like_doc.get("decision", "")).strip(),
+            "comparable": bool(spa_like_doc.get("comparable", False)),
+            "status": spa_like_status,
+            "reasons": spa_like_reasons,
+            "window_count": int(spa_like_doc.get("window_count", 0) or 0),
+        },
+        "white_rc": {
+            "policy": str(white_rc_doc.get("policy", "")).strip(),
+            "decision": str(white_rc_doc.get("decision", "")).strip(),
+            "comparable": bool(white_rc_doc.get("comparable", False)),
+            "status": white_rc_status,
+            "reasons": white_rc_reasons,
+            "panel_diagnostics": dict(white_rc_doc.get("panel_diagnostics") or {}),
+        },
+        "hansen_spa": {
+            "policy": str(hansen_spa_doc.get("policy", "")).strip(),
+            "decision": str(hansen_spa_doc.get("decision", "")).strip(),
+            "comparable": bool(hansen_spa_doc.get("comparable", False)),
+            "status": hansen_spa_status,
+            "reasons": hansen_spa_reasons,
+            "panel_diagnostics": dict(hansen_spa_doc.get("panel_diagnostics") or {}),
+        },
+        "cpcv_lite": {
+            "enabled": bool((cpcv_lite or {}).get("enabled", False)),
+            "trigger": str((cpcv_lite or {}).get("trigger", "")).strip() or "disabled",
+            "status": cpcv_status_raw,
+            "support_status": cpcv_support_status,
+            "summary": cpcv_summary,
+            "insufficiency_reasons": cpcv_reasons,
+            "pbo": dict((cpcv_lite or {}).get("pbo") or {}),
+            "dsr": dict((cpcv_lite or {}).get("dsr") or {}),
+        },
+    }
+
+
 def _build_trainer_research_evidence_from_promotion_v4(
     *,
     promotion: dict[str, Any],
+    support_lane: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     checks = dict((promotion or {}).get("checks") or {})
     research = dict((promotion or {}).get("research_acceptance") or {})
@@ -3949,6 +4117,7 @@ def _build_trainer_research_evidence_from_promotion_v4(
             "decision": execution_decision,
             "comparable": execution_comparable,
         },
+        "support_lane": dict(support_lane or {}),
     }
 
 

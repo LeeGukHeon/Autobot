@@ -195,6 +195,10 @@ These tickets are the required follow-on family before changing core promotion b
   - selection-grid comparable panels now preserve real period keys instead of flattened placeholder rows
   - `White RC` / `Hansen SPA` now expose explicit panel-alignment diagnostics when evidence is insufficient
   - `cpcv_lite` summaries now carry explicit budget/partial-support reasons
+- `T21.16` slice 2 landed locally:
+  - trainer research artifacts now preserve a support-only multiple-testing / `cpcv_lite` lane with explicit reasons
+  - certification artifacts now carry that support provenance forward without reintroducing trainer-prior gating
+  - `decision_surface.json` and `train_config.yaml` now surface when the research support lane is only partial or insufficient
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

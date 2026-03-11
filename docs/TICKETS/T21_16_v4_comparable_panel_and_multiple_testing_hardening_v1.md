@@ -1,7 +1,7 @@
 # T21.16 V4 Comparable Panel And Multiple-Testing Hardening v1
 
 - Date: 2026-03-11
-- Status: slice 1 landed locally
+- Status: landed locally
 
 ## Goal
 - Harden `spa_like`, `White RC`, `Hansen SPA`, and `CPCV-lite` into a clean certification-support lane.
@@ -67,3 +67,20 @@ Out of scope:
   - insufficient overlap surfaces exact panel reasons
 - `tests/test_train_v4_crypto_cs.py`
   - selection-grid trial panels keep real OOS periods and stop emitting placeholder precision/slices
+
+## 2026-03-11 Slice 2 Implementation
+- `trainer_research_evidence.json` now carries a support-only `support_lane` payload:
+  - `spa_like`, `White RC`, `Hansen SPA`
+  - panel-alignment diagnostics
+  - `CPCV-lite` status and insufficiency reasons
+- `candidate_acceptance.ps1` now preserves that support lane into `certification_artifact.research_evidence.support_lane`
+  - this is support provenance only and does not restore trainer-prior gating
+- `train_config.yaml` and `decision_surface.json` now expose a summarized research-support contract
+  - runs with partial/insufficient support lane now emit an explicit decision-surface warning
+
+## Additional Regression Coverage
+- `tests/test_train_v4_crypto_cs.py`
+  - support lane summary is emitted in trainer artifacts
+- `tests/test_candidate_acceptance_certification_lane.py`
+  - certification artifacts preserve trainer support-lane provenance when present
+  - missing trainer prior yields explicit `missing_prior` support status instead of silent omission

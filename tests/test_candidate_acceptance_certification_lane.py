@@ -212,6 +212,56 @@ def _make_fake_python_exe(
                                 "decision": "candidate_edge",
                                 "comparable": True,
                             }},
+                            "support_lane": {{
+                                "policy": "v4_certification_support_lane_v1",
+                                "source": "train_v4_crypto_cs",
+                                "support_only": True,
+                                "summary": {{
+                                    "status": "supported",
+                                    "windows_run": 4,
+                                    "multiple_testing_supported": True,
+                                    "cpcv_lite_status": "partial",
+                                    "reasons": ["WHITE_RC_PASS", "HANSEN_SPA_HOLD", "BUDGET_CUT"],
+                                }},
+                                "multiple_testing_panel_diagnostics": {{
+                                    "comparable": True,
+                                    "common_panel_key_count": 3,
+                                    "reasons": [],
+                                }},
+                                "spa_like": {{
+                                    "policy": "spa_like_window_ev_net",
+                                    "decision": "candidate_edge",
+                                    "comparable": True,
+                                    "status": "supported",
+                                    "reasons": ["SPA_LIKE_PASS"],
+                                }},
+                                "white_rc": {{
+                                    "policy": "white_reality_check",
+                                    "decision": "candidate_edge",
+                                    "comparable": True,
+                                    "status": "supported",
+                                    "reasons": ["WHITE_RC_PASS"],
+                                    "panel_diagnostics": {{"common_panel_key_count": 3, "reasons": []}},
+                                }},
+                                "hansen_spa": {{
+                                    "policy": "hansen_spa",
+                                    "decision": "candidate_edge",
+                                    "comparable": True,
+                                    "status": "supported",
+                                    "reasons": ["HANSEN_SPA_PASS"],
+                                    "panel_diagnostics": {{"common_panel_key_count": 3, "reasons": []}},
+                                }},
+                                "cpcv_lite": {{
+                                    "enabled": True,
+                                    "trigger": "guarded_policy",
+                                    "status": "partial",
+                                    "support_status": "partial",
+                                    "summary": {{"status": "partial", "reasons": ["BUDGET_CUT"]}},
+                                    "insufficiency_reasons": ["BUDGET_CUT"],
+                                    "pbo": {{"comparable": True}},
+                                    "dsr": {{"comparable": True}},
+                                }},
+                            }},
                         }},
                     )
                 write_json(
@@ -554,6 +604,8 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     assert certification["research_evidence"]["policy"] == "candidate_acceptance_certification_research_evidence_v1"
     assert certification["research_evidence"]["trainer_research_prior"]["present"] is True
     assert certification["research_evidence"]["trainer_research_prior"]["pass"] is True
+    assert certification["research_evidence"]["support_lane"]["summary"]["status"] == "supported"
+    assert certification["research_evidence"]["support_lane"]["cpcv_lite"]["status"] == "partial"
 
 
 def test_candidate_acceptance_required_trainer_evidence_fails_without_decision_surface(
@@ -659,6 +711,7 @@ def test_candidate_acceptance_certification_evidence_does_not_require_trainer_re
     assert certification["provenance"]["trainer_research_prior_present"] is False
     assert certification["research_evidence"]["trainer_research_prior"]["present"] is False
     assert certification["research_evidence"]["pass"] is True
+    assert certification["research_evidence"]["support_lane"]["summary"]["status"] == "missing_prior"
 
 
 def test_candidate_acceptance_uses_profile_governed_backtest_thresholds(

@@ -960,6 +960,7 @@ function Resolve-ResearchEvidenceFromArtifact {
         white_rc = [ordered]@{}
         hansen_spa = [ordered]@{}
         execution = [ordered]@{}
+        support_lane = [ordered]@{}
     }
     if ($Mode -eq "ignore") {
         $resolved.reasons = @("IGNORED_BY_POLICY")
@@ -981,6 +982,7 @@ function Resolve-ResearchEvidenceFromArtifact {
     $resolved.white_rc = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "white_rc" -DefaultValue @{})
     $resolved.hansen_spa = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "hansen_spa" -DefaultValue @{})
     $resolved.execution = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "execution" -DefaultValue @{})
+    $resolved.support_lane = (Get-PropValue -ObjectValue $ResearchEvidenceArtifact -Name "support_lane" -DefaultValue @{})
     if ($resolved.available -and $resolved.reasons.Count -eq 0) {
         $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
     }
@@ -1020,10 +1022,31 @@ function New-CertificationResearchEvidence {
     $windowValid = To-Bool (Get-PropValue -ObjectValue $CertificationArtifact -Name "valid_window_contract" -DefaultValue $false) $false
     $artifactProvenance = Get-PropValue -ObjectValue $CertificationArtifact -Name "provenance" -DefaultValue @{}
     $trainerResearchPriorPresent = To-Bool (Get-PropValue -ObjectValue $artifactProvenance -Name "trainer_research_prior_present" -DefaultValue $false) $false
+    $trainerSupportLane = Get-PropValue -ObjectValue $TrainerResearchPrior -Name "support_lane" -DefaultValue @{}
     $trainerResearchPriorPass = if ($trainerResearchPriorPresent) {
         To-Bool (Get-PropValue -ObjectValue $TrainerResearchPrior -Name "pass" -DefaultValue $false) $false
     } else {
         $false
+    }
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $trainerSupportLane) {
+        $supportLaneReasons = if ($trainerResearchPriorPresent) { @("MISSING_TRAINER_SUPPORT_LANE") } else { @("TRAINER_RESEARCH_PRIOR_NOT_PRESENT") }
+        $trainerSupportLane = [ordered]@{
+            policy = "v4_certification_support_lane_v1"
+            source = "trainer_research_prior"
+            support_only = $true
+            summary = [ordered]@{
+                status = if ($trainerResearchPriorPresent) { "missing" } else { "missing_prior" }
+                windows_run = 0
+                multiple_testing_supported = $false
+                cpcv_lite_status = "missing"
+                reasons = @($supportLaneReasons)
+            }
+            multiple_testing_panel_diagnostics = [ordered]@{}
+            spa_like = [ordered]@{}
+            white_rc = [ordered]@{}
+            hansen_spa = [ordered]@{}
+            cpcv_lite = [ordered]@{}
+        }
     }
 
     $reasons = @()
@@ -1130,6 +1153,8 @@ function New-CertificationResearchEvidence {
             economic_objective_profile_id = $EconomicObjectiveProfileId
             trainer_research_prior_present = $trainerResearchPriorPresent
             trainer_research_prior_pass = $trainerResearchPriorPass
+            support_lane_present = (-not (Test-IsEffectivelyEmptyObject -ObjectValue $trainerSupportLane))
+            support_lane_status = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $trainerSupportLane -Name "summary" -DefaultValue @{}) -Name "status" -DefaultValue "")
         }
         offline = [ordered]@{
             policy = "certification_candidate_sanity_v1"
@@ -1162,6 +1187,7 @@ function New-CertificationResearchEvidence {
             pass = $trainerResearchPriorPass
             source = [string](Get-PropValue -ObjectValue $TrainerResearchPrior -Name "source" -DefaultValue "")
         }
+        support_lane = $trainerSupportLane
     }
 }
 
@@ -1185,6 +1211,7 @@ function Resolve-TrainerEvidenceFromCertificationArtifact {
         white_rc = [ordered]@{}
         hansen_spa = [ordered]@{}
         execution = [ordered]@{}
+        support_lane = [ordered]@{}
         certification_window_valid = $false
         certification_window_reasons = @()
     }
@@ -1218,6 +1245,7 @@ function Resolve-TrainerEvidenceFromCertificationArtifact {
     $resolved.white_rc = (Get-PropValue -ObjectValue $researchEvidence -Name "white_rc" -DefaultValue @{})
     $resolved.hansen_spa = (Get-PropValue -ObjectValue $researchEvidence -Name "hansen_spa" -DefaultValue @{})
     $resolved.execution = (Get-PropValue -ObjectValue $researchEvidence -Name "execution" -DefaultValue @{})
+    $resolved.support_lane = (Get-PropValue -ObjectValue $researchEvidence -Name "support_lane" -DefaultValue @{})
     $resolved.certification_window_valid = $windowValid
     $resolved.certification_window_reasons = @($artifactReasons)
     if (-not $windowValid) {

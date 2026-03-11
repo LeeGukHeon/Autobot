@@ -10,6 +10,7 @@ from autobot.models.registry import load_json
 from autobot.models.train_v1 import _predict_scores
 from autobot.models.train_v4_crypto_cs import (
     TrainV4CryptoCsOptions,
+    _build_research_support_lane_v4,
     _evaluate_factor_block_refit_window_evidence,
     _evaluate_factor_block_refit_window_rows,
     _build_selection_search_trial_panel,
@@ -250,6 +251,58 @@ def test_evaluate_factor_block_refit_window_evidence_records_nonfatal_refit_fail
     assert evidence["support"]["by_block"]["v4_optional_test"]["reason_codes"] == ["REFIT_MODEL_FAILED_RUNTIMEERROR"]
 
 
+def test_build_research_support_lane_summarizes_multiple_testing_and_cpcv() -> None:
+    support_lane = _build_research_support_lane_v4(
+        walk_forward={
+            "summary": {"windows_run": 4},
+            "multiple_testing_panel_diagnostics": {
+                "comparable": True,
+                "common_panel_key_count": 3,
+                "reasons": [],
+            },
+            "spa_like_window_test": {
+                "policy": "spa_like_window_ev_net",
+                "decision": "candidate_edge",
+                "comparable": True,
+                "reasons": ["SPA_LIKE_PASS"],
+                "window_count": 4,
+            },
+            "white_reality_check": {
+                "policy": "white_reality_check",
+                "decision": "candidate_edge",
+                "comparable": True,
+                "reasons": ["WHITE_RC_PASS"],
+                "panel_diagnostics": {"common_panel_key_count": 3, "reasons": []},
+            },
+            "hansen_spa": {
+                "policy": "hansen_spa",
+                "decision": "indeterminate",
+                "comparable": True,
+                "reasons": ["HANSEN_SPA_HOLD"],
+                "panel_diagnostics": {"common_panel_key_count": 3, "reasons": []},
+            },
+        },
+        cpcv_lite={
+            "enabled": True,
+            "trigger": "guarded_policy",
+            "summary": {
+                "status": "partial",
+                "reasons": ["BUDGET_CUT", "INSUFFICIENT_COMPARABLE_FOLDS"],
+            },
+            "pbo": {"comparable": True},
+            "dsr": {"comparable": True},
+            "insufficiency_reasons": ["BUDGET_CUT"],
+        },
+    )
+
+    assert support_lane["policy"] == "v4_certification_support_lane_v1"
+    assert support_lane["summary"]["status"] == "supported"
+    assert support_lane["summary"]["multiple_testing_supported"] is True
+    assert support_lane["summary"]["cpcv_lite_status"] == "partial"
+    assert support_lane["white_rc"]["panel_diagnostics"]["common_panel_key_count"] == 3
+    assert "BUDGET_CUT" in support_lane["cpcv_lite"]["insufficiency_reasons"]
+
+
 def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monkeypatch) -> None:
     dataset = SimpleNamespace(
         rows=3,
@@ -371,6 +424,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert train_config_doc["selection_policy"]["mode"] == "rank_effective_quantile"
     assert int(train_config_doc["selection_calibration"]["version"]) == 1
     assert train_config_doc["factor_block_selection"]["refit_support"]["summary"]["status"] == "not_applicable"
+    assert train_config_doc["research_support_lane"]["policy"] == "v4_certification_support_lane_v1"
     assert result.trainer_research_evidence_path is not None
     assert result.trainer_research_evidence_path.exists()
     assert research_evidence_doc["policy"] == "v4_trainer_research_evidence_v1"
@@ -387,11 +441,13 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert decision_surface_doc["search_budget_contract"]["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
     assert decision_surface_doc["search_budget_contract"]["promotion_eligible_satisfied"] is False
     assert decision_surface_doc["factor_block_contract"]["refit_support_status"] == "not_applicable"
+    assert decision_surface_doc["research_support_contract"]["policy"] == "v4_certification_support_lane_v1"
     assert result.metrics["economic_objective"]["profile_id"] == "v4_shared_economic_objective_v1"
     assert "TRAINER_RESEARCH_PRIOR_IS_TRAIN_PRODUCED" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
     assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
     assert decision_surface_doc["promotion_contract"]["trainer_research_prior_role"] == "audit_only_prior"
+    assert research_evidence_doc["support_lane"]["policy"] == "v4_certification_support_lane_v1"
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
