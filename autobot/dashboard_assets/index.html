@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Autobot 운영 관제</title>
+  <title>Autobot 운영 대시보드</title>
   <link rel="stylesheet" href="/static/dashboard.css" />
 </head>
 <body>
@@ -11,10 +11,11 @@
   <div class="app-shell">
     <header class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Autobot 운영 관제</p>
-        <h1>학습, 검증, 페이퍼, 라이브를 한 화면에서 읽는 운영 화면</h1>
+        <p class="eyebrow">Autobot 운영 대시보드</p>
+        <h1>학습, 검증, 페이퍼, 라이브 카나리아를 한 화면에서 읽는 운영 화면</h1>
         <p class="hero-text">
-          현재 챔피언과 후보, 라이브 카나리아, WS 수집기, 최근 학습 결과를 JSON 없이 자연스러운 한국어로 요약합니다.
+          최신 후보가 왜 통과했는지, 지금 라이브 카나리아가 왜 매수하거나 건너뛰는지,
+          현재 열려 있는 포지션이 어떤 계획으로 관리되는지를 사람 말로 풀어서 보여줍니다.
         </p>
       </div>
       <div class="hero-side">
@@ -27,19 +28,19 @@
           <strong id="project-root">-</strong>
         </div>
         <div class="meta-box">
-          <span class="meta-label">저장공간</span>
+          <span class="meta-label">디스크 사용량</span>
           <strong id="storage-summary">-</strong>
         </div>
         <div class="hero-actions">
           <button id="refresh-btn" class="primary-button" type="button">지금 새로고침</button>
-          <span class="refresh-note">10초마다 비동기로 새로고침합니다</span>
+          <span class="refresh-note">10초마다 자동으로 다시 불러옵니다.</span>
         </div>
       </div>
     </header>
 
     <div id="fetch-error" class="error-box" hidden></div>
 
-    <nav class="tab-bar" id="tab-bar" aria-label="운영 화면 섹션">
+    <nav class="tab-bar" id="tab-bar" aria-label="운영 화면 탭">
       <button class="tab-button active" data-tab="overview" type="button">운영 개요</button>
       <button class="tab-button" data-tab="training" type="button">학습 / 검증</button>
       <button class="tab-button" data-tab="paper" type="button">페이퍼</button>
@@ -56,7 +57,7 @@
             <p id="overview-subhead" class="summary-text">-</p>
           </article>
           <article class="summary-card">
-            <p class="summary-label">핵심 수치</p>
+            <p class="summary-label">빠른 숫자</p>
             <div id="overview-kpis" class="mini-grid"></div>
           </article>
         </div>
@@ -65,7 +66,7 @@
           <div class="panel-head">
             <div>
               <h3>서비스 상태</h3>
-              <p>systemd 유닛과 타이머를 사람 눈에 맞게 요약합니다.</p>
+              <p>지금 실제로 어떤 서비스가 돌아가고 있는지, 최근에 언제 시작됐는지 바로 확인합니다.</p>
             </div>
           </div>
           <div id="services-grid" class="card-grid"></div>
@@ -75,7 +76,7 @@
           <div class="panel-head">
             <div>
               <h3>운영 메모</h3>
-              <p>지금 바로 읽어야 하는 거절 사유, 브레이커, 참고 메모를 모읍니다.</p>
+              <p>거절 사유, 브레이커, 챌린저 보류 이유처럼 지금 당장 봐야 하는 메모만 모아 보여줍니다.</p>
             </div>
           </div>
           <div id="alerts-grid" class="card-grid"></div>
@@ -85,12 +86,12 @@
       <section class="pane" data-pane="training" hidden>
         <div class="summary-grid">
           <article class="summary-card">
-            <p class="summary-label">최신 어셉턴스</p>
+            <p class="summary-label">최신 검증 상태</p>
             <h2 id="training-headline">-</h2>
             <p id="training-subhead" class="summary-text">-</p>
           </article>
           <article class="summary-card">
-            <p class="summary-label">빠른 요약</p>
+            <p class="summary-label">빠른 숫자</p>
             <div id="training-kpis" class="mini-grid"></div>
           </article>
         </div>
@@ -98,8 +99,8 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <h3>학습 / 어셉턴스</h3>
-              <p>이번 후보가 왜 통과했는지, 왜 탈락했는지와 실제 숫자를 함께 보여줍니다.</p>
+              <h3>학습 / 검증 요약</h3>
+              <p>이번 후보가 왜 통과했는지 또는 왜 탈락했는지를 운영자가 바로 이해할 수 있게 정리합니다.</p>
             </div>
           </div>
           <div id="training-details" class="detail-stack"></div>
@@ -109,7 +110,7 @@
           <div class="panel-head">
             <div>
               <h3>챌린저 루프</h3>
-              <p>spawn / promote에서 챌린저가 실제로 생성됐는지와 직접 사유를 보여줍니다.</p>
+              <p>챌린저가 실제로 만들어졌는지, 막혔다면 어느 단계에서 멈췄는지 보여줍니다.</p>
             </div>
           </div>
           <div id="challenger-details" class="detail-stack"></div>
@@ -119,7 +120,7 @@
           <div class="panel-head">
             <div>
               <h3>후보 산출물</h3>
-              <p>selection policy, calibration, runtime recommendation, factor 선택 결과를 요약합니다.</p>
+              <p>선택 정책, 보정, 진입/청산 추천, trade action 같은 핵심 산출물을 쉽게 읽을 수 있게 풀어씁니다.</p>
             </div>
           </div>
           <div id="artifact-grid" class="card-grid"></div>
@@ -131,7 +132,7 @@
           <div class="panel-head">
             <div>
               <h3>최근 페이퍼 런</h3>
-              <p>챔피언과 챌린저 페이퍼 런의 주문, 체결, 손익, 낙폭을 카드형으로 정리합니다.</p>
+              <p>최근 페이퍼에서 얼마나 주문했고 얼마나 체결됐는지, 손익과 낙폭이 어땠는지 카드로 봅니다.</p>
             </div>
           </div>
           <div id="paper-grid" class="card-grid"></div>
@@ -143,7 +144,7 @@
           <div class="panel-head">
             <div>
               <h3>라이브 / 카나리아 상태</h3>
-              <p>상태별로 나눠 보고, 현재 보유 종목과 매도 전략을 먼저 읽게 구성했습니다.</p>
+              <p>지금 어떤 모델이 연결돼 있고, 왜 매수하거나 왜 건너뛰었는지, 현재 포지션을 어떻게 관리하는지 보여줍니다.</p>
             </div>
           </div>
           <div id="live-summary-strip" class="mini-grid"></div>
@@ -160,7 +161,7 @@
             <p id="ws-subhead" class="summary-text">-</p>
           </article>
           <article class="summary-card">
-            <p class="summary-label">WS 핵심 수치</p>
+            <p class="summary-label">빠른 숫자</p>
             <div id="ws-kpis" class="mini-grid"></div>
           </article>
         </div>
@@ -169,7 +170,7 @@
           <div class="panel-head">
             <div>
               <h3>공용 WS 수집 상태</h3>
-              <p>라이브와 학습이 공유하는 데이터 플레인의 연결 상태와 최신 적재 상태를 읽기 쉽게 정리합니다.</p>
+              <p>학습과 라이브가 함께 쓰는 공용 데이터 플레인이 얼마나 신선한지, 최근 적재가 정상인지 보여줍니다.</p>
             </div>
           </div>
           <div id="ws-details" class="detail-stack"></div>

@@ -24,7 +24,14 @@
     BELOW_MIN_TOTAL: "최소 주문 금액 미만",
     INVALID_PARAMETER: "주문 파라미터 오류",
     DUPLICATE_EXIT_ORDER: "같은 매도 주문이 이미 있음",
-    CANARY_SLOT_UNAVAILABLE: "카나리아 슬롯 사용 중"
+    CANARY_SLOT_UNAVAILABLE: "카나리아 슬롯 사용 중",
+    MODEL_ALPHA_EXIT_HOLD_TIMEOUT: "보유 시간이 끝나 자동으로 정리",
+    MODEL_ALPHA_EXIT_TIMEOUT: "보유 시간이 끝나 정리",
+    MODEL_ALPHA_EXIT_TP: "목표 수익에 도달해 정리",
+    MODEL_ALPHA_EXIT_SL: "허용 손실을 넘어 정리",
+    MODEL_ALPHA_EXIT_TRAILING: "수익 보호 추적선에 닿아 정리",
+    POLICY_OK: "정책 통과",
+    ALLOW: "진입 가능"
   };
 
   const POLICY_TEXT = {
@@ -65,17 +72,17 @@
   };
 
   const SERVICE_LABELS = {
-    paper_champion: "Paper Champion",
-    paper_challenger: "Paper Challenger",
-    ws_public: "WS Collector",
-    live_main: "Live Main",
-    live_candidate: "Live Candidate",
-    spawn_service: "Spawn Service",
-    promote_service: "Promote Service",
-    rank_shadow_service: "Rank Shadow Service",
-    spawn_timer: "Spawn Timer",
-    promote_timer: "Promote Timer",
-    rank_shadow_timer: "Rank Shadow Timer"
+    paper_champion: "페이퍼 챔피언",
+    paper_challenger: "페이퍼 챌린저",
+    ws_public: "WS 수집기",
+    live_main: "메인 라이브",
+    live_candidate: "후보 카나리아",
+    spawn_service: "챌린저 생성 서비스",
+    promote_service: "챌린저 승급 서비스",
+    rank_shadow_service: "랭크 그림자 서비스",
+    spawn_timer: "챌린저 생성 타이머",
+    promote_timer: "챌린저 승급 타이머",
+    rank_shadow_timer: "랭크 그림자 타이머"
   };
 
   const TABS = new Set(["overview", "training", "paper", "live", "ws"]);
@@ -213,6 +220,59 @@
     return `<article class="alert-card"><div class="row"><h4>${esc(title)}</h4>${pill("메모", kind === "bad" ? "주의" : kind === "warn" ? "참고" : "요약", kind)}</div><p>${esc(text)}</p></article>`;
   }
 
+  function joinTranslated(values) {
+    return unique(values).map(translate).join(" / ") || "-";
+  }
+
+  function yesNoSentence(value, yesText, noText, unknownText = "-") {
+    if (value === true) return yesText;
+    if (value === false) return noText;
+    return unknownText;
+  }
+
+  function tradeActionSummary(intent) {
+    const action = intent.trade_action_recommended_action;
+    const edge = fmtBps(intent.trade_action_expected_edge_bps);
+    const downside = fmtBps(intent.trade_action_expected_downside_bps);
+    const multiple = fmtNumber(intent.trade_action_notional_multiplier, 2);
+    if (!action || action === "-") return "학습된 trade action 정보가 아직 없습니다.";
+    return `${translate(action)} 전략으로 판단했고, 기대 순엣지는 ${edge}, 예상 하방 변동은 ${downside}, 진입 금액 배수는 ${multiple}배로 계산됐습니다.`;
+  }
+
+  function intentNarrative(intent) {
+    const market = intent.market || "이 종목";
+    const side = translate(intent.side);
+    const status = translate(intent.status);
+    if (intent.skip_reason) {
+      return `${market} ${side} 주문은 ${translate(intent.skip_reason)} 때문에 보내지지 않았습니다.`;
+    }
+    if (intent.side === "ask") {
+      return `${market} 정리 주문이 접수됐습니다. 이유는 ${translate(intent.reason_code)}입니다.`;
+    }
+    if (intent.status === "SUBMITTED") {
+      return `${market} 진입 주문이 접수됐습니다. 예상 순엣지와 비용 검토를 통과했고, 카나리아 제한도 만족했습니다.`;
+    }
+    return `${market} ${side} 의도는 현재 ${status} 상태입니다.`;
+  }
+
+  function riskPlanNarrative(plan) {
+    if (!plan) return "활성 매도 계획이 없습니다.";
+    if (plan.exit_mode === "hold") {
+      return `${plan.market}는 시간을 기준으로 관리합니다. ${holdModeText(plan)} 기준으로 자동 정리됩니다.`;
+    }
+    return `${plan.market}는 손절/익절/추적 매도로 관리합니다. ${riskModeText(plan)} 기준으로 자동 정리됩니다.`;
+  }
+
+  function runtimeExplain(runtime) {
+    const action = runtime.trade_action || {};
+    const bins = action.sample_bins || [];
+    const firstBin = bins[0] || {};
+    const actionText = action.status === "ready"
+      ? `trade action이 활성화되어 있고, ${translate(firstBin.recommended_action)} 쪽 bin 예시가 ${bins.length}개 보입니다.`
+      : "trade action은 아직 비활성 또는 준비 전입니다.";
+    return `${translate(runtime.recommended_exit_mode)} 모드를 기본 청산 추천으로 쓰며, ${actionText}`;
+  }
+
   function setError(message) {
     const node = document.getElementById("fetch-error");
     if (!message) {
@@ -318,24 +378,35 @@
     const training = snapshot.training || {};
     const challenger = snapshot.challenger || {};
     const rankShadow = training.rank_shadow || {};
-    const summary = unique([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]).map(translate).join(" / ") || "No direct reasons";
+    const summary = joinTranslated([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]);
 
     document.getElementById("training-headline").textContent =
-      acceptance.overall_pass === true ? "Latest candidate passed acceptance." :
-      acceptance.overall_pass === false ? "Latest candidate failed acceptance." :
-      "No recent acceptance result.";
+      acceptance.overall_pass === true ? "최신 후보가 검증을 통과했습니다." :
+      acceptance.overall_pass === false ? "최신 후보가 검증을 통과하지 못했습니다." :
+      "아직 최근 검증 결과가 없습니다.";
     document.getElementById("training-subhead").textContent = summary;
     document.getElementById("training-kpis").innerHTML = [
-      metric("Candidate", shortRun(acceptance.candidate_run_id)),
-      metric("Batch", maybe(acceptance.batch_date)),
-      metric("Decision", translate(acceptance.decision_basis)),
-      metric("Updated", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
+      metric("후보 run", shortRun(acceptance.candidate_run_id)),
+      metric("배치 날짜", maybe(acceptance.batch_date)),
+      metric("판정 기준", translate(acceptance.decision_basis)),
+      metric("갱신 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
 
+    const acceptanceNarrative = acceptance.overall_pass === true
+      ? "백테스트와 보조 증거를 기준으로 이번 후보를 다음 단계로 넘길 수 있는 상태입니다."
+      : acceptance.overall_pass === false
+        ? "이번 후보는 적어도 한 개 이상의 검증 문턱을 넘지 못했습니다."
+        : "아직 acceptance 결과가 기록되지 않았습니다.";
+    const challengerNarrative = challenger.started
+      ? "챌린저 서비스가 실제로 올라가 다음 단계 관찰이 시작됐습니다."
+      : `${translate(challenger.reason)} 때문에 챌린저가 아직 올라가지 않았습니다.`;
+    const rankNarrative = rankShadow.status
+      ? `랭크 그림자 레인은 현재 ${maybe(rankShadow.status)} 상태이며 다음 액션은 ${maybe(rankShadow.next_action)}입니다.`
+      : "랭크 그림자 레인 최신 판단이 아직 없습니다.";
     document.getElementById("training-details").innerHTML = [
-      card("Latest Candidate", `<div class="kv-grid">${kv("Model family", maybe(acceptance.model_family))}${kv("Candidate dir", shortPath(acceptance.candidate_run_dir))}${kv("Previous champion", shortRun(acceptance.champion_before_run_id))}${kv("Current champion", shortRun(acceptance.champion_after_run_id))}${kv("Backtest", boolLabel(acceptance.backtest_pass))}${kv("Paper", boolLabel(acceptance.paper_pass))}</div>`),
-      card("Challenger Loop", `<div class="kv-grid">${kv("Spawn result", challenger.started ? "started" : "not started")}${kv("Reason", translate(challenger.reason))}${kv("Notes", unique(challenger.acceptance_notes || []).map(translate).join(" / ") || "-")}${kv("Report", shortPath(challenger.artifact_path))}</div>`),
-      card("Rank Shadow", `<div class="kv-grid">${kv("Status", maybe(rankShadow.status))}${kv("Next action", maybe(rankShadow.next_action))}${kv("Selected lane", maybe((rankShadow.governance_action || {}).selected_lane_id))}${kv("Selected script", maybe((rankShadow.governance_action || {}).selected_acceptance_script))}${kv("Candidate run", shortRun(rankShadow.candidate_run_id))}${kv("Cycle report", shortPath(rankShadow.artifact_path))}</div>`)
+      card("이번 후보 해석", `<p class="section-copy">${esc(acceptanceNarrative)}</p><div class="kv-grid">${kv("모델 계열", maybe(acceptance.model_family))}${kv("후보 run", shortRun(acceptance.candidate_run_id))}${kv("이전 챔피언", shortRun(acceptance.champion_before_run_id))}${kv("현재 챔피언", shortRun(acceptance.champion_after_run_id))}${kv("백테스트 통과", boolLabel(acceptance.backtest_pass))}${kv("페이퍼 통과", boolLabel(acceptance.paper_pass))}</div>`),
+      card("챌린저 루프", `<p class="section-copy">${esc(challengerNarrative)}</p><div class="kv-grid">${kv("챌린저 시작", challenger.started ? "시작됨" : "미시작")}${kv("멈춘 이유", translate(challenger.reason))}${kv("추가 메모", joinTranslated(challenger.acceptance_notes || []))}${kv("보고서", shortPath(challenger.artifact_path))}</div>`),
+      card("랭크 그림자 레인", `<p class="section-copy">${esc(rankNarrative)}</p><div class="kv-grid">${kv("현재 상태", maybe(rankShadow.status))}${kv("다음 액션", maybe(rankShadow.next_action))}${kv("선택 레인", maybe((rankShadow.governance_action || {}).selected_lane_id))}${kv("선택 스크립트", maybe((rankShadow.governance_action || {}).selected_acceptance_script))}${kv("후보 run", shortRun(rankShadow.candidate_run_id))}${kv("사이클 보고서", shortPath(rankShadow.artifact_path))}</div>`)
     ].join("");
 
     const artifacts = training.candidate_artifacts || {};
@@ -344,12 +415,14 @@
     const calibration = artifacts.selection_calibration || {};
     const budget = artifacts.search_budget_decision || {};
     const wf = artifacts.walk_forward_report || {};
+    const tradeAction = runtime.trade_action || {};
+    const tradeActionSample = (tradeAction.sample_bins || [])[0] || {};
 
     document.getElementById("artifact-grid").innerHTML = [
-      `<article class="artifact-card"><h4>Runtime Recommendations</h4><div class="kv-grid">${kv("Exit mode", translate(runtime.recommended_exit_mode))}${kv("Hold bars", maybe(runtime.recommended_hold_bars))}${kv("TP / SL / Trail", `${fmtPct((toNumber(runtime.tp_pct) || 0) * 100)} / ${fmtPct((toNumber(runtime.sl_pct) || 0) * 100)} / ${fmtPct((toNumber(runtime.trailing_pct) || 0) * 100)}`)}</div></article>`,
-      `<article class="artifact-card"><h4>Selection Policy</h4><div class="kv-grid">${kv("Mode", translate(policy.mode))}${kv("Threshold key", maybe(policy.threshold_key))}${kv("Rank quantile", policy.rank_quantile == null ? "-" : fmtPct(Number(policy.rank_quantile) * 100))}${kv("Calibration", maybe(calibration.method))}</div></article>`,
-      `<article class="artifact-card"><h4>Search Budget</h4><div class="kv-grid">${kv("Decision", maybe(budget.decision_mode))}${kv("Booster sweep", maybe(budget.booster_sweep_trials))}${kv("Runtime grid", maybe(budget.runtime_grid_mode))}${kv("Reasons", unique(budget.reasons || []).map(translate).join(" / ") || "-")}</div></article>`,
-      `<article class="artifact-card"><h4>Validation</h4><div class="kv-grid">${kv("White comparable", boolLabel(wf.white_rc_comparable))}${kv("Hansen comparable", boolLabel(wf.hansen_spa_comparable))}${kv("Selection trials", maybe(wf.selection_search_trial_count))}</div></article>`
+      `<article class="artifact-card"><h4>실전 주문 추천</h4><p class="section-copy">${esc(runtimeExplain(runtime))}</p><div class="kv-grid">${kv("기본 청산 방식", translate(runtime.recommended_exit_mode))}${kv("기본 보유 바", maybe(runtime.recommended_hold_bars))}${kv("리스크 기준 변동성", maybe(runtime.recommended_risk_vol_feature))}${kv("추천 근거", maybe(runtime.recommendation_source))}</div></article>`,
+      `<article class="artifact-card"><h4>진입 선택 규칙</h4><p class="section-copy">후보를 고를 때는 ${translate(policy.mode)} 방식을 쓰고, 점수 보정은 ${maybe(calibration.method)} 기준으로 적용합니다.</p><div class="kv-grid">${kv("선택 방식", translate(policy.mode))}${kv("기준 키", maybe(policy.threshold_key))}${kv("순위 비율", policy.rank_quantile == null ? "-" : fmtPct(Number(policy.rank_quantile) * 100))}${kv("보정 방식", maybe(calibration.method))}</div></article>`,
+      `<article class="artifact-card"><h4>Trade Action 정책</h4><p class="section-copy">${tradeAction.status === "ready" ? `학습된 trade action이 활성화돼 있습니다. 현재 예시 bin에서는 ${translate(tradeActionSample.recommended_action)} 전략과 ${fmtBps(tradeActionSample.expected_edge_bps)} 기대 엣지를 사용합니다.` : "trade action 정책이 아직 준비되지 않았습니다."}</p><div class="kv-grid">${kv("정책 상태", maybe(tradeAction.status))}${kv("사용 리스크 변수", maybe(tradeAction.risk_feature_name))}${kv("hold 추천 bin", maybe(tradeAction.hold_bins_recommended))}${kv("risk 추천 bin", maybe(tradeAction.risk_bins_recommended))}${kv("예시 엣지", fmtBps(tradeActionSample.expected_edge_bps))}${kv("예시 진입 배수", fmtNumber(tradeActionSample.notional_multiplier, 2))}</div></article>`,
+      `<article class="artifact-card"><h4>검증과 예산</h4><p class="section-copy">이번 후보는 ${maybe(wf.windows_run)}개 검증 구간과 ${maybe(wf.selection_search_trial_count)}개 선택 실험을 바탕으로 평가됐고, 검색 예산은 ${maybe(budget.decision_mode)} 모드로 적용됐습니다.</p><div class="kv-grid">${kv("White 검정 비교 가능", boolLabel(wf.white_rc_comparable))}${kv("Hansen 검정 비교 가능", boolLabel(wf.hansen_spa_comparable))}${kv("선택 실험 수", maybe(wf.selection_search_trial_count))}${kv("예산 모드", maybe(budget.decision_mode))}${kv("부스터 시도 수", maybe(budget.booster_sweep_trials))}${kv("예산 메모", joinTranslated(budget.reasons || []))}</div></article>`
     ].join("");
   }
 
@@ -449,6 +522,9 @@
     const topSummary = primaryPosition && primaryPlan
       ? describeExit(primaryPlan, primaryPosition, primaryOrder)
       : `${selected.label}는 현재 보유 포지션이 없습니다.`;
+    const liveNarrative = positions.length
+      ? `현재 ${positions.length}개 포지션을 관리 중이며, 가장 최근 포지션은 ${riskPlanNarrative(primaryPlan)}`
+      : `${selected.label}는 현재 비어 있고, 새 진입 신호만 기다리는 상태입니다.`;
 
     const positionSection = positions.length
       ? positions.map((position) => card(
@@ -471,7 +547,7 @@
         const exitSummary = plan.exit_mode === "hold" ? holdModeText(plan) : riskModeText(plan);
         return card(
           `${plan.market || "-"} · ${translate(plan.exit_mode)}`,
-          `<p class="section-brief">${esc(exitSummary)}</p><div class="kv-grid">${kv("플랜 상태", translate(plan.state))}${kv("플랜 source", maybe(plan.plan_source))}${kv("연결 intent", shortRun(plan.source_intent_id))}${kv("익절", plan.tp_enabled ? fmtPct(Number(plan.tp_pct) * 100) : "미사용")}${kv("손절", plan.sl_enabled ? fmtPct(Number(plan.sl_pct) * 100) : "미사용")}${kv("추적", plan.trailing_enabled ? fmtPct(Number(plan.trail_pct) * 100) : "미사용")}${kv("종료 시각", fmtDateTime(plan.timeout_ts_ms))}</div>`,
+          `<p class="section-brief">${esc(riskPlanNarrative(plan))}</p><div class="kv-grid">${kv("플랜 상태", translate(plan.state))}${kv("플랜 source", maybe(plan.plan_source))}${kv("연결 intent", shortRun(plan.source_intent_id))}${kv("익절", plan.tp_enabled ? fmtPct(Number(plan.tp_pct) * 100) : "미사용")}${kv("손절", plan.sl_enabled ? fmtPct(Number(plan.sl_pct) * 100) : "미사용")}${kv("추적", plan.trailing_enabled ? fmtPct(Number(plan.trail_pct) * 100) : "미사용")}${kv("종료 시각", fmtDateTime(plan.timeout_ts_ms))}</div>`,
           "mini-card"
         );
       }).join("")
@@ -480,12 +556,12 @@
     const intentSection = intents.length
       ? intents.slice(0, 4).map((intent) => card(
         `${intent.market || "-"} · ${translate(intent.side)} · ${translate(intent.status)}`,
-        `<div class="kv-grid">${kv("사유", translate(intent.reason_code))}${kv("예상 금액", fmtMoney(intent.notional_quote))}${kv("건너뜀", translate(intent.skip_reason))}${kv("예상 순엣지", fmtBps(intent.expected_net_edge_bps))}${kv("Trade 액션", translate(intent.trade_action_recommended_action))}${kv("Trade 엣지", fmtBps(intent.trade_action_expected_edge_bps))}${kv("Trade 하방", fmtBps(intent.trade_action_expected_downside_bps))}${kv("사이징 배수", fmtNumber(intent.trade_action_notional_multiplier, 2))}${kv("생성 시각", fmtDateTime(intent.ts_ms))}</div>`,
+        `<p class="section-brief">${esc(intentNarrative(intent))}</p><p class="section-brief">${esc(tradeActionSummary(intent))}</p><div class="kv-grid">${kv("사유", translate(intent.reason_code))}${kv("선택 방식", translate(intent.selection_policy_mode))}${kv("예상 금액", fmtMoney(intent.notional_quote))}${kv("예상 순엣지", fmtBps(intent.expected_net_edge_bps))}${kv("비용 합계", fmtBps(intent.estimated_total_cost_bps))}${kv("Trade 액션", translate(intent.trade_action_recommended_action))}${kv("Trade 엣지", fmtBps(intent.trade_action_expected_edge_bps))}${kv("Trade 하방", fmtBps(intent.trade_action_expected_downside_bps))}${kv("사이징 배수", fmtNumber(intent.trade_action_notional_multiplier, 2))}${kv("생성 시각", fmtDateTime(intent.ts_ms))}${kv("건너뜀", translate(intent.skip_reason))}</div>`,
         "mini-card"
       )).join("")
       : empty("최근 의도가 없습니다.");
 
-    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("챔피언 포인터", shortRun(runtime.champion_pointer_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("리스크 플랜", maybe(selected.active_risk_plans_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 동기화", runtime.model_pointer_divergence ? "어긋남" : "정상")}${kv("WS 신선도", runtime.ws_public_stale ? "오래됨" : "정상")}${kv("마지막 resume", fmtDateTime((selected.last_resume || {}).generated_at || (selected.last_resume || {}).checked_at || (selected.last_resume || {}).completed_at))}${kv("상태 DB", shortPath(selected.db_path))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections compact"><section class="section-block compact"><h5>보유 종목</h5><div class="stack">${positionSection}</div></section><section class="section-block compact"><h5>미체결 주문</h5><div class="stack">${orderSection}</div></section><section class="section-block compact"><h5>매도 전략</h5><div class="stack">${planSection}</div></section><section class="section-block compact"><h5>최근 의도</h5><div class="stack">${intentSection}</div></section></div></article>`;
+    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><p class="section-copy">${esc(liveNarrative)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("챔피언 포인터", shortRun(runtime.champion_pointer_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("리스크 플랜", maybe(selected.active_risk_plans_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 동기화", runtime.model_pointer_divergence ? "어긋남" : "정상")}${kv("WS 신선도", runtime.ws_public_stale ? "오래됨" : "정상")}${kv("마지막 resume", fmtDateTime((selected.last_resume || {}).generated_at || (selected.last_resume || {}).checked_at || (selected.last_resume || {}).completed_at))}${kv("상태 DB", shortPath(selected.db_path))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections compact"><section class="section-block compact"><h5>보유 종목</h5><div class="stack">${positionSection}</div></section><section class="section-block compact"><h5>미체결 주문</h5><div class="stack">${orderSection}</div></section><section class="section-block compact"><h5>매도 전략</h5><div class="stack">${planSection}</div></section><section class="section-block compact"><h5>최근 의도</h5><div class="stack">${intentSection}</div></section></div></article>`;
   }
 
   function renderWs(snapshot) {
