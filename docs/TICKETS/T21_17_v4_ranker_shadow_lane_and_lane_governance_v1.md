@@ -57,5 +57,8 @@ Out of scope:
 - `autobot.cli model daily-v4` now supports:
   - `--lane cls_scout`
   - `--lane rank_shadow`
+- optional server automation hook now exists:
+  - `scripts/install_server_rank_shadow_service.ps1`
+  - installs an isolated `rank_shadow` timer/service without changing the primary `cls` challenger lane
 - non-promotable manual/scout runs no longer rely on the global `latest_candidate` pointer after train
   - acceptance resolves the fresh run from trainer stdout first, preventing stale-pointer reuse
