@@ -193,6 +193,14 @@ These tickets are the required follow-on family before changing core promotion b
   - pairwise hold-vs-risk decisions are validated with an exact sign-flip test over aligned fold scores
   - runtime grid ranking now sorts by validated downside-risk objective and fold stability instead of a quadratic pairwise tournament
   - legacy summary-only artifacts are still readable, but new runs require explicit comparable validation evidence
+- `T21.14` slice 5 landed locally:
+  - daily `v4` acceptance now auto-ramps `train_lookback_days` from available `micro_v1` date coverage
+  - the ramp keeps `backtest_lookback_days` fixed and only grows the train window until the configured target is reached
+  - acceptance reports now record:
+    - requested train lookback
+    - effective train lookback
+    - contiguous micro days available
+    - whether ramp mode was active
 - `T21.15` slice 1 landed locally:
   - walk-forward factor-block evidence now stores bounded `refit_drop_block` certification rows
   - median ablation is now diagnostic-only and cannot reject optional blocks by itself
