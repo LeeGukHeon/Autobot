@@ -296,6 +296,28 @@ def _summarize_challenger(latest_path: Path, current_state_path: Path) -> dict[s
     }
 
 
+def _summarize_rank_shadow_cycle(latest_path: Path, governance_path: Path) -> dict[str, Any]:
+    payload = _load_json(latest_path)
+    governance = _load_json(governance_path)
+    return {
+        "status": payload.get("status"),
+        "next_action": payload.get("next_action"),
+        "action_reason": payload.get("action_reason"),
+        "candidate_run_id": payload.get("candidate_run_id"),
+        "lane_id": payload.get("lane_id"),
+        "lane_role": payload.get("lane_role"),
+        "lane_shadow_only": payload.get("lane_shadow_only"),
+        "overall_pass": payload.get("overall_pass"),
+        "backtest_pass": payload.get("backtest_pass"),
+        "decision_basis": payload.get("decision_basis"),
+        "generated_at": payload.get("generated_at"),
+        "completed_at": _path_mtime_iso(latest_path),
+        "artifact_path": str(latest_path),
+        "governance_action": governance,
+        "governance_action_path": str(governance_path),
+    }
+
+
 def _query_all(conn: sqlite3.Connection, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute(query, params).fetchall()
@@ -741,6 +763,8 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     acceptance_latest = project_root / "logs" / "model_v4_acceptance" / "latest.json"
     challenger_latest = project_root / "logs" / "model_v4_challenger" / "latest.json"
     challenger_state = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    rank_shadow_latest = project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json"
+    rank_shadow_governance = project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json"
     live_rollout_latest = project_root / "logs" / "live_rollout" / "latest.json"
     ws_status = _load_ws_public_status(
         meta_dir=project_root / "data" / "raw_ws" / "upbit" / "_meta",
@@ -759,12 +783,15 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
             "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
             "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
+            "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
             "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
             "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
+            "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
         },
         "training": {
             "acceptance": acceptance,
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
+            "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
         },
         "challenger": _summarize_challenger(challenger_latest, challenger_state),
         "paper": {

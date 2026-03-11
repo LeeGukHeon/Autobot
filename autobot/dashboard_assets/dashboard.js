@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
   const REASON_TEXT = {
     BACKTEST_ACCEPTANCE_FAILED: "백테스트 기준 미통과",
     TRAINER_EVIDENCE_REQUIRED_FAILED: "학습 증거 미통과",
@@ -65,15 +65,17 @@
   };
 
   const SERVICE_LABELS = {
-    paper_champion: "챔피언 페이퍼",
-    paper_challenger: "챌린저 페이퍼",
-    ws_public: "WS 수집기",
-    live_main: "메인 라이브",
-    live_candidate: "후보 카나리아",
-    spawn_service: "spawn 서비스",
-    promote_service: "promote 서비스",
-    spawn_timer: "spawn 타이머",
-    promote_timer: "promote 타이머"
+    paper_champion: "Paper Champion",
+    paper_challenger: "Paper Challenger",
+    ws_public: "WS Collector",
+    live_main: "Live Main",
+    live_candidate: "Live Candidate",
+    spawn_service: "Spawn Service",
+    promote_service: "Promote Service",
+    rank_shadow_service: "Rank Shadow Service",
+    spawn_timer: "Spawn Timer",
+    promote_timer: "Promote Timer",
+    rank_shadow_timer: "Rank Shadow Timer"
   };
 
   const TABS = new Set(["overview", "training", "paper", "live", "ws"]);
@@ -315,23 +317,25 @@
     const acceptance = (snapshot.training || {}).acceptance || {};
     const training = snapshot.training || {};
     const challenger = snapshot.challenger || {};
-    const summary = unique([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]).map(translate).join(" / ") || "핵심 사유 없음";
+    const rankShadow = training.rank_shadow || {};
+    const summary = unique([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]).map(translate).join(" / ") || "No direct reasons";
 
     document.getElementById("training-headline").textContent =
-      acceptance.overall_pass === true ? "이번 후보는 통과했습니다." :
-      acceptance.overall_pass === false ? "이번 후보는 탈락했습니다." :
-      "최신 어셉턴스 결과가 없습니다.";
+      acceptance.overall_pass === true ? "Latest candidate passed acceptance." :
+      acceptance.overall_pass === false ? "Latest candidate failed acceptance." :
+      "No recent acceptance result.";
     document.getElementById("training-subhead").textContent = summary;
     document.getElementById("training-kpis").innerHTML = [
-      metric("후보 run", shortRun(acceptance.candidate_run_id)),
-      metric("배치 날짜", maybe(acceptance.batch_date)),
-      metric("판정 기준", translate(acceptance.decision_basis)),
-      metric("완료 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
+      metric("Candidate", shortRun(acceptance.candidate_run_id)),
+      metric("Batch", maybe(acceptance.batch_date)),
+      metric("Decision", translate(acceptance.decision_basis)),
+      metric("Updated", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
 
     document.getElementById("training-details").innerHTML = [
-      card("이번 후보", `<div class="kv-grid">${kv("모델 패밀리", maybe(acceptance.model_family))}${kv("후보 폴더", shortPath(acceptance.candidate_run_dir))}${kv("직전 챔피언", shortRun(acceptance.champion_before_run_id))}${kv("현재 챔피언", shortRun(acceptance.champion_after_run_id))}${kv("백테스트", boolLabel(acceptance.backtest_pass))}${kv("paper", boolLabel(acceptance.paper_pass))}</div>`),
-      card("챌린저 루프", `<div class="kv-grid">${kv("spawn 결과", challenger.started ? "챌린저 기동" : "기동 안 함")}${kv("직접 사유", translate(challenger.reason))}${kv("메모", unique(challenger.acceptance_notes || []).map(translate).join(" / ") || "-")}${kv("리포트", shortPath(challenger.artifact_path))}</div>`)
+      card("Latest Candidate", `<div class="kv-grid">${kv("Model family", maybe(acceptance.model_family))}${kv("Candidate dir", shortPath(acceptance.candidate_run_dir))}${kv("Previous champion", shortRun(acceptance.champion_before_run_id))}${kv("Current champion", shortRun(acceptance.champion_after_run_id))}${kv("Backtest", boolLabel(acceptance.backtest_pass))}${kv("Paper", boolLabel(acceptance.paper_pass))}</div>`),
+      card("Challenger Loop", `<div class="kv-grid">${kv("Spawn result", challenger.started ? "started" : "not started")}${kv("Reason", translate(challenger.reason))}${kv("Notes", unique(challenger.acceptance_notes || []).map(translate).join(" / ") || "-")}${kv("Report", shortPath(challenger.artifact_path))}</div>`),
+      card("Rank Shadow", `<div class="kv-grid">${kv("Status", maybe(rankShadow.status))}${kv("Next action", maybe(rankShadow.next_action))}${kv("Selected lane", maybe((rankShadow.governance_action || {}).selected_lane_id))}${kv("Selected script", maybe((rankShadow.governance_action || {}).selected_acceptance_script))}${kv("Candidate run", shortRun(rankShadow.candidate_run_id))}${kv("Cycle report", shortPath(rankShadow.artifact_path))}</div>`)
     ].join("");
 
     const artifacts = training.candidate_artifacts || {};
@@ -342,10 +346,10 @@
     const wf = artifacts.walk_forward_report || {};
 
     document.getElementById("artifact-grid").innerHTML = [
-      `<article class="artifact-card"><h4>운용 추천</h4><div class="kv-grid">${kv("종료 모드", translate(runtime.recommended_exit_mode))}${kv("보유 bar", maybe(runtime.recommended_hold_bars))}${kv("TP / SL / 추적", `${fmtPct((toNumber(runtime.tp_pct) || 0) * 100)} / ${fmtPct((toNumber(runtime.sl_pct) || 0) * 100)} / ${fmtPct((toNumber(runtime.trailing_pct) || 0) * 100)}`)}</div></article>`,
-      `<article class="artifact-card"><h4>선택 정책</h4><div class="kv-grid">${kv("정책 모드", translate(policy.mode))}${kv("기준 키", maybe(policy.threshold_key))}${kv("상위 비율", policy.rank_quantile == null ? "-" : fmtPct(Number(policy.rank_quantile) * 100))}${kv("보정 방법", maybe(calibration.method))}</div></article>`,
-      `<article class="artifact-card"><h4>탐색 예산</h4><div class="kv-grid">${kv("예산 결정", maybe(budget.decision_mode))}${kv("booster sweep", maybe(budget.booster_sweep_trials))}${kv("runtime grid", maybe(budget.runtime_grid_mode))}${kv("사유", unique(budget.reasons || []).map(translate).join(" / ") || "-")}</div></article>`,
-      `<article class="artifact-card"><h4>강건성 검증</h4><div class="kv-grid">${kv("White comparable", boolLabel(wf.white_rc_comparable))}${kv("Hansen comparable", boolLabel(wf.hansen_spa_comparable))}${kv("selection trial 수", maybe(wf.selection_search_trial_count))}</div></article>`
+      `<article class="artifact-card"><h4>Runtime Recommendations</h4><div class="kv-grid">${kv("Exit mode", translate(runtime.recommended_exit_mode))}${kv("Hold bars", maybe(runtime.recommended_hold_bars))}${kv("TP / SL / Trail", `${fmtPct((toNumber(runtime.tp_pct) || 0) * 100)} / ${fmtPct((toNumber(runtime.sl_pct) || 0) * 100)} / ${fmtPct((toNumber(runtime.trailing_pct) || 0) * 100)}`)}</div></article>`,
+      `<article class="artifact-card"><h4>Selection Policy</h4><div class="kv-grid">${kv("Mode", translate(policy.mode))}${kv("Threshold key", maybe(policy.threshold_key))}${kv("Rank quantile", policy.rank_quantile == null ? "-" : fmtPct(Number(policy.rank_quantile) * 100))}${kv("Calibration", maybe(calibration.method))}</div></article>`,
+      `<article class="artifact-card"><h4>Search Budget</h4><div class="kv-grid">${kv("Decision", maybe(budget.decision_mode))}${kv("Booster sweep", maybe(budget.booster_sweep_trials))}${kv("Runtime grid", maybe(budget.runtime_grid_mode))}${kv("Reasons", unique(budget.reasons || []).map(translate).join(" / ") || "-")}</div></article>`,
+      `<article class="artifact-card"><h4>Validation</h4><div class="kv-grid">${kv("White comparable", boolLabel(wf.white_rc_comparable))}${kv("Hansen comparable", boolLabel(wf.hansen_spa_comparable))}${kv("Selection trials", maybe(wf.selection_search_trial_count))}</div></article>`
     ].join("");
   }
 
@@ -535,3 +539,4 @@
   refresh();
   setInterval(refresh, 10000);
 })();
+

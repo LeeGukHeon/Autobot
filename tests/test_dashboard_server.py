@@ -33,6 +33,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-10T00:10:00Z", "candidate_run_id": "run-abc", "overall_pass": False, "backtest_pass": False, "reasons": ["TRAINER_EVIDENCE_REQUIRED_FAILED"], "notes": ["PAPER_SOAK_SKIPPED"], "gates": {"backtest": {"decision_basis": "TRAINER_EVIDENCE_REQUIRED_FAIL"}}})
     _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"steps": {"start_challenger": {"candidate_run_id": "run-abc", "started": False, "reason": "TRAINER_EVIDENCE_REQUIRED_FAILED", "acceptance_notes": ["PAPER_SOAK_SKIPPED"]}}})
     _write_json(project_root / "logs" / "model_v4_challenger" / "current_state.json", {"candidate_run_id": "run-abc"})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {"status": "shadow_pass", "next_action": "use_rank_governed_lane", "candidate_run_id": "rank-run-001", "lane_id": "rank_shadow"})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {"selected_lane_id": "rank_governed_primary", "selected_acceptance_script": "v4_rank_governed_candidate_acceptance.ps1"})
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
     _write_json(project_root / "data" / "paper" / "runs" / "paper-20260310-001000" / "summary.json", {"run_id": "paper-20260310-001000", "orders_submitted": 1, "orders_filled": 1, "realized_pnl_quote": 1234.0})
     meta_dir = project_root / "data" / "raw_ws" / "upbit" / "_meta"
@@ -93,6 +95,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     exit_compare = runtime_recommendations["exit_mode_compare"]
 
     assert snapshot["training"]["acceptance"]["candidate_run_id"] == "run-abc"
+    assert snapshot["training"]["rank_shadow"]["status"] == "shadow_pass"
+    assert snapshot["training"]["rank_shadow"]["governance_action"]["selected_lane_id"] == "rank_governed_primary"
     assert snapshot["challenger"]["reason"] == "TRAINER_EVIDENCE_REQUIRED_FAILED"
     assert snapshot["paper"]["recent_runs"][0]["run_id"] == "paper-20260310-001000"
     assert snapshot["live"]["states"][0]["positions_count"] == 0
