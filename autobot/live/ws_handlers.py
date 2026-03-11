@@ -73,6 +73,11 @@ def _apply_my_order_event(
         root_order_uuid=_as_optional_str(existing.get("root_order_uuid")) if existing else event.uuid,
         prev_order_uuid=_as_optional_str(existing.get("prev_order_uuid")) if existing else None,
         prev_order_identifier=_as_optional_str(existing.get("prev_order_identifier")) if existing else None,
+        executed_funds=_as_optional_float(raw.get("executed_funds") or raw.get("ef")),
+        paid_fee=_as_optional_float(raw.get("paid_fee") or raw.get("pf")),
+        reserved_fee=_as_optional_float(raw.get("reserved_fee") or raw.get("rf")),
+        remaining_fee=_as_optional_float(raw.get("remaining_fee") or raw.get("rmf")),
+        exchange_payload_json=json.dumps(raw, ensure_ascii=False, sort_keys=True) if raw else "{}",
     )
     store.upsert_order(order_record)
 

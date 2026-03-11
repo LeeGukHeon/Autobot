@@ -5,7 +5,7 @@ from typing import Any
 
 from autobot.execution.order_supervisor import slippage_bps
 
-from .state_store import LiveStateStore, TradeJournalRecord
+from .state_store import LiveStateStore, OrderRecord, TradeJournalRecord
 
 TRADE_JOURNAL_STATUS_PENDING = "PENDING_ENTRY"
 TRADE_JOURNAL_STATUS_OPEN = "OPEN"
@@ -237,15 +237,28 @@ def close_trade_journal_for_market(
     if existing is None:
         return None
 
-    entry_price = _coalesce_float(
-        _as_optional_float((existing or {}).get("entry_price")),
-        _as_optional_float(position.get("avg_entry_price")),
+    entry_order = _resolve_entry_order_for_journal(
+        store=store,
+        market=market_value,
+        entry_order_uuid=_as_optional_str((existing or {}).get("entry_order_uuid")),
+        entry_intent_id=_as_optional_str((existing or {}).get("entry_intent_id")),
+        target_entry_ts=_coalesce_int(
+            _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
+            _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
+        ),
     )
     qty = _coalesce_float(
+        _filled_qty_from_order(entry_order),
         _as_optional_float((existing or {}).get("qty")),
         _as_optional_float(position.get("base_amount")),
     )
+    entry_price = _coalesce_float(
+        _filled_price_from_order(entry_order),
+        _as_optional_float((existing or {}).get("entry_price")),
+        _as_optional_float(position.get("avg_entry_price")),
+    )
     resolved_exit_price = _coalesce_float(
+        _filled_price_from_order(latest_done_exit),
         _as_optional_float(exit_price),
         _as_optional_float((latest_done_exit or {}).get("price")),
         entry_price,
@@ -304,6 +317,8 @@ def close_trade_journal_for_market(
     entry_meta_summary = _build_entry_meta_summary((existing or {}).get("entry_meta"))
     cost_metrics = _compute_cost_metrics(
         entry_meta=entry_meta_summary,
+        entry_order=entry_order,
+        exit_order=latest_done_exit,
         entry_price=entry_price,
         exit_price=resolved_exit_price,
         qty=qty,
@@ -337,8 +352,8 @@ def close_trade_journal_for_market(
             entry_price=entry_price,
             exit_price=resolved_exit_price,
             qty=qty,
-            entry_notional_quote=_as_optional_float((existing or {}).get("entry_notional_quote")),
-            exit_notional_quote=resolved_exit_price * qty if resolved_exit_price is not None and qty is not None else None,
+            entry_notional_quote=cost_metrics["entry_total_quote"],
+            exit_notional_quote=cost_metrics["exit_total_quote"],
             realized_pnl_quote=cost_metrics["net_pnl_quote"],
             realized_pnl_pct=cost_metrics["net_pnl_pct"],
             entry_reason_code=_as_optional_str((existing or {}).get("entry_reason_code")),
@@ -374,6 +389,13 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
         exit_meta_payload = _build_exit_meta_summary(row.get("exit_meta"))
         if str(row.get("status") or "").strip().upper() == TRADE_JOURNAL_STATUS_CLOSED:
             entry_ts = _coalesce_int(_as_optional_int(row.get("entry_filled_ts_ms")), _as_optional_int(row.get("entry_submitted_ts_ms")))
+            entry_order = _resolve_entry_order_for_journal(
+                store=store,
+                market=market,
+                entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
+                entry_intent_id=entry_intent_id,
+                target_entry_ts=entry_ts,
+            )
             exit_order = _resolve_exit_order_for_journal(
                 store=store,
                 market=market,
@@ -382,13 +404,27 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                 min_updated_ts=entry_ts,
                 target_exit_ts=_as_optional_int(row.get("exit_ts_ms")),
             )
-            exit_price = _coalesce_float(_as_optional_float((exit_order or {}).get("price")), _as_optional_float(row.get("exit_price")))
+            qty = _coalesce_float(
+                _filled_qty_from_order(entry_order),
+                _as_optional_float(row.get("qty")),
+            )
+            entry_price = _coalesce_float(
+                _filled_price_from_order(entry_order),
+                _as_optional_float(row.get("entry_price")),
+            )
+            exit_price = _coalesce_float(
+                _filled_price_from_order(exit_order),
+                _as_optional_float((exit_order or {}).get("price")),
+                _as_optional_float(row.get("exit_price")),
+            )
             exit_ts = _coalesce_int(_as_optional_int((exit_order or {}).get("updated_ts")), _as_optional_int(row.get("exit_ts_ms")))
             cost_metrics = _compute_cost_metrics(
                 entry_meta=entry_meta_summary,
-                entry_price=_as_optional_float(row.get("entry_price")),
+                entry_order=entry_order,
+                exit_order=exit_order,
+                entry_price=entry_price,
                 exit_price=exit_price,
-                qty=_as_optional_float(row.get("qty")),
+                qty=qty,
             )
             exit_meta_payload.update(
                 {
@@ -416,11 +452,11 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
                     entry_filled_ts_ms=_as_optional_int(row.get("entry_filled_ts_ms")),
                     exit_ts_ms=exit_ts,
-                    entry_price=_as_optional_float(row.get("entry_price")),
+                    entry_price=entry_price,
                     exit_price=exit_price,
-                    qty=_as_optional_float(row.get("qty")),
-                    entry_notional_quote=_as_optional_float(row.get("entry_notional_quote")),
-                    exit_notional_quote=exit_price * _as_optional_float(row.get("qty")) if exit_price is not None and _as_optional_float(row.get("qty")) is not None else None,
+                    qty=qty,
+                    entry_notional_quote=cost_metrics["entry_total_quote"],
+                    exit_notional_quote=cost_metrics["exit_total_quote"],
                     realized_pnl_quote=cost_metrics["net_pnl_quote"],
                     realized_pnl_pct=cost_metrics["net_pnl_pct"],
                     entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
@@ -478,6 +514,40 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
     return {"rows_total": len(rows), "rows_updated": updated, "rows_compacted": compacted}
 
 
+def backfill_order_execution_details(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    max_orders: int | None = 64,
+) -> dict[str, Any]:
+    scanned = 0
+    updated = 0
+    failed = 0
+    for order in store.list_orders(open_only=False):
+        if str(order.get("local_state") or "").strip().upper() != "DONE":
+            continue
+        if max_orders is not None and scanned >= int(max_orders):
+            break
+        if _as_optional_float(order.get("executed_funds")) is not None and _as_optional_float(order.get("paid_fee")) is not None:
+            continue
+        uuid = _as_optional_str(order.get("uuid"))
+        identifier = _as_optional_str(order.get("identifier"))
+        if uuid is None and identifier is None:
+            continue
+        scanned += 1
+        try:
+            payload = client.order(uuid=uuid, identifier=identifier)
+        except Exception:
+            failed += 1
+            continue
+        if not isinstance(payload, dict):
+            failed += 1
+            continue
+        store.upsert_order(_order_record_with_execution_details(order=order, payload=payload))
+        updated += 1
+    return {"orders_scanned": scanned, "orders_updated": updated, "orders_failed": failed}
+
+
 def _latest_live_trade_journal(*, store: LiveStateStore, market: str) -> dict[str, Any] | None:
     rows = store.list_trade_journal(
         market=market,
@@ -485,6 +555,40 @@ def _latest_live_trade_journal(*, store: LiveStateStore, market: str) -> dict[st
         limit=1,
     )
     return rows[0] if rows else None
+
+
+def _resolve_entry_order_for_journal(
+    *,
+    store: LiveStateStore,
+    market: str,
+    entry_order_uuid: str | None = None,
+    entry_intent_id: str | None = None,
+    target_entry_ts: int | None = None,
+) -> dict[str, Any] | None:
+    if entry_order_uuid:
+        direct = next((item for item in store.list_orders(open_only=False) if str(item.get("uuid") or "") == str(entry_order_uuid)), None)
+        if direct is not None and str(direct.get("side") or "").strip().lower() == "bid":
+            return direct
+    candidates: list[dict[str, Any]] = []
+    for order in store.list_orders(open_only=False):
+        if str(order.get("market") or "").strip().upper() != market:
+            continue
+        if str(order.get("side") or "").strip().lower() != "bid":
+            continue
+        if entry_intent_id and str(order.get("intent_id") or "").strip() != entry_intent_id:
+            continue
+        candidates.append(order)
+    if not candidates:
+        return None
+    if target_entry_ts is not None:
+        return min(
+            candidates,
+            key=lambda item: (
+                abs(int(item.get("updated_ts") or 0) - int(target_entry_ts)),
+                abs(int(item.get("created_ts") or 0) - int(target_entry_ts)),
+            ),
+        )
+    return max(candidates, key=lambda item: (int(item.get("updated_ts") or 0), int(item.get("created_ts") or 0)))
 
 
 def _resolve_exit_order_for_journal(
@@ -671,23 +775,33 @@ def _build_exit_meta_summary(exit_meta: Any) -> dict[str, Any]:
 def _compute_cost_metrics(
     *,
     entry_meta: dict[str, Any] | None,
+    entry_order: dict[str, Any] | None,
+    exit_order: dict[str, Any] | None,
     entry_price: float | None,
     exit_price: float | None,
     qty: float | None,
 ) -> dict[str, float | None]:
-    entry_price_value = _as_optional_float(entry_price)
-    exit_price_value = _as_optional_float(exit_price)
-    qty_value = _as_optional_float(qty)
+    qty_value = _coalesce_float(_filled_qty_from_order(entry_order), _as_optional_float(qty))
+    entry_price_value = _coalesce_float(_filled_price_from_order(entry_order), _as_optional_float(entry_price))
+    exit_price_value = _coalesce_float(_filled_price_from_order(exit_order), _as_optional_float(exit_price))
     entry_notional = entry_price_value * qty_value if entry_price_value is not None and qty_value is not None else None
     exit_notional = exit_price_value * qty_value if exit_price_value is not None and qty_value is not None else None
     entry_fee_rate = _resolve_entry_fee_rate(entry_meta)
     exit_fee_rate = _resolve_exit_fee_rate(entry_meta, entry_fee_rate=entry_fee_rate)
-    entry_fee_quote = entry_notional * entry_fee_rate if entry_notional is not None else None
-    exit_fee_quote = exit_notional * exit_fee_rate if exit_notional is not None else None
+    entry_gross_quote = _coalesce_float(_as_optional_float((entry_order or {}).get("executed_funds")), entry_notional)
+    exit_gross_quote = _coalesce_float(_as_optional_float((exit_order or {}).get("executed_funds")), exit_notional)
+    entry_fee_quote = _coalesce_float(
+        _as_optional_float((entry_order or {}).get("paid_fee")),
+        entry_notional * entry_fee_rate if entry_notional is not None else None,
+    )
+    exit_fee_quote = _coalesce_float(
+        _as_optional_float((exit_order or {}).get("paid_fee")),
+        exit_notional * exit_fee_rate if exit_notional is not None else None,
+    )
     gross_pnl_quote = (
-        (exit_price_value - entry_price_value) * qty_value
-        if entry_price_value is not None and exit_price_value is not None and qty_value is not None
-        else None
+        exit_gross_quote - entry_gross_quote
+        if entry_gross_quote is not None and exit_gross_quote is not None
+        else ((exit_price_value - entry_price_value) * qty_value if entry_price_value is not None and exit_price_value is not None and qty_value is not None else None)
     )
     gross_pnl_pct = (
         ((exit_price_value / entry_price_value) - 1.0) * 100.0
@@ -699,14 +813,24 @@ def _compute_cost_metrics(
         if entry_fee_quote is not None or exit_fee_quote is not None
         else None
     )
+    entry_total_quote = (
+        entry_gross_quote + entry_fee_quote
+        if entry_gross_quote is not None and entry_fee_quote is not None
+        else entry_notional
+    )
+    exit_total_quote = (
+        exit_gross_quote - exit_fee_quote
+        if exit_gross_quote is not None and exit_fee_quote is not None
+        else exit_notional
+    )
     net_pnl_quote = (
-        gross_pnl_quote - total_fee_quote
-        if gross_pnl_quote is not None and total_fee_quote is not None
-        else gross_pnl_quote
+        exit_total_quote - entry_total_quote
+        if exit_total_quote is not None and entry_total_quote is not None
+        else (gross_pnl_quote - total_fee_quote if gross_pnl_quote is not None and total_fee_quote is not None else gross_pnl_quote)
     )
     net_pnl_pct = (
-        (((exit_notional * (1.0 - exit_fee_rate)) / (entry_notional * (1.0 + entry_fee_rate))) - 1.0) * 100.0
-        if entry_notional is not None and exit_notional is not None and entry_notional > 0.0
+        ((exit_total_quote / entry_total_quote) - 1.0) * 100.0
+        if entry_total_quote is not None and exit_total_quote is not None and entry_total_quote > 0.0
         else gross_pnl_pct
     )
     entry_ref_price = _coalesce_float(
@@ -728,6 +852,8 @@ def _compute_cost_metrics(
         "entry_fee_quote": entry_fee_quote,
         "exit_fee_quote": exit_fee_quote,
         "total_fee_quote": total_fee_quote,
+        "entry_total_quote": entry_total_quote,
+        "exit_total_quote": exit_total_quote,
         "gross_pnl_quote": gross_pnl_quote,
         "gross_pnl_pct": gross_pnl_pct,
         "net_pnl_quote": net_pnl_quote,
@@ -746,11 +872,9 @@ def _resolve_entry_fee_rate(entry_meta: dict[str, Any] | None) -> float:
 
 
 def _resolve_exit_fee_rate(entry_meta: dict[str, Any] | None, *, entry_fee_rate: float) -> float:
-    fee_rate = _coalesce_float(
-        _dig_float(entry_meta, "strategy", "meta", "model_exit_plan", "expected_exit_fee_rate"),
-        _dig_float(entry_meta, "admissibility", "snapshot", "ask_fee"),
-        entry_fee_rate,
-    )
+    configured = _dig_float(entry_meta, "strategy", "meta", "model_exit_plan", "expected_exit_fee_rate")
+    snapshot_fee = _dig_float(entry_meta, "admissibility", "snapshot", "ask_fee")
+    fee_rate = configured if configured is not None and configured > 0.0 else _coalesce_float(snapshot_fee, entry_fee_rate)
     return max(float(fee_rate or 0.0), 0.0)
 
 
@@ -761,6 +885,56 @@ def _dig_float(payload: dict[str, Any] | None, *keys: str) -> float | None:
             return None
         current = current.get(key)
     return _as_optional_float(current)
+
+
+def _filled_qty_from_order(order: dict[str, Any] | None) -> float | None:
+    if not isinstance(order, dict):
+        return None
+    return _coalesce_float(_as_optional_float(order.get("volume_filled")), _as_optional_float(order.get("volume_req")))
+
+
+def _filled_price_from_order(order: dict[str, Any] | None) -> float | None:
+    if not isinstance(order, dict):
+        return None
+    executed_funds = _as_optional_float(order.get("executed_funds"))
+    executed_volume = _as_optional_float(order.get("volume_filled"))
+    if executed_funds is not None and executed_volume is not None and executed_volume > 0.0:
+        return executed_funds / executed_volume
+    return _as_optional_float(order.get("price"))
+
+
+def _order_record_with_execution_details(*, order: dict[str, Any], payload: dict[str, Any]) -> OrderRecord:
+    return OrderRecord(
+        uuid=str(order.get("uuid") or ""),
+        identifier=_as_optional_str(order.get("identifier")),
+        market=str(order.get("market") or ""),
+        side=_as_optional_str(order.get("side")),
+        ord_type=_as_optional_str(order.get("ord_type")),
+        price=_coalesce_float(_as_optional_float(payload.get("price")), _as_optional_float(order.get("price"))),
+        volume_req=_coalesce_float(_as_optional_float(payload.get("volume")), _as_optional_float(order.get("volume_req"))),
+        volume_filled=float(
+            _coalesce_float(_as_optional_float(payload.get("executed_volume")), _as_optional_float(order.get("volume_filled")), 0.0)
+            or 0.0
+        ),
+        state=str(payload.get("state") or order.get("state") or ""),
+        created_ts=int(order.get("created_ts") or 0),
+        updated_ts=int(order.get("updated_ts") or 0),
+        intent_id=_as_optional_str(order.get("intent_id")),
+        tp_sl_link=_as_optional_str(order.get("tp_sl_link")),
+        local_state=_as_optional_str(order.get("local_state")),
+        raw_exchange_state=_coalesce_str(_as_optional_str(payload.get("state")), _as_optional_str(order.get("raw_exchange_state"))),
+        last_event_name=_as_optional_str(order.get("last_event_name")),
+        event_source=_coalesce_str(_as_optional_str(order.get("event_source")), "order_detail_backfill"),
+        replace_seq=int(order.get("replace_seq") or 0),
+        root_order_uuid=_as_optional_str(order.get("root_order_uuid")),
+        prev_order_uuid=_as_optional_str(order.get("prev_order_uuid")),
+        prev_order_identifier=_as_optional_str(order.get("prev_order_identifier")),
+        executed_funds=_coalesce_float(_as_optional_float(payload.get("executed_funds")), _as_optional_float(order.get("executed_funds"))),
+        paid_fee=_coalesce_float(_as_optional_float(payload.get("paid_fee")), _as_optional_float(order.get("paid_fee"))),
+        reserved_fee=_coalesce_float(_as_optional_float(payload.get("reserved_fee")), _as_optional_float(order.get("reserved_fee"))),
+        remaining_fee=_coalesce_float(_as_optional_float(payload.get("remaining_fee")), _as_optional_float(order.get("remaining_fee"))),
+        exchange_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    )
 
 
 def _derive_close_mode(*, order: dict[str, Any] | None) -> str | None:

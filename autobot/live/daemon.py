@@ -1034,6 +1034,15 @@ def _apply_executor_event(
                             root_order_uuid=_as_optional_str(previous_order.get("root_order_uuid")) or prev_uuid,
                             prev_order_uuid=_as_optional_str(previous_order.get("prev_order_uuid")),
                             prev_order_identifier=_as_optional_str(previous_order.get("prev_order_identifier")),
+                            executed_funds=_as_optional_float(previous_order.get("executed_funds")),
+                            paid_fee=_as_optional_float(previous_order.get("paid_fee")),
+                            reserved_fee=_as_optional_float(previous_order.get("reserved_fee")),
+                            remaining_fee=_as_optional_float(previous_order.get("remaining_fee")),
+                            exchange_payload_json=(
+                                json.dumps(previous_order.get("exchange_payload"), ensure_ascii=False, sort_keys=True)
+                                if isinstance(previous_order.get("exchange_payload"), dict)
+                                else str(previous_order.get("exchange_payload_json") or "{}")
+                            ),
                         )
                     )
                 except Exception:
@@ -1067,6 +1076,7 @@ def _apply_executor_event(
                             root_order_uuid=_as_optional_str(previous_order.get("root_order_uuid")) if previous_order else prev_uuid or new_uuid,
                             prev_order_uuid=prev_uuid,
                             prev_order_identifier=prev_identifier,
+                            exchange_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
                         )
                     )
                 except Exception:

@@ -64,6 +64,11 @@ class OrderRecord:
     root_order_uuid: str | None = None
     prev_order_uuid: str | None = None
     prev_order_identifier: str | None = None
+    executed_funds: float | None = None
+    paid_fee: float | None = None
+    reserved_fee: float | None = None
+    remaining_fee: float | None = None
+    exchange_payload_json: str = "{}"
 
 
 @dataclass(frozen=True)
@@ -319,9 +324,10 @@ class LiveStateStore:
                     uuid, identifier, market, side, ord_type, price,
                     volume_req, volume_filled, state, created_ts, updated_ts, intent_id, tp_sl_link,
                     local_state, raw_exchange_state, last_event_name, event_source,
-                    replace_seq, root_order_uuid, prev_order_uuid, prev_order_identifier
+                    replace_seq, root_order_uuid, prev_order_uuid, prev_order_identifier,
+                    executed_funds, paid_fee, reserved_fee, remaining_fee, exchange_payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET
                     identifier=excluded.identifier,
                     market=excluded.market,
@@ -342,7 +348,15 @@ class LiveStateStore:
                     replace_seq=excluded.replace_seq,
                     root_order_uuid=excluded.root_order_uuid,
                     prev_order_uuid=excluded.prev_order_uuid,
-                    prev_order_identifier=excluded.prev_order_identifier
+                    prev_order_identifier=excluded.prev_order_identifier,
+                    executed_funds=COALESCE(excluded.executed_funds, orders.executed_funds),
+                    paid_fee=COALESCE(excluded.paid_fee, orders.paid_fee),
+                    reserved_fee=COALESCE(excluded.reserved_fee, orders.reserved_fee),
+                    remaining_fee=COALESCE(excluded.remaining_fee, orders.remaining_fee),
+                    exchange_payload_json=CASE
+                        WHEN excluded.exchange_payload_json IS NOT NULL AND excluded.exchange_payload_json != '{}' THEN excluded.exchange_payload_json
+                        ELSE orders.exchange_payload_json
+                    END
                 """,
                 (
                     record.uuid,
@@ -366,6 +380,11 @@ class LiveStateStore:
                     root_order_uuid,
                     record.prev_order_uuid,
                     record.prev_order_identifier,
+                    record.executed_funds,
+                    record.paid_fee,
+                    record.reserved_fee,
+                    record.remaining_fee,
+                    record.exchange_payload_json,
                 ),
             )
             if not transition_ok:
@@ -951,7 +970,12 @@ class LiveStateStore:
                     replace_seq INTEGER NOT NULL DEFAULT 0,
                     root_order_uuid TEXT,
                     prev_order_uuid TEXT,
-                    prev_order_identifier TEXT
+                    prev_order_identifier TEXT,
+                    executed_funds REAL,
+                    paid_fee REAL,
+                    reserved_fee REAL,
+                    remaining_fee REAL,
+                    exchange_payload_json TEXT NOT NULL DEFAULT '{}'
                 );
 
                 CREATE TABLE IF NOT EXISTS intents (
@@ -1085,6 +1109,11 @@ class LiveStateStore:
         self._ensure_column("orders", "root_order_uuid", "TEXT")
         self._ensure_column("orders", "prev_order_uuid", "TEXT")
         self._ensure_column("orders", "prev_order_identifier", "TEXT")
+        self._ensure_column("orders", "executed_funds", "REAL")
+        self._ensure_column("orders", "paid_fee", "REAL")
+        self._ensure_column("orders", "reserved_fee", "REAL")
+        self._ensure_column("orders", "remaining_fee", "REAL")
+        self._ensure_column("orders", "exchange_payload_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("risk_plans", "timeout_ts_ms", "INTEGER")
         self._ensure_column("risk_plans", "plan_source", "TEXT")
         self._ensure_column("risk_plans", "source_intent_id", "TEXT")
@@ -1164,6 +1193,11 @@ def _row_to_order(row: sqlite3.Row) -> dict[str, Any]:
         "root_order_uuid": row["root_order_uuid"],
         "prev_order_uuid": row["prev_order_uuid"],
         "prev_order_identifier": row["prev_order_identifier"],
+        "executed_funds": float(row["executed_funds"]) if row["executed_funds"] is not None else None,
+        "paid_fee": float(row["paid_fee"]) if row["paid_fee"] is not None else None,
+        "reserved_fee": float(row["reserved_fee"]) if row["reserved_fee"] is not None else None,
+        "remaining_fee": float(row["remaining_fee"]) if row["remaining_fee"] is not None else None,
+        "exchange_payload": _parse_json(row["exchange_payload_json"]),
     }
 
 

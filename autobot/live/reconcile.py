@@ -879,6 +879,11 @@ def _order_record_from_payload(payload: Any, *, ts_ms: int) -> OrderRecord | Non
         last_event_name=normalized.event_name,
         event_source="reconcile_snapshot",
         root_order_uuid=uuid,
+        executed_funds=_as_optional_float(payload.get("executed_funds")),
+        paid_fee=_as_optional_float(payload.get("paid_fee")),
+        reserved_fee=_as_optional_float(payload.get("reserved_fee")),
+        remaining_fee=_as_optional_float(payload.get("remaining_fee")),
+        exchange_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
     )
 
 
@@ -952,6 +957,15 @@ def _order_record_from_row_dict(
         root_order_uuid=_as_optional_str(row.get("root_order_uuid")),
         prev_order_uuid=_as_optional_str(row.get("prev_order_uuid")),
         prev_order_identifier=_as_optional_str(row.get("prev_order_identifier")),
+        executed_funds=_as_optional_float(row.get("executed_funds")),
+        paid_fee=_as_optional_float(row.get("paid_fee")),
+        reserved_fee=_as_optional_float(row.get("reserved_fee")),
+        remaining_fee=_as_optional_float(row.get("remaining_fee")),
+        exchange_payload_json=(
+            json.dumps(row.get("exchange_payload"), ensure_ascii=False, sort_keys=True)
+            if isinstance(row.get("exchange_payload"), dict)
+            else str(row.get("exchange_payload_json") or "{}")
+        ),
     )
 
 def _extract_exchange_positions(accounts_payload: Any, *, quote_currency: str, ts_ms: int) -> dict[str, dict[str, Any]]:

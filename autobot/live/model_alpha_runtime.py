@@ -82,6 +82,7 @@ from .small_account import (
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord
 from .trade_journal import (
     activate_trade_journal_for_position,
+    backfill_order_execution_details,
     close_trade_journal_for_market,
     recompute_trade_journal_records,
     record_entry_submission,
@@ -194,6 +195,7 @@ async def run_live_model_alpha_runtime(
 
     predictor = _load_predictor_for_runtime(store=store, settings=settings)
     summary["strategy_predictor_run_id"] = predictor.run_dir.name
+    summary["order_execution_backfill"] = backfill_order_execution_details(store=store, client=client)
     resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
         predictor=predictor,
         settings=settings.model_alpha,
