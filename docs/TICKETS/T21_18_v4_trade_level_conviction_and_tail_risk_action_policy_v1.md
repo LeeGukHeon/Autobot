@@ -121,3 +121,22 @@
   - runtime recommendation artifact and decision surface expose trade-action policy status
 - `tests/test_live_model_alpha_runtime.py`
   - live submit metadata still preserves the per-trade model exit plan contract
+
+## 2026-03-12 Conditional Downside Model Update
+- The first `v1` implementation still relied too much on a raw single risk feature for the
+  `risk` axis, which caused bin collapse and a strong `hold` bias.
+- The method was tightened to better match the literature basis:
+  - fit a compact contextual action model directly on walk-forward OOS replay rows
+  - use calibrated edge plus multi-feature conditional downside inputs:
+    - `selection_score`
+    - `rv_12`
+    - `rv_36`
+    - `atr_pct_14`
+  - predict action-level expected return, downside LPM, and downside-aware objective
+  - keep the final runtime action non-heuristic:
+    - prefer OOS Pareto / LPM winner from the matched conditional state bin
+    - fall back to contextual predicted metrics only when a matched comparable bin is absent
+- This keeps the runtime contract compact while moving the risk state from:
+  - raw volatility proxy
+  to:
+  - learned conditional downside state from OOS replay evidence
