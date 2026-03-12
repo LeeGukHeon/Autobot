@@ -1,7 +1,7 @@
 # T21.19 V4 Direct Conditional Tail-Risk And Continuous Action Value v1
 
 - Date: 2026-03-12
-- Status: planned / partial foundation landed
+- Status: local implementation advanced through direct ES/CTM contract and runtime observability
 - Scope:
   - `autobot/models/trade_action_policy.py`
   - `autobot/models/train_v4_crypto_cs.py`
@@ -155,7 +155,7 @@
   - sample coverage
   - comparable support
 - Status:
-  - pending hardening
+  - landed locally with compact empirical tail-exceedance diagnostics
 
 ### Slice 4. Certification Consistency
 - require certification-lane diagnostics to show:
@@ -174,7 +174,7 @@
   - expected CTM
   - expected action value
 - Status:
-  - pending
+  - landed locally
 
 ## Acceptance
 - trainer writes a compact conditional-action artifact with direct tail-risk targets

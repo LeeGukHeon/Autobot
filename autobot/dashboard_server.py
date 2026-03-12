@@ -67,6 +67,13 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _ratio_to_bps(value: Any) -> float | None:
+    numeric = _coerce_float(value)
+    if numeric is None:
+        return None
+    return float(numeric) * 10_000.0
+
+
 def _path_mtime_iso(path: Path | None) -> str | None:
     if path is None or not path.exists():
         return None
@@ -510,22 +517,28 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
         "estimated_total_cost_bps": _coerce_float(admissibility.get("estimated_total_cost_bps")),
         "expected_net_edge_bps": _coerce_float(admissibility.get("expected_net_edge_bps")),
         "trade_action_recommended_action": trade_action.get("recommended_action"),
-        "trade_action_expected_edge_bps": (
-            (_coerce_float(trade_action.get("expected_edge")) or 0.0) * 10_000.0
-            if _coerce_float(trade_action.get("expected_edge")) is not None
-            else None
+        "trade_action_expected_edge_bps": _ratio_to_bps(trade_action.get("expected_edge")),
+        "trade_action_expected_downside_bps": _ratio_to_bps(trade_action.get("expected_downside_deviation")),
+        "trade_action_expected_es_bps": _ratio_to_bps(trade_action.get("expected_es")),
+        "trade_action_expected_ctm": _coerce_float(
+            trade_action.get("expected_ctm") if trade_action.get("expected_ctm") is not None else trade_action.get("expected_ctm2")
         ),
-        "trade_action_expected_downside_bps": (
-            (_coerce_float(trade_action.get("expected_downside_deviation")) or 0.0) * 10_000.0
-            if _coerce_float(trade_action.get("expected_downside_deviation")) is not None
-            else None
-        ),
+        "trade_action_expected_ctm_order": _coerce_int(trade_action.get("expected_ctm_order")),
         "trade_action_objective_score": _coerce_float(trade_action.get("expected_objective_score")),
+        "trade_action_action_value": _coerce_float(
+            trade_action.get("expected_action_value")
+            if trade_action.get("expected_action_value") is not None
+            else trade_action.get("expected_objective_score")
+        ),
+        "trade_action_tail_probability": _coerce_float(trade_action.get("expected_tail_probability")),
+        "trade_action_decision_source": trade_action.get("decision_source") or trade_action.get("chosen_action_source"),
         "trade_action_notional_multiplier": _coerce_float(trade_action.get("recommended_notional_multiplier")),
     }
 
 
 def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
+    entry_meta = _normalize_json_text(row.get("entry_meta_json")) or {}
+    trade_action = _dig(entry_meta, "strategy", "meta", "trade_action", default={}) or {}
     exit_meta = _normalize_json_text(row.get("exit_meta_json")) or {}
     entry_ts_ms = _coerce_int(row.get("entry_filled_ts_ms")) or _coerce_int(row.get("entry_submitted_ts_ms"))
     exit_ts_ms = _coerce_int(row.get("exit_ts_ms"))
@@ -566,9 +579,21 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         "trade_action": row.get("trade_action"),
         "expected_edge_bps": _coerce_float(row.get("expected_edge_bps")),
         "expected_downside_bps": _coerce_float(row.get("expected_downside_bps")),
+        "expected_es_bps": _ratio_to_bps(trade_action.get("expected_es")),
+        "expected_ctm": _coerce_float(
+            trade_action.get("expected_ctm") if trade_action.get("expected_ctm") is not None else trade_action.get("expected_ctm2")
+        ),
+        "expected_ctm_order": _coerce_int(trade_action.get("expected_ctm_order")),
+        "trade_action_action_value": _coerce_float(
+            trade_action.get("expected_action_value")
+            if trade_action.get("expected_action_value") is not None
+            else trade_action.get("expected_objective_score")
+        ),
+        "trade_action_tail_probability": _coerce_float(trade_action.get("expected_tail_probability")),
+        "trade_action_decision_source": trade_action.get("decision_source") or trade_action.get("chosen_action_source"),
         "expected_net_edge_bps": _coerce_float(row.get("expected_net_edge_bps")),
         "notional_multiplier": _coerce_float(row.get("notional_multiplier")),
-        "entry_meta": _normalize_json_text(row.get("entry_meta_json")) or {},
+        "entry_meta": entry_meta,
         "exit_meta": exit_meta,
     }
 
@@ -761,6 +786,13 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
         "status": trade_action.get("status"),
         "source": trade_action.get("source"),
         "risk_feature_name": trade_action.get("risk_feature_name"),
+        "runtime_decision_source": trade_action.get("runtime_decision_source"),
+        "state_feature_names": trade_action.get("state_feature_names"),
+        "tail_confidence_level": _coerce_float(trade_action.get("tail_confidence_level")),
+        "ctm_order": _coerce_int(trade_action.get("ctm_order")),
+        "tail_risk_method": _dig(trade_action, "tail_risk_contract", "method"),
+        "conditional_action_model_status": _dig(trade_action, "conditional_action_model", "status"),
+        "conditional_action_model": _dig(trade_action, "conditional_action_model", "model"),
         "hold_bins_recommended": _dig(trade_action, "summary", "hold_bins_recommended"),
         "risk_bins_recommended": _dig(trade_action, "summary", "risk_bins_recommended"),
         "rows_total": trade_action.get("rows_total"),
@@ -775,16 +807,19 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
                 "edge_bin": item.get("edge_bin"),
                 "risk_bin": item.get("risk_bin"),
                 "recommended_action": item.get("recommended_action"),
-                "expected_edge_bps": (
-                    (_coerce_float(item.get("expected_edge")) or 0.0) * 10_000.0
-                    if _coerce_float(item.get("expected_edge")) is not None
-                    else None
+                "expected_edge_bps": _ratio_to_bps(item.get("expected_edge")),
+                "expected_downside_bps": _ratio_to_bps(item.get("expected_downside_deviation")),
+                "expected_es_bps": _ratio_to_bps(item.get("expected_es")),
+                "expected_ctm": _coerce_float(
+                    item.get("expected_ctm") if item.get("expected_ctm") is not None else item.get("expected_ctm2")
                 ),
-                "expected_downside_bps": (
-                    (_coerce_float(item.get("expected_downside_deviation")) or 0.0) * 10_000.0
-                    if _coerce_float(item.get("expected_downside_deviation")) is not None
-                    else None
+                "expected_ctm_order": _coerce_int(item.get("expected_ctm_order")),
+                "expected_action_value": _coerce_float(
+                    item.get("expected_action_value")
+                    if item.get("expected_action_value") is not None
+                    else item.get("expected_objective_score")
                 ),
+                "expected_tail_probability": _coerce_float(item.get("expected_tail_probability")),
                 "notional_multiplier": _coerce_float(item.get("recommended_notional_multiplier")),
                 "sample_count": _coerce_int(item.get("sample_count")),
             }

@@ -974,6 +974,15 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
             "status": "ready",
             "source": "walk_forward_oos_trade_replay",
             "risk_feature_name": "rv_36",
+            "runtime_decision_source": "continuous_conditional_action_value",
+            "state_feature_names": ["selection_score", "rv_12", "rv_36", "atr_pct_14"],
+            "tail_confidence_level": 0.9,
+            "ctm_order": 2,
+            "tail_risk_contract": {"method": "empirical_tail_exceedance_v1"},
+            "conditional_action_model": {
+                "status": "ready",
+                "model": "conditional_action_linear_ols_v1",
+            },
             "by_bin": [],
         },
     )
@@ -1054,6 +1063,9 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert decision_surface_doc["runtime_recommendation_contract"]["selection_use_learned_recommendations"] is True
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_policy_status"] == "ready"
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_risk_feature_name"] == "rv_36"
+    assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_runtime_decision_source"] == "continuous_conditional_action_value"
+    assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_tail_confidence_level"] == 0.9
+    assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_conditional_model"] == "conditional_action_linear_ols_v1"
     assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
     assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
     execution_options = captured["options"]

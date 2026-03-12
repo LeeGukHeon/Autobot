@@ -728,6 +728,24 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                     "expected_edge": trade_action.get("expected_edge"),
                     "expected_downside_deviation": trade_action.get("expected_downside_deviation"),
                     "expected_objective_score": trade_action.get("expected_objective_score"),
+                    "expected_action_value": (
+                        trade_action.get("expected_action_value")
+                        if trade_action.get("expected_action_value") is not None
+                        else trade_action.get("expected_objective_score")
+                    ),
+                    "expected_es": trade_action.get("expected_es"),
+                    "expected_ctm": (
+                        trade_action.get("expected_ctm")
+                        if trade_action.get("expected_ctm") is not None
+                        else trade_action.get("expected_ctm2")
+                    ),
+                    "expected_ctm_order": trade_action.get("expected_ctm_order"),
+                    "expected_tail_probability": trade_action.get("expected_tail_probability"),
+                    "decision_source": (
+                        trade_action.get("decision_source")
+                        if trade_action.get("decision_source") is not None
+                        else trade_action.get("chosen_action_source")
+                    ),
                     "recommended_notional_multiplier": trade_action.get("recommended_notional_multiplier"),
                 },
                 "model_exit_plan": {

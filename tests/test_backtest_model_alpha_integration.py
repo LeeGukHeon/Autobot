@@ -587,6 +587,10 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
                     "recommended_notional_multiplier": 1.25,
                     "expected_edge": 0.01,
                     "expected_downside_deviation": 0.005,
+                    "expected_es": 0.006,
+                    "expected_ctm": 0.000036,
+                    "expected_ctm_order": 2,
+                    "expected_action_value": 1.0,
                     "expected_objective_score": 1.0,
                 }
             ],
@@ -610,6 +614,7 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
     bid_intent = next(intent for intent in first.intents if intent.side == "bid")
     assert float((bid_intent.meta or {}).get("notional_multiplier", 0.0)) == 1.25
     assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "trade_action_policy"
+    assert dict((bid_intent.meta or {}).get("trade_action") or {})["expected_es"] == 0.006
     exit_plan = dict((bid_intent.meta or {}).get("model_exit_plan") or {})
     assert exit_plan["mode"] == "risk"
     assert exit_plan["hold_bars"] == 3

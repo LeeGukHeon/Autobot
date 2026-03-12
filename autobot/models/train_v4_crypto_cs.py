@@ -4062,6 +4062,31 @@ def _build_decision_surface_v4(
             "trade_action_policy_status": str(runtime_trade_action.get("status", "")).strip() or "missing",
             "trade_action_policy_source": str(runtime_trade_action.get("source", "")).strip(),
             "trade_action_risk_feature_name": str(runtime_trade_action.get("risk_feature_name", "")).strip(),
+            "trade_action_runtime_decision_source": str(runtime_trade_action.get("runtime_decision_source", "")).strip(),
+            "trade_action_state_feature_names": [
+                str(value).strip()
+                for value in (runtime_trade_action.get("state_feature_names") or [])
+                if str(value).strip()
+            ],
+            "trade_action_tail_confidence_level": (
+                float(runtime_trade_action.get("tail_confidence_level"))
+                if runtime_trade_action.get("tail_confidence_level") is not None
+                else None
+            ),
+            "trade_action_ctm_order": (
+                int(runtime_trade_action.get("ctm_order"))
+                if runtime_trade_action.get("ctm_order") is not None
+                else None
+            ),
+            "trade_action_tail_risk_method": str(
+                ((runtime_trade_action.get("tail_risk_contract") or {}).get("method")) or ""
+            ).strip(),
+            "trade_action_conditional_model_status": str(
+                ((runtime_trade_action.get("conditional_action_model") or {}).get("status")) or ""
+            ).strip(),
+            "trade_action_conditional_model": str(
+                ((runtime_trade_action.get("conditional_action_model") or {}).get("model")) or ""
+            ).strip(),
         },
         "promotion_contract": {
             "promotion_mode": str((promotion or {}).get("promotion_mode", "")).strip() or "candidate",

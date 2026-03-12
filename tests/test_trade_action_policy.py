@@ -72,6 +72,8 @@ def test_build_trade_action_policy_learns_bin_level_hold_vs_risk_preference() ->
     )
 
     assert policy["status"] == "ready"
+    assert policy["tail_risk_contract"]["method"] == "empirical_tail_exceedance_v1"
+    assert policy["conditional_action_model"]["status"] == "ready"
     high_score_low_risk = resolve_trade_action(policy, selection_score=0.95, row={"rv_36": 0.10})
     low_score_high_risk = resolve_trade_action(policy, selection_score=0.18, row={"rv_36": 0.50})
 
@@ -84,3 +86,6 @@ def test_build_trade_action_policy_learns_bin_level_hold_vs_risk_preference() ->
     assert high_score_low_risk["recommended_action"] != low_score_high_risk["recommended_action"]
     assert high_score_low_risk["decision_source"] == "continuous_conditional_action_value"
     assert low_score_high_risk["decision_source"] == "continuous_conditional_action_value"
+    assert float(high_score_low_risk["expected_es"]) >= 0.0
+    assert float(high_score_low_risk["expected_ctm"]) >= 0.0
+    assert float(high_score_low_risk["expected_action_value"]) == float(high_score_low_risk["expected_objective_score"])

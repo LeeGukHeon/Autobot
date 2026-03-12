@@ -14,6 +14,8 @@ DEFAULT_EDGE_BIN_COUNT = 6
 DEFAULT_RISK_BIN_COUNT = 6
 DEFAULT_MIN_BIN_SAMPLES = 20
 DEFAULT_STATE_FEATURE_NAMES = ("selection_score", "rv_12", "rv_36", "atr_pct_14")
+DEFAULT_TAIL_CONFIDENCE_LEVEL = 0.90
+DEFAULT_CTM_ORDER = 2
 
 
 def build_trade_action_policy_from_oos_rows(
@@ -28,6 +30,8 @@ def build_trade_action_policy_from_oos_rows(
     risk_bin_count: int = DEFAULT_RISK_BIN_COUNT,
     min_bin_samples: int = DEFAULT_MIN_BIN_SAMPLES,
     lpm_order: int = 2,
+    tail_confidence_level: float = DEFAULT_TAIL_CONFIDENCE_LEVEL,
+    ctm_order: int = DEFAULT_CTM_ORDER,
     numerical_floor: float = 1e-6,
 ) -> dict[str, Any]:
     hold_template = dict(hold_policy_template or {})
@@ -68,8 +72,15 @@ def build_trade_action_policy_from_oos_rows(
             "rows_total": int(len(trade_rows)),
         }
 
+    tail_risk_contract = _build_tail_risk_contract(
+        trade_rows=trade_rows,
+        tail_confidence_level=float(tail_confidence_level),
+        ctm_order=max(int(ctm_order), 1),
+        numerical_floor=float(numerical_floor),
+    )
     conditional_action_model = _build_conditional_action_model(
         trade_rows=trade_rows,
+        tail_risk_contract=tail_risk_contract,
         numerical_floor=float(numerical_floor),
     )
     selection_scores = np.asarray([float(row["selection_score"]) for row in trade_rows], dtype=np.float64)
@@ -114,6 +125,18 @@ def build_trade_action_policy_from_oos_rows(
         risk_mean_dev = float(risk_mean_lpm ** (1.0 / float(max(int(lpm_order), 1)))) if risk_mean_lpm > 0.0 else 0.0
         hold_mean_objective = float(np.mean(hold_objective))
         risk_mean_objective = float(np.mean(risk_objective))
+        hold_tail_metrics = _summarize_tail_moments(
+            returns=hold_returns,
+            action_contract=dict((tail_risk_contract.get("actions") or {}).get("hold") or {}),
+            ctm_order=max(int(ctm_order), 1),
+            numerical_floor=float(numerical_floor),
+        )
+        risk_tail_metrics = _summarize_tail_moments(
+            returns=risk_returns,
+            action_contract=dict((tail_risk_contract.get("actions") or {}).get("risk") or {}),
+            ctm_order=max(int(ctm_order), 1),
+            numerical_floor=float(numerical_floor),
+        )
         recommended_action = _select_recommended_action(
             hold_mean_return=hold_mean_return,
             risk_mean_return=risk_mean_return,
@@ -125,6 +148,21 @@ def build_trade_action_policy_from_oos_rows(
         selected_edge = risk_mean_return if recommended_action == "risk" else hold_mean_return
         selected_dev = risk_mean_dev if recommended_action == "risk" else hold_mean_dev
         selected_objective = risk_mean_objective if recommended_action == "risk" else hold_mean_objective
+        selected_es = (
+            float(risk_tail_metrics["expected_es"])
+            if recommended_action == "risk"
+            else float(hold_tail_metrics["expected_es"])
+        )
+        selected_ctm = (
+            float(risk_tail_metrics["expected_ctm"])
+            if recommended_action == "risk"
+            else float(hold_tail_metrics["expected_ctm"])
+        )
+        selected_tail_probability = (
+            float(risk_tail_metrics["tail_probability"])
+            if recommended_action == "risk"
+            else float(hold_tail_metrics["tail_probability"])
+        )
         row_doc = {
             "edge_bin": int(edge_bin),
             "risk_bin": int(risk_bin),
@@ -135,17 +173,31 @@ def build_trade_action_policy_from_oos_rows(
             "expected_edge": float(selected_edge),
             "expected_downside_deviation": float(selected_dev),
             "expected_objective_score": float(selected_objective),
+            "expected_action_value": float(selected_objective),
+            "expected_es": float(selected_es),
+            "expected_ctm": float(selected_ctm),
+            "expected_ctm2": float(selected_ctm),
+            "expected_ctm_order": max(int(ctm_order), 1),
+            "expected_tail_probability": float(selected_tail_probability),
             "hold": {
                 "mean_return": hold_mean_return,
                 "mean_downside_lpm": hold_mean_lpm,
                 "mean_downside_deviation": hold_mean_dev,
                 "mean_objective_score": hold_mean_objective,
+                "mean_expected_es": float(hold_tail_metrics["expected_es"]),
+                "mean_expected_ctm": float(hold_tail_metrics["expected_ctm"]),
+                "tail_probability": float(hold_tail_metrics["tail_probability"]),
+                "tail_threshold_loss": float(hold_tail_metrics["tail_threshold_loss"]),
             },
             "risk": {
                 "mean_return": risk_mean_return,
                 "mean_downside_lpm": risk_mean_lpm,
                 "mean_downside_deviation": risk_mean_dev,
                 "mean_objective_score": risk_mean_objective,
+                "mean_expected_es": float(risk_tail_metrics["expected_es"]),
+                "mean_expected_ctm": float(risk_tail_metrics["expected_ctm"]),
+                "tail_probability": float(risk_tail_metrics["tail_probability"]),
+                "tail_threshold_loss": float(risk_tail_metrics["tail_threshold_loss"]),
             },
         }
         if comparable:
@@ -171,20 +223,30 @@ def build_trade_action_policy_from_oos_rows(
         "windows_covered": int(window_count),
         "risk_feature_name": risk_feature_name,
         "risk_state_source": CONDITIONAL_ACTION_MODEL_ID if conditional_action_model.get("status") == "ready" else "raw_risk_feature",
+        "state_feature_names": list(DEFAULT_STATE_FEATURE_NAMES),
+        "runtime_decision_source": (
+            "continuous_conditional_action_value"
+            if conditional_action_model.get("status") == "ready"
+            else "bin_audit_fallback"
+        ),
         "edge_bounds": [float(value) for value in edge_bounds],
         "risk_bounds": [float(value) for value in risk_bounds],
         "edge_bin_count": int(edge_bin_count_effective),
         "risk_bin_count": int(risk_bin_count_effective),
         "min_bin_samples": max(int(min_bin_samples), 1),
         "lpm_order": max(int(lpm_order), 1),
+        "tail_confidence_level": float(tail_risk_contract.get("confidence_level", tail_confidence_level)),
+        "ctm_order": int(tail_risk_contract.get("ctm_order", ctm_order)),
         "hold_policy_template": hold_template,
         "risk_policy_template": risk_template,
+        "tail_risk_contract": tail_risk_contract,
         "conditional_action_model": conditional_action_model,
         "by_bin": by_bin,
         "summary": {
             "comparable_bins": int(len(comparable_indices)),
             "risk_bins_recommended": int(sum(1 for item in by_bin if item["recommended_action"] == "risk")),
             "hold_bins_recommended": int(sum(1 for item in by_bin if item["recommended_action"] == "hold")),
+            "tail_risk_method": str(tail_risk_contract.get("method", "")),
         },
     }
 
@@ -205,6 +267,17 @@ def normalize_trade_action_policy(policy: dict[str, Any] | None) -> dict[str, An
     payload["min_bin_samples"] = max(int(payload.get("min_bin_samples", DEFAULT_MIN_BIN_SAMPLES) or DEFAULT_MIN_BIN_SAMPLES), 1)
     payload["hold_policy_template"] = dict(payload.get("hold_policy_template") or {})
     payload["risk_policy_template"] = dict(payload.get("risk_policy_template") or {})
+    payload["tail_risk_contract"] = dict(payload.get("tail_risk_contract") or {})
+    payload["state_feature_names"] = [
+        str(value).strip()
+        for value in (payload.get("state_feature_names") or [])
+        if str(value).strip()
+    ]
+    payload["runtime_decision_source"] = str(payload.get("runtime_decision_source", "")).strip()
+    payload["tail_confidence_level"] = float(
+        payload.get("tail_confidence_level", DEFAULT_TAIL_CONFIDENCE_LEVEL) or DEFAULT_TAIL_CONFIDENCE_LEVEL
+    )
+    payload["ctm_order"] = max(int(payload.get("ctm_order", DEFAULT_CTM_ORDER) or DEFAULT_CTM_ORDER), 1)
     payload["conditional_action_model"] = dict(payload.get("conditional_action_model") or {})
     payload["by_bin"] = [dict(item) for item in (payload.get("by_bin") or []) if isinstance(item, dict)]
     return payload
@@ -213,6 +286,7 @@ def normalize_trade_action_policy(policy: dict[str, Any] | None) -> dict[str, An
 def _build_conditional_action_model(
     *,
     trade_rows: list[dict[str, Any]],
+    tail_risk_contract: dict[str, Any],
     numerical_floor: float,
 ) -> dict[str, Any]:
     if not trade_rows:
@@ -228,22 +302,6 @@ def _build_conditional_action_model(
         "risk_return": np.asarray([float(item["risk_return"]) for item in trade_rows], dtype=np.float64),
         "hold_objective": np.asarray([float(item["hold_objective_score"]) for item in trade_rows], dtype=np.float64),
         "risk_objective": np.asarray([float(item["risk_objective_score"]) for item in trade_rows], dtype=np.float64),
-        "hold_es_proxy": np.asarray(
-            [max(-float(item["hold_return"]), 0.0) for item in trade_rows],
-            dtype=np.float64,
-        ),
-        "risk_es_proxy": np.asarray(
-            [max(-float(item["risk_return"]), 0.0) for item in trade_rows],
-            dtype=np.float64,
-        ),
-        "hold_ctm2_proxy": np.asarray(
-            [max(-float(item["hold_return"]), 0.0) ** 2 for item in trade_rows],
-            dtype=np.float64,
-        ),
-        "risk_ctm2_proxy": np.asarray(
-            [max(-float(item["risk_return"]), 0.0) ** 2 for item in trade_rows],
-            dtype=np.float64,
-        ),
         "hold_log_lpm": np.asarray(
             [math.log1p(max(float(item["hold_downside_lpm"]), 0.0)) for item in trade_rows],
             dtype=np.float64,
@@ -253,6 +311,12 @@ def _build_conditional_action_model(
             dtype=np.float64,
         ),
     }
+    targets.update(
+        _build_tail_risk_targets(
+            trade_rows=trade_rows,
+            tail_risk_contract=tail_risk_contract,
+        )
+    )
     fitted_targets: dict[str, Any] = {}
     for name, y in targets.items():
         fitted = _fit_linear_ols_model(x=x, y=y)
@@ -265,6 +329,15 @@ def _build_conditional_action_model(
         "feature_names": list(DEFAULT_STATE_FEATURE_NAMES),
         "numerical_floor": float(numerical_floor),
         "targets": fitted_targets,
+        "tail_risk_contract": tail_risk_contract,
+        "diagnostics": {
+            "rows_total": int(x.shape[0]),
+            "feature_count": int(x.shape[1]),
+            "targets": {
+                name: dict((fitted_targets.get(name) or {}).get("fit_metrics") or {})
+                for name in sorted(fitted_targets)
+            },
+        },
         "rows_total": int(x.shape[0]),
     }
 
@@ -281,11 +354,22 @@ def _fit_linear_ols_model(*, x: np.ndarray, y: np.ndarray) -> dict[str, Any] | N
         coef, *_ = np.linalg.lstsq(design, y, rcond=None)
     except np.linalg.LinAlgError:
         return None
+    fitted = design @ coef
+    residual = y - fitted
+    ss_res = float(np.sum(residual ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = None if ss_tot <= 1e-12 else float(1.0 - (ss_res / ss_tot))
     return {
         "intercept": float(coef[0]),
         "coef": [float(value) for value in coef[1:].tolist()],
         "x_mean": [float(value) for value in x_mean.tolist()],
         "x_scale": [float(value) for value in x_scale.tolist()],
+        "fit_metrics": {
+            "sample_count": int(y.shape[0]),
+            "rmse": float(np.sqrt(np.mean(residual ** 2))),
+            "mae": float(np.mean(np.abs(residual))),
+            "r2": r2,
+        },
     }
 
 
@@ -331,10 +415,12 @@ def _predict_contextual_action_metrics(
     risk_return = _predict_linear_model(dict(targets.get("risk_return") or {}), vector=vector)
     hold_objective = _predict_linear_model(dict(targets.get("hold_objective") or {}), vector=vector)
     risk_objective = _predict_linear_model(dict(targets.get("risk_objective") or {}), vector=vector)
-    hold_es_proxy = _predict_linear_model(dict(targets.get("hold_es_proxy") or {}), vector=vector)
-    risk_es_proxy = _predict_linear_model(dict(targets.get("risk_es_proxy") or {}), vector=vector)
-    hold_ctm2_proxy = _predict_linear_model(dict(targets.get("hold_ctm2_proxy") or {}), vector=vector)
-    risk_ctm2_proxy = _predict_linear_model(dict(targets.get("risk_ctm2_proxy") or {}), vector=vector)
+    hold_tail_probability = _predict_linear_model(dict(targets.get("hold_tail_probability") or {}), vector=vector)
+    risk_tail_probability = _predict_linear_model(dict(targets.get("risk_tail_probability") or {}), vector=vector)
+    hold_tail_loss_numerator = _predict_linear_model(dict(targets.get("hold_tail_loss_numerator") or {}), vector=vector)
+    risk_tail_loss_numerator = _predict_linear_model(dict(targets.get("risk_tail_loss_numerator") or {}), vector=vector)
+    hold_tail_ctm_numerator = _predict_linear_model(dict(targets.get("hold_tail_ctm_numerator") or {}), vector=vector)
+    risk_tail_ctm_numerator = _predict_linear_model(dict(targets.get("risk_tail_ctm_numerator") or {}), vector=vector)
     hold_log_lpm = _predict_linear_model(dict(targets.get("hold_log_lpm") or {}), vector=vector)
     risk_log_lpm = _predict_linear_model(dict(targets.get("risk_log_lpm") or {}), vector=vector)
     values = (
@@ -342,19 +428,25 @@ def _predict_contextual_action_metrics(
         risk_return,
         hold_objective,
         risk_objective,
-        hold_es_proxy,
-        risk_es_proxy,
-        hold_ctm2_proxy,
-        risk_ctm2_proxy,
+        hold_tail_probability,
+        risk_tail_probability,
+        hold_tail_loss_numerator,
+        risk_tail_loss_numerator,
+        hold_tail_ctm_numerator,
+        risk_tail_ctm_numerator,
         hold_log_lpm,
         risk_log_lpm,
     )
     if any(value is None or not math.isfinite(float(value)) for value in values):
         return None
-    hold_es = max(float(hold_es_proxy), 0.0)
-    risk_es = max(float(risk_es_proxy), 0.0)
-    hold_ctm2 = max(float(hold_ctm2_proxy), 0.0)
-    risk_ctm2 = max(float(risk_ctm2_proxy), 0.0)
+    tail_risk_contract = dict(model_payload.get("tail_risk_contract") or {})
+    ctm_order = max(int(tail_risk_contract.get("ctm_order", DEFAULT_CTM_ORDER) or DEFAULT_CTM_ORDER), 1)
+    hold_tail_prob = min(max(float(hold_tail_probability), float(numerical_floor)), 1.0)
+    risk_tail_prob = min(max(float(risk_tail_probability), float(numerical_floor)), 1.0)
+    hold_es = max(float(hold_tail_loss_numerator), 0.0) / hold_tail_prob
+    risk_es = max(float(risk_tail_loss_numerator), 0.0) / risk_tail_prob
+    hold_ctm = max(float(hold_tail_ctm_numerator), 0.0) / hold_tail_prob
+    risk_ctm = max(float(risk_tail_ctm_numerator), 0.0) / risk_tail_prob
     hold_mean_lpm = max(math.expm1(float(hold_log_lpm)), 0.0)
     risk_mean_lpm = max(math.expm1(float(risk_log_lpm)), 0.0)
     hold_mean_dev = hold_mean_lpm ** (1.0 / float(max(int(lpm_order), 1))) if hold_mean_lpm > 0.0 else 0.0
@@ -377,10 +469,21 @@ def _predict_contextual_action_metrics(
         "risk_mean_downside_deviation": float(risk_mean_dev),
         "hold_mean_objective": float(hold_objective),
         "risk_mean_objective": float(risk_objective),
+        "hold_tail_probability": float(hold_tail_prob),
+        "risk_tail_probability": float(risk_tail_prob),
         "hold_expected_es": float(hold_es),
         "risk_expected_es": float(risk_es),
-        "hold_expected_ctm2": float(hold_ctm2),
-        "risk_expected_ctm2": float(risk_ctm2),
+        "hold_expected_ctm": float(hold_ctm),
+        "risk_expected_ctm": float(risk_ctm),
+        "hold_expected_ctm2": float(hold_ctm),
+        "risk_expected_ctm2": float(risk_ctm),
+        "ctm_order": int(ctm_order),
+        "hold_tail_threshold_loss": float(
+            _safe_optional_float(_dig_tail_contract(tail_risk_contract, "hold", "tail_threshold_loss")) or 0.0
+        ),
+        "risk_tail_threshold_loss": float(
+            _safe_optional_float(_dig_tail_contract(tail_risk_contract, "risk", "tail_threshold_loss")) or 0.0
+        ),
         "recommended_action": action,
         "risk_state_value": max(float(risk_state_value), float(numerical_floor)),
         "sample_count": int(model_payload.get("rows_total", 0) or 0),
@@ -496,8 +599,11 @@ def resolve_trade_action(
                 predicted["risk_mean_objective"] if action == "risk" else predicted["hold_mean_objective"]
             )
             expected_es = float(predicted["risk_expected_es"] if action == "risk" else predicted["hold_expected_es"])
-            expected_ctm2 = float(predicted["risk_expected_ctm2"] if action == "risk" else predicted["hold_expected_ctm2"])
-            continuous_score = expected_edge / max(expected_downside_deviation, 1e-6) if expected_edge > 0.0 else 0.0
+            expected_ctm = float(predicted["risk_expected_ctm"] if action == "risk" else predicted["hold_expected_ctm"])
+            expected_tail_probability = float(
+                predicted["risk_tail_probability"] if action == "risk" else predicted["hold_tail_probability"]
+            )
+            continuous_score = expected_edge / max(expected_es, 1e-6) if expected_edge > 0.0 else 0.0
             raw_risk_feature_value = _resolve_row_risk_feature_value(
                 row=row,
                 feature_name=str(normalized.get("risk_feature_name", "")).strip(),
@@ -513,8 +619,12 @@ def resolve_trade_action(
                 "expected_edge": expected_edge,
                 "expected_downside_deviation": expected_downside_deviation,
                 "expected_objective_score": expected_objective_score,
+                "expected_action_value": expected_objective_score,
                 "expected_es": expected_es,
-                "expected_ctm2": expected_ctm2,
+                "expected_ctm": expected_ctm,
+                "expected_ctm2": expected_ctm,
+                "expected_ctm_order": int(predicted.get("ctm_order", DEFAULT_CTM_ORDER) or DEFAULT_CTM_ORDER),
+                "expected_tail_probability": expected_tail_probability,
                 "sample_count": int(predicted.get("sample_count", 0) or 0),
                 "edge_bin": edge_bin,
                 "risk_bin": risk_bin,
@@ -526,14 +636,21 @@ def resolve_trade_action(
                 ),
                 "risk_state_source": CONDITIONAL_ACTION_MODEL_ID,
                 "decision_source": "continuous_conditional_action_value",
+                "chosen_action_source": "continuous_conditional_action_value",
                 "exit_policy_template": template,
                 "diagnostics": {
                     "hold_mean_return": float(predicted["hold_mean_return"]),
                     "risk_mean_return": float(predicted["risk_mean_return"]),
                     "hold_mean_objective": float(predicted["hold_mean_objective"]),
                     "risk_mean_objective": float(predicted["risk_mean_objective"]),
+                    "hold_tail_probability": float(predicted["hold_tail_probability"]),
+                    "risk_tail_probability": float(predicted["risk_tail_probability"]),
+                    "hold_tail_threshold_loss": float(predicted["hold_tail_threshold_loss"]),
+                    "risk_tail_threshold_loss": float(predicted["risk_tail_threshold_loss"]),
                     "hold_expected_es": float(predicted["hold_expected_es"]),
                     "risk_expected_es": float(predicted["risk_expected_es"]),
+                    "hold_expected_ctm": float(predicted["hold_expected_ctm"]),
+                    "risk_expected_ctm": float(predicted["risk_expected_ctm"]),
                     "hold_expected_ctm2": float(predicted["hold_expected_ctm2"]),
                     "risk_expected_ctm2": float(predicted["risk_expected_ctm2"]),
                 },
@@ -573,11 +690,21 @@ def resolve_trade_action(
             "expected_edge": float(item.get("expected_edge", 0.0) or 0.0),
             "expected_downside_deviation": float(item.get("expected_downside_deviation", 0.0) or 0.0),
             "expected_objective_score": float(item.get("expected_objective_score", 0.0) or 0.0),
+            "expected_action_value": float(
+                item.get("expected_action_value", item.get("expected_objective_score", 0.0)) or 0.0
+            ),
+            "expected_es": float(item.get("expected_es", 0.0) or 0.0),
+            "expected_ctm": float(item.get("expected_ctm", item.get("expected_ctm2", 0.0)) or 0.0),
+            "expected_ctm2": float(item.get("expected_ctm2", item.get("expected_ctm", 0.0)) or 0.0),
+            "expected_ctm_order": max(int(item.get("expected_ctm_order", DEFAULT_CTM_ORDER) or DEFAULT_CTM_ORDER), 1),
+            "expected_tail_probability": float(item.get("expected_tail_probability", 0.0) or 0.0),
             "sample_count": int(item.get("sample_count", 0) or 0),
             "edge_bin": int(edge_bin),
             "risk_bin": int(risk_bin),
             "risk_feature_name": risk_feature_name,
             "risk_feature_value": float(risk_value),
+            "decision_source": "bin_audit_fallback",
+            "chosen_action_source": "bin_audit_fallback",
             "exit_policy_template": template,
         }
     return None
@@ -822,7 +949,7 @@ def _apply_notional_multipliers(
     for index in comparable_indices:
         row = by_bin[index]
         edge = max(float(row.get("expected_edge", 0.0) or 0.0), 0.0)
-        downside = max(float(row.get("expected_downside_deviation", 0.0) or 0.0), float(numerical_floor))
+        downside = _resolve_risk_budget_denominator(row=row, numerical_floor=numerical_floor)
         score = edge / downside if edge > 0.0 else 0.0
         scores.append((float(score), int(index)))
     scores.sort(key=lambda item: item[0])
@@ -852,7 +979,7 @@ def _resolve_continuous_notional_multiplier(
     scored_rows: list[float] = []
     for item in comparable_rows:
         edge = max(float(item.get("expected_edge", 0.0) or 0.0), 0.0)
-        downside = max(float(item.get("expected_downside_deviation", 0.0) or 0.0), float(numerical_floor))
+        downside = _resolve_risk_budget_denominator(row=item, numerical_floor=numerical_floor)
         scored_rows.append(edge / downside if edge > 0.0 else 0.0)
     min_score = min(scored_rows, default=0.0)
     max_score = max(scored_rows, default=0.0)
@@ -888,6 +1015,135 @@ def _resolve_bin_index(value: float, bounds: list[float]) -> int:
     if clipped >= bounds[-1]:
         return len(bounds) - 2
     return max(min(int(np.searchsorted(bounds, clipped, side="right") - 1), len(bounds) - 2), 0)
+
+
+def _build_tail_risk_contract(
+    *,
+    trade_rows: list[dict[str, Any]],
+    tail_confidence_level: float,
+    ctm_order: int,
+    numerical_floor: float,
+) -> dict[str, Any]:
+    confidence = min(max(float(tail_confidence_level), 0.50), 0.995)
+    order = max(int(ctm_order), 1)
+    hold_losses = np.asarray([max(-float(item["hold_return"]), 0.0) for item in trade_rows], dtype=np.float64)
+    risk_losses = np.asarray([max(-float(item["risk_return"]), 0.0) for item in trade_rows], dtype=np.float64)
+    return {
+        "status": "ready",
+        "method": "empirical_tail_exceedance_v1",
+        "confidence_level": float(confidence),
+        "ctm_order": int(order),
+        "rows_total": int(len(trade_rows)),
+        "actions": {
+            "hold": _build_action_tail_contract(
+                losses=hold_losses,
+                confidence_level=float(confidence),
+                ctm_order=int(order),
+                numerical_floor=float(numerical_floor),
+            ),
+            "risk": _build_action_tail_contract(
+                losses=risk_losses,
+                confidence_level=float(confidence),
+                ctm_order=int(order),
+                numerical_floor=float(numerical_floor),
+            ),
+        },
+    }
+
+
+def _build_action_tail_contract(
+    *,
+    losses: np.ndarray,
+    confidence_level: float,
+    ctm_order: int,
+    numerical_floor: float,
+) -> dict[str, Any]:
+    clean_losses = np.asarray(losses, dtype=np.float64)
+    clean_losses = np.where(np.isfinite(clean_losses), np.clip(clean_losses, 0.0, None), 0.0)
+    if clean_losses.size <= 0:
+        return {
+            "tail_threshold_loss": 0.0,
+            "tail_count": 0,
+            "tail_event_rate": 0.0,
+            "sample_expected_es": 0.0,
+            "sample_expected_ctm": 0.0,
+        }
+    threshold = float(np.quantile(clean_losses, min(max(float(confidence_level), 0.0), 1.0)))
+    tail_mask = clean_losses >= max(threshold - float(numerical_floor), 0.0)
+    probability = float(np.mean(tail_mask.astype(np.float64)))
+    numerator = float(np.mean(clean_losses * tail_mask.astype(np.float64)))
+    ctm_numerator = float(np.mean((clean_losses ** max(int(ctm_order), 1)) * tail_mask.astype(np.float64)))
+    denominator = max(float(probability), float(numerical_floor))
+    return {
+        "tail_threshold_loss": float(threshold),
+        "tail_count": int(np.sum(tail_mask)),
+        "tail_event_rate": float(probability),
+        "sample_expected_es": float(numerator / denominator),
+        "sample_expected_ctm": float(ctm_numerator / denominator),
+    }
+
+
+def _build_tail_risk_targets(
+    *,
+    trade_rows: list[dict[str, Any]],
+    tail_risk_contract: dict[str, Any],
+) -> dict[str, np.ndarray]:
+    hold_contract = dict((tail_risk_contract.get("actions") or {}).get("hold") or {})
+    risk_contract = dict((tail_risk_contract.get("actions") or {}).get("risk") or {})
+    ctm_order = max(int(tail_risk_contract.get("ctm_order", DEFAULT_CTM_ORDER) or DEFAULT_CTM_ORDER), 1)
+    hold_threshold = float(hold_contract.get("tail_threshold_loss", 0.0) or 0.0)
+    risk_threshold = float(risk_contract.get("tail_threshold_loss", 0.0) or 0.0)
+    hold_losses = np.asarray([max(-float(item["hold_return"]), 0.0) for item in trade_rows], dtype=np.float64)
+    risk_losses = np.asarray([max(-float(item["risk_return"]), 0.0) for item in trade_rows], dtype=np.float64)
+    hold_tail_hit = (hold_losses >= hold_threshold).astype(np.float64)
+    risk_tail_hit = (risk_losses >= risk_threshold).astype(np.float64)
+    return {
+        "hold_tail_probability": hold_tail_hit,
+        "risk_tail_probability": risk_tail_hit,
+        "hold_tail_loss_numerator": hold_losses * hold_tail_hit,
+        "risk_tail_loss_numerator": risk_losses * risk_tail_hit,
+        "hold_tail_ctm_numerator": (hold_losses ** ctm_order) * hold_tail_hit,
+        "risk_tail_ctm_numerator": (risk_losses ** ctm_order) * risk_tail_hit,
+    }
+
+
+def _summarize_tail_moments(
+    *,
+    returns: np.ndarray,
+    action_contract: dict[str, Any],
+    ctm_order: int,
+    numerical_floor: float,
+) -> dict[str, float]:
+    losses = np.asarray([max(-float(value), 0.0) for value in np.asarray(returns, dtype=np.float64)], dtype=np.float64)
+    threshold = float(action_contract.get("tail_threshold_loss", 0.0) or 0.0)
+    tail_mask = losses >= max(threshold - float(numerical_floor), 0.0)
+    probability = float(np.mean(tail_mask.astype(np.float64))) if losses.size > 0 else 0.0
+    denominator = max(float(probability), float(numerical_floor))
+    numerator = float(np.mean(losses * tail_mask.astype(np.float64))) if losses.size > 0 else 0.0
+    ctm_numerator = (
+        float(np.mean((losses ** max(int(ctm_order), 1)) * tail_mask.astype(np.float64)))
+        if losses.size > 0
+        else 0.0
+    )
+    return {
+        "tail_probability": float(probability),
+        "tail_threshold_loss": float(threshold),
+        "expected_es": float(numerator / denominator),
+        "expected_ctm": float(ctm_numerator / denominator),
+    }
+
+
+def _resolve_risk_budget_denominator(*, row: dict[str, Any], numerical_floor: float) -> float:
+    expected_es = _safe_optional_float(row.get("expected_es"))
+    if expected_es is not None and expected_es > 0.0:
+        return max(float(expected_es), float(numerical_floor))
+    return max(float(row.get("expected_downside_deviation", 0.0) or 0.0), float(numerical_floor))
+
+
+def _dig_tail_contract(payload: dict[str, Any], action: str, key: str) -> Any:
+    actions = dict(payload.get("actions") or {})
+    action_payload = dict(actions.get(str(action).strip().lower()) or {})
+    return action_payload.get(key)
 
 
 def _result_doc(net_return: float, *, lpm_order: int, numerical_floor: float) -> dict[str, float]:

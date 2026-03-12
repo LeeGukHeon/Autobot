@@ -3,6 +3,8 @@ from pathlib import Path
 import sqlite3
 import time
 
+import pytest
+
 from autobot.dashboard_server import build_dashboard_snapshot
 
 
@@ -41,6 +43,11 @@ def _init_live_db(path: Path) -> None:
                                     "recommended_action": "risk",
                                     "expected_edge": 0.0123,
                                     "expected_downside_deviation": 0.0045,
+                                    "expected_es": 0.0061,
+                                    "expected_ctm": 0.000041,
+                                    "expected_ctm_order": 2,
+                                    "expected_action_value": 1.7,
+                                    "decision_source": "continuous_conditional_action_value",
                                     "recommended_notional_multiplier": 1.2,
                                 }
                             }
@@ -92,7 +99,26 @@ def _init_live_db(path: Path) -> None:
                 45.0,
                 98.7,
                 1.2,
-                json.dumps({"strategy": "model_alpha_v1"}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "trade_action": {
+                                    "recommended_action": "risk",
+                                    "expected_edge": 0.0123,
+                                    "expected_downside_deviation": 0.0045,
+                                    "expected_es": 0.0061,
+                                    "expected_ctm": 0.000041,
+                                    "expected_ctm_order": 2,
+                                    "expected_action_value": 1.7,
+                                    "decision_source": "continuous_conditional_action_value",
+                                    "recommended_notional_multiplier": 1.2,
+                                }
+                            }
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
                 json.dumps({"close_mode": "managed_exit_order"}, ensure_ascii=False),
                 now_ms - 5_000,
             ),
@@ -164,6 +190,15 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
                 "status": "ready",
                 "source": "walk_forward_oos_trade_replay",
                 "risk_feature_name": "rv_12",
+                "runtime_decision_source": "continuous_conditional_action_value",
+                "state_feature_names": ["selection_score", "rv_12", "rv_36", "atr_pct_14"],
+                "tail_confidence_level": 0.9,
+                "ctm_order": 2,
+                "tail_risk_contract": {"method": "empirical_tail_exceedance_v1"},
+                "conditional_action_model": {
+                    "status": "ready",
+                    "model": "conditional_action_linear_ols_v1",
+                },
                 "summary": {
                     "hold_bins_recommended": 5,
                     "risk_bins_recommended": 1,
@@ -175,6 +210,11 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
                         "recommended_action": "risk",
                         "expected_edge": 0.0123,
                         "expected_downside_deviation": 0.0045,
+                        "expected_es": 0.0061,
+                        "expected_ctm": 0.000041,
+                        "expected_ctm_order": 2,
+                        "expected_action_value": 1.7,
+                        "expected_tail_probability": 0.18,
                         "recommended_notional_multiplier": 1.2,
                         "sample_count": 42,
                     }
@@ -208,11 +248,15 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert runtime_recommendations["recommended_risk_vol_feature"] == "atr_14"
     assert runtime_recommendations["trade_action"]["status"] == "ready"
     assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_edge_bps"] == 123.0
+    assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_es_bps"] == pytest.approx(61.0)
+    assert runtime_recommendations["trade_action"]["conditional_action_model"] == "conditional_action_linear_ols_v1"
     assert exit_compare["hold"]["orders_filled"] == 8
     assert exit_compare["risk"]["slippage_bps_mean"] == 13.5
     assert exit_compare["summary_ko"]
     assert recent_intent["trade_action_recommended_action"] == "risk"
     assert recent_intent["trade_action_expected_edge_bps"] == 123.0
+    assert recent_intent["trade_action_expected_es_bps"] == pytest.approx(61.0)
+    assert recent_intent["trade_action_decision_source"] == "continuous_conditional_action_value"
     assert recent_intent["expected_net_edge_bps"] == 98.7
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 

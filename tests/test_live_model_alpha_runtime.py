@@ -784,6 +784,11 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
                                 "recommended_action": "risk",
                                 "expected_edge": 0.0123,
                                 "expected_downside_deviation": 0.0045,
+                                "expected_es": 0.0061,
+                                "expected_ctm": 0.000041,
+                                "expected_ctm_order": 2,
+                                "expected_action_value": 1.7,
+                                "decision_source": "continuous_conditional_action_value",
                                 "recommended_notional_multiplier": 1.2,
                             },
                             "model_exit_plan": {
@@ -869,6 +874,8 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
     trade_action = strategy_meta.get("trade_action")
     assert isinstance(trade_action, dict)
     assert trade_action.get("recommended_action") == "risk"
+    assert trade_action.get("expected_es") == 0.0061
+    assert trade_action.get("decision_source") == "continuous_conditional_action_value"
     admissibility = meta_payload.get("admissibility")
     assert isinstance(admissibility, dict)
     decision = admissibility.get("decision")

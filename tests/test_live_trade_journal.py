@@ -29,6 +29,11 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
                     "recommended_action": "risk",
                     "expected_edge": 0.0123,
                     "expected_downside_deviation": 0.0045,
+                    "expected_es": 0.0061,
+                    "expected_ctm": 0.000041,
+                    "expected_ctm_order": 2,
+                    "expected_action_value": 1.7,
+                    "decision_source": "continuous_conditional_action_value",
                     "recommended_notional_multiplier": 1.2,
                 },
             }
@@ -166,6 +171,9 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
     assert row["realized_pnl_pct"] == pytest.approx(2.8970514742628906)
     assert row["close_mode"] == "managed_exit_order"
     assert row["entry_meta"]["execution"]["initial_ref_price"] == 99.8
+    assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["expected_es"] == 0.0061
+    assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["expected_ctm"] == 0.000041
+    assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["decision_source"] == "continuous_conditional_action_value"
     assert row["exit_meta"]["gross_pnl_quote"] == pytest.approx(3.0)
     assert row["exit_meta"]["total_fee_quote"] == pytest.approx(0.1015)
     assert row["exit_meta"]["entry_realized_slippage_bps"] == pytest.approx(20.04008016032014)
