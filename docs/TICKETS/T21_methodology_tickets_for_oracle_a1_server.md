@@ -270,7 +270,7 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.19` slice 5 landed locally:
   - live trade journal summaries now preserve per-trade `ES / CTM / action-value / decision-source`
   - dashboard runtime, intent, and trade views now surface the same trade-action tail-risk contract
-- `T21.20` planned:
+- `T21.20` foundation landed locally:
   - `hold` and `risk` are now represented in runtime recommendations as explicit bounded exit families
   - runtime exit artifacts now expose:
     - `hold_family`
@@ -279,7 +279,7 @@ These tickets are the required follow-on family before changing core promotion b
     - `chosen_family`
     - `chosen_rule_id`
   - trainer decision surface now records family-status diagnostics for runtime exit recommendations
-  - latest work is family-contract foundation only; explicit abstain on insufficient family support is still pending
+  - explicit abstain on insufficient family support now lands through the runtime exit recommendation contract
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

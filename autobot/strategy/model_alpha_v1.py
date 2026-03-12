@@ -792,12 +792,22 @@ def resolve_runtime_model_alpha_settings(
 
     exit_doc = runtime_recommendations.get("exit")
     exit_contract_valid = isinstance(exit_doc, dict)
+    exit_family_compare_supported = True
     if isinstance(exit_doc, dict):
         contract_status = str(exit_doc.get("contract_status") or "").strip()
         contract_issues = [str(item).strip() for item in (exit_doc.get("contract_issues") or []) if str(item).strip()]
         backfilled_fields = [
             str(item).strip() for item in (exit_doc.get("contract_backfilled_fields") or []) if str(item).strip()
         ]
+        family_compare_status = str(exit_doc.get("family_compare_status") or "").strip()
+        state["exit_family_compare_status"] = family_compare_status or "missing"
+        exit_family_compare_supported = family_compare_status.lower() in {"", "supported", "legacy_backfilled"}
+        if not exit_family_compare_supported:
+            state["exit_family_compare_reason_codes"] = [
+                str(item).strip()
+                for item in ((exit_doc.get("family_compare") or {}).get("reason_codes") or [])
+                if str(item).strip()
+            ]
         if contract_status:
             state["exit_contract_status"] = contract_status
         if contract_issues:
@@ -806,7 +816,12 @@ def resolve_runtime_model_alpha_settings(
         if backfilled_fields:
             state["exit_contract_backfilled_fields"] = backfilled_fields
 
-    if isinstance(exit_doc, dict) and exit_contract_valid and bool(settings.exit.use_learned_exit_mode):
+    if (
+        isinstance(exit_doc, dict)
+        and exit_contract_valid
+        and exit_family_compare_supported
+        and bool(settings.exit.use_learned_exit_mode)
+    ):
         recommended_exit_mode = str(exit_doc.get("recommended_exit_mode", "")).strip().lower()
         if recommended_exit_mode in {"hold", "risk"}:
             resolved = replace(
@@ -829,7 +844,12 @@ def resolve_runtime_model_alpha_settings(
                 if isinstance(exit_doc.get("exit_mode_compare"), dict)
                 else {},
             }
-    if isinstance(exit_doc, dict) and exit_contract_valid and bool(settings.exit.use_learned_hold_bars):
+    if (
+        isinstance(exit_doc, dict)
+        and exit_contract_valid
+        and exit_family_compare_supported
+        and bool(settings.exit.use_learned_hold_bars)
+    ):
         recommended_hold_bars = exit_doc.get("recommended_hold_bars")
         try:
             if (
@@ -850,7 +870,12 @@ def resolve_runtime_model_alpha_settings(
         except (TypeError, ValueError):
             pass
 
-    if isinstance(exit_doc, dict) and exit_contract_valid and bool(settings.exit.use_learned_risk_recommendations):
+    if (
+        isinstance(exit_doc, dict)
+        and exit_contract_valid
+        and exit_family_compare_supported
+        and bool(settings.exit.use_learned_risk_recommendations)
+    ):
         try:
             recommended_scaling_mode = str(
                 exit_doc.get("recommended_risk_scaling_mode", resolved.exit.risk_scaling_mode)

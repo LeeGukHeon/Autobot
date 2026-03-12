@@ -78,6 +78,13 @@ def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[
         )
         if risk_family:
             normalized["risk_family"] = risk_family
+    family_compare = normalized.get("family_compare")
+    family_compare_status = (
+        str((family_compare or {}).get("status", "")).strip().lower() if isinstance(family_compare, dict) else ""
+    )
+    family_compare_supported = (
+        bool((family_compare or {}).get("comparable", False)) if isinstance(family_compare, dict) else False
+    )
     hold_row = _build_exit_row(
         summary=normalized.get("summary"),
         grid_point=normalized.get("grid_point"),
@@ -88,7 +95,19 @@ def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[
         grid_point=normalized.get("risk_grid_point"),
         objective_score=normalized.get("risk_objective_score"),
     )
-    derived = resolve_exit_mode_recommendation(hold_row, risk_row)
+    if family_compare_status and (family_compare_status != "supported" or not family_compare_supported):
+        derived = {
+            "recommended_exit_mode": "",
+            "recommended_exit_mode_source": "execution_backtest_family_compare",
+            "recommended_exit_mode_reason_code": "EXIT_FAMILY_INSUFFICIENT_EVIDENCE",
+            "exit_mode_compare": {
+                "decision": str((family_compare or {}).get("decision", "")).strip() or "not_comparable",
+                "comparable": False,
+                "reasons": list((family_compare or {}).get("reason_codes") or []),
+            },
+        }
+    else:
+        derived = resolve_exit_mode_recommendation(hold_row, risk_row)
     backfilled_fields: list[str] = []
     for key, value in derived.items():
         if _is_missing_contract_value(normalized.get(key)):
@@ -173,7 +192,8 @@ def runtime_exit_contract_issues(exit_payload: dict[str, Any] | None) -> list[st
     hold_family = payload.get("hold_family")
     risk_family = payload.get("risk_family")
     family_compare = payload.get("family_compare")
-    if mode not in _EXIT_MODE_VALUES:
+    family_compare_status = str((family_compare or {}).get("status", "")).strip().lower() if isinstance(family_compare, dict) else ""
+    if mode not in _EXIT_MODE_VALUES and family_compare_status == "supported":
         issues.append("RECOMMENDED_EXIT_MODE_MISSING")
     if not source:
         issues.append("RECOMMENDED_EXIT_MODE_SOURCE_MISSING")

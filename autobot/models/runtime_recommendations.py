@@ -179,11 +179,14 @@ def optimize_runtime_recommendations(
     ranked_risk_exit = _rank_execution_rows(risk_exit_rows)
     risk_family = _build_exit_family_doc(family="risk", rows=ranked_risk_exit)
     best_risk_exit = _resolve_family_representative_row(risk_family)
-    exit_recommendation = resolve_exit_mode_recommendation(best_hold, best_risk_exit)
     exit_family_compare = _build_exit_family_compare_doc(
         hold_family=hold_family,
         risk_family=risk_family,
-        exit_recommendation=exit_recommendation,
+    )
+    exit_recommendation = _resolve_family_aware_exit_recommendation(
+        family_compare=exit_family_compare,
+        best_hold_row=best_hold,
+        best_risk_row=best_risk_exit,
     )
     execution_exit_settings = _resolve_execution_backtest_exit_settings(
         base_exit=base_settings.exit,
@@ -412,7 +415,6 @@ def _build_exit_family_compare_doc(
     *,
     hold_family: dict[str, Any],
     risk_family: dict[str, Any],
-    exit_recommendation: dict[str, Any],
 ) -> dict[str, Any]:
     hold_row = _resolve_family_comparable_row(hold_family)
     risk_row = _resolve_family_comparable_row(risk_family)
@@ -426,7 +428,6 @@ def _build_exit_family_compare_doc(
             "decision": str(compare_doc.get("decision", "")).strip(),
             "comparable": bool(compare_doc.get("comparable", False)),
             "reason_codes": [str(item).strip() for item in (compare_doc.get("reasons") or []) if str(item).strip()],
-            "recommended_exit_mode": str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip(),
             "hold_rule_id": str(hold_row.get("rule_id", "")).strip(),
             "risk_rule_id": str(risk_row.get("rule_id", "")).strip(),
         }
@@ -440,10 +441,31 @@ def _build_exit_family_compare_doc(
         "decision": "not_comparable",
         "comparable": False,
         "reason_codes": reason_codes,
-        "recommended_exit_mode": str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip(),
         "hold_rule_id": str((hold_family.get("best_rule_id") or "")).strip(),
         "risk_rule_id": str((risk_family.get("best_rule_id") or "")).strip(),
     }
+
+
+def _resolve_family_aware_exit_recommendation(
+    *,
+    family_compare: dict[str, Any],
+    best_hold_row: dict[str, Any] | None,
+    best_risk_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    compare_status = str((family_compare or {}).get("status", "")).strip().lower()
+    comparable = bool((family_compare or {}).get("comparable", False))
+    if compare_status != "supported" or not comparable:
+        return {
+            "recommended_exit_mode": "",
+            "recommended_exit_mode_source": "execution_backtest_family_compare",
+            "recommended_exit_mode_reason_code": "EXIT_FAMILY_INSUFFICIENT_EVIDENCE",
+            "exit_mode_compare": {
+                "decision": str((family_compare or {}).get("decision", "")).strip() or "not_comparable",
+                "comparable": False,
+                "reasons": list((family_compare or {}).get("reason_codes") or []),
+            },
+        }
+    return resolve_exit_mode_recommendation(best_hold_row, best_risk_row)
 
 
 def _resolve_family_representative_row(family_doc: dict[str, Any]) -> dict[str, Any] | None:

@@ -163,7 +163,7 @@
 ### Slice 4. Runtime Abstain Contract
 - if family support is insufficient, emit `INSUFFICIENT_EVIDENCE` rather than defaulting to hold
 - Status:
-  - pending
+  - landed locally for runtime exit recommendations
 
 ### Slice 5. Observability
 - surface rule-family diagnostics in runtime, journal, and dashboard
