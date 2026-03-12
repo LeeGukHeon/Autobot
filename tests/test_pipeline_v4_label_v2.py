@@ -98,6 +98,10 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert stats["rows_final"] > 0
     assert stats["label_pos_rows"] > 0
     assert stats["label_neg_rows"] > 0
+    build_report = json.loads(
+        (features_root / "features_v4_test" / "_meta" / "build_report.json").read_text(encoding="utf-8")
+    )
+    assert build_report["min_rows_for_train"] == 1
 
     label_spec = json.loads((features_root / "features_v4_test" / "_meta" / "label_spec.json").read_text(encoding="utf-8"))
     assert label_spec["label_set_version"] == "v2_crypto_cs"

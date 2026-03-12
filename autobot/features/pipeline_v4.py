@@ -710,6 +710,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
         "rows_dropped_one_m": rows_dropped_one_m,
         "rows_rescued_by_one_m_densify": rows_rescued_by_one_m_densify,
         "rows_final": rows_final,
+        "min_rows_for_train": int(config.build.min_rows_for_train),
         "one_m_synth_ratio_p50": one_m_synth_ratio_p50,
         "one_m_synth_ratio_p90": one_m_synth_ratio_p90,
         "label_distribution_before_drop": label_dist_before_drop,

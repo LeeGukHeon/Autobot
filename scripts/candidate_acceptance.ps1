@@ -2394,6 +2394,12 @@ function Invoke-FeaturesBuildAndLoadReport {
     $minRows = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "min_rows_for_train" -DefaultValue 0) 0)
     $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
     $errorMessage = [string](Get-PropValue -ObjectValue $reportDoc -Name "error_message" -DefaultValue "")
+    if (($minRows -le 0) -and (-not [string]::IsNullOrWhiteSpace($errorMessage))) {
+        $minRowsMatch = [Regex]::Match($errorMessage, 'min_rows_for_train=(\d+)')
+        if ($minRowsMatch.Success) {
+            $minRows = [int](To-Int64 ([string]$minRowsMatch.Groups[1].Value) 0)
+        }
+    }
     $usable = ($exec.ExitCode -eq 0) -or (
         (-not [string]::IsNullOrWhiteSpace($status)) `
         -and ($status -eq "PASS") `
