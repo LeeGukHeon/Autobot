@@ -467,9 +467,9 @@
 
   function riskModeText(plan) {
     const parts = [];
-    if (plan.tp_enabled) parts.push(`익절 ${fmtPct(Number(plan.tp_pct) * 100)}`);
-    if (plan.sl_enabled) parts.push(`손절 ${fmtPct(Number(plan.sl_pct) * 100)}`);
-    if (plan.trailing_enabled) parts.push(`추적 ${fmtPct(Number(plan.trail_pct) * 100)}`);
+    if (plan.tp_enabled) parts.push(`익절 ${fmtPct(Number(plan.tp_pct))}`);
+    if (plan.sl_enabled) parts.push(`손절 ${fmtPct(Number(plan.sl_pct))}`);
+    if (plan.trailing_enabled) parts.push(`추적 ${fmtPct(Number(plan.trail_pct))}`);
     if (plan.timeout_ts_ms) parts.push(`최대 보유 ${fmtDateTime(plan.timeout_ts_ms)} 종료`);
     return parts.join(" · ") || "리스크 전략";
   }
@@ -561,7 +561,7 @@
         const exitSummary = plan.exit_mode === "hold" ? holdModeText(plan) : riskModeText(plan);
         return card(
           `${plan.market || "-"} · ${translate(plan.exit_mode)}`,
-          `<p class="section-brief">${esc(riskPlanNarrative(plan))}</p><div class="kv-grid">${kv("플랜 상태", translate(plan.state))}${kv("플랜 source", maybe(plan.plan_source))}${kv("연결 intent", shortRun(plan.source_intent_id))}${kv("익절", plan.tp_enabled ? fmtPct(Number(plan.tp_pct) * 100) : "미사용")}${kv("손절", plan.sl_enabled ? fmtPct(Number(plan.sl_pct) * 100) : "미사용")}${kv("추적", plan.trailing_enabled ? fmtPct(Number(plan.trail_pct) * 100) : "미사용")}${kv("종료 시각", fmtDateTime(plan.timeout_ts_ms))}</div>`,
+          `<p class="section-brief">${esc(riskPlanNarrative(plan))}</p><div class="kv-grid">${kv("플랜 상태", translate(plan.state))}${kv("플랜 source", maybe(plan.plan_source))}${kv("연결 intent", shortRun(plan.source_intent_id))}${kv("익절", plan.tp_enabled ? fmtPct(Number(plan.tp_pct)) : "미사용")}${kv("손절", plan.sl_enabled ? fmtPct(Number(plan.sl_pct)) : "미사용")}${kv("추적", plan.trailing_enabled ? fmtPct(Number(plan.trail_pct)) : "미사용")}${kv("종료 시각", fmtDateTime(plan.timeout_ts_ms))}</div>`,
           "mini-card"
         );
       }).join("")

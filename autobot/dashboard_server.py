@@ -1937,9 +1937,9 @@ INDEX_HTML = """<!doctype html>
           status: pill("플랜 상태", translateLocal(plan.state, policyText), plan.state === "ACTIVE" ? "good" : "warn"),
           desc: `진입가 ${fmtMoneyLocal(entry)} · 수량 ${fmtNumberLocal(qty, 8)} · 진입금액 약 ${fmtMoneyLocal(entry * qty)}`,
           meta: [
-            metaChipLocal("익절", plan.tp_enabled ? fmtPctLocal(Number(plan.tp_pct) * 100) : "미사용"),
-            metaChipLocal("손절", plan.sl_enabled ? fmtPctLocal(Number(plan.sl_pct) * 100) : "미사용"),
-            metaChipLocal("추적", plan.trailing_enabled ? fmtPctLocal(Number(plan.trail_pct) * 100) : "미사용"),
+            metaChipLocal("익절", plan.tp_enabled ? fmtPctLocal(Number(plan.tp_pct)) : "미사용"),
+            metaChipLocal("손절", plan.sl_enabled ? fmtPctLocal(Number(plan.sl_pct)) : "미사용"),
+            metaChipLocal("추적", plan.trailing_enabled ? fmtPctLocal(Number(plan.trail_pct)) : "미사용"),
             metaChipLocal("타임아웃", fmtDateTimeLocal(plan.timeout_ts_ms)),
             metaChipLocal("source", plan.plan_source || "-"),
             metaChipLocal("intent", shortRunLocal(plan.source_intent_id)),

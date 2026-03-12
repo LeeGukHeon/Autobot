@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from autobot.dashboard_server import build_dashboard_snapshot
+from autobot.dashboard_server import _load_dashboard_asset, build_dashboard_snapshot
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -313,6 +313,17 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["recent_trades"][0]["exit_recommendation_chosen_family"] == "hold"
     assert recent_intent["expected_net_edge_bps"] == 98.7
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
+
+
+def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
+    js = str(_load_dashboard_asset("dashboard.js"))
+
+    assert 'fmtPct(Number(plan.tp_pct))' in js
+    assert 'fmtPct(Number(plan.sl_pct))' in js
+    assert 'fmtPct(Number(plan.trail_pct))' in js
+    assert 'fmtPct(Number(plan.tp_pct) * 100)' not in js
+    assert 'fmtPct(Number(plan.sl_pct) * 100)' not in js
+    assert 'fmtPct(Number(plan.trail_pct) * 100)' not in js
 
 
 def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path: Path) -> None:
