@@ -58,6 +58,26 @@ def resolve_exit_mode_recommendation(
 
 def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(exit_payload or {})
+    hold_family = normalized.get("hold_family")
+    if not isinstance(hold_family, dict) or not hold_family:
+        hold_family = _build_legacy_exit_family_doc(
+            family="hold",
+            summary=normalized.get("summary"),
+            grid_point=normalized.get("grid_point"),
+            objective_score=normalized.get("objective_score"),
+        )
+        if hold_family:
+            normalized["hold_family"] = hold_family
+    risk_family = normalized.get("risk_family")
+    if not isinstance(risk_family, dict) or not risk_family:
+        risk_family = _build_legacy_exit_family_doc(
+            family="risk",
+            summary=normalized.get("risk_summary"),
+            grid_point=normalized.get("risk_grid_point"),
+            objective_score=normalized.get("risk_objective_score"),
+        )
+        if risk_family:
+            normalized["risk_family"] = risk_family
     hold_row = _build_exit_row(
         summary=normalized.get("summary"),
         grid_point=normalized.get("grid_point"),
@@ -74,6 +94,37 @@ def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[
         if _is_missing_contract_value(normalized.get(key)):
             normalized[key] = value
             backfilled_fields.append(key)
+    family_compare = normalized.get("family_compare")
+    if not isinstance(family_compare, dict) or not family_compare:
+        family_compare = _build_legacy_family_compare_doc(
+            hold_family=normalized.get("hold_family"),
+            risk_family=normalized.get("risk_family"),
+            derived=derived,
+        )
+        if family_compare:
+            normalized["family_compare"] = family_compare
+            backfilled_fields.append("family_compare")
+    if _is_missing_contract_value(normalized.get("hold_family_status")) and isinstance(normalized.get("hold_family"), dict):
+        normalized["hold_family_status"] = str((normalized.get("hold_family") or {}).get("status", "")).strip()
+        backfilled_fields.append("hold_family_status")
+    if _is_missing_contract_value(normalized.get("risk_family_status")) and isinstance(normalized.get("risk_family"), dict):
+        normalized["risk_family_status"] = str((normalized.get("risk_family") or {}).get("status", "")).strip()
+        backfilled_fields.append("risk_family_status")
+    if _is_missing_contract_value(normalized.get("family_compare_status")) and isinstance(normalized.get("family_compare"), dict):
+        normalized["family_compare_status"] = str((normalized.get("family_compare") or {}).get("status", "")).strip()
+        backfilled_fields.append("family_compare_status")
+    if _is_missing_contract_value(normalized.get("chosen_family")) and isinstance(normalized.get("family_compare"), dict):
+        chosen_mode = str(derived.get("recommended_exit_mode", "")).strip().lower()
+        normalized["chosen_family"] = chosen_mode if chosen_mode in _EXIT_MODE_VALUES else ""
+        backfilled_fields.append("chosen_family")
+    if _is_missing_contract_value(normalized.get("chosen_rule_id")):
+        chosen_mode = str(normalized.get("chosen_family") or derived.get("recommended_exit_mode") or "").strip().lower()
+        if chosen_mode == "risk":
+            normalized["chosen_rule_id"] = str(((normalized.get("risk_family") or {}).get("best_comparable_rule_id")) or "").strip()
+        elif chosen_mode == "hold":
+            normalized["chosen_rule_id"] = str(((normalized.get("hold_family") or {}).get("best_comparable_rule_id")) or "").strip()
+        if normalized.get("chosen_rule_id"):
+            backfilled_fields.append("chosen_rule_id")
     issues = runtime_exit_contract_issues(normalized)
     normalized["contract_issues"] = list(issues)
     normalized["contract_backfilled_fields"] = list(backfilled_fields)
@@ -119,6 +170,9 @@ def runtime_exit_contract_issues(exit_payload: dict[str, Any] | None) -> list[st
         ]
     )
     compare_doc = payload.get("exit_mode_compare")
+    hold_family = payload.get("hold_family")
+    risk_family = payload.get("risk_family")
+    family_compare = payload.get("family_compare")
     if mode not in _EXIT_MODE_VALUES:
         issues.append("RECOMMENDED_EXIT_MODE_MISSING")
     if not source:
@@ -130,6 +184,13 @@ def runtime_exit_contract_issues(exit_payload: dict[str, Any] | None) -> list[st
     if has_hold_summary and has_risk_summary:
         if not isinstance(compare_doc, dict) or not str(compare_doc.get("decision") or "").strip():
             issues.append("EXIT_MODE_COMPARE_MISSING")
+    if (has_hold_summary or has_risk_summary) and not isinstance(hold_family, dict):
+        issues.append("EXIT_HOLD_FAMILY_MISSING")
+    if (has_hold_summary or has_risk_summary) and not isinstance(risk_family, dict):
+        issues.append("EXIT_RISK_FAMILY_MISSING")
+    if isinstance(hold_family, dict) and isinstance(risk_family, dict):
+        if not isinstance(family_compare, dict) or not str(family_compare.get("status") or "").strip():
+            issues.append("EXIT_FAMILY_COMPARE_MISSING")
     return issues
 
 
@@ -148,6 +209,72 @@ def _build_exit_row(
     if utility_total is not None:
         row["utility_total"] = float(utility_total)
     return row
+
+
+def _build_legacy_exit_family_doc(
+    *,
+    family: str,
+    summary: Any,
+    grid_point: Any,
+    objective_score: Any,
+) -> dict[str, Any]:
+    row = _build_exit_row(summary=summary, grid_point=grid_point, objective_score=objective_score)
+    if not isinstance(row, dict):
+        return {}
+    family_name = str(family).strip().lower() or "hold"
+    rule_id = _legacy_rule_id(family_name, row)
+    compact_row = {
+        "rule_id": rule_id,
+        "kind": "risk_exit" if family_name == "risk" else "hold",
+        "grid_point": dict(row.get("grid_point", {})),
+        "utility_total": float(row.get("utility_total", 0.0) or 0.0),
+        "objective_score": float(row.get("utility_total", 0.0) or 0.0),
+        "summary": dict(row.get("summary", {})),
+    }
+    return {
+        "family": family_name,
+        "status": "legacy_backfilled",
+        "rows_total": 1,
+        "comparable_rows": 1,
+        "reason_codes": ["LEGACY_SINGLE_RULE_BACKFILL"],
+        "best_rule_id": rule_id,
+        "best_comparable_rule_id": rule_id,
+        "best_rule": compact_row,
+        "best_comparable_rule": compact_row,
+        "top_rules": [compact_row],
+    }
+
+
+def _build_legacy_family_compare_doc(
+    *,
+    hold_family: Any,
+    risk_family: Any,
+    derived: dict[str, Any],
+) -> dict[str, Any]:
+    hold_payload = dict(hold_family or {}) if isinstance(hold_family, dict) else {}
+    risk_payload = dict(risk_family or {}) if isinstance(risk_family, dict) else {}
+    compare_doc = dict(derived.get("exit_mode_compare") or {})
+    status = "supported" if bool(compare_doc.get("comparable", False)) else "legacy_backfilled"
+    return {
+        "status": status,
+        "decision": str(compare_doc.get("decision", "")).strip() or "legacy_backfilled",
+        "comparable": bool(compare_doc.get("comparable", False)),
+        "reason_codes": [str(item).strip() for item in (compare_doc.get("reasons") or []) if str(item).strip()]
+        or ["LEGACY_SINGLE_RULE_COMPARE_BACKFILL"],
+        "recommended_exit_mode": str(derived.get("recommended_exit_mode", "")).strip(),
+        "hold_rule_id": str(hold_payload.get("best_comparable_rule_id", "")).strip(),
+        "risk_rule_id": str(risk_payload.get("best_comparable_rule_id", "")).strip(),
+    }
+
+
+def _legacy_rule_id(family: str, row: dict[str, Any]) -> str:
+    grid_point = dict(row.get("grid_point", {}))
+    if family == "risk":
+        return (
+            f"risk_h{int(grid_point.get('hold_bars', 0) or 0)}"
+            f"_{str(grid_point.get('risk_vol_feature', '')).strip().lower() or 'legacy'}"
+        )
+    return f"hold_h{int(grid_point.get('hold_bars', 0) or 0)}"
 
 
 def _is_missing_contract_value(value: Any) -> bool:

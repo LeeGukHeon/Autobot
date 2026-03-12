@@ -1,7 +1,7 @@
 # T21.20 V4 Stopping-Rule Family And Fair Hold-Risk Comparison v1
 
 - Date: 2026-03-12
-- Status: planned
+- Status: partial foundation landed locally
 - Scope:
   - `autobot/models/trade_action_policy.py`
   - `autobot/models/train_v4_crypto_cs.py`
@@ -148,17 +148,17 @@
 ### Slice 1. Hold-Family Contract
 - version an explicit `hold_family` instead of one implicit hold template
 - Status:
-  - pending
+  - landed locally
 
 ### Slice 2. Risk-Family Compact Symmetry
 - bound `risk_family` to a compact comparable rule set
 - Status:
-  - pending
+  - landed locally
 
 ### Slice 3. Family-Level OOS Compare
 - compare best hold rule and best risk rule under one shared risk-aware objective
 - Status:
-  - pending
+  - landed locally as an execution-family compare contract
 
 ### Slice 4. Runtime Abstain Contract
 - if family support is insufficient, emit `INSUFFICIENT_EVIDENCE` rather than defaulting to hold
@@ -168,7 +168,7 @@
 ### Slice 5. Observability
 - surface rule-family diagnostics in runtime, journal, and dashboard
 - Status:
-  - pending
+  - partial foundation landed locally
 
 ## Acceptance
 - `hold` is represented as an explicit stopping-rule family, not one special simple baseline.

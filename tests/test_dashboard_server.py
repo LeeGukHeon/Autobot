@@ -149,9 +149,21 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
                 "recommended_exit_mode": "hold",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
                 "recommended_exit_mode_reason_code": "HOLD_EXECUTION_COMPARE_EDGE",
+                "chosen_family": "hold",
+                "chosen_rule_id": "hold_h6",
+                "hold_family_status": "supported",
+                "risk_family_status": "supported",
+                "family_compare_status": "supported",
                 "recommended_hold_bars": 6,
                 "objective_score": 0.15,
                 "grid_point": {"hold_bars": 6},
+                "hold_family": {
+                    "status": "supported",
+                    "rows_total": 4,
+                    "comparable_rows": 3,
+                    "best_rule_id": "hold_h6",
+                    "best_comparable_rule_id": "hold_h6",
+                },
                 "recommended_risk_scaling_mode": "volatility_scaled",
                 "recommended_risk_vol_feature": "atr_14",
                 "recommended_tp_vol_multiplier": 1.8,
@@ -178,6 +190,21 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
                     "max_drawdown_pct": 5.0,
                     "slippage_bps_mean": 13.5,
                     "orders_filled": 7,
+                },
+                "risk_family": {
+                    "status": "supported",
+                    "rows_total": 8,
+                    "comparable_rows": 5,
+                    "best_rule_id": "risk_h6_atr_14_tp1p8_sl0p9_tr1p1",
+                    "best_comparable_rule_id": "risk_h6_atr_14_tp1p8_sl0p9_tr1p1",
+                },
+                "family_compare": {
+                    "status": "supported",
+                    "decision": "champion_edge",
+                    "comparable": True,
+                    "reason_codes": ["UTILITY_TIE_BREAK_FAIL"],
+                    "hold_rule_id": "hold_h6",
+                    "risk_rule_id": "risk_h6_atr_14_tp1p8_sl0p9_tr1p1",
                 },
                 "exit_mode_compare": {
                     "decision": "champion_edge",
@@ -245,6 +272,10 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert runtime_artifacts["exists"] is True
     assert runtime_recommendations["recommended_exit_mode"] == "hold"
     assert runtime_recommendations["hold_grid_point"]["hold_bars"] == 6
+    assert runtime_recommendations["chosen_family"] == "hold"
+    assert runtime_recommendations["hold_family"]["status"] == "supported"
+    assert runtime_recommendations["risk_family"]["comparable_rows"] == 5
+    assert runtime_recommendations["family_compare"]["decision"] == "champion_edge"
     assert runtime_recommendations["recommended_risk_vol_feature"] == "atr_14"
     assert runtime_recommendations["trade_action"]["status"] == "ready"
     assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_edge_bps"] == 123.0

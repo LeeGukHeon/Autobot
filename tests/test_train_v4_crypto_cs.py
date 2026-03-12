@@ -938,10 +938,22 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
                 "recommended_exit_mode": "risk",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
                 "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+                "chosen_family": "risk",
+                "chosen_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
+                "hold_family_status": "supported",
+                "risk_family_status": "supported",
+                "family_compare_status": "supported",
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {"run_dir": str(hold_exec_run)},
                 "grid_point": {"hold_bars": 12},
+                "hold_family": {
+                    "status": "supported",
+                    "rows_total": 3,
+                    "comparable_rows": 3,
+                    "best_rule_id": "hold_h12",
+                    "best_comparable_rule_id": "hold_h12",
+                },
                 "recommended_risk_scaling_mode": "volatility_scaled",
                 "recommended_risk_vol_feature": "rv_36",
                 "recommended_tp_vol_multiplier": 2.5,
@@ -955,6 +967,21 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
                     "tp_vol_multiplier": 2.5,
                     "sl_vol_multiplier": 1.5,
                     "trailing_vol_multiplier": 0.75,
+                },
+                "risk_family": {
+                    "status": "supported",
+                    "rows_total": 6,
+                    "comparable_rows": 4,
+                    "best_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
+                    "best_comparable_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
+                },
+                "family_compare": {
+                    "status": "supported",
+                    "decision": "candidate_edge",
+                    "comparable": True,
+                    "reason_codes": ["RISK_EXECUTION_COMPARE_EDGE"],
+                    "hold_rule_id": "hold_h12",
+                    "risk_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
                 },
             },
             "execution": {
@@ -1063,6 +1090,9 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert decision_surface_doc["runtime_recommendation_contract"]["selection_use_learned_recommendations"] is True
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_policy_status"] == "ready"
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_risk_feature_name"] == "rv_36"
+    assert decision_surface_doc["runtime_recommendation_contract"]["exit_hold_family_status"] == "supported"
+    assert decision_surface_doc["runtime_recommendation_contract"]["exit_risk_family_status"] == "supported"
+    assert decision_surface_doc["runtime_recommendation_contract"]["exit_chosen_family"] == "risk"
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_runtime_decision_source"] == "continuous_conditional_action_value"
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_tail_confidence_level"] == 0.9
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_conditional_model"] == "conditional_action_linear_quantile_tail_v2"

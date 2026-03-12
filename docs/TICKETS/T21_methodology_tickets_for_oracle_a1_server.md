@@ -271,9 +271,15 @@ These tickets are the required follow-on family before changing core promotion b
   - live trade journal summaries now preserve per-trade `ES / CTM / action-value / decision-source`
   - dashboard runtime, intent, and trade views now surface the same trade-action tail-risk contract
 - `T21.20` planned:
-  - next methodology step is to represent both `hold` and `risk` as explicit stopping-rule families
-  - family comparison will use one shared OOS replay source and one shared downside-aware objective
-  - insufficient family support must remain explicit instead of collapsing to implicit hold
+  - `hold` and `risk` are now represented in runtime recommendations as explicit bounded exit families
+  - runtime exit artifacts now expose:
+    - `hold_family`
+    - `risk_family`
+    - `family_compare`
+    - `chosen_family`
+    - `chosen_rule_id`
+  - trainer decision surface now records family-status diagnostics for runtime exit recommendations
+  - latest work is family-contract foundation only; explicit abstain on insufficient family support is still pending
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

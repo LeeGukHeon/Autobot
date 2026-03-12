@@ -92,6 +92,7 @@ def optimize_runtime_recommendations(
 
     hold_rows: list[dict[str, Any]] = []
     for hold_bars in _dedupe_positive_ints(active_grid.hold_bars_grid):
+        grid_point = {"hold_bars": int(hold_bars)}
         candidate_settings = replace(
             base_settings,
             exit=replace(
@@ -113,13 +114,15 @@ def optimize_runtime_recommendations(
         hold_rows.append(
             {
                 "kind": "hold",
-                "grid_point": {"hold_bars": int(hold_bars)},
+                "rule_id": _build_exit_rule_id(kind="hold", grid_point=grid_point),
+                "grid_point": grid_point,
                 "summary": summary,
             }
         )
 
     ranked_holds = _rank_execution_rows(hold_rows)
-    best_hold = ranked_holds[0] if ranked_holds else None
+    hold_family = _build_exit_family_doc(family="hold", rows=ranked_holds)
+    best_hold = _resolve_family_representative_row(hold_family)
 
     risk_exit_rows: list[dict[str, Any]] = []
     for hold_bars in _dedupe_positive_ints(active_grid.hold_bars_grid):
@@ -127,6 +130,14 @@ def optimize_runtime_recommendations(
             for tp_mult in _dedupe_positive_floats(active_grid.tp_vol_multiplier_grid):
                 for sl_mult in _dedupe_positive_floats(active_grid.sl_vol_multiplier_grid):
                     for trailing_mult in _dedupe_nonnegative_floats(active_grid.trailing_vol_multiplier_grid):
+                        grid_point = {
+                            "hold_bars": int(hold_bars),
+                            "risk_scaling_mode": "volatility_scaled",
+                            "risk_vol_feature": str(vol_feature),
+                            "tp_vol_multiplier": float(tp_mult),
+                            "sl_vol_multiplier": float(sl_mult),
+                            "trailing_vol_multiplier": float(trailing_mult),
+                        }
                         candidate_settings = replace(
                             base_settings,
                             exit=ModelAlphaExitSettings(
@@ -159,21 +170,21 @@ def optimize_runtime_recommendations(
                         risk_exit_rows.append(
                             {
                                 "kind": "risk_exit",
-                                "grid_point": {
-                                    "hold_bars": int(hold_bars),
-                                    "risk_scaling_mode": "volatility_scaled",
-                                    "risk_vol_feature": str(vol_feature),
-                                    "tp_vol_multiplier": float(tp_mult),
-                                    "sl_vol_multiplier": float(sl_mult),
-                                    "trailing_vol_multiplier": float(trailing_mult),
-                                },
+                                "rule_id": _build_exit_rule_id(kind="risk_exit", grid_point=grid_point),
+                                "grid_point": grid_point,
                                 "summary": summary,
                             }
                         )
 
     ranked_risk_exit = _rank_execution_rows(risk_exit_rows)
-    best_risk_exit = ranked_risk_exit[0] if ranked_risk_exit else None
+    risk_family = _build_exit_family_doc(family="risk", rows=ranked_risk_exit)
+    best_risk_exit = _resolve_family_representative_row(risk_family)
     exit_recommendation = resolve_exit_mode_recommendation(best_hold, best_risk_exit)
+    exit_family_compare = _build_exit_family_compare_doc(
+        hold_family=hold_family,
+        risk_family=risk_family,
+        exit_recommendation=exit_recommendation,
+    )
     execution_exit_settings = _resolve_execution_backtest_exit_settings(
         base_exit=base_settings.exit,
         best_hold_row=best_hold,
@@ -233,8 +244,9 @@ def optimize_runtime_recommendations(
             "selected_threshold_key": selected_threshold_key,
         },
         "exit": _build_exit_doc(
-            best_hold,
-            best_risk_exit,
+            hold_family=hold_family,
+            risk_family=risk_family,
+            family_compare=exit_family_compare,
             fallback_hold_bars=int(base_settings.exit.hold_bars),
             fallback_exit=base_settings.exit,
             resolved_exit_recommendation=exit_recommendation,
@@ -248,13 +260,16 @@ def optimize_runtime_recommendations(
 
 
 def _build_exit_doc(
-    best_row: dict[str, Any] | None,
-    best_risk_row: dict[str, Any] | None,
     *,
+    hold_family: dict[str, Any],
+    risk_family: dict[str, Any],
+    family_compare: dict[str, Any],
     fallback_hold_bars: int,
     fallback_exit: ModelAlphaExitSettings,
     resolved_exit_recommendation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    best_row = _resolve_family_representative_row(hold_family)
+    best_risk_row = _resolve_family_representative_row(risk_family)
     payload: dict[str, Any] = {
         "mode": "hold",
         "recommended_hold_bars": int(fallback_hold_bars),
@@ -307,6 +322,12 @@ def _build_exit_doc(
         )
     exit_recommendation = dict(resolved_exit_recommendation or resolve_exit_mode_recommendation(best_row, best_risk_row))
     payload.update(exit_recommendation)
+    payload["hold_family"] = dict(hold_family)
+    payload["risk_family"] = dict(risk_family)
+    payload["family_compare"] = dict(family_compare)
+    payload["hold_family_status"] = str(hold_family.get("status", "")).strip()
+    payload["risk_family_status"] = str(risk_family.get("status", "")).strip()
+    payload["family_compare_status"] = str(family_compare.get("status", "")).strip()
     payload["mode"] = str(payload.get("recommended_exit_mode") or payload.get("mode") or "hold").strip().lower() or "hold"
     selected_row = _select_resolved_exit_row(best_row, best_risk_row, exit_recommendation)
     payload["recommended_hold_bars"] = _resolve_recommended_hold_bars(
@@ -315,6 +336,9 @@ def _build_exit_doc(
         fallback_hold_bars=fallback_hold_bars,
     )
     if isinstance(selected_row, dict):
+        chosen_family = "risk" if selected_row is best_risk_row else "hold"
+        payload["chosen_family"] = chosen_family
+        payload["chosen_rule_id"] = str(selected_row.get("rule_id", "")).strip()
         payload["selected_policy_kind"] = _resolved_exit_row_kind(
             selected_row=selected_row,
             best_hold_row=best_row,
@@ -324,6 +348,9 @@ def _build_exit_doc(
         payload["selected_objective_score"] = float(selected_row.get("utility_total", 0.0))
         payload["selected_summary"] = dict(selected_row.get("summary", {}))
         payload["selected_grid_point"] = dict(selected_row.get("grid_point", {}))
+    else:
+        payload["chosen_family"] = ""
+        payload["chosen_rule_id"] = ""
     return payload
 
 
@@ -351,6 +378,109 @@ def _build_execution_doc(
         "comparable_pairs": int(best_row.get("comparable_pairs", 0)),
         "summary": dict(best_row.get("summary", {})),
         "grid_point": grid_point,
+    }
+
+
+def _build_exit_family_doc(*, family: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized_rows = [dict(row) for row in rows if isinstance(row, dict)]
+    best_overall = normalized_rows[0] if normalized_rows else None
+    best_comparable = next((dict(row) for row in normalized_rows if bool(row.get("validation_comparable", False))), None)
+    status = "missing"
+    if normalized_rows:
+        status = "supported" if best_comparable is not None else "insufficient_support"
+    reason_codes: list[str] = []
+    if status == "missing":
+        reason_codes.append(f"{str(family).strip().upper()}_FAMILY_EMPTY")
+    elif status == "insufficient_support":
+        reason_codes.append(f"{str(family).strip().upper()}_FAMILY_NO_COMPARABLE_RULE")
+    top_rules = [_compact_exit_rule_row(row) for row in normalized_rows[:6]]
+    return {
+        "family": str(family).strip().lower() or "hold",
+        "status": status,
+        "rows_total": int(len(normalized_rows)),
+        "comparable_rows": int(sum(1 for row in normalized_rows if bool(row.get("validation_comparable", False)))),
+        "reason_codes": reason_codes,
+        "best_rule_id": str((best_overall or {}).get("rule_id", "")).strip(),
+        "best_comparable_rule_id": str((best_comparable or {}).get("rule_id", "")).strip(),
+        "best_rule": _compact_exit_rule_row(best_overall) if isinstance(best_overall, dict) else {},
+        "best_comparable_rule": _compact_exit_rule_row(best_comparable) if isinstance(best_comparable, dict) else {},
+        "top_rules": top_rules,
+    }
+
+
+def _build_exit_family_compare_doc(
+    *,
+    hold_family: dict[str, Any],
+    risk_family: dict[str, Any],
+    exit_recommendation: dict[str, Any],
+) -> dict[str, Any]:
+    hold_row = _resolve_family_comparable_row(hold_family)
+    risk_row = _resolve_family_comparable_row(risk_family)
+    if isinstance(hold_row, dict) and isinstance(risk_row, dict):
+        compare_doc = compare_execution_balanced_pareto(
+            risk_row.get("summary", {}),
+            hold_row.get("summary", {}),
+        )
+        return {
+            "status": "supported" if bool(compare_doc.get("comparable", False)) else "insufficient_support",
+            "decision": str(compare_doc.get("decision", "")).strip(),
+            "comparable": bool(compare_doc.get("comparable", False)),
+            "reason_codes": [str(item).strip() for item in (compare_doc.get("reasons") or []) if str(item).strip()],
+            "recommended_exit_mode": str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip(),
+            "hold_rule_id": str(hold_row.get("rule_id", "")).strip(),
+            "risk_rule_id": str(risk_row.get("rule_id", "")).strip(),
+        }
+    reason_codes: list[str] = []
+    if not isinstance(hold_row, dict):
+        reason_codes.append("HOLD_FAMILY_NO_COMPARABLE_RULE")
+    if not isinstance(risk_row, dict):
+        reason_codes.append("RISK_FAMILY_NO_COMPARABLE_RULE")
+    return {
+        "status": "insufficient_support",
+        "decision": "not_comparable",
+        "comparable": False,
+        "reason_codes": reason_codes,
+        "recommended_exit_mode": str((exit_recommendation or {}).get("recommended_exit_mode", "")).strip(),
+        "hold_rule_id": str((hold_family.get("best_rule_id") or "")).strip(),
+        "risk_rule_id": str((risk_family.get("best_rule_id") or "")).strip(),
+    }
+
+
+def _resolve_family_representative_row(family_doc: dict[str, Any]) -> dict[str, Any] | None:
+    best_comparable = family_doc.get("best_comparable_rule")
+    if isinstance(best_comparable, dict) and best_comparable:
+        return dict(best_comparable)
+    best_rule = family_doc.get("best_rule")
+    if isinstance(best_rule, dict) and best_rule:
+        return dict(best_rule)
+    return None
+
+
+def _resolve_family_comparable_row(family_doc: dict[str, Any]) -> dict[str, Any] | None:
+    best_comparable = family_doc.get("best_comparable_rule")
+    if isinstance(best_comparable, dict) and best_comparable:
+        return dict(best_comparable)
+    return None
+
+
+def _compact_exit_rule_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    summary = dict(row.get("summary", {}))
+    return {
+        "rule_id": str(row.get("rule_id", "")).strip(),
+        "kind": str(row.get("kind", "")).strip(),
+        "grid_point": dict(row.get("grid_point", {})),
+        "utility_total": float(row.get("utility_total", 0.0) or 0.0),
+        "objective_score": float(row.get("utility_total", 0.0) or 0.0),
+        "comparable_pairs": int(row.get("comparable_pairs", 0) or 0),
+        "validation_comparable": bool(row.get("validation_comparable", False)),
+        "realized_pnl_quote": float(summary.get("realized_pnl_quote", 0.0) or 0.0),
+        "fill_rate": float(summary.get("fill_rate", 0.0) or 0.0),
+        "max_drawdown_pct": float(summary.get("max_drawdown_pct", 0.0) or 0.0),
+        "slippage_bps_mean": float(summary.get("slippage_bps_mean", 0.0) or 0.0),
+        "orders_filled": int(summary.get("orders_filled", 0) or 0),
+        "summary": summary,
     }
 
 
@@ -402,6 +532,26 @@ def _rank_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reverse=True,
     )
     return normalized
+
+
+def _build_exit_rule_id(*, kind: str, grid_point: dict[str, Any]) -> str:
+    kind_value = str(kind).strip().lower() or "hold"
+    if kind_value == "hold":
+        return f"hold_h{int(grid_point.get('hold_bars', 0) or 0)}"
+    return (
+        f"risk_h{int(grid_point.get('hold_bars', 0) or 0)}"
+        f"_{str(grid_point.get('risk_vol_feature', '')).strip().lower()}"
+        f"_tp{_rule_float_token(grid_point.get('tp_vol_multiplier'))}"
+        f"_sl{_rule_float_token(grid_point.get('sl_vol_multiplier'))}"
+        f"_tr{_rule_float_token(grid_point.get('trailing_vol_multiplier'))}"
+    )
+
+
+def _rule_float_token(value: Any) -> str:
+    numeric = _safe_optional_float(value)
+    if numeric is None:
+        return "na"
+    return str(numeric).replace(".", "p")
 
 
 def _dedupe_positive_ints(values: tuple[int, ...]) -> tuple[int, ...]:

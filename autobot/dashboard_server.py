@@ -781,6 +781,9 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
     exit_payload = dict(_dig(normalized, "exit") or {})
     hold_grid_point = dict(exit_payload.get("grid_point") or {})
     risk_grid_point = dict(exit_payload.get("risk_grid_point") or {})
+    hold_family = dict(exit_payload.get("hold_family") or {})
+    risk_family = dict(exit_payload.get("risk_family") or {})
+    family_compare = dict(exit_payload.get("family_compare") or {})
     trade_action = dict(normalized.get("trade_action") or {})
     trade_action_summary = {
         "status": trade_action.get("status"),
@@ -828,10 +831,34 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
         "recommended_exit_mode": _dig(normalized, "exit", "recommended_exit_mode") or _dig(normalized, "exit", "mode"),
         "recommended_exit_mode_reason_code": _dig(normalized, "exit", "recommended_exit_mode_reason_code"),
         "recommended_hold_bars": _dig(normalized, "exit", "recommended_hold_bars"),
+        "chosen_family": exit_payload.get("chosen_family"),
+        "chosen_rule_id": exit_payload.get("chosen_rule_id"),
         "hold_objective_score": _dig(normalized, "exit", "objective_score"),
         "risk_objective_score": _dig(normalized, "exit", "risk_objective_score"),
         "hold_grid_point": hold_grid_point,
         "risk_grid_point": risk_grid_point,
+        "hold_family": {
+            "status": hold_family.get("status"),
+            "rows_total": _coerce_int(hold_family.get("rows_total")),
+            "comparable_rows": _coerce_int(hold_family.get("comparable_rows")),
+            "best_rule_id": hold_family.get("best_rule_id"),
+            "best_comparable_rule_id": hold_family.get("best_comparable_rule_id"),
+        },
+        "risk_family": {
+            "status": risk_family.get("status"),
+            "rows_total": _coerce_int(risk_family.get("rows_total")),
+            "comparable_rows": _coerce_int(risk_family.get("comparable_rows")),
+            "best_rule_id": risk_family.get("best_rule_id"),
+            "best_comparable_rule_id": risk_family.get("best_comparable_rule_id"),
+        },
+        "family_compare": {
+            "status": family_compare.get("status"),
+            "decision": family_compare.get("decision"),
+            "comparable": bool(family_compare.get("comparable", False)),
+            "reason_codes": list(family_compare.get("reason_codes") or []),
+            "hold_rule_id": family_compare.get("hold_rule_id"),
+            "risk_rule_id": family_compare.get("risk_rule_id"),
+        },
         "recommended_risk_scaling_mode": _dig(normalized, "exit", "recommended_risk_scaling_mode"),
         "recommended_risk_vol_feature": _dig(normalized, "exit", "recommended_risk_vol_feature"),
         "recommended_tp_vol_multiplier": _dig(normalized, "exit", "recommended_tp_vol_multiplier"),
