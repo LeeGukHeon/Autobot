@@ -10,6 +10,7 @@ import time
 import pytest
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepResult
+from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import (
     LiveModelAlphaRuntimeSettings,
@@ -73,6 +74,20 @@ class _FlowPublicClient:
     def orderbook_instruments(self, markets):  # noqa: ANN201
         _ = markets
         return [{"market": "KRW-FLOW", "tick_size": 0.1}]
+
+
+class _StaticPublicClient:
+    def __init__(self, market: str, tick_size: float) -> None:
+        self._market = market
+        self._tick_size = tick_size
+
+    def markets(self, *, is_details: bool = False):  # noqa: ANN201
+        _ = is_details
+        return [{"market": self._market}]
+
+    def orderbook_instruments(self, markets):  # noqa: ANN201
+        _ = markets
+        return [{"market": self._market, "tick_size": self._tick_size}]
 
 
 class _PublicWsClient:
@@ -143,6 +158,39 @@ class _ExecutorGateway:
             identifier=identifier,
             intent_id=intent.intent_id,
         )
+
+
+class _OrderSupervisionGateway:
+    def __init__(self) -> None:
+        self.cancel_calls: list[dict[str, object]] = []
+        self.replace_calls: list[dict[str, object]] = []
+
+    def cancel(self, *, upbit_uuid: str | None = None, identifier: str | None = None):  # noqa: ANN201
+        payload = {"upbit_uuid": upbit_uuid, "identifier": identifier}
+        self.cancel_calls.append(payload)
+        return SimpleNamespace(
+            accepted=True,
+            reason="",
+            upbit_uuid=upbit_uuid,
+            identifier=identifier,
+            intent_id=None,
+        )
+
+    def replace_order(self, **kwargs):  # noqa: ANN003, ANN201
+        self.replace_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            accepted=True,
+            reason="",
+            cancelled_order_uuid=kwargs.get("prev_order_uuid"),
+            new_order_uuid="replaced-order-1",
+            new_identifier=kwargs.get("new_identifier"),
+        )
+
+
+class _NullMicroProvider:
+    def get(self, market: str, ts_ms: int):  # noqa: ANN201
+        _ = market, ts_ms
+        return None
 
 
 class _LargeNotionalStrategy:
@@ -1511,3 +1559,204 @@ def test_attach_exit_order_to_risk_plan_marks_latest_plan_exiting(tmp_path: Path
     assert plan["sl"]["sl_pct"] == pytest.approx(1.0)
     assert plan["trailing"]["enabled"] is True
     assert plan["trailing"]["trail_pct"] == pytest.approx(0.015)
+
+
+def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=0,
+        price_mode="PASSIVE_MAKER",
+        max_chase_bps=10,
+        min_replace_interval_ms_global=1,
+    )
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-doge-1",
+                ts_ms=1_000,
+                market="KRW-DOGE",
+                side="bid",
+                price=134.0,
+                volume=41.9,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 135.0,
+                            "effective_ref_price": 135.0,
+                            "requested_price": 134.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                        "strategy": {"meta": {"model_prob": 0.79}},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="doge-order-1",
+                identifier="doge-order-1",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=134.0,
+                volume_req=41.9,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=9_000,
+                intent_id="intent-doge-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="doge-order-1",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_StaticPublicClient("KRW-DOGE", 0.1),
+            executor_gateway=gateway,
+            latest_prices={"KRW-DOGE": 135.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=10_000,
+        )
+        order = store.order_by_uuid(uuid="doge-order-1")
+        intent = store.intent_by_id(intent_id="intent-doge-1")
+
+    assert report["aborted"] == 1
+    assert len(gateway.cancel_calls) == 1
+    assert order is not None
+    assert order["state"] == "cancel"
+    assert order["local_state"] == "CANCELLED"
+    assert intent is not None
+    assert intent["status"] == "CANCELLED"
+
+
+def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_plan(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=1,
+        price_mode="JOIN",
+        max_chase_bps=10,
+        min_replace_interval_ms_global=1,
+    )
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-exit-1",
+                ts_ms=1_000,
+                market="KRW-KITE",
+                side="ask",
+                price=100.0,
+                volume=50.0,
+                reason_code="MODEL_ALPHA_EXIT_TIMEOUT",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 100.0,
+                            "effective_ref_price": 100.0,
+                            "requested_price": 100.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                        "strategy": {"meta": {"model_prob": 0.88}},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-1",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="95",
+                qty_str="50",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="EXITING",
+                current_exit_order_uuid="kite-order-1",
+                current_exit_order_identifier="kite-order-1",
+                replace_attempt=0,
+                created_ts=1_000,
+                updated_ts=1_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-entry",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="kite-order-1",
+                identifier="kite-order-1",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=50.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=9_000,
+                intent_id="intent-kite-exit-1",
+                tp_sl_link="plan-kite-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="kite-order-1",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_StaticPublicClient("KRW-KITE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-KITE": 105.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=10_000,
+        )
+        previous = store.order_by_uuid(uuid="kite-order-1")
+        replaced = store.order_by_uuid(uuid="replaced-order-1")
+        plan = store.risk_plan_by_id(plan_id="plan-kite-1")
+        lineage = store.list_order_lineage(intent_id="intent-kite-exit-1")
+
+    assert report["replaced"] == 1
+    assert len(gateway.replace_calls) == 1
+    assert previous is not None
+    assert previous["state"] == "cancel"
+    assert previous["local_state"] == "CANCELLED"
+    assert replaced is not None
+    assert replaced["state"] == "wait"
+    assert replaced["local_state"] == "REPLACING"
+    assert replaced["replace_seq"] == 1
+    assert replaced["tp_sl_link"] == "plan-kite-1"
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "replaced-order-1"
+    assert plan["replace_attempt"] == 1
+    assert len(lineage) == 1
+    assert lineage[0]["prev_uuid"] == "kite-order-1"
+    assert lineage[0]["new_uuid"] == "replaced-order-1"

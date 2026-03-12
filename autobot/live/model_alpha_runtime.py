@@ -74,6 +74,7 @@ from .identifier import new_order_identifier
 from . import model_alpha_runtime_bootstrap as _runtime_bootstrap
 from . import model_alpha_runtime_execute as _runtime_execute
 from . import model_alpha_projection as _model_alpha_projection
+from . import model_alpha_runtime_supervisor as _runtime_supervisor
 from .reconcile import resume_risk_plans_after_reconcile
 from .risk_loop import apply_ticker_event
 from .small_account import (
@@ -170,6 +171,8 @@ async def run_live_model_alpha_runtime(
         "strategy_feature_provider": "",
         "strategy_predictor_run_id": None,
         "stream_stop_reason": None,
+        "last_order_supervision_report": None,
+        "order_supervision_actions_total": 0,
     }
 
     if daemon_settings.startup_reconcile:
@@ -259,6 +262,21 @@ async def run_live_model_alpha_runtime(
         known_positions=known_positions,
         ts_ms=int(time.time() * 1000),
     )
+    initial_order_supervision = _supervise_open_strategy_orders(
+        store=store,
+        client=client,
+        public_client=public_client,
+        executor_gateway=executor_gateway,
+        latest_prices=market_data.latest_prices(),
+        micro_snapshot_provider=micro_provider,
+        micro_order_policy=micro_order_policy,
+        instrument_cache=instrument_cache,
+        ts_ms=int(time.time() * 1000),
+    )
+    summary["last_order_supervision_report"] = initial_order_supervision
+    summary["order_supervision_actions_total"] = int(summary["order_supervision_actions_total"]) + int(
+        initial_order_supervision.get("replaced", 0)
+    ) + int(initial_order_supervision.get("aborted", 0))
 
     interval_ms = _interval_ms_from_tf(settings.tf)
     last_model_decision_ts_ms: int | None = None
@@ -344,6 +362,21 @@ async def run_live_model_alpha_runtime(
                 summary["small_account_report"] = cycle_result.get("small_account_report")
                 _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
                 _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
+                order_supervision = _supervise_open_strategy_orders(
+                    store=store,
+                    client=client,
+                    public_client=public_client,
+                    executor_gateway=executor_gateway,
+                    latest_prices=market_data.latest_prices(),
+                    micro_snapshot_provider=micro_provider,
+                    micro_order_policy=micro_order_policy,
+                    instrument_cache=instrument_cache,
+                    ts_ms=int(time.time() * 1000),
+                )
+                summary["last_order_supervision_report"] = order_supervision
+                summary["order_supervision_actions_total"] = int(summary["order_supervision_actions_total"]) + int(
+                    order_supervision.get("replaced", 0)
+                ) + int(order_supervision.get("aborted", 0))
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -795,6 +828,31 @@ def _find_latest_model_entry_intent(
         store=store,
         market=market,
         position=position,
+    )
+
+
+def _supervise_open_strategy_orders(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    public_client: Any,
+    executor_gateway: Any | None,
+    latest_prices: dict[str, float],
+    micro_snapshot_provider: LiveWsMicroSnapshotProvider,
+    micro_order_policy: MicroOrderPolicyV1 | None,
+    instrument_cache: dict[str, dict[str, Any]],
+    ts_ms: int,
+) -> dict[str, Any]:
+    return _runtime_supervisor.supervise_open_strategy_orders(
+        store=store,
+        client=client,
+        public_client=public_client,
+        executor_gateway=executor_gateway,
+        instrument_cache=instrument_cache,
+        latest_prices=latest_prices,
+        micro_snapshot_provider=micro_snapshot_provider,
+        micro_order_policy=micro_order_policy,
+        ts_ms=ts_ms,
     )
 
 
