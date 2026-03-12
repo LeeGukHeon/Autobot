@@ -3273,7 +3273,7 @@ try {
         $report.steps.daily_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     }
 
-    if ($SplitPolicyHistoricalSelectorEnabled -and (-not $SkipDailyPipeline)) {
+    if ($SplitPolicyHistoricalSelectorEnabled) {
         $splitPolicyResolution = Resolve-SplitPolicySelection `
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
