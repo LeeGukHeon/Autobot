@@ -2315,6 +2315,155 @@ function Resolve-ReportedJsonPathFromText {
     return $reportedPath.Trim()
 }
 
+function Resolve-FeaturesBuildReportPathFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+    $pattern = '(?m)^\[features\]\[build\]\[[^\]]+\]\s+report=(.+)$'
+    $match = [Regex]::Match($TextValue, $pattern)
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
+function Get-DateRangeAscending {
+    param(
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    if ([string]::IsNullOrWhiteSpace($StartDate) -or [string]::IsNullOrWhiteSpace($EndDate)) {
+        return @()
+    }
+    $startObj = [DateTime]::ParseExact($StartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $endObj = [DateTime]::ParseExact($EndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    if ($endObj -lt $startObj) {
+        return @()
+    }
+    $values = New-Object System.Collections.Generic.List[string]
+    $cursor = $startObj
+    while ($cursor -le $endObj) {
+        $values.Add($cursor.ToString("yyyy-MM-dd")) | Out-Null
+        $cursor = $cursor.AddDays(1)
+    }
+    return @($values.ToArray())
+}
+
+function Invoke-FeaturesBuildAndLoadReport {
+    param(
+        [string]$PythonPath,
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    $args = @(
+        "-m", "autobot.cli",
+        "features", "build",
+        "--feature-set", $FeatureSet,
+        "--label-set", $LabelSet,
+        "--tf", $Tf,
+        "--quote", $Quote,
+        "--top-n", $TrainTopN,
+        "--start", $StartDate,
+        "--end", $EndDate
+    )
+    $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
+    $exec = $null
+    try {
+        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    } catch {
+        $exec = [PSCustomObject]@{
+            ExitCode = 2
+            Output = [string]$_.Exception.Message
+            Command = $commandText
+        }
+    }
+    $reportPath = if ($DryRun) { "" } else { Resolve-FeaturesBuildReportPathFromText -TextValue ([string]$exec.Output) }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (-not $DryRun)) {
+        $defaultReportPath = Join-Path $resolvedProjectRoot ("data/features/features_" + $FeatureSet + "/_meta/build_report.json")
+        if (Test-Path $defaultReportPath) {
+            $reportPath = $defaultReportPath
+        }
+    }
+    $reportDoc = if ([string]::IsNullOrWhiteSpace($reportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $reportPath }
+    $rowsFinal = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "rows_final" -DefaultValue 0) 0)
+    $minRows = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "min_rows_for_train" -DefaultValue 0) 0)
+    $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
+    $errorMessage = [string](Get-PropValue -ObjectValue $reportDoc -Name "error_message" -DefaultValue "")
+    $usable = ($exec.ExitCode -eq 0) -or (
+        (-not [string]::IsNullOrWhiteSpace($status)) `
+        -and ($status -eq "PASS") `
+        -and ($rowsFinal -ge $minRows)
+    )
+    return [PSCustomObject]@{
+        Exec = $exec
+        ReportPath = $reportPath
+        Report = $reportDoc
+        RowsFinal = $rowsFinal
+        MinRowsForTrain = $minRows
+        Status = $status
+        ErrorMessage = $errorMessage
+        Usable = [bool]$usable
+    }
+}
+
+function Resolve-TrainWindowByTrainableRows {
+    param(
+        [string]$PythonPath,
+        [string]$InitialTrainStartDate,
+        [string]$TrainEndDate
+    )
+    $attempts = @()
+    $bestAttempt = $null
+    foreach ($candidateStartDate in @(Get-DateRangeAscending -StartDate $InitialTrainStartDate -EndDate $TrainEndDate)) {
+        $probe = Invoke-FeaturesBuildAndLoadReport `
+            -PythonPath $PythonPath `
+            -StartDate $candidateStartDate `
+            -EndDate $TrainEndDate
+        $attempt = [ordered]@{
+            start = $candidateStartDate
+            end = $TrainEndDate
+            exit_code = [int]$probe.Exec.ExitCode
+            report_path = [string]$probe.ReportPath
+            rows_final = [int]$probe.RowsFinal
+            min_rows_for_train = [int]$probe.MinRowsForTrain
+            status = [string]$probe.Status
+            effective_start = [string](Get-PropValue -ObjectValue $probe.Report -Name "effective_start" -DefaultValue "")
+            effective_end = [string](Get-PropValue -ObjectValue $probe.Report -Name "effective_end" -DefaultValue "")
+            error_message = [string]$probe.ErrorMessage
+            usable = [bool]$probe.Usable
+            command = $probe.Exec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$probe.Exec.Output))
+        }
+        $attempts += $attempt
+        if (($null -eq $bestAttempt) -or ([int]$attempt.rows_final -gt [int](Get-PropValue -ObjectValue $bestAttempt -Name "rows_final" -DefaultValue 0))) {
+            $bestAttempt = $attempt
+        }
+        if ($probe.Usable) {
+            return [ordered]@{
+                status = "PASS"
+                selected_start = $candidateStartDate
+                selected_end = $TrainEndDate
+                attempts = @($attempts)
+                best_attempt = $bestAttempt
+                features_build = $attempt
+            }
+        }
+    }
+    return [ordered]@{
+        status = "INSUFFICIENT_TRAINABLE_ROWS"
+        selected_start = ""
+        selected_end = $TrainEndDate
+        attempts = @($attempts)
+        best_attempt = $bestAttempt
+        features_build = $null
+    }
+}
+
 function Resolve-RunDirFromText {
     param([string]$TextValue)
     if ([string]::IsNullOrWhiteSpace($TextValue)) {
@@ -2414,30 +2563,43 @@ try {
     }
 
     if (-not $SkipDailyPipeline) {
-        $featuresBuildArgs = @(
-            "-m", "autobot.cli",
-            "features", "build",
-            "--feature-set", $FeatureSet,
-            "--label-set", $LabelSet,
-            "--tf", $Tf,
-            "--quote", $Quote,
-            "--top-n", $TrainTopN,
-            "--start", $trainStartDate,
-            "--end", $trainEndDate
-        )
-        $featuresBuildExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $featuresBuildArgs
+        $trainabilityResolution = Resolve-TrainWindowByTrainableRows `
+            -PythonPath $resolvedPythonExe `
+            -InitialTrainStartDate $trainStartDate `
+            -TrainEndDate $trainEndDate
         $report.steps.features_build = [ordered]@{
             attempted = $true
-            exit_code = [int]$featuresBuildExec.ExitCode
-            command = $featuresBuildExec.Command
-            output_preview = (Get-OutputPreview -Text ([string]$featuresBuildExec.Output))
             feature_set = $FeatureSet
             label_set = $LabelSet
-            start = $trainStartDate
+            start = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "selected_start" -DefaultValue $trainStartDate)
             end = $trainEndDate
+            resolution_status = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "status" -DefaultValue "")
+            best_attempt = Get-PropValue -ObjectValue $trainabilityResolution -Name "best_attempt" -DefaultValue @{}
+            attempts = @((Get-PropValue -ObjectValue $trainabilityResolution -Name "attempts" -DefaultValue @()))
         }
-        if ($featuresBuildExec.ExitCode -ne 0) {
-            $report.reasons = @("FEATURES_BUILD_FAILED")
+        if ([string](Get-PropValue -ObjectValue $trainabilityResolution -Name "status" -DefaultValue "") -eq "PASS") {
+            $resolvedFeatureWindow = Get-PropValue -ObjectValue $trainabilityResolution -Name "features_build" -DefaultValue @{}
+            $trainStartDate = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "selected_start" -DefaultValue $trainStartDate)
+            $report.steps.features_build.exit_code = [int](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "exit_code" -DefaultValue 0)
+            $report.steps.features_build.command = [string](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "command" -DefaultValue "")
+            $report.steps.features_build.output_preview = [string](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "output_preview" -DefaultValue "")
+            $report.steps.features_build.report_path = [string](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "report_path" -DefaultValue "")
+            $report.steps.features_build.rows_final = [int](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "rows_final" -DefaultValue 0)
+            $report.steps.features_build.min_rows_for_train = [int](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "min_rows_for_train" -DefaultValue 0)
+            $report.steps.features_build.effective_start = [string](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "effective_start" -DefaultValue "")
+            $report.steps.features_build.effective_end = [string](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "effective_end" -DefaultValue "")
+            $report.windows_by_step.train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
+            $report.windows_by_step.research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "train_command_window" }
+        } else {
+            $bestTrainabilityAttempt = Get-PropValue -ObjectValue $trainabilityResolution -Name "best_attempt" -DefaultValue @{}
+            $report.steps.train = [ordered]@{
+                attempted = $false
+                reason = "INSUFFICIENT_TRAINABLE_V4_ROWS"
+                start = $trainStartDate
+                end = $trainEndDate
+                best_attempt = $bestTrainabilityAttempt
+            }
+            $report.reasons = @("INSUFFICIENT_TRAINABLE_V4_ROWS")
             $report.gates.overall_pass = $false
             $paths = Save-Report
             Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false

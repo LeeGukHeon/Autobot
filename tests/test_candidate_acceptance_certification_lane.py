@@ -38,6 +38,8 @@ def _make_fake_python_exe(
     budget_promotion_eligible_satisfied: bool = True,
     candidate_orders_filled: int = 64,
     profile_candidate_min_orders_filled: int = 30,
+    feature_rows_by_window: dict[str, int] | None = None,
+    feature_min_rows_for_train: int = 4000,
 ) -> Path:
     driver_path = tmp_path / "fake_python_driver.py"
     driver_path.write_text(
@@ -59,6 +61,8 @@ def _make_fake_python_exe(
             BUDGET_PROMOTION_ELIGIBLE_SATISFIED = {str(budget_promotion_eligible_satisfied)}
             CANDIDATE_ORDERS_FILLED = {int(candidate_orders_filled)}
             PROFILE_CANDIDATE_MIN_ORDERS_FILLED = {int(profile_candidate_min_orders_filled)}
+            FEATURE_ROWS_BY_WINDOW = {json.dumps(feature_rows_by_window or {})}
+            FEATURE_MIN_ROWS_FOR_TRAIN = {int(feature_min_rows_for_train)}
 
 
             def arg_value(name: str, default: str = "") -> str:
@@ -415,13 +419,44 @@ def _make_fake_python_exe(
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "features", "build"):
+                start_value = arg_value("--start")
+                end_value = arg_value("--end")
                 append_log(
                     {{
                         "command": "features build",
-                        "start": arg_value("--start"),
-                        "end": arg_value("--end"),
+                        "start": start_value,
+                        "end": end_value,
                     }}
                 )
+                key = f"{{start_value}}|{{end_value}}"
+                rows_final = FEATURE_ROWS_BY_WINDOW.get(key)
+                if rows_final is not None:
+                    report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "build_report.json"
+                    write_json(
+                        report_path,
+                        {{
+                            "dataset_name": "features_v4",
+                            "requested_start": start_value,
+                            "requested_end": end_value,
+                            "effective_start": start_value if int(rows_final) > 0 else "",
+                            "effective_end": end_value if int(rows_final) > 0 else "",
+                            "rows_final": int(rows_final),
+                            "min_rows_for_train": FEATURE_MIN_ROWS_FOR_TRAIN,
+                            "status": "PASS" if int(rows_final) >= FEATURE_MIN_ROWS_FOR_TRAIN else "FAIL",
+                            "error_message": (
+                                ""
+                                if int(rows_final) >= FEATURE_MIN_ROWS_FOR_TRAIN
+                                else f"NEED_MORE_MICRO_DAYS_OR_LOOSEN_UNIVERSE: rows_final={{int(rows_final)}} < min_rows_for_train={{FEATURE_MIN_ROWS_FOR_TRAIN}}"
+                            ),
+                        }},
+                    )
+                    print(f"[features][build][v4] report={{report_path}}")
+                    if int(rows_final) < FEATURE_MIN_ROWS_FOR_TRAIN:
+                        print(
+                            f"[features][error] NEED_MORE_MICRO_DAYS_OR_LOOSEN_UNIVERSE: rows_final={{int(rows_final)}} < min_rows_for_train={{FEATURE_MIN_ROWS_FOR_TRAIN}}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(2)
                 print("features_ok")
                 sys.exit(0)
 
@@ -725,6 +760,164 @@ def test_candidate_acceptance_recomputes_window_ramp_after_daily_pipeline_update
     assert report["steps"]["window_ramp_recomputed_after_pipeline"]["effective_train_lookback_days"] == 3
     assert report["windows_by_step"]["train"]["start"] == "2026-03-03"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+
+
+def test_candidate_acceptance_selects_first_train_window_that_meets_trainable_row_budget(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        feature_rows_by_window={
+            "2026-03-01|2026-03-05": 1200,
+            "2026-03-02|2026-03-05": 2500,
+            "2026-03-03|2026-03-05": 4300,
+        },
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-07",
+            "-TrainLookbackDays",
+            "5",
+            "-BacktestLookbackDays",
+            "2",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert [entry for entry in invocations if entry["command"] == "features build"] == [
+        {"command": "features build", "start": "2026-03-01", "end": "2026-03-05"},
+        {"command": "features build", "start": "2026-03-02", "end": "2026-03-05"},
+        {"command": "features build", "start": "2026-03-03", "end": "2026-03-05"},
+    ]
+    assert [entry for entry in invocations if entry["command"] == "model train"] == [
+        {"command": "model train", "start": "2026-03-03", "end": "2026-03-05"}
+    ]
+    assert report["windows_by_step"]["train"]["start"] == "2026-03-03"
+    assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+    assert report["steps"]["features_build"]["rows_final"] == 4300
+    assert report["steps"]["features_build"]["attempts"][0]["rows_final"] == 1200
+    assert report["steps"]["features_build"]["attempts"][1]["rows_final"] == 2500
+    assert report["steps"]["features_build"]["attempts"][2]["rows_final"] == 4300
+
+
+def test_candidate_acceptance_fails_explicitly_when_no_train_window_meets_min_rows(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        feature_rows_by_window={
+            "2026-03-01|2026-03-05": 1200,
+            "2026-03-02|2026-03-05": 1100,
+            "2026-03-03|2026-03-05": 900,
+            "2026-03-04|2026-03-05": 600,
+            "2026-03-05|2026-03-05": 200,
+        },
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-07",
+            "-TrainLookbackDays",
+            "5",
+            "-BacktestLookbackDays",
+            "2",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert report["reasons"] == ["INSUFFICIENT_TRAINABLE_V4_ROWS"]
+    assert report["steps"]["train"]["reason"] == "INSUFFICIENT_TRAINABLE_V4_ROWS"
+    assert report["steps"]["train"]["best_attempt"]["rows_final"] == 1200
+    assert report["steps"]["features_build"]["resolution_status"] == "INSUFFICIENT_TRAINABLE_ROWS"
+    assert len(report["steps"]["features_build"]["attempts"]) == 5
 
 
 def test_candidate_acceptance_applies_train_start_floor_date(tmp_path: Path) -> None:
