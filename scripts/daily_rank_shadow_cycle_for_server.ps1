@@ -70,9 +70,13 @@ function Get-PropValue {
         return $DefaultValue
     }
     try {
-        $property = $ObjectValue.PSObject.Properties[$Name]
-        if ($null -ne $property) {
-            return $property.Value
+        foreach ($property in @($ObjectValue.PSObject.Properties)) {
+            if ($null -eq $property) {
+                continue
+            }
+            if ([string]$property.Name -eq $Name) {
+                return $property.Value
+            }
         }
     } catch {
     }
