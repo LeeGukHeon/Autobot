@@ -8,8 +8,10 @@ from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, 
 from autobot.live.trade_journal import (
     activate_trade_journal_for_position,
     backfill_order_execution_details,
+    cancel_pending_entry_journal,
     close_trade_journal_for_market,
     record_entry_submission,
+    rebind_pending_entry_journal_order,
 )
 
 
@@ -299,3 +301,67 @@ def test_activate_trade_journal_does_not_reuse_other_open_journal_on_same_market
     assert rows[1]["journal_id"] == "journal-old"
     assert rows[1]["plan_id"] == "plan-old"
     assert rows[1]["entry_intent_id"] == "intent-old"
+
+
+def test_cancel_pending_entry_journal_marks_cancelled_entry(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        record_entry_submission(
+            store=store,
+            market="KRW-DOGE",
+            intent_id="intent-doge-1",
+            requested_price=134.0,
+            requested_volume=41.9,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.79}}},
+            ts_ms=1_000,
+            order_uuid="doge-order-1",
+        )
+
+        journal_id = cancel_pending_entry_journal(
+            store=store,
+            market="KRW-DOGE",
+            ts_ms=2_000,
+            entry_intent_id="intent-doge-1",
+            entry_order_uuid="doge-order-1",
+            close_reason_code="MAX_REPLACES_REACHED",
+            close_mode="entry_order_timeout",
+        )
+        row = store.trade_journal_by_entry_intent(entry_intent_id="intent-doge-1")
+
+    assert journal_id == "intent-doge-1"
+    assert row is not None
+    assert row["status"] == "CANCELLED_ENTRY"
+    assert row["entry_order_uuid"] == "doge-order-1"
+    assert row["close_reason_code"] == "MAX_REPLACES_REACHED"
+    assert row["close_mode"] == "entry_order_timeout"
+    assert row["exit_ts_ms"] == 2_000
+
+
+def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_order(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        record_entry_submission(
+            store=store,
+            market="KRW-DOGE",
+            intent_id="intent-doge-2",
+            requested_price=134.0,
+            requested_volume=41.9,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.79}}},
+            ts_ms=1_000,
+            order_uuid="doge-order-old",
+        )
+
+        journal_id = rebind_pending_entry_journal_order(
+            store=store,
+            entry_intent_id="intent-doge-2",
+            previous_entry_order_uuid="doge-order-old",
+            new_entry_order_uuid="doge-order-new",
+            ts_ms=2_000,
+        )
+        row = store.trade_journal_by_entry_intent(entry_intent_id="intent-doge-2")
+
+    assert journal_id == "intent-doge-2"
+    assert row is not None
+    assert row["status"] == "PENDING_ENTRY"
+    assert row["entry_order_uuid"] == "doge-order-new"
+    assert row["updated_ts"] == 2_000

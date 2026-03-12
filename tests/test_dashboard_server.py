@@ -324,6 +324,7 @@ def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
     assert 'fmtPct(Number(plan.tp_pct) * 100)' not in js
     assert 'fmtPct(Number(plan.sl_pct) * 100)' not in js
     assert 'fmtPct(Number(plan.trail_pct) * 100)' not in js
+    assert 'CANCELLED_ENTRY: "진입 취소"' in js
 
 
 def test_dashboard_server_no_longer_embeds_legacy_html_js_fallback() -> None:

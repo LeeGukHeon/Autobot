@@ -20,6 +20,7 @@ from autobot.live.model_alpha_runtime import (
 )
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
 from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
+from autobot.live.trade_journal import record_entry_submission
 from autobot.risk.live_risk_manager import LiveRiskManager, RiskManagerConfig
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
@@ -1631,6 +1632,17 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -
                 root_order_uuid="doge-order-1",
             )
         )
+        record_entry_submission(
+            store=store,
+            market="KRW-DOGE",
+            intent_id="intent-doge-1",
+            requested_price=134.0,
+            requested_volume=41.9,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.79}}},
+            ts_ms=1_000,
+            order_uuid="doge-order-1",
+        )
 
         report = runtime_module._supervise_open_strategy_orders(
             store=store,
@@ -1645,6 +1657,7 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -
         )
         order = store.order_by_uuid(uuid="doge-order-1")
         intent = store.intent_by_id(intent_id="intent-doge-1")
+        journal = store.list_trade_journal()[0]
 
     assert report["aborted"] == 1
     assert len(gateway.cancel_calls) == 1
@@ -1653,6 +1666,9 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -
     assert order["local_state"] == "CANCELLED"
     assert intent is not None
     assert intent["status"] == "CANCELLED"
+    assert journal["status"] == "CANCELLED_ENTRY"
+    assert journal["close_reason_code"] == "MAX_REPLACES_REACHED"
+    assert journal["close_mode"] == "entry_order_timeout"
 
 
 def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_plan(tmp_path: Path) -> None:

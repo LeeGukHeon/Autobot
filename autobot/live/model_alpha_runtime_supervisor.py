@@ -16,6 +16,7 @@ from autobot.execution.order_supervisor import (
 from autobot.live.order_state import normalize_order_state
 
 from .state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
+from .trade_journal import cancel_pending_entry_journal, rebind_pending_entry_journal_order
 
 
 def supervise_open_strategy_orders(
@@ -341,6 +342,22 @@ def _abort_open_order(
             "policy_diagnostics": dict(policy_diagnostics),
         },
     )
+    if str(order.get("side") or "").strip().lower() == "bid":
+        cancel_pending_entry_journal(
+            store=store,
+            market=str(order.get("market") or ""),
+            ts_ms=int(ts_ms),
+            entry_intent_id=_as_optional_str(intent.get("intent_id")),
+            entry_order_uuid=_as_optional_str(order.get("uuid")),
+            close_reason_code=reason_code,
+            close_mode="entry_order_timeout",
+            exit_meta={
+                "supervisor": {
+                    "action": "ABORT",
+                    "reason_code": reason_code,
+                }
+            },
+        )
     _update_linked_plan_after_abort(
         store=store,
         order=order,
@@ -472,6 +489,14 @@ def _replace_open_order(
             "policy_diagnostics": dict(policy_diagnostics),
         },
     )
+    if str(order.get("side") or "").strip().lower() == "bid":
+        rebind_pending_entry_journal_order(
+            store=store,
+            entry_intent_id=_as_optional_str(intent.get("intent_id")),
+            previous_entry_order_uuid=_as_optional_str(order.get("uuid")),
+            new_entry_order_uuid=new_uuid,
+            ts_ms=int(ts_ms),
+        )
     _update_linked_plan_after_replace(
         store=store,
         order=order,

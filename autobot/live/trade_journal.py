@@ -11,6 +11,7 @@ from .state_store import LiveStateStore, OrderRecord, TradeJournalRecord
 TRADE_JOURNAL_STATUS_PENDING = "PENDING_ENTRY"
 TRADE_JOURNAL_STATUS_OPEN = "OPEN"
 TRADE_JOURNAL_STATUS_CLOSED = "CLOSED"
+TRADE_JOURNAL_STATUS_CANCELLED = "CANCELLED_ENTRY"
 
 
 def record_entry_submission(
@@ -189,6 +190,131 @@ def activate_trade_journal_for_position(
         )
     )
     return journal_id
+
+
+def rebind_pending_entry_journal_order(
+    *,
+    store: LiveStateStore,
+    entry_intent_id: str | None = None,
+    previous_entry_order_uuid: str | None = None,
+    new_entry_order_uuid: str | None,
+    ts_ms: int,
+) -> str | None:
+    existing = (
+        store.trade_journal_by_entry_intent(entry_intent_id=entry_intent_id)
+        if _as_optional_str(entry_intent_id) is not None
+        else None
+    )
+    if existing is None and _as_optional_str(previous_entry_order_uuid) is not None:
+        existing = store.trade_journal_by_entry_order_uuid(entry_order_uuid=str(previous_entry_order_uuid))
+    if existing is None:
+        return None
+    if str(existing.get("status") or "").strip().upper() != TRADE_JOURNAL_STATUS_PENDING:
+        return _as_optional_str(existing.get("journal_id"))
+    store.upsert_trade_journal(
+        TradeJournalRecord(
+            journal_id=str(existing.get("journal_id") or ""),
+            market=str(existing.get("market") or ""),
+            status=TRADE_JOURNAL_STATUS_PENDING,
+            entry_intent_id=_coalesce_str(_as_optional_str(entry_intent_id), _as_optional_str(existing.get("entry_intent_id"))),
+            entry_order_uuid=_coalesce_str(_as_optional_str(new_entry_order_uuid), _as_optional_str(existing.get("entry_order_uuid"))),
+            exit_order_uuid=_as_optional_str(existing.get("exit_order_uuid")),
+            plan_id=_as_optional_str(existing.get("plan_id")),
+            entry_submitted_ts_ms=_as_optional_int(existing.get("entry_submitted_ts_ms")),
+            entry_filled_ts_ms=_as_optional_int(existing.get("entry_filled_ts_ms")),
+            exit_ts_ms=_as_optional_int(existing.get("exit_ts_ms")),
+            entry_price=_as_optional_float(existing.get("entry_price")),
+            exit_price=_as_optional_float(existing.get("exit_price")),
+            qty=_as_optional_float(existing.get("qty")),
+            entry_notional_quote=_as_optional_float(existing.get("entry_notional_quote")),
+            exit_notional_quote=_as_optional_float(existing.get("exit_notional_quote")),
+            realized_pnl_quote=_as_optional_float(existing.get("realized_pnl_quote")),
+            realized_pnl_pct=_as_optional_float(existing.get("realized_pnl_pct")),
+            entry_reason_code=_as_optional_str(existing.get("entry_reason_code")),
+            close_reason_code=_as_optional_str(existing.get("close_reason_code")),
+            close_mode=_as_optional_str(existing.get("close_mode")),
+            model_prob=_as_optional_float(existing.get("model_prob")),
+            selection_policy_mode=_as_optional_str(existing.get("selection_policy_mode")),
+            trade_action=_as_optional_str(existing.get("trade_action")),
+            expected_edge_bps=_as_optional_float(existing.get("expected_edge_bps")),
+            expected_downside_bps=_as_optional_float(existing.get("expected_downside_bps")),
+            expected_net_edge_bps=_as_optional_float(existing.get("expected_net_edge_bps")),
+            notional_multiplier=_as_optional_float(existing.get("notional_multiplier")),
+            entry_meta_json=_json_dumps(existing.get("entry_meta")),
+            exit_meta_json=_json_dumps(existing.get("exit_meta")),
+            updated_ts=int(ts_ms),
+        )
+    )
+    return _as_optional_str(existing.get("journal_id"))
+
+
+def cancel_pending_entry_journal(
+    *,
+    store: LiveStateStore,
+    market: str,
+    ts_ms: int,
+    entry_intent_id: str | None = None,
+    entry_order_uuid: str | None = None,
+    close_reason_code: str | None = None,
+    close_mode: str | None = None,
+    exit_meta: dict[str, Any] | None = None,
+) -> str | None:
+    market_value = str(market).strip().upper()
+    existing = (
+        store.trade_journal_by_entry_intent(entry_intent_id=entry_intent_id)
+        if _as_optional_str(entry_intent_id) is not None
+        else None
+    )
+    if existing is None and _as_optional_str(entry_order_uuid) is not None:
+        existing = store.trade_journal_by_entry_order_uuid(entry_order_uuid=str(entry_order_uuid))
+    if existing is None:
+        existing = _latest_live_trade_journal(store=store, market=market_value)
+    if existing is None:
+        return None
+    if str(existing.get("status") or "").strip().upper() != TRADE_JOURNAL_STATUS_PENDING:
+        return _as_optional_str(existing.get("journal_id"))
+    exit_meta_payload = dict(exit_meta or {})
+    exit_meta_payload.setdefault("close_mode", _coalesce_str(_as_optional_str(close_mode), "entry_order_timeout"))
+    exit_meta_payload.setdefault(
+        "close_reason_code",
+        _coalesce_str(_as_optional_str(close_reason_code), "ENTRY_ORDER_TIMEOUT"),
+    )
+    exit_meta_payload.setdefault("entry_cancelled", True)
+    store.upsert_trade_journal(
+        TradeJournalRecord(
+            journal_id=str(existing.get("journal_id") or ""),
+            market=market_value,
+            status=TRADE_JOURNAL_STATUS_CANCELLED,
+            entry_intent_id=_as_optional_str(existing.get("entry_intent_id")),
+            entry_order_uuid=_coalesce_str(_as_optional_str(entry_order_uuid), _as_optional_str(existing.get("entry_order_uuid"))),
+            exit_order_uuid=None,
+            plan_id=_as_optional_str(existing.get("plan_id")),
+            entry_submitted_ts_ms=_as_optional_int(existing.get("entry_submitted_ts_ms")),
+            entry_filled_ts_ms=None,
+            exit_ts_ms=int(ts_ms),
+            entry_price=_as_optional_float(existing.get("entry_price")),
+            exit_price=None,
+            qty=_as_optional_float(existing.get("qty")),
+            entry_notional_quote=_as_optional_float(existing.get("entry_notional_quote")),
+            exit_notional_quote=None,
+            realized_pnl_quote=None,
+            realized_pnl_pct=None,
+            entry_reason_code=_as_optional_str(existing.get("entry_reason_code")),
+            close_reason_code=_coalesce_str(_as_optional_str(close_reason_code), "ENTRY_ORDER_TIMEOUT"),
+            close_mode=_coalesce_str(_as_optional_str(close_mode), "entry_order_timeout"),
+            model_prob=_as_optional_float(existing.get("model_prob")),
+            selection_policy_mode=_as_optional_str(existing.get("selection_policy_mode")),
+            trade_action=_as_optional_str(existing.get("trade_action")),
+            expected_edge_bps=_as_optional_float(existing.get("expected_edge_bps")),
+            expected_downside_bps=_as_optional_float(existing.get("expected_downside_bps")),
+            expected_net_edge_bps=_as_optional_float(existing.get("expected_net_edge_bps")),
+            notional_multiplier=_as_optional_float(existing.get("notional_multiplier")),
+            entry_meta_json=_json_dumps(existing.get("entry_meta")),
+            exit_meta_json=_json_dumps(exit_meta_payload),
+            updated_ts=int(ts_ms),
+        )
+    )
+    return _as_optional_str(existing.get("journal_id"))
 
 
 def close_trade_journal_for_market(

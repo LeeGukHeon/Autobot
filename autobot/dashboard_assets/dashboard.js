@@ -19,6 +19,8 @@
     SKIPPED_SINGLE_SLOT_ACTIVE_ORDER: "이미 열린 주문이 있어 건너뜀",
     REJECT_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST: "비용 차감 후 기대 우위 없음",
     EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST: "비용을 빼면 기대수익이 부족함",
+    MAX_REPLACES_REACHED: "최대 재호가 횟수에 도달해 주문을 정리",
+    ENTRY_ORDER_TIMEOUT: "진입 주문이 시간 초과로 취소",
     INSUFFICIENT_FREE_BALANCE: "가용 잔고 부족",
     FEE_RESERVE_INSUFFICIENT: "수수료 여유 부족",
     DUST_REMAINDER: "잔량이 너무 작음",
@@ -70,7 +72,8 @@
     MODEL_ALPHA_EXIT_TRAILING: "추적 매도",
     SUBMITTED: "제출됨",
     SKIPPED: "건너뜀",
-    REJECTED_ADMISSIBILITY: "주문 조건 거절"
+    REJECTED_ADMISSIBILITY: "주문 조건 거절",
+    CANCELLED_ENTRY: "진입 취소"
   };
 
   const SERVICE_LABELS = {
@@ -577,7 +580,11 @@
 
     const tradeSection = recentTrades.length
       ? recentTrades.slice(0, 4).map((trade) => {
-        const direction = trade.status === "CLOSED" ? "거래 종료" : trade.status === "OPEN" ? "보유 중" : "진입 대기";
+        const direction =
+          trade.status === "CLOSED" ? "거래 종료" :
+          trade.status === "OPEN" ? "보유 중" :
+          trade.status === "CANCELLED_ENTRY" ? "진입 취소" :
+          "진입 대기";
         const pnlText = trade.realized_pnl_quote == null
           ? "손익 계산 전"
           : `${fmtMoney(trade.realized_pnl_quote)} / ${fmtPct(trade.realized_pnl_pct)}`;
@@ -585,9 +592,12 @@
           ? "계산 전"
           : `${fmtMoney(trade.gross_pnl_quote)} / ${fmtPct(trade.gross_pnl_pct)}`;
         const durationText = trade.hold_minutes == null ? "보유 시간 계산 전" : `${trade.hold_minutes}분 보유`;
+        const narrative = trade.status === "CANCELLED_ENTRY"
+          ? `${translate(trade.entry_reason_code)} 신호로 넣은 진입 주문이 ${translate(trade.close_reason_code)} 때문에 취소됐습니다.`
+          : `${translate(trade.entry_reason_code)}로 진입했고, ${translate(trade.close_mode)} 방식으로 ${translate(trade.close_reason_code)}에 종료됐습니다.`;
         return card(
           `${trade.market || "-"} · ${direction}`,
-          `<p class="section-brief">${esc(`${translate(trade.entry_reason_code)}로 진입했고, ${translate(trade.close_mode)} 방식으로 ${translate(trade.close_reason_code)}에 종료됐습니다.`)}</p><div class="kv-grid">${kv("진입 시각", fmtDateTime(trade.entry_ts_ms))}${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("수량", fmtNumber(trade.qty, 8))}${kv("순손익", pnlText)}${kv("총손익", grossText)}${kv("총수수료", fmtMoney(trade.total_fee_quote))}${kv("진입 슬리피지", fmtBps(trade.entry_realized_slippage_bps))}${kv("예상 종료 슬리피지", fmtBps(trade.exit_expected_slippage_bps))}${kv("예상 순엣지", fmtBps(trade.expected_net_edge_bps))}${kv("Trade 액션", translate(trade.trade_action))}${kv("Trade 엣지", fmtBps(trade.expected_edge_bps))}${kv("Trade 하방", fmtBps(trade.expected_downside_bps))}${kv("Trade ES", fmtBps(trade.expected_es_bps))}${kv("Trade CTM", fmtNumber(trade.expected_ctm, 6))}${kv("Action Value", fmtNumber(trade.trade_action_action_value, 3))}${kv("결정 원천", translate(trade.trade_action_decision_source))}${kv("Exit family", translate(trade.exit_recommendation_chosen_family))}${kv("Exit rule", maybe(trade.exit_recommendation_chosen_rule_id))}${kv("Family compare", maybe(trade.exit_recommendation_family_compare_status))}${kv("사이징 배수", fmtNumber(trade.notional_multiplier, 2))}</div>`,
+          `<p class="section-brief">${esc(narrative)}</p><div class="kv-grid">${kv("진입 시각", fmtDateTime(trade.entry_ts_ms))}${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("수량", fmtNumber(trade.qty, 8))}${kv("순손익", pnlText)}${kv("총손익", grossText)}${kv("총수수료", fmtMoney(trade.total_fee_quote))}${kv("진입 슬리피지", fmtBps(trade.entry_realized_slippage_bps))}${kv("예상 종료 슬리피지", fmtBps(trade.exit_expected_slippage_bps))}${kv("예상 순엣지", fmtBps(trade.expected_net_edge_bps))}${kv("Trade 액션", translate(trade.trade_action))}${kv("Trade 엣지", fmtBps(trade.expected_edge_bps))}${kv("Trade 하방", fmtBps(trade.expected_downside_bps))}${kv("Trade ES", fmtBps(trade.expected_es_bps))}${kv("Trade CTM", fmtNumber(trade.expected_ctm, 6))}${kv("Action Value", fmtNumber(trade.trade_action_action_value, 3))}${kv("결정 원천", translate(trade.trade_action_decision_source))}${kv("Exit family", translate(trade.exit_recommendation_chosen_family))}${kv("Exit rule", maybe(trade.exit_recommendation_chosen_rule_id))}${kv("Family compare", maybe(trade.exit_recommendation_family_compare_status))}${kv("사이징 배수", fmtNumber(trade.notional_multiplier, 2))}</div>`,
           "mini-card"
         );
       }).join("")

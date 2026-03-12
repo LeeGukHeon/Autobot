@@ -622,6 +622,7 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
         "closed_count": 0,
         "open_count": 0,
         "pending_count": 0,
+        "cancelled_count": 0,
         "wins": 0,
         "losses": 0,
         "flats": 0,
@@ -657,6 +658,9 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
         elif status == "PENDING_ENTRY":
             if entry_ts_ms is not None and start_ts_ms <= entry_ts_ms < end_ts_ms:
                 summary["pending_count"] += 1
+        elif status == "CANCELLED_ENTRY":
+            if exit_ts_ms is not None and start_ts_ms <= exit_ts_ms < end_ts_ms:
+                summary["cancelled_count"] += 1
     closed_count = int(summary["closed_count"])
     if closed_count > 0:
         summary["win_rate_pct"] = (float(summary["wins"]) / float(closed_count)) * 100.0
