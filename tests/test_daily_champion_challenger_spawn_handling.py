@@ -98,6 +98,7 @@ def _run_spawn_only(
     acceptance_script: Path,
     *,
     dry_run: bool = True,
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     sudo_dir = acceptance_script.parent
     _make_fake_sudo(sudo_dir)
@@ -118,6 +119,8 @@ def _run_spawn_only(
         "-Mode",
         "spawn_only",
     ]
+    if extra_args:
+        args.extend(extra_args)
     if dry_run:
         args.append("-DryRun")
     return subprocess.run(
@@ -234,3 +237,40 @@ def test_spawn_only_still_fails_when_acceptance_reports_runtime_exception(tmp_pa
 
     assert completed.returncode != 0
     assert "candidate acceptance failed unexpectedly" in completed.stderr or "candidate acceptance failed unexpectedly" in completed.stdout
+
+
+def test_spawn_only_accepts_comma_joined_promotion_target_units_from_installer(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-array"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["DUPLICATE_CANDIDATE"],
+        },
+        exit_code=2,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-PromotionTargetUnits",
+            "autobot-live-alpha.service,autobot-live-alpha-candidate.service",
+        ],
+    )
+
+    assert completed.returncode == 0
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert latest["promotion_target_units"] == [
+        "autobot-live-alpha.service",
+        "autobot-live-alpha-candidate.service",
+    ]

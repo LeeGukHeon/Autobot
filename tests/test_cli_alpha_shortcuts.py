@@ -11,6 +11,7 @@ from autobot.cli import (
     _normalize_backtest_alpha_args,
     _handle_model_command,
     _normalize_paper_alpha_args,
+    _resolve_model_ref_alias,
     _resolve_v4_runtime_model_ref_fallback,
     build_parser,
 )
@@ -201,6 +202,12 @@ def test_resolve_v4_runtime_model_ref_fallback_preserves_existing_champion(tmp_p
     assert resolved_ref == "champion"
     assert resolved_family == "train_v4_crypto_cs"
     assert warning is None
+
+
+def test_resolve_model_ref_alias_keeps_frozen_v4_pointer_contracts() -> None:
+    assert _resolve_model_ref_alias("champion_v4") == ("champion", "train_v4_crypto_cs")
+    assert _resolve_model_ref_alias("latest_v4") == ("latest", "train_v4_crypto_cs")
+    assert _resolve_model_ref_alias("candidate_v4") == ("latest_candidate", "train_v4_crypto_cs")
 
 
 def test_build_parser_supports_backtest_alpha_shortcut() -> None:

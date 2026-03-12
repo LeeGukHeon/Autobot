@@ -31,6 +31,7 @@ def _make_fake_acceptance_script(tmp_path: Path, *, payload: dict, exit_code: in
                 [string]$BatchDate = "",
                 [switch]$SkipDailyPipeline,
                 [switch]$SkipReportRefresh,
+                [switch]$SkipPaperSoak,
                 [switch]$DryRun
             )
 
@@ -170,3 +171,70 @@ def test_rank_shadow_cycle_preserves_fatal_acceptance_failure_and_writes_cycle_r
     assert governance["selected_acceptance_script"] == "v4_promotable_candidate_acceptance.ps1"
     assert latest["governance_action"]["selected_lane_id"] == "cls_primary"
     assert not governed_candidate_path.exists()
+
+
+def test_rank_shadow_cycle_accepts_comma_joined_array_args_from_installer(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        payload={
+            "candidate": {
+                "run_id": "rank-run-array-001",
+                "run_dir": str(project_root / "models" / "registry" / "train_v4_crypto_cs" / "rank-run-array-001"),
+                "lane_id": "rank_shadow",
+                "lane_role": "shadow",
+                "lane_shadow_only": True,
+                "lane_promotion_allowed": False,
+            },
+            "config": {
+                "task": "rank",
+            },
+            "gates": {
+                "overall_pass": True,
+                "backtest": {
+                    "pass": True,
+                    "decision_basis": "PARETO_DOMINANCE",
+                },
+            },
+            "reasons": [],
+            "notes": ["SHADOW_LANE_ONLY"],
+        },
+        exit_code=0,
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-AcceptanceScript",
+            str(acceptance_script),
+            "-BatchDate",
+            "2026-03-08",
+            "-BlockOnActiveUnits",
+            "autobot-v4-challenger-spawn.service,autobot-v4-challenger-promote.service",
+            "-AcceptanceArgs",
+            "-SkipPaperSoak",
+            "-SkipDailyPipeline",
+            "-SkipReportRefresh",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert latest["batch_date"] == "2026-03-08"
+    assert latest["status"] == "shadow_pass"
+    assert latest["candidate_run_id"] == "rank-run-array-001"

@@ -19,7 +19,7 @@ python -m autobot.cli --help
 ```
 
 ## Structure
-- `docs/`: architecture records, roadmap, ticket-level notes
+- `docs/`: architecture records, roadmap, unified runbook, ticket-level notes
 - `config/`: environment and module-level configuration
 - `autobot/`: core package (SSOT) for data, strategy, risk, execution, upbit client, backtest
 - `python/`: requirements/tooling directory, optional mirror target (`python/autobot`)
@@ -28,3 +28,4 @@ python -m autobot.cli --help
 ## Notes
 - Runtime artifacts in `data/`, `models/`, `logs/` are local-only and gitignored.
 - Fees, minimum order amount, and tick sizes must be fetched from Upbit APIs (no hardcoding).
+- Current program-wide overview is maintained in `docs/PROGRAM_RUNBOOK.md`.

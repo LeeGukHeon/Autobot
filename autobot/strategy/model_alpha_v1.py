@@ -10,10 +10,10 @@ import numpy as np
 import polars as pl
 
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
+from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.predictor import ModelPredictor
-from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
-from autobot.models.selection_policy import DEFAULT_SELECTION_POLICY_MODE, normalize_selection_policy
+from autobot.models.selection_policy import DEFAULT_SELECTION_POLICY_MODE
 from autobot.models.trade_action_policy import normalize_trade_action_policy, resolve_trade_action
 from autobot.strategy.operational_overlay_v1 import (
     ModelAlphaOperationalSettings,
@@ -22,6 +22,8 @@ from autobot.strategy.operational_overlay_v1 import (
     resolve_operational_max_positions,
     resolve_operational_risk_multiplier,
 )
+
+from . import model_alpha_runtime_contract as _runtime_contract
 
 
 @dataclass(frozen=True)
@@ -599,26 +601,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
 
 
 def resolve_model_alpha_runtime_row_columns(*, predictor: ModelPredictor) -> tuple[str, ...]:
-    runtime_recommendations = getattr(predictor, "runtime_recommendations", {}) or {}
-    trade_action_policy = normalize_trade_action_policy(
-        runtime_recommendations.get("trade_action") if isinstance(runtime_recommendations, dict) else {}
-    )
-    ordered: list[str] = ["close"]
-    state_feature_names = trade_action_policy.get("state_feature_names") or []
-    for raw_name in state_feature_names:
-        name = str(raw_name).strip()
-        if not name or name == "selection_score":
-            continue
-        if name not in ordered:
-            ordered.append(name)
-        if name == "atr_pct_14" and "atr_14" not in ordered:
-            ordered.append("atr_14")
-    risk_feature_name = str(trade_action_policy.get("risk_feature_name", "")).strip()
-    if risk_feature_name and risk_feature_name != "selection_score" and risk_feature_name not in ordered:
-        ordered.append(risk_feature_name)
-        if risk_feature_name == "atr_pct_14" and "atr_14" not in ordered:
-            ordered.append("atr_14")
-    return tuple(ordered)
+    return _runtime_contract.resolve_model_alpha_runtime_row_columns(predictor=predictor)
 
 
 def _resolve_ref_price(*, row: dict[str, Any] | None, latest_prices: dict[str, float], market: str) -> float | None:
@@ -652,25 +635,7 @@ def _resolve_selection_min_prob(
     predictor: ModelPredictor,
     settings: ModelAlphaSelectionSettings,
 ) -> tuple[float, str]:
-    manual_min_prob = _safe_optional_float(settings.min_prob)
-    if manual_min_prob is not None:
-        return _clamp_prob(manual_min_prob), "manual"
-
-    threshold_key, _ = _resolve_runtime_threshold_key(
-        predictor=predictor,
-        settings=settings,
-    )
-    thresholds = predictor.thresholds if isinstance(predictor.thresholds, dict) else {}
-    registry_value = _safe_optional_float(thresholds.get(threshold_key))
-    if registry_value is not None:
-        return _clamp_prob(registry_value), f"registry:{threshold_key}"
-
-    if threshold_key != "top_5pct":
-        fallback_value = _safe_optional_float(thresholds.get("top_5pct"))
-        if fallback_value is not None:
-            return _clamp_prob(fallback_value), "registry:top_5pct_fallback"
-
-    return 0.0, "fallback_zero"
+    return _runtime_contract.resolve_selection_min_prob(predictor=predictor, settings=settings)
 
 
 def _resolve_selection_top_pct(
@@ -680,21 +645,12 @@ def _resolve_selection_top_pct(
     selection_policy: dict[str, Any] | None = None,
     selection_policy_source: str = "manual",
 ) -> tuple[float, str]:
-    normalized_policy = dict(selection_policy or {})
-    if str(normalized_policy.get("mode", "")).strip().lower() == DEFAULT_SELECTION_POLICY_MODE:
-        return max(min(float(normalized_policy.get("selection_fraction", 0.0)), 1.0), 0.0), selection_policy_source
-    manual_value = max(min(float(settings.top_pct), 1.0), 0.0)
-    if not bool(settings.use_learned_recommendations):
-        return manual_value, "manual"
-
-    recommendation, source = _resolve_selection_recommendation_entry(
+    return _runtime_contract.resolve_selection_top_pct(
         predictor=predictor,
         settings=settings,
+        selection_policy=selection_policy,
+        selection_policy_source=selection_policy_source,
     )
-    recommended_value = _safe_optional_float(recommendation.get("recommended_top_pct")) if recommendation else None
-    if recommended_value is not None:
-        return _clamp_prob(recommended_value), source
-    return manual_value, "manual_fallback"
 
 
 def _resolve_selection_min_candidates(
@@ -704,69 +660,12 @@ def _resolve_selection_min_candidates(
     selection_policy: dict[str, Any] | None = None,
     selection_policy_source: str = "manual",
 ) -> tuple[int, str]:
-    normalized_policy = dict(selection_policy or {})
-    if str(normalized_policy.get("mode", "")).strip().lower() == DEFAULT_SELECTION_POLICY_MODE:
-        return max(int(normalized_policy.get("min_candidates_per_ts", 1) or 1), 1), selection_policy_source
-    manual_value = max(int(settings.min_candidates_per_ts), 0)
-    if not bool(settings.use_learned_recommendations):
-        return manual_value, "manual"
-
-    recommendation, source = _resolve_selection_recommendation_entry(
+    return _runtime_contract.resolve_selection_min_candidates(
         predictor=predictor,
         settings=settings,
+        selection_policy=selection_policy,
+        selection_policy_source=selection_policy_source,
     )
-    try:
-        recommended_value = recommendation.get("recommended_min_candidates_per_ts") if recommendation else None
-        if recommended_value is not None:
-            return max(int(recommended_value), 0), source
-    except (TypeError, ValueError):
-        pass
-    return manual_value, "manual_fallback"
-
-
-def _resolve_selection_recommendation_entry(
-    *,
-    predictor: ModelPredictor,
-    settings: ModelAlphaSelectionSettings,
-) -> tuple[dict[str, Any], str]:
-    recommendations = predictor.selection_recommendations if isinstance(predictor.selection_recommendations, dict) else {}
-    by_key = recommendations.get("by_threshold_key")
-    if not isinstance(by_key, dict):
-        return {}, "manual_fallback"
-
-    threshold_key, threshold_key_source = _resolve_runtime_threshold_key(
-        predictor=predictor,
-        settings=settings,
-    )
-    entry = by_key.get(threshold_key)
-    if isinstance(entry, dict):
-        source = f"registry_recommendation:{threshold_key}"
-        if threshold_key_source == "registry_recommendation":
-            source += ":learned_threshold_key"
-        return entry, source
-
-    if threshold_key != "top_5pct":
-        fallback_entry = by_key.get("top_5pct")
-        if isinstance(fallback_entry, dict):
-            return fallback_entry, "registry_recommendation:top_5pct_fallback"
-    return {}, "manual_fallback"
-
-
-def _resolve_runtime_threshold_key(
-    *,
-    predictor: ModelPredictor,
-    settings: ModelAlphaSelectionSettings,
-) -> tuple[str, str]:
-    default_key = str(settings.registry_threshold_key).strip() or "top_5pct"
-    if not bool(settings.use_learned_recommendations):
-        return default_key, "settings"
-
-    recommendations = predictor.selection_recommendations if isinstance(predictor.selection_recommendations, dict) else {}
-    recommended_key = str(recommendations.get("recommended_threshold_key", "")).strip()
-    by_key = recommendations.get("by_threshold_key") if isinstance(recommendations.get("by_threshold_key"), dict) else {}
-    if recommended_key and isinstance(by_key, dict) and isinstance(by_key.get(recommended_key), dict):
-        return recommended_key, "registry_recommendation"
-    return default_key, "settings"
 
 
 def _resolve_selection_policy(
@@ -774,26 +673,7 @@ def _resolve_selection_policy(
     predictor: ModelPredictor,
     settings: ModelAlphaSelectionSettings,
 ) -> tuple[dict[str, Any], str]:
-    selection_policy_payload = getattr(predictor, "selection_policy", {})
-    mode = str(settings.selection_policy_mode).strip().lower() or "auto"
-    if mode == "raw_threshold":
-        return {"mode": "raw_threshold"}, "settings"
-    if mode == DEFAULT_SELECTION_POLICY_MODE:
-        policy = normalize_selection_policy(
-            selection_policy_payload if isinstance(selection_policy_payload, dict) else {},
-            fallback_threshold_key=str(settings.registry_threshold_key).strip() or "top_5pct",
-        )
-        return policy, "registry_selection_policy"
-    if _safe_optional_float(settings.min_prob) is not None:
-        return {"mode": "raw_threshold"}, "manual_min_prob"
-    policy_payload = selection_policy_payload if isinstance(selection_policy_payload, dict) else {}
-    if policy_payload:
-        policy = normalize_selection_policy(
-            policy_payload,
-            fallback_threshold_key=str(settings.registry_threshold_key).strip() or "top_5pct",
-        )
-        return policy, "registry_selection_policy"
-    return {"mode": "raw_threshold"}, "manual_fallback"
+    return _runtime_contract.resolve_selection_policy(predictor=predictor, settings=settings)
 
 
 def resolve_runtime_model_alpha_settings(
@@ -801,197 +681,7 @@ def resolve_runtime_model_alpha_settings(
     predictor: ModelPredictor,
     settings: ModelAlphaSettings,
 ) -> tuple[ModelAlphaSettings, dict[str, Any]]:
-    runtime_recommendations_payload = getattr(predictor, "runtime_recommendations", {})
-    runtime_recommendations = normalize_runtime_recommendations_payload(
-        runtime_recommendations_payload if isinstance(runtime_recommendations_payload, dict) else {}
-    )
-    resolved = settings
-    state: dict[str, Any] = {
-        "runtime_recommendations_available": bool(runtime_recommendations),
-        "exit_mode_source": "manual",
-        "exit_hold_bars_source": "manual",
-        "execution_source": "manual",
-    }
-    if not runtime_recommendations:
-        return resolved, state
-
-    exit_doc = runtime_recommendations.get("exit")
-    exit_contract_valid = isinstance(exit_doc, dict)
-    exit_family_compare_supported = True
-    if isinstance(exit_doc, dict):
-        contract_status = str(exit_doc.get("contract_status") or "").strip()
-        contract_issues = [str(item).strip() for item in (exit_doc.get("contract_issues") or []) if str(item).strip()]
-        backfilled_fields = [
-            str(item).strip() for item in (exit_doc.get("contract_backfilled_fields") or []) if str(item).strip()
-        ]
-        state["exit_recommendation"] = {
-            "recommended_exit_mode": str(exit_doc.get("recommended_exit_mode", "")).strip().lower(),
-            "recommended_exit_mode_source": str(exit_doc.get("recommended_exit_mode_source", "")).strip(),
-            "recommended_exit_mode_reason_code": str(exit_doc.get("recommended_exit_mode_reason_code", "")).strip(),
-            "recommended_hold_bars": (
-                int(exit_doc.get("recommended_hold_bars"))
-                if exit_doc.get("recommended_hold_bars") not in (None, "")
-                else None
-            ),
-            "chosen_family": str(exit_doc.get("chosen_family", "")).strip(),
-            "chosen_rule_id": str(exit_doc.get("chosen_rule_id", "")).strip(),
-            "hold_family_status": str(exit_doc.get("hold_family_status", "")).strip(),
-            "risk_family_status": str(exit_doc.get("risk_family_status", "")).strip(),
-            "family_compare_status": str(exit_doc.get("family_compare_status", "")).strip(),
-            "family_compare_reason_codes": [
-                str(item).strip()
-                for item in ((exit_doc.get("family_compare") or {}).get("reason_codes") or [])
-                if str(item).strip()
-            ],
-        }
-        family_compare_status = str(exit_doc.get("family_compare_status") or "").strip()
-        state["exit_family_compare_status"] = family_compare_status or "missing"
-        exit_family_compare_supported = family_compare_status.lower() in {"", "supported", "legacy_backfilled"}
-        if not exit_family_compare_supported:
-            state["exit_family_compare_reason_codes"] = [
-                str(item).strip()
-                for item in ((exit_doc.get("family_compare") or {}).get("reason_codes") or [])
-                if str(item).strip()
-            ]
-        if contract_status:
-            state["exit_contract_status"] = contract_status
-        if contract_issues:
-            state["exit_contract_issues"] = contract_issues
-            exit_contract_valid = False
-        if backfilled_fields:
-            state["exit_contract_backfilled_fields"] = backfilled_fields
-
-    if (
-        isinstance(exit_doc, dict)
-        and exit_contract_valid
-        and exit_family_compare_supported
-        and bool(settings.exit.use_learned_exit_mode)
-    ):
-        recommended_exit_mode = str(exit_doc.get("recommended_exit_mode", "")).strip().lower()
-        if recommended_exit_mode in {"hold", "risk"}:
-            resolved = replace(
-                resolved,
-                exit=replace(
-                    resolved.exit,
-                    mode=recommended_exit_mode,
-                ),
-            )
-            state["exit_mode_source"] = str(
-                exit_doc.get("recommended_exit_mode_source", "runtime_recommendation")
-            )
-            state["exit_mode_recommendation"] = {
-                "recommended_exit_mode": recommended_exit_mode,
-                "recommended_exit_mode_source": state["exit_mode_source"],
-                "recommended_exit_mode_reason_code": str(
-                    exit_doc.get("recommended_exit_mode_reason_code", "")
-                ).strip(),
-                "exit_mode_compare": dict(exit_doc.get("exit_mode_compare", {}))
-                if isinstance(exit_doc.get("exit_mode_compare"), dict)
-                else {},
-            }
-    if (
-        isinstance(exit_doc, dict)
-        and exit_contract_valid
-        and exit_family_compare_supported
-        and bool(settings.exit.use_learned_hold_bars)
-    ):
-        recommended_hold_bars = exit_doc.get("recommended_hold_bars")
-        try:
-            if (
-                recommended_hold_bars is not None
-                and int(recommended_hold_bars) > 0
-            ):
-                resolved = replace(
-                    resolved,
-                    exit=replace(
-                        resolved.exit,
-                        hold_bars=max(int(recommended_hold_bars), 1),
-                    ),
-                )
-                state["exit_hold_bars_source"] = str(
-                    exit_doc.get("recommendation_source", "runtime_recommendation")
-                )
-                state["exit_recommendation"] = dict(exit_doc)
-        except (TypeError, ValueError):
-            pass
-
-    if (
-        isinstance(exit_doc, dict)
-        and exit_contract_valid
-        and exit_family_compare_supported
-        and bool(settings.exit.use_learned_risk_recommendations)
-    ):
-        try:
-            recommended_scaling_mode = str(
-                exit_doc.get("recommended_risk_scaling_mode", resolved.exit.risk_scaling_mode)
-            ).strip().lower() or str(resolved.exit.risk_scaling_mode)
-            recommended_vol_feature = str(
-                exit_doc.get("recommended_risk_vol_feature", resolved.exit.risk_vol_feature)
-            ).strip() or str(resolved.exit.risk_vol_feature)
-            recommended_tp_mult = _safe_optional_float(
-                exit_doc.get("recommended_tp_vol_multiplier", resolved.exit.tp_vol_multiplier)
-            )
-            recommended_sl_mult = _safe_optional_float(
-                exit_doc.get("recommended_sl_vol_multiplier", resolved.exit.sl_vol_multiplier)
-            )
-            recommended_trailing_mult = _safe_optional_float(
-                exit_doc.get("recommended_trailing_vol_multiplier", resolved.exit.trailing_vol_multiplier)
-            )
-            resolved = replace(
-                resolved,
-                exit=replace(
-                    resolved.exit,
-                    risk_scaling_mode=recommended_scaling_mode,
-                    risk_vol_feature=recommended_vol_feature,
-                    tp_vol_multiplier=recommended_tp_mult,
-                    sl_vol_multiplier=recommended_sl_mult,
-                    trailing_vol_multiplier=recommended_trailing_mult,
-                ),
-            )
-            state["exit_risk_source"] = str(
-                exit_doc.get("recommendation_source", "runtime_recommendation")
-            )
-            state["exit_risk_recommendation"] = {
-                "recommended_risk_scaling_mode": recommended_scaling_mode,
-                "recommended_risk_vol_feature": recommended_vol_feature,
-                "recommended_tp_vol_multiplier": recommended_tp_mult,
-                "recommended_sl_vol_multiplier": recommended_sl_mult,
-                "recommended_trailing_vol_multiplier": recommended_trailing_mult,
-            }
-        except (TypeError, ValueError):
-            pass
-
-    execution_doc = runtime_recommendations.get("execution")
-    if isinstance(execution_doc, dict) and bool(settings.execution.use_learned_recommendations):
-        try:
-            recommended_price_mode = str(
-                execution_doc.get("recommended_price_mode", resolved.execution.price_mode)
-            ).strip() or str(resolved.execution.price_mode)
-            recommended_timeout_bars = max(
-                int(execution_doc.get("recommended_timeout_bars", resolved.execution.timeout_bars)),
-                1,
-            )
-            recommended_replace_max = max(
-                int(execution_doc.get("recommended_replace_max", resolved.execution.replace_max)),
-                0,
-            )
-            resolved = replace(
-                resolved,
-                execution=replace(
-                    resolved.execution,
-                    price_mode=recommended_price_mode,
-                    timeout_bars=recommended_timeout_bars,
-                    replace_max=recommended_replace_max,
-                ),
-            )
-            state["execution_source"] = str(
-                execution_doc.get("recommendation_source", "runtime_recommendation")
-            )
-            state["execution_recommendation"] = dict(execution_doc)
-        except (TypeError, ValueError):
-            pass
-
-    return resolved, state
+    return _runtime_contract.resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
 
 
 def _resolve_trade_action_decision(
@@ -1067,23 +757,7 @@ def _resolve_trade_action_exit_settings(
 
 
 def _build_runtime_exit_recommendation_meta(runtime_state: dict[str, Any] | None) -> dict[str, Any]:
-    payload = dict((runtime_state or {}).get("exit_recommendation") or {})
-    if not payload:
-        return {}
-    return {
-        "recommended_exit_mode": str(payload.get("recommended_exit_mode", "")).strip(),
-        "recommended_exit_mode_source": str(payload.get("recommended_exit_mode_source", "")).strip(),
-        "recommended_exit_mode_reason_code": str(payload.get("recommended_exit_mode_reason_code", "")).strip(),
-        "recommended_hold_bars": payload.get("recommended_hold_bars"),
-        "chosen_family": str(payload.get("chosen_family", "")).strip(),
-        "chosen_rule_id": str(payload.get("chosen_rule_id", "")).strip(),
-        "hold_family_status": str(payload.get("hold_family_status", "")).strip(),
-        "risk_family_status": str(payload.get("risk_family_status", "")).strip(),
-        "family_compare_status": str(payload.get("family_compare_status", "")).strip(),
-        "family_compare_reason_codes": [
-            str(item).strip() for item in (payload.get("family_compare_reason_codes") or []) if str(item).strip()
-        ],
-    }
+    return _runtime_contract.build_runtime_exit_recommendation_meta(runtime_state)
 
 
 def _extract_model_exit_plan_from_fill_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
@@ -1091,12 +765,12 @@ def _extract_model_exit_plan_from_fill_meta(meta: dict[str, Any] | None) -> dict
         return {}
     payload = meta.get("model_exit_plan")
     if isinstance(payload, dict):
-        return dict(payload)
+        return normalize_model_exit_plan_payload(payload)
     strategy_meta = meta.get("strategy")
     if isinstance(strategy_meta, dict):
         nested = strategy_meta.get("meta")
         if isinstance(nested, dict) and isinstance(nested.get("model_exit_plan"), dict):
-            return dict(nested.get("model_exit_plan") or {})
+            return normalize_model_exit_plan_payload(nested.get("model_exit_plan"))
     return {}
 
 
@@ -1171,24 +845,26 @@ def build_model_alpha_exit_plan_payload(
         settings=settings,
         observed_entry_fee_rate=max(float(observed_entry_fee_rate), 0.0),
     )
-    return {
-        "source": "model_alpha_v1",
-        "version": 1,
-        "mode": mode,
-        "hold_bars": hold_bars,
-        "interval_ms": max(int(interval_ms), 1),
-        "timeout_delta_ms": int(timeout_delta_ms),
-        "tp_pct": float(tp_pct) if mode == "risk" and float(tp_pct) > 0.0 else 0.0,
-        "sl_pct": float(sl_pct) if float(sl_pct) > 0.0 else 0.0,
-        "trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
-        "expected_exit_fee_rate": float(exit_fee_rate),
-        "expected_exit_slippage_bps": float(exit_slippage_bps),
-        "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
-        "use_learned_exit_mode": bool(settings.exit.use_learned_exit_mode),
-        "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
-        "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
-        "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
-    }
+    return normalize_model_exit_plan_payload(
+        {
+            "source": "model_alpha_v1",
+            "version": 1,
+            "mode": mode,
+            "hold_bars": hold_bars,
+            "interval_ms": max(int(interval_ms), 1),
+            "timeout_delta_ms": int(timeout_delta_ms),
+            "tp_pct": float(tp_pct) if mode == "risk" and float(tp_pct) > 0.0 else 0.0,
+            "sl_pct": float(sl_pct) if float(sl_pct) > 0.0 else 0.0,
+            "trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
+            "expected_exit_fee_rate": float(exit_fee_rate),
+            "expected_exit_slippage_bps": float(exit_slippage_bps),
+            "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
+            "use_learned_exit_mode": bool(settings.exit.use_learned_exit_mode),
+            "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
+            "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
+            "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
+        }
+    )
 
 
 def _resolve_runtime_risk_exit_thresholds(

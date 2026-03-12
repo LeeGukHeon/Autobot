@@ -7,6 +7,17 @@
 
 목적: 데이터 학습 -> 백테스트 -> 라이브 페이퍼런 -> 실거래까지 하나의 일관된 구조(인터페이스/데이터 계약/리스크 관리)로 연결되는 업비트 자동매매 시스템을 구축합니다.
 
+## Current Authoritative Docs (2026-03-12)
+
+- Program-wide current-state runbook:
+  - `docs/PROGRAM_RUNBOOK.md`
+- Historical design records:
+  - `docs/ADR/`
+  - `docs/TICKETS/`
+  - `docs/reports/`
+- Next hardening ticket from full-code review:
+  - `docs/TICKETS/T23_2_program_contract_unification_and_runtime_hardening_v1.md`
+
 ## 0) 핵심 원칙 (절대 규칙)
 
 ### API 규칙 절대 준수
@@ -120,6 +131,7 @@ D:\MyApps\Autobot
 ├─ README.md
 ├─ docs\
 │  ├─ ROADMAP.md
+│  ├─ PROGRAM_RUNBOOK.md
 │  ├─ ADR\
 │  ├─ TICKETS\
 │  ├─ CHANGE_POLICY.md

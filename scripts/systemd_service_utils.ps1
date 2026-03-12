@@ -68,6 +68,36 @@ function Quote-ShellArg {
     return "'" + $Value.Replace("'", "'""'""'") + "'"
 }
 
+function Expand-DelimitedStringArray {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    $items = @()
+    foreach ($rawItem in @($Value)) {
+        if ($null -eq $rawItem) {
+            continue
+        }
+        foreach ($candidate in ([string]$rawItem -split ",")) {
+            $text = [string]$candidate
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                continue
+            }
+            $items += $text.Trim()
+        }
+    }
+    return @($items)
+}
+
+function Join-DelimitedStringArray {
+    param([Parameter(Mandatory = $false)]$Values)
+    $normalized = @(Expand-DelimitedStringArray -Value $Values)
+    if ($normalized.Count -eq 0) {
+        return ""
+    }
+    return [string]::Join(",", $normalized)
+}
+
 function Install-UnitFile {
     param(
         [string]$UnitName,

@@ -4,6 +4,8 @@ from typing import Any
 
 from .research_acceptance import compare_execution_balanced_pareto
 
+_RUNTIME_RECOMMENDATIONS_VERSION = 1
+_RUNTIME_EXIT_CONTRACT_VERSION = 1
 _EXIT_MODE_VALUES = {"hold", "risk"}
 
 
@@ -58,6 +60,13 @@ def resolve_exit_mode_recommendation(
 
 def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(exit_payload or {})
+    backfilled_fields: list[str] = []
+    normalized["version"], version_backfilled = _normalize_contract_version(
+        normalized.get("version"),
+        fallback_version=_RUNTIME_EXIT_CONTRACT_VERSION,
+    )
+    if version_backfilled:
+        backfilled_fields.append("version")
     hold_family = normalized.get("hold_family")
     if not isinstance(hold_family, dict) or not hold_family:
         hold_family = _build_legacy_exit_family_doc(
@@ -108,7 +117,6 @@ def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[
         }
     else:
         derived = resolve_exit_mode_recommendation(hold_row, risk_row)
-    backfilled_fields: list[str] = []
     for key, value in derived.items():
         if _is_missing_contract_value(normalized.get(key)):
             normalized[key] = value
@@ -158,15 +166,43 @@ def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[
 
 def normalize_runtime_recommendations_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(payload or {})
+    backfilled_fields: list[str] = []
+    issues: list[str] = []
+    normalized["version"], version_backfilled = _normalize_contract_version(
+        normalized.get("version"),
+        fallback_version=_RUNTIME_RECOMMENDATIONS_VERSION,
+    )
+    if version_backfilled:
+        backfilled_fields.append("version")
+    if int(normalized["version"]) != _RUNTIME_RECOMMENDATIONS_VERSION:
+        issues.append("RUNTIME_RECOMMENDATIONS_VERSION_UNSUPPORTED")
     exit_payload = normalized.get("exit")
     if isinstance(exit_payload, dict):
         normalized["exit"] = normalize_runtime_exit_payload(exit_payload)
+        exit_contract_status = str((normalized["exit"] or {}).get("contract_status", "")).strip().lower()
+        if exit_contract_status == "backfilled":
+            backfilled_fields.append("exit")
+        elif exit_contract_status == "invalid":
+            issues.append("EXIT_CONTRACT_INVALID")
+    normalized["contract_backfilled_fields"] = list(dict.fromkeys(backfilled_fields))
+    normalized["contract_issues"] = list(dict.fromkeys(issues))
+    if normalized["contract_issues"]:
+        normalized["contract_status"] = "invalid"
+    elif normalized["contract_backfilled_fields"]:
+        normalized["contract_status"] = "backfilled"
+    else:
+        normalized["contract_status"] = "ok"
     return normalized
 
 
 def runtime_exit_contract_issues(exit_payload: dict[str, Any] | None) -> list[str]:
     payload = dict(exit_payload or {})
     issues: list[str] = []
+    version = _safe_optional_int(payload.get("version"))
+    if version is None:
+        issues.append("EXIT_CONTRACT_VERSION_MISSING")
+    elif version != _RUNTIME_EXIT_CONTRACT_VERSION:
+        issues.append("EXIT_CONTRACT_VERSION_UNSUPPORTED")
     mode = str(payload.get("recommended_exit_mode") or "").strip().lower()
     source = str(payload.get("recommended_exit_mode_source") or "").strip()
     reason_code = str(payload.get("recommended_exit_mode_reason_code") or "").strip()
@@ -316,3 +352,19 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_contract_version(value: Any, *, fallback_version: int) -> tuple[int, bool]:
+    resolved = _safe_optional_int(value)
+    if resolved is None:
+        return int(fallback_version), True
+    return int(resolved), False

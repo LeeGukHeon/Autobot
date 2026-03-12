@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.execution.order_supervisor import slippage_bps
 
 from .state_store import LiveStateStore, OrderRecord, TradeJournalRecord
@@ -708,7 +709,11 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
         if isinstance(strategy_meta.get("exit_recommendation"), dict)
         else {}
     )
-    model_exit_plan = dict(strategy_meta.get("model_exit_plan") or {}) if isinstance(strategy_meta.get("model_exit_plan"), dict) else {}
+    model_exit_plan = (
+        normalize_model_exit_plan_payload(strategy_meta.get("model_exit_plan"))
+        if isinstance(strategy_meta.get("model_exit_plan"), dict)
+        else {}
+    )
     admissibility = dict(payload.get("admissibility") or {}) if isinstance(payload.get("admissibility"), dict) else {}
     decision = dict(admissibility.get("decision") or {}) if isinstance(admissibility.get("decision"), dict) else {}
     snapshot = dict(admissibility.get("snapshot") or {}) if isinstance(admissibility.get("snapshot"), dict) else {}
@@ -768,10 +773,15 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                 "model_exit_plan": {
                     "mode": model_exit_plan.get("mode"),
                     "hold_bars": model_exit_plan.get("hold_bars"),
+                    "bar_interval_ms": model_exit_plan.get("bar_interval_ms"),
                     "timeout_delta_ms": model_exit_plan.get("timeout_delta_ms"),
+                    "tp_ratio": model_exit_plan.get("tp_ratio"),
+                    "sl_ratio": model_exit_plan.get("sl_ratio"),
+                    "trailing_ratio": model_exit_plan.get("trailing_ratio"),
                     "tp_pct": model_exit_plan.get("tp_pct"),
                     "sl_pct": model_exit_plan.get("sl_pct"),
                     "trailing_pct": model_exit_plan.get("trailing_pct"),
+                    "expected_exit_fee_ratio": model_exit_plan.get("expected_exit_fee_ratio"),
                     "expected_exit_fee_rate": model_exit_plan.get("expected_exit_fee_rate"),
                     "expected_exit_slippage_bps": model_exit_plan.get("expected_exit_slippage_bps"),
                 },

@@ -17,6 +17,8 @@ from typing import Any, Callable
 import yaml
 
 from . import __version__
+from . import cli_model_helpers as _cli_model_helpers
+from . import cli_train_v4_helpers as _cli_train_v4_helpers
 from .backtest import BacktestRunSettings, run_backtest_sync
 from .data import (
     DuckDBSettings,
@@ -128,7 +130,6 @@ from .models import (
     TrainRunOptions,
     TrainV2MicroOptions,
     TrainV3MtfMicroOptions,
-    TrainV4CryptoCsOptions,
     audit_registered_model,
     compare_registered_models,
     evaluate_registered_model_window,
@@ -186,176 +187,15 @@ DEFAULT_PAPER_ALPHA_PRESET = "live_v4"
 
 
 def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
-    name = str(preset).strip().lower() or DEFAULT_PAPER_ALPHA_PRESET
-    overrides: dict[str, Any] = {
-        "strategy": "model_alpha_v1",
-        "feature_set": "v4",
-    }
-    if name in {"default", "config"}:
-        return overrides
-    if name in {"live_v3", "live"}:
-        overrides.update(
-            {
-                "feature_set": "v3",
-                "model_ref": "champion_v3",
-                "model_family": "train_v3_mtf_micro",
-                "top_pct": 0.10,
-                "min_cands_per_ts": 3,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "live_v3",
-                "paper_micro_provider": "live_ws",
-                "micro_gate": "off",
-                "micro_order_policy": "on",
-                "micro_order_policy_mode": "trade_only",
-                "micro_order_policy_on_missing": "static_fallback",
-            }
-        )
-        return overrides
-    if name in {"live_v4", "v4"}:
-        overrides.update(
-            {
-                "feature_set": "v4",
-                "model_ref": DEFAULT_V4_RUNTIME_REF,
-                "model_family": "train_v4_crypto_cs",
-                "top_pct": 0.50,
-                "min_cands_per_ts": 1,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "live_v4",
-                "paper_micro_provider": "live_ws",
-                "micro_gate": "off",
-                "micro_order_policy": "on",
-                "micro_order_policy_mode": "trade_only",
-                "micro_order_policy_on_missing": "static_fallback",
-            }
-        )
-        return overrides
-    if name in {"candidate_v4", "live_candidate_v4"}:
-        overrides.update(
-            {
-                "feature_set": "v4",
-                "model_ref": DEFAULT_V4_CANDIDATE_REF,
-                "model_family": "train_v4_crypto_cs",
-                "top_pct": 0.50,
-                "min_cands_per_ts": 1,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "live_v4",
-                "paper_micro_provider": "live_ws",
-                "micro_gate": "off",
-                "micro_order_policy": "on",
-                "micro_order_policy_mode": "trade_only",
-                "micro_order_policy_on_missing": "static_fallback",
-            }
-        )
-        return overrides
-    if name in {"offline", "offline_v3"}:
-        overrides.update(
-            {
-                "feature_set": "v3",
-                "model_ref": "champion_v3",
-                "model_family": "train_v3_mtf_micro",
-                "top_pct": 0.10,
-                "min_cands_per_ts": 3,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "offline_parquet",
-                "paper_micro_provider": "offline_parquet",
-            }
-        )
-        return overrides
-    if name in {"offline_v4"}:
-        overrides.update(
-            {
-                "feature_set": "v4",
-                "model_ref": DEFAULT_V4_RUNTIME_REF,
-                "model_family": "train_v4_crypto_cs",
-                "top_pct": 0.50,
-                "min_cands_per_ts": 1,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "offline_parquet",
-                "paper_micro_provider": "offline_parquet",
-            }
-        )
-        return overrides
-    raise ValueError(f"Unsupported paper alpha preset: {preset}")
+    return _cli_model_helpers.paper_alpha_preset_overrides(preset)
 
 
 def _normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
-    preset = str(getattr(args, "preset", None) or DEFAULT_PAPER_ALPHA_PRESET).strip().lower() or DEFAULT_PAPER_ALPHA_PRESET
-    overrides = _paper_alpha_preset_overrides(preset)
-    payload = {
-        "paper_command": "run",
-        "duration_sec": int(getattr(args, "duration_sec", 600)),
-        "quote": getattr(args, "quote", None),
-        "top_n": getattr(args, "top_n", None),
-        "strategy": str(overrides.get("strategy", "model_alpha_v1")),
-        "tf": getattr(args, "tf", None),
-        "model_ref": getattr(args, "model_ref", None) or overrides.get("model_ref"),
-        "model_family": getattr(args, "model_family", None) or overrides.get("model_family"),
-        "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
-        "top_pct": (
-            getattr(args, "top_pct", None)
-            if getattr(args, "top_pct", None) is not None
-            else overrides.get("top_pct")
-        ),
-        "min_prob": (
-            getattr(args, "min_prob", None)
-            if getattr(args, "min_prob", None) is not None
-            else overrides.get("min_prob")
-        ),
-        "min_cands_per_ts": (
-            getattr(args, "min_cands_per_ts", None)
-            if getattr(args, "min_cands_per_ts", None) is not None
-            else overrides.get("min_cands_per_ts")
-        ),
-        "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
-        "max_positions_total": getattr(args, "max_positions_total", None),
-        "cooldown_bars": getattr(args, "cooldown_bars", None),
-        "exit_mode": getattr(args, "exit_mode", None),
-        "hold_bars": getattr(args, "hold_bars", None),
-        "tp_pct": getattr(args, "tp_pct", None),
-        "sl_pct": getattr(args, "sl_pct", None),
-        "trailing_pct": getattr(args, "trailing_pct", None),
-        "execution_price_mode": getattr(args, "execution_price_mode", None),
-        "execution_timeout_bars": getattr(args, "execution_timeout_bars", None),
-        "execution_replace_max": getattr(args, "execution_replace_max", None),
-        "print_every_sec": getattr(args, "print_every_sec", None),
-        "starting_krw": getattr(args, "starting_krw", None),
-        "per_trade_krw": getattr(args, "per_trade_krw", None),
-        "max_positions": getattr(args, "max_positions", None),
-        "micro_gate": getattr(args, "micro_gate", None) or overrides.get("micro_gate"),
-        "micro_gate_mode": getattr(args, "micro_gate_mode", None),
-        "micro_gate_on_missing": getattr(args, "micro_gate_on_missing", None),
-        "micro_order_policy": getattr(args, "micro_order_policy", None) or overrides.get("micro_order_policy"),
-        "micro_order_policy_mode": (
-            getattr(args, "micro_order_policy_mode", None) or overrides.get("micro_order_policy_mode")
-        ),
-        "micro_order_policy_on_missing": (
-            getattr(args, "micro_order_policy_on_missing", None)
-            or overrides.get("micro_order_policy_on_missing")
-        ),
-        "paper_micro_provider": getattr(args, "paper_micro_provider", None) or overrides.get("paper_micro_provider"),
-        "paper_micro_warmup_sec": getattr(args, "paper_micro_warmup_sec", None),
-        "paper_micro_warmup_min_trade_events_per_market": getattr(
-            args,
-            "paper_micro_warmup_min_trade_events_per_market",
-            None,
-        ),
-        "paper_feature_provider": getattr(args, "paper_feature_provider", None) or overrides.get("paper_feature_provider"),
-        "preset": preset,
-    }
-    for key, value in vars(args).items():
-        if key not in payload:
-            payload[key] = value
-    return argparse.Namespace(**payload)
+    return _cli_model_helpers.normalize_paper_alpha_args(args)
 
 
 def _load_registry_pointer_payload(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return _cli_model_helpers.load_registry_pointer_payload(path)
 
 
 def _resolve_v4_runtime_model_ref_fallback(
@@ -363,104 +203,15 @@ def _resolve_v4_runtime_model_ref_fallback(
     model_family: str | None,
     registry_root: Path,
 ) -> tuple[str, str | None, str | None]:
-    ref = str(model_ref).strip()
-    family = str(model_family).strip() if model_family else None
-    if ref != "champion" or family != "train_v4_crypto_cs":
-        return ref, family, None
-
-    champion_payload = _load_registry_pointer_payload(registry_root / family / "champion.json")
-    if str(champion_payload.get("run_id", "")).strip():
-        return ref, family, None
-
-    latest_candidate_payload = _load_registry_pointer_payload(registry_root / family / "latest_candidate.json")
-    if str(latest_candidate_payload.get("run_id", "")).strip():
-        return "latest_candidate", family, "[paper][warn] champion_v4 pointer missing; falling back to latest_candidate_v4."
-
-    latest_payload = _load_registry_pointer_payload(registry_root / family / "latest.json")
-    if str(latest_payload.get("run_id", "")).strip():
-        return "latest", family, "[paper][warn] champion_v4 pointer missing; falling back to latest_v4."
-
-    return ref, family, None
+    return _cli_model_helpers.resolve_v4_runtime_model_ref_fallback(model_ref, model_family, registry_root)
 
 
 def _backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
-    name = str(preset).strip().lower() or "default"
-    overrides: dict[str, Any] = {
-        "strategy": "model_alpha_v1",
-        "feature_set": "v3",
-    }
-    if name == "default":
-        return overrides
-    if name == "acceptance":
-        overrides.update(
-            {
-                "micro_order_policy": "off",
-                "use_learned_selection_recommendations": False,
-            }
-        )
-        return overrides
-    raise ValueError(f"Unsupported backtest alpha preset: {preset}")
+    return _cli_model_helpers.backtest_alpha_preset_overrides(preset)
 
 
 def _normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
-    preset = str(getattr(args, "preset", None) or "default").strip().lower() or "default"
-    overrides = _backtest_alpha_preset_overrides(preset)
-    duration_days = getattr(args, "days", None)
-    if duration_days is None:
-        duration_days = getattr(args, "duration_days", None)
-    payload = {
-        "backtest_command": "run",
-        "dataset_name": getattr(args, "dataset_name", None),
-        "parquet_root": getattr(args, "parquet_root", None),
-        "tf": getattr(args, "tf", None),
-        "market": getattr(args, "market", None),
-        "markets": getattr(args, "markets", None),
-        "quote": getattr(args, "quote", None),
-        "top_n": getattr(args, "top_n", None),
-        "universe_mode": getattr(args, "universe_mode", None),
-        "strategy": str(overrides.get("strategy", "model_alpha_v1")),
-        "model_ref": getattr(args, "model_ref", None),
-        "model_family": getattr(args, "model_family", None),
-        "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
-        "entry": "top_pct",
-        "top_pct": getattr(args, "top_pct", None),
-        "min_prob": getattr(args, "min_prob", None),
-        "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
-        "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
-        "exit_mode": getattr(args, "exit_mode", None),
-        "hold_bars": getattr(args, "hold_bars", None),
-        "tp_pct": getattr(args, "tp_pct", None),
-        "sl_pct": getattr(args, "sl_pct", None),
-        "trailing_pct": getattr(args, "trailing_pct", None),
-        "cooldown_bars": getattr(args, "cooldown_bars", None),
-        "max_positions_total": getattr(args, "max_positions_total", None),
-        "execution_price_mode": getattr(args, "execution_price_mode", None),
-        "execution_timeout_bars": getattr(args, "execution_timeout_bars", None),
-        "execution_replace_max": getattr(args, "execution_replace_max", None),
-        "start": getattr(args, "start", None),
-        "end": getattr(args, "end", None),
-        "from_ts_ms": getattr(args, "from_ts_ms", None),
-        "to_ts_ms": getattr(args, "to_ts_ms", None),
-        "duration_days": duration_days,
-        "dense_grid": bool(getattr(args, "dense_grid", False)),
-        "starting_krw": getattr(args, "starting_krw", None),
-        "per_trade_krw": getattr(args, "per_trade_krw", None),
-        "max_positions": getattr(args, "max_positions", None),
-        "min_order_krw": getattr(args, "min_order_krw", None),
-        "order_timeout_bars": getattr(args, "order_timeout_bars", None),
-        "reprice_max_attempts": getattr(args, "reprice_max_attempts", None),
-        "micro_gate": getattr(args, "micro_gate", None),
-        "micro_gate_mode": getattr(args, "micro_gate_mode", None),
-        "micro_gate_on_missing": getattr(args, "micro_gate_on_missing", None),
-        "micro_order_policy": getattr(args, "micro_order_policy", None) or overrides.get("micro_order_policy"),
-        "micro_order_policy_mode": getattr(args, "micro_order_policy_mode", None),
-        "micro_order_policy_on_missing": getattr(args, "micro_order_policy_on_missing", None),
-        "preset": preset,
-    }
-    for key, value in vars(args).items():
-        if key not in payload:
-            payload[key] = value
-    return argparse.Namespace(**payload)
+    return _cli_model_helpers.normalize_backtest_alpha_args(args)
 
 
 def _selection_use_learned_recommendations(
@@ -2556,290 +2307,17 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
             if trainer == "v4_crypto_cs":
-                model_family = (
-                    str(getattr(args, "model_family", None) or "train_v4_crypto_cs").strip() or "train_v4_crypto_cs"
-                )
-                backtest_dataset_name_v4 = _resolve_backtest_dataset_name_for_model_features(
-                    parquet_root=Path(str(backtest_defaults["parquet_root"])),
-                    base_candles_dataset=str(features_v4_config.build.base_candles_dataset),
-                    fallback=str(backtest_defaults["dataset_name"]).strip() or "candles_v1",
-                )
-                model_alpha_backtest_defaults = backtest_defaults.get("model_alpha", {})
-                model_alpha_selection_defaults = (
-                    model_alpha_backtest_defaults.get("selection", {})
-                    if isinstance(model_alpha_backtest_defaults.get("selection"), dict)
-                    else {}
-                )
-                model_alpha_position_defaults = (
-                    model_alpha_backtest_defaults.get("position", {})
-                    if isinstance(model_alpha_backtest_defaults.get("position"), dict)
-                    else {}
-                )
-                model_alpha_exit_defaults = (
-                    model_alpha_backtest_defaults.get("exit", {})
-                    if isinstance(model_alpha_backtest_defaults.get("exit"), dict)
-                    else {}
-                )
-                model_alpha_execution_defaults = (
-                    model_alpha_backtest_defaults.get("execution", {})
-                    if isinstance(model_alpha_backtest_defaults.get("execution"), dict)
-                    else {}
-                )
-                model_alpha_operational_defaults = (
-                    model_alpha_backtest_defaults.get("operational", {})
-                    if isinstance(model_alpha_backtest_defaults.get("operational"), dict)
-                    else {}
-                )
-                exec_acceptance_top_n = max(
-                    int(getattr(args, "execution_acceptance_top_n", None))
-                    if getattr(args, "execution_acceptance_top_n", None) is not None
-                    else top_n,
-                    1,
-                )
-                exec_acceptance_top_pct = max(
-                    min(
-                        float(getattr(args, "execution_acceptance_top_pct", None))
-                        if getattr(args, "execution_acceptance_top_pct", None) is not None
-                        else float(model_alpha_selection_defaults.get("top_pct", 0.05)),
-                        1.0,
-                    ),
-                    0.0,
-                )
-                exec_acceptance_min_prob = _clamp_prob_value(
-                    _optional_float_value(
-                        getattr(args, "execution_acceptance_min_prob", None)
-                        if getattr(args, "execution_acceptance_min_prob", None) is not None
-                        else model_alpha_selection_defaults.get("min_prob")
-                    )
-                )
-                exec_acceptance_min_cands = max(
-                    int(getattr(args, "execution_acceptance_min_cands_per_ts", None))
-                    if getattr(args, "execution_acceptance_min_cands_per_ts", None) is not None
-                    else int(model_alpha_selection_defaults.get("min_candidates_per_ts", 10)),
-                    0,
-                )
-                exec_acceptance_hold_bars = max(
-                    int(getattr(args, "execution_acceptance_hold_bars", None))
-                    if getattr(args, "execution_acceptance_hold_bars", None) is not None
-                    else int(model_alpha_exit_defaults.get("hold_bars", 6)),
-                    0,
-                )
-                options_v4 = TrainV4CryptoCsOptions(
-                    dataset_root=features_v4_config.output_dataset_root,
+                options_v4 = _cli_train_v4_helpers.build_v4_train_options(
+                    args=args,
+                    defaults=defaults,
+                    backtest_defaults=backtest_defaults,
+                    features_v4_config=features_v4_config,
                     registry_root=registry_root,
                     logs_root=logs_root,
-                    model_family=model_family,
-                    tf=str(args.tf or defaults["tf"]).strip().lower(),
-                    quote=str(args.quote or defaults["quote"]).strip().upper(),
-                    top_n=max(top_n, 1),
-                    start=str(args.start or defaults["start"]).strip(),
-                    end=str(args.end or defaults["end"]).strip(),
-                    feature_set=str(args.feature_set).strip().lower(),
-                    label_set=str(args.label_set).strip().lower(),
-                    task=str(args.task or defaults["task"]).strip().lower(),
-                    booster_sweep_trials=int(
-                        args.booster_sweep_trials
-                        if args.booster_sweep_trials is not None
-                        else defaults["booster_sweep_trials"]
-                    ),
-                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                    nthread=int(args.nthread if args.nthread is not None else defaults["nthread"]),
-                    batch_rows=max(int(defaults["batch_rows"]), 1),
-                    train_ratio=float(defaults["train_ratio"]),
-                    valid_ratio=float(defaults["valid_ratio"]),
-                    test_ratio=float(defaults["test_ratio"]),
-                    embargo_bars=max(int(defaults["embargo_bars"]), 0),
-                    fee_bps_est=float(defaults["fee_bps_est"]),
-                    safety_bps=float(defaults["safety_bps"]),
-                    ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
-                    ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
-                    min_rows_for_train=max(int(features_v4_config.build.min_rows_for_train), 1),
-                    cpcv_lite_enabled=bool(getattr(args, "cpcv_lite", False)),
-                    cpcv_lite_group_count=max(int(getattr(args, "cpcv_lite_group_count", None) or 6), 3),
-                    cpcv_lite_test_group_count=max(int(getattr(args, "cpcv_lite_test_groups", None) or 2), 1),
-                    cpcv_lite_max_combinations=max(int(getattr(args, "cpcv_lite_max_combinations", None) or 6), 1),
-                    factor_block_selection_mode=str(
-                        getattr(args, "factor_block_selection_mode", None) or "guarded_auto"
-                    ).strip().lower(),
-                    run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip().lower(),
-                    execution_acceptance_enabled=True,
-                    execution_acceptance_dataset_name=backtest_dataset_name_v4,
-                    execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
-                    execution_acceptance_output_root=logs_root / "train_v4_execution_backtest",
-                    execution_acceptance_top_n=exec_acceptance_top_n,
-                    execution_acceptance_dense_grid=bool(backtest_defaults["dense_grid"]),
-                    execution_acceptance_starting_krw=float(backtest_defaults["starting_krw"]),
-                    execution_acceptance_per_trade_krw=float(backtest_defaults["per_trade_krw"]),
-                    execution_acceptance_max_positions=max(int(backtest_defaults["max_positions"]), 1),
-                    execution_acceptance_min_order_krw=max(float(backtest_defaults["min_order_krw"]), 0.0),
-                    execution_acceptance_order_timeout_bars=max(int(backtest_defaults["order_timeout_bars"]), 1),
-                    execution_acceptance_reprice_max_attempts=max(int(backtest_defaults["reprice_max_attempts"]), 0),
-                    execution_acceptance_reprice_tick_steps=max(int(backtest_defaults["reprice_tick_steps"]), 1),
-                    execution_acceptance_rules_ttl_sec=max(int(backtest_defaults["rules_ttl_sec"]), 1),
-                    execution_acceptance_model_alpha=ModelAlphaSettings(
-                        model_ref="candidate_v4",
-                        model_family=model_family,
-                        feature_set="v4",
-                        selection=ModelAlphaSelectionSettings(
-                            top_pct=exec_acceptance_top_pct,
-                            min_prob=exec_acceptance_min_prob,
-                            min_candidates_per_ts=exec_acceptance_min_cands,
-                            registry_threshold_key=(
-                                str(model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")).strip()
-                                or "top_5pct"
-                            ),
-                            use_learned_recommendations=False,
-                        ),
-                        position=ModelAlphaPositionSettings(
-                            max_positions_total=max(
-                                int(model_alpha_position_defaults.get("max_positions_total", 3)),
-                                1,
-                            ),
-                            cooldown_bars=max(int(model_alpha_position_defaults.get("cooldown_bars", 6)), 0),
-                            entry_min_notional_buffer_bps=max(
-                                float(model_alpha_position_defaults.get("entry_min_notional_buffer_bps", 25.0)),
-                                0.0,
-                            ),
-                            sizing_mode=(
-                                str(model_alpha_position_defaults.get("sizing_mode", "prob_ramp")).strip().lower()
-                                or "prob_ramp"
-                            ),
-                            size_multiplier_min=max(
-                                float(model_alpha_position_defaults.get("size_multiplier_min", 0.5)),
-                                0.0,
-                            ),
-                            size_multiplier_max=max(
-                                float(model_alpha_position_defaults.get("size_multiplier_max", 1.5)),
-                                max(float(model_alpha_position_defaults.get("size_multiplier_min", 0.5)), 0.0),
-                            ),
-                        ),
-                        exit=ModelAlphaExitSettings(
-                            mode=str(model_alpha_exit_defaults.get("mode", "hold")).strip().lower() or "hold",
-                            hold_bars=exec_acceptance_hold_bars,
-                            use_learned_exit_mode=False,
-                            use_learned_hold_bars=False,
-                            use_learned_risk_recommendations=False,
-                            risk_scaling_mode="fixed",
-                            risk_vol_feature=str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip()
-                            or "rv_12",
-                            tp_vol_multiplier=None,
-                            sl_vol_multiplier=None,
-                            trailing_vol_multiplier=None,
-                            tp_pct=max(float(model_alpha_exit_defaults.get("tp_pct", 0.02)), 0.0),
-                            sl_pct=max(float(model_alpha_exit_defaults.get("sl_pct", 0.01)), 0.0),
-                            trailing_pct=max(float(model_alpha_exit_defaults.get("trailing_pct", 0.0)), 0.0),
-                            expected_exit_slippage_bps=_optional_float_value(
-                                model_alpha_exit_defaults.get("expected_exit_slippage_bps")
-                            ),
-                            expected_exit_fee_bps=_optional_float_value(
-                                model_alpha_exit_defaults.get("expected_exit_fee_bps")
-                            ),
-                        ),
-                        execution=ModelAlphaExecutionSettings(
-                            price_mode=(
-                                str(model_alpha_execution_defaults.get("price_mode", "JOIN")).strip().upper()
-                                or "JOIN"
-                            ),
-                            timeout_bars=max(int(model_alpha_execution_defaults.get("timeout_bars", 2)), 1),
-                            replace_max=max(int(model_alpha_execution_defaults.get("replace_max", 2)), 0),
-                            use_learned_recommendations=False,
-                        ),
-                        operational=ModelAlphaOperationalSettings(
-                            enabled=bool(model_alpha_operational_defaults.get("enabled", True)),
-                            risk_multiplier_min=max(
-                                float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)),
-                                0.0,
-                            ),
-                            risk_multiplier_max=max(
-                                float(model_alpha_operational_defaults.get("risk_multiplier_max", 1.20)),
-                                max(float(model_alpha_operational_defaults.get("risk_multiplier_min", 0.80)), 0.0),
-                            ),
-                            max_positions_scale_min=max(
-                                float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)),
-                                0.10,
-                            ),
-                            max_positions_scale_max=max(
-                                float(model_alpha_operational_defaults.get("max_positions_scale_max", 1.50)),
-                                max(float(model_alpha_operational_defaults.get("max_positions_scale_min", 0.50)), 0.10),
-                            ),
-                            session_overlap_boost=max(
-                                float(model_alpha_operational_defaults.get("session_overlap_boost", 0.10)),
-                                0.0,
-                            ),
-                            session_offpeak_penalty=max(
-                                float(model_alpha_operational_defaults.get("session_offpeak_penalty", 0.05)),
-                                0.0,
-                            ),
-                            micro_quality_block_threshold=max(
-                                float(model_alpha_operational_defaults.get("micro_quality_block_threshold", 0.15)),
-                                0.0,
-                            ),
-                            micro_quality_conservative_threshold=max(
-                                float(model_alpha_operational_defaults.get("micro_quality_conservative_threshold", 0.35)),
-                                0.0,
-                            ),
-                            micro_quality_aggressive_threshold=max(
-                                float(model_alpha_operational_defaults.get("micro_quality_aggressive_threshold", 0.75)),
-                                0.0,
-                            ),
-                            max_execution_spread_bps_for_join=max(
-                                float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_join", 20.0)),
-                                0.0,
-                            ),
-                            max_execution_spread_bps_for_cross=max(
-                                float(model_alpha_operational_defaults.get("max_execution_spread_bps_for_cross", 6.0)),
-                                0.0,
-                            ),
-                            min_execution_depth_krw_for_cross=max(
-                                float(model_alpha_operational_defaults.get("min_execution_depth_krw_for_cross", 1_500_000.0)),
-                                0.0,
-                            ),
-                            snapshot_stale_ms=max(
-                                int(model_alpha_operational_defaults.get("snapshot_stale_ms", 15_000)),
-                                0,
-                            ),
-                            conservative_timeout_scale=max(
-                                float(model_alpha_operational_defaults.get("conservative_timeout_scale", 1.25)),
-                                0.10,
-                            ),
-                            aggressive_timeout_scale=max(
-                                float(model_alpha_operational_defaults.get("aggressive_timeout_scale", 0.75)),
-                                0.10,
-                            ),
-                            conservative_replace_interval_scale=max(
-                                float(model_alpha_operational_defaults.get("conservative_replace_interval_scale", 1.50)),
-                                0.10,
-                            ),
-                            aggressive_replace_interval_scale=max(
-                                float(model_alpha_operational_defaults.get("aggressive_replace_interval_scale", 0.50)),
-                                0.10,
-                            ),
-                            conservative_max_replaces_scale=max(
-                                float(model_alpha_operational_defaults.get("conservative_max_replaces_scale", 0.50)),
-                                0.0,
-                            ),
-                            aggressive_max_replaces_bonus=max(
-                                int(model_alpha_operational_defaults.get("aggressive_max_replaces_bonus", 1)),
-                                0,
-                            ),
-                            conservative_max_chase_bps_scale=max(
-                                float(model_alpha_operational_defaults.get("conservative_max_chase_bps_scale", 0.75)),
-                                0.0,
-                            ),
-                            aggressive_max_chase_bps_bonus=max(
-                                int(model_alpha_operational_defaults.get("aggressive_max_chase_bps_bonus", 5)),
-                                0,
-                            ),
-                            runtime_timeout_ms_floor=max(
-                                int(model_alpha_operational_defaults.get("runtime_timeout_ms_floor", 5_000)),
-                                1_000,
-                            ),
-                            runtime_replace_interval_ms_floor=max(
-                                int(model_alpha_operational_defaults.get("runtime_replace_interval_ms_floor", 1_500)),
-                                1,
-                            ),
-                        ),
-                    ),
+                    top_n=top_n,
+                    resolve_backtest_dataset_name_for_model_features=_resolve_backtest_dataset_name_for_model_features,
+                    clamp_prob_value=_clamp_prob_value,
+                    optional_float_value=_optional_float_value,
                 )
                 summary_v4 = train_and_register_v4_crypto_cs(options_v4)
                 print(
@@ -6096,26 +5574,7 @@ def _parse_orderbook_level_arg(value: Any) -> int | str | None:
 
 
 def _resolve_model_ref_alias(model_ref: str, model_family: str | None = None) -> tuple[str, str | None]:
-    ref = str(model_ref).strip()
-    family = str(model_family).strip() if model_family else None
-    aliases: dict[str, tuple[str, str]] = {
-        "latest_v1": ("latest", "train_v1"),
-        "champion_v1": ("champion", "train_v1"),
-        "latest_v2": ("latest", "train_v2_micro"),
-        "champion_v2": ("champion", "train_v2_micro"),
-        "latest_v3": ("latest", "train_v3_mtf_micro"),
-        "champion_v3": ("champion", "train_v3_mtf_micro"),
-        "latest_candidate_v3": ("latest_candidate", "train_v3_mtf_micro"),
-        "candidate_v3": ("latest_candidate", "train_v3_mtf_micro"),
-        "latest_v4": ("latest", "train_v4_crypto_cs"),
-        "champion_v4": ("champion", "train_v4_crypto_cs"),
-        "latest_candidate_v4": ("latest_candidate", "train_v4_crypto_cs"),
-        "candidate_v4": ("latest_candidate", "train_v4_crypto_cs"),
-    }
-    if ref in aliases:
-        resolved_ref, resolved_family = aliases[ref]
-        return resolved_ref, (family or resolved_family)
-    return ref, family
+    return _cli_model_helpers.resolve_model_ref_alias(model_ref, model_family)
 
 
 def _parse_bool_arg(value: Any, *, default: bool = False) -> bool:

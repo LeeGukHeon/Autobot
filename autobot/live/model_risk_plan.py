@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from autobot.common.model_exit_contract import is_model_exit_plan_payload, normalize_model_exit_plan_payload
+
 from .state_store import PositionRecord, RiskPlanRecord
 
 
@@ -16,12 +18,9 @@ def extract_model_exit_plan(meta: dict[str, Any] | None) -> dict[str, Any] | Non
             strategy_meta = strategy_payload.get("meta")
             if isinstance(strategy_meta, dict):
                 payload = strategy_meta.get("model_exit_plan")
-    if not isinstance(payload, dict):
+    if not is_model_exit_plan_payload(payload):
         return None
-    source = str(payload.get("source", "")).strip().lower()
-    if source != "model_alpha_v1":
-        return None
-    return dict(payload)
+    return normalize_model_exit_plan_payload(payload)
 
 
 def build_position_record_from_model_exit_plan(
@@ -34,7 +33,8 @@ def build_position_record_from_model_exit_plan(
     updated_ts: int,
     managed: bool = True,
 ) -> PositionRecord:
-    tp_json, sl_json, trailing_json = _build_position_policy_jsons(plan_payload)
+    normalized_plan = normalize_model_exit_plan_payload(plan_payload)
+    tp_json, sl_json, trailing_json = _build_position_policy_jsons(normalized_plan)
     return PositionRecord(
         market=str(market).strip().upper(),
         base_currency=str(base_currency).strip().upper(),
@@ -59,11 +59,12 @@ def build_risk_plan_record_from_model_exit_plan(
     plan_id: str,
     source_intent_id: str | None,
 ) -> RiskPlanRecord:
-    timeout_delta_ms = max(_as_int(plan_payload.get("timeout_delta_ms")) or 0, 0)
+    normalized_plan = normalize_model_exit_plan_payload(plan_payload)
+    timeout_delta_ms = max(_as_int(normalized_plan.get("timeout_delta_ms")) or 0, 0)
     timeout_ts_ms = int(created_ts) + timeout_delta_ms if timeout_delta_ms > 0 else None
-    tp_pct = _to_percent_points(_as_float(plan_payload.get("tp_pct")))
-    sl_pct = _to_percent_points(_as_float(plan_payload.get("sl_pct")))
-    trailing_pct = max(_as_float(plan_payload.get("trailing_pct")) or 0.0, 0.0)
+    tp_pct = _to_percent_points(_as_float(normalized_plan.get("tp_ratio")))
+    sl_pct = _to_percent_points(_as_float(normalized_plan.get("sl_ratio")))
+    trailing_pct = max(_as_float(normalized_plan.get("trailing_ratio")) or 0.0, 0.0)
     return RiskPlanRecord(
         plan_id=str(plan_id).strip(),
         market=str(market).strip().upper(),
@@ -159,28 +160,31 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
     tp_pct = _from_percent_points(_as_float(tp.get("tp_pct")))
     sl_pct = _from_percent_points(_as_float(sl.get("sl_pct")))
     trailing_pct = max(_as_float(trailing.get("trail_pct")) or 0.0, 0.0)
-    return {
-        "source": "model_alpha_v1",
-        "version": 1,
-        "mode": str(shared.get("mode", "hold")).strip().lower() or "hold",
-        "hold_bars": hold_bars,
-        "interval_ms": interval_ms,
-        "timeout_delta_ms": timeout_delta_ms,
-        "tp_pct": float(tp_pct or 0.0),
-        "sl_pct": float(sl_pct or 0.0),
-        "trailing_pct": float(trailing_pct),
-        "expected_exit_fee_rate": 0.0,
-        "expected_exit_slippage_bps": 0.0,
-    }
+    return normalize_model_exit_plan_payload(
+        {
+            "source": "model_alpha_v1",
+            "version": 1,
+            "mode": str(shared.get("mode", "hold")).strip().lower() or "hold",
+            "hold_bars": hold_bars,
+            "interval_ms": interval_ms,
+            "timeout_delta_ms": timeout_delta_ms,
+            "tp_pct": float(tp_pct or 0.0),
+            "sl_pct": float(sl_pct or 0.0),
+            "trailing_pct": float(trailing_pct),
+            "expected_exit_fee_rate": 0.0,
+            "expected_exit_slippage_bps": 0.0,
+        }
+    )
 
 
 def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str, str]:
-    mode = str(plan_payload.get("mode", "hold")).strip().lower() or "hold"
-    hold_bars = max(_as_int(plan_payload.get("hold_bars")) or 0, 0)
-    timeout_delta_ms = max(_as_int(plan_payload.get("timeout_delta_ms")) or 0, 0)
-    tp_pct = _to_percent_points(_as_float(plan_payload.get("tp_pct")))
-    sl_pct = _to_percent_points(_as_float(plan_payload.get("sl_pct")))
-    trailing_pct = max(_as_float(plan_payload.get("trailing_pct")) or 0.0, 0.0)
+    normalized_plan = normalize_model_exit_plan_payload(plan_payload)
+    mode = str(normalized_plan.get("mode", "hold")).strip().lower() or "hold"
+    hold_bars = max(_as_int(normalized_plan.get("hold_bars")) or 0, 0)
+    timeout_delta_ms = max(_as_int(normalized_plan.get("timeout_delta_ms")) or 0, 0)
+    tp_pct = _to_percent_points(_as_float(normalized_plan.get("tp_ratio")))
+    sl_pct = _to_percent_points(_as_float(normalized_plan.get("sl_ratio")))
+    trailing_pct = max(_as_float(normalized_plan.get("trailing_ratio")) or 0.0, 0.0)
     trailing_enabled = trailing_pct > 0.0
     shared = {
         "source": "model_alpha_v1",

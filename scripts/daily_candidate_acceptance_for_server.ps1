@@ -79,10 +79,7 @@ function Test-ObjectHasValues {
 
 function Get-StringArray {
     param([Parameter(Mandatory = $false)]$Value)
-    if ($null -eq $Value) {
-        return @()
-    }
-    return @($Value | ForEach-Object { [string]$_ })
+    return @(Expand-DelimitedStringArray -Value $Value)
 }
 
 function Resolve-BatchDateValue {
@@ -183,9 +180,11 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { Resolve-DefaultAcceptanceScript -Root $resolvedProjectRoot } else { $AcceptanceScript }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
+$resolvedBlockOnActiveUnits = @(Get-StringArray -Value $BlockOnActiveUnits)
+$resolvedAcceptanceArgs = @(Get-StringArray -Value $AcceptanceArgs)
 
 $activeBlockUnits = @()
-foreach ($unit in @($BlockOnActiveUnits)) {
+foreach ($unit in $resolvedBlockOnActiveUnits) {
     $trimmed = [string]$unit
     if ([string]::IsNullOrWhiteSpace($trimmed)) {
         continue
@@ -218,7 +217,7 @@ if ($SkipReportRefresh) {
 if ($DryRun) {
     $argList += "-DryRun"
 }
-$argList += @($AcceptanceArgs)
+$argList += $resolvedAcceptanceArgs
 
 $commandPreview = $psExe + " " + (($argList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 Write-Host ("[daily-accept] batch_date={0}" -f $resolvedBatchDate)

@@ -165,11 +165,16 @@ def test_normalize_runtime_recommendations_backfills_legacy_exit_mode_compare() 
     )
 
     exit_doc = payload["exit"]
+    assert payload["version"] == 1
+    assert payload["contract_status"] == "backfilled"
+    assert "version" in payload["contract_backfilled_fields"]
     assert exit_doc["recommended_exit_mode"] == "hold"
+    assert exit_doc["version"] == 1
     assert exit_doc["recommended_exit_mode_source"] == "execution_backtest_grid_search_compare"
     assert exit_doc["recommended_exit_mode_reason_code"] == "HOLD_EXECUTION_COMPARE_EDGE"
     assert exit_doc["exit_mode_compare"]["decision"] == "champion_edge"
     assert exit_doc["contract_status"] == "backfilled"
+    assert "version" in exit_doc["contract_backfilled_fields"]
     assert "recommended_exit_mode" in exit_doc["contract_backfilled_fields"]
     assert exit_doc["contract_issues"] == []
     assert exit_doc["hold_family"]["status"] == "legacy_backfilled"
@@ -217,6 +222,137 @@ def test_resolve_runtime_model_alpha_settings_rejects_partial_invalid_exit_contr
     assert resolved.exit.trailing_vol_multiplier == 0.25
     assert state["exit_contract_status"] == "invalid"
     assert "EXIT_RECOMMENDATION_EVIDENCE_MISSING" in state["exit_contract_issues"]
+
+
+def test_normalize_runtime_recommendations_rejects_unsupported_exit_contract_version() -> None:
+    payload = normalize_runtime_recommendations_payload(
+        {
+            "version": 1,
+            "exit": {
+                "version": 9,
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+                "recommended_hold_bars": 6,
+                "summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 100.0,
+                    "fill_rate": 0.9,
+                    "max_drawdown_pct": 2.0,
+                    "slippage_bps_mean": 5.0,
+                },
+                "risk_summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 120.0,
+                    "fill_rate": 0.92,
+                    "max_drawdown_pct": 1.8,
+                    "slippage_bps_mean": 4.0,
+                },
+                "grid_point": {"hold_bars": 6},
+                "risk_grid_point": {
+                    "hold_bars": 6,
+                    "risk_scaling_mode": "fixed",
+                    "risk_vol_feature": "rv_12",
+                    "tp_vol_multiplier": 2.0,
+                    "sl_vol_multiplier": 1.0,
+                    "trailing_vol_multiplier": 1.5,
+                },
+                "hold_family": {
+                    "status": "supported",
+                    "best_rule_id": "hold_h6",
+                    "best_comparable_rule_id": "hold_h6",
+                },
+                "risk_family": {
+                    "status": "supported",
+                    "best_rule_id": "risk_h6",
+                    "best_comparable_rule_id": "risk_h6",
+                },
+                "family_compare": {
+                    "status": "supported",
+                    "decision": "candidate_edge",
+                    "comparable": True,
+                    "reason_codes": [],
+                },
+                "exit_mode_compare": {"decision": "candidate_edge", "comparable": True},
+            },
+        }
+    )
+
+    assert payload["contract_status"] == "invalid"
+    assert "EXIT_CONTRACT_INVALID" in payload["contract_issues"]
+    assert payload["exit"]["contract_status"] == "invalid"
+    assert "EXIT_CONTRACT_VERSION_UNSUPPORTED" in payload["exit"]["contract_issues"]
+
+
+def test_resolve_runtime_model_alpha_settings_rejects_unsupported_runtime_recommendations_version() -> None:
+    predictor = _dummy_predictor(
+        runtime_recommendations={
+            "version": 9,
+            "exit": {
+                "version": 1,
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+                "chosen_family": "risk",
+                "chosen_rule_id": "risk_h6",
+                "hold_family_status": "supported",
+                "risk_family_status": "supported",
+                "family_compare_status": "supported",
+                "recommended_hold_bars": 6,
+                "summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 100.0,
+                    "fill_rate": 0.9,
+                    "max_drawdown_pct": 2.0,
+                    "slippage_bps_mean": 5.0,
+                },
+                "risk_summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 120.0,
+                    "fill_rate": 0.92,
+                    "max_drawdown_pct": 1.8,
+                    "slippage_bps_mean": 4.0,
+                },
+                "grid_point": {"hold_bars": 6},
+                "risk_grid_point": {
+                    "hold_bars": 6,
+                    "risk_scaling_mode": "fixed",
+                    "risk_vol_feature": "rv_12",
+                    "tp_vol_multiplier": 2.0,
+                    "sl_vol_multiplier": 1.0,
+                    "trailing_vol_multiplier": 1.5,
+                },
+                "hold_family": {
+                    "status": "supported",
+                    "best_rule_id": "hold_h6",
+                    "best_comparable_rule_id": "hold_h6",
+                },
+                "risk_family": {
+                    "status": "supported",
+                    "best_rule_id": "risk_h6",
+                    "best_comparable_rule_id": "risk_h6",
+                },
+                "family_compare": {
+                    "status": "supported",
+                    "decision": "candidate_edge",
+                    "comparable": True,
+                    "reason_codes": [],
+                },
+                "exit_mode_compare": {"decision": "candidate_edge", "comparable": True},
+            },
+        }
+    )
+    settings = ModelAlphaSettings(
+        exit=ModelAlphaExitSettings(mode="hold", hold_bars=6, use_learned_hold_bars=True),
+        execution=ModelAlphaExecutionSettings(use_learned_recommendations=False),
+    )
+
+    resolved, state = resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
+
+    assert resolved.exit.mode == "hold"
+    assert resolved.exit.hold_bars == 6
+    assert state["runtime_recommendations_contract_status"] == "invalid"
+    assert "RUNTIME_RECOMMENDATIONS_VERSION_UNSUPPORTED" in state["runtime_recommendations_contract_issues"]
 
 
 def test_resolve_runtime_model_alpha_settings_keeps_manual_exit_when_family_compare_is_insufficient() -> None:

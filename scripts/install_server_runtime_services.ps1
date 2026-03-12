@@ -107,6 +107,7 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $runtimeSpec = Get-PaperRuntimeSpec -Preset $PaperPreset -UnitName $PaperUnitName
 $effectiveRuntimeRole = if ([string]::IsNullOrWhiteSpace($PaperRuntimeRole)) { [string]$runtimeSpec.RuntimeRole } else { [string]$PaperRuntimeRole }
+$resolvedPaperCliArgs = @(Expand-DelimitedStringArray -Value $PaperCliArgs)
 
 if (
     -not $DryRun `
@@ -146,7 +147,7 @@ $paperArgList = @(
     "paper", "alpha",
     "--duration-sec", [string]([Math]::Max($PaperDurationSec, 0)),
     "--preset", $PaperPreset
-) + @($PaperCliArgs)
+) + $resolvedPaperCliArgs
 $paperCommand = ($paperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "
 $activatePath = Join-Path $resolvedProjectRoot ".venv/bin/activate"
 $execStart = "/bin/bash -lc " + (Quote-ShellArg ("source " + $activatePath + " && " + $resolvedPythonExe + " " + $paperCommand))

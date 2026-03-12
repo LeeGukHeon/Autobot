@@ -54,7 +54,7 @@ $wrapperArgList = @(
 )
 if (@($PromotionTargetUnits).Count -gt 0) {
     $wrapperArgList += "-PromotionTargetUnits"
-    $wrapperArgList += @($PromotionTargetUnits)
+    $wrapperArgList += (Join-DelimitedStringArray -Values $PromotionTargetUnits)
 }
 if ($SkipDailyPipeline) {
     $wrapperArgList += "-SkipDailyPipeline"
@@ -64,11 +64,11 @@ if ($SkipReportRefresh) {
 }
 if (@($BlockOnActiveUnits).Count -gt 0) {
     $wrapperArgList += "-BlockOnActiveUnits"
-    $wrapperArgList += @($BlockOnActiveUnits)
+    $wrapperArgList += (Join-DelimitedStringArray -Values $BlockOnActiveUnits)
 }
 if (@($AcceptanceArgs).Count -gt 0) {
     $wrapperArgList += "-AcceptanceArgs"
-    $wrapperArgList += @($AcceptanceArgs)
+    $wrapperArgList += (Join-DelimitedStringArray -Values $AcceptanceArgs)
 }
 
 $execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")

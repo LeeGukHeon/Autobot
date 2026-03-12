@@ -236,10 +236,7 @@ function Test-ObjectHasValues {
 
 function Get-StringArray {
     param([Parameter(Mandatory = $false)]$Value)
-    if ($null -eq $Value) {
-        return @()
-    }
-    return @($Value | ForEach-Object { [string]$_ })
+    return @(Expand-DelimitedStringArray -Value $Value)
 }
 
 function Test-AcceptanceFatalFailure {
@@ -333,8 +330,7 @@ function Start-OrUpdate-ChallengerUnit {
         "-NoBootstrapChampion",
         "-NoEnable",
         "-PaperCliArgs",
-        "--model-ref",
-        $CandidateRunId
+        (Join-DelimitedStringArray -Values @("--model-ref", $CandidateRunId))
     )
     return Invoke-CommandCapture -Exe $psExe -ArgList $args
 }
@@ -345,6 +341,7 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { Resolve-DefaultAcceptanceScript -Root $resolvedProjectRoot } else { $AcceptanceScript }
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
+$resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
 $stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
@@ -362,7 +359,7 @@ $report = [ordered]@{
     started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     champion_unit = $ChampionUnitName
     challenger_unit = $ChallengerUnitName
-    promotion_target_units = @($PromotionTargetUnits)
+    promotion_target_units = @($resolvedPromotionTargetUnits)
     steps = [ordered]@{}
     challenger_previous = @{}
     challenger_next = @{}
@@ -472,7 +469,7 @@ if ($runPromotionPhase) {
                 $skippedUnits = New-Object System.Collections.Generic.List[object]
                 Restart-Unit -UnitName $ChampionUnitName
                 $restartedUnits.Add($ChampionUnitName) | Out-Null
-                foreach ($unit in @($PromotionTargetUnits)) {
+                foreach ($unit in $resolvedPromotionTargetUnits) {
                     $trimmedUnit = [string]$unit
                     if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
                         continue
@@ -501,7 +498,7 @@ if ($runPromotionPhase) {
                     }
                 }
                 $primaryLiveTargetUnit = @(
-                    @($PromotionTargetUnits) |
+                    $resolvedPromotionTargetUnits |
                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Trim().StartsWith("autobot-live") } |
                         Select-Object -First 1
                 )
@@ -513,7 +510,7 @@ if ($runPromotionPhase) {
                     promoted_at_utc = (Get-Date).ToUniversalTime().ToString("o")
                     champion_unit = $ChampionUnitName
                     target_units = @($restartedUnits)
-                    configured_target_units = @($PromotionTargetUnits)
+                    configured_target_units = @($resolvedPromotionTargetUnits)
                     skipped_target_units = @($skippedUnits)
                     live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot -UnitName ([string]$primaryLiveTargetUnit))) -Name "contract" -DefaultValue @{})
                 }
@@ -642,7 +639,7 @@ if ($runSpawnPhase) {
             started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
             champion_unit = $ChampionUnitName
             challenger_unit = $ChallengerUnitName
-            promotion_target_units = @($PromotionTargetUnits)
+            promotion_target_units = @($resolvedPromotionTargetUnits)
         }
         if (-not $DryRun) {
             Write-JsonFile -PathValue $statePath -Payload $nextState

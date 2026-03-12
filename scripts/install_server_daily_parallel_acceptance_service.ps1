@@ -40,7 +40,7 @@ $wrapperArgList = @(
 )
 if (@($PromotionTargetUnits).Count -gt 0) {
     $wrapperArgList += "-PromotionTargetUnits"
-    $wrapperArgList += @($PromotionTargetUnits)
+    $wrapperArgList += (Join-DelimitedStringArray -Values $PromotionTargetUnits)
 }
 $execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 $execStart = "/bin/bash -lc " + (Quote-ShellArg $execStartCommand)

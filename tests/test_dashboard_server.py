@@ -326,6 +326,13 @@ def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
     assert 'fmtPct(Number(plan.trail_pct) * 100)' not in js
 
 
+def test_dashboard_server_no_longer_embeds_legacy_html_js_fallback() -> None:
+    source = Path("autobot/dashboard_server.py").read_text(encoding="utf-8")
+
+    assert "INDEX_HTML =" not in source
+    assert "window.renderLive = function renderLive(live)" not in source
+
+
 def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
