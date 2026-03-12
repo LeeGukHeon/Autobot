@@ -67,6 +67,7 @@ It should not be used for:
 10. `T21.10` Learned Exit-Mode Selection v1
 11. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
 12. `T21.19` V4 Direct Conditional Tail-Risk And Continuous Action Value v1
+13. `T21.20` V4 Stopping-Rule Family And Fair Hold-Risk Comparison v1
 
 ## 2026-03-11 Global Audit Update
 
@@ -137,6 +138,7 @@ These tickets are the required follow-on family before changing core promotion b
 7. `T21.17` V4 Ranker Shadow Lane And Lane Governance v1
 8. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
 9. `T21.19` V4 Direct Conditional Tail-Risk And Continuous Action Value v1
+10. `T21.20` V4 Stopping-Rule Family And Fair Hold-Risk Comparison v1
 
 ### Implementation Rule
 - `T21.11` must land first and write an auditable decision-surface artifact for every `v4` run.
@@ -146,6 +148,7 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.16` must keep `INSUFFICIENT_EVIDENCE` and `NOT_COMPARABLE` explicit.
 - `T21.17` is shadow-lane only until the earlier tickets freeze the certification contract.
 - `T21.18` may not map model score directly into TP/SL multipliers; it must learn trade-level action and sizing from OOS replay evidence.
+- `T21.20` may not let `hold` win merely because it is a simpler baseline action; `hold` and `risk` must be compared as bounded stopping-rule families under the same evidence contract.
 
 ### Implementation Progress
 - `T21.11` landed:
@@ -267,6 +270,10 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.19` slice 5 landed locally:
   - live trade journal summaries now preserve per-trade `ES / CTM / action-value / decision-source`
   - dashboard runtime, intent, and trade views now surface the same trade-action tail-risk contract
+- `T21.20` planned:
+  - next methodology step is to represent both `hold` and `risk` as explicit stopping-rule families
+  - family comparison will use one shared OOS replay source and one shared downside-aware objective
+  - insufficient family support must remain explicit instead of collapsing to implicit hold
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

@@ -469,6 +469,7 @@ D:\MyApps\Autobot
   - T21.10: learned `hold | risk` exit-mode selection from the same execution-aware tournament used for runtime recommendations
   - T21.18: trade-level conviction and tail-risk action policy so entry sizing and `hold | risk` resolve together from OOS replay
   - T21.19: direct conditional tail-risk and continuous action-value contract so runtime no longer depends on raw risk bins as the primary selector
+  - T21.20: explicit stopping-rule family comparison so `hold` and `risk` are evaluated under the same bounded OOS evidence contract
 - T22: live ops readiness and restart-safe continuity for small-account real trading
   - T22.7: live model handoff and ws-public data-plane synchronization
   - T22.6: shadow/canary rollout and explicit promote-to-live hook
