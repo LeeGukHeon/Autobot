@@ -499,11 +499,16 @@ def _make_fake_python_exe(
     return wrapper_path
 
 
-def _make_fake_daily_pipeline_script(tmp_path: Path) -> Path:
+def _make_fake_daily_pipeline_script(
+    tmp_path: Path,
+    *,
+    populate_batch_micro_date: bool = False,
+    tf: str = "5m",
+    market: str = "KRW-BTC",
+) -> Path:
     script_path = tmp_path / "fake_daily_pipeline.ps1"
-    script_path.write_text(
-        textwrap.dedent(
-            """
+    script_body = textwrap.dedent(
+        """
             param(
                 [string]$PythonExe = "",
                 [string]$ProjectRoot = "",
@@ -520,6 +525,11 @@ def _make_fake_daily_pipeline_script(tmp_path: Path) -> Path:
             $ErrorActionPreference = "Stop"
             $logPath = Join-Path $ProjectRoot "logs/fake_daily_pipeline_invocations.jsonl"
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+            if (__POPULATE_BATCH_MICRO_DATE__) {
+                $partDir = Join-Path $ProjectRoot "data/parquet/micro_v1/tf=__TF__/market=__MARKET__/date=$Date"
+                New-Item -ItemType Directory -Force -Path $partDir | Out-Null
+                Set-Content -Path (Join-Path $partDir "part.parquet") -Value "placeholder" -Encoding UTF8
+            }
             $entry = [ordered]@{
                 date = $Date
                 smoke_report_json = $SmokeReportJson
@@ -533,10 +543,15 @@ def _make_fake_daily_pipeline_script(tmp_path: Path) -> Path:
             ($entry | ConvertTo-Json -Compress) | Add-Content -Path $logPath -Encoding UTF8
             Write-Host "[daily-micro] report=ok"
             """
-        ).strip()
-        + "\n",
-        encoding="utf-8",
     )
+    script_body = (
+        script_body.replace("__POPULATE_BATCH_MICRO_DATE__", "$true" if populate_batch_micro_date else "$false")
+        .replace("__TF__", tf)
+        .replace("__MARKET__", market)
+        .strip()
+        + "\n"
+    )
+    script_path.write_text(script_body, encoding="utf-8")
     return script_path
 
 
@@ -628,6 +643,87 @@ def test_candidate_acceptance_ramps_train_window_from_available_micro_history(tm
     assert report["config"]["train_window_ramp_active"] is True
     assert report["config"]["train_window_ramp_reason"] == "RAMP_ACTIVE"
     assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
+    assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+
+
+def test_candidate_acceptance_recomputes_window_ramp_after_daily_pipeline_updates_micro_history(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"],
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(
+        tmp_path,
+        populate_batch_micro_date=True,
+        tf="5m",
+        market="KRW-BTC",
+    )
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-07",
+            "-TrainLookbackDays",
+            "3",
+            "-BacktestLookbackDays",
+            "2",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert [entry for entry in invocations if entry["command"] == "features build"] == [
+        {"command": "features build", "start": "2026-03-03", "end": "2026-03-05"}
+    ]
+    assert [entry for entry in invocations if entry["command"] == "model train"] == [
+        {"command": "model train", "start": "2026-03-03", "end": "2026-03-05"}
+    ]
+    assert report["config"]["train_lookback_days_effective"] == 3
+    assert report["config"]["train_window_ramp_reason"] == "TARGET_REACHED"
+    assert report["config"]["train_window_ramp_available_contiguous_micro_days"] == 5
+    assert report["steps"]["window_ramp_recomputed_after_pipeline"]["attempted"] is True
+    assert report["steps"]["window_ramp_recomputed_after_pipeline"]["effective_train_lookback_days"] == 3
+    assert report["windows_by_step"]["train"]["start"] == "2026-03-03"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
 
 

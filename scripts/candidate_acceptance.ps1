@@ -2210,7 +2210,36 @@ $effectiveRestartUnits = if ($AutoRestartKnownUnits) {
 }
 $report.runtime_units_before = @($runtimeUnitsBefore)
 $report.restart_targets = @($effectiveRestartUnits)
-$report.steps.window_ramp = $windowRamp
+
+function Sync-WindowRampState {
+    param($WindowRampValue)
+    $script:windowRamp = $WindowRampValue
+    $script:certificationStartDate = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "certification_start_date" -DefaultValue "")
+    $script:trainEndDate = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "train_end_date" -DefaultValue "")
+    $script:trainStartDate = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "train_start_date" -DefaultValue "")
+    $report.config.train_lookback_days = [int](Get-PropValue -ObjectValue $WindowRampValue -Name "effective_train_lookback_days" -DefaultValue $TrainLookbackDays)
+    $report.config.train_lookback_days_effective = [int](Get-PropValue -ObjectValue $WindowRampValue -Name "effective_train_lookback_days" -DefaultValue $TrainLookbackDays)
+    $report.config.train_window_ramp_enabled = [bool](Get-PropValue -ObjectValue $WindowRampValue -Name "enabled" -DefaultValue $false)
+    $report.config.train_window_ramp_active = [bool](Get-PropValue -ObjectValue $WindowRampValue -Name "ramp_active" -DefaultValue $false)
+    $report.config.train_window_ramp_reason = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "reason" -DefaultValue "")
+    $report.config.train_window_ramp_micro_root = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "micro_root" -DefaultValue "")
+    $report.config.train_window_ramp_min_markets_per_date = [int](Get-PropValue -ObjectValue $WindowRampValue -Name "min_markets_per_date" -DefaultValue 1)
+    $report.config.train_window_ramp_available_contiguous_micro_days = [int](Get-PropValue -ObjectValue $WindowRampValue -Name "available_contiguous_micro_days" -DefaultValue 0)
+    $report.config.train_window_ramp_first_available_micro_date = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "first_available_micro_date" -DefaultValue "")
+    $report.config.train_window_ramp_last_available_micro_date = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "last_available_micro_date" -DefaultValue "")
+    $report.config.train_start_floor_date = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "train_start_floor_date" -DefaultValue "")
+    $report.config.train_start_floor_applied = [bool](Get-PropValue -ObjectValue $WindowRampValue -Name "train_start_floor_applied" -DefaultValue $false)
+    $report.windows_by_step = [ordered]@{
+        train = [ordered]@{ start = $script:trainStartDate; end = $script:trainEndDate }
+        research = [ordered]@{ start = $script:trainStartDate; end = $script:trainEndDate; source = "train_command_window" }
+        certification = [ordered]@{ start = $script:certificationStartDate; end = $effectiveBatchDate }
+        backtest = [ordered]@{ start = $script:certificationStartDate; end = $effectiveBatchDate; alias_of = "certification" }
+    }
+    $report.window_ramp = $WindowRampValue
+    $report.steps.window_ramp = $WindowRampValue
+}
+
+Sync-WindowRampState -WindowRampValue $windowRamp
 
 function Sync-ReportTopLevelSummary {
     $candidate = Get-PropValue -ObjectValue $report -Name "candidate" -DefaultValue @{}
@@ -2336,6 +2365,23 @@ try {
             $paths = Save-Report
             Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
             exit 2
+        }
+        $windowRamp = Resolve-TrainWindowRamp `
+            -ProjectRoot $resolvedProjectRoot `
+            -BatchDate $effectiveBatchDate `
+            -Tf $Tf `
+            -RequestedTrainLookbackDays $TrainLookbackDays `
+            -RequestedBacktestLookbackDays $BacktestLookbackDays `
+            -RampEnabled $TrainLookbackRampEnabled `
+            -MicroRoot $TrainLookbackRampMicroRoot `
+            -MinMarketsPerDate $TrainLookbackRampMinMarketsPerDate `
+            -TrainStartFloorDate $TrainStartFloorDate
+        Sync-WindowRampState -WindowRampValue $windowRamp
+        $report.steps.window_ramp_recomputed_after_pipeline = [ordered]@{
+            attempted = $true
+            source = "daily_pipeline_complete"
+            reason = [string](Get-PropValue -ObjectValue $windowRamp -Name "reason" -DefaultValue "")
+            effective_train_lookback_days = [int](Get-PropValue -ObjectValue $windowRamp -Name "effective_train_lookback_days" -DefaultValue $TrainLookbackDays)
         }
     } else {
         $report.steps.daily_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
