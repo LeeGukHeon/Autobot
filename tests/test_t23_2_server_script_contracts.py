@@ -135,6 +135,7 @@ def test_t23_2_acceptance_scripts_keep_frozen_pointer_aliases_and_runtime_units(
         "v4_promotable_candidate_acceptance.ps1",
         "v4_scout_candidate_acceptance.ps1",
         "v4_rank_shadow_candidate_acceptance.ps1",
+        "v4_rank_governed_candidate_acceptance.ps1",
     )
 
     for script_name in protected_scripts:
@@ -143,6 +144,7 @@ def test_t23_2_acceptance_scripts_keep_frozen_pointer_aliases_and_runtime_units(
         assert '-CandidateModelRef "latest_candidate_v4"' in source
         assert '-ChampionModelRef "champion_v4"' in source
         assert '-KnownRuntimeUnits $knownRuntimeUnits' in source
+        assert '-TrainStartFloorDate "2026-03-04"' not in source
 
 
 def test_t23_2_governed_acceptance_script_keeps_promotable_fallback() -> None:
