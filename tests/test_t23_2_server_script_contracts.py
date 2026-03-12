@@ -140,11 +140,21 @@ def test_t23_2_acceptance_scripts_keep_frozen_pointer_aliases_and_runtime_units(
 
     for script_name in protected_scripts:
         source = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        assert '. (Join-Path $PSScriptRoot "v4_acceptance_contract.ps1")' in source
         assert '$knownRuntimeUnits = @("autobot-paper-v4.service", "autobot-live-alpha.service")' in source
+        assert '$trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate' in source
         assert '-CandidateModelRef "latest_candidate_v4"' in source
         assert '-ChampionModelRef "champion_v4"' in source
+        assert '-TrainDataQualityFloorDate $trainDataQualityFloorDate' in source
         assert '-KnownRuntimeUnits $knownRuntimeUnits' in source
         assert '-TrainStartFloorDate "2026-03-04"' not in source
+
+
+def test_t23_2_v4_acceptance_contract_keeps_explicit_data_quality_floor() -> None:
+    source = (REPO_ROOT / "scripts" / "v4_acceptance_contract.ps1").read_text(encoding="utf-8")
+
+    assert "Get-V4TrainDataQualityFloorDate" in source
+    assert '"2026-03-04"' in source
 
 
 def test_t23_2_governed_acceptance_script_keeps_promotable_fallback() -> None:

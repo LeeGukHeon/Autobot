@@ -920,7 +920,7 @@ def test_candidate_acceptance_fails_explicitly_when_no_train_window_meets_min_ro
     assert len(report["steps"]["features_build"]["attempts"]) == 5
 
 
-def test_candidate_acceptance_applies_train_start_floor_date(tmp_path: Path) -> None:
+def test_candidate_acceptance_applies_train_data_quality_floor_date(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
     _write_json(
@@ -958,7 +958,7 @@ def test_candidate_acceptance_applies_train_start_floor_date(tmp_path: Path) -> 
             "5",
             "-BacktestLookbackDays",
             "1",
-            "-TrainStartFloorDate",
+            "-TrainDataQualityFloorDate",
             "2026-03-04",
             "-SkipPaperSoak",
             "-SkipPromote",
@@ -987,10 +987,12 @@ def test_candidate_acceptance_applies_train_start_floor_date(tmp_path: Path) -> 
     assert [entry for entry in invocations if entry["command"] == "model train"] == [
         {"command": "model train", "start": "2026-03-04", "end": "2026-03-06"}
     ]
+    assert report["config"]["train_data_quality_floor_date"] == "2026-03-04"
+    assert report["config"]["train_data_quality_floor_applied"] is True
     assert report["config"]["train_start_floor_date"] == "2026-03-04"
     assert report["config"]["train_start_floor_applied"] is True
     assert report["config"]["train_lookback_days_effective"] == 3
-    assert report["config"]["train_window_ramp_reason"] == "TRAIN_START_FLOOR_ACTIVE"
+    assert report["config"]["train_window_ramp_reason"] == "TRAIN_DATA_QUALITY_FLOOR_ACTIVE"
     assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-06"
 

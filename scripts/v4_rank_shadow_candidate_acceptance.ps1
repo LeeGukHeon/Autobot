@@ -1,6 +1,8 @@
 # Rank shadow acceptance evaluates the rank lane under the frozen v4 certification
 # contract without allowing silent replacement of the production cls lane.
+. (Join-Path $PSScriptRoot "v4_acceptance_contract.ps1")
 $knownRuntimeUnits = @("autobot-paper-v4.service", "autobot-live-alpha.service")
+$trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
 & (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `
     -ModelFamily "train_v4_crypto_cs" `
     -Trainer "v4_crypto_cs" `
@@ -26,6 +28,7 @@ $knownRuntimeUnits = @("autobot-paper-v4.service", "autobot-live-alpha.service")
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `
     -SkipPromote `
+    -TrainDataQualityFloorDate $trainDataQualityFloorDate `
     -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v4_acceptance_rank_shadow" `
     -ReportPrefix "v4_candidate_acceptance_rank_shadow" `
