@@ -194,10 +194,10 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
                 "state_feature_names": ["selection_score", "rv_12", "rv_36", "atr_pct_14"],
                 "tail_confidence_level": 0.9,
                 "ctm_order": 2,
-                "tail_risk_contract": {"method": "empirical_tail_exceedance_v1"},
+                "tail_risk_contract": {"method": "conditional_linear_quantile_tail_v2"},
                 "conditional_action_model": {
                     "status": "ready",
-                    "model": "conditional_action_linear_ols_v1",
+                    "model": "conditional_action_linear_quantile_tail_v2",
                 },
                 "summary": {
                     "hold_bins_recommended": 5,
@@ -249,7 +249,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert runtime_recommendations["trade_action"]["status"] == "ready"
     assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_edge_bps"] == 123.0
     assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_es_bps"] == pytest.approx(61.0)
-    assert runtime_recommendations["trade_action"]["conditional_action_model"] == "conditional_action_linear_ols_v1"
+    assert runtime_recommendations["trade_action"]["conditional_action_model"] == "conditional_action_linear_quantile_tail_v2"
     assert exit_compare["hold"]["orders_filled"] == 8
     assert exit_compare["risk"]["slippage_bps_mean"] == 13.5
     assert exit_compare["summary_ko"]

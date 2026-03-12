@@ -252,13 +252,17 @@ These tickets are the required follow-on family before changing core promotion b
   - runtime action choice now uses continuous predicted action value rather than raw risk bins
   - `bin` tables remain as diagnostic / audit summaries rather than the primary runtime selector
 - `T21.19` slice 3 landed locally:
-  - direct tail-risk contract now fits compact empirical tail-exceedance `ES / CTM` targets rather than treating all downside mass as the tail
+  - direct tail-risk contract now fits compact conditional-quantile `ES / CTM` targets rather than treating all downside mass as the tail
   - `conditional_action_model` now records compact fit diagnostics, tail support, state feature contract, and fixed confidence-level tail settings
   - runtime trade-action decisions now expose:
     - `expected_es`
     - `expected_ctm`
     - `expected_action_value`
     - chosen decision source
+- `T21.19` hardening landed locally:
+  - latest trade-action artifacts no longer fall back from conditional action value to diagnostic bins
+  - latest runtime decisions no longer mean-impute missing tail-state features
+  - missing conditional support now stays explicit as insufficient-evidence behavior
 - `T21.19` slice 5 landed locally:
   - live trade journal summaries now preserve per-trade `ES / CTM / action-value / decision-source`
   - dashboard runtime, intent, and trade views now surface the same trade-action tail-risk contract

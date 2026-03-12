@@ -392,13 +392,23 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 selection_score=float(row.get("model_prob", 0.0)),
                 enabled=bool(self._settings.exit.use_trade_level_action_policy),
             )
+            if (
+                isinstance(trade_action_decision, dict)
+                and str(trade_action_decision.get("status", "")).strip().lower() == "insufficient_evidence"
+            ):
+                _inc_reason(
+                    skipped_reasons,
+                    str(trade_action_decision.get("reason_code", "TRADE_ACTION_INSUFFICIENT_EVIDENCE")).strip()
+                    or "TRADE_ACTION_INSUFFICIENT_EVIDENCE",
+                )
+                continue
             effective_exit_settings = _resolve_trade_action_exit_settings(
                 base_settings=self._settings,
                 decision=trade_action_decision,
             )
             notional_multiplier = (
                 float(trade_action_decision.get("recommended_notional_multiplier", base_notional_multiplier))
-                if isinstance(trade_action_decision, dict)
+                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
                 else float(base_notional_multiplier)
             )
             intents.append(
@@ -423,14 +433,14 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "selection_policy_source": str(selection_policy_source),
                         "sizing_mode": (
                             "trade_action_policy"
-                            if isinstance(trade_action_decision, dict)
+                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
                             else str(self._settings.position.sizing_mode)
                         ),
                         "base_notional_multiplier": float(base_notional_multiplier),
                         "notional_multiplier": float(notional_multiplier) * float(operational_risk_multiplier),
                         "notional_multiplier_source": (
                             "trade_action_policy"
-                            if isinstance(trade_action_decision, dict)
+                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
                             else str(self._settings.position.sizing_mode)
                         ),
                         "model_exit_plan": build_model_alpha_exit_plan_payload(
