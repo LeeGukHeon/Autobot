@@ -68,6 +68,7 @@ It should not be used for:
 11. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
 12. `T21.19` V4 Direct Conditional Tail-Risk And Continuous Action Value v1
 13. `T21.20` V4 Stopping-Rule Family And Fair Hold-Risk Comparison v1
+14. `T21.21` V4 Non-Heuristic Split Policy And Bootstrap Lane v1
 
 ## 2026-03-11 Global Audit Update
 
@@ -139,6 +140,7 @@ These tickets are the required follow-on family before changing core promotion b
 8. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
 9. `T21.19` V4 Direct Conditional Tail-Risk And Continuous Action Value v1
 10. `T21.20` V4 Stopping-Rule Family And Fair Hold-Risk Comparison v1
+11. `T21.21` V4 Non-Heuristic Split Policy And Bootstrap Lane v1
 
 ### Implementation Rule
 - `T21.11` must land first and write an auditable decision-surface artifact for every `v4` run.
@@ -149,6 +151,7 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.17` is shadow-lane only until the earlier tickets freeze the certification contract.
 - `T21.18` may not map model score directly into TP/SL multipliers; it must learn trade-level action and sizing from OOS replay evidence.
 - `T21.20` may not let `hold` win merely because it is a simpler baseline action; `hold` and `risk` must be compared as bounded stopping-rule families under the same evidence contract.
+- `T21.21` may not silently collapse promotion certification into a latest-inclusive bootstrap fit; promotable split selection must remain data-driven and explicit.
 
 ### Implementation Progress
 - `T21.11` landed:

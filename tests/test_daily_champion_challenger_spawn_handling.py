@@ -93,6 +93,35 @@ def _make_fake_acceptance_script(tmp_path: Path, payload: dict, exit_code: int) 
     return script_path
 
 
+def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
+    script_path = tmp_path / "fake_runtime_install.ps1"
+    script_path.write_text(
+        textwrap.dedent(
+            """
+            param(
+                [string]$ProjectRoot = "",
+                [string]$PythonExe = "",
+                [string]$PaperUnitName = "",
+                [string]$PaperModelRefPinned = "",
+                [string]$PaperCliArgs = ""
+            )
+
+            $logPath = Join-Path $ProjectRoot "logs/fake_runtime_install/report.json"
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+            @{
+                paper_unit_name = $PaperUnitName
+                paper_model_ref_pinned = $PaperModelRefPinned
+                paper_cli_args = $PaperCliArgs
+            } | ConvertTo-Json -Depth 4 | Set-Content -Path $logPath -Encoding UTF8
+            Write-Host "[fake-runtime-install] ok"
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return script_path
+
+
 def _run_spawn_only(
     project_root: Path,
     acceptance_script: Path,
@@ -274,3 +303,109 @@ def test_spawn_only_accepts_comma_joined_promotion_target_units_from_installer(t
         "autobot-live-alpha.service",
         "autobot-live-alpha-candidate.service",
     ]
+
+
+def test_spawn_only_starts_bootstrap_candidate_as_non_promotable_challenger(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+                "split_policy_artifact_path": str(project_root / "models" / "registry" / "train_v4_crypto_cs" / "candidate-run-bootstrap" / "split_policy_decision.json"),
+            },
+            "split_policy": {
+                "policy_id": "v4_split_policy_bootstrap_transition_v1",
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-bootstrap"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BOOTSTRAP_ONLY_POLICY"],
+        },
+        exit_code=2,
+    )
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+        ],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    state = json.loads((project_root / "logs" / "model_v4_challenger" / "current_state.json").read_text(encoding="utf-8-sig"))
+
+    assert latest["steps"]["train_candidate"]["bootstrap_only"] is True
+    assert latest["steps"]["start_challenger"]["candidate_run_id"] == "candidate-run-bootstrap"
+    assert latest["steps"]["start_challenger"]["bootstrap_only"] is True
+    assert state["candidate_run_id"] == "candidate-run-bootstrap"
+    assert state["lane_mode"] == "bootstrap_latest_inclusive"
+    assert state["promotion_eligible"] is False
+    assert state["bootstrap_only"] is True
+
+
+def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-08",
+                "candidate_run_id": "candidate-run-bootstrap",
+                "champion_run_id_at_start": "champion-run-000",
+                "started_ts_ms": 1,
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+                "bootstrap_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-Mode",
+            "promote_only",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", "")},
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert latest["steps"]["promote_previous_challenger"]["reason"] == "BOOTSTRAP_ONLY_POLICY"
+    assert latest["steps"]["promote_previous_challenger"]["promotion_eligible"] is False
+    assert not state_path.exists()

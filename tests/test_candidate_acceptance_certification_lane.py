@@ -920,6 +920,112 @@ def test_candidate_acceptance_fails_explicitly_when_no_train_window_meets_min_ro
     assert len(report["steps"]["features_build"]["attempts"]) == 5
 
 
+def test_candidate_acceptance_falls_back_to_bootstrap_latest_inclusive_lane_when_strict_split_is_untrainable(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=[
+            "2026-03-04",
+            "2026-03-05",
+            "2026-03-06",
+            "2026-03-07",
+            "2026-03-08",
+            "2026-03-09",
+            "2026-03-10",
+            "2026-03-11",
+            "2026-03-12",
+        ],
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        feature_rows_by_window={
+            "2026-03-04|2026-03-04": 899,
+            "2026-03-04|2026-03-12": 11628,
+        },
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-12",
+            "-TrainLookbackDays",
+            "30",
+            "-BacktestLookbackDays",
+            "8",
+            "-TrainDataQualityFloorDate",
+            "2026-03-04",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    split_policy_path = Path(report["candidate"]["split_policy_artifact_path"])
+    split_policy = json.loads(split_policy_path.read_text(encoding="utf-8-sig"))
+
+    assert [entry for entry in invocations if entry["command"] == "features build"] == [
+        {"command": "features build", "start": "2026-03-04", "end": "2026-03-04"},
+        {"command": "features build", "start": "2026-03-04", "end": "2026-03-12"},
+    ]
+    assert [entry for entry in invocations if entry["command"] == "model train"] == [
+        {"command": "model train", "start": "2026-03-04", "end": "2026-03-12"}
+    ]
+    assert report["reasons"] == ["BOOTSTRAP_ONLY_POLICY"]
+    assert report["candidate"]["lane_mode"] == "bootstrap_latest_inclusive"
+    assert report["candidate"]["promotion_eligible"] is False
+    assert report["split_policy"]["lane_mode"] == "bootstrap_latest_inclusive"
+    assert report["split_policy"]["promotion_eligible"] is False
+    assert report["split_policy"]["selected_holdout_days"] == 0
+    assert report["steps"]["features_build"]["resolution_status"] == "BOOTSTRAP_ONLY_POLICY"
+    assert report["steps"]["features_build"]["strict_best_attempt"]["rows_final"] == 899
+    assert report["steps"]["features_build"]["bootstrap_attempt"]["rows_final"] == 11628
+    assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
+    assert report["windows_by_step"]["train"]["end"] == "2026-03-12"
+    assert split_policy["lane_mode"] == "bootstrap_latest_inclusive"
+    assert split_policy["promotion_eligible"] is False
+    assert split_policy["current_batch_windows"]["bootstrap"]["start"] == "2026-03-04"
+    assert split_policy["current_batch_windows"]["bootstrap"]["end"] == "2026-03-12"
+
+
 def test_candidate_acceptance_applies_train_data_quality_floor_date(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

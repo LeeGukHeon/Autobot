@@ -175,6 +175,22 @@ function Test-ScoutNonFatalRejection {
     return ($budgetReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE")
 }
 
+function Test-BootstrapOnlyNonFatalRejection {
+    param([Parameter(Mandatory = $false)]$AcceptanceReport)
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    if ($reasons -contains "BOOTSTRAP_ONLY_POLICY") {
+        return $true
+    }
+    $candidate = Get-PropValue -ObjectValue $AcceptanceReport -Name "candidate" -DefaultValue @{}
+    $splitPolicy = Get-PropValue -ObjectValue $AcceptanceReport -Name "split_policy" -DefaultValue @{}
+    $laneMode = [string](Get-PropValue -ObjectValue $candidate -Name "lane_mode" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($laneMode)) {
+        $laneMode = [string](Get-PropValue -ObjectValue $splitPolicy -Name "lane_mode" -DefaultValue "")
+    }
+    $promotionEligible = [bool](Get-PropValue -ObjectValue $candidate -Name "promotion_eligible" -DefaultValue $true)
+    return (($laneMode -eq "bootstrap_latest_inclusive") -and (-not $promotionEligible))
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -232,6 +248,10 @@ if (Test-AcceptanceFatalFailure -ExitCode $exec.ExitCode -AcceptanceReport $acce
 }
 if (($exec.ExitCode -ne 0) -and (Test-ScoutNonFatalRejection -AcceptanceReport $acceptanceReport)) {
     Write-Host ("[daily-accept] scout_nonfatal_reason=SCOUT_ONLY_BUDGET_EVIDENCE")
+    exit 0
+}
+if (($exec.ExitCode -ne 0) -and (Test-BootstrapOnlyNonFatalRejection -AcceptanceReport $acceptanceReport)) {
+    Write-Host ("[daily-accept] bootstrap_nonfatal_reason=BOOTSTRAP_ONLY_POLICY")
     exit 0
 }
 exit $exec.ExitCode

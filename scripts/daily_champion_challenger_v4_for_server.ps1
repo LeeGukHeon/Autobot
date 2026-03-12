@@ -268,6 +268,28 @@ function Test-AcceptanceFatalFailure {
     return $false
 }
 
+function Test-BootstrapOnlyAcceptanceReport {
+    param([Parameter(Mandatory = $false)]$AcceptanceReport)
+    if (-not (Test-ObjectHasValues -ObjectValue $AcceptanceReport)) {
+        return $false
+    }
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    if ($reasons -contains "BOOTSTRAP_ONLY_POLICY") {
+        return $true
+    }
+    $candidate = Get-PropValue -ObjectValue $AcceptanceReport -Name "candidate" -DefaultValue @{}
+    $splitPolicy = Get-PropValue -ObjectValue $AcceptanceReport -Name "split_policy" -DefaultValue @{}
+    $laneMode = [string](Get-PropValue -ObjectValue $candidate -Name "lane_mode" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($laneMode)) {
+        $laneMode = [string](Get-PropValue -ObjectValue $splitPolicy -Name "lane_mode" -DefaultValue "")
+    }
+    $promotionEligible = [bool](Get-PropValue -ObjectValue $candidate -Name "promotion_eligible" -DefaultValue $true)
+    if (($laneMode -eq "bootstrap_latest_inclusive") -and (-not $promotionEligible)) {
+        return $true
+    }
+    return $false
+}
+
 function Write-JsonFile {
     param(
         [string]$PathValue,
@@ -427,7 +449,9 @@ if ($runPromotionPhase) {
         $candidateRunId = [string](Get-PropValue -ObjectValue $previousState -Name "candidate_run_id" -DefaultValue "")
         $championRunIdAtStart = [string](Get-PropValue -ObjectValue $previousState -Name "champion_run_id_at_start" -DefaultValue "")
         $startedTsMs = [int64](Get-PropValue -ObjectValue $previousState -Name "started_ts_ms" -DefaultValue 0)
-        if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0)) {
+        $previousLaneMode = [string](Get-PropValue -ObjectValue $previousState -Name "lane_mode" -DefaultValue "")
+        $previousPromotionEligible = [bool](Get-PropValue -ObjectValue $previousState -Name "promotion_eligible" -DefaultValue $true)
+        if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and $previousPromotionEligible -and ($previousLaneMode -ne "bootstrap_latest_inclusive")) {
             $compareArgs = @(
                 "-m", "autobot.common.paper_lane_evidence",
                 "--paper-root", (Join-Path $resolvedProjectRoot "data/paper"),
@@ -536,6 +560,15 @@ if ($runPromotionPhase) {
                     reason = if ($shouldPromote) { "DRY_RUN" } else { [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "decision" -DefaultValue "keep_champion") }
                 }
             }
+        } elseif ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and ((-not $previousPromotionEligible) -or ($previousLaneMode -eq "bootstrap_latest_inclusive"))) {
+            $report.steps.promote_previous_challenger = [ordered]@{
+                attempted = $false
+                promoted = $false
+                candidate_run_id = $candidateRunId
+                reason = "BOOTSTRAP_ONLY_POLICY"
+                lane_mode = $previousLaneMode
+                promotion_eligible = $previousPromotionEligible
+            }
         } else {
             $report.steps.promote_previous_challenger = [ordered]@{
                 attempted = $false
@@ -606,6 +639,14 @@ if ($runSpawnPhase) {
     $backtestPass = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $acceptReport -Name "gates" -DefaultValue @{}) -Name "backtest" -DefaultValue @{}) -Name "pass" -DefaultValue $false)
     $overallPass = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $acceptReport -Name "gates" -DefaultValue @{}) -Name "overall_pass" -DefaultValue $false)
     $acceptReasons = Get-StringArray -Value (Get-PropValue -ObjectValue $acceptReport -Name "reasons" -DefaultValue @())
+    $acceptCandidate = Get-PropValue -ObjectValue $acceptReport -Name "candidate" -DefaultValue @{}
+    $acceptSplitPolicy = Get-PropValue -ObjectValue $acceptReport -Name "split_policy" -DefaultValue @{}
+    $acceptLaneMode = [string](Get-PropValue -ObjectValue $acceptCandidate -Name "lane_mode" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($acceptLaneMode)) {
+        $acceptLaneMode = [string](Get-PropValue -ObjectValue $acceptSplitPolicy -Name "lane_mode" -DefaultValue "")
+    }
+    $acceptPromotionEligible = [bool](Get-PropValue -ObjectValue $acceptCandidate -Name "promotion_eligible" -DefaultValue $true)
+    $bootstrapOnly = Test-BootstrapOnlyAcceptanceReport -AcceptanceReport $acceptReport
     $report.steps.train_candidate = [ordered]@{
         exit_code = [int]$acceptExec.ExitCode
         command = $acceptExec.Command
@@ -614,10 +655,13 @@ if ($runSpawnPhase) {
         candidate_run_id = $candidateRunId
         backtest_pass = $backtestPass
         overall_pass = $overallPass
+        lane_mode = $acceptLaneMode
+        promotion_eligible = $acceptPromotionEligible
+        bootstrap_only = $bootstrapOnly
         reasons = @($acceptReasons)
     }
 
-    if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and $backtestPass) {
+    if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($backtestPass -or $bootstrapOnly)) {
         $challengerInstallExec = Start-OrUpdate-ChallengerUnit `
             -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
             -Root $resolvedProjectRoot `
@@ -628,6 +672,9 @@ if ($runSpawnPhase) {
             command = $challengerInstallExec.Command
             output_preview = $challengerInstallExec.Output
             candidate_run_id = $candidateRunId
+            lane_mode = $acceptLaneMode
+            promotion_eligible = $acceptPromotionEligible
+            bootstrap_only = $bootstrapOnly
         }
         $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
         $nextState = [ordered]@{
@@ -640,6 +687,11 @@ if ($runSpawnPhase) {
             champion_unit = $ChampionUnitName
             challenger_unit = $ChallengerUnitName
             promotion_target_units = @($resolvedPromotionTargetUnits)
+            lane_mode = $acceptLaneMode
+            promotion_eligible = $acceptPromotionEligible
+            bootstrap_only = $bootstrapOnly
+            split_policy_id = [string](Get-PropValue -ObjectValue $acceptSplitPolicy -Name "policy_id" -DefaultValue "")
+            split_policy_artifact_path = [string](Get-PropValue -ObjectValue $acceptCandidate -Name "split_policy_artifact_path" -DefaultValue "")
         }
         if (-not $DryRun) {
             Write-JsonFile -PathValue $statePath -Payload $nextState
@@ -660,6 +712,8 @@ if ($runSpawnPhase) {
                 "TRAINER_EVIDENCE_REQUIRED_FAILED"
             } elseif ($acceptReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE") {
                 "SCOUT_ONLY_BUDGET_EVIDENCE"
+            } elseif ($bootstrapOnly) {
+                "BOOTSTRAP_ONLY_POLICY"
             } elseif (-not $backtestPass) {
                 "BACKTEST_SANITY_FAILED"
             } elseif (-not $overallPass) {

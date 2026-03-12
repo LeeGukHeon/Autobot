@@ -749,6 +749,90 @@ function New-DateWindowRecord {
     }
 }
 
+function New-TrainabilityAttemptRecord {
+    param(
+        $Probe,
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    return [ordered]@{
+        start = $StartDate
+        end = $EndDate
+        exit_code = [int]$Probe.Exec.ExitCode
+        report_path = [string]$Probe.ReportPath
+        rows_final = [int]$Probe.RowsFinal
+        min_rows_for_train = [int]$Probe.MinRowsForTrain
+        status = [string]$Probe.Status
+        effective_start = [string](Get-PropValue -ObjectValue $Probe.Report -Name "effective_start" -DefaultValue "")
+        effective_end = [string](Get-PropValue -ObjectValue $Probe.Report -Name "effective_end" -DefaultValue "")
+        error_message = [string]$Probe.ErrorMessage
+        usable = [bool]$Probe.Usable
+        command = $Probe.Exec.Command
+        output_preview = (Get-OutputPreview -Text ([string]$Probe.Exec.Output))
+    }
+}
+
+function Build-SplitPolicyDecisionRecord {
+    param(
+        [string]$PolicyId,
+        [string]$LaneMode,
+        [bool]$PromotionEligible,
+        [string]$SelectedBy,
+        [int]$RequestedHoldoutDays,
+        [int]$SelectedHoldoutDays,
+        [string]$QualityFloorDate,
+        [string[]]$ReasonCodes,
+        $StrictTrainability,
+        $BootstrapTrainability,
+        [string]$TrainWindowStart,
+        [string]$TrainWindowEnd,
+        [string]$CertificationWindowStart,
+        [string]$CertificationWindowEnd,
+        [string]$BootstrapWindowStart,
+        [string]$BootstrapWindowEnd,
+        [int]$HistoricalAnchorCount = 0,
+        [string]$ArtifactPath = "",
+        [string]$CandidateRunId = "",
+        [string]$CandidateRunDir = ""
+    )
+    return [ordered]@{
+        version = 1
+        policy_id = $PolicyId
+        lane_mode = $LaneMode
+        promotion_eligible = [bool]$PromotionEligible
+        selected_by = $SelectedBy
+        requested_holdout_days = [int]$RequestedHoldoutDays
+        selected_holdout_days = [int]$SelectedHoldoutDays
+        train_data_quality_floor_date = $QualityFloorDate
+        historical_anchor_count = [int]$HistoricalAnchorCount
+        reason_codes = @($ReasonCodes)
+        current_batch_windows = [ordered]@{
+            train = New-DateWindowRecord -Name "train" -Start $TrainWindowStart -End $TrainWindowEnd -Source "split_policy.current_train"
+            certification = New-DateWindowRecord -Name "certification" -Start $CertificationWindowStart -End $CertificationWindowEnd -Source "split_policy.current_certification"
+            backtest = New-DateWindowRecord -Name "backtest" -Start $CertificationWindowStart -End $CertificationWindowEnd -Source "split_policy.current_backtest"
+            bootstrap = New-DateWindowRecord -Name "bootstrap" -Start $BootstrapWindowStart -End $BootstrapWindowEnd -Source "split_policy.bootstrap_window"
+        }
+        strict_trainability = if ($null -eq $StrictTrainability) { @{} } else { $StrictTrainability }
+        bootstrap_trainability = if ($null -eq $BootstrapTrainability) { @{} } else { $BootstrapTrainability }
+        artifact_path = $ArtifactPath
+        candidate_run_id = $CandidateRunId
+        candidate_run_dir = $CandidateRunDir
+    }
+}
+
+function Write-SplitPolicyDecisionArtifact {
+    param(
+        [string]$CandidateRunDir,
+        $SplitPolicyDecision
+    )
+    if ([string]::IsNullOrWhiteSpace($CandidateRunDir) -or (-not (Test-Path $CandidateRunDir))) {
+        return ""
+    }
+    $artifactPath = Join-Path $CandidateRunDir "split_policy_decision.json"
+    Write-JsonFile -PathValue $artifactPath -Payload $SplitPolicyDecision
+    return $artifactPath
+}
+
 function Compare-DateWindowRecords {
     param(
         [Parameter(Mandatory = $false)]$LeftWindow,
@@ -2201,8 +2285,14 @@ $report = [ordered]@{
         research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "train_command_window" }
         certification = [ordered]@{ start = $certificationStartDate; end = $effectiveBatchDate }
         backtest = [ordered]@{ start = $certificationStartDate; end = $effectiveBatchDate; alias_of = "certification" }
+        bootstrap = [ordered]@{
+            start = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_data_quality_floor_date" -DefaultValue "")
+            end = $effectiveBatchDate
+            source = "bootstrap_latest_inclusive_candidate"
+        }
     }
     window_ramp = $windowRamp
+    split_policy = [ordered]@{}
     steps = [ordered]@{}
     candidate = [ordered]@{}
     gates = [ordered]@{}
@@ -2248,6 +2338,11 @@ function Sync-WindowRampState {
         research = [ordered]@{ start = $script:trainStartDate; end = $script:trainEndDate; source = "train_command_window" }
         certification = [ordered]@{ start = $script:certificationStartDate; end = $effectiveBatchDate }
         backtest = [ordered]@{ start = $script:certificationStartDate; end = $effectiveBatchDate; alias_of = "certification" }
+        bootstrap = [ordered]@{
+            start = [string](Get-PropValue -ObjectValue $WindowRampValue -Name "train_data_quality_floor_date" -DefaultValue "")
+            end = $effectiveBatchDate
+            source = "bootstrap_latest_inclusive_candidate"
+        }
     }
     $report.window_ramp = $WindowRampValue
     $report.steps.window_ramp = $WindowRampValue
@@ -2255,15 +2350,56 @@ function Sync-WindowRampState {
 
 Sync-WindowRampState -WindowRampValue $windowRamp
 
+$script:splitPolicyId = "v4_split_policy_bootstrap_transition_v1"
+$script:splitPolicyLaneMode = "promotion_strict"
+$script:splitPolicyPromotionEligible = $true
+$script:splitPolicySelectedBy = "strict_trainability"
+$script:splitPolicySelectedHoldoutDays = [int]$BacktestLookbackDays
+$script:splitPolicyReasonCodes = @()
+$script:splitPolicyStrictTrainability = @{}
+$script:splitPolicyBootstrapTrainability = @{}
+$script:splitPolicyArtifactPath = ""
+$script:bootstrapWindowStart = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_data_quality_floor_date" -DefaultValue "")
+$script:bootstrapWindowEnd = $effectiveBatchDate
+
+function Sync-SplitPolicyState {
+    $report.split_policy = Build-SplitPolicyDecisionRecord `
+        -PolicyId $script:splitPolicyId `
+        -LaneMode $script:splitPolicyLaneMode `
+        -PromotionEligible $script:splitPolicyPromotionEligible `
+        -SelectedBy $script:splitPolicySelectedBy `
+        -RequestedHoldoutDays ([int]$BacktestLookbackDays) `
+        -SelectedHoldoutDays $script:splitPolicySelectedHoldoutDays `
+        -QualityFloorDate $script:bootstrapWindowStart `
+        -ReasonCodes @($script:splitPolicyReasonCodes) `
+        -StrictTrainability $script:splitPolicyStrictTrainability `
+        -BootstrapTrainability $script:splitPolicyBootstrapTrainability `
+        -TrainWindowStart $script:trainStartDate `
+        -TrainWindowEnd $script:trainEndDate `
+        -CertificationWindowStart $script:certificationStartDate `
+        -CertificationWindowEnd $effectiveBatchDate `
+        -BootstrapWindowStart $script:bootstrapWindowStart `
+        -BootstrapWindowEnd $script:bootstrapWindowEnd `
+        -HistoricalAnchorCount 0 `
+        -ArtifactPath $script:splitPolicyArtifactPath `
+        -CandidateRunId ([string](Get-PropValue -ObjectValue $report.candidate -Name "run_id" -DefaultValue "")) `
+        -CandidateRunDir ([string](Get-PropValue -ObjectValue $report.candidate -Name "run_dir" -DefaultValue ""))
+}
+
+Sync-SplitPolicyState
+
 function Sync-ReportTopLevelSummary {
     $candidate = Get-PropValue -ObjectValue $report -Name "candidate" -DefaultValue @{}
     $gates = Get-PropValue -ObjectValue $report -Name "gates" -DefaultValue @{}
     $backtestGate = Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{}
     $paperGate = Get-PropValue -ObjectValue $gates -Name "paper" -DefaultValue @{}
+    $splitPolicy = Get-PropValue -ObjectValue $report -Name "split_policy" -DefaultValue @{}
     $report.candidate_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "run_id" -DefaultValue "")
     $report.candidate_run_dir = [string](Get-PropValue -ObjectValue $candidate -Name "run_dir" -DefaultValue "")
     $report.champion_before_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "champion_before_run_id" -DefaultValue "")
     $report.champion_after_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "champion_after_run_id" -DefaultValue "")
+    $report.lane_mode = [string](Get-PropValue -ObjectValue $splitPolicy -Name "lane_mode" -DefaultValue "")
+    $report.promotion_eligible = [bool](Get-PropValue -ObjectValue $splitPolicy -Name "promotion_eligible" -DefaultValue $false)
     $report.overall_pass = Get-PropValue -ObjectValue $gates -Name "overall_pass" -DefaultValue $null
     $report.backtest_pass = Get-PropValue -ObjectValue $backtestGate -Name "pass" -DefaultValue $null
     $report.paper_pass = Get-PropValue -ObjectValue $paperGate -Name "pass" -DefaultValue $null
@@ -2444,21 +2580,7 @@ function Resolve-TrainWindowByTrainableRows {
             -PythonPath $PythonPath `
             -StartDate $candidateStartDate `
             -EndDate $TrainEndDate
-        $attempt = [ordered]@{
-            start = $candidateStartDate
-            end = $TrainEndDate
-            exit_code = [int]$probe.Exec.ExitCode
-            report_path = [string]$probe.ReportPath
-            rows_final = [int]$probe.RowsFinal
-            min_rows_for_train = [int]$probe.MinRowsForTrain
-            status = [string]$probe.Status
-            effective_start = [string](Get-PropValue -ObjectValue $probe.Report -Name "effective_start" -DefaultValue "")
-            effective_end = [string](Get-PropValue -ObjectValue $probe.Report -Name "effective_end" -DefaultValue "")
-            error_message = [string]$probe.ErrorMessage
-            usable = [bool]$probe.Usable
-            command = $probe.Exec.Command
-            output_preview = (Get-OutputPreview -Text ([string]$probe.Exec.Output))
-        }
+        $attempt = New-TrainabilityAttemptRecord -Probe $probe -StartDate $candidateStartDate -EndDate $TrainEndDate
         $attempts += $attempt
         if (($null -eq $bestAttempt) -or ([int]$attempt.rows_final -gt [int](Get-PropValue -ObjectValue $bestAttempt -Name "rows_final" -DefaultValue 0))) {
             $bestAttempt = $attempt
@@ -2547,6 +2669,9 @@ try {
             -TrainDataQualityFloorDate $TrainDataQualityFloorDate `
             -TrainStartFloorDate $TrainStartFloorDate
         Sync-WindowRampState -WindowRampValue $windowRamp
+        $script:bootstrapWindowStart = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_data_quality_floor_date" -DefaultValue "")
+        $script:bootstrapWindowEnd = $effectiveBatchDate
+        Sync-SplitPolicyState
         $report.steps.window_ramp_recomputed_after_pipeline = [ordered]@{
             attempted = $true
             source = "daily_pipeline_complete"
@@ -2588,6 +2713,13 @@ try {
             -PythonPath $resolvedPythonExe `
             -InitialTrainStartDate $trainStartDate `
             -TrainEndDate $trainEndDate
+        $script:splitPolicyStrictTrainability = [ordered]@{
+            status = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "status" -DefaultValue "")
+            selected_start = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "selected_start" -DefaultValue "")
+            selected_end = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "selected_end" -DefaultValue "")
+            best_attempt = Get-PropValue -ObjectValue $trainabilityResolution -Name "best_attempt" -DefaultValue @{}
+            attempts = @((Get-PropValue -ObjectValue $trainabilityResolution -Name "attempts" -DefaultValue @()))
+        }
         $report.steps.features_build = [ordered]@{
             attempted = $true
             feature_set = $FeatureSet
@@ -2599,6 +2731,11 @@ try {
             attempts = @((Get-PropValue -ObjectValue $trainabilityResolution -Name "attempts" -DefaultValue @()))
         }
         if ([string](Get-PropValue -ObjectValue $trainabilityResolution -Name "status" -DefaultValue "") -eq "PASS") {
+            $script:splitPolicyLaneMode = "promotion_strict"
+            $script:splitPolicyPromotionEligible = $true
+            $script:splitPolicySelectedBy = "strict_trainability"
+            $script:splitPolicySelectedHoldoutDays = [int]$BacktestLookbackDays
+            $script:splitPolicyReasonCodes = @()
             $resolvedFeatureWindow = Get-PropValue -ObjectValue $trainabilityResolution -Name "features_build" -DefaultValue @{}
             $trainStartDate = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "selected_start" -DefaultValue $trainStartDate)
             $report.steps.features_build.exit_code = [int](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "exit_code" -DefaultValue 0)
@@ -2611,20 +2748,78 @@ try {
             $report.steps.features_build.effective_end = [string](Get-PropValue -ObjectValue $resolvedFeatureWindow -Name "effective_end" -DefaultValue "")
             $report.windows_by_step.train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
             $report.windows_by_step.research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "train_command_window" }
+            Sync-SplitPolicyState
         } else {
             $bestTrainabilityAttempt = Get-PropValue -ObjectValue $trainabilityResolution -Name "best_attempt" -DefaultValue @{}
-            $report.steps.train = [ordered]@{
-                attempted = $false
-                reason = "INSUFFICIENT_TRAINABLE_V4_ROWS"
-                start = $trainStartDate
-                end = $trainEndDate
-                best_attempt = $bestTrainabilityAttempt
+            $bootstrapResolved = $false
+            if ((-not [string]::IsNullOrWhiteSpace($script:bootstrapWindowStart)) -and ($script:bootstrapWindowEnd -ge $script:bootstrapWindowStart)) {
+                $bootstrapProbe = Invoke-FeaturesBuildAndLoadReport `
+                    -PythonPath $resolvedPythonExe `
+                    -StartDate $script:bootstrapWindowStart `
+                    -EndDate $script:bootstrapWindowEnd
+                $bootstrapAttempt = New-TrainabilityAttemptRecord `
+                    -Probe $bootstrapProbe `
+                    -StartDate $script:bootstrapWindowStart `
+                    -EndDate $script:bootstrapWindowEnd
+                $script:splitPolicyBootstrapTrainability = [ordered]@{
+                    status = if ($bootstrapProbe.Usable) { "PASS" } else { "INSUFFICIENT_TRAINABLE_ROWS" }
+                    start = $script:bootstrapWindowStart
+                    end = $script:bootstrapWindowEnd
+                    attempt = $bootstrapAttempt
+                }
+                $report.steps.features_build.strict_resolution_status = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "status" -DefaultValue "")
+                $report.steps.features_build.strict_best_attempt = $bestTrainabilityAttempt
+                $report.steps.features_build.strict_attempts = @((Get-PropValue -ObjectValue $trainabilityResolution -Name "attempts" -DefaultValue @()))
+                $report.steps.features_build.bootstrap_attempt = $bootstrapAttempt
+                if ($bootstrapProbe.Usable) {
+                    $bootstrapResolved = $true
+                    $script:splitPolicyLaneMode = "bootstrap_latest_inclusive"
+                    $script:splitPolicyPromotionEligible = $false
+                    $script:splitPolicySelectedBy = "bootstrap_latest_inclusive_fallback_after_strict_trainability_failure"
+                    $script:splitPolicySelectedHoldoutDays = 0
+                    $script:splitPolicyReasonCodes = @(
+                        "BOOTSTRAP_ONLY_POLICY",
+                        "STRICT_INSUFFICIENT_TRAINABLE_V4_ROWS"
+                    )
+                    $trainStartDate = $script:bootstrapWindowStart
+                    $trainEndDate = $script:bootstrapWindowEnd
+                    $report.steps.features_build.start = $trainStartDate
+                    $report.steps.features_build.end = $trainEndDate
+                    $report.steps.features_build.resolution_status = "BOOTSTRAP_ONLY_POLICY"
+                    $report.steps.features_build.exit_code = [int](Get-PropValue -ObjectValue $bootstrapAttempt -Name "exit_code" -DefaultValue 0)
+                    $report.steps.features_build.command = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "command" -DefaultValue "")
+                    $report.steps.features_build.output_preview = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "output_preview" -DefaultValue "")
+                    $report.steps.features_build.report_path = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "report_path" -DefaultValue "")
+                    $report.steps.features_build.rows_final = [int](Get-PropValue -ObjectValue $bootstrapAttempt -Name "rows_final" -DefaultValue 0)
+                    $report.steps.features_build.min_rows_for_train = [int](Get-PropValue -ObjectValue $bootstrapAttempt -Name "min_rows_for_train" -DefaultValue 0)
+                    $report.steps.features_build.effective_start = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "effective_start" -DefaultValue "")
+                    $report.steps.features_build.effective_end = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "effective_end" -DefaultValue "")
+                    $report.windows_by_step.train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
+                    $report.windows_by_step.research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "bootstrap_latest_inclusive_fallback" }
+                    $report.windows_by_step.bootstrap = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "bootstrap_latest_inclusive_fallback" }
+                    Sync-SplitPolicyState
+                }
             }
-            $report.reasons = @("INSUFFICIENT_TRAINABLE_V4_ROWS")
-            $report.gates.overall_pass = $false
-            $paths = Save-Report
-            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
-            exit 2
+            if (-not $bootstrapResolved) {
+                $script:splitPolicyLaneMode = "promotion_strict"
+                $script:splitPolicyPromotionEligible = $false
+                $script:splitPolicySelectedBy = "strict_trainability_failed"
+                $script:splitPolicySelectedHoldoutDays = [int]$BacktestLookbackDays
+                $script:splitPolicyReasonCodes = @("INSUFFICIENT_TRAINABLE_V4_ROWS")
+                Sync-SplitPolicyState
+                $report.steps.train = [ordered]@{
+                    attempted = $false
+                    reason = "INSUFFICIENT_TRAINABLE_V4_ROWS"
+                    start = $trainStartDate
+                    end = $trainEndDate
+                    best_attempt = $bestTrainabilityAttempt
+                }
+                $report.reasons = @("INSUFFICIENT_TRAINABLE_V4_ROWS")
+                $report.gates.overall_pass = $false
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
         }
     } else {
         $report.steps.features_build = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
@@ -2798,9 +2993,21 @@ try {
     $championBacktestModelRef = if ([string]::IsNullOrWhiteSpace($championRunId)) { $ChampionModelRef } else { $championRunId }
     $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $championRunId }
     $duplicateCandidateArtifacts = Resolve-DuplicateCandidateArtifacts -CandidateRunDir $candidateRunDir -ChampionRunDir $championModelRunDir
+    $report.split_policy.candidate_run_id = $candidateRunId
+    $report.split_policy.candidate_run_dir = $candidateRunDir
+    $script:splitPolicyArtifactPath = if ($DryRun) {
+        if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "split_policy_decision.json" }
+    } else {
+        Write-SplitPolicyDecisionArtifact -CandidateRunDir $candidateRunDir -SplitPolicyDecision $report.split_policy
+    }
+    $report.split_policy.artifact_path = $script:splitPolicyArtifactPath
     $report.candidate = [ordered]@{
         run_id = $candidateRunId
         run_dir = $candidateRunDir
+        lane_mode = [string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue "")
+        promotion_eligible = [bool](Get-PropValue -ObjectValue $report.split_policy -Name "promotion_eligible" -DefaultValue $false)
+        split_policy_id = [string](Get-PropValue -ObjectValue $report.split_policy -Name "policy_id" -DefaultValue "")
+        split_policy_artifact_path = $script:splitPolicyArtifactPath
         research_evidence_path = $researchEvidencePath
         trainer_research_prior_path = $researchEvidencePath
         search_budget_decision_path = $searchBudgetDecisionPath
@@ -2825,6 +3032,7 @@ try {
         duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
         duplicate_artifacts = $duplicateCandidateArtifacts
     }
+    Sync-SplitPolicyState
     $report.steps.train.duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
     $report.steps.train.duplicate_candidate_artifacts = $duplicateCandidateArtifacts
 
@@ -2891,6 +3099,84 @@ try {
         $paths = Save-Report
         Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
         Write-Host ("[{0}] duplicate_candidate={1}" -f $LogTag, $true)
+        Write-Host ("[{0}] backtest_pass={1}" -f $LogTag, $false)
+        Write-Host ("[{0}] paper_pass={1}" -f $LogTag, $null)
+        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+        if ($DryRun) {
+            exit 0
+        }
+        exit 2
+    }
+
+    if ([string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue "") -eq "bootstrap_latest_inclusive") {
+        $report.steps.backtest_candidate = [ordered]@{
+            attempted = $false
+            reason = "BOOTSTRAP_ONLY_POLICY"
+            model_ref_requested = $CandidateModelRef
+            model_ref_used = $candidateBacktestModelRef
+            start = $certificationStartDate
+            end = $effectiveBatchDate
+        }
+        $report.steps.backtest_champion = [ordered]@{
+            attempted = $false
+            reason = "BOOTSTRAP_ONLY_POLICY"
+            model_ref_requested = $ChampionModelRef
+            model_ref_used = $championBacktestModelRef
+            start = $certificationStartDate
+            end = $effectiveBatchDate
+        }
+        $report.steps.paper_candidate = [ordered]@{
+            attempted = $false
+            reason = "BOOTSTRAP_ONLY_POLICY"
+            model_ref_requested = $CandidateModelRef
+            model_ref_used = $candidatePaperModelRef
+        }
+        $report.steps.overlay_calibration = [ordered]@{
+            attempted = $false
+            reason = "BOOTSTRAP_ONLY_POLICY"
+        }
+        $report.gates.backtest = [ordered]@{
+            evaluated = $false
+            skipped = $true
+            pass = $false
+            reason = "BOOTSTRAP_ONLY_POLICY"
+            decision_basis = "BOOTSTRAP_ONLY_POLICY"
+            compare_required = $false
+            lane_mode = "bootstrap_latest_inclusive"
+            promotion_eligible = $false
+        }
+        $report.gates.paper = [ordered]@{
+            evaluated = $false
+            skipped = $true
+            pass = $null
+            reason = "BOOTSTRAP_ONLY_POLICY"
+        }
+        $report.gates.overall_pass = $false
+        $report.reasons = @("BOOTSTRAP_ONLY_POLICY")
+        $report.notes = @("BOOTSTRAP_LATEST_INCLUSIVE")
+        $report.steps.promote = [ordered]@{
+            attempted = $false
+            promoted = $false
+            reason = "BOOTSTRAP_ONLY_POLICY"
+        }
+        $report.steps.restart_units = @()
+        $report.steps.report_refresh = if ($SkipReportRefresh) {
+            [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+        } else {
+            [ordered]@{ attempted = $false; reason = "BOOTSTRAP_ONLY_POLICY" }
+        }
+        if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+            $certificationArtifact.status = "bootstrap_only"
+            $certificationArtifact.certification = [ordered]@{
+                evaluated = $false
+                decision_basis = "BOOTSTRAP_ONLY_POLICY"
+                lane_mode = "bootstrap_latest_inclusive"
+                promotion_eligible = $false
+            }
+            Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+        }
+        $paths = Save-Report
+        Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
         Write-Host ("[{0}] backtest_pass={1}" -f $LogTag, $false)
         Write-Host ("[{0}] paper_pass={1}" -f $LogTag, $null)
         Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false

@@ -134,3 +134,51 @@ def test_daily_candidate_acceptance_preserves_fatal_acceptance_failure(tmp_path:
     )
 
     assert completed.returncode == 2
+
+
+def test_daily_candidate_acceptance_treats_bootstrap_only_policy_as_success(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        payload={
+            "candidate": {
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+            },
+            "split_policy": {
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+            },
+            "reasons": ["BOOTSTRAP_ONLY_POLICY"],
+        },
+        exit_code=2,
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-AcceptanceScript",
+            str(acceptance_script),
+            "-BatchDate",
+            "2026-03-08",
+            "-SkipDailyPipeline",
+            "-SkipReportRefresh",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "bootstrap_nonfatal_reason=BOOTSTRAP_ONLY_POLICY" in completed.stdout
