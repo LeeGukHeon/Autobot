@@ -836,6 +836,9 @@ def _attach_exit_order_to_risk_plan(
     plan_id = str(selected.get("plan_id") or "").strip()
     if not plan_id:
         return None
+    selected_tp = dict(selected.get("tp") or {})
+    selected_sl = dict(selected.get("sl") or {})
+    selected_trailing = dict(selected.get("trailing") or {})
     store.upsert_risk_plan(
         RiskPlanRecord(
             plan_id=plan_id,
@@ -843,16 +846,16 @@ def _attach_exit_order_to_risk_plan(
             side=str(selected.get("side", "long") or "long"),
             entry_price_str=str(selected.get("entry_price_str", "")),
             qty_str=str(selected.get("qty_str", "")),
-            tp_enabled=bool(selected.get("tp_enabled")),
-            tp_price_str=_as_optional_str(selected.get("tp_price_str")),
-            tp_pct=_safe_optional_float(selected.get("tp_pct")),
-            sl_enabled=bool(selected.get("sl_enabled")),
-            sl_price_str=_as_optional_str(selected.get("sl_price_str")),
-            sl_pct=_safe_optional_float(selected.get("sl_pct")),
-            trailing_enabled=bool(selected.get("trailing_enabled")),
-            trail_pct=_safe_optional_float(selected.get("trail_pct")),
-            high_watermark_price_str=_as_optional_str(selected.get("high_watermark_price_str")),
-            armed_ts_ms=_safe_optional_int(selected.get("armed_ts_ms")),
+            tp_enabled=bool(selected_tp.get("enabled")),
+            tp_price_str=_as_optional_str(selected_tp.get("tp_price_str")),
+            tp_pct=_safe_optional_float(selected_tp.get("tp_pct")),
+            sl_enabled=bool(selected_sl.get("enabled")),
+            sl_price_str=_as_optional_str(selected_sl.get("sl_price_str")),
+            sl_pct=_safe_optional_float(selected_sl.get("sl_pct")),
+            trailing_enabled=bool(selected_trailing.get("enabled")),
+            trail_pct=_safe_optional_float(selected_trailing.get("trail_pct")),
+            high_watermark_price_str=_as_optional_str(selected_trailing.get("high_watermark_price_str")),
+            armed_ts_ms=_safe_optional_int(selected_trailing.get("armed_ts_ms")),
             timeout_ts_ms=_safe_optional_int(selected.get("timeout_ts_ms")),
             state="EXITING",
             last_eval_ts_ms=int(selected.get("last_eval_ts_ms", 0) or 0),
@@ -915,10 +918,33 @@ def _ensure_live_risk_plan(
         if current_exit_uuid:
             continue
         derived_plan_record = None
+        derived_position_record = None
+        plan_tp = dict(plan.get("tp") or {})
+        plan_sl = dict(plan.get("sl") or {})
+        plan_trailing = dict(plan.get("trailing") or {})
         plan_source = _as_optional_str(plan.get("plan_source"))
         source_intent_id = _as_optional_str(plan.get("source_intent_id"))
         timeout_ts_ms = _safe_optional_int(plan.get("timeout_ts_ms"))
-        if not plan_source or not source_intent_id or timeout_ts_ms is None:
+        needs_model_backfill = (not plan_source) or (not source_intent_id) or (timeout_ts_ms is None)
+        if not needs_model_backfill and str(plan_source).strip().lower() == "model_alpha_v1":
+            if entry_intent is None:
+                entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=position)
+            if entry_intent is not None:
+                candidate_position_record, candidate_plan_record = build_model_derived_risk_records(
+                    market=market,
+                    base_currency=str(market).split("-")[-1],
+                    base_amount=qty,
+                    avg_entry_price=entry_price,
+                    plan_payload=entry_intent["plan_payload"],
+                    created_ts=int(entry_intent["created_ts"]),
+                    updated_ts=int(ts_ms),
+                    intent_id=entry_intent["intent_id"],
+                )
+                needs_model_backfill = _risk_plan_differs_from_record(plan=plan, record=candidate_plan_record)
+                if needs_model_backfill:
+                    derived_position_record = candidate_position_record
+                    derived_plan_record = candidate_plan_record
+        elif needs_model_backfill:
             if entry_intent is None:
                 entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=position)
             if entry_intent is not None:
@@ -932,10 +958,6 @@ def _ensure_live_risk_plan(
                     updated_ts=int(ts_ms),
                     intent_id=entry_intent["intent_id"],
                 )
-            else:
-                derived_position_record = None
-        else:
-            derived_position_record = None
         store.upsert_risk_plan(
             RiskPlanRecord(
                 plan_id=str(plan.get("plan_id")),
@@ -943,18 +965,18 @@ def _ensure_live_risk_plan(
                 side=str(plan.get("side", "long") or "long"),
                 entry_price_str=str(entry_price),
                 qty_str=str(qty),
-                tp_enabled=bool(derived_plan_record.tp_enabled) if derived_plan_record is not None else bool(plan.get("tp_enabled")),
-                tp_price_str=derived_plan_record.tp_price_str if derived_plan_record is not None else _as_optional_str(plan.get("tp_price_str")),
-                tp_pct=derived_plan_record.tp_pct if derived_plan_record is not None else _safe_optional_float(plan.get("tp_pct")),
-                sl_enabled=bool(derived_plan_record.sl_enabled) if derived_plan_record is not None else bool(plan.get("sl_enabled")),
-                sl_price_str=derived_plan_record.sl_price_str if derived_plan_record is not None else _as_optional_str(plan.get("sl_price_str")),
-                sl_pct=derived_plan_record.sl_pct if derived_plan_record is not None else _safe_optional_float(plan.get("sl_pct")),
-                trailing_enabled=bool(derived_plan_record.trailing_enabled) if derived_plan_record is not None else bool(plan.get("trailing_enabled")),
-                trail_pct=derived_plan_record.trail_pct if derived_plan_record is not None else _safe_optional_float(plan.get("trail_pct")),
-                high_watermark_price_str=_as_optional_str(plan.get("high_watermark_price_str")) or (
+                tp_enabled=bool(derived_plan_record.tp_enabled) if derived_plan_record is not None else bool(plan_tp.get("enabled")),
+                tp_price_str=derived_plan_record.tp_price_str if derived_plan_record is not None else _as_optional_str(plan_tp.get("tp_price_str")),
+                tp_pct=derived_plan_record.tp_pct if derived_plan_record is not None else _safe_optional_float(plan_tp.get("tp_pct")),
+                sl_enabled=bool(derived_plan_record.sl_enabled) if derived_plan_record is not None else bool(plan_sl.get("enabled")),
+                sl_price_str=derived_plan_record.sl_price_str if derived_plan_record is not None else _as_optional_str(plan_sl.get("sl_price_str")),
+                sl_pct=derived_plan_record.sl_pct if derived_plan_record is not None else _safe_optional_float(plan_sl.get("sl_pct")),
+                trailing_enabled=bool(derived_plan_record.trailing_enabled) if derived_plan_record is not None else bool(plan_trailing.get("enabled")),
+                trail_pct=derived_plan_record.trail_pct if derived_plan_record is not None else _safe_optional_float(plan_trailing.get("trail_pct")),
+                high_watermark_price_str=_as_optional_str(plan_trailing.get("high_watermark_price_str")) or (
                     derived_plan_record.high_watermark_price_str if derived_plan_record is not None else None
                 ),
-                armed_ts_ms=_safe_optional_int(plan.get("armed_ts_ms")) if _safe_optional_int(plan.get("armed_ts_ms")) is not None else (
+                armed_ts_ms=_safe_optional_int(plan_trailing.get("armed_ts_ms")) if _safe_optional_int(plan_trailing.get("armed_ts_ms")) is not None else (
                     derived_plan_record.armed_ts_ms if derived_plan_record is not None else None
                 ),
                 timeout_ts_ms=derived_plan_record.timeout_ts_ms if derived_plan_record is not None else timeout_ts_ms,
@@ -974,10 +996,38 @@ def _ensure_live_risk_plan(
             store.upsert_position(derived_position_record)
 
 
+def _risk_plan_differs_from_record(*, plan: dict[str, Any], record: RiskPlanRecord) -> bool:
+    plan_tp = dict(plan.get("tp") or {})
+    plan_sl = dict(plan.get("sl") or {})
+    plan_trailing = dict(plan.get("trailing") or {})
+    if _as_optional_str(plan.get("plan_source")) != record.plan_source:
+        return True
+    if _as_optional_str(plan.get("source_intent_id")) != record.source_intent_id:
+        return True
+    if _safe_optional_int(plan.get("timeout_ts_ms")) != record.timeout_ts_ms:
+        return True
+    if bool(plan_tp.get("enabled")) != bool(record.tp_enabled):
+        return True
+    if _safe_optional_float(plan_tp.get("tp_pct")) != _safe_optional_float(record.tp_pct):
+        return True
+    if bool(plan_sl.get("enabled")) != bool(record.sl_enabled):
+        return True
+    if _safe_optional_float(plan_sl.get("sl_pct")) != _safe_optional_float(record.sl_pct):
+        return True
+    if bool(plan_trailing.get("enabled")) != bool(record.trailing_enabled):
+        return True
+    if _safe_optional_float(plan_trailing.get("trail_pct")) != _safe_optional_float(record.trail_pct):
+        return True
+    return False
+
+
 def _close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) -> None:
     for plan in store.list_risk_plans(market=market):
         if str(plan.get("state", "")).strip().upper() == "CLOSED":
             continue
+        plan_tp = dict(plan.get("tp") or {})
+        plan_sl = dict(plan.get("sl") or {})
+        plan_trailing = dict(plan.get("trailing") or {})
         store.upsert_risk_plan(
             RiskPlanRecord(
                 plan_id=str(plan.get("plan_id")),
@@ -985,16 +1035,16 @@ def _close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) 
                 side=str(plan.get("side", "long") or "long"),
                 entry_price_str=str(plan.get("entry_price_str", "")),
                 qty_str=str(plan.get("qty_str", "")),
-                tp_enabled=bool(plan.get("tp_enabled")),
-                tp_price_str=_as_optional_str(plan.get("tp_price_str")),
-                tp_pct=_safe_optional_float(plan.get("tp_pct")),
-                sl_enabled=bool(plan.get("sl_enabled")),
-                sl_price_str=_as_optional_str(plan.get("sl_price_str")),
-                sl_pct=_safe_optional_float(plan.get("sl_pct")),
-                trailing_enabled=bool(plan.get("trailing_enabled")),
-                trail_pct=_safe_optional_float(plan.get("trail_pct")),
-                high_watermark_price_str=_as_optional_str(plan.get("high_watermark_price_str")),
-                armed_ts_ms=_safe_optional_int(plan.get("armed_ts_ms")),
+                tp_enabled=bool(plan_tp.get("enabled")),
+                tp_price_str=_as_optional_str(plan_tp.get("tp_price_str")),
+                tp_pct=_safe_optional_float(plan_tp.get("tp_pct")),
+                sl_enabled=bool(plan_sl.get("enabled")),
+                sl_price_str=_as_optional_str(plan_sl.get("sl_price_str")),
+                sl_pct=_safe_optional_float(plan_sl.get("sl_pct")),
+                trailing_enabled=bool(plan_trailing.get("enabled")),
+                trail_pct=_safe_optional_float(plan_trailing.get("trail_pct")),
+                high_watermark_price_str=_as_optional_str(plan_trailing.get("high_watermark_price_str")),
+                armed_ts_ms=_safe_optional_int(plan_trailing.get("armed_ts_ms")),
                 timeout_ts_ms=_safe_optional_int(plan.get("timeout_ts_ms")),
                 state="CLOSED",
                 last_eval_ts_ms=int(plan.get("last_eval_ts_ms", 0) or 0),

@@ -1065,9 +1065,9 @@ def test_ensure_live_risk_plan_backfills_position_policy_json_from_model_exit_pl
                 replace_attempt=0,
                 created_ts=now_ms - 2000,
                 updated_ts=now_ms - 1000,
-                timeout_ts_ms=None,
-                plan_source=None,
-                source_intent_id=None,
+                timeout_ts_ms=(now_ms - 2000) + 2700000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-bsv-1",
             )
         )
 
@@ -1099,6 +1099,8 @@ def test_ensure_live_risk_plan_backfills_position_policy_json_from_model_exit_pl
     assert plan["sl"]["enabled"] is True
     assert plan["tp"]["tp_pct"] == pytest.approx(5.0928971583880405)
     assert plan["sl"]["sl_pct"] == pytest.approx(3.3952647722586943)
+    assert plan["plan_source"] == "model_alpha_v1"
+    assert plan["source_intent_id"] == "intent-bsv-1"
     assert positions[0]["tp"]["enabled"] is True
     assert positions[0]["sl"]["enabled"] is True
 
@@ -1471,9 +1473,12 @@ def test_attach_exit_order_to_risk_plan_marks_latest_plan_exiting(tmp_path: Path
                 side="long",
                 entry_price_str="441",
                 qty_str="12.7",
-                tp_enabled=False,
-                sl_enabled=False,
-                trailing_enabled=False,
+                tp_enabled=True,
+                tp_pct=2.0,
+                sl_enabled=True,
+                sl_pct=1.0,
+                trailing_enabled=True,
+                trail_pct=0.015,
                 state="ACTIVE",
                 last_eval_ts_ms=1_000,
                 last_action_ts_ms=0,
@@ -1500,3 +1505,9 @@ def test_attach_exit_order_to_risk_plan_marks_latest_plan_exiting(tmp_path: Path
     assert plan["state"] == "EXITING"
     assert plan["current_exit_order_uuid"] == "exit-uuid-1"
     assert plan["current_exit_order_identifier"] == "AUTOBOT-exit-1"
+    assert plan["tp"]["enabled"] is True
+    assert plan["tp"]["tp_pct"] == pytest.approx(2.0)
+    assert plan["sl"]["enabled"] is True
+    assert plan["sl"]["sl_pct"] == pytest.approx(1.0)
+    assert plan["trailing"]["enabled"] is True
+    assert plan["trailing"]["trail_pct"] == pytest.approx(0.015)
