@@ -90,6 +90,16 @@ class _StaticPublicClient:
         return [{"market": self._market, "tick_size": self._tick_size}]
 
 
+class _NoInstrumentPublicClient:
+    def markets(self, *, is_details: bool = False):  # noqa: ANN201
+        _ = is_details
+        return []
+
+    def orderbook_instruments(self, markets):  # noqa: ANN201
+        _ = markets
+        return []
+
+
 class _PublicWsClient:
     async def stream_ticker(self, markets, duration_sec=None):  # noqa: ANN201
         _ = markets, duration_sec
@@ -1625,7 +1635,7 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -
         report = runtime_module._supervise_open_strategy_orders(
             store=store,
             client=_PrivateClient(),
-            public_client=_StaticPublicClient("KRW-DOGE", 0.1),
+            public_client=_NoInstrumentPublicClient(),
             executor_gateway=gateway,
             latest_prices={"KRW-DOGE": 135.0},
             micro_snapshot_provider=_NullMicroProvider(),

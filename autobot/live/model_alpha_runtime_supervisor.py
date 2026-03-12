@@ -4,6 +4,7 @@ import json
 from typing import Any, Callable
 
 from autobot.execution.order_supervisor import (
+    REASON_MAX_REPLACES_REACHED,
     SUPERVISOR_ACTION_ABORT,
     SUPERVISOR_ACTION_REPLACE,
     OrderExecProfile,
@@ -63,6 +64,34 @@ def supervise_open_strategy_orders(
         )
         if remaining_volume <= 0.0:
             continue
+        profile = _resolve_exec_profile(execution_meta)
+        replace_count = max(int(order.get("replace_seq") or 0), 0)
+        if _timeout_abort_due(
+            profile=profile,
+            created_ts_ms=int(order.get("created_ts") or intent.get("ts_ms") or ts_ms),
+            now_ts_ms=int(ts_ms),
+            replace_count=replace_count,
+        ):
+            report["evaluated"] = int(report["evaluated"]) + 1
+            result = _abort_open_order(
+                store=store,
+                executor_gateway=executor_gateway,
+                order=order,
+                intent=intent,
+                action=SupervisorAction(
+                    action=SUPERVISOR_ACTION_ABORT,
+                    reason_code=REASON_MAX_REPLACES_REACHED,
+                ),
+                ts_ms=int(ts_ms),
+                policy_diagnostics={},
+            )
+            report["results"].append(result)
+            if result["ok"]:
+                report["aborted"] = int(report["aborted"]) + 1
+                _inc_reason(report["reason_counts"], result["reason_code"])
+            else:
+                report["failed"] = int(report["failed"]) + 1
+            continue
         market_rules = _resolve_market_rules(
             client=client,
             public_client=public_client,
@@ -72,7 +101,6 @@ def supervise_open_strategy_orders(
         )
         if market_rules is None:
             continue
-        profile = _resolve_exec_profile(execution_meta)
         current_ref_price = _resolve_ref_price(
             order=order,
             execution_meta=execution_meta,
@@ -88,7 +116,6 @@ def supervise_open_strategy_orders(
         )
         if current_ref_price <= 0.0 or initial_ref_price <= 0.0:
             continue
-        replace_count = max(int(order.get("replace_seq") or 0), 0)
         effective_profile = profile
         policy_diagnostics: dict[str, Any] = {}
         policy_abort_reason: str | None = None
@@ -257,6 +284,19 @@ def _recent_replace_count(*, store: LiveStateStore, intent_id: str, ts_ms: int) 
             if int(item.get("ts_ms") or 0) >= lower_bound
         ]
     )
+
+
+def _timeout_abort_due(
+    *,
+    profile: OrderExecProfile,
+    created_ts_ms: int,
+    now_ts_ms: int,
+    replace_count: int,
+) -> bool:
+    if int(replace_count) < int(profile.max_replaces):
+        return False
+    age_ms = max(int(now_ts_ms) - int(created_ts_ms), 0)
+    return age_ms >= max(int(profile.timeout_ms), int(profile.replace_interval_ms))
 
 
 def _abort_open_order(
