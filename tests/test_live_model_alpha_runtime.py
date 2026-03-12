@@ -801,6 +801,16 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
                                 "sl_pct": 0.01,
                                 "trailing_pct": 0.015,
                             },
+                            "exit_recommendation": {
+                                "recommended_exit_mode": "risk",
+                                "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+                                "chosen_family": "risk",
+                                "chosen_rule_id": "risk_h6_rv_36_tp2p5_sl1p5_tr0p75",
+                                "hold_family_status": "supported",
+                                "risk_family_status": "supported",
+                                "family_compare_status": "supported",
+                            },
                         },
                     ),
                 ),
@@ -876,6 +886,10 @@ def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_pa
     assert trade_action.get("recommended_action") == "risk"
     assert trade_action.get("expected_es") == 0.0061
     assert trade_action.get("decision_source") == "continuous_conditional_action_value"
+    exit_recommendation = strategy_meta.get("exit_recommendation")
+    assert isinstance(exit_recommendation, dict)
+    assert exit_recommendation.get("chosen_family") == "risk"
+    assert exit_recommendation.get("chosen_rule_id") == "risk_h6_rv_36_tp2p5_sl1p5_tr0p75"
     admissibility = meta_payload.get("admissibility")
     assert isinstance(admissibility, dict)
     decision = admissibility.get("decision")

@@ -168,7 +168,10 @@
 ### Slice 5. Observability
 - surface rule-family diagnostics in runtime, journal, and dashboard
 - Status:
-  - partial foundation landed locally
+  - expanded locally:
+    - live intent metadata
+    - trade journal entry metadata
+    - dashboard recent-intent / recent-trade summaries
 
 ## Acceptance
 - `hold` is represented as an explicit stopping-rule family, not one special simple baseline.

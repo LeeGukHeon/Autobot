@@ -551,6 +551,29 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
         }
     )
     runtime_recommendations = {
+        "exit": {
+            "recommended_exit_mode": "risk",
+            "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+            "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+            "recommended_hold_bars": 3,
+            "chosen_family": "risk",
+            "chosen_rule_id": "risk_h3_rv_36_tp1p5_sl1p0_tr0p0",
+            "hold_family_status": "supported",
+            "risk_family_status": "supported",
+            "family_compare_status": "supported",
+            "family_compare": {"reason_codes": []},
+            "summary": {"orders_filled": 5, "realized_pnl_quote": 10.0, "fill_rate": 0.9, "max_drawdown_pct": 1.0, "slippage_bps_mean": 2.0},
+            "risk_summary": {"orders_filled": 5, "realized_pnl_quote": 12.0, "fill_rate": 0.92, "max_drawdown_pct": 0.8, "slippage_bps_mean": 2.1},
+            "grid_point": {"hold_bars": 6},
+            "risk_grid_point": {
+                "hold_bars": 3,
+                "risk_scaling_mode": "fixed",
+                "risk_vol_feature": "rv_36",
+                "tp_vol_multiplier": 1.5,
+                "sl_vol_multiplier": 1.0,
+                "trailing_vol_multiplier": 0.0,
+            },
+        },
         "trade_action": {
             "version": 1,
             "policy": TRADE_ACTION_POLICY_ID,
@@ -615,6 +638,8 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
     assert float((bid_intent.meta or {}).get("notional_multiplier", 0.0)) == 1.25
     assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "trade_action_policy"
     assert dict((bid_intent.meta or {}).get("trade_action") or {})["expected_es"] == 0.006
+    assert dict((bid_intent.meta or {}).get("exit_recommendation") or {})["chosen_family"] == "risk"
+    assert dict((bid_intent.meta or {}).get("exit_recommendation") or {})["chosen_rule_id"] == "risk_h3_rv_36_tp1p5_sl1p0_tr0p0"
     exit_plan = dict((bid_intent.meta or {}).get("model_exit_plan") or {})
     assert exit_plan["mode"] == "risk"
     assert exit_plan["hold_bars"] == 3

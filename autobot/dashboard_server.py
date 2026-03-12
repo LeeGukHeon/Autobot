@@ -485,6 +485,9 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
     sizing = _dig(meta_dict, "admissibility", "sizing", default={}) or {}
     strategy_meta = _dig(meta_dict, "strategy", "meta", default={}) or {}
     trade_action = strategy_meta.get("trade_action") if isinstance(strategy_meta.get("trade_action"), dict) else {}
+    exit_recommendation = (
+        strategy_meta.get("exit_recommendation") if isinstance(strategy_meta.get("exit_recommendation"), dict) else {}
+    )
     trade_gate = _dig(meta_dict, "trade_gate", default={}) or {}
     requested_price = _coerce_float(row.get("price"))
     requested_volume = _coerce_float(row.get("volume"))
@@ -533,12 +536,17 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
         "trade_action_tail_probability": _coerce_float(trade_action.get("expected_tail_probability")),
         "trade_action_decision_source": trade_action.get("decision_source") or trade_action.get("chosen_action_source"),
         "trade_action_notional_multiplier": _coerce_float(trade_action.get("recommended_notional_multiplier")),
+        "exit_recommendation_mode": exit_recommendation.get("recommended_exit_mode"),
+        "exit_recommendation_chosen_family": exit_recommendation.get("chosen_family"),
+        "exit_recommendation_chosen_rule_id": exit_recommendation.get("chosen_rule_id"),
+        "exit_recommendation_family_compare_status": exit_recommendation.get("family_compare_status"),
     }
 
 
 def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
     entry_meta = _normalize_json_text(row.get("entry_meta_json")) or {}
     trade_action = _dig(entry_meta, "strategy", "meta", "trade_action", default={}) or {}
+    exit_recommendation = _dig(entry_meta, "strategy", "meta", "exit_recommendation", default={}) or {}
     exit_meta = _normalize_json_text(row.get("exit_meta_json")) or {}
     entry_ts_ms = _coerce_int(row.get("entry_filled_ts_ms")) or _coerce_int(row.get("entry_submitted_ts_ms"))
     exit_ts_ms = _coerce_int(row.get("exit_ts_ms"))
@@ -591,6 +599,10 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "trade_action_tail_probability": _coerce_float(trade_action.get("expected_tail_probability")),
         "trade_action_decision_source": trade_action.get("decision_source") or trade_action.get("chosen_action_source"),
+        "exit_recommendation_mode": exit_recommendation.get("recommended_exit_mode"),
+        "exit_recommendation_chosen_family": exit_recommendation.get("chosen_family"),
+        "exit_recommendation_chosen_rule_id": exit_recommendation.get("chosen_rule_id"),
+        "exit_recommendation_family_compare_status": exit_recommendation.get("family_compare_status"),
         "expected_net_edge_bps": _coerce_float(row.get("expected_net_edge_bps")),
         "notional_multiplier": _coerce_float(row.get("notional_multiplier")),
         "entry_meta": entry_meta,

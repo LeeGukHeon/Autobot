@@ -25,6 +25,16 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
                     "expected_exit_fee_rate": 0.0005,
                     "expected_exit_slippage_bps": 2.5,
                 },
+                "exit_recommendation": {
+                    "recommended_exit_mode": "risk",
+                    "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                    "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+                    "chosen_family": "risk",
+                    "chosen_rule_id": "risk_h6_rv_36_tp2p5_sl1p5_tr0p75",
+                    "hold_family_status": "supported",
+                    "risk_family_status": "supported",
+                    "family_compare_status": "supported",
+                },
                 "trade_action": {
                     "recommended_action": "risk",
                     "expected_edge": 0.0123,
@@ -174,6 +184,8 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
     assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["expected_es"] == 0.0061
     assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["expected_ctm"] == 0.000041
     assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["decision_source"] == "continuous_conditional_action_value"
+    assert row["entry_meta"]["strategy"]["meta"]["exit_recommendation"]["chosen_family"] == "risk"
+    assert row["entry_meta"]["strategy"]["meta"]["exit_recommendation"]["chosen_rule_id"] == "risk_h6_rv_36_tp2p5_sl1p5_tr0p75"
     assert row["exit_meta"]["gross_pnl_quote"] == pytest.approx(3.0)
     assert row["exit_meta"]["total_fee_quote"] == pytest.approx(0.1015)
     assert row["exit_meta"]["entry_realized_slippage_bps"] == pytest.approx(20.04008016032014)

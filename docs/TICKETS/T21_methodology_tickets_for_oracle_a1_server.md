@@ -280,6 +280,10 @@ These tickets are the required follow-on family before changing core promotion b
     - `chosen_rule_id`
   - trainer decision surface now records family-status diagnostics for runtime exit recommendations
   - explicit abstain on insufficient family support now lands through the runtime exit recommendation contract
+  - live canary/shadow/submitted intents and trade-journal entry metadata now preserve:
+    - `chosen_family`
+    - `chosen_rule_id`
+    - family-compare status
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:

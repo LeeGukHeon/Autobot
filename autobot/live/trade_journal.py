@@ -703,6 +703,11 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
     strategy = dict(payload.get("strategy") or {}) if isinstance(payload.get("strategy"), dict) else {}
     strategy_meta = dict(strategy.get("meta") or {}) if isinstance(strategy.get("meta"), dict) else {}
     trade_action = dict(strategy_meta.get("trade_action") or {}) if isinstance(strategy_meta.get("trade_action"), dict) else {}
+    exit_recommendation = (
+        dict(strategy_meta.get("exit_recommendation") or {})
+        if isinstance(strategy_meta.get("exit_recommendation"), dict)
+        else {}
+    )
     model_exit_plan = dict(strategy_meta.get("model_exit_plan") or {}) if isinstance(strategy_meta.get("model_exit_plan"), dict) else {}
     admissibility = dict(payload.get("admissibility") or {}) if isinstance(payload.get("admissibility"), dict) else {}
     decision = dict(admissibility.get("decision") or {}) if isinstance(admissibility.get("decision"), dict) else {}
@@ -747,6 +752,18 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                         else trade_action.get("chosen_action_source")
                     ),
                     "recommended_notional_multiplier": trade_action.get("recommended_notional_multiplier"),
+                },
+                "exit_recommendation": {
+                    "recommended_exit_mode": exit_recommendation.get("recommended_exit_mode"),
+                    "recommended_exit_mode_source": exit_recommendation.get("recommended_exit_mode_source"),
+                    "recommended_exit_mode_reason_code": exit_recommendation.get("recommended_exit_mode_reason_code"),
+                    "recommended_hold_bars": exit_recommendation.get("recommended_hold_bars"),
+                    "chosen_family": exit_recommendation.get("chosen_family"),
+                    "chosen_rule_id": exit_recommendation.get("chosen_rule_id"),
+                    "hold_family_status": exit_recommendation.get("hold_family_status"),
+                    "risk_family_status": exit_recommendation.get("risk_family_status"),
+                    "family_compare_status": exit_recommendation.get("family_compare_status"),
+                    "family_compare_reason_codes": list(exit_recommendation.get("family_compare_reason_codes") or []),
                 },
                 "model_exit_plan": {
                     "mode": model_exit_plan.get("mode"),

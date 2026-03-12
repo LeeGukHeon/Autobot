@@ -34,6 +34,22 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_exec
                 "recommended_exit_mode": "risk",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
                 "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+                "chosen_family": "risk",
+                "chosen_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
+                "hold_family_status": "supported",
+                "risk_family_status": "supported",
+                "family_compare_status": "supported",
+                "hold_family": {
+                    "status": "supported",
+                    "best_rule_id": "hold_h12",
+                    "best_comparable_rule_id": "hold_h12",
+                },
+                "risk_family": {
+                    "status": "supported",
+                    "best_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
+                    "best_comparable_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75",
+                },
+                "family_compare": {"status": "supported", "comparable": True, "reason_codes": []},
                 "recommended_hold_bars": 12,
                 "recommendation_source": "execution_backtest_grid_search",
                 "summary": {
@@ -90,6 +106,8 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_exec
     assert state["exit_mode_source"] == "execution_backtest_grid_search_compare"
     assert state["exit_hold_bars_source"] == "execution_backtest_grid_search"
     assert state["execution_source"] == "execution_backtest_grid_search"
+    assert state["exit_recommendation"]["chosen_family"] == "risk"
+    assert state["exit_recommendation"]["chosen_rule_id"] == "risk_h12_rv_36_tp2p5_sl1p5_tr0p75"
 
 
 def test_normalize_runtime_recommendations_backfills_legacy_exit_mode_compare() -> None:

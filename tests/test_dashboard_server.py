@@ -39,6 +39,16 @@ def _init_live_db(path: Path) -> None:
                     {
                         "strategy": {
                             "meta": {
+                                "exit_recommendation": {
+                                    "recommended_exit_mode": "hold",
+                                    "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                                    "recommended_exit_mode_reason_code": "HOLD_EXECUTION_COMPARE_EDGE",
+                                    "chosen_family": "hold",
+                                    "chosen_rule_id": "hold_h6",
+                                    "hold_family_status": "supported",
+                                    "risk_family_status": "supported",
+                                    "family_compare_status": "supported",
+                                },
                                 "trade_action": {
                                     "recommended_action": "risk",
                                     "expected_edge": 0.0123,
@@ -103,6 +113,16 @@ def _init_live_db(path: Path) -> None:
                     {
                         "strategy": {
                             "meta": {
+                                "exit_recommendation": {
+                                    "recommended_exit_mode": "hold",
+                                    "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                                    "recommended_exit_mode_reason_code": "HOLD_EXECUTION_COMPARE_EDGE",
+                                    "chosen_family": "hold",
+                                    "chosen_rule_id": "hold_h6",
+                                    "hold_family_status": "supported",
+                                    "risk_family_status": "supported",
+                                    "family_compare_status": "supported",
+                                },
                                 "trade_action": {
                                     "recommended_action": "risk",
                                     "expected_edge": 0.0123,
@@ -288,6 +308,9 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert recent_intent["trade_action_expected_edge_bps"] == 123.0
     assert recent_intent["trade_action_expected_es_bps"] == pytest.approx(61.0)
     assert recent_intent["trade_action_decision_source"] == "continuous_conditional_action_value"
+    assert recent_intent["exit_recommendation_chosen_family"] == "hold"
+    assert recent_intent["exit_recommendation_chosen_rule_id"] == "hold_h6"
+    assert snapshot["live"]["states"][0]["recent_trades"][0]["exit_recommendation_chosen_family"] == "hold"
     assert recent_intent["expected_net_edge_bps"] == 98.7
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 

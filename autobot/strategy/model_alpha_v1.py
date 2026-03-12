@@ -456,6 +456,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                             interval_ms=self._interval_ms,
                             observed_entry_fee_rate=0.0,
                         ),
+                        "exit_recommendation": _build_runtime_exit_recommendation_meta(
+                            self._runtime_recommendation_state
+                        ),
                         "trade_action": dict(trade_action_decision or {}),
                         "operational_overlay": dict(operational_state),
                     },
@@ -799,6 +802,26 @@ def resolve_runtime_model_alpha_settings(
         backfilled_fields = [
             str(item).strip() for item in (exit_doc.get("contract_backfilled_fields") or []) if str(item).strip()
         ]
+        state["exit_recommendation"] = {
+            "recommended_exit_mode": str(exit_doc.get("recommended_exit_mode", "")).strip().lower(),
+            "recommended_exit_mode_source": str(exit_doc.get("recommended_exit_mode_source", "")).strip(),
+            "recommended_exit_mode_reason_code": str(exit_doc.get("recommended_exit_mode_reason_code", "")).strip(),
+            "recommended_hold_bars": (
+                int(exit_doc.get("recommended_hold_bars"))
+                if exit_doc.get("recommended_hold_bars") not in (None, "")
+                else None
+            ),
+            "chosen_family": str(exit_doc.get("chosen_family", "")).strip(),
+            "chosen_rule_id": str(exit_doc.get("chosen_rule_id", "")).strip(),
+            "hold_family_status": str(exit_doc.get("hold_family_status", "")).strip(),
+            "risk_family_status": str(exit_doc.get("risk_family_status", "")).strip(),
+            "family_compare_status": str(exit_doc.get("family_compare_status", "")).strip(),
+            "family_compare_reason_codes": [
+                str(item).strip()
+                for item in ((exit_doc.get("family_compare") or {}).get("reason_codes") or [])
+                if str(item).strip()
+            ],
+        }
         family_compare_status = str(exit_doc.get("family_compare_status") or "").strip()
         state["exit_family_compare_status"] = family_compare_status or "missing"
         exit_family_compare_supported = family_compare_status.lower() in {"", "supported", "legacy_backfilled"}
@@ -1019,6 +1042,26 @@ def _resolve_trade_action_exit_settings(
         ),
     )
     return replace(base_settings, exit=resolved_exit)
+
+
+def _build_runtime_exit_recommendation_meta(runtime_state: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict((runtime_state or {}).get("exit_recommendation") or {})
+    if not payload:
+        return {}
+    return {
+        "recommended_exit_mode": str(payload.get("recommended_exit_mode", "")).strip(),
+        "recommended_exit_mode_source": str(payload.get("recommended_exit_mode_source", "")).strip(),
+        "recommended_exit_mode_reason_code": str(payload.get("recommended_exit_mode_reason_code", "")).strip(),
+        "recommended_hold_bars": payload.get("recommended_hold_bars"),
+        "chosen_family": str(payload.get("chosen_family", "")).strip(),
+        "chosen_rule_id": str(payload.get("chosen_rule_id", "")).strip(),
+        "hold_family_status": str(payload.get("hold_family_status", "")).strip(),
+        "risk_family_status": str(payload.get("risk_family_status", "")).strip(),
+        "family_compare_status": str(payload.get("family_compare_status", "")).strip(),
+        "family_compare_reason_codes": [
+            str(item).strip() for item in (payload.get("family_compare_reason_codes") or []) if str(item).strip()
+        ],
+    }
 
 
 def _extract_model_exit_plan_from_fill_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
