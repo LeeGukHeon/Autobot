@@ -173,6 +173,55 @@ def test_rank_shadow_cycle_preserves_fatal_acceptance_failure_and_writes_cycle_r
     assert not governed_candidate_path.exists()
 
 
+def test_rank_shadow_cycle_handles_fatal_acceptance_with_malformed_candidate_surface(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        payload={
+            "candidate": [],
+            "steps": {
+                "exception": {"message": "boom"},
+            },
+            "reasons": ["UNHANDLED_EXCEPTION"],
+        },
+        exit_code=2,
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-AcceptanceScript",
+            str(acceptance_script),
+            "-BatchDate",
+            "2026-03-08",
+            "-SkipDailyPipeline",
+            "-SkipReportRefresh",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json").read_text(encoding="utf-8-sig"))
+    governance = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json").read_text(encoding="utf-8-sig"))
+
+    assert latest["status"] == "fatal_error"
+    assert latest["next_action"] == "use_cls_primary_lane"
+    assert governance["selected_acceptance_script"] == "v4_promotable_candidate_acceptance.ps1"
+
+
 def test_rank_shadow_cycle_accepts_comma_joined_array_args_from_installer(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

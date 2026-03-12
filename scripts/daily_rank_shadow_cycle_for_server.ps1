@@ -69,8 +69,12 @@ function Get-PropValue {
         }
         return $DefaultValue
     }
-    if ($ObjectValue.PSObject -and $ObjectValue.PSObject.Properties.Name -contains $Name) {
-        return $ObjectValue.$Name
+    try {
+        $property = $ObjectValue.PSObject.Properties[$Name]
+        if ($null -ne $property) {
+            return $property.Value
+        }
+    } catch {
     }
     return $DefaultValue
 }
@@ -187,13 +191,13 @@ function Build-RankShadowCycleReport {
         [string[]]$BlockingUnits = @(),
         [bool]$SkippedBecauseBlocked = $false
     )
-    $candidate = Get-PropValue -ObjectValue $AcceptanceReport -Name "candidate" -DefaultValue @{}
-    $config = Get-PropValue -ObjectValue $AcceptanceReport -Name "config" -DefaultValue @{}
-    $gates = Get-PropValue -ObjectValue $AcceptanceReport -Name "gates" -DefaultValue @{}
-    $backtestGate = Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{}
     $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
     $notes = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "notes" -DefaultValue @())
     $fatal = Test-AcceptanceFatalFailure -ExitCode $AcceptanceExitCode -AcceptanceReport $AcceptanceReport
+    $candidate = if ($fatal) { @{} } else { Get-PropValue -ObjectValue $AcceptanceReport -Name "candidate" -DefaultValue @{} }
+    $config = if ($fatal) { @{} } else { Get-PropValue -ObjectValue $AcceptanceReport -Name "config" -DefaultValue @{} }
+    $gates = if ($fatal) { @{} } else { Get-PropValue -ObjectValue $AcceptanceReport -Name "gates" -DefaultValue @{} }
+    $backtestGate = if ($fatal) { @{} } else { Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{} }
     $overallPass = [bool](Get-PropValue -ObjectValue $gates -Name "overall_pass" -DefaultValue $false)
     $laneShadowOnly = [bool](Get-PropValue -ObjectValue $candidate -Name "lane_shadow_only" -DefaultValue $false)
     $decisionBasis = [string](Get-PropValue -ObjectValue $backtestGate -Name "decision_basis" -DefaultValue "")
