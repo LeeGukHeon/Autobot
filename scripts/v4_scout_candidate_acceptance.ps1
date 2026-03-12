@@ -28,6 +28,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
+    -SplitPolicyHistoricalSelectorEnabled `
     -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v4_acceptance_scout" `
     -ReportPrefix "v4_candidate_acceptance_scout" `

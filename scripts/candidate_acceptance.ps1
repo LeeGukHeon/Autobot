@@ -12,6 +12,12 @@ param(
     [int]$TrainLookbackRampMinMarketsPerDate = 1,
     [string]$TrainDataQualityFloorDate = "",
     [string]$TrainStartFloorDate = "",
+    [switch]$SplitPolicyHistoricalSelectorEnabled,
+    [string]$SplitPolicyCandidateHoldoutDays = "",
+    [int]$SplitPolicyMinHistoricalAnchors = 2,
+    [int]$SplitPolicyMaxNewAnchorEvaluationsPerRun = 1,
+    [int]$SplitPolicyHistoryBoosterSweepTrials = 1,
+    [string]$SplitPolicyHistoryRunScope = "scheduled_split_policy_history",
     [string]$Tf = "5m",
     [string]$Quote = "KRW",
     [int]$TrainTopN = 50,
@@ -817,6 +823,11 @@ function Build-SplitPolicyDecisionRecord {
         artifact_path = $ArtifactPath
         candidate_run_id = $CandidateRunId
         candidate_run_dir = $CandidateRunDir
+        candidate_holdout_days = @()
+        historical_anchor_min_required = 0
+        selection_summary = @()
+        history_path = ""
+        new_evaluations = @()
     }
 }
 
@@ -831,6 +842,575 @@ function Write-SplitPolicyDecisionArtifact {
     $artifactPath = Join-Path $CandidateRunDir "split_policy_decision.json"
     Write-JsonFile -PathValue $artifactPath -Payload $SplitPolicyDecision
     return $artifactPath
+}
+
+function Resolve-SplitPolicySelectorHistoryPath {
+    param(
+        [string]$RegistryRoot,
+        [string]$ModelFamilyName,
+        [string]$TaskName
+    )
+    $taskSlug = ([string]$TaskName).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($taskSlug)) {
+        $taskSlug = "cls"
+    }
+    $taskSlug = ($taskSlug -replace '[^a-z0-9]+', '_').Trim('_')
+    if ([string]::IsNullOrWhiteSpace($taskSlug)) {
+        $taskSlug = "cls"
+    }
+    return (Join-Path (Join-Path $RegistryRoot $ModelFamilyName) ("split_policy_selector_history." + $taskSlug + ".jsonl"))
+}
+
+function Get-SplitPolicyHistoryRecordKey {
+    param(
+        [string]$TaskName,
+        [int]$HoldoutDays,
+        [string]$AnchorDate
+    )
+    return (([string]$TaskName).Trim().ToLowerInvariant() + "|" + [string]([int]$HoldoutDays) + "|" + ([string]$AnchorDate).Trim())
+}
+
+function Load-SplitPolicySelectorHistoryRecords {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
+        return @()
+    }
+    $rawLines = Get-Content -Path $PathValue -Encoding UTF8
+    $recordsByKey = @{}
+    $orderedKeys = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $rawLines) {
+        $text = [string]$line
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        try {
+            $record = $text | ConvertFrom-Json
+        } catch {
+            continue
+        }
+        $taskName = [string](Get-PropValue -ObjectValue $record -Name "task" -DefaultValue "")
+        $holdoutDays = [int](To-Int64 (Get-PropValue -ObjectValue $record -Name "holdout_days" -DefaultValue 0) 0)
+        $anchorDate = [string](Get-PropValue -ObjectValue $record -Name "anchor_date" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($taskName) -or ($holdoutDays -le 0) -or [string]::IsNullOrWhiteSpace($anchorDate)) {
+            continue
+        }
+        $key = Get-SplitPolicyHistoryRecordKey -TaskName $taskName -HoldoutDays $holdoutDays -AnchorDate $anchorDate
+        if (-not $recordsByKey.ContainsKey($key)) {
+            $orderedKeys.Add($key) | Out-Null
+        }
+        $recordsByKey[$key] = $record
+    }
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($key in $orderedKeys) {
+        $records.Add($recordsByKey[$key]) | Out-Null
+    }
+    return @($records.ToArray())
+}
+
+function Save-SplitPolicySelectorHistoryRecords {
+    param(
+        [string]$PathValue,
+        [object[]]$Records
+    )
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return ""
+    }
+    $parent = Split-Path -Parent $PathValue
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $deduped = @{}
+    foreach ($record in @($Records)) {
+        $taskName = [string](Get-PropValue -ObjectValue $record -Name "task" -DefaultValue "")
+        $holdoutDays = [int](To-Int64 (Get-PropValue -ObjectValue $record -Name "holdout_days" -DefaultValue 0) 0)
+        $anchorDate = [string](Get-PropValue -ObjectValue $record -Name "anchor_date" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($taskName) -or ($holdoutDays -le 0) -or [string]::IsNullOrWhiteSpace($anchorDate)) {
+            continue
+        }
+        $key = Get-SplitPolicyHistoryRecordKey -TaskName $taskName -HoldoutDays $holdoutDays -AnchorDate $anchorDate
+        $deduped[$key] = $record
+    }
+    $sortedRecords = @(
+        $deduped.Values |
+            Sort-Object `
+                @{ Expression = { [int](To-Int64 (Get-PropValue -ObjectValue $_ -Name "holdout_days" -DefaultValue 0) 0) } }, `
+                @{ Expression = { [string](Get-PropValue -ObjectValue $_ -Name "anchor_date" -DefaultValue "") } }
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($record in $sortedRecords) {
+        $lines.Add(($record | ConvertTo-Json -Compress -Depth 12)) | Out-Null
+    }
+    $content = if ($lines.Count -gt 0) { ($lines -join [Environment]::NewLine) + [Environment]::NewLine } else { "" }
+    Set-Content -Path $PathValue -Value $content -Encoding UTF8
+    return $PathValue
+}
+
+function Resolve-SplitPolicyCandidateHoldoutDays {
+    param(
+        [int]$RequestedBacktestLookbackDays,
+        [string]$OverrideText
+    )
+    $resolved = New-Object System.Collections.Generic.List[int]
+    $seen = @{}
+    $tokens = if ([string]::IsNullOrWhiteSpace($OverrideText)) {
+        @()
+    } else {
+        @($OverrideText -split '[,\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    }
+    if ($tokens.Count -eq 0) {
+        foreach ($value in 1..([Math]::Max([int]$RequestedBacktestLookbackDays, 1))) {
+            if (-not $seen.ContainsKey($value)) {
+                $seen[$value] = $true
+                $resolved.Add([int]$value) | Out-Null
+            }
+        }
+    } else {
+        foreach ($token in $tokens) {
+            $parsed = [int](To-Int64 ([string]$token) 0)
+            if ($parsed -le 0) {
+                continue
+            }
+            if ($seen.ContainsKey($parsed)) {
+                continue
+            }
+            $seen[$parsed] = $true
+            $resolved.Add($parsed) | Out-Null
+        }
+    }
+    return @($resolved.ToArray())
+}
+
+function Resolve-SplitPolicyHoldoutWindows {
+    param(
+        [string]$BatchDateValue,
+        [int]$HoldoutDays,
+        [string]$QualityFloorDate
+    )
+    $qualityFloorText = [string]$QualityFloorDate
+    $result = [ordered]@{
+        holdout_days = [int]$HoldoutDays
+        valid_for_strict = $false
+        reasons = @()
+        train_start = ""
+        train_end = ""
+        certification_start = ""
+        certification_end = ""
+        bootstrap_start = $qualityFloorText
+        bootstrap_end = $BatchDateValue
+    }
+    if ([string]::IsNullOrWhiteSpace($qualityFloorText)) {
+        $result.reasons = @("MISSING_TRAIN_DATA_QUALITY_FLOOR")
+        return $result
+    }
+    $batchObj = [DateTime]::ParseExact($BatchDateValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $qualityFloorObj = [DateTime]::ParseExact($qualityFloorText, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $holdoutValue = [Math]::Max([int]$HoldoutDays, 1)
+    $certificationEndObj = $batchObj
+    $certificationStartObj = $batchObj.AddDays(-1 * [Math]::Max($holdoutValue - 1, 0))
+    $trainEndObj = $batchObj.AddDays(-1 * $holdoutValue)
+    $result.certification_start = $certificationStartObj.ToString("yyyy-MM-dd")
+    $result.certification_end = $certificationEndObj.ToString("yyyy-MM-dd")
+    if ($trainEndObj -lt $qualityFloorObj) {
+        $result.reasons = @("TRAIN_WINDOW_BEFORE_QUALITY_FLOOR")
+        return $result
+    }
+    $result.train_start = $qualityFloorText
+    $result.train_end = $trainEndObj.ToString("yyyy-MM-dd")
+    $result.valid_for_strict = $true
+    return $result
+}
+
+function Remove-DirectoryIfExists {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return
+    }
+    if (Test-Path $PathValue) {
+        Remove-Item -Path $PathValue -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-SplitPolicyUtilityStatistics {
+    param(
+        [double[]]$Values,
+        [double]$ZScore = 1.96
+    )
+    $validValues = @(
+        @($Values) |
+            Where-Object { $null -ne $_ -and (-not [double]::IsNaN([double]$_)) -and (-not [double]::IsInfinity([double]$_)) }
+    )
+    $positiveInfinityCount = @($Values | Where-Object { $null -ne $_ -and [double]::IsPositiveInfinity([double]$_) }).Count
+    if (($validValues.Count -eq 0) -and ($positiveInfinityCount -gt 0)) {
+        return [ordered]@{
+            count = [int]$positiveInfinityCount
+            mean_utility = [double]::PositiveInfinity
+            standard_error = 0.0
+            lower_confidence_bound = [double]::PositiveInfinity
+            method = "lag1_hac"
+        }
+    }
+    if ($validValues.Count -eq 0) {
+        return [ordered]@{
+            count = 0
+            mean_utility = $null
+            standard_error = $null
+            lower_confidence_bound = $null
+            method = "lag1_hac"
+        }
+    }
+    $valuesArray = @($validValues | ForEach-Object { [double]$_ })
+    $n = [int]$valuesArray.Count
+    $meanValue = ($valuesArray | Measure-Object -Average).Average
+    if ($n -eq 1) {
+        return [ordered]@{
+            count = 1
+            mean_utility = [double]$meanValue
+            standard_error = 0.0
+            lower_confidence_bound = [double]$meanValue
+            method = "lag1_hac"
+        }
+    }
+    $demeaned = @()
+    foreach ($value in $valuesArray) {
+        $demeaned += ([double]$value - [double]$meanValue)
+    }
+    $gamma0 = 0.0
+    foreach ($value in $demeaned) {
+        $gamma0 += ([double]$value * [double]$value)
+    }
+    $gamma0 = $gamma0 / [double]$n
+    $gamma1 = 0.0
+    for ($index = 1; $index -lt $demeaned.Count; $index++) {
+        $gamma1 += ([double]$demeaned[$index] * [double]$demeaned[$index - 1])
+    }
+    $gamma1 = $gamma1 / [double]$n
+    $varianceOfMean = ([double]$gamma0 + [double]$gamma1) / [double]$n
+    if ($varianceOfMean -lt 0.0) {
+        $varianceOfMean = 0.0
+    }
+    $standardError = [Math]::Sqrt($varianceOfMean)
+    return [ordered]@{
+        count = [int]$n
+        mean_utility = [double]$meanValue
+        standard_error = [double]$standardError
+        lower_confidence_bound = ([double]$meanValue - ([double]$ZScore * [double]$standardError))
+        method = "lag1_hac"
+    }
+}
+
+function Invoke-SplitPolicyHistoricalAnchorEvaluation {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$RegistryRoot,
+        [string]$AnchorDate,
+        [int]$HoldoutDays,
+        [string]$QualityFloorDate
+    )
+    $windowSpec = Resolve-SplitPolicyHoldoutWindows -BatchDateValue $AnchorDate -HoldoutDays $HoldoutDays -QualityFloorDate $QualityFloorDate
+    $record = [ordered]@{
+        version = 1
+        policy = "v4_split_policy_forward_validation_lcb_v1"
+        task = $Task
+        holdout_days = [int]$HoldoutDays
+        anchor_date = $AnchorDate
+        evaluated_at = (Get-Date).ToString("o")
+        train_window = New-DateWindowRecord -Name "train" -Start ([string](Get-PropValue -ObjectValue $windowSpec -Name "train_start" -DefaultValue "")) -End ([string](Get-PropValue -ObjectValue $windowSpec -Name "train_end" -DefaultValue "")) -Source "split_policy.history_train"
+        certification_window = New-DateWindowRecord -Name "certification" -Start ([string](Get-PropValue -ObjectValue $windowSpec -Name "certification_start" -DefaultValue "")) -End ([string](Get-PropValue -ObjectValue $windowSpec -Name "certification_end" -DefaultValue "")) -Source "split_policy.history_certification"
+        status = "pending"
+        reasons = @((Get-PropValue -ObjectValue $windowSpec -Name "reasons" -DefaultValue @()))
+        utility_metric = "calmar_like"
+        utility_score = $null
+        candidate_run_id = ""
+        candidate_run_dir = ""
+        backtest_run_dir = ""
+        trainability = @{}
+    }
+    if (-not (To-Bool (Get-PropValue -ObjectValue $windowSpec -Name "valid_for_strict" -DefaultValue $false) $false)) {
+        $record.status = "INVALID_WINDOW"
+        return $record
+    }
+    $trainStartDate = [string](Get-PropValue -ObjectValue $windowSpec -Name "train_start" -DefaultValue "")
+    $trainEndDate = [string](Get-PropValue -ObjectValue $windowSpec -Name "train_end" -DefaultValue "")
+    $certificationStartDate = [string](Get-PropValue -ObjectValue $windowSpec -Name "certification_start" -DefaultValue "")
+    $certificationEndDate = [string](Get-PropValue -ObjectValue $windowSpec -Name "certification_end" -DefaultValue "")
+    $probe = Invoke-FeaturesBuildAndLoadReport -PythonPath $PythonPath -StartDate $trainStartDate -EndDate $trainEndDate
+    $record.trainability = New-TrainabilityAttemptRecord -Probe $probe -StartDate $trainStartDate -EndDate $trainEndDate
+    if (-not $probe.Usable) {
+        $record.status = "INSUFFICIENT_TRAINABLE_ROWS"
+        $record.reasons = Merge-UniqueStringArray -First @($record.reasons) -Second @("INSUFFICIENT_TRAINABLE_ROWS")
+        return $record
+    }
+    $historyRunDir = ""
+    $backtestRunDir = ""
+    try {
+        $trainArgs = @(
+            "-m", "autobot.cli",
+            "model", "train",
+            "--trainer", $Trainer,
+            "--model-family", $ModelFamily,
+            "--feature-set", $FeatureSet,
+            "--label-set", $LabelSet,
+            "--task", $Task,
+            "--run-scope", $SplitPolicyHistoryRunScope,
+            "--tf", $Tf,
+            "--quote", $Quote,
+            "--top-n", $TrainTopN,
+            "--start", $trainStartDate,
+            "--end", $trainEndDate,
+            "--booster-sweep-trials", $SplitPolicyHistoryBoosterSweepTrials,
+            "--seed", $Seed,
+            "--nthread", $NThread,
+            "--execution-acceptance-top-n", $BacktestTopN,
+            "--execution-acceptance-top-pct", $BacktestTopPct,
+            "--execution-acceptance-min-prob", $BacktestMinProb,
+            "--execution-acceptance-min-cands-per-ts", $BacktestMinCandidatesPerTs,
+            "--execution-acceptance-hold-bars", $HoldBars
+        )
+        $trainExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $trainArgs -AllowFailure
+        $historyRunDir = Resolve-RunDirFromText -TextValue ([string]$trainExec.Output)
+        $record.train_exec = [ordered]@{
+            exit_code = [int]$trainExec.ExitCode
+            command = $trainExec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$trainExec.Output))
+        }
+        if ($trainExec.ExitCode -ne 0) {
+            $record.status = "TRAIN_FAILED"
+            $record.reasons = Merge-UniqueStringArray -First @($record.reasons) -Second @("TRAIN_FAILED")
+            return $record
+        }
+        $historyRunId = if ([string]::IsNullOrWhiteSpace($historyRunDir)) { "" } else { Split-Path -Leaf $historyRunDir }
+        $record.candidate_run_id = $historyRunId
+        $record.candidate_run_dir = $historyRunDir
+        $backtest = Invoke-BacktestAndLoadSummary `
+            -PythonPath $PythonPath `
+            -Root $Root `
+            -ModelRef $historyRunId `
+            -StartDate $certificationStartDate `
+            -EndDate $certificationEndDate
+        $backtestRunDir = $backtest.RunDir
+        $summary = $backtest.Summary
+        $ordersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $summary -Name "orders_filled" -DefaultValue 0) 0)
+        $realizedPnl = To-Double (Get-PropValue -ObjectValue $summary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
+        $maxDrawdownPct = To-Double (Get-PropValue -ObjectValue $summary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
+        $utilityScore = Get-CalmarLikeScore -RealizedPnlQuote $realizedPnl -MaxDrawdownPct $maxDrawdownPct
+        $record.backtest = [ordered]@{
+            start = $certificationStartDate
+            end = $certificationEndDate
+            run_dir = $backtestRunDir
+            summary_path = $backtest.SummaryPath
+            orders_filled = $ordersFilled
+            realized_pnl_quote = [double]$realizedPnl
+            max_drawdown_pct = [double]$maxDrawdownPct
+            fill_rate = To-Double (Get-PropValue -ObjectValue $summary -Name "fill_rate" -DefaultValue -1.0) -1.0
+            slippage_bps_mean = Get-NullableDouble (Get-PropValue -ObjectValue $summary -Name "slippage_bps_mean" -DefaultValue $null)
+            utility_score = $utilityScore
+        }
+        $record.utility_score = $utilityScore
+        $record.status = "EVALUATED"
+        return $record
+    } catch {
+        $record.status = "UNHANDLED_EXCEPTION"
+        $record.reasons = Merge-UniqueStringArray -First @($record.reasons) -Second @("UNHANDLED_EXCEPTION")
+        $record.exception = [ordered]@{ message = $_.Exception.Message }
+        return $record
+    } finally {
+        Remove-DirectoryIfExists -PathValue $historyRunDir
+        Remove-DirectoryIfExists -PathValue $backtestRunDir
+    }
+}
+
+function Resolve-SplitPolicySelection {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$RegistryRoot,
+        [string]$BatchDateValue,
+        [string]$QualityFloorDate
+    )
+    $historyPath = Resolve-SplitPolicySelectorHistoryPath -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamily -TaskName $Task
+    $candidateHoldoutDays = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays $BacktestLookbackDays -OverrideText $SplitPolicyCandidateHoldoutDays)
+    $historyRecords = @(Load-SplitPolicySelectorHistoryRecords -PathValue $historyPath)
+    $newEvaluations = New-Object System.Collections.Generic.List[object]
+    $remainingEvaluationBudget = [Math]::Max([int]$SplitPolicyMaxNewAnchorEvaluationsPerRun, 0)
+
+    if ($SplitPolicyHistoricalSelectorEnabled -and ($remainingEvaluationBudget -gt 0) -and (-not [string]::IsNullOrWhiteSpace($QualityFloorDate))) {
+        $batchObj = [DateTime]::ParseExact($BatchDateValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+        $qualityFloorObj = [DateTime]::ParseExact($QualityFloorDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+        foreach ($holdoutDays in $candidateHoldoutDays) {
+            $anchorCursor = $qualityFloorObj.AddDays([double]$holdoutDays)
+            while (($anchorCursor -lt $batchObj) -and ($remainingEvaluationBudget -gt 0)) {
+                $anchorDate = $anchorCursor.ToString("yyyy-MM-dd")
+                $recordKey = Get-SplitPolicyHistoryRecordKey -TaskName $Task -HoldoutDays $holdoutDays -AnchorDate $anchorDate
+                $alreadyExists = $false
+                foreach ($existingRecord in $historyRecords) {
+                    $existingTask = [string](Get-PropValue -ObjectValue $existingRecord -Name "task" -DefaultValue "")
+                    $existingHoldoutDays = [int](To-Int64 (Get-PropValue -ObjectValue $existingRecord -Name "holdout_days" -DefaultValue 0) 0)
+                    $existingAnchorDate = [string](Get-PropValue -ObjectValue $existingRecord -Name "anchor_date" -DefaultValue "")
+                    if ($recordKey -eq (Get-SplitPolicyHistoryRecordKey -TaskName $existingTask -HoldoutDays $existingHoldoutDays -AnchorDate $existingAnchorDate)) {
+                        $alreadyExists = $true
+                        break
+                    }
+                }
+                if (-not $alreadyExists) {
+                    $newRecord = Invoke-SplitPolicyHistoricalAnchorEvaluation `
+                        -PythonPath $PythonPath `
+                        -Root $Root `
+                        -RegistryRoot $RegistryRoot `
+                        -AnchorDate $anchorDate `
+                        -HoldoutDays $holdoutDays `
+                        -QualityFloorDate $QualityFloorDate
+                    $historyRecords += $newRecord
+                    $newEvaluations.Add($newRecord) | Out-Null
+                    $remainingEvaluationBudget -= 1
+                }
+                $anchorCursor = $anchorCursor.AddDays(1)
+            }
+        }
+        if ($newEvaluations.Count -gt 0) {
+            Save-SplitPolicySelectorHistoryRecords -PathValue $historyPath -Records $historyRecords | Out-Null
+        }
+    }
+
+    $selectionSummary = New-Object System.Collections.Generic.List[object]
+    $selectedHoldout = $null
+    $selectedSummary = $null
+    $bestLcb = $null
+    $bootstrapProbe = $null
+    if ((-not [string]::IsNullOrWhiteSpace($QualityFloorDate)) -and ($BatchDateValue -ge $QualityFloorDate)) {
+        $bootstrapProbe = Invoke-FeaturesBuildAndLoadReport -PythonPath $PythonPath -StartDate $QualityFloorDate -EndDate $BatchDateValue
+    }
+    $bootstrapAttempt = if ($null -eq $bootstrapProbe) { @{} } else { New-TrainabilityAttemptRecord -Probe $bootstrapProbe -StartDate $QualityFloorDate -EndDate $BatchDateValue }
+
+    foreach ($holdoutDays in $candidateHoldoutDays) {
+        $windowSpec = Resolve-SplitPolicyHoldoutWindows -BatchDateValue $BatchDateValue -HoldoutDays $holdoutDays -QualityFloorDate $QualityFloorDate
+        $currentAttempt = $null
+        if (To-Bool (Get-PropValue -ObjectValue $windowSpec -Name "valid_for_strict" -DefaultValue $false) $false) {
+            $currentProbe = Invoke-FeaturesBuildAndLoadReport `
+                -PythonPath $PythonPath `
+                -StartDate ([string](Get-PropValue -ObjectValue $windowSpec -Name "train_start" -DefaultValue "")) `
+                -EndDate ([string](Get-PropValue -ObjectValue $windowSpec -Name "train_end" -DefaultValue ""))
+            $currentAttempt = New-TrainabilityAttemptRecord `
+                -Probe $currentProbe `
+                -StartDate ([string](Get-PropValue -ObjectValue $windowSpec -Name "train_start" -DefaultValue "")) `
+                -EndDate ([string](Get-PropValue -ObjectValue $windowSpec -Name "train_end" -DefaultValue ""))
+        } else {
+            $currentAttempt = [ordered]@{
+                start = [string](Get-PropValue -ObjectValue $windowSpec -Name "train_start" -DefaultValue "")
+                end = [string](Get-PropValue -ObjectValue $windowSpec -Name "train_end" -DefaultValue "")
+                exit_code = 2
+                report_path = ""
+                rows_final = 0
+                min_rows_for_train = 0
+                status = "INVALID_WINDOW"
+                effective_start = ""
+                effective_end = ""
+                error_message = ""
+                usable = $false
+                command = ""
+                output_preview = ""
+            }
+        }
+        $historyForHoldout = @(
+            $historyRecords |
+                Where-Object {
+                    ([string](Get-PropValue -ObjectValue $_ -Name "task" -DefaultValue "") -eq $Task) -and
+                    ([int](To-Int64 (Get-PropValue -ObjectValue $_ -Name "holdout_days" -DefaultValue 0) 0) -eq [int]$holdoutDays)
+                }
+        )
+        $evaluatedHistory = @(
+            $historyForHoldout |
+                Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "status" -DefaultValue "") -eq "EVALUATED" }
+        )
+        $utilityValues = @()
+        foreach ($historyRecord in $evaluatedHistory) {
+            $utilityValue = Get-PropValue -ObjectValue $historyRecord -Name "utility_score" -DefaultValue $null
+            if ($null -ne $utilityValue) {
+                $utilityValues += [double]$utilityValue
+            }
+        }
+        $stats = Get-SplitPolicyUtilityStatistics -Values $utilityValues
+        $admissibilityReasons = @()
+        if (-not (To-Bool (Get-PropValue -ObjectValue $windowSpec -Name "valid_for_strict" -DefaultValue $false) $false)) {
+            $admissibilityReasons += @((Get-PropValue -ObjectValue $windowSpec -Name "reasons" -DefaultValue @()))
+        }
+        if (-not (To-Bool (Get-PropValue -ObjectValue $currentAttempt -Name "usable" -DefaultValue $false) $false)) {
+            $admissibilityReasons += "CURRENT_BATCH_INSUFFICIENT_TRAINABLE_ROWS"
+        }
+        if ([int](Get-PropValue -ObjectValue $stats -Name "count" -DefaultValue 0) -lt [int]$SplitPolicyMinHistoricalAnchors) {
+            $admissibilityReasons += "HISTORICAL_ANCHOR_COUNT_LT_MIN"
+        }
+        $admissibilityReasons = Merge-UniqueStringArray -First @($admissibilityReasons) -Second @()
+        $admissible = ($admissibilityReasons.Count -eq 0)
+        $summaryItem = [ordered]@{
+            holdout_days = [int]$holdoutDays
+            admissible = [bool]$admissible
+            reasons = @($admissibilityReasons)
+            current_windows = $windowSpec
+            current_trainability = $currentAttempt
+            historical_anchor_count = [int](Get-PropValue -ObjectValue $stats -Name "count" -DefaultValue 0)
+            utility_stats = $stats
+            history_records = @($evaluatedHistory)
+        }
+        $selectionSummary.Add($summaryItem) | Out-Null
+        if ($admissible) {
+            $lcb = Get-PropValue -ObjectValue $stats -Name "lower_confidence_bound" -DefaultValue $null
+            if (($null -eq $bestLcb) -or ($lcb -gt $bestLcb)) {
+                $bestLcb = $lcb
+                $selectedHoldout = [int]$holdoutDays
+                $selectedSummary = $summaryItem
+            }
+        }
+    }
+
+    if ($null -ne $selectedSummary) {
+        return [ordered]@{
+            policy_id = "v4_split_policy_forward_validation_lcb_v1"
+            lane_mode = "promotion_strict"
+            promotion_eligible = $true
+            selected_by = "forward_validation_lcb"
+            selected_holdout_days = [int]$selectedHoldout
+            candidate_holdout_days = @($candidateHoldoutDays)
+            historical_anchor_count = [int](Get-PropValue -ObjectValue $selectedSummary -Name "historical_anchor_count" -DefaultValue 0)
+            reason_codes = @("FORWARD_VALIDATION_LCB")
+            selection_summary = @($selectionSummary.ToArray())
+            history_path = $historyPath
+            new_evaluations = @($newEvaluations.ToArray())
+            bootstrap_attempt = $bootstrapAttempt
+            selected_summary = $selectedSummary
+            current_windows = Get-PropValue -ObjectValue $selectedSummary -Name "current_windows" -DefaultValue @{}
+        }
+    }
+
+    $bootstrapReasons = @("BOOTSTRAP_ONLY_POLICY")
+    if ((Get-PropValue -ObjectValue $selectionSummary -Name "Count" -DefaultValue 0) -eq 0) {
+        $bootstrapReasons += "NO_HOLDOUT_CANDIDATES"
+    } else {
+        $bootstrapReasons += "NO_ADMISSIBLE_FORWARD_VALIDATION_HOLDOUT"
+    }
+    return [ordered]@{
+        policy_id = "v4_split_policy_forward_validation_lcb_v1"
+        lane_mode = "bootstrap_latest_inclusive"
+        promotion_eligible = $false
+        selected_by = "bootstrap_latest_inclusive_fallback"
+        selected_holdout_days = 0
+        candidate_holdout_days = @($candidateHoldoutDays)
+        historical_anchor_count = 0
+        reason_codes = @($bootstrapReasons)
+        selection_summary = @($selectionSummary.ToArray())
+        history_path = $historyPath
+        new_evaluations = @($newEvaluations.ToArray())
+        bootstrap_attempt = $bootstrapAttempt
+        selected_summary = $null
+        current_windows = [ordered]@{
+            train_start = $QualityFloorDate
+            train_end = $BatchDateValue
+            certification_start = ""
+            certification_end = ""
+            bootstrap_start = $QualityFloorDate
+            bootstrap_end = $BatchDateValue
+        }
+    }
 }
 
 function Compare-DateWindowRecords {
@@ -2350,7 +2930,7 @@ function Sync-WindowRampState {
 
 Sync-WindowRampState -WindowRampValue $windowRamp
 
-$script:splitPolicyId = "v4_split_policy_bootstrap_transition_v1"
+$script:splitPolicyId = "v4_split_policy_forward_validation_lcb_v1"
 $script:splitPolicyLaneMode = "promotion_strict"
 $script:splitPolicyPromotionEligible = $true
 $script:splitPolicySelectedBy = "strict_trainability"
@@ -2358,6 +2938,11 @@ $script:splitPolicySelectedHoldoutDays = [int]$BacktestLookbackDays
 $script:splitPolicyReasonCodes = @()
 $script:splitPolicyStrictTrainability = @{}
 $script:splitPolicyBootstrapTrainability = @{}
+$script:splitPolicyCandidateHoldoutDays = @()
+$script:splitPolicyHistoricalAnchorCount = 0
+$script:splitPolicySelectionSummary = @()
+$script:splitPolicyHistoryPath = ""
+$script:splitPolicyNewEvaluations = @()
 $script:splitPolicyArtifactPath = ""
 $script:bootstrapWindowStart = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_data_quality_floor_date" -DefaultValue "")
 $script:bootstrapWindowEnd = $effectiveBatchDate
@@ -2384,6 +2969,12 @@ function Sync-SplitPolicyState {
         -ArtifactPath $script:splitPolicyArtifactPath `
         -CandidateRunId ([string](Get-PropValue -ObjectValue $report.candidate -Name "run_id" -DefaultValue "")) `
         -CandidateRunDir ([string](Get-PropValue -ObjectValue $report.candidate -Name "run_dir" -DefaultValue ""))
+    $report.split_policy.candidate_holdout_days = @($script:splitPolicyCandidateHoldoutDays)
+    $report.split_policy.historical_anchor_min_required = [int]$SplitPolicyMinHistoricalAnchors
+    $report.split_policy.historical_anchor_count = [int]$script:splitPolicyHistoricalAnchorCount
+    $report.split_policy.selection_summary = @($script:splitPolicySelectionSummary)
+    $report.split_policy.history_path = $script:splitPolicyHistoryPath
+    $report.split_policy.new_evaluations = @($script:splitPolicyNewEvaluations)
 }
 
 Sync-SplitPolicyState
@@ -2682,37 +3273,160 @@ try {
         $report.steps.daily_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     }
 
-    if (
-        (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "enabled" -DefaultValue $false) $false) `
-        -and (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "micro_coverage_present" -DefaultValue $false) $false) `
-        -and (-not (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "comparable_window_available" -DefaultValue $false) $false))
-    ) {
-        $windowRampReason = [string](Get-PropValue -ObjectValue $windowRamp -Name "reason" -DefaultValue "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY")
-        if ([string]::IsNullOrWhiteSpace($windowRampReason)) {
-            $windowRampReason = "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"
-        }
-        $report.reasons = @($windowRampReason)
-        $report.gates.overall_pass = $false
-        $report.steps.features_build = [ordered]@{
-            attempted = $false
-            reason = $windowRampReason
-        }
-        $report.steps.train = [ordered]@{
-            attempted = $false
-            reason = $windowRampReason
-            start = $trainStartDate
-            end = $trainEndDate
-        }
-        $paths = Save-Report
-        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
-        exit 2
-    }
-
-    if (-not $SkipDailyPipeline) {
-        $trainabilityResolution = Resolve-TrainWindowByTrainableRows `
+    if ($SplitPolicyHistoricalSelectorEnabled -and (-not $SkipDailyPipeline)) {
+        $splitPolicyResolution = Resolve-SplitPolicySelection `
             -PythonPath $resolvedPythonExe `
-            -InitialTrainStartDate $trainStartDate `
-            -TrainEndDate $trainEndDate
+            -Root $resolvedProjectRoot `
+            -RegistryRoot $resolvedRegistryRoot `
+            -BatchDateValue $effectiveBatchDate `
+            -QualityFloorDate $script:bootstrapWindowStart
+        $script:splitPolicyId = [string](Get-PropValue -ObjectValue $splitPolicyResolution -Name "policy_id" -DefaultValue $script:splitPolicyId)
+        $script:splitPolicyLaneMode = [string](Get-PropValue -ObjectValue $splitPolicyResolution -Name "lane_mode" -DefaultValue "bootstrap_latest_inclusive")
+        $script:splitPolicyPromotionEligible = [bool](Get-PropValue -ObjectValue $splitPolicyResolution -Name "promotion_eligible" -DefaultValue $false)
+        $script:splitPolicySelectedBy = [string](Get-PropValue -ObjectValue $splitPolicyResolution -Name "selected_by" -DefaultValue "")
+        $script:splitPolicySelectedHoldoutDays = [int](To-Int64 (Get-PropValue -ObjectValue $splitPolicyResolution -Name "selected_holdout_days" -DefaultValue 0) 0)
+        $script:splitPolicyReasonCodes = @((Get-PropValue -ObjectValue $splitPolicyResolution -Name "reason_codes" -DefaultValue @()))
+        $script:splitPolicyCandidateHoldoutDays = @((Get-PropValue -ObjectValue $splitPolicyResolution -Name "candidate_holdout_days" -DefaultValue @()))
+        $script:splitPolicyHistoricalAnchorCount = [int](To-Int64 (Get-PropValue -ObjectValue $splitPolicyResolution -Name "historical_anchor_count" -DefaultValue 0) 0)
+        $script:splitPolicySelectionSummary = @((Get-PropValue -ObjectValue $splitPolicyResolution -Name "selection_summary" -DefaultValue @()))
+        $script:splitPolicyHistoryPath = [string](Get-PropValue -ObjectValue $splitPolicyResolution -Name "history_path" -DefaultValue "")
+        $script:splitPolicyNewEvaluations = @((Get-PropValue -ObjectValue $splitPolicyResolution -Name "new_evaluations" -DefaultValue @()))
+        $script:splitPolicyBootstrapTrainability = Get-PropValue -ObjectValue $splitPolicyResolution -Name "bootstrap_attempt" -DefaultValue @{}
+        $report.steps.split_policy_selector = [ordered]@{
+            attempted = $true
+            policy_id = $script:splitPolicyId
+            lane_mode = $script:splitPolicyLaneMode
+            promotion_eligible = $script:splitPolicyPromotionEligible
+            selected_by = $script:splitPolicySelectedBy
+            selected_holdout_days = $script:splitPolicySelectedHoldoutDays
+            candidate_holdout_days = @($script:splitPolicyCandidateHoldoutDays)
+            historical_anchor_count = $script:splitPolicyHistoricalAnchorCount
+            history_path = $script:splitPolicyHistoryPath
+            new_evaluation_count = @($script:splitPolicyNewEvaluations).Count
+            reason_codes = @($script:splitPolicyReasonCodes)
+            selection_summary = @($script:splitPolicySelectionSummary)
+        }
+        if ($script:splitPolicyLaneMode -eq "promotion_strict") {
+            $selectedSummary = Get-PropValue -ObjectValue $splitPolicyResolution -Name "selected_summary" -DefaultValue @{}
+            $selectedWindows = Get-PropValue -ObjectValue $splitPolicyResolution -Name "current_windows" -DefaultValue @{}
+            $selectedAttempt = Get-PropValue -ObjectValue $selectedSummary -Name "current_trainability" -DefaultValue @{}
+            $script:splitPolicyStrictTrainability = $selectedSummary
+            $script:certificationStartDate = [string](Get-PropValue -ObjectValue $selectedWindows -Name "certification_start" -DefaultValue $certificationStartDate)
+            $script:trainStartDate = [string](Get-PropValue -ObjectValue $selectedWindows -Name "train_start" -DefaultValue $trainStartDate)
+            $script:trainEndDate = [string](Get-PropValue -ObjectValue $selectedWindows -Name "train_end" -DefaultValue $trainEndDate)
+            $certificationStartDate = $script:certificationStartDate
+            $trainStartDate = $script:trainStartDate
+            $trainEndDate = $script:trainEndDate
+            $report.steps.features_build = [ordered]@{
+                attempted = $true
+                feature_set = $FeatureSet
+                label_set = $LabelSet
+                start = $trainStartDate
+                end = $trainEndDate
+                resolution_status = "PASS"
+                selected_holdout_days = $script:splitPolicySelectedHoldoutDays
+                selection_method = "forward_validation_lcb"
+                current_trainability = $selectedAttempt
+            }
+            $report.steps.features_build.exit_code = [int](Get-PropValue -ObjectValue $selectedAttempt -Name "exit_code" -DefaultValue 0)
+            $report.steps.features_build.command = [string](Get-PropValue -ObjectValue $selectedAttempt -Name "command" -DefaultValue "")
+            $report.steps.features_build.output_preview = [string](Get-PropValue -ObjectValue $selectedAttempt -Name "output_preview" -DefaultValue "")
+            $report.steps.features_build.report_path = [string](Get-PropValue -ObjectValue $selectedAttempt -Name "report_path" -DefaultValue "")
+            $report.steps.features_build.rows_final = [int](Get-PropValue -ObjectValue $selectedAttempt -Name "rows_final" -DefaultValue 0)
+            $report.steps.features_build.min_rows_for_train = [int](Get-PropValue -ObjectValue $selectedAttempt -Name "min_rows_for_train" -DefaultValue 0)
+            $report.steps.features_build.effective_start = [string](Get-PropValue -ObjectValue $selectedAttempt -Name "effective_start" -DefaultValue "")
+            $report.steps.features_build.effective_end = [string](Get-PropValue -ObjectValue $selectedAttempt -Name "effective_end" -DefaultValue "")
+            $report.windows_by_step.train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
+            $report.windows_by_step.research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "train_command_window" }
+            $report.windows_by_step.certification = [ordered]@{ start = $certificationStartDate; end = $effectiveBatchDate }
+            $report.windows_by_step.backtest = [ordered]@{ start = $certificationStartDate; end = $effectiveBatchDate; alias_of = "certification" }
+            Sync-SplitPolicyState
+        } else {
+            $bootstrapAttempt = Get-PropValue -ObjectValue $splitPolicyResolution -Name "bootstrap_attempt" -DefaultValue @{}
+            if (-not (To-Bool (Get-PropValue -ObjectValue $bootstrapAttempt -Name "usable" -DefaultValue $false) $false)) {
+                $report.steps.features_build = [ordered]@{
+                    attempted = $true
+                    feature_set = $FeatureSet
+                    label_set = $LabelSet
+                    start = $script:bootstrapWindowStart
+                    end = $script:bootstrapWindowEnd
+                    resolution_status = "INSUFFICIENT_TRAINABLE_ROWS"
+                    bootstrap_attempt = $bootstrapAttempt
+                }
+                $report.steps.train = [ordered]@{
+                    attempted = $false
+                    reason = "INSUFFICIENT_TRAINABLE_V4_ROWS"
+                    start = $script:bootstrapWindowStart
+                    end = $script:bootstrapWindowEnd
+                }
+                Sync-SplitPolicyState
+                $report.reasons = @("INSUFFICIENT_TRAINABLE_V4_ROWS")
+                $report.gates.overall_pass = $false
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
+            $trainStartDate = $script:bootstrapWindowStart
+            $trainEndDate = $script:bootstrapWindowEnd
+            $certificationStartDate = ""
+            $report.steps.features_build = [ordered]@{
+                attempted = $true
+                feature_set = $FeatureSet
+                label_set = $LabelSet
+                start = $trainStartDate
+                end = $trainEndDate
+                resolution_status = "BOOTSTRAP_ONLY_POLICY"
+                selected_holdout_days = 0
+                selection_method = [string](Get-PropValue -ObjectValue $splitPolicyResolution -Name "selected_by" -DefaultValue "")
+                bootstrap_attempt = $bootstrapAttempt
+            }
+            $report.steps.features_build.exit_code = [int](Get-PropValue -ObjectValue $bootstrapAttempt -Name "exit_code" -DefaultValue 0)
+            $report.steps.features_build.command = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "command" -DefaultValue "")
+            $report.steps.features_build.output_preview = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "output_preview" -DefaultValue "")
+            $report.steps.features_build.report_path = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "report_path" -DefaultValue "")
+            $report.steps.features_build.rows_final = [int](Get-PropValue -ObjectValue $bootstrapAttempt -Name "rows_final" -DefaultValue 0)
+            $report.steps.features_build.min_rows_for_train = [int](Get-PropValue -ObjectValue $bootstrapAttempt -Name "min_rows_for_train" -DefaultValue 0)
+            $report.steps.features_build.effective_start = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "effective_start" -DefaultValue "")
+            $report.steps.features_build.effective_end = [string](Get-PropValue -ObjectValue $bootstrapAttempt -Name "effective_end" -DefaultValue "")
+            $report.windows_by_step.train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
+            $report.windows_by_step.research = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "bootstrap_latest_inclusive_fallback" }
+            $report.windows_by_step.bootstrap = [ordered]@{ start = $trainStartDate; end = $trainEndDate; source = "bootstrap_latest_inclusive_fallback" }
+            $report.windows_by_step.certification = [ordered]@{ start = ""; end = ""; source = "not_applicable_bootstrap_lane" }
+            $report.windows_by_step.backtest = [ordered]@{ start = ""; end = ""; alias_of = "certification" }
+            Sync-SplitPolicyState
+        }
+    } else {
+        if (
+            (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "enabled" -DefaultValue $false) $false) `
+            -and (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "micro_coverage_present" -DefaultValue $false) $false) `
+            -and (-not (To-Bool (Get-PropValue -ObjectValue $windowRamp -Name "comparable_window_available" -DefaultValue $false) $false))
+        ) {
+            $windowRampReason = [string](Get-PropValue -ObjectValue $windowRamp -Name "reason" -DefaultValue "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY")
+            if ([string]::IsNullOrWhiteSpace($windowRampReason)) {
+                $windowRampReason = "INSUFFICIENT_CONTIGUOUS_MICRO_HISTORY"
+            }
+            $report.reasons = @($windowRampReason)
+            $report.gates.overall_pass = $false
+            $report.steps.features_build = [ordered]@{
+                attempted = $false
+                reason = $windowRampReason
+            }
+            $report.steps.train = [ordered]@{
+                attempted = $false
+                reason = $windowRampReason
+                start = $trainStartDate
+                end = $trainEndDate
+            }
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+
+        if (-not $SkipDailyPipeline) {
+            $trainabilityResolution = Resolve-TrainWindowByTrainableRows `
+                -PythonPath $resolvedPythonExe `
+                -InitialTrainStartDate $trainStartDate `
+                -TrainEndDate $trainEndDate
         $script:splitPolicyStrictTrainability = [ordered]@{
             status = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "status" -DefaultValue "")
             selected_start = [string](Get-PropValue -ObjectValue $trainabilityResolution -Name "selected_start" -DefaultValue "")
@@ -2821,8 +3535,9 @@ try {
                 exit 2
             }
         }
-    } else {
-        $report.steps.features_build = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+        } else {
+            $report.steps.features_build = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+        }
     }
 
     $trainArgs = @(
