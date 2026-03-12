@@ -66,6 +66,7 @@ It should not be used for:
 9. `T21.9` Shared OOS Selection Calibration v1
 10. `T21.10` Learned Exit-Mode Selection v1
 11. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
+12. `T21.19` V4 Direct Conditional Tail-Risk And Continuous Action Value v1
 
 ## 2026-03-11 Global Audit Update
 
@@ -135,6 +136,7 @@ These tickets are the required follow-on family before changing core promotion b
 6. `T21.16` V4 Comparable Panel And Multiple-Testing Hardening v1
 7. `T21.17` V4 Ranker Shadow Lane And Lane Governance v1
 8. `T21.18` V4 Trade-Level Conviction And Tail-Risk Action Policy v1
+9. `T21.19` V4 Direct Conditional Tail-Risk And Continuous Action Value v1
 
 ### Implementation Rule
 - `T21.11` must land first and write an auditable decision-surface artifact for every `v4` run.
@@ -240,6 +242,15 @@ These tickets are the required follow-on family before changing core promotion b
     - risk-adjusted notional multiplier
   - `model_alpha_v1` now consumes that artifact at entry time and writes a per-trade `model_exit_plan`
   - backtest/paper/live strategy bookkeeping now uses the stored entry plan rather than re-reading one global exit configuration
+- `T21.19` slice 1 / 2 landed locally:
+  - `trade_action` now carries a compact contextual conditional-action model fitted on OOS replay rows
+  - runtime conditional state now uses multi-feature downside inputs:
+    - calibrated selection score
+    - `rv_12`
+    - `rv_36`
+    - `atr_pct_14`
+  - runtime action choice now uses continuous predicted action value rather than raw risk bins
+  - `bin` tables remain as diagnostic / audit summaries rather than the primary runtime selector
 
 ## Intended Outcome
 If the `T21` family is completed without violating `T20`, the project should move from:
