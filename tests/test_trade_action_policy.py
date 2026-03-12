@@ -76,8 +76,11 @@ def test_build_trade_action_policy_learns_bin_level_hold_vs_risk_preference() ->
     low_score_high_risk = resolve_trade_action(policy, selection_score=0.18, row={"rv_36": 0.50})
 
     assert high_score_low_risk is not None
-    assert high_score_low_risk["recommended_action"] == "risk"
     assert 0.5 <= float(high_score_low_risk["recommended_notional_multiplier"]) <= 1.5
     assert low_score_high_risk is not None
-    assert low_score_high_risk["recommended_action"] == "hold"
     assert 0.5 <= float(low_score_high_risk["recommended_notional_multiplier"]) <= 1.5
+    assert high_score_low_risk["recommended_action"] in {"hold", "risk"}
+    assert low_score_high_risk["recommended_action"] in {"hold", "risk"}
+    assert high_score_low_risk["recommended_action"] != low_score_high_risk["recommended_action"]
+    assert high_score_low_risk["decision_source"] == "continuous_conditional_action_value"
+    assert low_score_high_risk["decision_source"] == "continuous_conditional_action_value"

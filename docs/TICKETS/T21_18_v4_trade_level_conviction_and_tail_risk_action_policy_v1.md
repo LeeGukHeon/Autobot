@@ -140,3 +140,23 @@
   - raw volatility proxy
   to:
   - learned conditional downside state from OOS replay evidence
+
+## 2026-03-12 Continuous Action-Value Update
+- The next refinement removed bin winner selection from the runtime decision path.
+- Runtime action choice now uses:
+  - direct conditional action-value estimation
+  - direct conditional downside-tail proxies
+- The compact contextual model now predicts, per action:
+  - expected return
+  - expected downside LPM
+  - expected ES proxy
+  - expected CTM proxy
+  - expected downside-aware objective
+- Runtime now chooses `hold` vs `risk` by:
+  - continuous `argmax` on predicted action value
+  - with ES-aware tie-break preserved through the objective contract
+- Bins remain in the artifact only for:
+  - diagnostics
+  - auditability
+  - stability monitoring
+  and are no longer the primary runtime action selector.

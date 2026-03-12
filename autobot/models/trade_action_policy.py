@@ -228,6 +228,22 @@ def _build_conditional_action_model(
         "risk_return": np.asarray([float(item["risk_return"]) for item in trade_rows], dtype=np.float64),
         "hold_objective": np.asarray([float(item["hold_objective_score"]) for item in trade_rows], dtype=np.float64),
         "risk_objective": np.asarray([float(item["risk_objective_score"]) for item in trade_rows], dtype=np.float64),
+        "hold_es_proxy": np.asarray(
+            [max(-float(item["hold_return"]), 0.0) for item in trade_rows],
+            dtype=np.float64,
+        ),
+        "risk_es_proxy": np.asarray(
+            [max(-float(item["risk_return"]), 0.0) for item in trade_rows],
+            dtype=np.float64,
+        ),
+        "hold_ctm2_proxy": np.asarray(
+            [max(-float(item["hold_return"]), 0.0) ** 2 for item in trade_rows],
+            dtype=np.float64,
+        ),
+        "risk_ctm2_proxy": np.asarray(
+            [max(-float(item["risk_return"]), 0.0) ** 2 for item in trade_rows],
+            dtype=np.float64,
+        ),
         "hold_log_lpm": np.asarray(
             [math.log1p(max(float(item["hold_downside_lpm"]), 0.0)) for item in trade_rows],
             dtype=np.float64,
@@ -315,24 +331,43 @@ def _predict_contextual_action_metrics(
     risk_return = _predict_linear_model(dict(targets.get("risk_return") or {}), vector=vector)
     hold_objective = _predict_linear_model(dict(targets.get("hold_objective") or {}), vector=vector)
     risk_objective = _predict_linear_model(dict(targets.get("risk_objective") or {}), vector=vector)
+    hold_es_proxy = _predict_linear_model(dict(targets.get("hold_es_proxy") or {}), vector=vector)
+    risk_es_proxy = _predict_linear_model(dict(targets.get("risk_es_proxy") or {}), vector=vector)
+    hold_ctm2_proxy = _predict_linear_model(dict(targets.get("hold_ctm2_proxy") or {}), vector=vector)
+    risk_ctm2_proxy = _predict_linear_model(dict(targets.get("risk_ctm2_proxy") or {}), vector=vector)
     hold_log_lpm = _predict_linear_model(dict(targets.get("hold_log_lpm") or {}), vector=vector)
     risk_log_lpm = _predict_linear_model(dict(targets.get("risk_log_lpm") or {}), vector=vector)
-    values = (hold_return, risk_return, hold_objective, risk_objective, hold_log_lpm, risk_log_lpm)
+    values = (
+        hold_return,
+        risk_return,
+        hold_objective,
+        risk_objective,
+        hold_es_proxy,
+        risk_es_proxy,
+        hold_ctm2_proxy,
+        risk_ctm2_proxy,
+        hold_log_lpm,
+        risk_log_lpm,
+    )
     if any(value is None or not math.isfinite(float(value)) for value in values):
         return None
+    hold_es = max(float(hold_es_proxy), 0.0)
+    risk_es = max(float(risk_es_proxy), 0.0)
+    hold_ctm2 = max(float(hold_ctm2_proxy), 0.0)
+    risk_ctm2 = max(float(risk_ctm2_proxy), 0.0)
     hold_mean_lpm = max(math.expm1(float(hold_log_lpm)), 0.0)
     risk_mean_lpm = max(math.expm1(float(risk_log_lpm)), 0.0)
     hold_mean_dev = hold_mean_lpm ** (1.0 / float(max(int(lpm_order), 1))) if hold_mean_lpm > 0.0 else 0.0
     risk_mean_dev = risk_mean_lpm ** (1.0 / float(max(int(lpm_order), 1))) if risk_mean_lpm > 0.0 else 0.0
-    action = _select_recommended_action(
-        hold_mean_return=float(hold_return),
-        risk_mean_return=float(risk_return),
-        hold_mean_lpm=float(hold_mean_lpm),
-        risk_mean_lpm=float(risk_mean_lpm),
-        hold_mean_objective=float(hold_objective),
-        risk_mean_objective=float(risk_objective),
+    action = _select_continuous_action_value(
+        hold_action_value=float(hold_objective),
+        risk_action_value=float(risk_objective),
+        hold_expected_return=float(hold_return),
+        risk_expected_return=float(risk_return),
+        hold_expected_es=float(hold_es),
+        risk_expected_es=float(risk_es),
     )
-    risk_state_value = float(risk_mean_dev if action == "risk" else hold_mean_dev)
+    risk_state_value = float(risk_es if action == "risk" else hold_es)
     return {
         "hold_mean_return": float(hold_return),
         "risk_mean_return": float(risk_return),
@@ -342,10 +377,37 @@ def _predict_contextual_action_metrics(
         "risk_mean_downside_deviation": float(risk_mean_dev),
         "hold_mean_objective": float(hold_objective),
         "risk_mean_objective": float(risk_objective),
+        "hold_expected_es": float(hold_es),
+        "risk_expected_es": float(risk_es),
+        "hold_expected_ctm2": float(hold_ctm2),
+        "risk_expected_ctm2": float(risk_ctm2),
         "recommended_action": action,
         "risk_state_value": max(float(risk_state_value), float(numerical_floor)),
         "sample_count": int(model_payload.get("rows_total", 0) or 0),
     }
+
+
+def _select_continuous_action_value(
+    *,
+    hold_action_value: float,
+    risk_action_value: float,
+    hold_expected_return: float,
+    risk_expected_return: float,
+    hold_expected_es: float,
+    risk_expected_es: float,
+) -> str:
+    if risk_action_value > hold_action_value:
+        return "risk"
+    if hold_action_value > risk_action_value:
+        return "hold"
+    return _select_recommended_action(
+        hold_mean_return=float(hold_expected_return),
+        risk_mean_return=float(risk_expected_return),
+        hold_mean_lpm=float(hold_expected_es),
+        risk_mean_lpm=float(risk_expected_es),
+        hold_mean_objective=float(hold_action_value),
+        risk_mean_objective=float(risk_action_value),
+    )
 
 
 def _build_runtime_state_vector(
@@ -412,14 +474,7 @@ def resolve_trade_action(
             numerical_floor=1e-6,
         )
         if predicted is not None:
-            predicted_action = _select_recommended_action(
-                hold_mean_return=float(predicted["hold_mean_return"]),
-                risk_mean_return=float(predicted["risk_mean_return"]),
-                hold_mean_lpm=float(predicted["hold_mean_lpm"]),
-                risk_mean_lpm=float(predicted["risk_mean_lpm"]),
-                hold_mean_objective=float(predicted["hold_mean_objective"]),
-                risk_mean_objective=float(predicted["risk_mean_objective"]),
-            )
+            predicted_action = str(predicted.get("recommended_action") or "").strip().lower()
             edge_bin = int(_resolve_bin_index(float(selection_score), [float(v) for v in (normalized.get("edge_bounds") or [])]))
             risk_bin = int(
                 _resolve_bin_index(
@@ -427,40 +482,21 @@ def resolve_trade_action(
                     [float(v) for v in (normalized.get("risk_bounds") or [])],
                 )
             )
-            matched_row = next(
-                (
-                    dict(item)
-                    for item in (normalized.get("by_bin") or [])
-                    if int(item.get("edge_bin", -1)) == edge_bin
-                    and int(item.get("risk_bin", -1)) == risk_bin
-                    and bool(item.get("comparable", False))
-                ),
-                None,
-            )
-            action = str((matched_row or {}).get("recommended_action") or predicted_action).strip().lower()
+            action = predicted_action if predicted_action in {"hold", "risk"} else "hold"
             template = (
                 dict(normalized.get("risk_policy_template") or {})
                 if action == "risk"
                 else dict(normalized.get("hold_policy_template") or {})
             )
-            expected_edge = float(
-                (matched_row or {}).get(
-                    "expected_edge",
-                    predicted["risk_mean_return"] if action == "risk" else predicted["hold_mean_return"],
-                )
-            )
+            expected_edge = float(predicted["risk_mean_return"] if action == "risk" else predicted["hold_mean_return"])
             expected_downside_deviation = float(
-                (matched_row or {}).get(
-                    "expected_downside_deviation",
-                    predicted["risk_mean_downside_deviation"] if action == "risk" else predicted["hold_mean_downside_deviation"],
-                )
+                predicted["risk_mean_downside_deviation"] if action == "risk" else predicted["hold_mean_downside_deviation"]
             )
             expected_objective_score = float(
-                (matched_row or {}).get(
-                    "expected_objective_score",
-                    predicted["risk_mean_objective"] if action == "risk" else predicted["hold_mean_objective"],
-                )
+                predicted["risk_mean_objective"] if action == "risk" else predicted["hold_mean_objective"]
             )
+            expected_es = float(predicted["risk_expected_es"] if action == "risk" else predicted["hold_expected_es"])
+            expected_ctm2 = float(predicted["risk_expected_ctm2"] if action == "risk" else predicted["hold_expected_ctm2"])
             continuous_score = expected_edge / max(expected_downside_deviation, 1e-6) if expected_edge > 0.0 else 0.0
             raw_risk_feature_value = _resolve_row_risk_feature_value(
                 row=row,
@@ -469,20 +505,17 @@ def resolve_trade_action(
             return {
                 "policy": TRADE_ACTION_POLICY_ID,
                 "recommended_action": action,
-                "recommended_notional_multiplier": float(
-                    (matched_row or {}).get(
-                        "recommended_notional_multiplier",
-                        _resolve_continuous_notional_multiplier(
-                            policy=normalized,
-                            score=float(continuous_score),
-                            numerical_floor=1e-6,
-                        ),
-                    )
+                "recommended_notional_multiplier": _resolve_continuous_notional_multiplier(
+                    policy=normalized,
+                    score=float(continuous_score),
+                    numerical_floor=1e-6,
                 ),
                 "expected_edge": expected_edge,
                 "expected_downside_deviation": expected_downside_deviation,
                 "expected_objective_score": expected_objective_score,
-                "sample_count": int((matched_row or {}).get("sample_count", predicted.get("sample_count", 0)) or 0),
+                "expected_es": expected_es,
+                "expected_ctm2": expected_ctm2,
+                "sample_count": int(predicted.get("sample_count", 0) or 0),
                 "edge_bin": edge_bin,
                 "risk_bin": risk_bin,
                 "risk_feature_name": str(normalized.get("risk_feature_name", "")).strip(),
@@ -492,7 +525,18 @@ def resolve_trade_action(
                     else float(predicted["risk_state_value"])
                 ),
                 "risk_state_source": CONDITIONAL_ACTION_MODEL_ID,
+                "decision_source": "continuous_conditional_action_value",
                 "exit_policy_template": template,
+                "diagnostics": {
+                    "hold_mean_return": float(predicted["hold_mean_return"]),
+                    "risk_mean_return": float(predicted["risk_mean_return"]),
+                    "hold_mean_objective": float(predicted["hold_mean_objective"]),
+                    "risk_mean_objective": float(predicted["risk_mean_objective"]),
+                    "hold_expected_es": float(predicted["hold_expected_es"]),
+                    "risk_expected_es": float(predicted["risk_expected_es"]),
+                    "hold_expected_ctm2": float(predicted["hold_expected_ctm2"]),
+                    "risk_expected_ctm2": float(predicted["risk_expected_ctm2"]),
+                },
             }
     risk_feature_name = str(normalized.get("risk_feature_name", "")).strip()
     if not risk_feature_name:
