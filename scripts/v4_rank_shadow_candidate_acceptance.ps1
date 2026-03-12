@@ -29,7 +29,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PaperMinPolicyEvents 0 `
     -SkipPromote `
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
-    -SplitPolicyHistoricalSelectorEnabled `
+    -SplitPolicyHistoricalSelectorEnabled:$true `
     -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v4_acceptance_rank_shadow" `
     -ReportPrefix "v4_candidate_acceptance_rank_shadow" `
