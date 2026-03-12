@@ -411,6 +411,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
                 else float(base_notional_multiplier)
             )
+            if (
+                isinstance(trade_action_decision, dict)
+                and "recommended_notional_multiplier" in trade_action_decision
+                and float(notional_multiplier) <= 0.0
+            ):
+                _inc_reason(skipped_reasons, "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE")
+                continue
             intents.append(
                 StrategyOrderIntent(
                     market=market,

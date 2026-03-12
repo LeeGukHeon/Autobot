@@ -263,6 +263,7 @@ These tickets are the required follow-on family before changing core promotion b
   - latest trade-action artifacts no longer fall back from conditional action value to diagnostic bins
   - latest runtime decisions no longer mean-impute missing tail-state features
   - missing conditional support now stays explicit as insufficient-evidence behavior
+  - trade-action sizing no longer uses policy-layer min/max clamps; exchange/account admissibility remains execution-layer only
 - `T21.19` slice 5 landed locally:
   - live trade journal summaries now preserve per-trade `ES / CTM / action-value / decision-source`
   - dashboard runtime, intent, and trade views now surface the same trade-action tail-risk contract

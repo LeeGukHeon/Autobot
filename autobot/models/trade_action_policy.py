@@ -1152,8 +1152,6 @@ def _build_notional_multiplier_model(
     size_multiplier_max: float,
     numerical_floor: float,
 ) -> dict[str, Any]:
-    min_multiplier = max(float(size_multiplier_min), 0.0)
-    max_multiplier = max(float(size_multiplier_max), min_multiplier)
     scores: list[float] = []
     for index in comparable_indices:
         row = by_bin[index]
@@ -1164,21 +1162,25 @@ def _build_notional_multiplier_model(
     if not positive_scores:
         return {
             "status": "degraded",
-            "method": "empirical_es_score_anchor_v1",
-            "size_multiplier_min": float(min_multiplier),
-            "size_multiplier_max": float(max_multiplier),
+            "method": "empirical_es_score_ratio_unclipped_v2",
             "score_anchor": 1.0,
             "comparable_score_count": int(len(scores)),
+            "deprecated_requested_size_multiplier_min": float(max(float(size_multiplier_min), 0.0)),
+            "deprecated_requested_size_multiplier_max": float(
+                max(float(size_multiplier_max), max(float(size_multiplier_min), 0.0))
+            ),
         }
     anchor = float(np.median(np.asarray(positive_scores, dtype=np.float64)))
     return {
         "status": "ready",
-        "method": "empirical_es_score_anchor_v1",
-        "size_multiplier_min": float(min_multiplier),
-        "size_multiplier_max": float(max_multiplier),
+        "method": "empirical_es_score_ratio_unclipped_v2",
         "score_anchor": max(float(anchor), float(numerical_floor)),
         "score_upper": float(np.quantile(np.asarray(positive_scores, dtype=np.float64), 0.90)),
         "comparable_score_count": int(len(scores)),
+        "deprecated_requested_size_multiplier_min": float(max(float(size_multiplier_min), 0.0)),
+        "deprecated_requested_size_multiplier_max": float(
+            max(float(size_multiplier_max), max(float(size_multiplier_min), 0.0))
+        ),
     }
 
 
@@ -1195,13 +1197,9 @@ def _resolve_continuous_notional_multiplier(
 
 
 def _resolve_notional_multiplier_from_model(*, model: dict[str, Any], score: float) -> float:
-    min_multiplier = max(float(model.get("size_multiplier_min", 1.0) or 1.0), 0.0)
-    max_multiplier = max(float(model.get("size_multiplier_max", 1.0) or 1.0), min_multiplier)
     anchor = max(float(model.get("score_anchor", 1.0) or 1.0), 1e-6)
     raw_multiplier = max(float(score), 0.0) / anchor
-    if raw_multiplier <= 0.0:
-        return float(min_multiplier)
-    return float(min(max(raw_multiplier, min_multiplier), max_multiplier))
+    return float(max(raw_multiplier, 0.0))
 
 
 def _quantile_bounds(values: np.ndarray, *, bin_count: int) -> list[float]:

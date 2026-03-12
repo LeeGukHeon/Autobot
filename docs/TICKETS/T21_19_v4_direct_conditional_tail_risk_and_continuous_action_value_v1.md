@@ -102,9 +102,9 @@
   - expected edge
   - conditional downside or ES estimate
 - this remains compact:
-  - keep one scalar `recommended_notional_multiplier`
-  - derive it from continuous risk-adjusted score
-  - do not keep a giant policy surface artifact
+  - keep one compact continuous sizing output
+  - do not reintroduce heuristic internal min/max clamps in the policy layer
+  - exchange admissibility and account constraints stay in the execution layer
 
 ### 5. Runtime Contract
 - `runtime_recommendations.json.trade_action` must expose:
@@ -166,6 +166,7 @@
   - partially hardened locally:
     - latest artifacts no longer fall back from conditional action value to diagnostic bins
     - missing runtime state now emits explicit insufficient-evidence behavior instead of mean-imputed state
+    - trade-action sizing no longer re-clamps with policy-level min/max envelopes
 
 ### Slice 5. Live / Dashboard Observability
 - show, per trade:
