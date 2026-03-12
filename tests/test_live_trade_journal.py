@@ -11,6 +11,7 @@ from autobot.live.trade_journal import (
     cancel_pending_entry_journal,
     close_trade_journal_for_market,
     record_entry_submission,
+    recompute_trade_journal_records,
     rebind_pending_entry_journal_order,
 )
 
@@ -365,3 +366,50 @@ def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_orde
     assert row["status"] == "PENDING_ENTRY"
     assert row["entry_order_uuid"] == "doge-order-new"
     assert row["updated_ts"] == 2_000
+
+
+def test_recompute_trade_journal_records_compacts_cancelled_pending_entry(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        record_entry_submission(
+            store=store,
+            market="KRW-DOGE",
+            intent_id="intent-doge-3",
+            requested_price=134.0,
+            requested_volume=41.9,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.79}}},
+            ts_ms=1_000,
+            order_uuid="doge-order-3",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="doge-order-3",
+                identifier="doge-order-3",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=134.0,
+                volume_req=41.9,
+                volume_filled=0.0,
+                state="cancel",
+                created_ts=1_000,
+                updated_ts=2_000,
+                intent_id="intent-doge-3",
+                local_state="CANCELLED",
+                raw_exchange_state="cancel",
+                last_event_name="ORDER_TIMEOUT",
+                event_source="test",
+                root_order_uuid="doge-order-3",
+            )
+        )
+
+        assert store.list_trade_journal()[0]["status"] == "PENDING_ENTRY"
+        compact_report = recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_entry_intent(entry_intent_id="intent-doge-3")
+
+    assert compact_report["rows_compacted"] == 1
+    assert row is not None
+    assert row["status"] == "CANCELLED_ENTRY"
+    assert row["close_reason_code"] == "ORDER_TIMEOUT"
+    assert row["close_mode"] == "entry_order_timeout"
+    assert row["exit_ts_ms"] == 2_000

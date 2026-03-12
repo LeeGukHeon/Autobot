@@ -618,18 +618,49 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
             )
             updated += 1
         else:
+            status_value = str(row.get("status") or "")
+            entry_order = _resolve_entry_order_for_journal(
+                store=store,
+                market=market,
+                entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
+                entry_intent_id=entry_intent_id,
+                target_entry_ts=_coalesce_int(
+                    _as_optional_int(row.get("entry_filled_ts_ms")),
+                    _as_optional_int(row.get("entry_submitted_ts_ms")),
+                ),
+            )
+            if (
+                status_value.strip().upper() == TRADE_JOURNAL_STATUS_PENDING
+                and isinstance(entry_order, dict)
+                and str(entry_order.get("local_state") or "").strip().upper() == "CANCELLED"
+                and _filled_qty_from_order(entry_order) in (None, 0.0)
+            ):
+                exit_meta_payload["close_mode"] = _coalesce_str(
+                    _as_optional_str(exit_meta_payload.get("close_mode")),
+                    "entry_order_timeout",
+                )
+                exit_meta_payload["close_reason_code"] = _coalesce_str(
+                    _as_optional_str(exit_meta_payload.get("close_reason_code")),
+                    _as_optional_str(entry_order.get("last_event_name")),
+                    "ENTRY_ORDER_TIMEOUT",
+                )
+                exit_meta_payload["entry_cancelled"] = True
+                status_value = TRADE_JOURNAL_STATUS_CANCELLED
             store.upsert_trade_journal(
                 TradeJournalRecord(
                     journal_id=str(row.get("journal_id")),
                     market=market,
-                    status=str(row.get("status")),
+                    status=status_value,
                     entry_intent_id=entry_intent_id,
                     entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
                     exit_order_uuid=_as_optional_str(row.get("exit_order_uuid")),
                     plan_id=_as_optional_str(row.get("plan_id")),
                     entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
                     entry_filled_ts_ms=_as_optional_int(row.get("entry_filled_ts_ms")),
-                    exit_ts_ms=_as_optional_int(row.get("exit_ts_ms")),
+                    exit_ts_ms=_coalesce_int(
+                        _as_optional_int(row.get("exit_ts_ms")),
+                        _as_optional_int((entry_order or {}).get("updated_ts")),
+                    ),
                     entry_price=_as_optional_float(row.get("entry_price")),
                     exit_price=_as_optional_float(row.get("exit_price")),
                     qty=_as_optional_float(row.get("qty")),
@@ -638,8 +669,14 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     realized_pnl_quote=_as_optional_float(row.get("realized_pnl_quote")),
                     realized_pnl_pct=_as_optional_float(row.get("realized_pnl_pct")),
                     entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
-                    close_reason_code=_as_optional_str(row.get("close_reason_code")),
-                    close_mode=_as_optional_str(row.get("close_mode")),
+                    close_reason_code=_coalesce_str(
+                        _as_optional_str(row.get("close_reason_code")),
+                        _as_optional_str(exit_meta_payload.get("close_reason_code")),
+                    ),
+                    close_mode=_coalesce_str(
+                        _as_optional_str(row.get("close_mode")),
+                        _as_optional_str(exit_meta_payload.get("close_mode")),
+                    ),
                     model_prob=_as_optional_float(row.get("model_prob")),
                     selection_policy_mode=_as_optional_str(row.get("selection_policy_mode")),
                     trade_action=_as_optional_str(row.get("trade_action")),
