@@ -34,6 +34,7 @@ class LiveFeatureProviderV4:
         self,
         *,
         feature_columns: Sequence[str],
+        extra_columns: Sequence[str] = (),
         tf: str = "5m",
         quote: str = "KRW",
         high_tfs: Sequence[str] = ("15m", "60m", "240m"),
@@ -44,6 +45,7 @@ class LiveFeatureProviderV4:
         bootstrap_1m_bars: int = 2000,
     ) -> None:
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
+        self._extra_columns = tuple(str(col).strip() for col in extra_columns if str(col).strip())
         self._quote = str(quote).strip().upper() or "KRW"
         self._high_tfs = tuple(str(item).strip().lower() for item in high_tfs if str(item).strip())
         self._parquet_root = Path(parquet_root)
@@ -63,6 +65,7 @@ class LiveFeatureProviderV4:
         self._ctrend_daily_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._base_provider = LiveFeatureProviderV3(
             feature_columns=feature_columns_v3_contract(high_tfs=self._high_tfs),
+            extra_columns=self._extra_columns,
             tf=tf,
             high_tfs=self._high_tfs,
             micro_snapshot_provider=micro_snapshot_provider,
@@ -118,6 +121,7 @@ class LiveFeatureProviderV4:
         final_frame, missing_columns = _project_requested_columns(
             frame=enriched,
             feature_columns=self._feature_columns,
+            extra_columns=self._extra_columns,
         )
         hard_gate_triggered = len(missing_columns) > 0
         if hard_gate_triggered:
@@ -210,8 +214,9 @@ def _project_requested_columns(
     *,
     frame: pl.DataFrame,
     feature_columns: Sequence[str],
+    extra_columns: Sequence[str] = (),
 ) -> tuple[pl.DataFrame, tuple[str, ...]]:
-    required_order = ["ts_ms", "market", "close", *list(feature_columns)]
+    required_order = ["ts_ms", "market", *[str(col) for col in extra_columns if str(col) != "close"], "close", *list(feature_columns)]
     working = frame
     missing_columns: list[str] = []
     if "ts_ms" not in working.columns:
@@ -220,6 +225,12 @@ def _project_requested_columns(
         working = working.with_columns(pl.lit("", dtype=pl.Utf8).alias("market"))
     if "close" not in working.columns:
         working = working.with_columns(pl.lit(0.0, dtype=pl.Float32).alias("close"))
+    for name in extra_columns:
+        col_name = str(name).strip()
+        if not col_name or col_name == "close":
+            continue
+        if col_name not in working.columns:
+            working = working.with_columns(pl.lit(None, dtype=pl.Float64).alias(col_name))
     for name in feature_columns:
         if name in working.columns:
             continue

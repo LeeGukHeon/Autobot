@@ -451,8 +451,13 @@ def _scan_market_rows(
             raise ValueError(f"feature column missing in {market}: {col}")
         expressions.append(_feature_to_float_expr(col, schema=schema))
     for col in extra_columns:
-        if col in names:
-            expressions.append(pl.col(col).cast(pl.Float64, strict=False).alias(col))
+        source_name = _aux_column_source_name(column=col, available_names=names)
+        if source_name in names:
+            dtype = schema.get(source_name)
+            if dtype == pl.Boolean:
+                expressions.append(pl.col(source_name).cast(pl.Int8).cast(pl.Float64).alias(col))
+            else:
+                expressions.append(pl.col(source_name).cast(pl.Float64, strict=False).alias(col))
         else:
             expressions.append(pl.lit(None, dtype=pl.Float64).alias(col))
 

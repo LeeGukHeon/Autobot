@@ -43,6 +43,7 @@ from autobot.models.predictor import load_predictor_from_registry
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSettings,
     ModelAlphaStrategyV1,
+    resolve_model_alpha_runtime_row_columns,
     resolve_runtime_model_alpha_settings,
 )
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
@@ -1931,7 +1932,7 @@ class BacktestRunEngine:
         groups = iter_feature_rows_grouped_by_ts(
             request,
             feature_columns=predictor.feature_columns,
-            extra_columns=("close",),
+            extra_columns=resolve_model_alpha_runtime_row_columns(predictor=predictor),
         )
         interval_ms = _interval_ms_from_tf(settings.tf)
         return ModelAlphaStrategyV1(

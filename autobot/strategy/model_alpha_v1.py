@@ -134,7 +134,6 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
     @property
     def predictor_run_id(self) -> str:
         return str(self._predictor.run_dir.name).strip()
-
     def on_ts(
         self,
         *,
@@ -597,6 +596,29 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         frame = self._pending_group.frame
         self._pending_group = None
         return frame
+
+
+def resolve_model_alpha_runtime_row_columns(*, predictor: ModelPredictor) -> tuple[str, ...]:
+    runtime_recommendations = getattr(predictor, "runtime_recommendations", {}) or {}
+    trade_action_policy = normalize_trade_action_policy(
+        runtime_recommendations.get("trade_action") if isinstance(runtime_recommendations, dict) else {}
+    )
+    ordered: list[str] = ["close"]
+    state_feature_names = trade_action_policy.get("state_feature_names") or []
+    for raw_name in state_feature_names:
+        name = str(raw_name).strip()
+        if not name or name == "selection_score":
+            continue
+        if name not in ordered:
+            ordered.append(name)
+        if name == "atr_pct_14" and "atr_14" not in ordered:
+            ordered.append("atr_14")
+    risk_feature_name = str(trade_action_policy.get("risk_feature_name", "")).strip()
+    if risk_feature_name and risk_feature_name != "selection_score" and risk_feature_name not in ordered:
+        ordered.append(risk_feature_name)
+        if risk_feature_name == "atr_pct_14" and "atr_14" not in ordered:
+            ordered.append("atr_14")
+    return tuple(ordered)
 
 
 def _resolve_ref_price(*, row: dict[str, Any] | None, latest_prices: dict[str, float], market: str) -> float | None:

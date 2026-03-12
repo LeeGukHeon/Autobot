@@ -66,6 +66,7 @@ class LiveFeatureProviderV3:
         self,
         *,
         feature_columns: Sequence[str],
+        extra_columns: Sequence[str] = (),
         tf: str = "5m",
         high_tfs: Sequence[str] = ("15m", "60m", "240m"),
         micro_snapshot_provider: MicroSnapshotProvider | None = None,
@@ -78,6 +79,7 @@ class LiveFeatureProviderV3:
         missing_feature_skip_ratio: float = 0.20,
     ) -> None:
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
+        self._extra_columns = tuple(str(col).strip() for col in extra_columns if str(col).strip())
         self._tf = str(tf).strip().lower() or "5m"
         self._high_tfs = tuple(str(item).strip().lower() for item in high_tfs if str(item).strip())
         self._micro_snapshot_provider = micro_snapshot_provider
@@ -212,7 +214,7 @@ class LiveFeatureProviderV3:
             self._last_built_ts_ms = ts_value
         else:
             self._last_built_ts_ms = None
-        frame = _rows_to_frame(rows=rows, feature_columns=self._feature_columns)
+        frame = _rows_to_frame(rows=rows, feature_columns=self._feature_columns, extra_columns=self._extra_columns)
         self._last_build_stats = {
             "provider": "LIVE_V3",
             "requested_ts_ms": ts_value,
@@ -301,11 +303,14 @@ class LiveFeatureProviderV3:
                 max_staleness_ms=staleness,
             )
 
+        base_with_aux = _attach_runtime_aux_columns(base)
         target = working.filter(pl.col("ts_ms") == int(ts_ms)).tail(1)
         if target.height <= 0:
             return None, "NO_FEATURE_ROW_AT_TS", 0, ()
 
         base_row = target.row(0, named=True)
+        aux_target = base_with_aux.filter(pl.col("ts_ms") == int(ts_ms)).tail(1)
+        aux_row = aux_target.row(0, named=True) if aux_target.height > 0 else {}
         close_value = _safe_float(base_row.get("close")) or _safe_float(state.last_price)
         if close_value is None or close_value <= 0:
             close_value = 0.0
@@ -336,6 +341,15 @@ class LiveFeatureProviderV3:
                 missing_features += 1
                 missing_columns.append(str(col))
             out[col] = float(normalized)
+        for col in self._extra_columns:
+            if str(col) == "close":
+                continue
+            out[str(col)] = _resolve_extra_row_value(
+                column=str(col),
+                base_row=base_row,
+                aux_row=aux_row,
+                close_value=float(close_value),
+            )
         feature_count = max(len(self._feature_columns), 1)
         missing_ratio = float(missing_features) / float(feature_count)
         if missing_ratio > float(self._missing_feature_skip_ratio):
@@ -654,18 +668,70 @@ def _rollup_from_1m(*, one_m: pl.DataFrame, tf: str) -> pl.DataFrame:
     return grouped
 
 
-def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str]) -> pl.DataFrame:
+def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str], extra_columns: Sequence[str] = ()) -> pl.DataFrame:
     schema: dict[str, pl.DataType] = {"ts_ms": pl.Int64, "market": pl.Utf8}
     for col in feature_columns:
         schema[str(col)] = pl.Float32
+    for col in extra_columns:
+        name = str(col)
+        if name == "close":
+            continue
+        schema[name] = pl.Float64
     schema["close"] = pl.Float64
 
     if not rows:
         return pl.DataFrame(schema=schema)
     frame = pl.DataFrame(rows)
-    ordered = ["ts_ms", "market", *[str(col) for col in feature_columns], "close"]
+    ordered = [
+        "ts_ms",
+        "market",
+        *[str(col) for col in feature_columns],
+        *[str(col) for col in extra_columns if str(col) != "close"],
+        "close",
+    ]
     present = [name for name in ordered if name in frame.columns]
     return frame.select(present).sort("market")
+
+
+def _resolve_extra_row_value(*, column: str, base_row: dict[str, Any], aux_row: dict[str, Any], close_value: float) -> float | None:
+    name = str(column).strip()
+    if not name:
+        return None
+    if name in aux_row:
+        return _safe_float(aux_row.get(name))
+    if name in base_row:
+        return _safe_float(base_row.get(name))
+    if name == "rv_12":
+        return _safe_float(base_row.get("vol_12"))
+    if name == "rv_36":
+        return _safe_float(base_row.get("vol_36"))
+    if name == "atr_pct_14":
+        atr = _safe_float(aux_row.get("atr_14"))
+        if atr is None or close_value <= 0.0:
+            return None
+        return float(atr) / float(close_value)
+    return None
+
+
+def _attach_runtime_aux_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.height <= 0:
+        return frame
+    return frame.sort("ts_ms").with_columns(
+        [
+            pl.max_horizontal(
+                [
+                    (pl.col("high") - pl.col("low")),
+                    (pl.col("high") - pl.col("close").shift(1)).abs(),
+                    (pl.col("low") - pl.col("close").shift(1)).abs(),
+                ]
+            ).alias("__true_range"),
+        ]
+    ).with_columns(
+        [
+            pl.col("__true_range").rolling_mean(window_size=14, min_samples=14).alias("atr_14"),
+            (pl.col("__true_range").rolling_mean(window_size=14, min_samples=14) / pl.col("close")).alias("atr_pct_14"),
+        ]
+    ).drop("__true_range")
 
 
 def _default_micro_feature_values() -> dict[str, float]:

@@ -178,6 +178,7 @@
   - expected action value
 - Status:
   - landed locally
+  - runtime wiring now explicitly carries trade-action state inputs (`rv_12`, `rv_36`, `atr_pct_14`) into backtest / paper / live rows
 
 ## Acceptance
 - trainer writes a compact conditional-action artifact with direct tail-risk targets

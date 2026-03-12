@@ -9,6 +9,7 @@ from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
     ModelAlphaSettings,
+    resolve_model_alpha_runtime_row_columns,
     resolve_runtime_model_alpha_settings,
 )
 
@@ -108,6 +109,24 @@ def test_resolve_runtime_model_alpha_settings_applies_learned_exit_hold_and_exec
     assert state["execution_source"] == "execution_backtest_grid_search"
     assert state["exit_recommendation"]["chosen_family"] == "risk"
     assert state["exit_recommendation"]["chosen_rule_id"] == "risk_h12_rv_36_tp2p5_sl1p5_tr0p75"
+
+
+def test_resolve_model_alpha_runtime_row_columns_includes_trade_action_state_inputs() -> None:
+    predictor = _dummy_predictor(
+        runtime_recommendations={
+            "trade_action": {
+                "version": 1,
+                "policy": "trade_level_hold_risk_oos_bins_v1",
+                "status": "ready",
+                "risk_feature_name": "rv_12",
+                "state_feature_names": ["selection_score", "rv_12", "rv_36", "atr_pct_14"],
+            }
+        }
+    )
+
+    columns = resolve_model_alpha_runtime_row_columns(predictor=predictor)
+
+    assert columns == ("close", "rv_12", "rv_36", "atr_pct_14", "atr_14")
 
 
 def test_normalize_runtime_recommendations_backfills_legacy_exit_mode_compare() -> None:

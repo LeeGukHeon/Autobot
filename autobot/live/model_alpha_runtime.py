@@ -33,6 +33,7 @@ from autobot.strategy.micro_snapshot import LiveWsMicroSnapshotProvider, LiveWsP
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSettings,
     ModelAlphaStrategyV1,
+    resolve_model_alpha_runtime_row_columns,
     resolve_runtime_model_alpha_settings,
 )
 from autobot.strategy.operational_overlay_v1 import (
@@ -515,6 +516,7 @@ def _build_live_feature_provider(
     feature_set = str(settings.model_alpha.feature_set).strip().lower() or "v4"
     common_kwargs = {
         "feature_columns": predictor.feature_columns,
+        "extra_columns": resolve_model_alpha_runtime_row_columns(predictor=predictor),
         "tf": str(settings.tf).strip().lower() or "5m",
         "quote": str(settings.quote).strip().upper() or "KRW",
         "micro_snapshot_provider": micro_snapshot_provider,

@@ -270,6 +270,7 @@ These tickets are the required follow-on family before changing core promotion b
 - `T21.19` slice 5 landed locally:
   - live trade journal summaries now preserve per-trade `ES / CTM / action-value / decision-source`
   - dashboard runtime, intent, and trade views now surface the same trade-action tail-risk contract
+  - runtime row builders now explicitly carry conditional trade-action state inputs required by the learned tail model across backtest / paper / live
 - `T21.20` foundation landed locally:
   - `hold` and `risk` are now represented in runtime recommendations as explicit bounded exit families
   - runtime exit artifacts now expose:

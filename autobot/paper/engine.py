@@ -52,6 +52,7 @@ from autobot.strategy.micro_snapshot import (
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSettings,
     ModelAlphaStrategyV1,
+    resolve_model_alpha_runtime_row_columns,
     resolve_runtime_model_alpha_settings,
 )
 from autobot.strategy.operational_overlay_v1 import (
@@ -1655,6 +1656,7 @@ class PaperRunEngine:
                 raise ValueError("paper LIVE_V3 provider requires --feature-set v3")
             live_feature_provider = LiveFeatureProviderV3(
                 feature_columns=predictor.feature_columns,
+                extra_columns=resolve_model_alpha_runtime_row_columns(predictor=predictor),
                 tf=str(settings.tf).strip().lower(),
                 micro_snapshot_provider=self._runtime_state.get("micro_snapshot_provider_for_features"),
                 micro_max_age_ms=max(int(settings.paper_live_micro_max_age_ms), 0),
@@ -1681,6 +1683,7 @@ class PaperRunEngine:
                 raise ValueError("paper LIVE_V4 provider requires --feature-set v4")
             live_feature_provider = LiveFeatureProviderV4(
                 feature_columns=predictor.feature_columns,
+                extra_columns=resolve_model_alpha_runtime_row_columns(predictor=predictor),
                 tf=str(settings.tf).strip().lower(),
                 quote=str(settings.quote).strip().upper(),
                 micro_snapshot_provider=self._runtime_state.get("micro_snapshot_provider_for_features"),
@@ -1725,7 +1728,7 @@ class PaperRunEngine:
         groups = iter_feature_rows_grouped_by_ts(
             request,
             feature_columns=predictor.feature_columns,
-            extra_columns=("close",),
+            extra_columns=resolve_model_alpha_runtime_row_columns(predictor=predictor),
         )
         self._runtime_state["live_feature_provider"] = None
         interval_ms = _interval_ms_from_tf(settings.tf)
