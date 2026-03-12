@@ -922,7 +922,7 @@ def _ensure_live_risk_plan(
             if entry_intent is None:
                 entry_intent = _find_latest_model_entry_intent(store=store, market=market, position=position)
             if entry_intent is not None:
-                _, derived_plan_record = build_model_derived_risk_records(
+                derived_position_record, derived_plan_record = build_model_derived_risk_records(
                     market=market,
                     base_currency=str(market).split("-")[-1],
                     base_amount=qty,
@@ -932,6 +932,10 @@ def _ensure_live_risk_plan(
                     updated_ts=int(ts_ms),
                     intent_id=entry_intent["intent_id"],
                 )
+            else:
+                derived_position_record = None
+        else:
+            derived_position_record = None
         store.upsert_risk_plan(
             RiskPlanRecord(
                 plan_id=str(plan.get("plan_id")),
@@ -966,6 +970,8 @@ def _ensure_live_risk_plan(
                 source_intent_id=derived_plan_record.source_intent_id if derived_plan_record is not None else source_intent_id,
             )
         )
+        if derived_position_record is not None:
+            store.upsert_position(derived_position_record)
 
 
 def _close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) -> None:

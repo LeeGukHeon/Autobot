@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import time
 
+import pytest
+
 from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepResult
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import (
@@ -992,6 +994,113 @@ def test_live_model_alpha_runtime_backfills_existing_active_plan_from_model_inte
     assert plan["tp"]["tp_pct"] == 2.0
     assert plan["sl"]["sl_pct"] == 1.0
     assert plan["trailing"]["trail_pct"] == 0.015
+
+
+def test_ensure_live_risk_plan_backfills_position_policy_json_from_model_exit_plan(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BSV",
+                base_currency="BSV",
+                base_amount=0.26916523,
+                avg_entry_price=22260.0,
+                updated_ts=now_ms - 500,
+                tp_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-bsv-1",
+                ts_ms=now_ms - 2000,
+                market="KRW-BSV",
+                side="bid",
+                price=22260.0,
+                volume=0.26916523,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "submit_result": {"accepted": True},
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "risk",
+                                    "hold_bars": 9,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 2700000,
+                                    "tp_pct": 0.050928971583880406,
+                                    "sl_pct": 0.03395264772258694,
+                                    "trailing_pct": 0.0,
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-bsv-1",
+                market="KRW-BSV",
+                side="long",
+                entry_price_str="22260",
+                qty_str="0.26916523",
+                tp_enabled=False,
+                tp_pct=None,
+                sl_enabled=False,
+                sl_pct=None,
+                trailing_enabled=False,
+                trail_pct=None,
+                state="ACTIVE",
+                last_eval_ts_ms=now_ms - 1000,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=now_ms - 2000,
+                updated_ts=now_ms - 1000,
+                timeout_ts_ms=None,
+                plan_source=None,
+                source_intent_id=None,
+            )
+        )
+
+        runtime_module._ensure_live_risk_plan(
+            store=store,
+            risk_manager=LiveRiskManager(
+                store=store,
+                executor_gateway=None,
+                config=RiskManagerConfig(
+                    default_tp_pct=3.0,
+                    default_sl_pct=2.0,
+                    default_trailing_enabled=False,
+                    default_trail_pct=0.01,
+                ),
+            ),
+            market="KRW-BSV",
+            position={
+                "market": "KRW-BSV",
+                "base_amount": 0.26916523,
+                "avg_entry_price": 22260.0,
+            },
+            ts_ms=now_ms,
+        )
+        plan = store.risk_plan_by_id(plan_id="model-risk-bsv-1")
+        positions = store.list_positions()
+
+    assert plan is not None
+    assert plan["tp"]["enabled"] is True
+    assert plan["sl"]["enabled"] is True
+    assert plan["tp"]["tp_pct"] == pytest.approx(5.0928971583880405)
+    assert plan["sl"]["sl_pct"] == pytest.approx(3.3952647722586943)
+    assert positions[0]["tp"]["enabled"] is True
+    assert positions[0]["sl"]["enabled"] is True
 
 
 def test_find_latest_model_entry_intent_prefers_filled_order_match_over_newer_unfilled_order(tmp_path: Path) -> None:
