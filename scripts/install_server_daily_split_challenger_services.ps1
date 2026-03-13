@@ -6,6 +6,7 @@ param(
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
+    [string[]]$CandidateTargetUnits = @(),
     [string]$PromoteServiceUnitName = "autobot-v4-challenger-promote.service",
     [string]$PromoteTimerUnitName = "autobot-v4-challenger-promote.timer",
     [string]$PromoteOnCalendar = "*-*-* 23:50:00",
@@ -86,7 +87,8 @@ function Build-ExecStart {
         [string]$ModeName,
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
-        [string[]]$ExtraPromotionUnits
+        [string[]]$ExtraPromotionUnits,
+        [string[]]$ExtraCandidateUnits
     )
     $argList = @(
         "-NoProfile",
@@ -101,6 +103,10 @@ function Build-ExecStart {
     if (@($ExtraPromotionUnits).Count -gt 0) {
         $argList += "-PromotionTargetUnits"
         $argList += @($ExtraPromotionUnits)
+    }
+    if (($ModeName -eq "spawn_only") -and (@($ExtraCandidateUnits).Count -gt 0)) {
+        $argList += "-CandidateTargetUnits"
+        $argList += @($ExtraCandidateUnits)
     }
     $command = $PwshExe + " " + (($argList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
     return ("/bin/bash -lc " + (Quote-ShellArg $command))
@@ -120,7 +126,8 @@ $promoteExecStart = Build-ExecStart `
     -ModeName "promote_only" `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
-    -ExtraPromotionUnits $PromotionTargetUnits
+    -ExtraPromotionUnits $PromotionTargetUnits `
+    -ExtraCandidateUnits $CandidateTargetUnits
 $spawnExecStart = Build-ExecStart `
     -PwshExe $resolvedPwshExe `
     -WrapperPath $resolvedWrapperScript `
@@ -129,7 +136,8 @@ $spawnExecStart = Build-ExecStart `
     -ModeName "spawn_only" `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
-    -ExtraPromotionUnits $PromotionTargetUnits
+    -ExtraPromotionUnits $PromotionTargetUnits `
+    -ExtraCandidateUnits $CandidateTargetUnits
 
 $promoteServiceContent = New-ServiceContent `
     -Description "Autobot V4 Challenger Promotion" `

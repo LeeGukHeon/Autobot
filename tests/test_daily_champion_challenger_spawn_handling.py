@@ -42,8 +42,14 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
         wrapper_path = tmp_path / "systemctl.cmd"
         wrapper_path.write_text(
             "@echo off\r\n"
-            "if \"%1\"==\"is-active\" exit /b 1\r\n"
-            "exit /b 0\r\n",
+            "if \"%1\"==\"is-active\" goto is_active\r\n"
+            "exit /b 0\r\n"
+            ":is_active\r\n"
+            "set \"TARGET=%2\"\r\n"
+            "if \"%2\"==\"--quiet\" set \"TARGET=%3\"\r\n"
+            "echo ,%FAKE_ACTIVE_UNITS%, | findstr /I /C:\",%TARGET%,\" >nul\r\n"
+            "if not errorlevel 1 exit /b 0\r\n"
+            "exit /b 1\r\n",
             encoding="utf-8",
         )
     else:
@@ -60,9 +66,28 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
     return wrapper_path
 
 
-def _make_fake_acceptance_script(tmp_path: Path, payload: dict, exit_code: int) -> Path:
+def _make_fake_acceptance_script(
+    tmp_path: Path,
+    payload: dict,
+    exit_code: int,
+    *,
+    emit_daily_micro_report: bool = False,
+) -> Path:
     script_path = tmp_path / f"fake_acceptance_{exit_code}.ps1"
     payload_json = json.dumps(payload)
+    prelude = ""
+    if emit_daily_micro_report:
+        prelude = textwrap.indent(
+            textwrap.dedent(
+                """
+                $dailyReportPath = Join-Path $ProjectRoot "docs/reports/DAILY_MICRO_REPORT_2026-03-08.md"
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dailyReportPath) | Out-Null
+                "# fake daily report" | Set-Content -Path $dailyReportPath -Encoding UTF8
+                Write-Host ("[daily-micro] report={0}" -f $dailyReportPath)
+                """
+            ).strip(),
+            "            ",
+        )
     script_path.write_text(
         textwrap.dedent(
             f"""
@@ -80,6 +105,7 @@ def _make_fake_acceptance_script(tmp_path: Path, payload: dict, exit_code: int) 
             $ErrorActionPreference = "Stop"
             $reportPath = Join-Path $ProjectRoot "logs/fake_acceptance/report.json"
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $reportPath) | Out-Null
+            {prelude}
             @'
             {payload_json}
             '@ | Set-Content -Path $reportPath -Encoding UTF8
@@ -128,6 +154,7 @@ def _run_spawn_only(
     *,
     dry_run: bool = True,
     extra_args: list[str] | None = None,
+    active_units: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     sudo_dir = acceptance_script.parent
     _make_fake_sudo(sudo_dir)
@@ -157,7 +184,11 @@ def _run_spawn_only(
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", "")},
+        env={
+            **os.environ,
+            "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_ACTIVE_UNITS": ",".join(active_units or []),
+        },
     )
 
 
@@ -240,6 +271,32 @@ def test_spawn_only_treats_duplicate_candidate_as_successful_no_challenger_day(t
     assert completed.returncode == 0
     assert "[daily-cc] mode=spawn_only" in completed.stdout
     assert "[daily-cc] challenger_candidate_run_id=candidate-run-dup" in completed.stdout
+
+
+def test_spawn_only_prefers_final_json_report_over_daily_markdown_report(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-002"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BACKTEST_ACCEPTANCE_FAILED"],
+        },
+        exit_code=2,
+        emit_daily_micro_report=True,
+    )
+
+    completed = _run_spawn_only(project_root, acceptance_script, dry_run=False)
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    assert "[daily-cc] challenger_candidate_run_id=candidate-run-002" in completed.stdout
 
 
 def test_spawn_only_still_fails_when_acceptance_reports_runtime_exception(tmp_path: Path) -> None:
@@ -356,6 +413,57 @@ def test_spawn_only_starts_bootstrap_candidate_as_non_promotable_challenger(tmp_
     assert state["lane_mode"] == "bootstrap_latest_inclusive"
     assert state["promotion_eligible"] is False
     assert state["bootstrap_only"] is True
+
+
+def test_spawn_only_restarts_configured_candidate_targets_when_active(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+            },
+            "split_policy": {
+                "lane_mode": "bootstrap_latest_inclusive",
+                "promotion_eligible": False,
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-live-canary"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BOOTSTRAP_ONLY_POLICY"],
+        },
+        exit_code=2,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        active_units=["autobot-live-alpha-candidate.service"],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    restart_step = latest["steps"]["restart_candidate_targets"]
+    assert restart_step["attempted"] is True
+    assert restart_step["candidate_run_id"] == "candidate-run-live-canary"
+    assert restart_step["restarted_units"] == ["autobot-live-alpha-candidate.service"]
+    assert restart_step["skipped_units"] == []
 
 
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:

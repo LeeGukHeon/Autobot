@@ -19,9 +19,28 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
-def _make_fake_acceptance_script(tmp_path: Path, *, payload: dict, exit_code: int) -> Path:
+def _make_fake_acceptance_script(
+    tmp_path: Path,
+    *,
+    payload: dict,
+    exit_code: int,
+    emit_daily_micro_report: bool = False,
+) -> Path:
     script_path = tmp_path / f"fake_acceptance_{exit_code}.ps1"
     payload_json = json.dumps(payload)
+    prelude = ""
+    if emit_daily_micro_report:
+        prelude = textwrap.indent(
+            textwrap.dedent(
+                """
+                $dailyReportPath = Join-Path $ProjectRoot "docs/reports/DAILY_MICRO_REPORT_2026-03-08.md"
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dailyReportPath) | Out-Null
+                "# fake daily report" | Set-Content -Path $dailyReportPath -Encoding UTF8
+                Write-Host ("[daily-micro] report={0}" -f $dailyReportPath)
+                """
+            ).strip(),
+            "            ",
+        )
     script_path.write_text(
         textwrap.dedent(
             f"""
@@ -36,6 +55,7 @@ def _make_fake_acceptance_script(tmp_path: Path, *, payload: dict, exit_code: in
 
             $reportPath = Join-Path $ProjectRoot "logs/fake_acceptance/report.json"
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $reportPath) | Out-Null
+            {prelude}
             @'
             {payload_json}
             '@ | Set-Content -Path $reportPath -Encoding UTF8
@@ -182,3 +202,49 @@ def test_daily_candidate_acceptance_treats_bootstrap_only_policy_as_success(tmp_
 
     assert completed.returncode == 0
     assert "bootstrap_nonfatal_reason=BOOTSTRAP_ONLY_POLICY" in completed.stdout
+
+
+def test_daily_candidate_acceptance_prefers_final_json_report_over_daily_markdown_report(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        payload={
+            "gates": {
+                "backtest": {
+                    "budget_contract_reasons": ["SCOUT_ONLY_BUDGET_EVIDENCE"],
+                }
+            },
+            "reasons": ["BACKTEST_ACCEPTANCE_FAILED", "SCOUT_ONLY_BUDGET_EVIDENCE"],
+        },
+        exit_code=2,
+        emit_daily_micro_report=True,
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-AcceptanceScript",
+            str(acceptance_script),
+            "-BatchDate",
+            "2026-03-08",
+            "-SkipDailyPipeline",
+            "-SkipReportRefresh",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    assert "scout_nonfatal_reason=SCOUT_ONLY_BUDGET_EVIDENCE" in completed.stdout

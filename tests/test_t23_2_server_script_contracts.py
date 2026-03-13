@@ -121,6 +121,7 @@ def test_t23_2_daily_orchestrator_param_surface_keeps_protected_names() -> None:
         '[string]$ChampionUnitName = "autobot-paper-v4.service"',
         '[string]$ChallengerUnitName = "autobot-paper-v4-challenger.service"',
         '[string[]]$PromotionTargetUnits = @()',
+        '[string[]]$CandidateTargetUnits = @()',
         '[ValidateSet("combined", "promote_only", "spawn_only")]',
         '[string]$Mode = "combined"',
         '[switch]$SkipDailyPipeline',

@@ -7,6 +7,7 @@ param(
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
+    [string[]]$CandidateTargetUnits = @(),
     [double]$ChallengerMinHours = 12.0,
     [int]$ChallengerMinOrdersFilled = 2,
     [double]$ChallengerMinRealizedPnlQuote = 0.0,
@@ -90,12 +91,24 @@ function Invoke-CommandCapture {
 
 function Resolve-ReportedJsonPath {
     param([string]$OutputText)
-    $regex = [System.Text.RegularExpressions.Regex]::new("(?m)^\[[^\]]+\]\s+report=(.+)$")
-    $match = $regex.Match([string]$OutputText)
-    if (-not $match.Success) {
+    if ([string]::IsNullOrWhiteSpace($OutputText)) {
         return ""
     }
-    return [string]$match.Groups[1].Value.Trim()
+    $regex = [System.Text.RegularExpressions.Regex]::new("(?m)^\[[^\]]+\]\s+report=(.+)$")
+    $matches = $regex.Matches([string]$OutputText)
+    if ($null -eq $matches -or $matches.Count -eq 0) {
+        return ""
+    }
+    for ($index = $matches.Count - 1; $index -ge 0; $index--) {
+        $candidatePath = [string]$matches[$index].Groups[1].Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($candidatePath)) {
+            continue
+        }
+        if ([string]::Equals([System.IO.Path]::GetExtension($candidatePath), ".json", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $candidatePath
+        }
+    }
+    return [string]$matches[$matches.Count - 1].Groups[1].Value.Trim()
 }
 
 function Load-JsonOrEmpty {
@@ -364,6 +377,7 @@ $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript))
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
+$resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
 $stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
@@ -382,6 +396,7 @@ $report = [ordered]@{
     champion_unit = $ChampionUnitName
     challenger_unit = $ChallengerUnitName
     promotion_target_units = @($resolvedPromotionTargetUnits)
+    candidate_target_units = @($resolvedCandidateTargetUnits)
     steps = [ordered]@{}
     challenger_previous = @{}
     challenger_next = @{}
@@ -697,6 +712,39 @@ if ($runSpawnPhase) {
             Write-JsonFile -PathValue $statePath -Payload $nextState
         }
         $report.challenger_next = $nextState
+
+        if ($resolvedCandidateTargetUnits.Count -gt 0) {
+            $restartedCandidateUnits = @()
+            $skippedCandidateUnits = @()
+            foreach ($unit in $resolvedCandidateTargetUnits) {
+                $trimmedUnit = [string]$unit
+                if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
+                    continue
+                }
+                $trimmedUnit = $trimmedUnit.Trim()
+                if (Test-SystemdUnitActive -UnitName $trimmedUnit) {
+                    Restart-Unit -UnitName $trimmedUnit
+                    $restartedCandidateUnits += $trimmedUnit
+                } else {
+                    $skippedCandidateUnits += [ordered]@{
+                        unit = $trimmedUnit
+                        reason = "UNIT_NOT_ACTIVE"
+                    }
+                }
+            }
+            $report.steps.restart_candidate_targets = [ordered]@{
+                attempted = $true
+                candidate_run_id = $candidateRunId
+                restarted_units = @($restartedCandidateUnits)
+                skipped_units = @($skippedCandidateUnits)
+            }
+        } else {
+            $report.steps.restart_candidate_targets = [ordered]@{
+                attempted = $false
+                reason = "NO_CANDIDATE_TARGET_UNITS"
+                candidate_run_id = $candidateRunId
+            }
+        }
     } else {
         $report.steps.start_challenger = [ordered]@{
             skipped = $true
@@ -722,6 +770,11 @@ if ($runSpawnPhase) {
                 "UNKNOWN"
             }
         }
+        $report.steps.restart_candidate_targets = [ordered]@{
+            attempted = $false
+            candidate_run_id = $candidateRunId
+            reason = [string]$report.steps.start_challenger.reason
+        }
         if (-not $DryRun) {
             & sudo systemctl stop $ChallengerUnitName 2>$null
             Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
@@ -733,6 +786,10 @@ if ($runSpawnPhase) {
         reason = "SKIPPED_BY_MODE"
     }
     $report.steps.start_challenger = [ordered]@{
+        attempted = $false
+        reason = "SKIPPED_BY_MODE"
+    }
+    $report.steps.restart_candidate_targets = [ordered]@{
         attempted = $false
         reason = "SKIPPED_BY_MODE"
     }

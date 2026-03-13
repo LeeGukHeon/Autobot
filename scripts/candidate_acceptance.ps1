@@ -365,13 +365,13 @@ function Get-PropValue {
 function Convert-ToStringArray {
     param([Parameter(Mandatory = $false)]$Value)
     if ($null -eq $Value) {
-        return @()
+        return ,@()
     }
     if ($Value -is [string]) {
         if ([string]::IsNullOrWhiteSpace($Value)) {
-            return @()
+            return ,@()
         }
-        return @($Value.Trim())
+        return ,@($Value.Trim())
     }
     $items = @()
     if ($Value -is [System.Array] -or $Value -is [System.Collections.IEnumerable]) {
@@ -381,13 +381,13 @@ function Convert-ToStringArray {
                 $items += $text.Trim()
             }
         }
-        return @($items)
+        return ,@($items)
     }
     $text = [string]$Value
     if ([string]::IsNullOrWhiteSpace($text)) {
-        return @()
+        return ,@()
     }
-    return @($text.Trim())
+    return ,@($text.Trim())
 }
 
 function To-Double {
@@ -873,7 +873,7 @@ function Get-SplitPolicyHistoryRecordKey {
 function Load-SplitPolicySelectorHistoryRecords {
     param([string]$PathValue)
     if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
-        return @()
+        return ,@()
     }
     $rawLines = Get-Content -Path $PathValue -Encoding UTF8
     $recordsByKey = @{}
@@ -904,7 +904,7 @@ function Load-SplitPolicySelectorHistoryRecords {
     foreach ($key in $orderedKeys) {
         $records.Add($recordsByKey[$key]) | Out-Null
     }
-    return @($records.ToArray())
+    return ,@($records.ToArray())
 }
 
 function Save-SplitPolicySelectorHistoryRecords {
@@ -977,7 +977,7 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
             $resolved.Add($parsed) | Out-Null
         }
     }
-    return @($resolved.ToArray())
+    return ,@($resolved.ToArray())
 }
 
 function Resolve-SplitPolicyHoldoutWindows {
@@ -1229,8 +1229,8 @@ function Resolve-SplitPolicySelection {
         [string]$QualityFloorDate
     )
     $historyPath = Resolve-SplitPolicySelectorHistoryPath -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamily -TaskName $Task
-    $candidateHoldoutDays = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays $BacktestLookbackDays -OverrideText $SplitPolicyCandidateHoldoutDays)
-    $historyRecords = @(Load-SplitPolicySelectorHistoryRecords -PathValue $historyPath)
+    $candidateHoldoutDays = Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays $BacktestLookbackDays -OverrideText $SplitPolicyCandidateHoldoutDays
+    $historyRecords = Load-SplitPolicySelectorHistoryRecords -PathValue $historyPath
     $newEvaluations = New-Object System.Collections.Generic.List[object]
     $remainingEvaluationBudget = [Math]::Max([int]$SplitPolicyMaxNewAnchorEvaluationsPerRun, 0)
 
@@ -2534,7 +2534,7 @@ function Invoke-RestartUnits {
             active_output_preview = (Get-OutputPreview -Text ([string]$activeExec.Output))
         }
     }
-    return @($results)
+    return ,@($results)
 }
 
 function Get-UnitStates {
@@ -2566,7 +2566,7 @@ function Get-UnitStates {
             enabled_output_preview = (Get-OutputPreview -Text ([string]$enabledExec.Output))
         }
     }
-    return @($results)
+    return ,@($results)
 }
 
 function Merge-UniqueStringArray {
@@ -2588,7 +2588,7 @@ function Merge-UniqueStringArray {
         $seen[$text] = $true
         $values.Add($text) | Out-Null
     }
-    return @($values.ToArray())
+    return ,@($values.ToArray())
 }
 
 function Build-ReportMarkdown {
@@ -3079,12 +3079,12 @@ function Get-DateRangeAscending {
         [string]$EndDate
     )
     if ([string]::IsNullOrWhiteSpace($StartDate) -or [string]::IsNullOrWhiteSpace($EndDate)) {
-        return @()
+        return ,@()
     }
     $startObj = [DateTime]::ParseExact($StartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
     $endObj = [DateTime]::ParseExact($EndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
     if ($endObj -lt $startObj) {
-        return @()
+        return ,@()
     }
     $values = New-Object System.Collections.Generic.List[string]
     $cursor = $startObj
@@ -3092,7 +3092,7 @@ function Get-DateRangeAscending {
         $values.Add($cursor.ToString("yyyy-MM-dd")) | Out-Null
         $cursor = $cursor.AddDays(1)
     }
-    return @($values.ToArray())
+    return ,@($values.ToArray())
 }
 
 function Invoke-FeaturesBuildAndLoadReport {
@@ -3166,7 +3166,7 @@ function Resolve-TrainWindowByTrainableRows {
     )
     $attempts = @()
     $bestAttempt = $null
-    foreach ($candidateStartDate in @(Get-DateRangeAscending -StartDate $InitialTrainStartDate -EndDate $TrainEndDate)) {
+    foreach ($candidateStartDate in (Get-DateRangeAscending -StartDate $InitialTrainStartDate -EndDate $TrainEndDate)) {
         $probe = Invoke-FeaturesBuildAndLoadReport `
             -PythonPath $PythonPath `
             -StartDate $candidateStartDate `

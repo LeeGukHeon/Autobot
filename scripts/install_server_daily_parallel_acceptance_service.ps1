@@ -9,6 +9,7 @@ param(
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
+    [string[]]$CandidateTargetUnits = @(),
     [switch]$NoRestartTimer,
     [switch]$DryRun
 )
@@ -41,6 +42,10 @@ $wrapperArgList = @(
 if (@($PromotionTargetUnits).Count -gt 0) {
     $wrapperArgList += "-PromotionTargetUnits"
     $wrapperArgList += (Join-DelimitedStringArray -Values $PromotionTargetUnits)
+}
+if (@($CandidateTargetUnits).Count -gt 0) {
+    $wrapperArgList += "-CandidateTargetUnits"
+    $wrapperArgList += (Join-DelimitedStringArray -Values $CandidateTargetUnits)
 }
 $execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 $execStart = "/bin/bash -lc " + (Quote-ShellArg $execStartCommand)

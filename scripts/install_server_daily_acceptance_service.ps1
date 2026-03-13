@@ -11,6 +11,7 @@ param(
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
+    [string[]]$CandidateTargetUnits = @(),
     [string[]]$BlockOnActiveUnits = @(),
     [string[]]$AcceptanceArgs = @(),
     [bool]$SkipDailyPipeline = $true,
@@ -55,6 +56,10 @@ $wrapperArgList = @(
 if (@($PromotionTargetUnits).Count -gt 0) {
     $wrapperArgList += "-PromotionTargetUnits"
     $wrapperArgList += (Join-DelimitedStringArray -Values $PromotionTargetUnits)
+}
+if (@($CandidateTargetUnits).Count -gt 0) {
+    $wrapperArgList += "-CandidateTargetUnits"
+    $wrapperArgList += (Join-DelimitedStringArray -Values $CandidateTargetUnits)
 }
 if ($SkipDailyPipeline) {
     $wrapperArgList += "-SkipDailyPipeline"

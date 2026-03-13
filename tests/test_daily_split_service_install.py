@@ -46,3 +46,31 @@ def test_split_installer_generates_promote_and_spawn_units() -> None:
     assert "promote_only" in stdout
     assert "spawn_only" in stdout
     assert "ExecStart=/bin/bash -lc " in stdout
+
+
+def test_split_installer_can_pass_candidate_target_units_to_spawn_service() -> None:
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(INSTALL_SCRIPT),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "autobot-live-alpha-candidate.service" in stdout
+    assert "-CandidateTargetUnits" in stdout
