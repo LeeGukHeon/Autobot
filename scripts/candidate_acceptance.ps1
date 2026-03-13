@@ -959,6 +959,7 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
     $resolved = New-Object System.Collections.Generic.List[int]
     $tokens = New-Object System.Collections.Generic.List[string]
     $seen = @{}
+    $hasTokens = $false
     if (-not [string]::IsNullOrWhiteSpace($OverrideText)) {
         foreach ($token in @($OverrideText -split '[,\s]+')) {
             $tokenText = [string]$token
@@ -966,9 +967,10 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
                 continue
             }
             $tokens.Add($tokenText) | Out-Null
+            $hasTokens = $true
         }
     }
-    if ($tokens.Count -eq 0) {
+    if (-not $hasTokens) {
         foreach ($value in 1..([Math]::Max([int]$RequestedBacktestLookbackDays, 1))) {
             if (-not $seen.ContainsKey($value)) {
                 $seen[$value] = $true
@@ -1352,7 +1354,8 @@ function Resolve-SplitPolicySelection {
             $admissibilityReasons += "HISTORICAL_ANCHOR_COUNT_LT_MIN"
         }
         $admissibilityReasons = Merge-UniqueStringArray -First @($admissibilityReasons) -Second @()
-        $admissible = ($admissibilityReasons.Count -eq 0)
+        $admissibilityReasonCount = if ($null -eq $admissibilityReasons) { 0 } else { @($admissibilityReasons).Count }
+        $admissible = ($admissibilityReasonCount -eq 0)
         $summaryItem = [ordered]@{
             holdout_days = [int]$holdoutDays
             admissible = [bool]$admissible
