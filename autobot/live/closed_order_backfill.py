@@ -36,20 +36,35 @@ def backfill_recent_bot_closed_orders(
     seen = 0
     upserted = 0
     skipped = 0
+    tracked_exit_order_uuids = {
+        str(item.get("current_exit_order_uuid") or "").strip()
+        for item in store.list_risk_plans()
+        if str(item.get("current_exit_order_uuid") or "").strip()
+    }
+    tracked_exit_order_identifiers = {
+        str(item.get("current_exit_order_identifier") or "").strip()
+        for item in store.list_risk_plans()
+        if str(item.get("current_exit_order_identifier") or "").strip()
+    }
     for item in rows:
         if not isinstance(item, dict):
             continue
         seen += 1
         identifier = _as_optional_str(item.get("identifier"))
         uuid = _as_optional_str(item.get("uuid"))
-        if not is_bot_identifier(identifier, prefix=identifier_prefix, bot_id=bot_id):
-            skipped += 1
-            continue
         existing = None
         if uuid:
             existing = store.order_by_uuid(uuid=uuid)
         if existing is None and identifier:
             existing = store.order_by_identifier(identifier=identifier)
+        tracked_order = existing is not None
+        tracked_plan = (uuid in tracked_exit_order_uuids if uuid else False) or (
+            identifier in tracked_exit_order_identifiers if identifier else False
+        )
+        tracked_identifier = is_bot_identifier(identifier, prefix=identifier_prefix, bot_id=bot_id)
+        if not (tracked_identifier or tracked_order or tracked_plan):
+            skipped += 1
+            continue
         intent_id = _as_optional_str((existing or {}).get("intent_id")) or extract_intent_id_from_identifier(
             identifier,
             prefix=identifier_prefix,
