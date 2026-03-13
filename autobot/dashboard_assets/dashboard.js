@@ -993,6 +993,7 @@
         const active = liveState.label === state.activeLiveLabel;
         const todayState = liveState.today_trade_summary || {};
         const privateWsTs = coerceTs((liveState.last_ws_event || {}).event_ts_ms) || coerceTs((liveState.daemon_last_run || {}).private_ws_last_event_ts_ms);
+        const selectorWsFreshness = privateWsTs == null ? "없음" : fmtAge(privateWsTs);
         const unit = liveStateService(snapshot, liveState);
         const unitActive = String(unit.active_state || "").trim().toLowerCase() === "active";
         const selectorTone = liveState.breaker_active
@@ -1013,7 +1014,7 @@
               : unitActive
                 ? "관찰 모드"
                 : "비활성 기록";
-        const selectorMeta = `${unitActive ? "가동" : "중지"} · WS ${privateWsTs == null ? "없음" : privateWsFreshness}`;
+        const selectorMeta = `${unitActive ? "가동" : "중지"} · WS ${selectorWsFreshness}`;
         return `
           <button class="live-selector-card ${active ? "active" : ""}" type="button" data-live-label="${esc(liveState.label)}">
             <div class="live-selector-main">
