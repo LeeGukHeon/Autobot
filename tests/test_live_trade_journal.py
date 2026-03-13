@@ -663,6 +663,212 @@ def test_recompute_trade_journal_records_corrects_late_stale_verified_exit_times
     assert row["exit_ts_ms"] == 1900
 
 
+def test_recompute_trade_journal_records_closes_open_row_from_backfilled_done_ask(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-open",
+                identifier="AUTOBOT-entry-open",
+                market="KRW-ETH",
+                side="bid",
+                ord_type="limit",
+                price=3066000.0,
+                volume_req=0.00185242,
+                volume_filled=0.00185242,
+                state="done",
+                created_ts=1773383401000,
+                updated_ts=1773383401000,
+                intent_id="intent-open",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="closed_orders_backfill",
+                root_order_uuid="entry-order-open",
+                executed_funds=5679.51972,
+                paid_fee=2.83975986,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-open",
+                identifier="AUTOBOT-RISK-model-risk-1773386114314",
+                market="KRW-ETH",
+                side="ask",
+                ord_type="limit",
+                price=3071000.0,
+                volume_req=0.00185242,
+                volume_filled=0.00185242,
+                state="done",
+                created_ts=1773386114000,
+                updated_ts=1773386114000,
+                intent_id="inferred-exit-order-open",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="exit-order-open",
+                executed_funds=5685.07694,
+                paid_fee=2.84531712,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="intent-open",
+                market="KRW-ETH",
+                status="OPEN",
+                entry_intent_id="intent-open",
+                entry_order_uuid="entry-order-open",
+                exit_order_uuid=None,
+                plan_id=None,
+                entry_submitted_ts_ms=1773383400000,
+                entry_filled_ts_ms=1773383401000,
+                exit_ts_ms=None,
+                entry_price=3066000.0,
+                exit_price=None,
+                qty=0.00185242,
+                entry_notional_quote=5682.35947986,
+                exit_notional_quote=None,
+                realized_pnl_quote=None,
+                realized_pnl_pct=None,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code=None,
+                close_mode=None,
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {"sizing": {"fee_rate": 0.0005}, "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005}},
+                        "execution": {"requested_price": 3066000.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                updated_ts=1773383401000,
+            )
+        )
+
+        recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_id(journal_id="intent-open")
+
+    assert row is not None
+    assert row["status"] == "CLOSED"
+    assert row["exit_order_uuid"] == "exit-order-open"
+    assert row["exit_ts_ms"] == 1773386114000
+    assert row["realized_pnl_quote"] is not None
+
+
+def test_recompute_trade_journal_records_replaces_far_stale_exit_order_uuid(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-enso-old",
+                identifier="AUTOBOT-entry-enso-old",
+                market="KRW-ENSO",
+                side="bid",
+                ord_type="limit",
+                price=1875.0,
+                volume_req=3.03256638,
+                volume_filled=3.03256638,
+                state="done",
+                created_ts=1773365402000,
+                updated_ts=1773365402000,
+                intent_id="intent-enso-old",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="entry-order-enso-old",
+                executed_funds=5686.0619625,
+                paid_fee=2.84303098125,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-enso-old",
+                identifier="AUTOBOT-RISK-model-risk-1773370244893",
+                market="KRW-ENSO",
+                side="ask",
+                ord_type="limit",
+                price=1929.0,
+                volume_req=3.03256638,
+                volume_filled=3.03256638,
+                state="done",
+                created_ts=1773370244000,
+                updated_ts=1773370244000,
+                intent_id="inferred-exit-order-enso-old",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="exit-order-enso-old",
+                executed_funds=5850.81934902,
+                paid_fee=2.92540967451,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-enso-new",
+                identifier="AUTOBOT-RISK-model-risk-1773388656711",
+                market="KRW-ENSO",
+                side="ask",
+                ord_type="limit",
+                price=2033.0,
+                volume_req=2.7315655,
+                volume_filled=2.7315655,
+                state="done",
+                created_ts=1773388656000,
+                updated_ts=1773388656000,
+                intent_id="inferred-exit-order-enso-new",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="exit-order-enso-new",
+                executed_funds=5553.5726615,
+                paid_fee=2.77678633075,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-enso-old",
+                market="KRW-ENSO",
+                status="CLOSED",
+                entry_intent_id="intent-enso-old",
+                entry_order_uuid="entry-order-enso-old",
+                exit_order_uuid="exit-order-enso-new",
+                plan_id="plan-enso-old",
+                entry_submitted_ts_ms=1773365400000,
+                entry_filled_ts_ms=1773365402000,
+                exit_ts_ms=1773370244000,
+                entry_price=1875.0,
+                exit_price=1929.0,
+                qty=3.03256638,
+                entry_notional_quote=5688.90499348125,
+                exit_notional_quote=5847.893939345489,
+                realized_pnl_quote=158.98894586423963,
+                realized_pnl_pct=2.7947101449275315,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="CLOSED_ORDERS_BACKFILL",
+                close_mode="done_ask_order",
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {"sizing": {"fee_rate": 0.0005}, "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005}},
+                        "execution": {"requested_price": 1875.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                exit_meta_json=json.dumps({"close_verified": True, "close_verification_status": "verified_exit_order"}, ensure_ascii=False, sort_keys=True),
+                updated_ts=1773370244000,
+            )
+        )
+
+        recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_id(journal_id="journal-enso-old")
+
+    assert row is not None
+    assert row["exit_order_uuid"] == "exit-order-enso-old"
+    assert row["exit_ts_ms"] == 1773370244000
+
+
 def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_order(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(

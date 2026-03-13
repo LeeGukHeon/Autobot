@@ -12,6 +12,7 @@ TRADE_JOURNAL_STATUS_PENDING = "PENDING_ENTRY"
 TRADE_JOURNAL_STATUS_OPEN = "OPEN"
 TRADE_JOURNAL_STATUS_CLOSED = "CLOSED"
 TRADE_JOURNAL_STATUS_CANCELLED = "CANCELLED_ENTRY"
+_EXIT_ORDER_TS_MATCH_GRACE_MS = 300_000
 
 
 def record_entry_submission(
@@ -674,16 +675,129 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
             updated += 1
         else:
             status_value = str(row.get("status") or "")
+            entry_ts = _coalesce_int(
+                _as_optional_int(row.get("entry_filled_ts_ms")),
+                _as_optional_int(row.get("entry_submitted_ts_ms")),
+            )
             entry_order = _resolve_entry_order_for_journal(
                 store=store,
                 market=market,
                 entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
                 entry_intent_id=entry_intent_id,
-                target_entry_ts=_coalesce_int(
-                    _as_optional_int(row.get("entry_filled_ts_ms")),
-                    _as_optional_int(row.get("entry_submitted_ts_ms")),
-                ),
+                target_entry_ts=entry_ts,
             )
+            exit_order = _resolve_exit_order_for_journal(
+                store=store,
+                market=market,
+                plan_id=_as_optional_str(row.get("plan_id")),
+                exit_order_uuid=_as_optional_str(row.get("exit_order_uuid")),
+                min_updated_ts=entry_ts,
+                target_exit_ts=_as_optional_int(row.get("exit_ts_ms")),
+            )
+            if (
+                status_value.strip().upper() in {TRADE_JOURNAL_STATUS_OPEN, TRADE_JOURNAL_STATUS_PENDING}
+                and _has_verified_exit_order(order=exit_order)
+                and _filled_qty_from_order(entry_order) not in (None, 0.0)
+            ):
+                qty = _coalesce_float(
+                    _filled_qty_from_order(entry_order),
+                    _as_optional_float(row.get("qty")),
+                )
+                entry_price = _coalesce_float(
+                    _filled_price_from_order(entry_order),
+                    _as_optional_float(row.get("entry_price")),
+                )
+                exit_price = _coalesce_float(
+                    _filled_price_from_order(exit_order),
+                    _as_optional_float((exit_order or {}).get("price")),
+                    _as_optional_float(row.get("exit_price")),
+                )
+                exit_ts = _coalesce_int(
+                    _as_optional_int((exit_order or {}).get("updated_ts")),
+                    _as_optional_int(row.get("exit_ts_ms")),
+                    _as_optional_int(row.get("updated_ts")),
+                )
+                close_mode = _coalesce_str(
+                    _as_optional_str(row.get("close_mode")),
+                    _derive_close_mode(order=exit_order),
+                )
+                close_reason_code = _coalesce_str(
+                    _as_optional_str(row.get("close_reason_code")),
+                    _as_optional_str((exit_order or {}).get("last_event_name")),
+                    _as_optional_str((exit_order or {}).get("raw_exchange_state")),
+                    "CLOSED_ORDERS_BACKFILL",
+                )
+                close_verification_status = _derive_close_verification_status(
+                    order=exit_order,
+                    close_mode=close_mode,
+                )
+                exit_meta_payload.update(
+                    {
+                        "close_mode": close_mode,
+                        "close_reason_code": close_reason_code,
+                        "close_verification_status": close_verification_status,
+                        "close_verified": close_verification_status == "verified_exit_order",
+                    }
+                )
+                cost_metrics = _compute_cost_metrics(
+                    entry_meta=entry_meta_summary,
+                    entry_order=entry_order,
+                    exit_order=exit_order,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    qty=qty,
+                )
+                exit_meta_payload.update(
+                    {
+                        "gross_pnl_quote": cost_metrics["gross_pnl_quote"],
+                        "gross_pnl_pct": cost_metrics["gross_pnl_pct"],
+                        "entry_fee_quote": cost_metrics["entry_fee_quote"],
+                        "exit_fee_quote": cost_metrics["exit_fee_quote"],
+                        "total_fee_quote": cost_metrics["total_fee_quote"],
+                        "entry_fee_bps": cost_metrics["entry_fee_bps"],
+                        "exit_fee_bps": cost_metrics["exit_fee_bps"],
+                        "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
+                        "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
+                        "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
+                    }
+                )
+                store.upsert_trade_journal(
+                    TradeJournalRecord(
+                        journal_id=str(row.get("journal_id")),
+                        market=market,
+                        status=TRADE_JOURNAL_STATUS_CLOSED,
+                        entry_intent_id=entry_intent_id,
+                        entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
+                        exit_order_uuid=_coalesce_str(_as_optional_str((exit_order or {}).get("uuid")), _as_optional_str(row.get("exit_order_uuid"))),
+                        plan_id=_as_optional_str(row.get("plan_id")),
+                        entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
+                        entry_filled_ts_ms=_coalesce_int(_as_optional_int(row.get("entry_filled_ts_ms")), _as_optional_int((entry_order or {}).get("updated_ts"))),
+                        exit_ts_ms=exit_ts,
+                        entry_price=entry_price,
+                        exit_price=exit_price,
+                        qty=qty,
+                        entry_notional_quote=cost_metrics["entry_total_quote"],
+                        exit_notional_quote=cost_metrics["exit_total_quote"],
+                        realized_pnl_quote=cost_metrics["net_pnl_quote"],
+                        realized_pnl_pct=cost_metrics["net_pnl_pct"],
+                        entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
+                        close_reason_code=close_reason_code,
+                        close_mode=close_mode,
+                        model_prob=_as_optional_float(row.get("model_prob")),
+                        selection_policy_mode=_as_optional_str(row.get("selection_policy_mode")),
+                        trade_action=_as_optional_str(row.get("trade_action")),
+                        expected_edge_bps=_as_optional_float(row.get("expected_edge_bps")),
+                        expected_downside_bps=_as_optional_float(row.get("expected_downside_bps")),
+                        expected_net_edge_bps=_as_optional_float(row.get("expected_net_edge_bps")),
+                        notional_multiplier=_as_optional_float(row.get("notional_multiplier")),
+                        entry_meta_json=_json_dumps(entry_meta_summary),
+                        exit_meta_json=_json_dumps(exit_meta_payload),
+                        updated_ts=_coalesce_int(exit_ts, _as_optional_int(row.get("updated_ts")), 0) or 0,
+                    )
+                )
+                updated += 1
+                compacted += 1
+                continue
             if (
                 status_value.strip().upper() == TRADE_JOURNAL_STATUS_PENDING
                 and isinstance(entry_order, dict)
@@ -909,11 +1023,13 @@ def _resolve_exit_order_for_journal(
     min_updated_ts: int | None = None,
     target_exit_ts: int | None = None,
 ) -> dict[str, Any] | None:
+    direct = None
     if exit_order_uuid:
         direct = next((item for item in store.list_orders(open_only=False) if str(item.get("uuid") or "") == str(exit_order_uuid)), None)
         if direct is not None and str(direct.get("local_state") or "").strip().upper() == "DONE":
             if min_updated_ts is None or int(direct.get("updated_ts") or 0) >= int(min_updated_ts):
-                return direct
+                if target_exit_ts is None or abs(int(direct.get("updated_ts") or 0) - int(target_exit_ts)) <= int(_EXIT_ORDER_TS_MATCH_GRACE_MS):
+                    return direct
     candidates: list[dict[str, Any]] = []
     for order in store.list_orders(open_only=False):
         if str(order.get("market") or "").strip().upper() != market:
@@ -927,6 +1043,20 @@ def _resolve_exit_order_for_journal(
         candidates.append(order)
     if not candidates:
         return None
+    if exit_order_uuid and direct is not None and direct in candidates:
+        if target_exit_ts is None:
+            return direct
+        nearest_candidate = min(
+            candidates,
+            key=lambda item: (
+                abs(int(item.get("updated_ts") or 0) - int(target_exit_ts)),
+                int(item.get("updated_ts") or 0),
+            ),
+        )
+        if nearest_candidate is direct:
+            return direct
+        if abs(int(direct.get("updated_ts") or 0) - int(target_exit_ts)) <= abs(int(nearest_candidate.get("updated_ts") or 0) - int(target_exit_ts)):
+            return direct
     preferred = [item for item in candidates if plan_id and _as_optional_str(item.get("tp_sl_link")) == plan_id]
     pool = preferred or candidates
     if target_exit_ts is not None:

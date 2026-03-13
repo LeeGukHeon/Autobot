@@ -435,6 +435,35 @@ def test_build_dashboard_snapshot_keeps_distinct_canonical_rows_with_shared_exit
     assert len(recent_trades) == 2
 
 
+def test_build_dashboard_snapshot_hides_synthetic_trade_rows_when_canonical_trade_exists(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        row = conn.execute(
+            "SELECT * FROM trade_journal WHERE journal_id = ?",
+            ("journal-1",),
+        ).fetchone()
+        assert row is not None
+        duplicate = list(row)
+        duplicate[0] = "trade-KRW-BTC-dup"
+        duplicate[3] = None
+        duplicate[4] = None
+        conn.execute(
+            "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(duplicate),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    recent_trades = snapshot["live"]["states"][0]["recent_trades"]
+
+    assert len(recent_trades) == 1
+    assert recent_trades[0]["journal_id"] == "journal-1"
+
+
 def test_build_dashboard_snapshot_excludes_unverified_close_from_pnl_summary(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
@@ -478,6 +507,7 @@ def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
     assert 'fmtPct(Number(plan.sl_pct) * 100)' not in js
     assert 'fmtPct(Number(plan.trail_pct) * 100)' not in js
     assert 'CANCELLED_ENTRY: "진입 취소"' in js
+    assert 'UPDATED_FROM_CLOSED_ORDERS: "체결 이력 보정 반영"' in js
 
 
 def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:

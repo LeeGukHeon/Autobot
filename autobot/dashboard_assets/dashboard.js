@@ -33,6 +33,10 @@
     MODEL_ALPHA_EXIT_TP: "목표 수익에 도달해 정리",
     MODEL_ALPHA_EXIT_SL: "허용 손실을 넘어 정리",
     MODEL_ALPHA_EXIT_TRAILING: "수익 보호 추적선에 닿아 정리",
+    UPDATED_FROM_CLOSED_ORDERS: "체결 이력 보정 반영",
+    CLOSED_ORDERS_BACKFILL: "체결 이력 역보정",
+    EXCHANGE_SNAPSHOT: "거래소 스냅샷 반영",
+    POSITION_CLOSED: "포지션 종료",
     POLICY_OK: "정책 통과",
     ALLOW: "진입 가능"
   };
@@ -73,7 +77,15 @@
     SUBMITTED: "제출됨",
     SKIPPED: "건너뜀",
     REJECTED_ADMISSIBILITY: "주문 조건 거절",
-    CANCELLED_ENTRY: "진입 취소"
+    CANCELLED_ENTRY: "진입 취소",
+    done_ask_order: "매도 체결",
+    managed_exit_order: "관리형 청산",
+    missing_on_exchange_after_exit_plan: "청산 후 거래소 미보유 확인",
+    external_manual_order: "수동 외부 청산",
+    entry_order_timeout: "진입 주문 시간초과",
+    verified_exit_order: "체결 확인 완료",
+    unverified_position_sync: "포지션 동기화 기반",
+    unverified_missing_exit_order: "체결 주문 미확인"
   };
 
   const SERVICE_LABELS = {

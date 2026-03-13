@@ -687,21 +687,31 @@ def _trade_journal_dedupe_key(
     return ("journal_id", journal_id)
 
 
+def _is_synthetic_closed_trade_row(item: dict[str, Any]) -> bool:
+    journal_id = str(item.get("journal_id") or "").strip()
+    status = str(item.get("status") or "").strip().upper()
+    if status != "CLOSED":
+        return False
+    if str(item.get("entry_intent_id") or "").strip():
+        return False
+    if str(item.get("entry_order_uuid") or "").strip():
+        return False
+    return journal_id.startswith("imported-") or journal_id.startswith("trade-")
+
+
 def _dedupe_trade_journal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     canonical_exit_order_uuids: set[str] = set()
     for row in rows:
         item = _summarize_live_trade_journal(row)
-        journal_id = str(item.get("journal_id") or "").strip()
         exit_uuid = str(item.get("exit_order_uuid") or "").strip()
-        if exit_uuid and not journal_id.startswith("imported-"):
+        if exit_uuid and not _is_synthetic_closed_trade_row(item):
             canonical_exit_order_uuids.add(exit_uuid)
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for row in rows:
         item = _summarize_live_trade_journal(row)
-        journal_id = str(item.get("journal_id") or "").strip()
         exit_uuid = str(item.get("exit_order_uuid") or "").strip()
-        if journal_id.startswith("imported-") and exit_uuid and exit_uuid in canonical_exit_order_uuids:
+        if _is_synthetic_closed_trade_row(item) and exit_uuid and exit_uuid in canonical_exit_order_uuids:
             continue
         key = _trade_journal_dedupe_key(row)
         if key in seen:
