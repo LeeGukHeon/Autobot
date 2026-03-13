@@ -573,6 +573,11 @@
       button.classList.toggle("active", active);
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
+    document.querySelectorAll(".quick-tab-button").forEach((button) => {
+      const active = button.dataset.tab === nextTab;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
     document.querySelectorAll(".pane").forEach((pane) => {
       pane.hidden = pane.dataset.pane !== nextTab;
     });
@@ -593,6 +598,15 @@
       setTab(button.dataset.tab);
       setDrawerOpen(false);
     });
+    const quickTabs = document.getElementById("mobile-quick-tabs");
+    if (quickTabs) {
+      quickTabs.addEventListener("click", (event) => {
+        const button = event.target.closest(".quick-tab-button");
+        if (!button) return;
+        event.preventDefault();
+        setTab(button.dataset.tab);
+      });
+    }
     window.addEventListener("hashchange", () => {
       const nextTab = location.hash.replace("#", "");
       if (TABS.has(nextTab)) setTab(nextTab, false);
