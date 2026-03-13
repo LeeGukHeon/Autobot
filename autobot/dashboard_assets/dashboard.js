@@ -336,8 +336,9 @@
     node.textContent = message;
   }
 
-  function setTab(nextTab, updateHash = true) {
+  function setTab(nextTab, updateHash = true, options = {}) {
     if (!TABS.has(nextTab)) return;
+    const scroll = options.scroll !== false;
     state.activeTab = nextTab;
     document.querySelectorAll(".tab-button").forEach((button) => {
       const active = button.dataset.tab === nextTab;
@@ -348,9 +349,11 @@
       pane.hidden = pane.dataset.pane !== nextTab;
     });
     if (updateHash) history.replaceState(null, "", `#${nextTab}`);
-    const workspace = document.querySelector(".workspace");
-    if (workspace && typeof workspace.scrollTo === "function") workspace.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    if (scroll) {
+      const workspace = document.querySelector(".workspace");
+      if (workspace && typeof workspace.scrollTo === "function") workspace.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
   }
 
   function bindTabs() {
@@ -631,6 +634,24 @@
       ? `현재 ${positions.length}개 포지션을 관리 중입니다. 핵심 상태는 ${riskPlanNarrative(primaryPlan)}`
       : `${selected.label}는 현재 보유 포지션 없이 관찰 중입니다.`;
     const todaySummaryLine = `${maybe(today.date_label, "-")} ${maybe(today.timezone, "KST")} 기준으로 종료 ${maybe(today.closed_count, "0")}건 중 손익 확정 ${verifiedClosed}건, 미확정 ${unverifiedClosed}건입니다. 확정 거래 기준 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}, 순손익 ${fmtMoney(today.net_pnl_quote_total)}입니다. 현재 기준으로는 ${maybe(today.current_positions_count, "0")}개 보유, ${maybe(today.current_pending_orders_count, "0")}개 진입 대기입니다.`;
+    const positionFocus = primaryPosition ? `
+      <div class="position-focus">
+        <div class="position-focus-head">
+          <div>
+            <h5>현재 핵심 보유</h5>
+            <strong>${esc(primaryPosition.market || "-")}</strong>
+            <p>${esc(topSummary)}</p>
+          </div>
+          ${pill("실시간", primaryPosition.current_price == null ? "지연" : "동기화", primaryPosition.current_price == null ? "warn" : "good")}
+        </div>
+        <div class="metric-grid">
+          ${metric("현재가", fmtMoney(primaryPosition.current_price))}
+          ${metric("평균 매수가", fmtMoney(primaryPosition.avg_entry_price))}
+          ${metric("현재 수익률", fmtPct(primaryPosition.unrealized_pnl_pct))}
+          ${metric("평가손익", fmtMoney(primaryPosition.unrealized_pnl_quote))}
+        </div>
+      </div>
+    ` : "";
 
     const positionSection = positions.length
       ? terminalTable(
@@ -703,7 +724,7 @@
       )
       : empty("아직 거래 저널이 없습니다.");
 
-    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><p class="section-copy">${esc(liveNarrative)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("손익 확정", maybe(today.verified_closed_count, "0"))}${metric("미확정 종료", maybe(today.unverified_closed_count, "0"))}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("현재 미종결", `${maybe(today.current_positions_count, "0")}개 보유 / ${maybe(today.current_pending_orders_count, "0")}개 대기`)}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 상태", pointerStatus)}${kv("공용 WS", runtime.ws_public_stale ? "수신 오래됨" : "정상 수신")}${kv("개인 체결 WS", privateWsFreshness)}${kv("마지막 개인 WS", fmtDateTime(privateWsLastTs))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections terminal-layout"><section class="section-block section-primary"><h5>현재 보유</h5>${positionSection}</section><section class="section-block"><h5>매도 플랜</h5>${planSection}</section><section class="section-block"><h5>미체결 주문</h5>${orderSection}</section><section class="section-block section-primary"><h5>최근 거래</h5>${tradeSection}</section></div></article>`;
+    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p class="section-copy">${esc(liveNarrative)}</p>${positionFocus}<div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("손익 확정", maybe(today.verified_closed_count, "0"))}${metric("미확정 종료", maybe(today.unverified_closed_count, "0"))}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("현재 미종결", `${maybe(today.current_positions_count, "0")}개 보유 / ${maybe(today.current_pending_orders_count, "0")}개 대기`)}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 상태", pointerStatus)}${kv("공용 WS", runtime.ws_public_stale ? "수신 오래됨" : "정상 수신")}${kv("개인 체결 WS", privateWsFreshness)}${kv("마지막 개인 WS", fmtDateTime(privateWsLastTs))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections terminal-layout"><section class="section-block section-primary"><h5>현재 보유</h5>${positionSection}</section><section class="section-block"><h5>매도 플랜</h5>${planSection}</section><section class="section-block"><h5>미체결 주문</h5>${orderSection}</section><section class="section-block section-primary"><h5>최근 거래</h5>${tradeSection}</section></div></article>`;
   }
 
   function renderWs(snapshot) {
@@ -736,7 +757,7 @@
     renderPaper(snapshot);
     renderLive(snapshot);
     renderWs(snapshot);
-    setTab(state.activeTab, false);
+    setTab(state.activeTab, false, { scroll: false });
   }
 
   async function refresh() {
@@ -798,7 +819,7 @@
   bindLayout();
   bindTabs();
   renderAll(INITIAL_SNAPSHOT);
-  setTab(state.activeTab, false);
+  setTab(state.activeTab, false, { scroll: false });
   refresh();
   startStream();
 })();

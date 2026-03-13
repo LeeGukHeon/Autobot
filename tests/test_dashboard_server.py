@@ -482,6 +482,8 @@ def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
 
 def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     js = str(_load_dashboard_asset("dashboard.js"))
+    html = str(_load_dashboard_asset("index.html"))
+    css = str(_load_dashboard_asset("dashboard.css"))
 
     assert 'if (value == null) return null;' in js
     assert 'if (typeof value === "string" && value.trim() === "") return null;' in js
@@ -496,6 +498,9 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "return bTs - aTs;" in js
     assert "현재 미종결" in js
     assert "current_pending_orders_count" in js
+    assert "setTab(state.activeTab, false, { scroll: false });" in js
+    assert "position-focus" in css
+    assert "mobile-menu-label" in html
 
 
 def test_unit_snapshot_normalizes_blank_timer_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
