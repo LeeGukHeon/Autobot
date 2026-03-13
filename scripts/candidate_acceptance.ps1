@@ -1352,11 +1352,6 @@ function Resolve-SplitPolicySelection {
             $admissibilityReasons += "HISTORICAL_ANCHOR_COUNT_LT_MIN"
         }
         $admissibilityReasons = @(Merge-UniqueStringArray -First @($admissibilityReasons) -Second @())
-        if ($null -eq $admissibilityReasons) {
-            $admissibilityReasons = @()
-        } else {
-            $admissibilityReasons = @($admissibilityReasons)
-        }
         $admissible = ($admissibilityReasons.Count -eq 0)
         $summaryItem = [ordered]@{
             holdout_days = [int]$holdoutDays
