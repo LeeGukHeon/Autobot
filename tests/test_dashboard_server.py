@@ -310,7 +310,16 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
         },
     )
 
-    snapshot = build_dashboard_snapshot(project_root)
+    import autobot.dashboard_server as dashboard_server_module
+
+    original_ticker_loader = dashboard_server_module._load_live_market_tickers
+    dashboard_server_module._load_live_market_tickers = lambda project_root, markets: {  # type: ignore[assignment]
+        "KRW-BTC": {"trade_price": 104.0, "trade_timestamp": int(time.time() * 1000)}
+    }
+    try:
+        snapshot = build_dashboard_snapshot(project_root)
+    finally:
+        dashboard_server_module._load_live_market_tickers = original_ticker_loader  # type: ignore[assignment]
     runtime_artifacts = snapshot["live"]["states"][0]["runtime_artifacts"]
     runtime_recommendations = runtime_artifacts["runtime_recommendations"]
     exit_compare = runtime_recommendations["exit_mode_compare"]
@@ -326,6 +335,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["open_orders_count"] == 1
     assert snapshot["live"]["states"][0]["active_risk_plans_count"] == 1
     assert snapshot["live"]["states"][0]["recent_trades"][0]["realized_pnl_quote"] == 3.0
+    assert snapshot["live"]["states"][0]["positions"] == []
     assert today_summary["closed_count"] == 1
     assert today_summary["wins"] == 1
     assert today_summary["net_pnl_quote_total"] == 3.0
@@ -477,6 +487,9 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "미확정 종료" in js
     assert "개인 체결 WS" in js
     assert "후보 모델 추적 중" in js
+    assert "현재 수익률" in js
+    assert "EventSource" in js
+    assert "/api/stream" in js
 
 
 def test_unit_snapshot_normalizes_blank_timer_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:

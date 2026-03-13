@@ -18,6 +18,9 @@ from urllib.parse import urlparse
 
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
+from autobot.upbit.config import load_upbit_settings
+from autobot.upbit.http_client import UpbitHttpClient
+from autobot.upbit.public import UpbitPublicClient
 
 
 DEFAULT_DASHBOARD_HOST = "0.0.0.0"
@@ -151,6 +154,43 @@ def _filesystem_usage(project_root: Path) -> dict[str, Any]:
         "free_bytes": int(usage.free),
         "project_used_bytes": int(_project_size_bytes(project_root)),
     }
+
+
+@lru_cache(maxsize=16)
+def _cached_live_market_tickers(project_root_str: str, bucket: int, markets_key: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    _ = bucket
+    project_root = Path(project_root_str)
+    if not markets_key:
+        return {}
+    try:
+        settings = load_upbit_settings(project_root / "config")
+        with UpbitHttpClient(settings) as http_client:
+            client = UpbitPublicClient(http_client)
+            payload = client.ticker(markets_key)
+    except Exception:
+        return {}
+    if not isinstance(payload, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        market = str(item.get("market") or "").strip().upper()
+        if not market:
+            continue
+        out[market] = {
+            "market": market,
+            "trade_price": _coerce_float(item.get("trade_price")),
+            "trade_timestamp": _coerce_int(item.get("trade_timestamp") or item.get("timestamp")),
+            "signed_change_rate": _coerce_float(item.get("signed_change_rate")),
+        }
+    return out
+
+
+def _load_live_market_tickers(project_root: Path, markets: list[str]) -> dict[str, dict[str, Any]]:
+    normalized = tuple(sorted({str(item).strip().upper() for item in markets if str(item).strip()}))
+    bucket = int(time.time() // 2)
+    return _cached_live_market_tickers(str(project_root.resolve()), bucket, normalized)
 
 
 def _systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
@@ -359,13 +399,28 @@ def _derive_live_exit_mode(plan: dict[str, Any]) -> str:
     return "none"
 
 
-def _summarize_live_position(row: dict[str, Any]) -> dict[str, Any]:
+def _summarize_live_position(row: dict[str, Any], *, market_tickers: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    market = row.get("market")
+    avg_entry_price = _coerce_float(row.get("avg_entry_price"))
+    base_amount = _coerce_float(row.get("base_amount"))
+    ticker = dict((market_tickers or {}).get(str(market or "").strip().upper()) or {})
+    current_price = _coerce_float(ticker.get("trade_price"))
+    unrealized_pnl_quote = None
+    unrealized_pnl_pct = None
+    if current_price is not None and avg_entry_price is not None and base_amount is not None:
+        unrealized_pnl_quote = (float(current_price) - float(avg_entry_price)) * float(base_amount)
+        if float(avg_entry_price) > 0:
+            unrealized_pnl_pct = ((float(current_price) / float(avg_entry_price)) - 1.0) * 100.0
     return {
-        "market": row.get("market"),
-        "base_amount": _coerce_float(row.get("base_amount")),
-        "avg_entry_price": _coerce_float(row.get("avg_entry_price")),
+        "market": market,
+        "base_amount": base_amount,
+        "avg_entry_price": avg_entry_price,
         "managed": bool(row.get("managed", 1)),
         "updated_ts": _coerce_int(row.get("updated_ts")),
+        "current_price": current_price,
+        "current_price_ts_ms": _coerce_int(ticker.get("trade_timestamp")),
+        "unrealized_pnl_quote": unrealized_pnl_quote,
+        "unrealized_pnl_pct": unrealized_pnl_pct,
     }
 
 
@@ -787,6 +842,10 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         active_risk_plans = [row for row in risk_plans if str(row.get("state") or "").upper() in {"ACTIVE", "TRIGGERED", "EXITING"}]
         active_breakers = [row for row in breaker_states if bool(row.get("active"))]
         now_ts_ms = int(time.time() * 1000)
+        market_tickers = _load_live_market_tickers(
+            project_root,
+            [str(row.get("market") or "").strip().upper() for row in positions],
+        )
         active_risk_plan_payloads: list[dict[str, Any]] = []
         for row in active_risk_plans[:8]:
             payload = _summarize_live_risk_plan(row)
@@ -817,10 +876,14 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             "intents_count": len(intents),
             "active_risk_plans_count": len(active_risk_plans),
             "breaker_active": len(active_breakers) > 0,
-            "positions": [_summarize_live_position(row) for row in positions[:8]],
+            "positions": [_summarize_live_position(row, market_tickers=market_tickers) for row in positions[:8]],
             "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
             "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
-            "recent_trades": [_summarize_live_trade_journal(row) for row in deduped_trade_journal[:8]],
+            "recent_trades": [
+                _summarize_live_trade_journal(row)
+                for row in deduped_trade_journal
+                if str(row.get("status") or "").strip().upper() == "CLOSED"
+            ][:8],
             "today_trade_summary": _summarize_kst_trade_day(deduped_trade_journal, now_ts_ms=now_ts_ms),
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
@@ -1142,6 +1205,28 @@ def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], sta
         return
 
 
+def _sse_response(handler: BaseHTTPRequestHandler, project_root: Path, *, interval_sec: float = 2.0) -> None:
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store, max-age=0")
+    handler.send_header("Connection", "keep-alive")
+    handler.end_headers()
+    try:
+        handler.wfile.write(b"retry: 5000\n\n")
+        handler.wfile.flush()
+        while True:
+            payload = build_dashboard_snapshot(project_root)
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            handler.wfile.write(b"event: snapshot\n")
+            handler.wfile.write(b"data: ")
+            handler.wfile.write(body)
+            handler.wfile.write(b"\n\n")
+            handler.wfile.flush()
+            time.sleep(max(float(interval_sec), 0.5))
+    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+        return
+
+
 def _html_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
@@ -1219,6 +1304,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 _json_response(self, {"ok": False, "error": str(exc), "generated_at": _utc_now_iso()}, status=500)
                 return
             _json_response(self, payload)
+            return
+        if parsed.path == "/api/stream":
+            try:
+                _sse_response(self, self.project_root)
+            except Exception:  # pragma: no cover
+                return
             return
         _json_response(self, {"ok": False, "error": "not_found"}, status=404)
 

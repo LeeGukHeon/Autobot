@@ -94,7 +94,9 @@
   const INITIAL_SNAPSHOT = JSON.parse(document.getElementById("initial-snapshot").textContent || "{}");
   const state = {
     activeTab: TABS.has(location.hash.replace("#", "")) ? location.hash.replace("#", "") : "overview",
-    activeLiveLabel: null
+    activeLiveLabel: null,
+    stream: null,
+    fallbackRefreshTimer: null
   };
 
   function esc(value) {
@@ -559,7 +561,7 @@
     const positionSection = positions.length
       ? positions.map((position) => card(
         position.market || "-",
-        `<div class="kv-grid">${kv("보유 수량", `${fmtNumber(position.base_amount, 8)}개`)}${kv("평균 매수가", fmtMoney(position.avg_entry_price))}${kv("원금", fmtMoney((toNumber(position.base_amount) || 0) * (toNumber(position.avg_entry_price) || 0)))}${kv("최근 갱신", fmtDateTime(position.updated_ts))}</div>`,
+        `<div class="kv-grid">${kv("보유 수량", `${fmtNumber(position.base_amount, 8)}개`)}${kv("평균 매수가", fmtMoney(position.avg_entry_price))}${kv("현재가", fmtMoney(position.current_price))}${kv("현재 수익률", fmtPct(position.unrealized_pnl_pct))}${kv("평가손익", fmtMoney(position.unrealized_pnl_quote))}${kv("최근 갱신", fmtDateTime(position.updated_ts))}</div>`,
         "mini-card"
       )).join("")
       : empty("보유 종목이 없습니다.");
@@ -656,11 +658,54 @@
     }
   }
 
+  function startFallbackRefresh() {
+    if (state.fallbackRefreshTimer != null) return;
+    state.fallbackRefreshTimer = setInterval(refresh, 15000);
+  }
+
+  function stopFallbackRefresh() {
+    if (state.fallbackRefreshTimer == null) return;
+    clearInterval(state.fallbackRefreshTimer);
+    state.fallbackRefreshTimer = null;
+  }
+
+  function startStream() {
+    if (!("EventSource" in window)) {
+      startFallbackRefresh();
+      return;
+    }
+    if (state.stream) {
+      state.stream.close();
+    }
+    const stream = new EventSource("/api/stream");
+    state.stream = stream;
+    stream.onopen = () => {
+      stopFallbackRefresh();
+      setError("");
+    };
+    stream.onmessage = (event) => {
+      try {
+        renderAll(JSON.parse(event.data));
+        setError("");
+      } catch (err) {
+        setError(`실시간 데이터 해석 실패: ${err && err.message ? err.message : err}`);
+      }
+    };
+    stream.onerror = () => {
+      if (state.stream === stream) {
+        stream.close();
+        state.stream = null;
+      }
+      startFallbackRefresh();
+      setError("실시간 연결이 불안정해 보조 새로고침으로 전환했습니다.");
+    };
+  }
+
   document.getElementById("refresh-btn").addEventListener("click", refresh);
   bindTabs();
   renderAll(INITIAL_SNAPSHOT);
   setTab(state.activeTab, false);
   refresh();
-  setInterval(refresh, 10000);
+  startStream();
 })();
 
