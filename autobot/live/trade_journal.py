@@ -362,12 +362,23 @@ def close_trade_journal_for_market(
         if lookup_exit_uuid is not None:
             existing = store.trade_journal_by_exit_order_uuid(exit_order_uuid=lookup_exit_uuid)
     if existing is None:
+        existing = _latest_matching_live_trade_journal(store=store, market=market_value, position=position)
+    if existing is None:
         risk_plan = _risk_plan_for_close(store=store, market=market_value, plan_id=resolved_plan)
         fallback_intent_id = _as_optional_str((risk_plan or {}).get("source_intent_id"))
         if resolved_plan is None:
             resolved_plan = _as_optional_str((risk_plan or {}).get("plan_id"))
         if fallback_intent_id:
             existing = store.trade_journal_by_entry_intent(entry_intent_id=fallback_intent_id)
+    if existing is None:
+        recent_closed = _latest_matching_recent_closed_trade_journal(
+            store=store,
+            market=market_value,
+            position=position,
+            ts_ms=int(ts_ms),
+        )
+        if recent_closed is not None:
+            return _as_optional_str(recent_closed.get("journal_id"))
         if existing is None:
             existing = {
                 "journal_id": f"imported-{market_value}-{int(ts_ms)}",
@@ -432,20 +443,15 @@ def close_trade_journal_for_market(
         _derive_close_mode(order=latest_done_exit),
         "position_sync",
     )
+    close_verification_status = _derive_close_verification_status(
+        order=latest_done_exit,
+        close_mode=resolved_close_mode,
+    )
+    close_verified = close_verification_status == "verified_exit_order"
     resolved_plan = _coalesce_str(
         resolved_plan,
         _as_optional_str((existing or {}).get("plan_id")),
         _as_optional_str((_risk_plan_for_close(store=store, market=market_value, plan_id=resolved_plan) or {}).get("plan_id")),
-    )
-    realized_pnl_quote = (
-        (resolved_exit_price - entry_price) * qty
-        if resolved_exit_price is not None and entry_price is not None and qty is not None
-        else None
-    )
-    realized_pnl_pct = (
-        ((resolved_exit_price / entry_price) - 1.0) * 100.0
-        if resolved_exit_price is not None and entry_price is not None and entry_price > 0.0
-        else None
     )
     exit_meta_payload = dict(exit_meta or {})
     if latest_done_exit is not None:
@@ -463,13 +469,17 @@ def close_trade_journal_for_market(
         )
     exit_meta_payload.setdefault("close_mode", resolved_close_mode)
     exit_meta_payload.setdefault("close_reason_code", resolved_close_reason)
+    exit_meta_payload["close_verification_status"] = close_verification_status
+    exit_meta_payload["close_verified"] = close_verified
+    if not close_verified and resolved_exit_price is not None:
+        exit_meta_payload.setdefault("observed_exit_price", resolved_exit_price)
     entry_meta_summary = _build_entry_meta_summary((existing or {}).get("entry_meta"))
     cost_metrics = _compute_cost_metrics(
         entry_meta=entry_meta_summary,
         entry_order=entry_order,
-        exit_order=latest_done_exit,
+        exit_order=latest_done_exit if close_verified else None,
         entry_price=entry_price,
-        exit_price=resolved_exit_price,
+        exit_price=resolved_exit_price if close_verified else None,
         qty=qty,
     )
     exit_meta_payload.update(
@@ -499,12 +509,12 @@ def close_trade_journal_for_market(
             entry_filled_ts_ms=_as_optional_int((existing or {}).get("entry_filled_ts_ms")),
             exit_ts_ms=exit_ts,
             entry_price=entry_price,
-            exit_price=resolved_exit_price,
+            exit_price=resolved_exit_price if close_verified else None,
             qty=qty,
             entry_notional_quote=cost_metrics["entry_total_quote"],
-            exit_notional_quote=cost_metrics["exit_total_quote"],
-            realized_pnl_quote=cost_metrics["net_pnl_quote"],
-            realized_pnl_pct=cost_metrics["net_pnl_pct"],
+            exit_notional_quote=cost_metrics["exit_total_quote"] if close_verified else None,
+            realized_pnl_quote=cost_metrics["net_pnl_quote"] if close_verified else None,
+            realized_pnl_pct=cost_metrics["net_pnl_pct"] if close_verified else None,
             entry_reason_code=_as_optional_str((existing or {}).get("entry_reason_code")),
             close_reason_code=resolved_close_reason,
             close_mode=resolved_close_mode,
@@ -567,12 +577,17 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                 _as_optional_float(row.get("exit_price")),
             )
             exit_ts = _coalesce_int(_as_optional_int((exit_order or {}).get("updated_ts")), _as_optional_int(row.get("exit_ts_ms")))
+            close_verification_status = _derive_close_verification_status(
+                order=exit_order,
+                close_mode=_coalesce_str(_as_optional_str(row.get("close_mode")), _as_optional_str(exit_meta_payload.get("close_mode"))),
+            )
+            close_verified = close_verification_status == "verified_exit_order"
             cost_metrics = _compute_cost_metrics(
                 entry_meta=entry_meta_summary,
                 entry_order=entry_order,
-                exit_order=exit_order,
+                exit_order=exit_order if close_verified else None,
                 entry_price=entry_price,
-                exit_price=exit_price,
+                exit_price=exit_price if close_verified else None,
                 qty=qty,
             )
             exit_meta_payload.update(
@@ -587,8 +602,12 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
                     "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
                     "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
+                    "close_verification_status": close_verification_status,
+                    "close_verified": close_verified,
                 }
             )
+            if not close_verified and exit_price is not None:
+                exit_meta_payload.setdefault("observed_exit_price", exit_price)
             store.upsert_trade_journal(
                 TradeJournalRecord(
                     journal_id=str(row.get("journal_id")),
@@ -602,12 +621,12 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     entry_filled_ts_ms=_as_optional_int(row.get("entry_filled_ts_ms")),
                     exit_ts_ms=exit_ts,
                     entry_price=entry_price,
-                    exit_price=exit_price,
+                    exit_price=exit_price if close_verified else None,
                     qty=qty,
                     entry_notional_quote=cost_metrics["entry_total_quote"],
-                    exit_notional_quote=cost_metrics["exit_total_quote"],
-                    realized_pnl_quote=cost_metrics["net_pnl_quote"],
-                    realized_pnl_pct=cost_metrics["net_pnl_pct"],
+                    exit_notional_quote=cost_metrics["exit_total_quote"] if close_verified else None,
+                    realized_pnl_quote=cost_metrics["net_pnl_quote"] if close_verified else None,
+                    realized_pnl_pct=cost_metrics["net_pnl_pct"] if close_verified else None,
                     entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
                     close_reason_code=_coalesce_str(_as_optional_str(row.get("close_reason_code")), _as_optional_str((exit_order or {}).get("last_event_name"))),
                     close_mode=_coalesce_str(_as_optional_str(row.get("close_mode")), _derive_close_mode(order=exit_order)),
@@ -747,6 +766,45 @@ def _latest_live_trade_journal(*, store: LiveStateStore, market: str) -> dict[st
         limit=1,
     )
     return rows[0] if rows else None
+
+
+def _latest_matching_live_trade_journal(
+    *,
+    store: LiveStateStore,
+    market: str,
+    position: dict[str, Any],
+) -> dict[str, Any] | None:
+    rows = store.list_trade_journal(
+        market=market,
+        statuses=(TRADE_JOURNAL_STATUS_OPEN, TRADE_JOURNAL_STATUS_PENDING),
+        limit=8,
+    )
+    for row in rows:
+        if _position_matches_trade_journal(position=position, row=row):
+            return row
+    return None
+
+
+def _latest_matching_recent_closed_trade_journal(
+    *,
+    store: LiveStateStore,
+    market: str,
+    position: dict[str, Any],
+    ts_ms: int,
+    grace_ms: int = 300_000,
+) -> dict[str, Any] | None:
+    rows = store.list_trade_journal(
+        market=market,
+        statuses=(TRADE_JOURNAL_STATUS_CLOSED,),
+        limit=8,
+    )
+    for row in rows:
+        exit_ts = _as_optional_int(row.get("exit_ts_ms"))
+        if exit_ts is None or abs(int(ts_ms) - exit_ts) > int(grace_ms):
+            continue
+        if _position_matches_trade_journal(position=position, row=row):
+            return row
+    return None
 
 
 def _risk_plan_for_close(
@@ -1210,6 +1268,53 @@ def _derive_close_mode(*, order: dict[str, Any] | None) -> str | None:
     if _as_optional_str(order.get("tp_sl_link")):
         return "managed_exit_order"
     return "done_ask_order"
+
+
+def _derive_close_verification_status(*, order: dict[str, Any] | None, close_mode: str | None) -> str:
+    if _has_verified_exit_order(order=order):
+        return "verified_exit_order"
+    mode = _as_optional_str(close_mode)
+    if mode == "position_sync":
+        return "unverified_position_sync"
+    return "unverified_missing_exit_order"
+
+
+def _has_verified_exit_order(*, order: dict[str, Any] | None) -> bool:
+    if not isinstance(order, dict):
+        return False
+    side = str(order.get("side") or "").strip().lower()
+    if side and side != "ask":
+        return False
+    state = str(order.get("state") or "").strip().lower()
+    local_state = str(order.get("local_state") or "").strip().upper()
+    executed_funds = _as_optional_float(order.get("executed_funds"))
+    volume_filled = _as_optional_float(order.get("volume_filled"))
+    if executed_funds is not None and executed_funds > 0.0:
+        return True
+    if volume_filled is not None and volume_filled > 0.0:
+        return True
+    if state == "done" or local_state == "DONE":
+        return True
+    return False
+
+
+def _position_matches_trade_journal(*, position: dict[str, Any], row: dict[str, Any]) -> bool:
+    market = str(position.get("market") or row.get("market") or "").strip().upper()
+    if not market or market != str(row.get("market") or "").strip().upper():
+        return False
+    position_qty = _as_optional_float(position.get("base_amount"))
+    row_qty = _as_optional_float(row.get("qty"))
+    if position_qty is not None and row_qty is not None and abs(position_qty - row_qty) > max(1e-8, abs(position_qty) * 1e-6):
+        return False
+    position_entry_price = _as_optional_float(position.get("avg_entry_price"))
+    row_entry_price = _as_optional_float(row.get("entry_price"))
+    if (
+        position_entry_price is not None
+        and row_entry_price is not None
+        and abs(position_entry_price - row_entry_price) > max(1e-8, abs(position_entry_price) * 1e-6)
+    ):
+        return False
+    return True
 
 
 def _resolve_journal_id(

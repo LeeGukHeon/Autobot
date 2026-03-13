@@ -607,6 +607,8 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         "notional_multiplier": _coerce_float(row.get("notional_multiplier")),
         "entry_meta": entry_meta,
         "exit_meta": exit_meta,
+        "close_verified": bool(exit_meta.get("close_verified")) if exit_meta.get("close_verified") is not None else None,
+        "close_verification_status": exit_meta.get("close_verification_status"),
     }
 
 
@@ -665,6 +667,8 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
         "date_label": start_dt.strftime("%Y-%m-%d"),
         "timezone": "KST",
         "closed_count": 0,
+        "verified_closed_count": 0,
+        "unverified_closed_count": 0,
         "open_count": 0,
         "pending_count": 0,
         "cancelled_count": 0,
@@ -685,6 +689,10 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
             if exit_ts_ms is None or exit_ts_ms < start_ts_ms or exit_ts_ms >= end_ts_ms:
                 continue
             summary["closed_count"] += 1
+            if item.get("close_verified") is False:
+                summary["unverified_closed_count"] += 1
+                continue
+            summary["verified_closed_count"] += 1
             pnl = _coerce_float(item.get("realized_pnl_quote")) or 0.0
             gross = _coerce_float(item.get("gross_pnl_quote")) or 0.0
             fee = _coerce_float(item.get("total_fee_quote")) or 0.0
@@ -706,9 +714,9 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
         elif status == "CANCELLED_ENTRY":
             if exit_ts_ms is not None and start_ts_ms <= exit_ts_ms < end_ts_ms:
                 summary["cancelled_count"] += 1
-    closed_count = int(summary["closed_count"])
-    if closed_count > 0:
-        summary["win_rate_pct"] = (float(summary["wins"]) / float(closed_count)) * 100.0
+    verified_closed_count = int(summary["verified_closed_count"])
+    if verified_closed_count > 0:
+        summary["win_rate_pct"] = (float(summary["wins"]) / float(verified_closed_count)) * 100.0
     return summary
 
 

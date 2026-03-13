@@ -403,6 +403,86 @@ def test_close_trade_journal_reuses_existing_row_by_exit_order_uuid(tmp_path) ->
     assert rows[0]["journal_id"] == "journal-existing"
 
 
+def test_close_trade_journal_reuses_matching_open_row_before_importing_position_sync(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-open",
+                market="KRW-NOM",
+                status="OPEN",
+                entry_intent_id="intent-nom",
+                entry_order_uuid="entry-order-nom",
+                exit_order_uuid=None,
+                plan_id=None,
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                entry_price=7.49,
+                qty=751.77764922,
+                entry_notional_quote=5633.63,
+                updated_ts=1_100,
+            )
+        )
+
+        journal_id = close_trade_journal_for_market(
+            store=store,
+            market="KRW-NOM",
+            position={"market": "KRW-NOM", "base_amount": 751.77764922, "avg_entry_price": 7.49, "updated_ts": 2_000},
+            ts_ms=2_000,
+            exit_price=7.73,
+            plan_id=None,
+        )
+        rows = store.list_trade_journal(statuses=("CLOSED",), market="KRW-NOM")
+
+    assert journal_id == "journal-open"
+    assert len(rows) == 1
+    assert rows[0]["journal_id"] == "journal-open"
+    assert rows[0]["realized_pnl_quote"] is None
+    assert rows[0]["exit_price"] is None
+    assert rows[0]["exit_meta"]["close_verified"] is False
+    assert rows[0]["exit_meta"]["close_verification_status"] == "unverified_position_sync"
+    assert rows[0]["exit_meta"]["observed_exit_price"] == 7.73
+
+
+def test_recompute_trade_journal_records_clears_unverified_close_pnl(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-unverified",
+                market="KRW-NOM",
+                status="CLOSED",
+                entry_intent_id="intent-nom",
+                entry_order_uuid="entry-order-nom",
+                exit_order_uuid="exit-order-missing",
+                plan_id="plan-nom",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=2_000,
+                entry_price=7.49,
+                exit_price=7.73,
+                qty=751.77764922,
+                entry_notional_quote=5633.63,
+                exit_notional_quote=5811.24,
+                realized_pnl_quote=177.61,
+                realized_pnl_pct=3.15,
+                close_reason_code="POSITION_CLOSED",
+                close_mode="missing_on_exchange_after_exit_plan",
+                updated_ts=2_000,
+            )
+        )
+        compact_report = recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_id(journal_id="journal-unverified")
+
+    assert compact_report["rows_updated"] == 1
+    assert row is not None
+    assert row["realized_pnl_quote"] is None
+    assert row["realized_pnl_pct"] is None
+    assert row["exit_notional_quote"] is None
+    assert row["exit_price"] is None
+    assert row["exit_meta"]["close_verified"] is False
+    assert row["exit_meta"]["close_verification_status"] == "unverified_missing_exit_order"
+    assert row["exit_meta"]["observed_exit_price"] == 7.73
+
+
 def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_order(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(

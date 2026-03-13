@@ -381,6 +381,39 @@ def test_build_dashboard_snapshot_keeps_distinct_canonical_rows_with_shared_exit
     assert len(recent_trades) == 2
 
 
+def test_build_dashboard_snapshot_excludes_unverified_close_from_pnl_summary(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        row = conn.execute(
+            "SELECT exit_meta_json FROM trade_journal WHERE journal_id = ?",
+            ("journal-1",),
+        ).fetchone()
+        assert row is not None
+        exit_meta = json.loads(row[0])
+        exit_meta["close_verified"] = False
+        exit_meta["close_verification_status"] = "unverified_position_sync"
+        conn.execute(
+            "UPDATE trade_journal SET exit_meta_json = ?, realized_pnl_quote = NULL, exit_notional_quote = NULL, exit_price = NULL WHERE journal_id = ?",
+            (json.dumps(exit_meta, ensure_ascii=False, sort_keys=True), "journal-1"),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    today_summary = snapshot["live"]["states"][0]["today_trade_summary"]
+    recent_trade = snapshot["live"]["states"][0]["recent_trades"][0]
+
+    assert today_summary["closed_count"] == 1
+    assert today_summary["verified_closed_count"] == 0
+    assert today_summary["unverified_closed_count"] == 1
+    assert today_summary["net_pnl_quote_total"] == 0.0
+    assert recent_trade["close_verified"] is False
+    assert recent_trade["close_verification_status"] == "unverified_position_sync"
+
+
 def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
     js = str(_load_dashboard_asset("dashboard.js"))
 
