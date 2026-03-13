@@ -834,6 +834,41 @@
       (Number(item.intents_count || 0));
   }
 
+  function liveStateServiceKey(item) {
+    const label = String((item || {}).label || "");
+    if (label.includes("후보")) return "live_candidate";
+    if (label.includes("메인")) return "live_main";
+    return null;
+  }
+
+  function liveStateService(snapshot, item) {
+    const key = liveStateServiceKey(item);
+    return key ? ((snapshot.services || {})[key] || {}) : {};
+  }
+
+  function liveStateHasActivity(item) {
+    return Boolean(
+      Number(item.positions_count || 0) > 0 ||
+      Number(item.open_orders_count || 0) > 0 ||
+      Number(item.active_risk_plans_count || 0) > 0 ||
+      Number(item.intents_count || 0) > 0 ||
+      item.breaker_active
+    );
+  }
+
+  function isFreshLiveState(item, maxAgeMs = 15 * 60 * 1000) {
+    const ts = coerceTs(item.updated_at);
+    return ts != null && (Date.now() - ts) <= maxAgeMs;
+  }
+
+  function shouldDisplayLiveState(snapshot, item) {
+    const service = liveStateService(snapshot, item);
+    const active = String(service.active_state || "").trim().toLowerCase() === "active";
+    if (active) return true;
+    if (liveStateHasActivity(item)) return true;
+    return isFreshLiveState(item);
+  }
+
   function holdModeText(plan) {
     const total = toNumber(plan.hold_total_minutes);
     const elapsed = toNumber(plan.hold_elapsed_minutes);
@@ -864,7 +899,9 @@
   }
 
   function renderLive(snapshot) {
-    const states = [...((snapshot.live || {}).states || [])].sort((a, b) => statePriority(b) - statePriority(a));
+    const allStates = [...((snapshot.live || {}).states || [])].sort((a, b) => statePriority(b) - statePriority(a));
+    const visibleStates = allStates.filter((item) => shouldDisplayLiveState(snapshot, item));
+    const states = visibleStates.length ? visibleStates : allStates;
     const summaryStrip = document.getElementById("live-summary-strip");
     const tabBar = document.getElementById("live-tab-bar");
     const container = document.getElementById("live-state-list");
@@ -878,20 +915,26 @@
         const active = liveState.label === state.activeLiveLabel;
         const todayState = liveState.today_trade_summary || {};
         const privateWsTs = coerceTs((liveState.last_ws_event || {}).event_ts_ms) || coerceTs((liveState.daemon_last_run || {}).private_ws_last_event_ts_ms);
+        const unit = liveStateService(snapshot, liveState);
+        const unitActive = String(unit.active_state || "").trim().toLowerCase() === "active";
         const selectorTone = liveState.breaker_active
           ? "bad"
           : Number(liveState.positions_count || 0) > 0
             ? "good"
             : Number(liveState.open_orders_count || 0) > 0
               ? "warn"
-              : "neutral";
+              : unitActive
+                ? "neutral"
+                : "neutral";
         const selectorHeadline = liveState.breaker_active
           ? "브레이커 감지"
           : Number(liveState.positions_count || 0) > 0
             ? "포지션 운용 중"
             : Number(liveState.open_orders_count || 0) > 0
               ? "주문 감시 중"
-              : "관찰 모드";
+              : unitActive
+                ? "관찰 모드"
+                : "비활성 기록";
         return `
           <button class="live-selector-card ${active ? "active" : ""}" type="button" data-live-label="${esc(liveState.label)}">
             <div class="live-selector-top">
@@ -899,14 +942,17 @@
                 <span class="live-selector-label">${esc(liveState.label)}</span>
                 <strong>${esc(selectorHeadline)}</strong>
               </div>
-              ${pill("모드", translate((liveState.rollout_status || {}).mode), selectorTone)}
+              <div class="live-pill-stack">
+                ${pill("서비스", unitActive ? "가동 중" : "중지됨", unitActive ? "good" : "neutral")}
+                ${pill("모드", translate((liveState.rollout_status || {}).mode), selectorTone)}
+              </div>
             </div>
             <div class="live-selector-kpis">
               <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
               <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
               <div><span>오늘 손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total))}</strong></div>
             </div>
-            <div class="live-selector-foot">${esc(`개인 WS ${privateWsTs == null ? "수신 없음" : fmtAge(privateWsTs)} · 종료 ${maybe(todayState.closed_count, "0")}건`)}</div>
+            <div class="live-selector-foot">${esc(`${unitActive ? "서비스 가동 중" : "서비스 중지 상태"} · 개인 WS ${privateWsTs == null ? "수신 없음" : fmtAge(privateWsTs)} · 종료 ${maybe(todayState.closed_count, "0")}건`)}</div>
           </button>
         `;
       }).join("")
@@ -933,6 +979,8 @@
       return;
     }
 
+    const selectedService = liveStateService(snapshot, selected);
+    const selectedServiceActive = String(selectedService.active_state || "").trim().toLowerCase() === "active";
     const runtime = selected.runtime_health || {};
     const daemonLastRun = selected.daemon_last_run || {};
     const lastWsEvent = selected.last_ws_event || {};
@@ -979,7 +1027,9 @@
         ? "good"
         : openOrders.length
           ? "warn"
-          : "neutral";
+          : selectedServiceActive
+            ? "neutral"
+            : "neutral";
     const spotlightValue = primaryPosition ? fmtPct(primaryPosition.unrealized_pnl_pct) : fmtMoney(today.net_pnl_quote_total);
     const spotlightTone = primaryPosition ? toneFromValue(primaryPosition.unrealized_pnl_pct) : toneFromValue(today.net_pnl_quote_total);
     const spotlightMetrics = primaryPosition
@@ -997,6 +1047,14 @@
       ].join("");
 
     const runtimeSignals = [
+      signalCard({
+        label: "서비스 상태",
+        value: selectedServiceActive ? "가동 중" : "중지됨",
+        note: selectedServiceActive
+          ? `${selected.label} 서비스가 실제로 가동 중입니다.`
+          : `${selected.label} 서비스는 현재 꺼져 있고, 이 화면은 남아 있는 상태 DB 기준 기록입니다.`,
+        tone: selectedServiceActive ? "good" : "neutral",
+      }),
       signalCard({
         label: "운용 모드",
         value: translate(rollout.mode),
@@ -1037,6 +1095,7 @@
 
     const issueRail = [
       selected.error ? `<article class="live-inline-banner bad"><strong>상태 DB 오류</strong><span>${esc(selected.error)}</span></article>` : "",
+      !selectedServiceActive ? `<article class="live-inline-banner neutral"><strong>비활성 상태 기록</strong><span>${esc(`${selected.label} 서비스는 현재 중지돼 있습니다. 혼동을 줄이기 위해 최근 활동이 없는 비활성 레인은 기본적으로 숨기고 있습니다.`)}</span></article>` : "",
       activeBreakers.length
         ? `<article class="live-inline-banner warn"><strong>즉시 확인할 브레이커</strong><span>${esc(activeBreakers.join(" / "))}</span></article>`
         : `<article class="live-inline-banner neutral"><strong>브레이커 상태</strong><span>현재 활성 브레이커가 없습니다.</span></article>`,

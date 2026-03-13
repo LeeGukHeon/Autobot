@@ -491,6 +491,7 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert 'function humanizeStructuredValue(value, depth = 0)' in js
     assert 'function fmtDateLabel(value)' in js
     assert 'function responseErrorText(response)' in js
+    assert 'function shouldDisplayLiveState(snapshot, item)' in js
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js
@@ -499,6 +500,7 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "setTab(state.activeTab, false, { scroll: false });" in js
     assert "live-selector-card" in css
     assert "live-command-shell" in css
+    assert "animation: rise-in" not in css
     assert "position-focus" in css
     assert "mobile-menu-label" in html
 
