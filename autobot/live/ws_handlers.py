@@ -54,6 +54,7 @@ def _apply_my_order_event(
         )
     if not intent_id:
         intent_id = f"inferred-{event.uuid}"
+    existing_intent = store.intent_by_id(intent_id=intent_id)
     raw = dict(event.raw) if isinstance(event.raw, dict) else {}
     event_name = _as_optional_str(raw.get("event_name")) or "PRIVATE_WS_ORDER_EVENT"
     normalized = normalize_order_state(
@@ -99,9 +100,15 @@ def _apply_my_order_event(
     store.upsert_order(order_record)
 
     status = "UPDATED_FROM_WS"
-    if existing is None or not _as_optional_str(existing.get("intent_id")):
+    if existing is None and existing_intent is None:
         status = "INFERRED_FROM_EXCHANGE"
-    intent_meta = {
+    intent_meta = (
+        dict(existing_intent.get("meta") or {})
+        if existing_intent is not None and isinstance(existing_intent.get("meta"), dict)
+        else {}
+    )
+    intent_meta.update(
+        {
         "source": "private_ws",
         "stream_type": event.stream_type,
         "order_uuid": event.uuid,
@@ -113,7 +120,8 @@ def _apply_my_order_event(
             prefix=identifier_prefix,
             bot_id=bot_id,
         ),
-    }
+        }
+    )
     store.upsert_intent(
         IntentRecord(
             intent_id=intent_id,
@@ -122,7 +130,7 @@ def _apply_my_order_event(
             side=str(event.side or "bid"),
             price=event.price,
             volume=event.volume,
-            reason_code="PRIVATE_WS_ORDER_EVENT",
+            reason_code=_as_optional_str(existing_intent.get("reason_code")) if existing_intent is not None else "PRIVATE_WS_ORDER_EVENT",
             meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
             status=status,
         )

@@ -53,8 +53,6 @@ def supervise_open_strategy_orders(
             continue
         intent_meta = dict(intent.get("meta") or {})
         execution_meta = dict(intent_meta.get("execution") or {})
-        if not execution_meta:
-            continue
         market = str(order.get("market", "")).strip().upper()
         side = str(order.get("side", "")).strip().lower()
         if not market or side not in {"bid", "ask"}:

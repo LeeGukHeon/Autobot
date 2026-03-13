@@ -1865,6 +1865,88 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -
     assert journal["close_mode"] == "entry_order_timeout"
 
 
+def test_supervise_open_strategy_orders_aborts_stale_bid_order_when_execution_meta_is_missing(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-avnt-1",
+                ts_ms=1_000,
+                market="KRW-AVNT",
+                side="bid",
+                price=245.0,
+                volume=22.0,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "source": "private_ws",
+                        "stream_type": "myOrder",
+                        "order_uuid": "avnt-order-1",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="UPDATED_FROM_WS",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="avnt-order-1",
+                identifier="AUTOBOT-autobot-candidate-001-intent-avnt-1-1-run",
+                market="KRW-AVNT",
+                side="bid",
+                ord_type="limit",
+                price=245.0,
+                volume_req=22.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-avnt-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="avnt-order-1",
+            )
+        )
+        record_entry_submission(
+            store=store,
+            market="KRW-AVNT",
+            intent_id="intent-avnt-1",
+            requested_price=245.0,
+            requested_volume=22.0,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"source": "private_ws"},
+            ts_ms=1_000,
+            order_uuid="avnt-order-1",
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_NoInstrumentPublicClient(),
+            executor_gateway=gateway,
+            latest_prices={"KRW-AVNT": 245.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=360_000,
+        )
+        order = store.order_by_uuid(uuid="avnt-order-1")
+        intent = store.intent_by_id(intent_id="intent-avnt-1")
+
+    assert report["aborted"] == 1
+    assert len(gateway.cancel_calls) == 1
+    assert order is not None
+    assert order["local_state"] == "CANCELLED"
+    assert intent is not None
+    assert intent["status"] == "CANCELLED"
+
+
 def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_plan(tmp_path: Path) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
