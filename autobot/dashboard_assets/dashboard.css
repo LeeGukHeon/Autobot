@@ -893,6 +893,24 @@ body {
 .live-spotlight-value.bad { color: var(--bad); }
 .live-spotlight-value.neutral { color: var(--ink); }
 
+.live-spotlight-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.live-spotlight-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .live-session-card h5,
 .live-surface-head h5 {
   margin: 0 0 8px;
@@ -907,6 +925,52 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 12px;
   margin-top: 16px;
+}
+
+.live-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.live-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  min-width: 0;
+}
+
+.live-status-chip b {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.live-status-chip strong {
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.live-status-chip.good {
+  border-color: rgba(60, 231, 160, 0.18);
+  background: rgba(60, 231, 160, 0.07);
+}
+
+.live-status-chip.warn {
+  border-color: rgba(255, 191, 105, 0.18);
+  background: rgba(255, 191, 105, 0.08);
+}
+
+.live-status-chip.bad {
+  border-color: rgba(255, 107, 107, 0.2);
+  background: rgba(255, 107, 107, 0.08);
 }
 
 .live-signal-card {

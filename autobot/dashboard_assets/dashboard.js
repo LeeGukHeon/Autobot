@@ -447,6 +447,10 @@
     return `<article class="live-signal-card ${tone}"><span class="live-signal-label">${esc(label)}</span><strong>${esc(value)}</strong>${note ? `<p>${esc(note)}</p>` : ""}</article>`;
   }
 
+  function statusChip(label, value, tone = "neutral") {
+    return `<span class="live-status-chip ${tone}"><b>${esc(label)}</b><strong>${esc(value)}</strong></span>`;
+  }
+
   function surfaceCard({ title, copy = "", body = "", extraClass = "" }) {
     return `<article class="live-surface-card ${extraClass}"><div class="live-surface-head"><div><h5>${esc(title)}</h5>${copy ? `<p class="live-surface-copy">${esc(copy)}</p>` : ""}</div></div>${body}</article>`;
   }
@@ -1079,56 +1083,27 @@
             : "neutral";
     const spotlightValue = primaryPosition ? fmtPct(primaryPosition.unrealized_pnl_pct) : fmtMoney(today.net_pnl_quote_total);
     const spotlightTone = primaryPosition ? toneFromValue(primaryPosition.unrealized_pnl_pct) : toneFromValue(today.net_pnl_quote_total);
-    const spotlightMetrics = primaryPosition
+    const spotlightTags = primaryPosition
       ? [
-        metric("현재가", fmtMoney(primaryPosition.current_price)),
-        metric("평균 매수가", fmtMoney(primaryPosition.avg_entry_price)),
-        metric("평가손익", fmtMoney(primaryPosition.unrealized_pnl_quote)),
-        metric(primaryPlan ? "청산 시각" : "최근 갱신", primaryPlan ? fmtCompactDateTime(primaryPlan.timeout_ts_ms) : fmtCompactDateTime(primaryPosition.updated_ts))
-      ].join("")
+        `보유 ${fmtNumber(primaryPosition.base_amount, 8)}개`,
+        `평균 ${fmtMoney(primaryPosition.avg_entry_price)}`,
+        `현재가 ${fmtMoney(primaryPosition.current_price)}`,
+        `평가손익 ${fmtMoney(primaryPosition.unrealized_pnl_quote)}`,
+        primaryPlan ? compactPlanSummary(primaryPlan) : "청산 플랜 없음",
+      ]
       : [
-        metric("오늘 종료", maybe(today.closed_count, "0")),
-        metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total)),
-        metric("진입 대기", maybe(today.current_pending_orders_count, "0")),
-        metric("최근 갱신", fmtCompactDateTime(selected.updated_at))
-      ].join("");
+        `오늘 종료 ${maybe(today.closed_count, "0")}건`,
+        `진입 대기 ${maybe(today.current_pending_orders_count, "0")}건`,
+        `최근 갱신 ${fmtCompactDateTime(selected.updated_at)}`,
+      ];
 
     const runtimeSignals = [
-      signalCard({
-        label: "서비스",
-        value: selectedServiceActive ? "가동 중" : "중지됨",
-        tone: selectedServiceActive ? "good" : "neutral",
-      }),
-      signalCard({
-        label: "모드",
-        value: translate(rollout.mode),
-        tone: leadTone,
-      }),
-      signalCard({
-        label: "모델",
-        value: shortRun(runtime.live_runtime_model_run_id),
-        tone: runtime.model_pointer_divergence ? "bad" : "good",
-      }),
-      signalCard({
-        label: "공용 WS",
-        value: runtime.ws_public_stale ? "지연 감지" : "정상 수신",
-        tone: runtime.ws_public_stale ? "warn" : "good",
-      }),
-      signalCard({
-        label: "개인 WS",
-        value: privateWsFreshness,
-        tone: privateWsLastTs == null ? "warn" : "good",
-      }),
-      signalCard({
-        label: "주문 허용",
-        value: boolLabel(rollout.order_emission_allowed),
-        tone: rollout.order_emission_allowed ? "good" : "bad",
-      }),
-      signalCard({
-        label: "브레이커",
-        value: activeBreakers.length ? `${activeBreakers.length}건` : "없음",
-        tone: activeBreakers.length ? "bad" : "neutral",
-      }),
+      statusChip("서비스", selectedServiceActive ? "가동" : "중지", selectedServiceActive ? "good" : "neutral"),
+      statusChip("모드", translate(rollout.mode), leadTone),
+      statusChip("주문", boolLabel(rollout.order_emission_allowed), rollout.order_emission_allowed ? "good" : "bad"),
+      statusChip("공용 WS", runtime.ws_public_stale ? "지연" : "정상", runtime.ws_public_stale ? "warn" : "good"),
+      statusChip("개인 WS", privateWsFreshness, privateWsLastTs == null ? "warn" : "good"),
+      statusChip("브레이커", activeBreakers.length ? `${activeBreakers.length}건` : "없음", activeBreakers.length ? "bad" : "neutral"),
     ].join("");
 
     const issueRail = [
@@ -1266,20 +1241,19 @@
               <div class="live-pill-stack">
                 ${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}
                 ${pill("주문 허용", boolLabel(rollout.order_emission_allowed), rollout.order_emission_allowed ? "good" : "bad")}
-                ${pill("포인터", pointerStatus, runtime.model_pointer_divergence ? "bad" : "neutral")}
               </div>
             </div>
             <div class="live-hero-grid">
               <article class="live-spotlight ${spotlightTone}">
-                <span class="live-spotlight-kicker">${esc(primaryPosition ? "Primary Position" : "Session Overview")}</span>
+                <span class="live-spotlight-kicker">${esc(primaryPosition ? "핵심 포지션" : "세션 개요")}</span>
                 <strong class="live-spotlight-market">${esc(primaryPosition ? (primaryPosition.market || selected.label) : selected.label)}</strong>
                 <p class="live-spotlight-summary">${esc(topSummary)}</p>
                 <div class="live-spotlight-value-wrap">
                   <span>${esc(primaryPosition ? "현재 수익률" : "오늘 순손익")}</span>
                   <strong class="live-spotlight-value ${spotlightTone}">${esc(spotlightValue)}</strong>
                 </div>
-                <div class="metric-grid">
-                  ${spotlightMetrics}
+                <div class="live-spotlight-tags">
+                  ${spotlightTags.map((item) => `<span class="live-spotlight-tag">${esc(item)}</span>`).join("")}
                 </div>
               </article>
               <article class="live-session-card">
@@ -1300,7 +1274,7 @@
                 </div>
               </article>
             </div>
-            <div class="live-signal-grid">
+            <div class="live-status-strip">
               ${runtimeSignals}
             </div>
             ${issueRail ? `<div class="live-inline-stack">${issueRail}</div>` : ""}
@@ -1308,8 +1282,8 @@
         </section>
         <section class="live-board-grid">
           ${surfaceCard({
-            title: "포지션 & 청산",
-            copy: primaryPosition ? `핵심 보유 ${primaryPosition.market || "-"} · ${fmtPct(primaryPosition.unrealized_pnl_pct)}` : "현재는 포지션 없이 관찰 중입니다.",
+            title: "전체 포지션 & 청산",
+            copy: positions.length > 1 ? `${positions.length}건 전체 상세` : primaryPosition ? "상단은 핵심 1건 요약, 아래는 상세" : "현재는 포지션 없이 관찰 중입니다.",
             body: positionSection,
             extraClass: "live-span-2"
           })}
