@@ -4682,8 +4682,17 @@ try {
     $report.gates.overall_pass = $false
     $report.reasons = @("UNHANDLED_EXCEPTION")
     $invocation = $_.InvocationInfo
+    $exceptionMessage = [string]$_.Exception.Message
+    $positionMessage = if ($null -eq $invocation) { "" } else { [string]$invocation.PositionMessage }
+    $stackTrace = [string]$_.ScriptStackTrace
+    if (-not [string]::IsNullOrWhiteSpace($positionMessage)) {
+        $exceptionMessage += " | position=" + ($positionMessage -replace "\s+", " ").Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stackTrace)) {
+        $exceptionMessage += " | stack=" + ($stackTrace -replace "\s+", " ").Trim()
+    }
     $report.steps.exception = [ordered]@{
-        message = $_.Exception.Message
+        message = $exceptionMessage
         exception_type = if ($null -eq $_.Exception) { "" } else { [string]$_.Exception.GetType().FullName }
         script_name = if ($null -eq $invocation) { "" } else { [string]$invocation.ScriptName }
         line = if ($null -eq $invocation) { 0 } else { [int]$invocation.ScriptLineNumber }
@@ -4692,7 +4701,7 @@ try {
         script_stack_trace = [string]$_.ScriptStackTrace
     }
     $paths = Save-Report
-    Write-Host ("[{0}][error] {1}" -f $LogTag, $_.Exception.Message)
+    Write-Host ("[{0}][error] {1}" -f $LogTag, $exceptionMessage)
     Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
     exit 2
 }
