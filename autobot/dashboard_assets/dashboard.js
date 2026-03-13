@@ -1030,7 +1030,7 @@
               <div class="live-selector-kpis">
                 <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
                 <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
-                <div><span>손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total))}</strong></div>
+                <div><span>손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total, 2))}</strong></div>
               </div>
             </div>
           </button>
@@ -1103,7 +1103,7 @@
     const todaySummaryLine = `${todayLabel} ${maybe(today.timezone, "KST")} 세션`;
     const todaySummaryTags = [
       `종료 ${maybe(today.closed_count, "0")}건`,
-      `손익 ${fmtMoney(today.net_pnl_quote_total)}`,
+      `손익 ${fmtMoney(today.net_pnl_quote_total, 2)}`,
       `대기 ${maybe(today.current_pending_orders_count, "0")} / ${maybe(today.current_exit_orders_count, "0")}`,
     ];
     const leadTone = selected.breaker_active
@@ -1115,7 +1115,7 @@
           : selectedServiceActive
             ? "neutral"
             : "neutral";
-    const spotlightValue = primaryPosition ? fmtPct(primaryPosition.unrealized_pnl_pct) : fmtMoney(today.net_pnl_quote_total);
+    const spotlightValue = primaryPosition ? fmtPct(primaryPosition.unrealized_pnl_pct) : fmtMoney(today.net_pnl_quote_total, 2);
     const spotlightTone = primaryPosition ? toneFromValue(primaryPosition.unrealized_pnl_pct) : toneFromValue(today.net_pnl_quote_total);
     const spotlightTags = primaryPosition
       ? [
@@ -1157,7 +1157,7 @@
             <div class="position-tile-head">
               <div>
                 <strong>${esc(position.market || "-")}</strong>
-                <p>${esc(`보유 ${fmtNumber(position.base_amount, 8)}개 · 갱신 ${fmtCompactDateTime(position.updated_ts)}`)}</p>
+                <p>${esc(`보유 ${fmtNumber(position.base_amount, 2)}개 · 갱신 ${fmtCompactDateTime(position.updated_ts)}`)}</p>
               </div>
               ${pill("실시간", position.current_price == null ? "지연" : "동기화", position.current_price == null ? "warn" : "good")}
             </div>
