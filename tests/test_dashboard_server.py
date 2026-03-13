@@ -369,6 +369,73 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 
 
+def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_is_missing(tmp_path: Path) -> None:
+    project_root = tmp_path
+    run_dir = project_root / "data" / "paper" / "runs" / "paper-20260313-010000-demo"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "orders.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"order_id": "order-1", "state": "FILLED"}, ensure_ascii=False),
+                json.dumps({"order_id": "order-1", "state": "FILLED"}, ensure_ascii=False),
+                json.dumps({"order_id": "order-2", "state": "OPEN"}, ensure_ascii=False),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "fills.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"order_id": "order-1", "market": "KRW-BTC"}, ensure_ascii=False),
+                json.dumps({"order_id": "order-1", "market": "KRW-BTC"}, ensure_ascii=False),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_type": "RUN_STARTED",
+                        "payload": {
+                            "run_id": "paper-20260313-010000-demo",
+                            "feature_provider": "LIVE_V4",
+                            "micro_provider": "LIVE_WS",
+                            "warmup_satisfied": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps({"event_type": "PORTFOLIO_SNAPSHOT", "payload": {}}, ensure_ascii=False),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "equity.csv").write_text(
+        "\n".join(
+            [
+                "1773392672029,50304.74709382385,2579.093644963885,0.0,782.7007792700134,-208.803267400843,14",
+                "1773392677070,50381.45665072069,2579.093644963885,0.0,782.7007792700134,-132.09371050400316,14",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+    recent_runs = snapshot["paper"]["recent_runs"]
+
+    assert recent_runs
+    assert recent_runs[0]["run_id"] == "paper-20260313-010000-demo"
+    assert recent_runs[0]["feature_provider"] == "LIVE_V4"
+    assert recent_runs[0]["micro_provider"] == "LIVE_WS"
+    assert recent_runs[0]["orders_submitted"] == 2
+    assert recent_runs[0]["orders_filled"] == 1
+    assert recent_runs[0]["fill_rate"] == pytest.approx(0.5)
+    assert recent_runs[0]["realized_pnl_quote"] == pytest.approx(782.7007792700134)
+    assert recent_runs[0]["unrealized_pnl_quote"] == pytest.approx(-132.09371050400316)
+
+
 def test_build_dashboard_snapshot_dedupes_duplicate_closed_trade_rows(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})

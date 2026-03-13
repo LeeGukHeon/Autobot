@@ -252,33 +252,156 @@ def _latest_paper_summaries(project_root: Path, limit: int = 4) -> list[dict[str
     runs_root = project_root / "data" / "paper" / "runs"
     if not runs_root.exists():
         return []
-    summary_paths = sorted(
-        runs_root.glob("paper-*/summary.json"),
-        key=lambda path: path.stat().st_mtime,
+    items: list[dict[str, Any]] = []
+    run_dirs = sorted(
+        [path for path in runs_root.glob("paper-*") if path.is_dir()],
+        key=_paper_run_sort_key,
         reverse=True,
     )[: max(limit, 1)]
-    items: list[dict[str, Any]] = []
-    for summary_path in summary_paths:
-        payload = _load_json(summary_path)
-        items.append(
-            {
-                "run_id": payload.get("run_id") or summary_path.parent.name,
-                "feature_provider": payload.get("feature_provider"),
-                "micro_provider": payload.get("micro_provider"),
-                "orders_submitted": _coerce_int(payload.get("orders_submitted")) or 0,
-                "orders_filled": _coerce_int(payload.get("orders_filled")) or 0,
-                "fill_rate": _coerce_float(payload.get("fill_rate")),
-                "realized_pnl_quote": _coerce_float(payload.get("realized_pnl_quote")),
-                "unrealized_pnl_quote": _coerce_float(payload.get("unrealized_pnl_quote")),
-                "max_drawdown_pct": _coerce_float(payload.get("max_drawdown_pct")),
-                "duration_sec": _coerce_float(payload.get("duration_sec")),
-                "warmup_satisfied": bool(payload.get("warmup_satisfied", False)),
-                "events": _coerce_int(payload.get("events")),
-                "updated_at": _path_mtime_iso(summary_path),
-                "summary_path": str(summary_path),
-            }
-        )
+    for run_dir in run_dirs:
+        summary_path = run_dir / "summary.json"
+        if summary_path.exists():
+            payload = _load_json(summary_path)
+            items.append(
+                {
+                    "run_id": payload.get("run_id") or run_dir.name,
+                    "feature_provider": payload.get("feature_provider"),
+                    "micro_provider": payload.get("micro_provider"),
+                    "orders_submitted": _coerce_int(payload.get("orders_submitted")) or 0,
+                    "orders_filled": _coerce_int(payload.get("orders_filled")) or 0,
+                    "fill_rate": _coerce_float(payload.get("fill_rate")),
+                    "realized_pnl_quote": _coerce_float(payload.get("realized_pnl_quote")),
+                    "unrealized_pnl_quote": _coerce_float(payload.get("unrealized_pnl_quote")),
+                    "max_drawdown_pct": _coerce_float(payload.get("max_drawdown_pct")),
+                    "duration_sec": _coerce_float(payload.get("duration_sec")),
+                    "warmup_satisfied": bool(payload.get("warmup_satisfied", False)),
+                    "events": _coerce_int(payload.get("events")),
+                    "updated_at": _path_mtime_iso(summary_path),
+                    "summary_path": str(summary_path),
+                }
+            )
+            continue
+        items.append(_partial_paper_summary(run_dir))
     return items
+
+
+def _paper_run_sort_key(run_dir: Path) -> float:
+    try:
+        mtimes = [path.stat().st_mtime for path in run_dir.iterdir() if path.is_file()]
+    except OSError:
+        mtimes = []
+    if mtimes:
+        return max(mtimes)
+    try:
+        return run_dir.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _partial_paper_summary(run_dir: Path) -> dict[str, Any]:
+    orders_path = run_dir / "orders.jsonl"
+    fills_path = run_dir / "fills.jsonl"
+    events_path = run_dir / "events.jsonl"
+    equity_path = run_dir / "equity.csv"
+    started_payload = _paper_run_started_payload(events_path)
+    realized_pnl_quote, unrealized_pnl_quote = _paper_equity_tail(equity_path)
+    orders_submitted = _jsonl_unique_count(orders_path, key="order_id")
+    orders_filled = _jsonl_unique_count(fills_path, key="order_id")
+    fill_rate = (float(orders_filled) / float(orders_submitted)) if orders_submitted > 0 else 0.0
+    return {
+        "run_id": str(started_payload.get("run_id") or run_dir.name),
+        "feature_provider": started_payload.get("feature_provider"),
+        "micro_provider": started_payload.get("micro_provider"),
+        "orders_submitted": orders_submitted,
+        "orders_filled": orders_filled,
+        "fill_rate": fill_rate,
+        "realized_pnl_quote": realized_pnl_quote,
+        "unrealized_pnl_quote": unrealized_pnl_quote,
+        "max_drawdown_pct": None,
+        "duration_sec": None,
+        "warmup_satisfied": bool(started_payload.get("warmup_satisfied", False)),
+        "events": _jsonl_line_count(events_path),
+        "updated_at": _path_mtime_iso(run_dir),
+        "summary_path": str(run_dir),
+    }
+
+
+def _paper_run_started_payload(events_path: Path) -> dict[str, Any]:
+    if not events_path.exists():
+        return {}
+    try:
+        with events_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = str(line).strip()
+                if not raw:
+                    continue
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("event_type") or "").strip().upper() != "RUN_STARTED":
+                    continue
+                event_payload = payload.get("payload")
+                return dict(event_payload or {}) if isinstance(event_payload, dict) else {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return {}
+
+
+def _jsonl_line_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if str(line).strip():
+                    count += 1
+    except (OSError, UnicodeDecodeError):
+        return 0
+    return count
+
+
+def _jsonl_unique_count(path: Path, *, key: str) -> int:
+    if not path.exists():
+        return 0
+    values: set[str] = set()
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = str(line).strip()
+                if not raw:
+                    continue
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    continue
+                value = str(payload.get(key) or "").strip()
+                if value:
+                    values.add(value)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return len(values)
+    return len(values)
+
+
+def _paper_equity_tail(path: Path) -> tuple[float | None, float | None]:
+    if not path.exists():
+        return None, None
+    last_line: str | None = None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = str(line).strip()
+                if raw:
+                    last_line = raw
+    except (OSError, UnicodeDecodeError):
+        return None, None
+    if not last_line:
+        return None, None
+    parts = [item.strip() for item in last_line.split(",")]
+    if len(parts) < 6:
+        return None, None
+    realized = _coerce_float(parts[4])
+    unrealized = _coerce_float(parts[5])
+    return realized, unrealized
 
 
 def _summarize_acceptance(latest_path: Path) -> dict[str, Any]:
