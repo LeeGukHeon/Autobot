@@ -869,6 +869,97 @@ def test_recompute_trade_journal_records_replaces_far_stale_exit_order_uuid(tmp_
     assert row["exit_ts_ms"] == 1773370244000
 
 
+def test_recompute_trade_journal_records_corrects_verified_exit_ts_when_it_precedes_entry(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-late",
+                identifier="AUTOBOT-entry-late",
+                market="KRW-ENSO",
+                side="bid",
+                ord_type="limit",
+                price=2081.0,
+                volume_req=2.7315655,
+                volume_filled=2.7315655,
+                state="done",
+                created_ts=1773388202000,
+                updated_ts=1773388202000,
+                intent_id="intent-late",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="entry-order-late",
+                executed_funds=5684.9872055,
+                paid_fee=2.84249360275,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-late",
+                identifier="AUTOBOT-RISK-model-risk-1773388656711",
+                market="KRW-ENSO",
+                side="ask",
+                ord_type="limit",
+                price=2033.0,
+                volume_req=2.7315655,
+                volume_filled=2.7315655,
+                state="done",
+                created_ts=1773388656000,
+                updated_ts=1773388656000,
+                intent_id="inferred-exit-order-late",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="exit-order-late",
+                executed_funds=5553.5726615,
+                paid_fee=2.77678633075,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-late",
+                market="KRW-ENSO",
+                status="CLOSED",
+                entry_intent_id="intent-late",
+                entry_order_uuid="entry-order-late",
+                exit_order_uuid="exit-order-late",
+                plan_id=None,
+                entry_submitted_ts_ms=1773388200000,
+                entry_filled_ts_ms=1773388202000,
+                exit_ts_ms=1773370244000,
+                entry_price=2081.0,
+                exit_price=2035.0,
+                qty=2.7315655,
+                entry_notional_quote=5687.82969910275,
+                exit_notional_quote=5550.79587516925,
+                realized_pnl_quote=-137.03382393350028,
+                realized_pnl_pct=-2.409122517709904,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="CLOSED_ORDERS_BACKFILL",
+                close_mode="done_ask_order",
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {"sizing": {"fee_rate": 0.0005}, "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005}},
+                        "execution": {"requested_price": 2081.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                exit_meta_json=json.dumps({"close_verified": True, "close_verification_status": "verified_exit_order"}, ensure_ascii=False, sort_keys=True),
+                updated_ts=1773370244000,
+            )
+        )
+
+        recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_id(journal_id="journal-late")
+
+    assert row is not None
+    assert row["exit_order_uuid"] == "exit-order-late"
+    assert row["exit_ts_ms"] == 1773388656000
+
+
 def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_order(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(

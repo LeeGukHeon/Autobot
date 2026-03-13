@@ -606,7 +606,12 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
             verified_exit_ts = _as_optional_int((exit_order or {}).get("updated_ts")) if close_verified else None
             computed_exit_ts = _coalesce_int(verified_exit_ts, existing_exit_ts)
             if close_verified and verified_exit_ts is not None:
-                if not previous_close_verified or existing_exit_ts is None or existing_exit_ts > verified_exit_ts:
+                if (
+                    not previous_close_verified
+                    or existing_exit_ts is None
+                    or existing_exit_ts > verified_exit_ts
+                    or (entry_ts is not None and existing_exit_ts < entry_ts)
+                ):
                     exit_ts = verified_exit_ts
                 else:
                     exit_ts = existing_exit_ts
