@@ -198,6 +198,7 @@ async def run_live_model_alpha_runtime(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=daemon_settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -562,6 +563,7 @@ def _startup_sync(
     _apply_runtime_status_to_summary(summary, runtime_status)
     rollout_status = _evaluate_rollout_gate(
         store=store,
+        client=client,
         settings=settings,
         ts_ms=int(time.time() * 1000),
     )

@@ -40,6 +40,7 @@ from .reconcile import apply_cancel_actions, reconcile_exchange_snapshot, resume
 from .rollout import (
     DEFAULT_LIVE_TARGET_UNIT,
     DEFAULT_ROLLOUT_MODE,
+    build_rollout_test_order_record,
     evaluate_live_rollout_gate,
     rollout_gate_to_payload,
 )
@@ -103,6 +104,10 @@ class LiveDaemonSettings:
             raise ValueError("rollout_target_unit must not be blank")
         if int(self.rollout_test_order_max_age_sec) <= 0:
             raise ValueError("rollout_test_order_max_age_sec must be positive")
+
+
+LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT = "live_rollout_auto_test_order_refresh"
+LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_MIN_INTERVAL_SEC = 300
 
 
 def _runtime_model_binding_after_resume(
@@ -304,12 +309,125 @@ def _small_account_single_slot_ready(settings: LiveDaemonSettings) -> bool:
     )
 
 
+def _maybe_auto_refresh_rollout_test_order(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    settings: LiveDaemonSettings,
+    ts_ms: int,
+) -> dict[str, Any] | None:
+    mode = str(settings.rollout_mode).strip().lower()
+    if mode not in {"canary", "live"}:
+        return None
+    if not bool(settings.rollout_require_test_order):
+        return None
+    if not hasattr(client, "order_test"):
+        return None
+
+    contract = store.live_rollout_contract() or {}
+    if not bool(contract.get("armed")):
+        return None
+    contract_target_unit = str(contract.get("target_unit") or settings.rollout_target_unit).strip()
+    if contract_target_unit != str(settings.rollout_target_unit).strip():
+        return None
+
+    test_order = store.live_test_order() or {}
+    market = str(test_order.get("market") or "").strip().upper()
+    side = str(test_order.get("side") or "").strip().lower()
+    ord_type = str(test_order.get("ord_type") or "").strip().lower()
+    price = str(test_order.get("price") or "").strip() if test_order.get("price") is not None else None
+    volume = str(test_order.get("volume") or "").strip() if test_order.get("volume") is not None else None
+    if not market or not side or not ord_type:
+        return None
+
+    test_order_ts = test_order.get("ts_ms")
+    try:
+        test_order_age_sec = max((int(ts_ms) - int(test_order_ts)) / 1000.0, 0.0) if test_order_ts is not None else None
+    except (TypeError, ValueError):
+        test_order_age_sec = None
+
+    needs_refresh = not bool(test_order.get("ok"))
+    if not needs_refresh and test_order_age_sec is not None:
+        needs_refresh = test_order_age_sec > max(int(settings.rollout_test_order_max_age_sec), 1)
+    if not needs_refresh:
+        return None
+
+    last_attempt = store.get_checkpoint(name=LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT)
+    last_attempt_ts_ms = int(last_attempt.get("ts_ms")) if last_attempt and last_attempt.get("ts_ms") is not None else None
+    if last_attempt_ts_ms is not None:
+        min_interval_ms = max(int(LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_MIN_INTERVAL_SEC), 1) * 1000
+        if int(ts_ms) - int(last_attempt_ts_ms) < min_interval_ms:
+            return None
+
+    attempt_payload: dict[str, Any] = {
+        "attempted": True,
+        "mode": mode,
+        "target_unit": contract_target_unit,
+        "market": market,
+        "side": side,
+        "ord_type": ord_type,
+        "price": price,
+        "volume": volume,
+        "reason": "stale" if bool(test_order.get("ok")) else "missing_or_failed",
+        "previous_checked_at_utc": test_order.get("checked_at_utc"),
+        "previous_ts_ms": test_order_ts,
+    }
+    try:
+        response_payload = client.order_test(
+            market=market,
+            side=side,
+            ord_type=ord_type,
+            price=price,
+            volume=volume,
+        )
+    except Exception as exc:  # pragma: no cover - protective runtime path
+        attempt_payload.update({"ok": False, "error": str(exc)})
+        store.set_checkpoint(
+            name=LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT,
+            payload=attempt_payload,
+            ts_ms=ts_ms,
+        )
+        return attempt_payload
+
+    refreshed_record = build_rollout_test_order_record(
+        market=market,
+        side=side,
+        ord_type=ord_type,
+        price=price,
+        volume=volume,
+        ok=True,
+        response_payload=response_payload if isinstance(response_payload, dict) else {},
+        ts_ms=ts_ms,
+    )
+    store.set_live_test_order(payload=refreshed_record, ts_ms=ts_ms)
+    attempt_payload.update(
+        {
+            "ok": True,
+            "checked_at_utc": refreshed_record.get("checked_at_utc"),
+            "response_payload": response_payload if isinstance(response_payload, dict) else {},
+        }
+    )
+    store.set_checkpoint(
+        name=LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT,
+        payload=attempt_payload,
+        ts_ms=ts_ms,
+    )
+    return attempt_payload
+
+
 def _evaluate_rollout_gate(
     *,
     store: LiveStateStore,
+    client: Any | None,
     settings: LiveDaemonSettings,
     ts_ms: int,
 ) -> dict[str, Any]:
+    auto_test_order_refresh = _maybe_auto_refresh_rollout_test_order(
+        store=store,
+        client=client,
+        settings=settings,
+        ts_ms=ts_ms,
+    ) if client is not None else None
     clear_breaker_reasons(
         store,
         reason_codes=[
@@ -338,6 +456,8 @@ def _evaluate_rollout_gate(
         ts_ms=ts_ms,
     )
     payload = rollout_gate_to_payload(gate)
+    if auto_test_order_refresh is not None:
+        payload["auto_test_order_refresh"] = auto_test_order_refresh
     store.set_live_rollout_status(payload=payload, ts_ms=ts_ms)
     rollout_reason_codes = [item for item in gate.reason_codes if item != "LIVE_BREAKER_ACTIVE"]
     if bool(gate.mode != "shadow") and rollout_reason_codes:
@@ -442,6 +562,7 @@ def run_live_sync_daemon(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -462,6 +583,7 @@ def run_live_sync_daemon(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -605,6 +727,7 @@ def run_live_sync_daemon_with_executor_events(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -626,6 +749,7 @@ def run_live_sync_daemon_with_executor_events(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -844,6 +968,7 @@ async def run_live_sync_daemon_with_private_ws(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -866,6 +991,7 @@ async def run_live_sync_daemon_with_private_ws(
         _apply_runtime_status_to_summary(summary, runtime_status)
         rollout_status = _evaluate_rollout_gate(
             store=store,
+            client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
@@ -1538,6 +1664,7 @@ def _run_sync_cycle_with_breakers(
     )
     rollout_status = _evaluate_rollout_gate(
         store=store,
+        client=client,
         settings=settings,
         ts_ms=ts_ms,
     )

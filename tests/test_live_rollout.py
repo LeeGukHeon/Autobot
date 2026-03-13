@@ -42,6 +42,15 @@ class _QuietClient:
         return {"ok": True, "uuid": uuid, "identifier": identifier}
 
 
+class _AutoRefreshTestOrderClient(_QuietClient):
+    def __init__(self) -> None:
+        self.order_test_calls: list[dict[str, object]] = []
+
+    def order_test(self, **kwargs):  # noqa: ANN201
+        self.order_test_calls.append(dict(kwargs))
+        return {"ok": True, "uuid": "auto-test-order-1"}
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -328,6 +337,76 @@ def test_live_daemon_clears_recovered_stale_breaker_before_canary_gate(tmp_path:
     assert breaker is not None
     assert breaker["active"] is False
     assert breaker["reason_codes"] == []
+
+
+def test_live_daemon_auto_refreshes_stale_rollout_test_order(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
+    registry_root = _seed_runtime_contract(tmp_path, champion_run_id="run-live", ws_updated_at_ms=9_950)
+    now_ms = 10_000
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 2_000,
+            ),
+            ts_ms=now_ms - 2_000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="5000",
+                volume="1",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=0,
+            ),
+            ts_ms=0,
+        )
+        client = _AutoRefreshTestOrderClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=False,
+                registry_root=str(registry_root),
+                runtime_model_ref_source="champion_v4",
+                runtime_model_family="train_v4_crypto_cs",
+                ws_public_raw_root=str(tmp_path / "data" / "raw_ws" / "upbit" / "public"),
+                ws_public_meta_dir=str(tmp_path / "data" / "raw_ws" / "upbit" / "_meta"),
+                ws_public_stale_threshold_sec=180,
+                micro_aggregate_report_path=str(tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
+                rollout_mode="canary",
+                rollout_target_unit="autobot-live-alpha.service",
+                rollout_test_order_max_age_sec=5,
+                small_account_canary_enabled=True,
+                small_account_max_positions=1,
+                small_account_max_open_orders_per_market=1,
+            ),
+        )
+        refreshed_test_order = store.live_test_order() or {}
+        rollout_status = store.live_rollout_status() or {}
+        auto_refresh_checkpoint = store.get_checkpoint(name=daemon_module.LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT)
+
+    assert summary["halted"] is False
+    assert summary["rollout_order_emission_allowed"] is True
+    assert len(client.order_test_calls) == 1
+    assert client.order_test_calls[0]["market"] == "KRW-BTC"
+    assert refreshed_test_order["ts_ms"] == now_ms
+    assert rollout_status["order_emission_allowed"] is True
+    assert auto_refresh_checkpoint is not None
+    assert auto_refresh_checkpoint["payload"]["ok"] is True
 
 
 def test_live_installer_dry_run_exposes_rollout_mode() -> None:
