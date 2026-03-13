@@ -355,6 +355,13 @@ def close_trade_journal_for_market(
         target_exit_ts=_as_optional_int((existing or {}).get("exit_ts_ms")),
     )
     if existing is None:
+        lookup_exit_uuid = _coalesce_str(
+            _as_optional_str(exit_order_uuid),
+            _as_optional_str((latest_done_exit or {}).get("uuid")),
+        )
+        if lookup_exit_uuid is not None:
+            existing = store.trade_journal_by_exit_order_uuid(exit_order_uuid=lookup_exit_uuid)
+    if existing is None:
         risk_plan = _risk_plan_for_close(store=store, market=market_value, plan_id=resolved_plan)
         fallback_intent_id = _as_optional_str((risk_plan or {}).get("source_intent_id"))
         if resolved_plan is None:

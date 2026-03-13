@@ -610,7 +610,39 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _trade_journal_dedupe_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    item = _summarize_live_trade_journal(row)
+    status = str(item.get("status") or "").strip().upper()
+    if status in {"CLOSED", "CANCELLED_ENTRY"}:
+        exit_uuid = str(item.get("exit_order_uuid") or "").strip()
+        if exit_uuid:
+            return (status, "exit_order_uuid", exit_uuid)
+        return (
+            status,
+            str(item.get("market") or "").strip().upper(),
+            _coerce_int(item.get("exit_ts_ms")),
+            _coerce_float(item.get("realized_pnl_quote")),
+            _coerce_float(item.get("qty")),
+            _coerce_float(item.get("entry_price")),
+            _coerce_float(item.get("exit_price")),
+        )
+    return ("journal_id", str(item.get("journal_id") or "").strip())
+
+
+def _dedupe_trade_journal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for row in rows:
+        key = _trade_journal_dedupe_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
 def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> dict[str, Any]:
+    rows = _dedupe_trade_journal_rows(rows)
     now_dt = datetime.fromtimestamp(now_ts_ms / 1000.0, tz=_KST)
     start_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
     end_dt = start_dt + timedelta(days=1)
@@ -688,6 +720,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             if "trade_journal" in tables
             else []
         )
+        deduped_trade_journal = _dedupe_trade_journal_rows(trade_journal)
         breaker_states = _query_all(conn, "SELECT * FROM breaker_states ORDER BY updated_ts DESC") if "breaker_states" in tables else []
         source_intent_lookup: dict[str, dict[str, Any]] = {}
         if "intents" in tables and risk_plans:
@@ -756,8 +789,8 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             "positions": [_summarize_live_position(row) for row in positions[:8]],
             "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
             "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
-            "recent_trades": [_summarize_live_trade_journal(row) for row in trade_journal[:8]],
-            "today_trade_summary": _summarize_kst_trade_day(trade_journal, now_ts_ms=now_ts_ms),
+            "recent_trades": [_summarize_live_trade_journal(row) for row in deduped_trade_journal[:8]],
+            "today_trade_summary": _summarize_kst_trade_day(deduped_trade_journal, now_ts_ms=now_ts_ms),
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {

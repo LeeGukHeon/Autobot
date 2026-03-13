@@ -315,6 +315,35 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 
 
+def test_build_dashboard_snapshot_dedupes_duplicate_closed_trade_rows(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        row = conn.execute(
+            "SELECT * FROM trade_journal WHERE journal_id = ?",
+            ("journal-1",),
+        ).fetchone()
+        assert row is not None
+        duplicate = list(row)
+        duplicate[0] = "journal-dup"
+        conn.execute(
+            "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(duplicate),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    today_summary = snapshot["live"]["states"][0]["today_trade_summary"]
+    recent_trades = snapshot["live"]["states"][0]["recent_trades"]
+
+    assert today_summary["closed_count"] == 1
+    assert today_summary["net_pnl_quote_total"] == 3.0
+    assert len(recent_trades) == 1
+
+
 def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
     js = str(_load_dashboard_asset("dashboard.js"))
 

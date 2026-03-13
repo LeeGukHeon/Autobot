@@ -685,6 +685,15 @@ class LiveStateStore:
             return None
         return _row_to_trade_journal(row)
 
+    def trade_journal_by_exit_order_uuid(self, *, exit_order_uuid: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM trade_journal WHERE exit_order_uuid = ? ORDER BY updated_ts DESC LIMIT 1",
+            (exit_order_uuid,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_trade_journal(row)
+
     def list_trade_journal(
         self,
         *,
@@ -1141,6 +1150,9 @@ class LiveStateStore:
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trade_journal_entry_intent_id ON trade_journal (entry_intent_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_journal_exit_order_uuid ON trade_journal (exit_order_uuid)"
             )
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state)")

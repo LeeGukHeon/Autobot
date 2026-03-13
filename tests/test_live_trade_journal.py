@@ -338,6 +338,71 @@ def test_cancel_pending_entry_journal_marks_cancelled_entry(tmp_path) -> None:
     assert row["exit_ts_ms"] == 2_000
 
 
+def test_close_trade_journal_reuses_existing_row_by_exit_order_uuid(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-existing",
+                market="KRW-DOGE",
+                status="CLOSED",
+                entry_intent_id="intent-existing",
+                entry_order_uuid="entry-order-existing",
+                exit_order_uuid="exit-order-existing",
+                plan_id="plan-existing",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=1_900,
+                entry_price=138.0,
+                exit_price=138.0,
+                qty=40.2113436,
+                entry_notional_quote=5550.0,
+                exit_notional_quote=5544.4508345832,
+                realized_pnl_quote=-5.5491654168,
+                realized_pnl_pct=-0.1,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="ORDER_STATE",
+                close_mode="managed_exit_order",
+                updated_ts=1_900,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-existing",
+                identifier="exit-order-existing",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=138.0,
+                volume_req=40.2113436,
+                volume_filled=40.2113436,
+                state="done",
+                created_ts=1_800,
+                updated_ts=1_900,
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-existing",
+                executed_funds=5549.1654168,
+                paid_fee=0.0,
+            )
+        )
+
+        journal_id = close_trade_journal_for_market(
+            store=store,
+            market="KRW-DOGE",
+            position={"market": "KRW-DOGE", "base_amount": 40.2113436, "avg_entry_price": 138.0, "updated_ts": 1_900},
+            ts_ms=1_950,
+            exit_order_uuid="exit-order-existing",
+            plan_id=None,
+        )
+        rows = store.list_trade_journal(statuses=("CLOSED",))
+
+    assert journal_id == "journal-existing"
+    assert len(rows) == 1
+    assert rows[0]["journal_id"] == "journal-existing"
+
+
 def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_order(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(
