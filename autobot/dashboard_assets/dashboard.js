@@ -99,6 +99,34 @@
     fallbackRefreshTimer: null
   };
 
+  const TAB_HERO = {
+    overview: {
+      eyebrow: "Autobot Terminal",
+      title: "Autobot Terminal",
+      text: "서비스, 검증, 타이머, 경고를 실시간으로 읽는 운영 화면입니다."
+    },
+    training: {
+      eyebrow: "Training Surface",
+      title: "Training & Acceptance",
+      text: "후보 생성부터 검증, 챌린저 흐름까지 한 눈에 보는 탭입니다."
+    },
+    paper: {
+      eyebrow: "Paper Runs",
+      title: "Paper Experiments",
+      text: "최근 페이퍼 런의 제출, 체결, 손익 흐름을 빠르게 비교합니다."
+    },
+    live: {
+      eyebrow: "Live Desk",
+      title: "Live & Canary Desk",
+      text: "현재 보유, 매도 플랜, 주문 상태, 최근 종료 거래를 실시간으로 확인합니다."
+    },
+    ws: {
+      eyebrow: "Data Plane",
+      title: "WS Public Plane",
+      text: "수집 연결과 적재 신선도를 읽는 데이터 플레인 화면입니다."
+    }
+  };
+
   function esc(value) {
     return String(value == null ? "-" : value)
       .replace(/&/g, "&amp;")
@@ -336,6 +364,16 @@
     node.textContent = message;
   }
 
+  function renderHero() {
+    const copy = TAB_HERO[state.activeTab] || TAB_HERO.overview;
+    const eyebrow = document.getElementById("hero-eyebrow");
+    const title = document.getElementById("hero-title");
+    const text = document.getElementById("hero-text");
+    if (eyebrow) eyebrow.textContent = copy.eyebrow;
+    if (title) title.textContent = copy.title;
+    if (text) text.textContent = copy.text;
+  }
+
   function setTab(nextTab, updateHash = true, options = {}) {
     if (!TABS.has(nextTab)) return;
     const scroll = options.scroll !== false;
@@ -348,6 +386,7 @@
     document.querySelectorAll(".pane").forEach((pane) => {
       pane.hidden = pane.dataset.pane !== nextTab;
     });
+    renderHero();
     if (updateHash) history.replaceState(null, "", `#${nextTab}`);
     if (scroll) {
       const workspace = document.querySelector(".workspace");
@@ -654,20 +693,19 @@
     ` : "";
 
     const positionSection = positions.length
-      ? terminalTable(
-        ["종목", "보유 수량", "평균 매수가", "현재가", "현재 수익률", "평가손익"],
-        positions.map((position) => ({
-          rowClass: Number(position.unrealized_pnl_quote || 0) > 0 ? "positive" : Number(position.unrealized_pnl_quote || 0) < 0 ? "negative" : "",
-          cells: [
-            cell(position.market || "-", `최근 갱신 ${fmtDateTime(position.updated_ts)}`),
-            cell(`${fmtNumber(position.base_amount, 8)}개`),
-            cell(fmtMoney(position.avg_entry_price)),
-            cell(fmtMoney(position.current_price)),
-            cell(fmtPct(position.unrealized_pnl_pct), "", Number(position.unrealized_pnl_pct || 0) > 0 ? "good" : Number(position.unrealized_pnl_pct || 0) < 0 ? "bad" : ""),
-            cell(fmtMoney(position.unrealized_pnl_quote), "", Number(position.unrealized_pnl_quote || 0) > 0 ? "good" : Number(position.unrealized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
-          ],
-        })),
-      )
+      ? `<div class="position-board">${positions.map((position) => `
+        <div class="position-row">
+          <div class="position-main">
+            <strong>${esc(position.market || "-")}</strong>
+            <p>${esc(`보유 ${fmtNumber(position.base_amount, 8)}개 · 평균 ${fmtMoney(position.avg_entry_price)} · 최근 갱신 ${fmtDateTime(position.updated_ts)}`)}</p>
+          </div>
+          <div class="position-side">
+            <div class="position-line"><span>현재가</span><strong>${esc(fmtMoney(position.current_price))}</strong></div>
+            <div class="position-line"><span>현재 수익률</span><strong class="${Number(position.unrealized_pnl_pct || 0) > 0 ? "good" : Number(position.unrealized_pnl_pct || 0) < 0 ? "bad" : ""}">${esc(fmtPct(position.unrealized_pnl_pct))}</strong></div>
+            <div class="position-line"><span>평가손익</span><strong class="${Number(position.unrealized_pnl_quote || 0) > 0 ? "good" : Number(position.unrealized_pnl_quote || 0) < 0 ? "bad" : ""}">${esc(fmtMoney(position.unrealized_pnl_quote))}</strong></div>
+          </div>
+        </div>
+      `).join("")}</div>`
       : empty("보유 종목이 없습니다.");
 
     const orderSection = openOrders.length
@@ -686,18 +724,23 @@
       : empty("미체결 주문이 없습니다.");
 
     const planSection = riskPlans.length
-      ? terminalTable(
-        ["플랜", "상태", "익절", "손절", "종료 시각"],
-        riskPlans.map((plan) => ({
-          cells: [
-            cell(`${plan.market || "-"} · ${translate(plan.exit_mode)}`, riskPlanNarrative(plan)),
-            cell(translate(plan.state)),
-            cell(plan.tp_enabled ? fmtPct(Number(plan.tp_pct)) : "미사용"),
-            cell(plan.sl_enabled ? fmtPct(Number(plan.sl_pct)) : "미사용"),
-            cell(fmtDateTime(plan.timeout_ts_ms)),
-          ],
-        })),
-      )
+      ? `<div class="plan-board">${riskPlans.map((plan) => `
+        <div class="plan-row">
+          <div class="plan-row-header">
+            <div>
+              <strong>${esc(`${plan.market || "-"} · ${translate(plan.exit_mode)}`)}</strong>
+              <p>${esc(riskPlanNarrative(plan))}</p>
+            </div>
+            ${pill("플랜", translate(plan.state), String(plan.state).toUpperCase() === "ACTIVE" ? "good" : "warn")}
+          </div>
+          <div class="plan-tags">
+            <span class="plan-chip ${plan.tp_enabled ? "good" : ""}">익절 ${esc(plan.tp_enabled ? fmtPct(Number(plan.tp_pct)) : "미사용")}</span>
+            <span class="plan-chip ${plan.sl_enabled ? "bad" : ""}">손절 ${esc(plan.sl_enabled ? fmtPct(Number(plan.sl_pct)) : "미사용")}</span>
+            <span class="plan-chip ${plan.trailing_enabled ? "warn" : ""}">추적 ${esc(plan.trailing_enabled ? fmtPct(Number(plan.trail_pct)) : "미사용")}</span>
+            <span class="plan-chip">종료 예정 ${esc(fmtDateTime(plan.timeout_ts_ms))}</span>
+          </div>
+        </div>
+      `).join("")}</div>`
       : empty("활성 리스크 플랜이 없습니다.");
 
     const tradeSection = recentTrades.length
