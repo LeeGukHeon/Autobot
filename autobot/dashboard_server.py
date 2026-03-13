@@ -610,29 +610,42 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _trade_journal_dedupe_key(row: dict[str, Any]) -> tuple[Any, ...]:
+def _trade_journal_dedupe_key(
+    row: dict[str, Any],
+) -> tuple[Any, ...]:
     item = _summarize_live_trade_journal(row)
     status = str(item.get("status") or "").strip().upper()
+    journal_id = str(item.get("journal_id") or "").strip()
     if status in {"CLOSED", "CANCELLED_ENTRY"}:
         exit_uuid = str(item.get("exit_order_uuid") or "").strip()
-        if exit_uuid:
-            return (status, "exit_order_uuid", exit_uuid)
         return (
             status,
-            str(item.get("market") or "").strip().upper(),
-            _coerce_int(item.get("exit_ts_ms")),
-            _coerce_float(item.get("realized_pnl_quote")),
+            "journal_id" if exit_uuid else str(item.get("market") or "").strip().upper(),
+            journal_id if exit_uuid else _coerce_int(item.get("exit_ts_ms")),
+            exit_uuid if exit_uuid else _coerce_float(item.get("realized_pnl_quote")),
             _coerce_float(item.get("qty")),
             _coerce_float(item.get("entry_price")),
             _coerce_float(item.get("exit_price")),
         )
-    return ("journal_id", str(item.get("journal_id") or "").strip())
+    return ("journal_id", journal_id)
 
 
 def _dedupe_trade_journal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    canonical_exit_order_uuids: set[str] = set()
+    for row in rows:
+        item = _summarize_live_trade_journal(row)
+        journal_id = str(item.get("journal_id") or "").strip()
+        exit_uuid = str(item.get("exit_order_uuid") or "").strip()
+        if exit_uuid and not journal_id.startswith("imported-"):
+            canonical_exit_order_uuids.add(exit_uuid)
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for row in rows:
+        item = _summarize_live_trade_journal(row)
+        journal_id = str(item.get("journal_id") or "").strip()
+        exit_uuid = str(item.get("exit_order_uuid") or "").strip()
+        if journal_id.startswith("imported-") and exit_uuid and exit_uuid in canonical_exit_order_uuids:
+            continue
         key = _trade_journal_dedupe_key(row)
         if key in seen:
             continue

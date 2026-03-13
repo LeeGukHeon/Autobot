@@ -328,7 +328,10 @@ def test_build_dashboard_snapshot_dedupes_duplicate_closed_trade_rows(tmp_path: 
         ).fetchone()
         assert row is not None
         duplicate = list(row)
-        duplicate[0] = "journal-dup"
+        duplicate[0] = "imported-KRW-BTC-dup"
+        duplicate[3] = None
+        duplicate[4] = None
+        duplicate[6] = None
         conn.execute(
             "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             tuple(duplicate),
@@ -342,6 +345,40 @@ def test_build_dashboard_snapshot_dedupes_duplicate_closed_trade_rows(tmp_path: 
     assert today_summary["closed_count"] == 1
     assert today_summary["net_pnl_quote_total"] == 3.0
     assert len(recent_trades) == 1
+
+
+def test_build_dashboard_snapshot_keeps_distinct_canonical_rows_with_shared_exit_order_uuid(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        row = conn.execute(
+            "SELECT * FROM trade_journal WHERE journal_id = ?",
+            ("journal-1",),
+        ).fetchone()
+        assert row is not None
+        duplicate = list(row)
+        duplicate[0] = "journal-2"
+        duplicate[3] = "intent-2"
+        duplicate[4] = "order-2"
+        duplicate[6] = "plan-2"
+        duplicate[15] = 4.0
+        duplicate[16] = 4.0
+        conn.execute(
+            "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(duplicate),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    today_summary = snapshot["live"]["states"][0]["today_trade_summary"]
+    recent_trades = snapshot["live"]["states"][0]["recent_trades"]
+
+    assert today_summary["closed_count"] == 2
+    assert today_summary["net_pnl_quote_total"] == 7.0
+    assert len(recent_trades) == 2
 
 
 def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
