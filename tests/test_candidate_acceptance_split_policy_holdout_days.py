@@ -52,7 +52,6 @@ def test_resolve_split_policy_candidate_holdout_days_keeps_empty_override_as_arr
                 "    default = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays 3 -OverrideText '')",
                 "    override = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays 5 -OverrideText '2, 4 2')",
                 "    merged_empty = @(Merge-UniqueStringArray -First @() -Second @())",
-                "    merged_wrapped_assignment = @(Merge-UniqueStringArray -First @() -Second @())",
                 "}",
                 "$payload | ConvertTo-Json -Compress -Depth 4",
             ]
@@ -81,4 +80,3 @@ def test_resolve_split_policy_candidate_holdout_days_keeps_empty_override_as_arr
     assert payload["default"] == [1, 2, 3]
     assert payload["override"] == [2, 4]
     assert payload["merged_empty"] == []
-    assert payload["merged_wrapped_assignment"] == []
