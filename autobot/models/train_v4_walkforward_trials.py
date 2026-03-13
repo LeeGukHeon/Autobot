@@ -6,6 +6,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .train_v4_models import build_group_level_sample_weight
+
 
 def fit_walk_forward_weighted_trials(
     *,
@@ -309,10 +311,10 @@ def fit_walk_forward_ranker_trials(
     if train_group.size <= 0 or valid_group.size <= 0:
         raise RuntimeError("walk-forward ranker requires timestamp-grouped train and valid rows")
 
-    w_train_safe = np.asarray(w_train, dtype=np.float64)
-    if w_train_safe.size != y_train_rank.size:
-        w_train_safe = np.ones(y_train_rank.size, dtype=np.float64)
-    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+    row_train_w = np.asarray(w_train, dtype=np.float64)
+    if row_train_w.size != y_train_rank.size:
+        row_train_w = np.ones(y_train_rank.size, dtype=np.float64)
+    w_train_safe = build_group_level_sample_weight(row_train_w, train_group)
 
     best_key: tuple[float, ...] | None = None
     best_bundle: dict[str, Any] | None = None

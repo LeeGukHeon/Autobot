@@ -7,6 +7,31 @@ from typing import Any, Callable
 import numpy as np
 
 
+def build_group_level_sample_weight(row_weights: np.ndarray, group_counts: np.ndarray) -> np.ndarray:
+    weights = np.asarray(row_weights, dtype=np.float64)
+    groups = np.asarray(group_counts, dtype=np.int64)
+    if groups.size <= 0:
+        return np.empty(0, dtype=np.float64)
+    if weights.size == groups.size:
+        return np.clip(weights, 1e-6, None)
+    if int(groups.sum()) != int(weights.size):
+        raise RuntimeError(
+            "ranker sample_weight rows must match the total query-group rows "
+            f"(weights={int(weights.size)}, grouped_rows={int(groups.sum())})"
+        )
+    group_weights = np.empty(groups.size, dtype=np.float64)
+    offset = 0
+    for index, group_size in enumerate(groups.tolist()):
+        size = int(group_size)
+        if size <= 0:
+            group_weights[index] = 1.0
+            continue
+        group_slice = weights[offset : offset + size]
+        group_weights[index] = float(np.mean(group_slice))
+        offset += size
+    return np.clip(group_weights, 1e-6, None)
+
+
 def fit_fixed_classifier_model(
     *,
     options: Any,
@@ -129,7 +154,10 @@ def fit_fixed_ranker_model(
     valid_group = group_counts_by_ts_fn(ts_valid_ms)
     if train_group.size <= 0 or valid_group.size <= 0:
         raise RuntimeError("ranker CPCV-lite fold requires grouped train and valid rows")
-    train_w = np.clip(np.asarray(w_train, dtype=np.float64), 1e-6, None)
+    row_train_w = np.asarray(w_train, dtype=np.float64)
+    if row_train_w.size != y_train.size:
+        row_train_w = np.ones(y_train.size, dtype=np.float64)
+    train_w = build_group_level_sample_weight(row_train_w, train_group)
     estimator = xgb.XGBRanker(
         objective="rank:pairwise",
         tree_method="hist",
@@ -437,10 +465,10 @@ def fit_booster_sweep_ranker(
         raise RuntimeError("ranker lane requires at least one timestamp-group in train and valid splits")
 
     y_train = np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    w_train_safe = np.asarray(w_train, dtype=np.float64)
-    if w_train_safe.size != y_train.size:
-        w_train_safe = np.ones(y_train.size, dtype=np.float64)
-    w_train_safe = np.clip(w_train_safe, 1e-6, None)
+    row_train_w = np.asarray(w_train, dtype=np.float64)
+    if row_train_w.size != y_train.size:
+        row_train_w = np.ones(y_train.size, dtype=np.float64)
+    w_train_safe = build_group_level_sample_weight(row_train_w, train_group)
 
     for trial in range(max(int(trials), 1)):
         params = sample_xgb_params_fn(rng)
