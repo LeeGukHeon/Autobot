@@ -295,6 +295,14 @@
     return `<article class="alert-card"><div class="row"><h4>${esc(title)}</h4>${pill("메모", kind === "bad" ? "주의" : kind === "warn" ? "참고" : "요약", kind)}</div><p>${esc(text)}</p></article>`;
   }
 
+  function compactStat(label, value, tone = "") {
+    return `<div class="list-meta-item ${tone}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  }
+
+  function compactRow({ title, summary = "", items = [], pillHtml = "", extraClass = "" }) {
+    return `<article class="list-row ${extraClass}"><div class="list-row-head"><div><h4>${esc(title)}</h4>${summary ? `<p class="list-row-summary">${esc(summary)}</p>` : ""}</div>${pillHtml}</div>${items.length ? `<div class="list-meta">${items.join("")}</div>` : ""}</article>`;
+  }
+
   function joinTranslated(values) {
     return unique(values).map(translate).join(" / ") || "-";
   }
@@ -485,22 +493,51 @@
     ].join("");
 
     const services = snapshot.services || {};
-    document.getElementById("services-grid").innerHTML = Object.entries(services).map(([key, svc]) => {
-      const active = String(svc.active_state || "").toLowerCase();
-      const sub = String(svc.sub_state || "").toLowerCase();
-      return `<article class="service-card"><div class="row"><h4>${esc(SERVICE_LABELS[key] || key)}</h4>${pill("상태", `${translate(active)} / ${translate(sub)}`, active === "active" ? "good" : active === "failed" ? "bad" : "warn")}</div><div class="kv-grid">${kv("최근 시작", fmtDateTime(svc.started_at))}${kv("다음 실행", fmtDateTime(svc.next_run_at))}</div></article>`;
-    }).join("") || empty("표시할 서비스가 없습니다.");
+    document.getElementById("services-grid").innerHTML = terminalTable(
+      ["서비스", "상태", "최근 시작", "다음 실행"],
+      Object.entries(services).map(([key, svc]) => {
+        const active = String(svc.active_state || "").toLowerCase();
+        const sub = String(svc.sub_state || "").toLowerCase();
+        return {
+          cells: [
+            cell(SERVICE_LABELS[key] || key, svc.description || ""),
+            cell(`${translate(active)} / ${translate(sub)}`),
+            cell(fmtDateTime(svc.started_at)),
+            cell(fmtDateTime(svc.next_run_at)),
+          ],
+        };
+      }),
+    ) || empty("표시할 서비스가 없습니다.");
 
     const notes = [];
-    if ((acceptance.reasons || []).length) notes.push(noteCard("직접 사유", unique(acceptance.reasons).map(translate).join(" / "), "warn"));
-    if ((acceptance.trainer_reasons || []).length) notes.push(noteCard("학습 증거", unique(acceptance.trainer_reasons).map(translate).join(" / "), "warn"));
-    if (challenger.reason) notes.push(noteCard("챌린저 미기동 사유", translate(challenger.reason), "warn"));
+    if ((acceptance.reasons || []).length) notes.push(compactRow({
+      title: "직접 사유",
+      summary: unique(acceptance.reasons).map(translate).join(" / "),
+      pillHtml: pill("메모", "참고", "warn"),
+    }));
+    if ((acceptance.trainer_reasons || []).length) notes.push(compactRow({
+      title: "학습 증거",
+      summary: unique(acceptance.trainer_reasons).map(translate).join(" / "),
+      pillHtml: pill("메모", "참고", "warn"),
+    }));
+    if (challenger.reason) notes.push(compactRow({
+      title: "챌린저 미기동 사유",
+      summary: translate(challenger.reason),
+      pillHtml: pill("메모", "참고", "warn"),
+    }));
     liveStates.forEach((liveState) => {
       const breakers = unique((liveState.active_breakers || []).map((item) => item.reason || item.code || item.name));
-      if (breakers.length) notes.push(noteCard(`${liveState.label} 브레이커`, breakers.map(translate).join(" / "), "bad"));
+      if (breakers.length) notes.push(compactRow({
+        title: `${liveState.label} 브레이커`,
+        summary: breakers.map(translate).join(" / "),
+        pillHtml: pill("메모", "주의", "bad"),
+      }));
     });
     document.getElementById("alerts-grid").innerHTML =
-      notes.length ? notes.join("") : noteCard("현재 상태", "즉시 확인이 필요한 경고는 없습니다.");
+      notes.length ? `<div class="dense-list">${notes.join("")}</div>` : compactRow({
+        title: "현재 상태",
+        summary: "즉시 확인이 필요한 경고는 없습니다.",
+      });
   }
 
   function renderTraining(snapshot) {
@@ -533,11 +570,44 @@
     const rankNarrative = rankShadow.status
       ? `랭크 그림자 레인은 현재 ${maybe(rankShadow.status)} 상태이며 다음 액션은 ${maybe(rankShadow.next_action)}입니다.`
       : "랭크 그림자 레인 최신 판단이 아직 없습니다.";
-    document.getElementById("training-details").innerHTML = [
-      card("이번 후보 해석", `<p class="section-copy">${esc(acceptanceNarrative)}</p><div class="kv-grid">${kv("모델 계열", maybe(acceptance.model_family))}${kv("후보 run", shortRun(acceptance.candidate_run_id))}${kv("이전 챔피언", shortRun(acceptance.champion_before_run_id))}${kv("현재 챔피언", shortRun(acceptance.champion_after_run_id))}${kv("백테스트 통과", boolLabel(acceptance.backtest_pass))}${kv("페이퍼 통과", boolLabel(acceptance.paper_pass))}</div>`),
-      card("챌린저 루프", `<p class="section-copy">${esc(challengerNarrative)}</p><div class="kv-grid">${kv("챌린저 시작", challenger.started ? "시작됨" : "미시작")}${kv("멈춘 이유", translate(challenger.reason))}${kv("추가 메모", joinTranslated(challenger.acceptance_notes || []))}${kv("보고서", shortPath(challenger.artifact_path))}</div>`),
-      card("랭크 그림자 레인", `<p class="section-copy">${esc(rankNarrative)}</p><div class="kv-grid">${kv("현재 상태", maybe(rankShadow.status))}${kv("다음 액션", maybe(rankShadow.next_action))}${kv("선택 레인", maybe((rankShadow.governance_action || {}).selected_lane_id))}${kv("선택 스크립트", maybe((rankShadow.governance_action || {}).selected_acceptance_script))}${kv("후보 run", shortRun(rankShadow.candidate_run_id))}${kv("사이클 보고서", shortPath(rankShadow.artifact_path))}</div>`)
-    ].join("");
+    document.getElementById("training-details").innerHTML = `<div class="dense-list">${
+      [
+        compactRow({
+          title: "이번 후보 해석",
+          summary: acceptanceNarrative,
+          items: [
+            compactStat("모델 계열", maybe(acceptance.model_family)),
+            compactStat("후보 run", shortRun(acceptance.candidate_run_id)),
+            compactStat("이전 챔피언", shortRun(acceptance.champion_before_run_id)),
+            compactStat("현재 챔피언", shortRun(acceptance.champion_after_run_id)),
+            compactStat("백테스트", boolLabel(acceptance.backtest_pass)),
+            compactStat("페이퍼", boolLabel(acceptance.paper_pass)),
+          ],
+        }),
+        compactRow({
+          title: "챌린저 루프",
+          summary: challengerNarrative,
+          items: [
+            compactStat("챌린저 시작", challenger.started ? "시작됨" : "미시작"),
+            compactStat("멈춘 이유", translate(challenger.reason)),
+            compactStat("추가 메모", joinTranslated(challenger.acceptance_notes || [])),
+            compactStat("보고서", shortPath(challenger.artifact_path)),
+          ],
+        }),
+        compactRow({
+          title: "랭크 그림자 레인",
+          summary: rankNarrative,
+          items: [
+            compactStat("현재 상태", maybe(rankShadow.status)),
+            compactStat("다음 액션", maybe(rankShadow.next_action)),
+            compactStat("선택 레인", maybe((rankShadow.governance_action || {}).selected_lane_id)),
+            compactStat("선택 스크립트", maybe((rankShadow.governance_action || {}).selected_acceptance_script)),
+            compactStat("후보 run", shortRun(rankShadow.candidate_run_id)),
+            compactStat("사이클 보고서", shortPath(rankShadow.artifact_path)),
+          ],
+        }),
+      ].join("")
+    }</div>`;
 
     const artifacts = training.candidate_artifacts || {};
     const runtime = artifacts.runtime_recommendations || {};
@@ -548,21 +618,79 @@
     const tradeAction = runtime.trade_action || {};
     const tradeActionSample = (tradeAction.sample_bins || [])[0] || {};
 
-    document.getElementById("artifact-grid").innerHTML = [
-      `<article class="artifact-card"><h4>실전 주문 추천</h4><p class="section-copy">${esc(runtimeExplain(runtime))}</p><div class="kv-grid">${kv("기본 청산 방식", translate(runtime.recommended_exit_mode))}${kv("선택 family", maybe(runtime.chosen_family))}${kv("선택 rule", maybe(runtime.chosen_rule_id))}${kv("hold family", maybe((runtime.hold_family || {}).status))}${kv("risk family", maybe((runtime.risk_family || {}).status))}${kv("family compare", maybe((runtime.family_compare || {}).status))}${kv("기본 보유 바", maybe(runtime.recommended_hold_bars))}${kv("리스크 기준 변동성", maybe(runtime.recommended_risk_vol_feature))}${kv("추천 근거", maybe(runtime.recommendation_source))}</div></article>`,
-      `<article class="artifact-card"><h4>진입 선택 규칙</h4><p class="section-copy">후보를 고를 때는 ${translate(policy.mode)} 방식을 쓰고, 점수 보정은 ${maybe(calibration.method)} 기준으로 적용합니다.</p><div class="kv-grid">${kv("선택 방식", translate(policy.mode))}${kv("기준 키", maybe(policy.threshold_key))}${kv("순위 비율", policy.rank_quantile == null ? "-" : fmtPct(Number(policy.rank_quantile) * 100))}${kv("보정 방식", maybe(calibration.method))}</div></article>`,
-      `<article class="artifact-card"><h4>Trade Action 정책</h4><p class="section-copy">${tradeAction.status === "ready" ? `학습된 trade action이 활성화돼 있습니다. 현재 예시 bin에서는 ${translate(tradeActionSample.recommended_action)} 전략과 ${fmtBps(tradeActionSample.expected_edge_bps)} 기대 엣지를 사용합니다.` : "trade action 정책이 아직 준비되지 않았습니다."}</p><div class="kv-grid">${kv("정책 상태", maybe(tradeAction.status))}${kv("사용 리스크 변수", maybe(tradeAction.risk_feature_name))}${kv("hold 추천 bin", maybe(tradeAction.hold_bins_recommended))}${kv("risk 추천 bin", maybe(tradeAction.risk_bins_recommended))}${kv("예시 엣지", fmtBps(tradeActionSample.expected_edge_bps))}${kv("예시 진입 배수", fmtNumber(tradeActionSample.notional_multiplier, 2))}</div></article>`,
-      `<article class="artifact-card"><h4>검증과 예산</h4><p class="section-copy">이번 후보는 ${maybe(wf.windows_run)}개 검증 구간과 ${maybe(wf.selection_search_trial_count)}개 선택 실험을 바탕으로 평가됐고, 검색 예산은 ${maybe(budget.decision_mode)} 모드로 적용됐습니다.</p><div class="kv-grid">${kv("White 검정 비교 가능", boolLabel(wf.white_rc_comparable))}${kv("Hansen 검정 비교 가능", boolLabel(wf.hansen_spa_comparable))}${kv("선택 실험 수", maybe(wf.selection_search_trial_count))}${kv("예산 모드", maybe(budget.decision_mode))}${kv("부스터 시도 수", maybe(budget.booster_sweep_trials))}${kv("예산 메모", joinTranslated(budget.reasons || []))}</div></article>`
-    ].join("");
+    document.getElementById("artifact-grid").innerHTML = `<div class="dense-list">${
+      [
+        compactRow({
+          title: "실전 주문 추천",
+          summary: runtimeExplain(runtime),
+          items: [
+            compactStat("기본 청산", translate(runtime.recommended_exit_mode)),
+            compactStat("선택 family", maybe(runtime.chosen_family)),
+            compactStat("선택 rule", maybe(runtime.chosen_rule_id)),
+            compactStat("hold family", maybe((runtime.hold_family || {}).status)),
+            compactStat("risk family", maybe((runtime.risk_family || {}).status)),
+            compactStat("family compare", maybe((runtime.family_compare || {}).status)),
+          ],
+        }),
+        compactRow({
+          title: "진입 선택 규칙",
+          summary: `후보를 고를 때는 ${translate(policy.mode)} 방식을 쓰고, 점수 보정은 ${maybe(calibration.method)} 기준으로 적용합니다.`,
+          items: [
+            compactStat("선택 방식", translate(policy.mode)),
+            compactStat("기준 키", maybe(policy.threshold_key)),
+            compactStat("순위 비율", policy.rank_quantile == null ? "-" : fmtPct(Number(policy.rank_quantile) * 100)),
+            compactStat("보정 방식", maybe(calibration.method)),
+          ],
+        }),
+        compactRow({
+          title: "Trade Action 정책",
+          summary: tradeAction.status === "ready"
+            ? `현재 예시 bin에서는 ${translate(tradeActionSample.recommended_action)} 전략과 ${fmtBps(tradeActionSample.expected_edge_bps)} 기대 엣지를 사용합니다.`
+            : "trade action 정책이 아직 준비되지 않았습니다.",
+          items: [
+            compactStat("정책 상태", maybe(tradeAction.status)),
+            compactStat("리스크 변수", maybe(tradeAction.risk_feature_name)),
+            compactStat("hold 추천 bin", maybe(tradeAction.hold_bins_recommended)),
+            compactStat("risk 추천 bin", maybe(tradeAction.risk_bins_recommended)),
+            compactStat("예시 엣지", fmtBps(tradeActionSample.expected_edge_bps)),
+            compactStat("예시 진입 배수", fmtNumber(tradeActionSample.notional_multiplier, 2)),
+          ],
+        }),
+        compactRow({
+          title: "검증과 예산",
+          summary: `이번 후보는 ${maybe(wf.windows_run)}개 검증 구간과 ${maybe(wf.selection_search_trial_count)}개 선택 실험을 바탕으로 평가됐고, 검색 예산은 ${maybe(budget.decision_mode)} 모드로 적용됐습니다.`,
+          items: [
+            compactStat("White 검정", boolLabel(wf.white_rc_comparable)),
+            compactStat("Hansen 검정", boolLabel(wf.hansen_spa_comparable)),
+            compactStat("선택 실험 수", maybe(wf.selection_search_trial_count)),
+            compactStat("예산 모드", maybe(budget.decision_mode)),
+            compactStat("부스터 시도 수", maybe(budget.booster_sweep_trials)),
+            compactStat("예산 메모", joinTranslated(budget.reasons || [])),
+          ],
+        }),
+      ].join("")
+    }</div>`;
   }
 
   function renderPaper(snapshot) {
     const rows = [...((snapshot.paper || {}).recent_runs || [])].sort((a, b) => {
       return (coerceTs(b.updated_at) || 0) - (coerceTs(a.updated_at) || 0);
     });
-    document.getElementById("paper-grid").innerHTML = rows.map((run) => {
-      return `<article class="paper-card"><div class="row"><h4>${esc(shortRun(run.run_id))}</h4>${pill("워밍업", boolLabel(run.warmup_satisfied), run.warmup_satisfied ? "good" : "warn")}</div><div class="metric-grid">${metric("제출", maybe(run.orders_submitted, "0"))}${metric("체결", maybe(run.orders_filled, "0"))}${metric("체결률", run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100))}${metric("실현 손익", fmtMoney(run.realized_pnl_quote))}${metric("평가 손익", fmtMoney(run.unrealized_pnl_quote))}${metric("최대 낙폭", fmtPct(run.max_drawdown_pct))}</div><div class="subtle">${esc(maybe(run.feature_provider))} / ${esc(maybe(run.micro_provider))} · ${esc(fmtDateTime(run.updated_at))}</div></article>`;
-    }).join("") || empty("최근 페이퍼 런이 없습니다.");
+    document.getElementById("paper-grid").innerHTML = rows.length
+      ? terminalTable(
+        ["런", "제출", "체결", "체결률", "실현 손익", "업데이트"],
+        rows.map((run) => ({
+          cells: [
+            cell(shortRun(run.run_id), `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`),
+            cell(maybe(run.orders_submitted, "0")),
+            cell(maybe(run.orders_filled, "0")),
+            cell(run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100)),
+            cell(fmtMoney(run.realized_pnl_quote), `평가 ${fmtMoney(run.unrealized_pnl_quote)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+            cell(fmtDateTime(run.updated_at)),
+          ],
+        })),
+      )
+      : empty("최근 페이퍼 런이 없습니다.");
   }
 
   function statePriority(item) {
@@ -787,10 +915,30 @@
       metric("최근 수신", fmtAge(lastRxTs)),
       metric("현재 run", shortRun(health.run_id || latestRun.run_id))
     ].join("");
-    document.getElementById("ws-details").innerHTML = [
-      card("수집기 상태", `<div class="kv-grid">${kv("연결", boolLabel(health.connected))}${kv("재연결 횟수", maybe(health.reconnect_count, "0"))}${kv("최근 수신", fmtDateTime(lastRxTs))}${kv("fatal reason", maybe(health.fatal_reason))}</div>`),
-      card("누적 적재", `<div class="kv-grid">${kv("총 적재 행", fmtNumber((health.written_rows || {}).total, 0))}${kv("trade 행", fmtNumber((health.written_rows || {}).trade, 0))}${kv("orderbook 행", fmtNumber((health.written_rows || {}).orderbook, 0))}${kv("총 drop 행", fmtNumber((health.dropped_rows || {}).total, 0))}${kv("최근 run", `parts ${fmtNumber(latestRun.parts, 0)} · rows ${fmtNumber(latestRun.rows_total, 0)}`)}</div>`)
-    ].join("");
+    document.getElementById("ws-details").innerHTML = `<div class="dense-list">${
+      [
+        compactRow({
+          title: "수집기 상태",
+          summary: health.connected ? "WS 수집기가 정상 연결 상태입니다." : "WS 수집기가 끊겨 있습니다.",
+          items: [
+            compactStat("연결", boolLabel(health.connected)),
+            compactStat("재연결 횟수", maybe(health.reconnect_count, "0")),
+            compactStat("최근 수신", fmtDateTime(lastRxTs)),
+            compactStat("fatal reason", maybe(health.fatal_reason)),
+          ],
+        }),
+        compactRow({
+          title: "누적 적재",
+          summary: `최근 run ${fmtNumber(latestRun.parts, 0)} parts · ${fmtNumber(latestRun.rows_total, 0)} rows`,
+          items: [
+            compactStat("총 적재 행", fmtNumber((health.written_rows || {}).total, 0)),
+            compactStat("trade 행", fmtNumber((health.written_rows || {}).trade, 0)),
+            compactStat("orderbook 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
+            compactStat("총 drop 행", fmtNumber((health.dropped_rows || {}).total, 0)),
+          ],
+        }),
+      ].join("")
+    }</div>`;
   }
 
   function renderAll(snapshot) {
