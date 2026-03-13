@@ -51,6 +51,11 @@ def _matches_close_geometry(imported: dict[str, Any], canonical: dict[str, Any])
     return True
 
 
+def _is_synthetic_closed_row(row: dict[str, Any]) -> bool:
+    journal_id = str(row.get("journal_id") or "").strip()
+    return journal_id.startswith("imported-") or journal_id.startswith("trade-")
+
+
 def _load_duplicate_candidates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     imported_rows = [
@@ -59,7 +64,7 @@ def _load_duplicate_candidates(conn: sqlite3.Connection) -> list[dict[str, Any]]
             """
             SELECT *
             FROM trade_journal
-            WHERE journal_id LIKE 'imported-%'
+            WHERE (journal_id LIKE 'imported-%' OR journal_id LIKE 'trade-%')
               AND status = 'CLOSED'
             ORDER BY updated_ts ASC, journal_id ASC
             """
@@ -72,6 +77,7 @@ def _load_duplicate_candidates(conn: sqlite3.Connection) -> list[dict[str, Any]]
             SELECT *
             FROM trade_journal
             WHERE journal_id NOT LIKE 'imported-%'
+              AND journal_id NOT LIKE 'trade-%'
               AND status = 'CLOSED'
             ORDER BY updated_ts ASC, journal_id ASC
             """
@@ -164,7 +170,7 @@ def cleanup_imported_trade_journal_duplicates(db_path: Path, *, apply_changes: b
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Clean imported duplicate trade journal close rows.")
+    parser = argparse.ArgumentParser(description="Clean synthetic duplicate trade journal close rows.")
     parser.add_argument("--db-path", required=True, help="Path to live_state.db")
     parser.add_argument(
         "--apply",

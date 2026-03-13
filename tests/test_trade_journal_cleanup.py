@@ -174,3 +174,50 @@ def test_cleanup_imported_trade_journal_duplicates_removes_recent_geometry_match
         rows = store.list_trade_journal(statuses=("CLOSED",), market="KRW-NOM")
 
     assert [row["journal_id"] for row in rows] == ["journal-nom"]
+
+
+def test_cleanup_imported_trade_journal_duplicates_removes_trade_prefixed_synthetic_rows(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-eth",
+                market="KRW-ETH",
+                status="CLOSED",
+                entry_intent_id="intent-eth",
+                entry_order_uuid="entry-order-eth",
+                exit_order_uuid="exit-order-eth",
+                plan_id="plan-eth",
+                entry_filled_ts_ms=1_000,
+                exit_ts_ms=2_000,
+                entry_price=100.0,
+                exit_price=101.0,
+                qty=1.0,
+                realized_pnl_quote=0.9,
+                updated_ts=2_000,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="trade-KRW-ETH-2000",
+                market="KRW-ETH",
+                status="CLOSED",
+                entry_intent_id=None,
+                entry_order_uuid=None,
+                exit_order_uuid="exit-order-eth",
+                exit_ts_ms=2_000,
+                realized_pnl_quote=0.9,
+                updated_ts=2_000,
+            )
+        )
+
+    dry_run = cleanup_imported_trade_journal_duplicates(db_path, apply_changes=False)
+    assert dry_run["duplicate_row_count"] == 1
+    assert dry_run["groups"][0]["delete_journal_ids"] == ["trade-KRW-ETH-2000"]
+    assert dry_run["groups"][0]["keep_journal_ids"] == ["journal-eth"]
+
+    cleanup_imported_trade_journal_duplicates(db_path, apply_changes=True)
+    with LiveStateStore(db_path) as store:
+        rows = sorted(store.list_trade_journal(statuses=("CLOSED",), market="KRW-ETH"), key=lambda item: str(item["journal_id"]))
+
+    assert [row["journal_id"] for row in rows] == ["journal-eth"]
