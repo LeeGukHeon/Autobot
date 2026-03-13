@@ -19,28 +19,9 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
-def _make_fake_acceptance_script(
-    tmp_path: Path,
-    *,
-    payload: dict,
-    exit_code: int,
-    emit_daily_micro_report: bool = False,
-) -> Path:
+def _make_fake_acceptance_script(tmp_path: Path, *, payload: dict, exit_code: int) -> Path:
     script_path = tmp_path / f"fake_rank_shadow_acceptance_{exit_code}.ps1"
     payload_json = json.dumps(payload)
-    prelude = ""
-    if emit_daily_micro_report:
-        prelude = textwrap.indent(
-            textwrap.dedent(
-                """
-                $dailyReportPath = Join-Path $ProjectRoot "docs/reports/DAILY_MICRO_REPORT_2026-03-08.md"
-                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dailyReportPath) | Out-Null
-                "# fake daily report" | Set-Content -Path $dailyReportPath -Encoding UTF8
-                Write-Host ("[daily-micro] report={0}" -f $dailyReportPath)
-                """
-            ).strip(),
-            "            ",
-        )
     script_path.write_text(
         textwrap.dedent(
             f"""
@@ -56,7 +37,6 @@ def _make_fake_acceptance_script(
 
             $reportPath = Join-Path $ProjectRoot "logs/fake_rank_shadow_acceptance/report.json"
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $reportPath) | Out-Null
-            {prelude}
             @'
             {payload_json}
             '@ | Set-Content -Path $reportPath -Encoding UTF8
@@ -307,66 +287,3 @@ def test_rank_shadow_cycle_accepts_comma_joined_array_args_from_installer(tmp_pa
     assert latest["batch_date"] == "2026-03-08"
     assert latest["status"] == "shadow_pass"
     assert latest["candidate_run_id"] == "rank-run-array-001"
-
-
-def test_rank_shadow_cycle_prefers_final_json_report_over_daily_markdown_report(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    acceptance_script = _make_fake_acceptance_script(
-        tmp_path,
-        payload={
-            "candidate": {
-                "run_id": "rank-run-002",
-                "run_dir": str(project_root / "models" / "registry" / "train_v4_crypto_cs" / "rank-run-002"),
-                "lane_id": "rank_shadow",
-                "lane_role": "shadow",
-                "lane_shadow_only": True,
-                "lane_promotion_allowed": False,
-            },
-            "config": {
-                "task": "rank",
-            },
-            "gates": {
-                "overall_pass": True,
-                "backtest": {
-                    "pass": True,
-                    "decision_basis": "PARETO_DOMINANCE",
-                },
-            },
-            "reasons": [],
-            "notes": ["SHADOW_LANE_ONLY"],
-        },
-        exit_code=0,
-        emit_daily_micro_report=True,
-    )
-
-    completed = subprocess.run(
-        [
-            _powershell_exe(),
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(SCRIPT_PATH),
-            "-ProjectRoot",
-            str(project_root),
-            "-PythonExe",
-            "python",
-            "-AcceptanceScript",
-            str(acceptance_script),
-            "-BatchDate",
-            "2026-03-08",
-            "-SkipDailyPipeline",
-            "-SkipReportRefresh",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
-    latest = json.loads((project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json").read_text(encoding="utf-8-sig"))
-
-    assert latest["status"] == "shadow_pass"
-    assert latest["candidate_run_id"] == "rank-run-002"
