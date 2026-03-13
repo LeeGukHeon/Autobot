@@ -1455,6 +1455,128 @@ def test_find_latest_model_entry_intent_prefers_filled_order_match_over_newer_un
     assert entry_intent["intent_id"] == "intent-old-filled"
 
 
+def test_find_latest_model_entry_intent_accepts_closed_order_backfill_status_when_contract_survives(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-awe",
+                ts_ms=1_000,
+                market="KRW-AWE",
+                side="bid",
+                price=77.0,
+                volume=77.88313635,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="UPDATED_FROM_CLOSED_ORDERS",
+                meta_json=json.dumps(
+                    {
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-awe"},
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 9,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 2700000,
+                                    "tp_pct": 0.0,
+                                    "sl_pct": 0.02,
+                                    "trailing_pct": 0.0,
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-awe",
+                identifier="AUTOBOT-autobot-001-intent-awe-1000-a",
+                market="KRW-AWE",
+                side="bid",
+                ord_type="limit",
+                price=77.0,
+                volume_req=77.88313635,
+                volume_filled=77.88313635,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-awe",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="entry-order-awe",
+            )
+        )
+
+        entry_intent = runtime_module._find_latest_model_entry_intent(
+            store=store,
+            market="KRW-AWE",
+            position={
+                "market": "KRW-AWE",
+                "base_amount": 77.88313635,
+                "avg_entry_price": 77.0,
+            },
+        )
+
+    assert entry_intent is not None
+    assert entry_intent["intent_id"] == "intent-awe"
+    assert entry_intent["plan_payload"]["mode"] == "hold"
+
+
+def test_startup_sync_backfills_closed_orders_before_reconcile(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    call_order: list[str] = []
+
+    monkeypatch.setattr(
+        runtime_module,
+        "backfill_recent_bot_closed_orders",
+        lambda **_: call_order.append("backfill") or {"orders_upserted": 1},
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_run_sync_cycle_with_breakers",
+        lambda **_: call_order.append("cycle")
+        or {
+            "report": {"halted": True, "halted_reasons": ["TEST_HALT"]},
+            "cancel_summary": None,
+            "breaker_report": None,
+            "small_account_report": None,
+        },
+    )
+    monkeypatch.setattr(runtime_module, "_maybe_enforce_breaker", lambda **_: None)
+    settings = _runtime_settings(tmp_path, rollout_mode="canary").daemon
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = {
+            "cycles": 0,
+            "last_report": None,
+            "last_cancel_summary": None,
+            "breaker_report": None,
+            "small_account_report": None,
+            "last_breaker_cancel_summary": None,
+            "halted": False,
+            "halted_reasons": [],
+            "closed_orders_backfill": None,
+        }
+        ok = runtime_module._startup_sync(
+            store=store,
+            client=_PrivateClient(),
+            settings=settings,
+            summary=summary,
+        )
+
+    assert ok is False
+    assert call_order == ["backfill", "cycle"]
+    assert summary["closed_orders_backfill"] == {"orders_upserted": 1}
+
+
 def test_bootstrap_strategy_positions_opens_trade_journal_for_existing_position(tmp_path: Path) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 

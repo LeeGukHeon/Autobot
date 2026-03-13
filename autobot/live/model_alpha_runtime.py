@@ -394,6 +394,13 @@ async def run_live_model_alpha_runtime(
 
             if now_monotonic >= next_sync_monotonic:
                 previous_positions = dict(known_positions)
+                summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
+                    store=store,
+                    client=client,
+                    bot_id=daemon_settings.bot_id,
+                    identifier_prefix=daemon_settings.identifier_prefix,
+                    now_ts_ms=int(time.time() * 1000),
+                )
                 cycle_result = _run_sync_cycle_with_breakers(
                     store=store,
                     client=client,
@@ -405,13 +412,6 @@ async def run_live_model_alpha_runtime(
                 summary["last_cancel_summary"] = cycle_result["cancel_summary"]
                 summary["breaker_report"] = cycle_result.get("breaker_report")
                 summary["small_account_report"] = cycle_result.get("small_account_report")
-                summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
-                    store=store,
-                    client=client,
-                    bot_id=daemon_settings.bot_id,
-                    identifier_prefix=daemon_settings.identifier_prefix,
-                    now_ts_ms=int(time.time() * 1000),
-                )
                 _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
                 _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
                 order_supervision = _supervise_open_strategy_orders(
@@ -524,6 +524,13 @@ def _startup_sync(
     settings: LiveDaemonSettings,
     summary: dict[str, Any],
 ) -> bool:
+    summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
+        store=store,
+        client=client,
+        bot_id=settings.bot_id,
+        identifier_prefix=settings.identifier_prefix,
+        now_ts_ms=int(time.time() * 1000),
+    )
     cycle_result = _run_sync_cycle_with_breakers(
         store=store,
         client=client,

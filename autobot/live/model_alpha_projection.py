@@ -297,13 +297,14 @@ def find_latest_model_entry_intent(
     position: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     market_value = str(market).strip().upper()
+    accepted_statuses = {"SUBMITTED", "UPDATED_FROM_WS", "UPDATED_FROM_CLOSED_ORDERS"}
     intents_by_id: dict[str, dict[str, Any]] = {}
     for item in store.list_intents():
         if str(item.get("market", "")).strip().upper() != market_value:
             continue
         if str(item.get("side", "")).strip().lower() != "bid":
             continue
-        if str(item.get("status", "")).strip().upper() != "SUBMITTED":
+        if str(item.get("status", "")).strip().upper() not in accepted_statuses:
             continue
         meta = item.get("meta")
         if not isinstance(meta, dict):

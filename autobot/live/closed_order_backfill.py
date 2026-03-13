@@ -79,31 +79,44 @@ def backfill_recent_bot_closed_orders(
         )
         if intent_id is None and uuid is not None:
             intent_id = f"inferred-{uuid}"
+        existing_intent = store.intent_by_id(intent_id=intent_id) if intent_id else None
         if intent_id:
+            intent_meta = (
+                dict(existing_intent.get("meta") or {})
+                if existing_intent is not None and isinstance(existing_intent.get("meta"), dict)
+                else {}
+            )
+            intent_meta["closed_orders_backfill"] = {
+                "identifier": identifier,
+                "order_uuid": uuid,
+                "runtime_model_run_id": extract_run_token_from_identifier(
+                    identifier,
+                    prefix=identifier_prefix,
+                    bot_id=bot_id,
+                ),
+            }
+            intent_meta["last_update_source"] = "closed_orders_backfill"
+            if "source" not in intent_meta:
+                intent_meta["source"] = "closed_orders_backfill"
             store.upsert_intent(
                 IntentRecord(
                     intent_id=intent_id,
-                    ts_ms=_parse_created_ts(item.get("created_at"), fallback_ts=now_ts_ms),
-                    market=str(item.get("market") or "").strip().upper(),
-                    side=str(item.get("side") or "bid").strip().lower(),
-                    price=_as_optional_float(item.get("price")),
-                    volume=_as_optional_float(item.get("volume")),
-                    reason_code="CLOSED_ORDERS_BACKFILL",
-                    meta_json=json.dumps(
-                        {
-                            "source": "closed_orders_backfill",
-                            "identifier": identifier,
-                            "order_uuid": uuid,
-                            "runtime_model_run_id": extract_run_token_from_identifier(
-                                identifier,
-                                prefix=identifier_prefix,
-                                bot_id=bot_id,
-                            ),
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
+                    ts_ms=int((existing_intent or {}).get("ts_ms") or _parse_created_ts(item.get("created_at"), fallback_ts=now_ts_ms)),
+                    market=str((existing_intent or {}).get("market") or item.get("market") or "").strip().upper(),
+                    side=str((existing_intent or {}).get("side") or item.get("side") or "bid").strip().lower(),
+                    price=(
+                        existing_intent.get("price")
+                        if existing_intent is not None and existing_intent.get("price") is not None
+                        else _as_optional_float(item.get("price"))
                     ),
-                    status="UPDATED_FROM_CLOSED_ORDERS",
+                    volume=(
+                        existing_intent.get("volume")
+                        if existing_intent is not None and existing_intent.get("volume") is not None
+                        else _as_optional_float(item.get("volume"))
+                    ),
+                    reason_code=_as_optional_str((existing_intent or {}).get("reason_code")) or "CLOSED_ORDERS_BACKFILL",
+                    meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
+                    status=_as_optional_str((existing_intent or {}).get("status")) or "UPDATED_FROM_CLOSED_ORDERS",
                 )
             )
         normalized = normalize_order_state(

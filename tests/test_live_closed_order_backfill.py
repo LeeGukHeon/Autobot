@@ -4,7 +4,8 @@ import json
 import pytest
 
 from autobot.live.closed_order_backfill import backfill_recent_bot_closed_orders
-from autobot.live.state_store import LiveStateStore, OrderRecord, RiskPlanRecord, TradeJournalRecord
+from autobot.live.reconcile import reconcile_exchange_snapshot
+from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord, TradeJournalRecord
 
 
 class _StubClosedOrdersClient:
@@ -333,3 +334,189 @@ def test_backfill_recent_bot_closed_orders_accepts_tracked_exit_uuid_from_journa
     assert order is not None
     assert journal is not None
     assert journal["realized_pnl_quote"] is not None
+
+
+def test_backfill_recent_bot_closed_orders_preserves_existing_intent_contract_and_status(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-awe",
+                ts_ms=1_000,
+                market="KRW-AWE",
+                side="bid",
+                price=77.0,
+                volume=77.88313635,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-awe"},
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "risk",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1800000,
+                                    "tp_pct": 0.03,
+                                    "sl_pct": 0.02,
+                                    "trailing_pct": 0.0,
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-awe",
+                identifier="AUTOBOT-autobot-001-intent-awe-1000-a",
+                market="KRW-AWE",
+                side="bid",
+                ord_type="limit",
+                price=77.0,
+                volume_req=77.88313635,
+                volume_filled=77.88313635,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-awe",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                root_order_uuid="entry-order-awe",
+            )
+        )
+        client = _StubClosedOrdersClient(
+            [
+                {
+                    "uuid": "entry-order-awe",
+                    "identifier": "AUTOBOT-autobot-001-intent-awe-1000-a-rid_run-1",
+                    "market": "KRW-AWE",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "state": "done",
+                    "price": "77",
+                    "volume": "77.88313635",
+                    "executed_volume": "77.88313635",
+                    "executed_funds": "5997.0015",
+                    "paid_fee": "2.9985",
+                    "created_at": "2026-03-13T10:21:01Z",
+                    "done_at": "2026-03-13T10:21:01Z",
+                }
+            ]
+        )
+
+        report = backfill_recent_bot_closed_orders(
+            store=store,
+            client=client,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            now_ts_ms=1_700_000_200_000,
+        )
+        intent = store.intent_by_id(intent_id="intent-awe")
+
+    assert report["orders_upserted"] == 1
+    assert intent is not None
+    assert intent["status"] == "SUBMITTED"
+    assert intent["reason_code"] == "MODEL_ALPHA_ENTRY_V1"
+    assert intent["meta"]["submit_result"]["accepted"] is True
+    assert intent["meta"]["strategy"]["meta"]["model_exit_plan"]["mode"] == "risk"
+    assert intent["meta"]["closed_orders_backfill"]["order_uuid"] == "entry-order-awe"
+
+
+def test_backfill_then_reconcile_recovers_model_plan_for_filled_bid(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-awe",
+                ts_ms=1_000,
+                market="KRW-AWE",
+                side="bid",
+                price=77.0,
+                volume=77.88313635,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-awe"},
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "risk",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1800000,
+                                    "tp_pct": 0.03,
+                                    "sl_pct": 0.02,
+                                    "trailing_pct": 0.0,
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        client = _StubClosedOrdersClient(
+            [
+                {
+                    "uuid": "entry-order-awe",
+                    "identifier": "AUTOBOT-autobot-001-intent-awe-1000-a-rid_run-1",
+                    "market": "KRW-AWE",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "state": "done",
+                    "price": "77",
+                    "volume": "77.88313635",
+                    "executed_volume": "77.88313635",
+                    "executed_funds": "5997.0015",
+                    "paid_fee": "2.9985",
+                    "created_at": "2026-03-13T10:21:01Z",
+                    "done_at": "2026-03-13T10:21:01Z",
+                }
+            ]
+        )
+
+        backfill_recent_bot_closed_orders(
+            store=store,
+            client=client,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            now_ts_ms=1_700_000_200_000,
+        )
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "AWE",
+                    "balance": "77.88313635",
+                    "locked": "0",
+                    "avg_buy_price": "76.9",
+                }
+            ],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="attach_strategy_risk",
+            dry_run=False,
+            ts_ms=5_000,
+        )
+        plans = store.list_risk_plans(market="KRW-AWE")
+
+    assert report["halted"] is False
+    assert any(item["type"] == "import_managed_position_from_bot_intent" for item in report["actions"])
+    assert len(plans) == 1
+    assert plans[0]["source_intent_id"] == "intent-awe"
+    assert plans[0]["tp"]["tp_pct"] == pytest.approx(3.0)
+    assert plans[0]["sl"]["sl_pct"] == pytest.approx(2.0)
