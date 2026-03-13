@@ -542,6 +542,15 @@
     return bits.join(" · ");
   }
 
+  function shortLiveLabel(label) {
+    const text = String(label || "").trim();
+    if (!text) return "-";
+    if (text.includes("후보")) return "카나리아";
+    if (text.includes("레거시")) return "레거시";
+    if (text.includes("메인")) return "메인";
+    return text.replace(/\s+/g, "");
+  }
+
   function setError(message) {
     const node = document.getElementById("fetch-error");
     if (!message) {
@@ -1000,24 +1009,26 @@
               : unitActive
                 ? "관찰 모드"
                 : "비활성 기록";
+        const selectorMeta = `${unitActive ? "가동" : "중지"} · WS ${privateWsTs == null ? "없음" : privateWsFreshness}`;
         return `
           <button class="live-selector-card ${active ? "active" : ""}" type="button" data-live-label="${esc(liveState.label)}">
-            <div class="live-selector-top">
-              <div>
-                <span class="live-selector-label">${esc(liveState.label)}</span>
-                <strong>${esc(selectorHeadline)}</strong>
+            <div class="live-selector-main">
+              <div class="live-selector-copy">
+                <div class="live-selector-top">
+                  <div>
+                    <span class="live-selector-label">${esc(shortLiveLabel(liveState.label))}</span>
+                    <strong>${esc(selectorHeadline)}</strong>
+                  </div>
+                  ${pill("모드", translate((liveState.rollout_status || {}).mode), selectorTone)}
+                </div>
+                <div class="live-selector-foot">${esc(selectorMeta)}</div>
               </div>
-              <div class="live-pill-stack">
-                ${pill("서비스", unitActive ? "가동 중" : "중지됨", unitActive ? "good" : "neutral")}
-                ${pill("모드", translate((liveState.rollout_status || {}).mode), selectorTone)}
+              <div class="live-selector-kpis">
+                <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
+                <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
+                <div><span>손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total))}</strong></div>
               </div>
             </div>
-            <div class="live-selector-kpis">
-              <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
-              <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
-              <div><span>오늘 손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total))}</strong></div>
-            </div>
-            <div class="live-selector-foot">${esc(`${unitActive ? "서비스 가동 중" : "서비스 중지 상태"} · 개인 WS ${privateWsTs == null ? "수신 없음" : fmtAge(privateWsTs)} · 종료 ${maybe(todayState.closed_count, "0")}건`)}</div>
           </button>
         `;
       }).join("")
@@ -1085,7 +1096,12 @@
       ? `${positions.length}개 포지션 · ${maybe(selected.open_orders_count, "0")}개 주문`
       : `${maybe(selected.open_orders_count, "0")}개 주문 감시 중`;
     const todayLabel = fmtDateLabel(today.date_label);
-    const todaySummaryLine = `${todayLabel} ${maybe(today.timezone, "KST")} · 종료 ${maybe(today.closed_count, "0")} · 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")} · 순손익 ${fmtMoney(today.net_pnl_quote_total)}`;
+    const todaySummaryLine = `${todayLabel} ${maybe(today.timezone, "KST")} 세션`;
+    const todaySummaryTags = [
+      `${maybe(today.closed_count, "0")}건 종료`,
+      `승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}`,
+      `순손익 ${fmtMoney(today.net_pnl_quote_total)}`,
+    ];
     const leadTone = selected.breaker_active
       ? "bad"
       : positions.length
@@ -1277,6 +1293,9 @@
                     <p>${esc(todaySummaryLine)}</p>
                   </div>
                   ${pill("개인 WS", privateWsFreshness, privateWsLastTs == null ? "warn" : "good")}
+                </div>
+                <div class="live-session-tags">
+                  ${todaySummaryTags.map((item) => `<span class="live-session-tag">${esc(item)}</span>`).join("")}
                 </div>
                 <div class="metric-grid">
                   ${metric("승률", fmtPct(today.win_rate_pct))}

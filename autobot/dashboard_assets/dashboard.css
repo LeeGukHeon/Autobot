@@ -807,11 +807,22 @@ body {
   line-height: 1.35;
 }
 
+.live-selector-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(168px, 0.95fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.live-selector-copy {
+  min-width: 0;
+}
+
 .live-selector-foot {
-  margin-top: 12px;
+  margin-top: 10px;
   color: var(--muted);
-  font-size: 0.8rem;
-  line-height: 1.6;
+  font-size: 0.74rem;
+  line-height: 1.45;
 }
 
 .live-command-shell {
@@ -969,6 +980,24 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--muted);
+}
+
+.live-session-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.live-session-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .live-signal-grid {
@@ -1640,6 +1669,10 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .live-selector-main {
+    grid-template-columns: 1fr;
+  }
+
   .hero-ribbon {
     display: grid;
     grid-template-columns: 1fr;
@@ -1694,6 +1727,34 @@ body {
 
   .live-selector-kpis {
     grid-template-columns: 1fr;
+  }
+
+  .live-hero-head h4 {
+    font-size: 1.45rem;
+    line-height: 1;
+  }
+
+  .live-selector-label {
+    font-size: 0.66rem;
+  }
+
+  .live-selector-top strong {
+    font-size: 0.92rem;
+  }
+
+  .live-session-card p {
+    font-size: 0.84rem;
+    line-height: 1.55;
+  }
+
+  .live-session-tag,
+  .live-spotlight-tag {
+    font-size: 0.74rem;
+    padding: 6px 9px;
+  }
+
+  .live-status-chip strong {
+    font-size: 0.75rem;
   }
 
   .metric,
