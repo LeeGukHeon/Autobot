@@ -1149,7 +1149,7 @@ function Invoke-SplitPolicyHistoricalAnchorEvaluation {
     $record.trainability = New-TrainabilityAttemptRecord -Probe $probe -StartDate $trainStartDate -EndDate $trainEndDate
     if (-not $probe.Usable) {
         $record.status = "INSUFFICIENT_TRAINABLE_ROWS"
-        $record.reasons = Merge-UniqueStringArray -First @($record.reasons) -Second @("INSUFFICIENT_TRAINABLE_ROWS")
+        $record.reasons = @(Merge-UniqueStringArray -First @($record.reasons) -Second @("INSUFFICIENT_TRAINABLE_ROWS"))
         return $record
     }
     $historyRunDir = ""
@@ -1187,7 +1187,7 @@ function Invoke-SplitPolicyHistoricalAnchorEvaluation {
         }
         if ($trainExec.ExitCode -ne 0) {
             $record.status = "TRAIN_FAILED"
-            $record.reasons = Merge-UniqueStringArray -First @($record.reasons) -Second @("TRAIN_FAILED")
+            $record.reasons = @(Merge-UniqueStringArray -First @($record.reasons) -Second @("TRAIN_FAILED"))
             return $record
         }
         $historyRunId = if ([string]::IsNullOrWhiteSpace($historyRunDir)) { "" } else { Split-Path -Leaf $historyRunDir }
@@ -1222,7 +1222,7 @@ function Invoke-SplitPolicyHistoricalAnchorEvaluation {
         return $record
     } catch {
         $record.status = "UNHANDLED_EXCEPTION"
-        $record.reasons = Merge-UniqueStringArray -First @($record.reasons) -Second @("UNHANDLED_EXCEPTION")
+        $record.reasons = @(Merge-UniqueStringArray -First @($record.reasons) -Second @("UNHANDLED_EXCEPTION"))
         $record.exception = [ordered]@{ message = $_.Exception.Message }
         return $record
     } finally {
@@ -1351,7 +1351,7 @@ function Resolve-SplitPolicySelection {
         if ([int](Get-PropValue -ObjectValue $stats -Name "count" -DefaultValue 0) -lt [int]$SplitPolicyMinHistoricalAnchors) {
             $admissibilityReasons += "HISTORICAL_ANCHOR_COUNT_LT_MIN"
         }
-        $admissibilityReasons = Merge-UniqueStringArray -First @($admissibilityReasons) -Second @()
+        $admissibilityReasons = @(Merge-UniqueStringArray -First @($admissibilityReasons) -Second @())
         $admissible = ($admissibilityReasons.Count -eq 0)
         $summaryItem = [ordered]@{
             holdout_days = [int]$holdoutDays
@@ -1520,7 +1520,7 @@ function New-CertificationArtifact {
         $reasons += "MISSING_DECISION_SURFACE"
     }
     foreach ($window in @($trainWindow, $researchWindow, $certificationWindow)) {
-        $reasons = Merge-UniqueStringArray -First $reasons -Second @(Get-PropValue -ObjectValue $window -Name "reasons" -DefaultValue @())
+        $reasons = @(Merge-UniqueStringArray -First $reasons -Second @(Get-PropValue -ObjectValue $window -Name "reasons" -DefaultValue @()))
     }
     if (To-Bool (Get-PropValue -ObjectValue $trainVsCertification -Name "overlap" -DefaultValue $false) $false) {
         $reasons += "TRAIN_CERTIFICATION_WINDOW_OVERLAP"
@@ -1528,7 +1528,7 @@ function New-CertificationArtifact {
     if (To-Bool (Get-PropValue -ObjectValue $researchVsCertification -Name "overlap" -DefaultValue $false) $false) {
         $reasons += "RESEARCH_CERTIFICATION_WINDOW_OVERLAP"
     }
-    $reasons = Merge-UniqueStringArray -First $reasons -Second @()
+    $reasons = @(Merge-UniqueStringArray -First $reasons -Second @())
     return [ordered]@{
         version = 1
         policy = "candidate_acceptance_certification_v1"
@@ -1895,7 +1895,7 @@ function New-CertificationResearchEvidence {
     $reasons = @()
     if (-not $windowValid) {
         $reasons += "CERTIFICATION_WINDOW_CONTRACT_INVALID"
-        $reasons = Merge-UniqueStringArray -First $reasons -Second $artifactReasons
+        $reasons = @(Merge-UniqueStringArray -First $reasons -Second $artifactReasons)
     }
     if (-not $CandidateBacktestPresent) {
         $reasons += "NO_CERTIFICATION_CANDIDATE_BACKTEST"
@@ -2074,7 +2074,7 @@ function Resolve-TrainerEvidenceFromCertificationArtifact {
         $resolved.pass = $false
         $resolved.certification_window_valid = $windowValid
         $resolved.certification_window_reasons = @($artifactReasons)
-        $resolved.reasons = Merge-UniqueStringArray -First @("MISSING_CERTIFICATION_RESEARCH_EVIDENCE") -Second $artifactReasons
+        $resolved.reasons = @(Merge-UniqueStringArray -First @("MISSING_CERTIFICATION_RESEARCH_EVIDENCE") -Second $artifactReasons)
         return $resolved
     }
     $resolved.available = To-Bool (Get-PropValue -ObjectValue $researchEvidence -Name "available" -DefaultValue $false) $false
@@ -2093,7 +2093,7 @@ function Resolve-TrainerEvidenceFromCertificationArtifact {
     $resolved.certification_window_reasons = @($artifactReasons)
     if (-not $windowValid) {
         $resolved.pass = $false
-        $resolved.reasons = Merge-UniqueStringArray -First $resolved.reasons -Second $artifactReasons
+        $resolved.reasons = @(Merge-UniqueStringArray -First $resolved.reasons -Second $artifactReasons)
     }
     if ($resolved.available -and $resolved.reasons.Count -eq 0) {
         $resolved.reasons = @("TRAINER_EVIDENCE_PASS")
@@ -2900,9 +2900,9 @@ $activeKnownUnits = @(
         ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "unit" -DefaultValue "") }
 )
 $effectiveRestartUnits = if ($AutoRestartKnownUnits) {
-    Merge-UniqueStringArray -First $RestartUnits -Second $activeKnownUnits
+    @(Merge-UniqueStringArray -First $RestartUnits -Second $activeKnownUnits)
 } else {
-    Merge-UniqueStringArray -First $RestartUnits -Second @()
+    @(Merge-UniqueStringArray -First $RestartUnits -Second @())
 }
 $report.runtime_units_before = @($runtimeUnitsBefore)
 $report.restart_targets = @($effectiveRestartUnits)
