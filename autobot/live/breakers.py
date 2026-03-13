@@ -133,6 +133,26 @@ def new_intents_allowed(store: LiveStateStore) -> bool:
     return not (current and bool(current.get("active")))
 
 
+def protective_orders_allowed(store: LiveStateStore) -> bool:
+    decision = active_breaker_decision(store)
+    if not decision.active:
+        return True
+    return str(decision.action or "").strip().upper() not in {
+        ACTION_HALT_AND_CANCEL_BOT_ORDERS,
+        ACTION_FULL_KILL_SWITCH,
+    }
+
+
+def runtime_loop_allowed(store: LiveStateStore) -> bool:
+    decision = active_breaker_decision(store)
+    if not decision.active:
+        return True
+    return str(decision.action or "").strip().upper() not in {
+        ACTION_HALT_AND_CANCEL_BOT_ORDERS,
+        ACTION_FULL_KILL_SWITCH,
+    }
+
+
 def arm_breaker(
     store: LiveStateStore,
     *,

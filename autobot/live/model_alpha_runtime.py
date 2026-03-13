@@ -58,6 +58,7 @@ from .breakers import (
     breaker_status,
     classify_executor_reject_reason,
     new_intents_allowed,
+    protective_orders_allowed,
     record_counter_failure,
     reset_counter,
 )
@@ -193,7 +194,7 @@ async def run_live_model_alpha_runtime(
         )
         _apply_rollout_status_to_summary(summary, rollout_status)
         summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
+        if not _runtime_loop_allowed(store):
             summary["halted"] = True
             summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
             summary["ended_ts_ms"] = int(time.time() * 1000)
@@ -290,7 +291,7 @@ async def run_live_model_alpha_runtime(
             feature_provider.ingest_ticker(ticker)
             _ingest_live_micro_from_ticker(provider=micro_provider, ticker=ticker)
 
-            if settings.risk_enabled and risk_manager is not None and _order_emission_allowed(store):
+            if settings.risk_enabled and risk_manager is not None and _protective_order_emission_allowed(store):
                 risk_actions = apply_ticker_event(risk_manager=risk_manager, event=ticker)
                 summary["risk_actions_total"] = int(summary["risk_actions_total"]) + int(len(risk_actions))
 
@@ -394,7 +395,7 @@ async def run_live_model_alpha_runtime(
                     latest_prices=market_data.latest_prices(),
                     ts_ms=int(ticker.ts_ms),
                 )
-                if bool(cycle_result["report"].get("halted")) or bool(active_breaker_decision(store).active):
+                if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
                     summary["halted"] = True
                     summary["halted_reasons"] = list(
                         active_breaker_decision(store).reason_codes
@@ -415,7 +416,7 @@ async def run_live_model_alpha_runtime(
         summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         summary["stream_stop_reason"] = str(exc)
     else:
-        if bool(active_breaker_decision(store).active):
+        if not _runtime_loop_allowed(store):
             summary["halted"] = True
             summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         else:
@@ -1120,6 +1121,14 @@ def _effective_live_trade_gate_max_positions(settings: LiveModelAlphaRuntimeSett
 
 def _order_emission_allowed(store: LiveStateStore) -> bool:
     return _runtime_execute.order_emission_allowed(store, new_intents_allowed_fn=new_intents_allowed)
+
+
+def _protective_order_emission_allowed(store: LiveStateStore) -> bool:
+    return protective_orders_allowed(store)
+
+
+def _runtime_loop_allowed(store: LiveStateStore) -> bool:
+    return protective_orders_allowed(store)
 
 
 def _resolve_live_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:

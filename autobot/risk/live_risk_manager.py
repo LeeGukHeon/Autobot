@@ -11,7 +11,7 @@ from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
     arm_breaker,
     classify_executor_reject_reason,
-    new_intents_allowed,
+    protective_orders_allowed,
     record_counter_failure,
     reset_counter,
 )
@@ -227,7 +227,7 @@ class LiveRiskManager:
         last_price: float,
         ts_ms: int,
     ) -> tuple[RiskPlan, dict[str, Any]]:
-        if not new_intents_allowed(self._store):
+        if not protective_orders_allowed(self._store):
             updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
             return updated, {"type": "risk_blocked_by_breaker", "plan_id": plan.plan_id, "reason": trigger_reason}
         exit_price = self._resolve_exit_price(market=plan.market, last_price=last_price, step=1)
@@ -335,7 +335,7 @@ class LiveRiskManager:
         last_price: float,
         ts_ms: int,
     ) -> tuple[RiskPlan, dict[str, Any]]:
-        if not new_intents_allowed(self._store):
+        if not protective_orders_allowed(self._store):
             updated = replace(plan, updated_ts=ts_ms)
             return updated, {"type": "risk_replace_blocked_by_breaker", "plan_id": plan.plan_id}
         if self._executor_gateway is None or not hasattr(self._executor_gateway, "replace_order"):

@@ -11,6 +11,7 @@ import pytest
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepResult
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
+from autobot.live.breakers import ACTION_HALT_NEW_INTENTS, arm_breaker
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import (
     LiveModelAlphaRuntimeSettings,
@@ -119,6 +120,21 @@ class _FlowPublicWsClient:
             market="KRW-FLOW",
             ts_ms=int(time.time() * 1000),
             trade_price=90.6,
+            acc_trade_price_24h=1_000_000_000.0,
+        )
+
+
+class _StaticPublicWsClient:
+    def __init__(self, market: str, trade_price: float) -> None:
+        self._market = market
+        self._trade_price = trade_price
+
+    async def stream_ticker(self, markets, duration_sec=None):  # noqa: ANN201
+        _ = markets, duration_sec
+        yield TickerEvent(
+            market=self._market,
+            ts_ms=int(time.time() * 1000),
+            trade_price=self._trade_price,
             acc_trade_price_24h=1_000_000_000.0,
         )
 
@@ -413,6 +429,90 @@ def test_live_model_alpha_runtime_canary_submits_when_armed(tmp_path: Path, monk
     assert intents[0]["status"] == "SUBMITTED"
     assert orders
     assert orders[0]["uuid"] == "order-1"
+
+
+def test_live_model_alpha_runtime_allows_protective_exit_under_halt_new_intents(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _NoIntentStrategy())
+
+    settings = replace(
+        _runtime_settings(tmp_path, rollout_mode="canary", canary=True),
+        risk_enabled=True,
+    )
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        arm_breaker(
+            store,
+            reason_codes=["LIVE_TEST_ORDER_REQUIRED"],
+            source="test",
+            ts_ms=now_ms - 1000,
+            action=ACTION_HALT_NEW_INTENTS,
+        )
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ENSO",
+                base_currency="ENSO",
+                base_amount=3.0,
+                avg_entry_price=1872.0,
+                updated_ts=now_ms - 60_000,
+                tp_json="{}",
+                sl_json="{}",
+                trailing_json="{}",
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-enso-1",
+                market="KRW-ENSO",
+                side="long",
+                entry_price_str="1872.0",
+                qty_str="3.0",
+                tp_enabled=True,
+                tp_price_str=None,
+                tp_pct=3.5,
+                sl_enabled=False,
+                sl_price_str=None,
+                sl_pct=None,
+                trailing_enabled=False,
+                trail_pct=None,
+                high_watermark_price_str=None,
+                armed_ts_ms=None,
+                timeout_ts_ms=now_ms - 1_000,
+                state="ACTIVE",
+                last_eval_ts_ms=now_ms - 60_000,
+                last_action_ts_ms=0,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier=None,
+                replace_attempt=0,
+                created_ts=now_ms - 60_000,
+                updated_ts=now_ms - 60_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-enso-1",
+            )
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_StaticPublicClient("KRW-ENSO", 1.0),
+                public_ws_client=_StaticPublicWsClient("KRW-ENSO", 1950.0),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        plan = store.risk_plan_by_id(plan_id="plan-enso-1")
+
+    assert summary["halted"] is False
+    assert summary["risk_actions_total"] >= 1
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["intent"].side == "ask"
+    assert plan is not None
+    assert plan["state"] == "EXITING"
 
 
 def test_live_model_alpha_runtime_caps_bid_notional_to_canary_limit(tmp_path: Path, monkeypatch) -> None:
