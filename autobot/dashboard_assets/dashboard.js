@@ -174,22 +174,48 @@
     return num > 10000000000 ? num : num * 1000;
   }
 
+  function relativeTimeLabel(ts) {
+    const deltaMs = ts - Date.now();
+    const absSec = Math.abs(deltaMs) / 1000;
+    if (absSec < 30) return "방금";
+    if (absSec < 3600) return `${Math.round(absSec / 60)}분 ${deltaMs >= 0 ? "뒤" : "전"}`;
+    if (absSec < 86400) return `${Math.round(absSec / 3600)}시간 ${deltaMs >= 0 ? "뒤" : "전"}`;
+    return `${Math.round(absSec / 86400)}일 ${deltaMs >= 0 ? "뒤" : "전"}`;
+  }
+
   function fmtDateTime(value) {
     const ts = coerceTs(value);
-    if (ts != null) return new Date(ts).toLocaleString("ko-KR", { hour12: false });
+    if (ts != null) {
+      const date = new Date(ts);
+      const now = new Date();
+      const sameYear = date.getFullYear() === now.getFullYear();
+      const base = new Intl.DateTimeFormat("ko-KR", sameYear ? {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      } : {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      }).format(date).replace(/\.\s/g, ".").replace(/\.$/, "");
+      return `${base} · ${relativeTimeLabel(ts)}`;
+    }
     const text = String(value || "").trim();
     if (!text) return "-";
     const parsed = Date.parse(text);
-    return Number.isNaN(parsed) ? text : new Date(parsed).toLocaleString("ko-KR", { hour12: false });
+    if (Number.isNaN(parsed)) return text;
+    return fmtDateTime(parsed);
   }
 
   function fmtAge(value) {
     const ts = coerceTs(value);
     if (ts == null) return "-";
-    const sec = Math.max(0, (Date.now() - ts) / 1000);
-    if (sec < 60) return `${sec.toFixed(0)}초 전`;
-    if (sec < 3600) return `${(sec / 60).toFixed(0)}분 전`;
-    return `${(sec / 3600).toFixed(1)}시간 전`;
+    return relativeTimeLabel(ts);
   }
 
   function boolLabel(value) {
@@ -318,10 +344,39 @@
       if (!button) return;
       event.preventDefault();
       setTab(button.dataset.tab);
+      setDrawerOpen(false);
     });
     window.addEventListener("hashchange", () => {
       const nextTab = location.hash.replace("#", "");
       if (TABS.has(nextTab)) setTab(nextTab, false);
+    });
+  }
+
+  function setDrawerOpen(open) {
+    const shell = document.getElementById("app-shell");
+    const scrim = document.getElementById("nav-scrim");
+    const toggle = document.getElementById("menu-toggle");
+    if (!shell || !scrim || !toggle) return;
+    shell.classList.toggle("nav-open", Boolean(open));
+    scrim.hidden = !open;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function bindLayout() {
+    const toggle = document.getElementById("menu-toggle");
+    const scrim = document.getElementById("nav-scrim");
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        const shell = document.getElementById("app-shell");
+        const next = !(shell && shell.classList.contains("nav-open"));
+        setDrawerOpen(next);
+      });
+    }
+    if (scrim) {
+      scrim.addEventListener("click", () => setDrawerOpen(false));
+    }
+    window.addEventListener("resize", () => {
+      if (window.innerWidth > 920) setDrawerOpen(false);
     });
   }
 
@@ -703,7 +758,7 @@
     };
   }
 
-  document.getElementById("refresh-btn").addEventListener("click", refresh);
+  bindLayout();
   bindTabs();
   renderAll(INITIAL_SNAPSHOT);
   setTab(state.activeTab, false);
