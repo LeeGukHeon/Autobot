@@ -339,6 +339,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert today_summary["closed_count"] == 1
     assert today_summary["wins"] == 1
     assert today_summary["net_pnl_quote_total"] == 3.0
+    assert today_summary["current_positions_count"] == 0
+    assert today_summary["current_pending_orders_count"] == 1
     assert snapshot["live"]["states"][0]["daemon_last_run"]["private_ws_events_total"] == 7
     assert snapshot["live"]["states"][0]["last_ws_event"]["event_type"] == "myOrder"
     assert runtime_artifacts["exists"] is True
@@ -492,6 +494,8 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js
     assert "return bTs - aTs;" in js
+    assert "현재 미종결" in js
+    assert "current_pending_orders_count" in js
 
 
 def test_unit_snapshot_normalizes_blank_timer_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:

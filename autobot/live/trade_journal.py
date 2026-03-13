@@ -669,6 +669,13 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
             if (
                 status_value.strip().upper() == TRADE_JOURNAL_STATUS_PENDING
                 and isinstance(entry_order, dict)
+                and str(entry_order.get("local_state") or "").strip().upper() == "DONE"
+                and _filled_qty_from_order(entry_order) not in (None, 0.0)
+            ):
+                status_value = TRADE_JOURNAL_STATUS_OPEN
+            if (
+                status_value.strip().upper() == TRADE_JOURNAL_STATUS_PENDING
+                and isinstance(entry_order, dict)
                 and str(entry_order.get("local_state") or "").strip().upper() == "CANCELLED"
                 and _filled_qty_from_order(entry_order) in (None, 0.0)
             ):
@@ -693,10 +700,17 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     exit_order_uuid=_as_optional_str(row.get("exit_order_uuid")),
                     plan_id=_as_optional_str(row.get("plan_id")),
                     entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
-                    entry_filled_ts_ms=_as_optional_int(row.get("entry_filled_ts_ms")),
-                    exit_ts_ms=_coalesce_int(
-                        _as_optional_int(row.get("exit_ts_ms")),
-                        _as_optional_int((entry_order or {}).get("updated_ts")),
+                    entry_filled_ts_ms=_coalesce_int(
+                        _as_optional_int(row.get("entry_filled_ts_ms")),
+                        _as_optional_int((entry_order or {}).get("updated_ts")) if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN else None,
+                    ),
+                    exit_ts_ms=(
+                        None
+                        if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN
+                        else _coalesce_int(
+                            _as_optional_int(row.get("exit_ts_ms")),
+                            _as_optional_int((entry_order or {}).get("updated_ts")),
+                        )
                     ),
                     entry_price=_as_optional_float(row.get("entry_price")),
                     exit_price=_as_optional_float(row.get("exit_price")),

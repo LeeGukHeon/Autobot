@@ -846,6 +846,22 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             project_root,
             [str(row.get("market") or "").strip().upper() for row in positions],
         )
+        today_trade_summary = _summarize_kst_trade_day(deduped_trade_journal, now_ts_ms=now_ts_ms)
+        today_trade_summary["current_positions_count"] = len(positions)
+        today_trade_summary["current_pending_orders_count"] = len(
+            [
+                row
+                for row in open_order_rows
+                if str(row.get("side") or "").strip().lower() == "bid"
+            ]
+        )
+        today_trade_summary["current_exit_orders_count"] = len(
+            [
+                row
+                for row in open_order_rows
+                if str(row.get("side") or "").strip().lower() == "ask"
+            ]
+        )
         active_risk_plan_payloads: list[dict[str, Any]] = []
         for row in active_risk_plans[:8]:
             payload = _summarize_live_risk_plan(row)
@@ -884,7 +900,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
                 for row in deduped_trade_journal
                 if str(row.get("status") or "").strip().upper() == "CLOSED"
             ][:8],
-            "today_trade_summary": _summarize_kst_trade_day(deduped_trade_journal, now_ts_ms=now_ts_ms),
+            "today_trade_summary": today_trade_summary,
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {
