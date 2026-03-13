@@ -90,12 +90,24 @@ function Invoke-CommandCapture {
 
 function Resolve-ReportedJsonPath {
     param([string]$OutputText)
-    $regex = [System.Text.RegularExpressions.Regex]::new("(?m)^\[[^\]]+\]\s+report=(.+)$")
-    $match = $regex.Match([string]$OutputText)
-    if (-not $match.Success) {
+    if ([string]::IsNullOrWhiteSpace($OutputText)) {
         return ""
     }
-    return [string]$match.Groups[1].Value.Trim()
+    $regex = [System.Text.RegularExpressions.Regex]::new("(?m)^\[[^\]]+\]\s+report=(.+)$")
+    $matches = $regex.Matches([string]$OutputText)
+    if ($null -eq $matches -or $matches.Count -eq 0) {
+        return ""
+    }
+    for ($index = $matches.Count - 1; $index -ge 0; $index--) {
+        $candidatePath = [string]$matches[$index].Groups[1].Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($candidatePath)) {
+            continue
+        }
+        if ([string]::Equals([System.IO.Path]::GetExtension($candidatePath), ".json", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $candidatePath
+        }
+    }
+    return [string]$matches[$matches.Count - 1].Groups[1].Value.Trim()
 }
 
 function Load-JsonOrEmpty {
