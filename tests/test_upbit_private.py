@@ -52,6 +52,41 @@ def test_open_orders_requires_non_empty_states() -> None:
         client.open_orders(states=())
 
 
+def test_closed_orders_supports_time_window_and_states() -> None:
+    stub = _StubHttpClient()
+    client = UpbitPrivateClient(stub)  # type: ignore[arg-type]
+
+    client.closed_orders(
+        market="krw-btc",
+        states=("done", "cancel"),
+        start_time="2026-03-13T00:00:00Z",
+        end_time="2026-03-13T23:59:59Z",
+        limit=50,
+        order_by="desc",
+    )
+
+    call = stub.calls[-1]
+    assert call["method"] == "GET"
+    assert call["endpoint"] == "/v1/orders/closed"
+    assert call["kwargs"]["params"] == [
+        ("market", "KRW-BTC"),
+        ("states[]", "done"),
+        ("states[]", "cancel"),
+        ("start_time", "2026-03-13T00:00:00Z"),
+        ("end_time", "2026-03-13T23:59:59Z"),
+        ("limit", "50"),
+        ("order_by", "desc"),
+    ]
+
+
+def test_closed_orders_rejects_state_and_states_together() -> None:
+    stub = _StubHttpClient()
+    client = UpbitPrivateClient(stub)  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError):
+        client.closed_orders(state="done", states=("cancel",))
+
+
 def test_order_accepts_identifier_only() -> None:
     stub = _StubHttpClient()
     client = UpbitPrivateClient(stub)  # type: ignore[arg-type]

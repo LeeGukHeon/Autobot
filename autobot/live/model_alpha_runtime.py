@@ -94,6 +94,7 @@ from .trade_journal import (
     recompute_trade_journal_records,
     record_entry_submission,
 )
+from .closed_order_backfill import backfill_recent_bot_closed_orders
 from autobot.upbit.ws import MyOrderEvent, MyAssetEvent
 
 
@@ -264,6 +265,13 @@ async def run_live_model_alpha_runtime(
     )
     known_positions = _snapshot_position_state(store)
     summary["trade_journal_backfill"] = recompute_trade_journal_records(store=store)
+    summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
+        store=store,
+        client=client,
+        bot_id=daemon_settings.bot_id,
+        identifier_prefix=daemon_settings.identifier_prefix,
+        now_ts_ms=int(time.time() * 1000),
+    )
     _bootstrap_strategy_positions(
         store=store,
         strategy=strategy,
@@ -396,6 +404,13 @@ async def run_live_model_alpha_runtime(
                 summary["last_cancel_summary"] = cycle_result["cancel_summary"]
                 summary["breaker_report"] = cycle_result.get("breaker_report")
                 summary["small_account_report"] = cycle_result.get("small_account_report")
+                summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
+                    store=store,
+                    client=client,
+                    bot_id=daemon_settings.bot_id,
+                    identifier_prefix=daemon_settings.identifier_prefix,
+                    now_ts_ms=int(time.time() * 1000),
+                )
                 _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
                 _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
                 order_supervision = _supervise_open_strategy_orders(
@@ -1233,6 +1248,9 @@ def _drain_private_ws_events(
             )
             if risk_action is not None:
                 summary["risk_actions_total"] = int(summary["risk_actions_total"]) + 1
+            state_value = str(ws_event.state or "").strip().lower()
+            if state_value in {"done", "cancel", "cancelled"}:
+                summary["trade_journal_backfill"] = recompute_trade_journal_records(store=store)
         summary["breaker_report"] = breaker_status(store)
     if private_ws_task is not None and private_ws_task.done():
         if private_ws_client is not None and hasattr(private_ws_client, "stats"):

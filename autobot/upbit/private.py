@@ -136,6 +136,63 @@ class UpbitPrivateClient:
             rate_limit_group="default",
         )
 
+    def closed_orders(
+        self,
+        *,
+        market: str | None = None,
+        state: str | None = None,
+        states: Sequence[str] | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+        order_by: str | None = None,
+    ) -> JSONValue:
+        if state is not None and states is not None:
+            raise ValidationError("state and states cannot both be provided")
+        params: list[tuple[str, str]] = []
+        if market is not None:
+            market_value = market.strip().upper()
+            if not market_value:
+                raise ValidationError("market must not be blank")
+            params.append(("market", market_value))
+        state_value = str(state or "").strip().lower()
+        if state_value:
+            params.append(("state", state_value))
+        elif states is not None:
+            states_value = tuple(str(item).strip().lower() for item in states if str(item).strip())
+            if not states_value:
+                raise ValidationError("states must include at least one value")
+            for item in states_value:
+                params.append(("states[]", item))
+        if start_time is not None:
+            start_value = str(start_time).strip()
+            if not start_value:
+                raise ValidationError("start_time must not be blank")
+            params.append(("start_time", start_value))
+        if end_time is not None:
+            end_value = str(end_time).strip()
+            if not end_value:
+                raise ValidationError("end_time must not be blank")
+            params.append(("end_time", end_value))
+        if page is not None:
+            params.append(("page", str(int(page))))
+        if limit is not None:
+            params.append(("limit", str(int(limit))))
+        if order_by is not None:
+            order_by_value = str(order_by).strip().lower()
+            if not order_by_value:
+                raise ValidationError("order_by must not be blank")
+            params.append(("order_by", order_by_value))
+
+        return self._http.request_json(
+            "GET",
+            "/v1/orders/closed",
+            params=params,
+            auth=True,
+            rate_limit_group="default",
+        )
+
     def order(
         self,
         *,
