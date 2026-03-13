@@ -251,6 +251,18 @@
     return `<article class="${extraClass ? `${extraClass} ` : ""}detail-box"><h4>${esc(title)}</h4>${body}</article>`;
   }
 
+  function terminalTable(headers, rows, rowClass = "") {
+    const head = `<div class="terminal-head">${headers.map((item) => `<div class="terminal-cell">${esc(item)}</div>`).join("")}</div>`;
+    const body = rows.length
+      ? rows.map((row) => `<div class="terminal-row ${rowClass} ${row.rowClass || ""}">${row.cells.join("")}</div>`).join("")
+      : "";
+    return `<div class="terminal-table">${head}${body}</div>`;
+  }
+
+  function cell(primary, secondary = "", extraClass = "", align = "") {
+    return `<div class="terminal-cell ${extraClass} ${align}"><strong>${esc(primary)}</strong>${secondary ? `<span>${esc(secondary)}</span>` : ""}</div>`;
+  }
+
   function noteCard(title, text, kind = "neutral") {
     return `<article class="alert-card"><div class="row"><h4>${esc(title)}</h4>${pill("메모", kind === "bad" ? "주의" : kind === "warn" ? "참고" : "요약", kind)}</div><p>${esc(text)}</p></article>`;
   }
@@ -336,6 +348,9 @@
       pane.hidden = pane.dataset.pane !== nextTab;
     });
     if (updateHash) history.replaceState(null, "", `#${nextTab}`);
+    const workspace = document.querySelector(".workspace");
+    if (workspace && typeof workspace.scrollTo === "function") workspace.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 
   function bindTabs() {
@@ -364,6 +379,7 @@
 
   function bindLayout() {
     const toggle = document.getElementById("menu-toggle");
+    const close = document.getElementById("menu-close");
     const scrim = document.getElementById("nav-scrim");
     if (toggle) {
       toggle.addEventListener("click", () => {
@@ -371,6 +387,9 @@
         const next = !(shell && shell.classList.contains("nav-open"));
         setDrawerOpen(next);
       });
+    }
+    if (close) {
+      close.addEventListener("click", () => setDrawerOpen(false));
     }
     if (scrim) {
       scrim.addEventListener("click", () => setDrawerOpen(false));
@@ -614,59 +633,77 @@
     const todaySummaryLine = `${maybe(today.date_label, "-")} ${maybe(today.timezone, "KST")} 기준으로 종료 ${maybe(today.closed_count, "0")}건 중 손익 확정 ${verifiedClosed}건, 미확정 ${unverifiedClosed}건입니다. 확정 거래 기준 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}, 순손익 ${fmtMoney(today.net_pnl_quote_total)}입니다. 현재 기준으로는 ${maybe(today.current_positions_count, "0")}개 보유, ${maybe(today.current_pending_orders_count, "0")}개 진입 대기입니다.`;
 
     const positionSection = positions.length
-      ? positions.map((position) => card(
-        position.market || "-",
-        `<div class="kv-grid">${kv("보유 수량", `${fmtNumber(position.base_amount, 8)}개`)}${kv("평균 매수가", fmtMoney(position.avg_entry_price))}${kv("현재가", fmtMoney(position.current_price))}${kv("현재 수익률", fmtPct(position.unrealized_pnl_pct))}${kv("평가손익", fmtMoney(position.unrealized_pnl_quote))}${kv("최근 갱신", fmtDateTime(position.updated_ts))}</div>`,
-        "mini-card"
-      )).join("")
+      ? terminalTable(
+        ["종목", "보유 수량", "평균 매수가", "현재가", "현재 수익률", "평가손익"],
+        positions.map((position) => ({
+          rowClass: Number(position.unrealized_pnl_quote || 0) > 0 ? "positive" : Number(position.unrealized_pnl_quote || 0) < 0 ? "negative" : "",
+          cells: [
+            cell(position.market || "-", `최근 갱신 ${fmtDateTime(position.updated_ts)}`),
+            cell(`${fmtNumber(position.base_amount, 8)}개`),
+            cell(fmtMoney(position.avg_entry_price)),
+            cell(fmtMoney(position.current_price)),
+            cell(fmtPct(position.unrealized_pnl_pct), "", Number(position.unrealized_pnl_pct || 0) > 0 ? "good" : Number(position.unrealized_pnl_pct || 0) < 0 ? "bad" : ""),
+            cell(fmtMoney(position.unrealized_pnl_quote), "", Number(position.unrealized_pnl_quote || 0) > 0 ? "good" : Number(position.unrealized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+          ],
+        })),
+      )
       : empty("보유 종목이 없습니다.");
 
     const orderSection = openOrders.length
-      ? openOrders.map((order) => card(
-        `${order.market || "-"} · ${translate(order.side)} ${translate(order.ord_type)}`,
-        `<div class="kv-grid">${kv("주문가", fmtMoney(order.price))}${kv("남은 수량", fmtNumber((toNumber(order.volume_req) || 0) - (toNumber(order.volume_filled) || 0), 8))}${kv("상태", translate(order.raw_exchange_state))}${kv("최근 갱신", fmtDateTime(order.updated_ts))}</div>`,
-        "mini-card"
-      )).join("")
+      ? terminalTable(
+        ["주문", "주문가", "남은 수량", "상태", "최근 갱신"],
+        openOrders.map((order) => ({
+          cells: [
+            cell(`${order.market || "-"} · ${translate(order.side)}`, translate(order.ord_type)),
+            cell(fmtMoney(order.price)),
+            cell(fmtNumber((toNumber(order.volume_req) || 0) - (toNumber(order.volume_filled) || 0), 8)),
+            cell(translate(order.raw_exchange_state || order.local_state || order.state)),
+            cell(fmtDateTime(order.updated_ts)),
+          ],
+        })),
+      )
       : empty("미체결 주문이 없습니다.");
 
     const planSection = riskPlans.length
-      ? riskPlans.map((plan) => {
-        return card(
-          `${plan.market || "-"} · ${translate(plan.exit_mode)}`,
-          `<p class="section-brief">${esc(riskPlanNarrative(plan))}</p><div class="kv-grid">${kv("플랜 상태", translate(plan.state))}${kv("익절", plan.tp_enabled ? fmtPct(Number(plan.tp_pct)) : "미사용")}${kv("손절", plan.sl_enabled ? fmtPct(Number(plan.sl_pct)) : "미사용")}${kv("종료 시각", fmtDateTime(plan.timeout_ts_ms))}</div>`,
-          "mini-card"
-        );
-      }).join("")
+      ? terminalTable(
+        ["플랜", "상태", "익절", "손절", "종료 시각"],
+        riskPlans.map((plan) => ({
+          cells: [
+            cell(`${plan.market || "-"} · ${translate(plan.exit_mode)}`, riskPlanNarrative(plan)),
+            cell(translate(plan.state)),
+            cell(plan.tp_enabled ? fmtPct(Number(plan.tp_pct)) : "미사용"),
+            cell(plan.sl_enabled ? fmtPct(Number(plan.sl_pct)) : "미사용"),
+            cell(fmtDateTime(plan.timeout_ts_ms)),
+          ],
+        })),
+      )
       : empty("활성 리스크 플랜이 없습니다.");
 
     const tradeSection = recentTrades.length
-      ? recentTrades.slice(0, 3).map((trade) => {
-        const direction =
-          trade.status === "CLOSED" ? "거래 종료" :
-          trade.status === "OPEN" ? "보유 중" :
-          trade.status === "CANCELLED_ENTRY" ? "진입 취소" :
-          "진입 대기";
-        const pnlText = trade.realized_pnl_quote == null
-          ? (trade.close_verified === false ? "거래소 체결 확인 전" : "손익 계산 전")
-          : `${fmtMoney(trade.realized_pnl_quote)} / ${fmtPct(trade.realized_pnl_pct)}`;
-        const grossText = trade.gross_pnl_quote == null
-          ? "계산 전"
-          : `${fmtMoney(trade.gross_pnl_quote)} / ${fmtPct(trade.gross_pnl_pct)}`;
-        const durationText = trade.hold_minutes == null ? "보유 시간 계산 전" : `${trade.hold_minutes}분 보유`;
-        const narrative = trade.status === "CANCELLED_ENTRY"
-          ? `${translate(trade.entry_reason_code)} 신호로 넣은 진입 주문이 ${translate(trade.close_reason_code)} 때문에 취소됐습니다.`
-          : trade.close_verified === false
-          ? `${translate(trade.entry_reason_code)}로 진입했고 포지션 종료는 확인됐지만, 거래소 체결값이 아직 확정되지 않아 손익 집계에서 제외했습니다.`
-          : `${translate(trade.entry_reason_code)}로 진입했고, ${translate(trade.close_mode)} 방식으로 ${translate(trade.close_reason_code)}에 종료됐습니다.`;
-        return card(
-          `${trade.market || "-"} · ${direction}`,
-          `<p class="section-brief">${esc(narrative)}</p><div class="kv-grid">${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("체결 확인", trade.close_verified === false ? "미확정" : trade.close_verified === true ? "확정" : "-")}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("순손익", pnlText)}${kv("총수수료", fmtMoney(trade.total_fee_quote))}</div>`,
-          "mini-card"
-        );
-      }).join("")
+      ? terminalTable(
+        ["거래", "종료 시각", "보유 시간", "체결 확인", "순손익", "종료 방식"],
+        recentTrades.slice(0, 8).map((trade) => {
+          const direction = trade.status === "CLOSED" ? "거래 종료" : trade.status;
+          const pnlText = trade.realized_pnl_quote == null
+            ? (trade.close_verified === false ? "체결 확인 전" : "계산 전")
+            : `${fmtMoney(trade.realized_pnl_quote)} / ${fmtPct(trade.realized_pnl_pct)}`;
+          const durationText = trade.hold_minutes == null ? "계산 전" : `${trade.hold_minutes}분`;
+          return {
+            rowClass: Number(trade.realized_pnl_quote || 0) > 0 ? "positive" : Number(trade.realized_pnl_quote || 0) < 0 ? "negative" : "",
+            cells: [
+              cell(`${trade.market || "-"} · ${direction}`, `${translate(trade.entry_reason_code)} → ${translate(trade.close_reason_code)}`),
+              cell(fmtDateTime(trade.exit_ts_ms)),
+              cell(durationText),
+              cell(trade.close_verified === false ? "미확정" : trade.close_verified === true ? "확정" : "-"),
+              cell(pnlText, trade.exit_price == null ? "" : `종료가 ${fmtMoney(trade.exit_price)}`, Number(trade.realized_pnl_quote || 0) > 0 ? "good" : Number(trade.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+              cell(translate(trade.close_mode)),
+            ],
+          };
+        }),
+      )
       : empty("아직 거래 저널이 없습니다.");
 
-    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><p class="section-copy">${esc(liveNarrative)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("손익 확정", maybe(today.verified_closed_count, "0"))}${metric("미확정 종료", maybe(today.unverified_closed_count, "0"))}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("현재 미종결", `${maybe(today.current_positions_count, "0")}개 보유 / ${maybe(today.current_pending_orders_count, "0")}개 대기`)}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 상태", pointerStatus)}${kv("공용 WS", runtime.ws_public_stale ? "수신 오래됨" : "정상 수신")}${kv("개인 체결 WS", privateWsFreshness)}${kv("마지막 개인 WS", fmtDateTime(privateWsLastTs))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections compact"><section class="section-block compact"><h5>보유 종목</h5><div class="stack">${positionSection}</div></section><section class="section-block compact"><h5>미체결 주문</h5><div class="stack">${orderSection}</div></section><section class="section-block compact"><h5>매도 플랜</h5><div class="stack">${planSection}</div></section><section class="section-block compact"><h5>최근 거래</h5><div class="stack">${tradeSection}</div></section></div></article>`;
+    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><p class="section-copy">${esc(liveNarrative)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("손익 확정", maybe(today.verified_closed_count, "0"))}${metric("미확정 종료", maybe(today.unverified_closed_count, "0"))}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("현재 미종결", `${maybe(today.current_positions_count, "0")}개 보유 / ${maybe(today.current_pending_orders_count, "0")}개 대기`)}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 상태", pointerStatus)}${kv("공용 WS", runtime.ws_public_stale ? "수신 오래됨" : "정상 수신")}${kv("개인 체결 WS", privateWsFreshness)}${kv("마지막 개인 WS", fmtDateTime(privateWsLastTs))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections terminal-layout"><section class="section-block section-primary"><h5>현재 보유</h5>${positionSection}</section><section class="section-block"><h5>매도 플랜</h5>${planSection}</section><section class="section-block"><h5>미체결 주문</h5>${orderSection}</section><section class="section-block section-primary"><h5>최근 거래</h5>${tradeSection}</section></div></article>`;
   }
 
   function renderWs(snapshot) {
