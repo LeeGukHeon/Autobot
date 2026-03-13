@@ -741,6 +741,7 @@ def handle_strategy_intent(
         prefix=str(settings.daemon.identifier_prefix),
         bot_id=str(settings.daemon.bot_id),
         intent_id=intent.intent_id,
+        run_token=str(predictor.run_dir.name),
         ts_ms=ts_ms,
     )
     record_strategy_intent_fn(

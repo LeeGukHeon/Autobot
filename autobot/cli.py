@@ -4110,8 +4110,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         strategy_runtime = bool(getattr(args, "strategy_runtime", False)) or bool(
                             defaults["strategy_runtime_enabled"]
                         )
-                        if strategy_runtime and (use_private_ws or use_executor_ws):
-                            raise ValueError("strategy-runtime currently supports poll sync only")
+                        if strategy_runtime and use_executor_ws:
+                            raise ValueError("strategy-runtime currently supports poll sync or private ws only")
 
                         daemon_settings = LiveDaemonSettings(
                             bot_id=bot_id,
@@ -4165,6 +4165,11 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             with UpbitHttpClient(settings) as public_http:
                                 public_client = UpbitPublicClient(public_http)
                                 public_ws_client = UpbitWebSocketPublicClient(settings.websocket)
+                                private_ws_client = (
+                                    UpbitWebSocketPrivateClient(settings.websocket, credentials)
+                                    if use_private_ws
+                                    else None
+                                )
                                 if daemon_settings.rollout_mode != "shadow" or bool(runtime_settings.risk_enabled):
                                     execution_backend = str(defaults["executor_backend"]).strip().lower()
                                     if execution_backend == "direct_rest":
@@ -4189,6 +4194,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                                 public_ws_client=public_ws_client,
                                                 settings=runtime_settings,
                                                 executor_gateway=executor_gateway,
+                                                private_ws_client=private_ws_client,
                                             )
                                         )
                                 else:
@@ -4200,6 +4206,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                             public_ws_client=public_ws_client,
                                             settings=runtime_settings,
                                             executor_gateway=None,
+                                            private_ws_client=private_ws_client,
                                         )
                                     )
                         elif daemon_settings.use_private_ws:

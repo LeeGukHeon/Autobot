@@ -396,6 +396,37 @@ def test_live_installer_dry_run_supports_strategy_runtime() -> None:
     assert "--strategy-runtime" in stdout
 
 
+def test_live_installer_dry_run_supports_strategy_runtime_with_private_ws() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-RolloutMode",
+            "shadow",
+            "-SyncMode",
+            "private_ws",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "--strategy-runtime" in stdout
+    assert "--use-private-ws" in stdout
+
+
 def test_live_installer_dry_run_supports_candidate_specific_overrides() -> None:
     script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
     completed = subprocess.run(

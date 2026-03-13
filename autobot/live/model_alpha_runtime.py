@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -64,6 +65,7 @@ from .breakers import (
 )
 from .daemon import (
     LiveDaemonSettings,
+    _apply_private_ws_event_with_breakers,
     _apply_rollout_status_to_summary,
     _apply_runtime_status_to_summary,
     _evaluate_rollout_gate,
@@ -92,6 +94,7 @@ from .trade_journal import (
     recompute_trade_journal_records,
     record_entry_submission,
 )
+from autobot.upbit.ws import MyOrderEvent, MyAssetEvent
 
 
 @dataclass(frozen=True)
@@ -122,8 +125,8 @@ class LiveModelAlphaRuntimeSettings:
     risk_default_trail_pct: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.daemon.use_private_ws or self.daemon.use_executor_ws:
-            raise ValueError("strategy-runtime currently supports poll sync only")
+        if self.daemon.use_executor_ws:
+            raise ValueError("strategy-runtime currently supports poll sync or private ws only")
 
 
 async def run_live_model_alpha_runtime(
@@ -134,6 +137,7 @@ async def run_live_model_alpha_runtime(
     public_ws_client: Any,
     settings: LiveModelAlphaRuntimeSettings,
     executor_gateway: Any | None = None,
+    private_ws_client: Any | None = None,
 ) -> dict[str, Any]:
     daemon_settings = settings.daemon
     started_ts_ms = int(time.time() * 1000)
@@ -174,6 +178,10 @@ async def run_live_model_alpha_runtime(
         "stream_stop_reason": None,
         "last_order_supervision_report": None,
         "order_supervision_actions_total": 0,
+        "private_ws_events_total": 0,
+        "private_ws_last_event_ts_ms": None,
+        "private_ws_last_event_latency_ms": None,
+        "private_ws_stats": {},
     }
 
     if daemon_settings.startup_reconcile:
@@ -283,8 +291,35 @@ async def run_live_model_alpha_runtime(
     last_model_decision_ts_ms: int | None = None
     next_sync_monotonic = time.monotonic() + max(int(daemon_settings.poll_interval_sec), 1)
     next_decision_at = time.monotonic()
+    private_ws_queue: asyncio.Queue[MyOrderEvent | MyAssetEvent] | None = None
+    private_ws_task: asyncio.Task[None] | None = None
+    private_ws_stop_event: asyncio.Event | None = None
+    if private_ws_client is not None:
+        private_ws_queue = asyncio.Queue()
+        private_ws_stop_event = asyncio.Event()
+
+        async def _private_ws_pump() -> None:
+            assert private_ws_queue is not None
+            assert private_ws_stop_event is not None
+            async for ws_event in private_ws_client.stream_private(duration_sec=daemon_settings.duration_sec):
+                if private_ws_stop_event.is_set():
+                    break
+                await private_ws_queue.put(ws_event)
+
+        private_ws_task = asyncio.create_task(_private_ws_pump())
+        await asyncio.sleep(0)
     try:
         async for ticker in public_ws_client.stream_ticker(markets, duration_sec=daemon_settings.duration_sec):
+            if private_ws_queue is not None:
+                _drain_private_ws_events(
+                    store=store,
+                    private_ws_queue=private_ws_queue,
+                    private_ws_task=private_ws_task,
+                    private_ws_client=private_ws_client,
+                    risk_manager=risk_manager,
+                    daemon_settings=daemon_settings,
+                    summary=summary,
+                )
             summary["ticker_events"] = int(summary["ticker_events"]) + 1
             market_data.update(ticker)
             universe.update_ticker(ticker)
@@ -395,6 +430,16 @@ async def run_live_model_alpha_runtime(
                     latest_prices=market_data.latest_prices(),
                     ts_ms=int(ticker.ts_ms),
                 )
+                if private_ws_queue is not None:
+                    _drain_private_ws_events(
+                        store=store,
+                        private_ws_queue=private_ws_queue,
+                        private_ws_task=private_ws_task,
+                        private_ws_client=private_ws_client,
+                        risk_manager=risk_manager,
+                        daemon_settings=daemon_settings,
+                        summary=summary,
+                    )
                 if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
                     summary["halted"] = True
                     summary["halted_reasons"] = list(
@@ -416,11 +461,29 @@ async def run_live_model_alpha_runtime(
         summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         summary["stream_stop_reason"] = str(exc)
     else:
+        if private_ws_queue is not None:
+            _drain_private_ws_events(
+                store=store,
+                private_ws_queue=private_ws_queue,
+                private_ws_task=private_ws_task,
+                private_ws_client=private_ws_client,
+                risk_manager=risk_manager,
+                daemon_settings=daemon_settings,
+                summary=summary,
+            )
         if not _runtime_loop_allowed(store):
             summary["halted"] = True
             summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         else:
             summary["stream_stop_reason"] = "STREAM_COMPLETED"
+    finally:
+        if private_ws_stop_event is not None:
+            private_ws_stop_event.set()
+        if private_ws_task is not None:
+            private_ws_task.cancel()
+            await asyncio.gather(private_ws_task, return_exceptions=True)
+        if private_ws_client is not None and hasattr(private_ws_client, "stats"):
+            summary["private_ws_stats"] = private_ws_client.stats
 
     summary["small_account_report"] = build_small_account_runtime_report(
         store=store,
@@ -1129,6 +1192,66 @@ def _protective_order_emission_allowed(store: LiveStateStore) -> bool:
 
 def _runtime_loop_allowed(store: LiveStateStore) -> bool:
     return protective_orders_allowed(store)
+
+
+def _drain_private_ws_events(
+    *,
+    store: LiveStateStore,
+    private_ws_queue: asyncio.Queue[MyOrderEvent | MyAssetEvent],
+    private_ws_task: asyncio.Task[None] | None,
+    private_ws_client: Any | None,
+    risk_manager: LiveRiskManager | None,
+    daemon_settings: LiveDaemonSettings,
+    summary: dict[str, Any],
+) -> None:
+    while True:
+        try:
+            ws_event = private_ws_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        action = _apply_private_ws_event_with_breakers(
+            store=store,
+            event=ws_event,
+            bot_id=daemon_settings.bot_id,
+            identifier_prefix=daemon_settings.identifier_prefix,
+            quote_currency=daemon_settings.quote_currency,
+            settings=daemon_settings,
+        )
+        summary["private_ws_events_total"] = int(summary["private_ws_events_total"]) + 1
+        summary["private_ws_last_event_ts_ms"] = int(ws_event.ts_ms)
+        summary["private_ws_last_event_latency_ms"] = max(int(time.time() * 1000) - int(ws_event.ts_ms), 0)
+        if risk_manager is not None and isinstance(ws_event, MyOrderEvent):
+            risk_action = risk_manager.handle_executor_event(
+                {
+                    "payload": {
+                        "uuid": ws_event.uuid,
+                        "identifier": ws_event.identifier,
+                        "state": ws_event.state,
+                        "event_name": "ORDER_STATE",
+                    }
+                }
+            )
+            if risk_action is not None:
+                summary["risk_actions_total"] = int(summary["risk_actions_total"]) + 1
+        summary["breaker_report"] = breaker_status(store)
+    if private_ws_task is not None and private_ws_task.done():
+        if private_ws_client is not None and hasattr(private_ws_client, "stats"):
+            summary["private_ws_stats"] = private_ws_client.stats
+        exc = None
+        if not private_ws_task.cancelled():
+            try:
+                exc = private_ws_task.exception()
+            except Exception:
+                exc = None
+        arm_breaker(
+            store,
+            reason_codes=["STALE_PRIVATE_WS_STREAM"],
+            source="strategy_private_ws",
+            ts_ms=int(time.time() * 1000),
+            action=ACTION_HALT_NEW_INTENTS,
+            details={"task_error": str(exc) if exc is not None else None},
+        )
+        summary["breaker_report"] = breaker_status(store)
 
 
 def _resolve_live_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:

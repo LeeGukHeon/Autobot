@@ -7,6 +7,7 @@ from typing import Any
 
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
+from .identifier import extract_intent_id_from_identifier, extract_run_token_from_identifier, is_bot_identifier
 from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord
 
@@ -40,7 +41,17 @@ def _apply_my_order_event(
         return {"type": "ws_order_skip", "reason": "missing_uuid_or_market"}
 
     existing = store.order_by_uuid(uuid=event.uuid)
+    identifier_value = event.identifier or (_as_optional_str(existing.get("identifier")) if existing else None)
+    if existing is None and not is_bot_identifier(identifier_value, prefix=identifier_prefix, bot_id=bot_id):
+        return {"type": "ws_order_skip", "reason": "external_order", "uuid": event.uuid, "identifier": identifier_value}
+
     intent_id = _as_optional_str(existing.get("intent_id")) if existing else None
+    if not intent_id:
+        intent_id = extract_intent_id_from_identifier(
+            identifier_value,
+            prefix=identifier_prefix,
+            bot_id=bot_id,
+        )
     if not intent_id:
         intent_id = f"inferred-{event.uuid}"
     raw = dict(event.raw) if isinstance(event.raw, dict) else {}
@@ -59,7 +70,7 @@ def _apply_my_order_event(
 
     order_record = OrderRecord(
         uuid=event.uuid,
-        identifier=(event.identifier or _as_optional_str(existing.get("identifier"))) if existing else event.identifier,
+        identifier=identifier_value,
         market=event.market,
         side=event.side,
         ord_type=event.ord_type,
@@ -97,6 +108,11 @@ def _apply_my_order_event(
         "identifier": event.identifier,
         "bot_id": bot_id,
         "identifier_prefix": identifier_prefix,
+        "runtime_model_run_id": extract_run_token_from_identifier(
+            identifier_value,
+            prefix=identifier_prefix,
+            bot_id=bot_id,
+        ),
     }
     store.upsert_intent(
         IntentRecord(
@@ -182,3 +198,12 @@ def _as_optional_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _as_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

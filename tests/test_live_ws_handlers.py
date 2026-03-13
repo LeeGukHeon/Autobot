@@ -37,6 +37,33 @@ def test_ws_order_event_upserts_order_and_intent(tmp_path: Path) -> None:
     assert order["local_state"] == "OPEN"
     assert len(intents) == 1
     assert intents[0]["status"] in {"INFERRED_FROM_EXCHANGE", "UPDATED_FROM_WS"}
+    assert intents[0]["intent_id"] == "intent-1"
+
+
+def test_ws_order_event_skips_unknown_external_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        action = apply_private_ws_event(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=1700000000000,
+                uuid="manual-order-1",
+                identifier="MANUAL-order-1",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="wait",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+
+    assert action["type"] == "ws_order_skip"
+    assert action["reason"] == "external_order"
 
 
 def test_ws_asset_event_upserts_and_deletes_position(tmp_path: Path) -> None:

@@ -56,8 +56,8 @@ $liveArgList = @(
     "--rollout-target-unit", $effectiveTargetUnit
 )
 if ($StrategyRuntime) {
-    if ($SyncMode -ne "poll") {
-        throw "StrategyRuntime currently supports only SyncMode=poll"
+    if ($SyncMode -eq "executor_ws") {
+        throw "StrategyRuntime currently supports only SyncMode=poll or private_ws"
     }
     $liveArgList += "--strategy-runtime"
 }

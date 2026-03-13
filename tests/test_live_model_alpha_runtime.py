@@ -25,7 +25,7 @@ from autobot.live.trade_journal import record_entry_submission
 from autobot.risk.live_risk_manager import LiveRiskManager, RiskManagerConfig
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
-from autobot.upbit.ws.models import TickerEvent
+from autobot.upbit.ws.models import MyOrderEvent, TickerEvent
 
 
 class _PrivateClient:
@@ -137,6 +137,17 @@ class _StaticPublicWsClient:
             trade_price=self._trade_price,
             acc_trade_price_24h=1_000_000_000.0,
         )
+
+
+class _PrivateWsClient:
+    def __init__(self, events) -> None:  # noqa: ANN001
+        self._events = list(events)
+        self.stats = {"received_events": len(self._events)}
+
+    async def stream_private(self, *, channels=("myOrder", "myAsset"), duration_sec=None):  # noqa: ANN201
+        _ = channels, duration_sec
+        for event in self._events:
+            yield event
 
 
 class _FeatureProvider:
@@ -550,6 +561,52 @@ def test_live_model_alpha_runtime_startup_reconcile_stays_alive_under_halt_new_i
 
     assert summary["halted"] is False
     assert summary["cycles"] >= 1
+
+
+def test_live_model_alpha_runtime_consumes_private_ws_order_events(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _NoIntentStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    now_ms = int(time.time() * 1000)
+    private_ws_client = _PrivateWsClient(
+        [
+            MyOrderEvent(
+                ts_ms=now_ms,
+                uuid="ws-order-1",
+                identifier="AUTOBOT-autobot-001-intent-ws-1-1700000000000-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="wait",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.0,
+                raw={"event_name": "ORDER_STATE", "state": "wait", "uuid": "ws-order-1"},
+            )
+        ]
+    )
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=None,
+                private_ws_client=private_ws_client,
+            )
+        )
+        order = store.order_by_uuid(uuid="ws-order-1")
+
+    assert summary["private_ws_events_total"] == 1
+    assert summary["private_ws_last_event_ts_ms"] == now_ms
+    assert order is not None
+    assert order["local_state"] == "OPEN"
 
 
 def test_live_model_alpha_runtime_caps_bid_notional_to_canary_limit(tmp_path: Path, monkeypatch) -> None:
