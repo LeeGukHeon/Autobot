@@ -123,6 +123,34 @@ def test_reconcile_cancel_policy_creates_bot_cancel_action(tmp_path: Path) -> No
     assert "cancel_bot_open_order" in action_types
 
 
+def test_reconcile_treats_risk_identifier_as_bot_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[
+                {
+                    "uuid": "risk-1",
+                    "identifier": "AUTOBOT-RISK-model-risk-1773391515252",
+                    "market": "KRW-BTC",
+                    "side": "ask",
+                    "ord_type": "limit",
+                    "state": "wait",
+                }
+            ],
+            unknown_open_orders_policy="halt",
+            unknown_positions_policy="halt",
+            dry_run=True,
+        )
+
+    assert report["halted"] is False
+    assert report["counts"]["external_open_orders"] == 0
+    assert report["counts"]["exchange_bot_open_orders"] == 1
+
+
 def test_reconcile_cancel_external_requires_opt_in(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

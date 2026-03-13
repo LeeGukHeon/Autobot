@@ -31,8 +31,19 @@ def is_bot_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> bo
     identifier_value = str(identifier).strip()
     if not identifier_value:
         return False
-    expected_prefix = f"{_normalize_token(prefix, upper=True)}-{_normalize_token(bot_id, upper=False)}-"
-    return identifier_value.startswith(expected_prefix)
+    normalized_prefix = _normalize_token(prefix, upper=True)
+    expected_prefix = f"{normalized_prefix}-{_normalize_token(bot_id, upper=False)}-"
+    if identifier_value.startswith(expected_prefix):
+        return True
+    identifier_upper = identifier_value.upper()
+    for marker in (
+        f"{normalized_prefix}-RISK-",
+        f"{normalized_prefix}-RISKREP-",
+        f"{normalized_prefix}-SUPREP-",
+    ):
+        if identifier_upper.startswith(marker):
+            return True
+    return False
 
 
 def extract_intent_id_from_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> str | None:

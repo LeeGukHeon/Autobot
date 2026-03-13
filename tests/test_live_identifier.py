@@ -33,3 +33,9 @@ def test_identifier_generation_supports_run_token() -> None:
         extract_run_token_from_identifier(identifier, prefix="AUTOBOT", bot_id="autobot-001")
         == "20260312t193538z-s42-d443dd89"
     )
+
+
+def test_identifier_classification_accepts_risk_and_supervisor_prefixes() -> None:
+    assert is_bot_identifier("AUTOBOT-RISK-model-risk-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")
+    assert is_bot_identifier("AUTOBOT-RISKREP-model-ri-1-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")
+    assert is_bot_identifier("AUTOBOT-SUPREP-intent-1-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")
