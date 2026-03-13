@@ -4682,30 +4682,17 @@ try {
     $report.gates.overall_pass = $false
     $report.reasons = @("UNHANDLED_EXCEPTION")
     $invocation = $_.InvocationInfo
-    $positionMessage = if ($null -eq $invocation) { "" } else { [string]$invocation.PositionMessage }
-    $stackTrace = [string]$_.ScriptStackTrace
-    $exceptionMessage = [string]$_.Exception.Message
-    if (-not [string]::IsNullOrWhiteSpace($positionMessage) -or -not [string]::IsNullOrWhiteSpace($stackTrace)) {
-        $messageParts = @($exceptionMessage)
-        if (-not [string]::IsNullOrWhiteSpace($positionMessage)) {
-            $messageParts += ("position=" + ($positionMessage -replace "\s+", " ").Trim())
-        }
-        if (-not [string]::IsNullOrWhiteSpace($stackTrace)) {
-            $messageParts += ("stack=" + ($stackTrace -replace "\s+", " ").Trim())
-        }
-        $exceptionMessage = ($messageParts -join " | ")
-    }
     $report.steps.exception = [ordered]@{
-        message = $exceptionMessage
+        message = $_.Exception.Message
         exception_type = if ($null -eq $_.Exception) { "" } else { [string]$_.Exception.GetType().FullName }
         script_name = if ($null -eq $invocation) { "" } else { [string]$invocation.ScriptName }
         line = if ($null -eq $invocation) { 0 } else { [int]$invocation.ScriptLineNumber }
         offset_in_line = if ($null -eq $invocation) { 0 } else { [int]$invocation.OffsetInLine }
-        position_message = $positionMessage
-        script_stack_trace = $stackTrace
+        position_message = if ($null -eq $invocation) { "" } else { [string]$invocation.PositionMessage }
+        script_stack_trace = [string]$_.ScriptStackTrace
     }
     $paths = Save-Report
-    Write-Host ("[{0}][error] {1}" -f $LogTag, $exceptionMessage)
+    Write-Host ("[{0}][error] {1}" -f $LogTag, $_.Exception.Message)
     Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
     exit 2
 }
