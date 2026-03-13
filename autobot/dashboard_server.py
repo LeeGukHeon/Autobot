@@ -203,8 +203,8 @@ def _unit_snapshot(unit_name: str, *, timer: bool = False) -> dict[str, Any]:
         "started_at": payload.get("ExecMainStartTimestamp") or None,
         "exited_at": payload.get("ExecMainExitTimestamp") or None,
         "description": payload.get("Description") or unit_name,
-        "next_run_at": payload.get("NextElapseUSecRealtime") if timer else None,
-        "last_trigger_at": payload.get("LastTriggerUSec") if timer else None,
+        "next_run_at": (payload.get("NextElapseUSecRealtime") or None) if timer else None,
+        "last_trigger_at": (payload.get("LastTriggerUSec") or None) if timer else None,
     }
 
 

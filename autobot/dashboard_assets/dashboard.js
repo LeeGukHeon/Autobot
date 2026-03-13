@@ -119,6 +119,8 @@
   }
 
   function toNumber(value) {
+    if (value == null) return null;
+    if (typeof value === "string" && value.trim() === "") return null;
     const num = Number(value);
     return Number.isFinite(num) ? num : null;
   }

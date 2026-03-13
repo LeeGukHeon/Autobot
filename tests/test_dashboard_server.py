@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from autobot.dashboard_server import _load_dashboard_asset, build_dashboard_snapshot
+from autobot.dashboard_server import _load_dashboard_asset, _unit_snapshot, build_dashboard_snapshot
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -354,6 +354,40 @@ def test_dashboard_asset_keeps_live_risk_plan_percent_points_unscaled() -> None:
     assert 'fmtPct(Number(plan.sl_pct) * 100)' not in js
     assert 'fmtPct(Number(plan.trail_pct) * 100)' not in js
     assert 'CANCELLED_ENTRY: "진입 취소"' in js
+
+
+def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
+    js = str(_load_dashboard_asset("dashboard.js"))
+
+    assert 'if (value == null) return null;' in js
+    assert 'if (typeof value === "string" && value.trim() === "") return null;' in js
+
+
+def test_unit_snapshot_normalizes_blank_timer_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        assert unit_name == "autobot-v4-challenger-spawn.timer"
+        assert "NextElapseUSecRealtime" in properties
+        assert "LastTriggerUSec" in properties
+        return {
+            "ActiveState": "active",
+            "SubState": "waiting",
+            "UnitFileState": "enabled",
+            "MainPID": "0",
+            "ExecMainStartTimestamp": "",
+            "ExecMainExitTimestamp": "",
+            "Description": "Spawn timer",
+            "NextElapseUSecRealtime": "",
+            "LastTriggerUSec": "",
+        }
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+
+    snapshot = _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True)
+
+    assert snapshot["next_run_at"] is None
+    assert snapshot["last_trigger_at"] is None
+    assert snapshot["started_at"] is None
+    assert snapshot["exited_at"] is None
 
 
 def test_dashboard_server_no_longer_embeds_legacy_html_js_fallback() -> None:
