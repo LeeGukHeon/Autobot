@@ -555,6 +555,12 @@
     return text.replace(/\s+/g, "");
   }
 
+  function fmtFactor(value) {
+    const num = toNumber(value);
+    if (num == null) return "-";
+    return Number.isFinite(num) ? fmtNumber(num, 2) : "∞";
+  }
+
   function setError(message) {
     const node = document.getElementById("fetch-error");
     if (!message) {
@@ -1076,6 +1082,7 @@
       const bTs = coerceTs(b.exit_ts_ms) || coerceTs(b.entry_ts_ms) || coerceTs(b.updated_ts) || 0;
       return bTs - aTs;
     });
+    const tradeAnalysis = selected.trade_analysis || {};
     const activeBreakers = unique((selected.active_breakers || []).flatMap((item) => {
       const codes = Array.isArray(item.reason_codes) ? item.reason_codes : [];
       return codes.length ? codes : [item.reason || item.code || item.name || item.breaker_key];
@@ -1241,6 +1248,39 @@
       )
       : empty("아직 거래 저널이 없습니다.");
 
+    const analysisSection = tradeAnalysis && Number(tradeAnalysis.closed_total || 0) > 0
+      ? `<div class="dense-list">${
+        [
+          compactRow({
+            title: "누적 요약",
+            summary: `종료 ${maybe(tradeAnalysis.closed_total, "0")}건, 검증 완료 ${maybe(tradeAnalysis.verified_closed_total, "0")}건 기준으로 누적 손익 ${fmtMoney(tradeAnalysis.realized_pnl_quote_total_verified, 2)}입니다.`,
+            items: [
+              compactStat("승률", fmtPct(tradeAnalysis.win_rate_verified_pct)),
+              compactStat("PF", fmtFactor(tradeAnalysis.profit_factor_verified)),
+              compactStat("평균 손익", fmtMoney(tradeAnalysis.realized_pnl_quote_avg_verified, 2)),
+              compactStat("평균 보유", tradeAnalysis.avg_hold_minutes_all_closed == null ? "-" : `${fmtNumber(tradeAnalysis.avg_hold_minutes_all_closed, 1)}분`),
+              compactStat("취소 진입", maybe(tradeAnalysis.cancelled_entry_total, "0")),
+            ],
+          }),
+          compactRow({
+            title: "시장별 상위 기여",
+            summary: (tradeAnalysis.markets_top || []).length
+              ? (tradeAnalysis.markets_top || []).slice(0, 3).map((item) => `${item.market} ${fmtMoney(item.realized_pnl_quote, 2)}`).join(" / ")
+              : "아직 시장별 종료 데이터가 충분하지 않습니다.",
+            items: (tradeAnalysis.markets_top || []).slice(0, 4).map((item) =>
+              compactStat(item.market, `${maybe(item.closed, "0")}건 · ${fmtMoney(item.realized_pnl_quote, 2)}`, toNumber(item.realized_pnl_quote) > 0 ? "good" : toNumber(item.realized_pnl_quote) < 0 ? "bad" : "")
+            ),
+          }),
+          compactRow({
+            title: "종료 방식",
+            summary: Object.entries(tradeAnalysis.close_modes || {}).length
+              ? Object.entries(tradeAnalysis.close_modes || {}).map(([key, value]) => `${translate(key)} ${value}건`).join(" / ")
+              : "종료 방식 집계가 없습니다.",
+          }),
+        ].join("")
+      }</div>`
+      : empty("누적 카나리아 분석 데이터가 아직 부족합니다.");
+
     container.innerHTML = `
       <div class="live-dashboard">
         <section class="live-command-shell">
@@ -1307,6 +1347,11 @@
             title: "주문 큐",
             copy: openOrders.length ? "" : "",
             body: orderSection
+          })}
+          ${surfaceCard({
+            title: "카나리아 누적 분석",
+            copy: "후보 카나리아 누적 체결 기준 요약",
+            body: analysisSection
           })}
           ${surfaceCard({
             title: "최근 거래",

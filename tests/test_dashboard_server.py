@@ -436,6 +436,27 @@ def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_i
     assert recent_runs[0]["unrealized_pnl_quote"] == pytest.approx(-132.09371050400316)
 
 
+def test_build_dashboard_snapshot_includes_candidate_trade_analysis(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "UPDATE trade_journal SET exit_meta_json = ? WHERE journal_id = ?",
+            (json.dumps({"close_mode": "managed_exit_order", "close_verified": True, "close_verification_status": "verified_exit_order"}, ensure_ascii=False, sort_keys=True), "journal-1"),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    candidate_state = next(item for item in snapshot["live"]["states"] if "후보" in str(item.get("label")))
+
+    assert candidate_state["trade_analysis"]["closed_total"] == 1
+    assert candidate_state["trade_analysis"]["verified_closed_total"] == 1
+    assert candidate_state["trade_analysis"]["realized_pnl_quote_total_verified"] == 3.0
+
+
 def test_build_dashboard_snapshot_dedupes_duplicate_closed_trade_rows(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})

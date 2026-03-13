@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from autobot.live.order_state import is_open_local_state, normalize_order_state
+from autobot.live.candidate_canary_report import build_candidate_canary_report
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.upbit.config import load_upbit_settings
 from autobot.upbit.http_client import UpbitHttpClient
@@ -1016,6 +1017,12 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         last_ws_event = checkpoints.get("last_ws_event") or {}
         runtime_run_dir = _resolve_model_run_dir(project_root, runtime_health.get("live_runtime_model_run_id"))
         runtime_artifacts = _collect_recent_model_artifacts(project_root, str(runtime_run_dir)) if runtime_run_dir else {}
+        trade_analysis: dict[str, Any] = {}
+        if "trade_journal" in tables and "후보" in str(label):
+            try:
+                trade_analysis = build_candidate_canary_report(db_path)
+            except Exception:
+                trade_analysis = {}
         return {
             "label": label,
             "db_path": str(db_path),
@@ -1047,6 +1054,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             "runtime_artifacts": runtime_artifacts,
             "daemon_last_run": daemon_last_run,
             "last_ws_event": last_ws_event,
+            "trade_analysis": trade_analysis,
             "rollout_status": checkpoints.get("live_rollout_status") or {},
             "rollout_contract": checkpoints.get("live_rollout_contract") or {},
             "last_resume": checkpoints.get("last_resume") or {},
