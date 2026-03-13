@@ -53,6 +53,7 @@ def test_resolve_split_policy_candidate_holdout_days_keeps_empty_override_as_arr
                 "    override = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays 5 -OverrideText '2, 4 2')",
                 "    merged_empty = @(Merge-UniqueStringArray -First @() -Second @())",
                 "    merged_wrapped_assignment = @(Merge-UniqueStringArray -First @() -Second @())",
+                "    admissibility_reasons_count = $( $tmp = @(Merge-UniqueStringArray -First @() -Second @()); if ($null -eq $tmp) { $tmp = @() } else { $tmp = @($tmp) }; $tmp.Count )",
                 "}",
                 "$payload | ConvertTo-Json -Compress -Depth 4",
             ]
@@ -82,3 +83,4 @@ def test_resolve_split_policy_candidate_holdout_days_keeps_empty_override_as_arr
     assert payload["override"] == [2, 4]
     assert payload["merged_empty"] == []
     assert payload["merged_wrapped_assignment"] == []
+    assert payload["admissibility_reasons_count"] == 0
