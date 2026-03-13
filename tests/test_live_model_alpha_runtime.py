@@ -2062,3 +2062,99 @@ def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_pla
     assert len(lineage) == 1
     assert lineage[0]["prev_uuid"] == "kite-order-1"
     assert lineage[0]["new_uuid"] == "replaced-order-1"
+
+
+def test_supervise_open_strategy_orders_aborts_stale_ask_order_when_execution_meta_is_missing(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-exit-missing-meta",
+                ts_ms=1_000,
+                market="KRW-KITE",
+                side="ask",
+                price=100.0,
+                volume=50.0,
+                reason_code="MODEL_ALPHA_EXIT_TIMEOUT",
+                meta_json=json.dumps(
+                    {
+                        "source": "private_ws",
+                        "stream_type": "myOrder",
+                        "order_uuid": "kite-order-missing-meta",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="UPDATED_FROM_WS",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-missing-meta",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="95",
+                qty_str="50",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="EXITING",
+                current_exit_order_uuid="kite-order-missing-meta",
+                current_exit_order_identifier="AUTOBOT-kite-order-missing-meta",
+                replace_attempt=0,
+                created_ts=1_000,
+                updated_ts=1_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-entry",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="kite-order-missing-meta",
+                identifier="AUTOBOT-kite-order-missing-meta",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=50.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-kite-exit-missing-meta",
+                tp_sl_link="plan-kite-missing-meta",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="kite-order-missing-meta",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_StaticPublicClient("KRW-KITE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-KITE": 105.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=360_000,
+        )
+        order = store.order_by_uuid(uuid="kite-order-missing-meta")
+        intent = store.intent_by_id(intent_id="intent-kite-exit-missing-meta")
+        plan = store.risk_plan_by_id(plan_id="plan-kite-missing-meta")
+
+    assert report["aborted"] == 1
+    assert len(gateway.cancel_calls) == 1
+    assert order is not None
+    assert order["local_state"] == "CANCELLED"
+    assert intent is not None
+    assert intent["status"] == "CANCELLED"
+    assert plan is not None
+    assert plan["state"] == "TRIGGERED"
+    assert plan["current_exit_order_uuid"] is None
