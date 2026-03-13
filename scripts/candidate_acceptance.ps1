@@ -904,6 +904,9 @@ function Load-SplitPolicySelectorHistoryRecords {
     foreach ($key in $orderedKeys) {
         $records.Add($recordsByKey[$key]) | Out-Null
     }
+    if ($records.Count -eq 0) {
+        return @()
+    }
     return @($records.ToArray())
 }
 
@@ -981,6 +984,9 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
             $seen[$parsed] = $true
             $resolved.Add($parsed) | Out-Null
         }
+    }
+    if ($resolved.Count -eq 0) {
+        return @()
     }
     return @($resolved.ToArray())
 }
@@ -1378,9 +1384,9 @@ function Resolve-SplitPolicySelection {
             candidate_holdout_days = @($candidateHoldoutDays)
             historical_anchor_count = [int](Get-PropValue -ObjectValue $selectedSummary -Name "historical_anchor_count" -DefaultValue 0)
             reason_codes = @("FORWARD_VALIDATION_LCB")
-            selection_summary = @($selectionSummary.ToArray())
+            selection_summary = if ($selectionSummary.Count -eq 0) { @() } else { @($selectionSummary.ToArray()) }
             history_path = $historyPath
-            new_evaluations = @($newEvaluations.ToArray())
+            new_evaluations = if ($newEvaluations.Count -eq 0) { @() } else { @($newEvaluations.ToArray()) }
             bootstrap_attempt = $bootstrapAttempt
             selected_summary = $selectedSummary
             current_windows = Get-PropValue -ObjectValue $selectedSummary -Name "current_windows" -DefaultValue @{}
@@ -1402,9 +1408,9 @@ function Resolve-SplitPolicySelection {
         candidate_holdout_days = @($candidateHoldoutDays)
         historical_anchor_count = 0
         reason_codes = @($bootstrapReasons)
-        selection_summary = @($selectionSummary.ToArray())
+        selection_summary = if ($selectionSummary.Count -eq 0) { @() } else { @($selectionSummary.ToArray()) }
         history_path = $historyPath
-        new_evaluations = @($newEvaluations.ToArray())
+        new_evaluations = if ($newEvaluations.Count -eq 0) { @() } else { @($newEvaluations.ToArray()) }
         bootstrap_attempt = $bootstrapAttempt
         selected_summary = $null
         current_windows = [ordered]@{
@@ -2593,6 +2599,9 @@ function Merge-UniqueStringArray {
         $seen[$text] = $true
         $values.Add($text) | Out-Null
     }
+    if ($values.Count -eq 0) {
+        return @()
+    }
     return @($values.ToArray())
 }
 
@@ -3096,6 +3105,9 @@ function Get-DateRangeAscending {
     while ($cursor -le $endObj) {
         $values.Add($cursor.ToString("yyyy-MM-dd")) | Out-Null
         $cursor = $cursor.AddDays(1)
+    }
+    if ($values.Count -eq 0) {
+        return @()
     }
     return @($values.ToArray())
 }

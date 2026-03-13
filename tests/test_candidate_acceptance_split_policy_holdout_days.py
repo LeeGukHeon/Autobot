@@ -36,15 +36,22 @@ def test_resolve_split_policy_candidate_holdout_days_keeps_empty_override_as_arr
         "function Resolve-SplitPolicyCandidateHoldoutDays {",
         "function Resolve-SplitPolicyHoldoutWindows {",
     )
+    merge_block = _extract_function_block(
+        source,
+        "function Merge-UniqueStringArray {",
+        "function Build-ReportMarkdown {",
+    )
     script_path = tmp_path / "holdout_probe.ps1"
     script_path.write_text(
         "\n\n".join(
             [
                 to_int64_block,
                 holdout_block,
+                merge_block,
                 "$payload = [ordered]@{",
                 "    default = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays 3 -OverrideText '')",
                 "    override = @(Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays 5 -OverrideText '2, 4 2')",
+                "    merged_empty = @(Merge-UniqueStringArray -First @() -Second @())",
                 "}",
                 "$payload | ConvertTo-Json -Compress -Depth 4",
             ]
@@ -72,3 +79,4 @@ def test_resolve_split_policy_candidate_holdout_days_keeps_empty_override_as_arr
 
     assert payload["default"] == [1, 2, 3]
     assert payload["override"] == [2, 4]
+    assert payload["merged_empty"] == []
