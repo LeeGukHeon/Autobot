@@ -576,16 +576,23 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                 _as_optional_float((exit_order or {}).get("price")),
                 _as_optional_float(row.get("exit_price")),
             )
-            previous_exit_meta = _build_exit_meta_summary(row.get("exit_meta"))
-            previous_close_verified = bool(previous_exit_meta.get("close_verified")) if previous_exit_meta.get("close_verified") is not None else False
-            existing_exit_ts = _as_optional_int(row.get("exit_ts_ms"))
-            computed_exit_ts = _coalesce_int(_as_optional_int((exit_order or {}).get("updated_ts")), existing_exit_ts)
-            exit_ts = existing_exit_ts if previous_close_verified and existing_exit_ts is not None else computed_exit_ts
             close_verification_status = _derive_close_verification_status(
                 order=exit_order,
                 close_mode=_coalesce_str(_as_optional_str(row.get("close_mode")), _as_optional_str(exit_meta_payload.get("close_mode"))),
             )
             close_verified = close_verification_status == "verified_exit_order"
+            previous_exit_meta = _build_exit_meta_summary(row.get("exit_meta"))
+            previous_close_verified = bool(previous_exit_meta.get("close_verified")) if previous_exit_meta.get("close_verified") is not None else False
+            existing_exit_ts = _as_optional_int(row.get("exit_ts_ms"))
+            verified_exit_ts = _as_optional_int((exit_order or {}).get("updated_ts")) if close_verified else None
+            computed_exit_ts = _coalesce_int(verified_exit_ts, existing_exit_ts)
+            if close_verified and verified_exit_ts is not None:
+                if not previous_close_verified or existing_exit_ts is None or existing_exit_ts > verified_exit_ts:
+                    exit_ts = verified_exit_ts
+                else:
+                    exit_ts = existing_exit_ts
+            else:
+                exit_ts = existing_exit_ts if previous_close_verified and existing_exit_ts is not None else computed_exit_ts
             cost_metrics = _compute_cost_metrics(
                 entry_meta=entry_meta_summary,
                 entry_order=entry_order,

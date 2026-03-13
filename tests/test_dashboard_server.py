@@ -490,6 +490,8 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "현재 수익률" in js
     assert "EventSource" in js
     assert "/api/stream" in js
+    assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js
+    assert "return bTs - aTs;" in js
 
 
 def test_unit_snapshot_normalizes_blank_timer_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:

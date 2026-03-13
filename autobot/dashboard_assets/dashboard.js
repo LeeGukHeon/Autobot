@@ -532,9 +532,9 @@
     const intents = [...(selected.recent_intents || [])].sort((a, b) => (coerceTs(b.ts_ms) || 0) - (coerceTs(a.ts_ms) || 0));
     const today = selected.today_trade_summary || {};
     const recentTrades = [...(selected.recent_trades || [])].sort((a, b) => {
-      const left = coerceTs(b.exit_ts_ms) || coerceTs(b.entry_ts_ms) || coerceTs(b.updated_ts) || 0;
-      const right = coerceTs(a.exit_ts_ms) || coerceTs(a.entry_ts_ms) || coerceTs(a.updated_ts) || 0;
-      return left - right;
+      const aTs = coerceTs(a.exit_ts_ms) || coerceTs(a.entry_ts_ms) || coerceTs(a.updated_ts) || 0;
+      const bTs = coerceTs(b.exit_ts_ms) || coerceTs(b.entry_ts_ms) || coerceTs(b.updated_ts) || 0;
+      return bTs - aTs;
     });
     const activeBreakers = unique((selected.active_breakers || []).map((item) => item.reason || item.code || item.name)).map(translate);
     const primaryPosition = positions[0];
@@ -683,7 +683,7 @@
       stopFallbackRefresh();
       setError("");
     };
-    stream.onmessage = (event) => {
+    const applySnapshotEvent = (event) => {
       try {
         renderAll(JSON.parse(event.data));
         setError("");
@@ -691,6 +691,8 @@
         setError(`실시간 데이터 해석 실패: ${err && err.message ? err.message : err}`);
       }
     };
+    stream.onmessage = applySnapshotEvent;
+    stream.addEventListener("snapshot", applySnapshotEvent);
     stream.onerror = () => {
       if (state.stream === stream) {
         stream.close();
