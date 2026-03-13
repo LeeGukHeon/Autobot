@@ -238,3 +238,98 @@ def test_backfill_recent_bot_closed_orders_accepts_tracked_risk_exit_without_bot
     assert order["local_state"] == "DONE"
     assert journal is not None
     assert journal["realized_pnl_quote"] is not None
+
+
+def test_backfill_recent_bot_closed_orders_accepts_tracked_exit_uuid_from_journal(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-j",
+                identifier="AUTOBOT-autobot-candidate-001-intent-j-1700000000000-a",
+                market="KRW-ENSO",
+                side="bid",
+                ord_type="limit",
+                price=1872.0,
+                volume_req=3.0,
+                volume_filled=3.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-j",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="entry-order-j",
+                executed_funds=5616.0,
+                paid_fee=2.808,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-j",
+                market="KRW-ENSO",
+                status="CLOSED",
+                entry_intent_id="intent-j",
+                entry_order_uuid="entry-order-j",
+                exit_order_uuid="exit-order-j",
+                plan_id="plan-j",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=2_000,
+                entry_price=1872.0,
+                exit_price=None,
+                qty=3.0,
+                entry_notional_quote=5616.0,
+                exit_notional_quote=None,
+                realized_pnl_quote=None,
+                realized_pnl_pct=None,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="POSITION_CLOSED",
+                close_mode="missing_on_exchange_after_exit_plan",
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {"sizing": {"fee_rate": 0.0005}, "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005}},
+                        "execution": {"requested_price": 1872.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                updated_ts=2_000,
+            )
+        )
+        client = _StubClosedOrdersClient(
+            [
+                {
+                    "uuid": "exit-order-j",
+                    "identifier": "AUTOBOT-RISK-journal-only",
+                    "market": "KRW-ENSO",
+                    "side": "ask",
+                    "ord_type": "limit",
+                    "state": "done",
+                    "price": "1930",
+                    "volume": "3",
+                    "executed_volume": "3",
+                    "executed_funds": "5790",
+                    "paid_fee": "2.895",
+                    "created_at": "2026-03-13T02:50:44Z",
+                    "done_at": "2026-03-13T02:50:44Z",
+                }
+            ]
+        )
+        report = backfill_recent_bot_closed_orders(
+            store=store,
+            client=client,
+            bot_id="autobot-candidate-001",
+            identifier_prefix="AUTOBOT",
+            now_ts_ms=1_700_000_200_000,
+        )
+        order = store.order_by_uuid(uuid="exit-order-j")
+        journal = store.trade_journal_by_id(journal_id="journal-j")
+
+    assert report["orders_upserted"] == 1
+    assert order is not None
+    assert journal is not None
+    assert journal["realized_pnl_quote"] is not None

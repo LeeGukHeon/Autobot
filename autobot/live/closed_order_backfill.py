@@ -41,6 +41,13 @@ def backfill_recent_bot_closed_orders(
         for item in store.list_risk_plans()
         if str(item.get("current_exit_order_uuid") or "").strip()
     }
+    tracked_exit_order_uuids.update(
+        {
+            str(item.get("exit_order_uuid") or "").strip()
+            for item in store.list_trade_journal(statuses=("CLOSED", "OPEN", "PENDING_ENTRY", "CANCELLED_ENTRY"))
+            if str(item.get("exit_order_uuid") or "").strip()
+        }
+    )
     tracked_exit_order_identifiers = {
         str(item.get("current_exit_order_identifier") or "").strip()
         for item in store.list_risk_plans()
