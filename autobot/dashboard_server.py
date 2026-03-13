@@ -761,7 +761,15 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
                 }
         checkpoints: dict[str, Any] = {}
         if "checkpoints" in tables:
-            for name in ("live_runtime_health", "live_rollout_status", "live_rollout_contract", "last_resume"):
+            for name in (
+                "live_runtime_health",
+                "live_rollout_status",
+                "live_rollout_contract",
+                "last_resume",
+                "daemon_last_run",
+                "live_model_alpha_last_run",
+                "last_ws_event",
+            ):
                 row = _query_one(conn, "SELECT * FROM checkpoints WHERE name = ?", (name,))
                 if row:
                     checkpoints[name] = _normalize_json_text(row.get("payload_json"))
@@ -796,6 +804,8 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
                 payload["hold_remaining_minutes"] = remaining_min
             active_risk_plan_payloads.append(payload)
         runtime_health = checkpoints.get("live_runtime_health") or {}
+        daemon_last_run = checkpoints.get("live_model_alpha_last_run") or checkpoints.get("daemon_last_run") or {}
+        last_ws_event = checkpoints.get("last_ws_event") or {}
         runtime_run_dir = _resolve_model_run_dir(project_root, runtime_health.get("live_runtime_model_run_id"))
         runtime_artifacts = _collect_recent_model_artifacts(project_root, str(runtime_run_dir)) if runtime_run_dir else {}
         return {
@@ -823,6 +833,8 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             ],
             "runtime_health": runtime_health,
             "runtime_artifacts": runtime_artifacts,
+            "daemon_last_run": daemon_last_run,
+            "last_ws_event": last_ws_event,
             "rollout_status": checkpoints.get("live_rollout_status") or {},
             "rollout_contract": checkpoints.get("live_rollout_contract") or {},
             "last_resume": checkpoints.get("last_resume") or {},
@@ -830,6 +842,20 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         }
     finally:
         conn.close()
+
+
+def _resolve_live_db_candidates(project_root: Path) -> list[tuple[str, Path]]:
+    candidates: list[tuple[str, Path]] = []
+    main_db = project_root / "data" / "state" / "live" / "live_state.db"
+    if main_db.exists():
+        candidates.append(("메인 라이브", main_db))
+    legacy_db = project_root / "data" / "state" / "live_state.db"
+    if legacy_db.exists() and legacy_db != main_db:
+        candidates.append(("레거시 라이브", legacy_db))
+    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    if candidate_db.exists():
+        candidates.append(("후보 카나리아", candidate_db))
+    return candidates
 
 
 def _resolve_live_db_candidates(project_root: Path) -> list[tuple[str, Path]]:

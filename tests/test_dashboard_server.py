@@ -163,6 +163,46 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     _write_json(meta_dir / "ws_runs_summary.json", {"run_id": "ws-run-1"})
     _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
     _write_json(
+        project_root / "data" / "state" / "live" / "live_breaker_report.json",
+        {"active": False},
+    )
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?)",
+            (
+                "live_model_alpha_last_run",
+                2,
+                json.dumps(
+                    {
+                        "private_ws_events_total": 7,
+                        "private_ws_last_event_ts_ms": 1700000000000,
+                        "private_ws_stats": {"received_events": 7},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?)",
+            (
+                "last_ws_event",
+                3,
+                json.dumps(
+                    {
+                        "event_type": "myOrder",
+                        "event_ts_ms": 1700000000001,
+                        "latency_ms": 15,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
+        )
+    conn.close()
+    _write_json(
         project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_recommendations.json",
         {
             "exit": {
@@ -289,6 +329,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert today_summary["closed_count"] == 1
     assert today_summary["wins"] == 1
     assert today_summary["net_pnl_quote_total"] == 3.0
+    assert snapshot["live"]["states"][0]["daemon_last_run"]["private_ws_events_total"] == 7
+    assert snapshot["live"]["states"][0]["last_ws_event"]["event_type"] == "myOrder"
     assert runtime_artifacts["exists"] is True
     assert runtime_recommendations["recommended_exit_mode"] == "hold"
     assert runtime_recommendations["hold_grid_point"]["hold_bars"] == 6
@@ -431,6 +473,10 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
 
     assert 'if (value == null) return null;' in js
     assert 'if (typeof value === "string" && value.trim() === "") return null;' in js
+    assert "손익 확정" in js
+    assert "미확정 종료" in js
+    assert "개인 체결 WS" in js
+    assert "후보 모델 추적 중" in js
 
 
 def test_unit_snapshot_normalizes_blank_timer_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:

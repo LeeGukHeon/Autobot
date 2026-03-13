@@ -521,6 +521,8 @@
     }
 
     const runtime = selected.runtime_health || {};
+    const daemonLastRun = selected.daemon_last_run || {};
+    const lastWsEvent = selected.last_ws_event || {};
     const rollout = selected.rollout_status || {};
     const positions = [...(selected.positions || [])];
     const openOrders = [...(selected.open_orders || [])].sort((a, b) => (coerceTs(b.updated_ts) || 0) - (coerceTs(a.updated_ts) || 0));
@@ -536,6 +538,15 @@
     const primaryPosition = positions[0];
     const primaryPlan = riskPlans.find((item) => item.market === (primaryPosition || {}).market) || riskPlans[0];
     const primaryOrder = openOrders.find((item) => item.market === (primaryPosition || {}).market && item.side === "ask") || openOrders[0];
+    const isCanary = String(rollout.mode || "").trim().toLowerCase() === "canary" || String(selected.label || "").includes("카나리아");
+    const pointerStatus = runtime.model_pointer_divergence
+      ? (isCanary ? "후보 모델 추적 중" : "모델 포인터 불일치")
+      : (isCanary ? "챔피언과 동일" : "정상");
+    const privateWsLastTs = coerceTs(lastWsEvent.event_ts_ms) || coerceTs(daemonLastRun.private_ws_last_event_ts_ms);
+    const privateWsEventsTotal = maybe(daemonLastRun.private_ws_events_total, "0");
+    const privateWsFreshness = privateWsLastTs == null ? "아직 수신 없음" : fmtAge(privateWsLastTs);
+    const verifiedClosed = maybe(today.verified_closed_count, "0");
+    const unverifiedClosed = maybe(today.unverified_closed_count, "0");
 
     const topSummary = primaryPosition && primaryPlan
       ? describeExit(primaryPlan, primaryPosition, primaryOrder)
@@ -543,7 +554,7 @@
     const liveNarrative = positions.length
       ? `현재 ${positions.length}개 포지션을 관리 중이며, 가장 최근 포지션은 ${riskPlanNarrative(primaryPlan)}`
       : `${selected.label}는 현재 비어 있고, 새 진입 신호만 기다리는 상태입니다.`;
-    const todaySummaryLine = `${maybe(today.date_label, "-")} ${maybe(today.timezone, "KST")} 기준으로 종료 ${maybe(today.closed_count, "0")}건, 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}, 순손익 ${fmtMoney(today.net_pnl_quote_total)}입니다.`;
+    const todaySummaryLine = `${maybe(today.date_label, "-")} ${maybe(today.timezone, "KST")} 기준으로 종료 ${maybe(today.closed_count, "0")}건 중 손익 확정 ${verifiedClosed}건, 미확정 ${unverifiedClosed}건입니다. 확정 거래 기준 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}, 순손익 ${fmtMoney(today.net_pnl_quote_total)}입니다.`;
 
     const positionSection = positions.length
       ? positions.map((position) => card(
@@ -588,7 +599,7 @@
           trade.status === "CANCELLED_ENTRY" ? "진입 취소" :
           "진입 대기";
         const pnlText = trade.realized_pnl_quote == null
-          ? "손익 계산 전"
+          ? (trade.close_verified === false ? "거래소 체결 확인 전" : "손익 계산 전")
           : `${fmtMoney(trade.realized_pnl_quote)} / ${fmtPct(trade.realized_pnl_pct)}`;
         const grossText = trade.gross_pnl_quote == null
           ? "계산 전"
@@ -596,16 +607,18 @@
         const durationText = trade.hold_minutes == null ? "보유 시간 계산 전" : `${trade.hold_minutes}분 보유`;
         const narrative = trade.status === "CANCELLED_ENTRY"
           ? `${translate(trade.entry_reason_code)} 신호로 넣은 진입 주문이 ${translate(trade.close_reason_code)} 때문에 취소됐습니다.`
+          : trade.close_verified === false
+          ? `${translate(trade.entry_reason_code)}로 진입했고 포지션 종료는 확인됐지만, 거래소 체결값이 아직 확정되지 않아 손익 집계에서 제외했습니다.`
           : `${translate(trade.entry_reason_code)}로 진입했고, ${translate(trade.close_mode)} 방식으로 ${translate(trade.close_reason_code)}에 종료됐습니다.`;
         return card(
           `${trade.market || "-"} · ${direction}`,
-          `<p class="section-brief">${esc(narrative)}</p><div class="kv-grid">${kv("진입 시각", fmtDateTime(trade.entry_ts_ms))}${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("수량", fmtNumber(trade.qty, 8))}${kv("순손익", pnlText)}${kv("총손익", grossText)}${kv("총수수료", fmtMoney(trade.total_fee_quote))}${kv("진입 슬리피지", fmtBps(trade.entry_realized_slippage_bps))}${kv("예상 종료 슬리피지", fmtBps(trade.exit_expected_slippage_bps))}${kv("예상 순엣지", fmtBps(trade.expected_net_edge_bps))}${kv("Trade 액션", translate(trade.trade_action))}${kv("Trade 엣지", fmtBps(trade.expected_edge_bps))}${kv("Trade 하방", fmtBps(trade.expected_downside_bps))}${kv("Trade ES", fmtBps(trade.expected_es_bps))}${kv("Trade CTM", fmtNumber(trade.expected_ctm, 6))}${kv("Action Value", fmtNumber(trade.trade_action_action_value, 3))}${kv("결정 원천", translate(trade.trade_action_decision_source))}${kv("Exit family", translate(trade.exit_recommendation_chosen_family))}${kv("Exit rule", maybe(trade.exit_recommendation_chosen_rule_id))}${kv("Family compare", maybe(trade.exit_recommendation_family_compare_status))}${kv("사이징 배수", fmtNumber(trade.notional_multiplier, 2))}</div>`,
+          `<p class="section-brief">${esc(narrative)}</p><div class="kv-grid">${kv("진입 시각", fmtDateTime(trade.entry_ts_ms))}${kv("종료 시각", fmtDateTime(trade.exit_ts_ms))}${kv("보유 시간", durationText)}${kv("체결 확인", trade.close_verified === false ? "미확정" : trade.close_verified === true ? "확정" : "-")}${kv("진입가", fmtMoney(trade.entry_price))}${kv("종료가", fmtMoney(trade.exit_price))}${kv("수량", fmtNumber(trade.qty, 8))}${kv("순손익", pnlText)}${kv("총손익", grossText)}${kv("총수수료", fmtMoney(trade.total_fee_quote))}${kv("진입 슬리피지", fmtBps(trade.entry_realized_slippage_bps))}${kv("예상 종료 슬리피지", fmtBps(trade.exit_expected_slippage_bps))}${kv("예상 순엣지", fmtBps(trade.expected_net_edge_bps))}${kv("Trade 액션", translate(trade.trade_action))}${kv("Trade 엣지", fmtBps(trade.expected_edge_bps))}${kv("Trade 하방", fmtBps(trade.expected_downside_bps))}${kv("Trade ES", fmtBps(trade.expected_es_bps))}${kv("Trade CTM", fmtNumber(trade.expected_ctm, 6))}${kv("Action Value", fmtNumber(trade.trade_action_action_value, 3))}${kv("결정 원천", translate(trade.trade_action_decision_source))}${kv("Exit family", translate(trade.exit_recommendation_chosen_family))}${kv("Exit rule", maybe(trade.exit_recommendation_chosen_rule_id))}${kv("Family compare", maybe(trade.exit_recommendation_family_compare_status))}${kv("사이징 배수", fmtNumber(trade.notional_multiplier, 2))}</div>`,
           "mini-card"
         );
       }).join("")
       : empty("아직 거래 저널이 없습니다.");
 
-    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><p class="section-copy">${esc(liveNarrative)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("챔피언 포인터", shortRun(runtime.champion_pointer_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("리스크 플랜", maybe(selected.active_risk_plans_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("오늘 승패", `${maybe(today.wins, "0")}승 / ${maybe(today.losses, "0")}패`)}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("오늘 수수료", fmtMoney(today.fee_quote_total))}${metric("오늘 미종결", `${maybe(today.open_count, "0")}개 보유 / ${maybe(today.pending_count, "0")}개 대기`)}${metric("오늘 승률", fmtPct(today.win_rate_pct))}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 동기화", runtime.model_pointer_divergence ? "어긋남" : "정상")}${kv("WS 신선도", runtime.ws_public_stale ? "오래됨" : "정상")}${kv("마지막 resume", fmtDateTime((selected.last_resume || {}).generated_at || (selected.last_resume || {}).checked_at || (selected.last_resume || {}).completed_at))}${kv("상태 DB", shortPath(selected.db_path))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections compact"><section class="section-block compact"><h5>보유 종목</h5><div class="stack">${positionSection}</div></section><section class="section-block compact"><h5>미체결 주문</h5><div class="stack">${orderSection}</div></section><section class="section-block compact"><h5>매도 전략</h5><div class="stack">${planSection}</div></section><section class="section-block compact"><h5>최근 의도</h5><div class="stack">${intentSection}</div></section><section class="section-block compact"><h5>최근 거래 저널</h5><div class="stack">${tradeSection}</div></section></div></article>`;
+    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p>${esc(topSummary)}</p><p class="section-copy">${esc(liveNarrative)}</p><div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("챔피언 포인터", shortRun(runtime.champion_pointer_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("리스크 플랜", maybe(selected.active_risk_plans_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("손익 확정", maybe(today.verified_closed_count, "0"))}${metric("미확정 종료", maybe(today.unverified_closed_count, "0"))}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("오늘 수수료", fmtMoney(today.fee_quote_total))}${metric("오늘 미종결", `${maybe(today.open_count, "0")}개 보유 / ${maybe(today.pending_count, "0")}개 대기`)}${metric("오늘 승률", fmtPct(today.win_rate_pct))}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 상태", pointerStatus)}${kv("공용 WS", runtime.ws_public_stale ? "수신 오래됨" : "정상 수신")}${kv("개인 체결 WS", privateWsFreshness)}${kv("개인 WS 이벤트", privateWsEventsTotal)}${kv("마지막 개인 WS", fmtDateTime(privateWsLastTs))}${kv("마지막 resume", fmtDateTime((selected.last_resume || {}).generated_at || (selected.last_resume || {}).checked_at || (selected.last_resume || {}).completed_at))}${kv("상태 DB", shortPath(selected.db_path))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections compact"><section class="section-block compact"><h5>보유 종목</h5><div class="stack">${positionSection}</div></section><section class="section-block compact"><h5>미체결 주문</h5><div class="stack">${orderSection}</div></section><section class="section-block compact"><h5>매도 전략</h5><div class="stack">${planSection}</div></section><section class="section-block compact"><h5>최근 의도</h5><div class="stack">${intentSection}</div></section><section class="section-block compact"><h5>최근 거래 저널</h5><div class="stack">${tradeSection}</div></section></div></article>`;
   }
 
   function renderWs(snapshot) {
