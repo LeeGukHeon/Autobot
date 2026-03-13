@@ -123,12 +123,30 @@ def activate_trade_journal_for_position(
         entry_order_uuid_value,
         _as_optional_str((existing or {}).get("entry_order_uuid")),
     )
+    entry_order = _resolve_entry_order_for_journal(
+        store=store,
+        market=market_value,
+        entry_order_uuid=entry_order_uuid,
+        entry_intent_id=entry_intent_id,
+        target_entry_ts=_coalesce_int(
+            _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
+            _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
+            _as_optional_int((intent_record or {}).get("ts_ms")),
+            _as_optional_int((entry_intent or {}).get("created_ts")),
+        ),
+    )
     submitted_ts = _coalesce_int(
         _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
         _as_optional_int((intent_record or {}).get("ts_ms")),
         _as_optional_int((entry_intent or {}).get("created_ts")),
     )
-    filled_ts = _coalesce_int(_as_optional_int(position.get("updated_ts")), int(ts_ms))
+    filled_ts = _coalesce_int(
+        _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
+        _as_optional_int((entry_order or {}).get("updated_ts")),
+        _as_optional_int((entry_order or {}).get("created_ts")),
+        _as_optional_int(position.get("updated_ts")),
+        int(ts_ms),
+    )
     journal_id = _resolve_journal_id(existing=existing, entry_intent_id=entry_intent_id, market=market_value, ts_ms=filled_ts)
     store.upsert_trade_journal(
         TradeJournalRecord(

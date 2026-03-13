@@ -245,6 +245,126 @@ def test_reconcile_attach_strategy_risk_builds_model_plan(tmp_path: Path) -> Non
     assert risk_plans[0]["timeout_ts_ms"] == 5_000 + (6 * 300_000)
 
 
+def test_reconcile_attach_strategy_risk_reuses_pending_entry_journal_for_filled_bid(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    registry_root = tmp_path / "models" / "registry"
+    run_dir = registry_root / "train_v4_crypto_cs" / "run-live"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (registry_root / "train_v4_crypto_cs" / "champion.json").write_text(
+        json.dumps({"run_id": "run-live"}, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    (run_dir / "runtime_recommendations.json").write_text(
+        json.dumps(
+            {
+                "exit": {
+                    "version": 1,
+                    "recommended_exit_mode": "hold",
+                    "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                    "recommended_exit_mode_reason_code": "HOLD_EXECUTION_COMPARE_EDGE",
+                    "recommended_hold_bars": 6,
+                }
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-avnt-1",
+                ts_ms=1_000,
+                market="KRW-AVNT",
+                side="bid",
+                price=251.0,
+                volume=22.35025913,
+                reason_code="CLOSED_ORDERS_BACKFILL",
+                meta_json=json.dumps({"source": "closed_orders_backfill"}, ensure_ascii=False, sort_keys=True),
+                status="UPDATED_FROM_CLOSED_ORDERS",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="avnt-order-1",
+                identifier="AUTOBOT-autobot-001-intent-avnt-1-1000-abcd",
+                market="KRW-AVNT",
+                side="bid",
+                ord_type="limit",
+                price=251.0,
+                volume_req=22.35025913,
+                volume_filled=22.35025913,
+                state="done",
+                created_ts=1_100,
+                updated_ts=1_100,
+                intent_id="intent-avnt-1",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="avnt-order-1",
+                executed_funds=5610.91504163,
+                paid_fee=2.805457520815,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="intent-avnt-1",
+                market="KRW-AVNT",
+                status="PENDING_ENTRY",
+                entry_intent_id="intent-avnt-1",
+                entry_order_uuid="avnt-order-1",
+                exit_order_uuid=None,
+                plan_id=None,
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=None,
+                exit_ts_ms=None,
+                entry_price=251.0,
+                exit_price=None,
+                qty=22.35025913,
+                entry_notional_quote=5610.91504163,
+                exit_notional_quote=None,
+                realized_pnl_quote=None,
+                realized_pnl_pct=None,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code=None,
+                close_mode=None,
+                updated_ts=1_000,
+            )
+        )
+
+        reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "AVNT",
+                    "balance": "22.35025913",
+                    "locked": "0",
+                    "avg_buy_price": "251",
+                }
+            ],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="attach_strategy_risk",
+            registry_root=str(registry_root),
+            runtime_model_ref_source="champion_v4",
+            runtime_model_family="train_v4_crypto_cs",
+            dry_run=False,
+            ts_ms=5_000,
+        )
+        journals = store.list_trade_journal(market="KRW-AVNT")
+        risk_plans = store.list_risk_plans(market="KRW-AVNT")
+
+    assert len(journals) == 1
+    assert journals[0]["journal_id"] == "intent-avnt-1"
+    assert journals[0]["status"] == "OPEN"
+    assert journals[0]["entry_filled_ts_ms"] == 1_100
+    assert journals[0]["plan_id"] == risk_plans[0]["plan_id"]
+    assert risk_plans[0]["source_intent_id"] == "intent-avnt-1"
+
+
 def test_reconcile_classifies_missing_position_as_manual_sell(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

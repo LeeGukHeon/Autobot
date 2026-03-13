@@ -488,6 +488,9 @@ def reconcile_exchange_snapshot(
                 )
             for market in unknown_position_markets:
                 position = exchange_positions[market]
+                latest_bid_order = bid_orders_by_market.get(market)
+                recovered_intent_id = _as_optional_str((latest_bid_order or {}).get("intent_id"))
+                recovered_intent = intents_by_id.get(recovered_intent_id) if recovered_intent_id else None
                 record = PositionRecord(
                     market=market,
                     base_currency=str(position["base_currency"]),
@@ -519,7 +522,7 @@ def reconcile_exchange_snapshot(
                             plan_payload=plan_payload,
                             created_ts=now_ts,
                             updated_ts=now_ts,
-                            intent_id=None,
+                            intent_id=recovered_intent_id,
                         )
                 if not dry_run:
                     store.upsert_position(record)
@@ -554,6 +557,27 @@ def reconcile_exchange_snapshot(
                         )
                     elif strategy_plan_record is not None:
                         store.upsert_risk_plan(strategy_plan_record)
+                        activate_trade_journal_for_position(
+                            store=store,
+                            market=market,
+                            position={
+                                "market": record.market,
+                                "base_amount": record.base_amount,
+                                "avg_entry_price": record.avg_entry_price,
+                                "updated_ts": record.updated_ts,
+                            },
+                            ts_ms=now_ts,
+                            entry_intent=(
+                                {
+                                    "intent_id": recovered_intent_id,
+                                    "created_ts": _as_optional_int((recovered_intent or {}).get("ts_ms")),
+                                    "order_uuid": _as_optional_str((latest_bid_order or {}).get("uuid")),
+                                }
+                                if recovered_intent_id or _as_optional_str((latest_bid_order or {}).get("uuid"))
+                                else None
+                            ),
+                            plan_id=strategy_plan_record.plan_id,
+                        )
                 actions.append(
                     {
                         "type": "upsert_unknown_position",
@@ -577,6 +601,7 @@ def reconcile_exchange_snapshot(
                             "avg_entry_price": float(position["avg_entry_price"]),
                             "base_amount": float(position["base_amount"]),
                             "plan_attached": strategy_plan_record is not None,
+                            "intent_id": recovered_intent_id,
                         }
                     )
 
