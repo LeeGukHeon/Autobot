@@ -36,7 +36,7 @@ def build_rank_relevance_labels(rank_values: np.ndarray) -> np.ndarray:
     values = np.asarray(rank_values, dtype=np.float64)
     finite = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     clipped = np.clip(finite, 0.0, 1.0)
-    return np.rint(clipped * 1000.0).astype(np.int32, copy=False)
+    return np.rint(clipped * 31.0).astype(np.int32, copy=False)
 
 
 def fit_fixed_classifier_model(

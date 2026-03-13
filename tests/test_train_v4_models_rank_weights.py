@@ -61,7 +61,7 @@ def test_build_rank_relevance_labels_converts_continuous_rank_scores_to_integers
     labels = build_rank_relevance_labels(np.asarray([0.0, 0.125, 0.5, 1.0], dtype=np.float64))
 
     assert labels.dtype == np.int32
-    assert labels.tolist() == [0, 125, 500, 1000]
+    assert labels.tolist() == [0, 4, 16, 31]
 
 
 def test_fit_booster_sweep_ranker_uses_group_level_sample_weight() -> None:
@@ -101,7 +101,7 @@ def test_fit_booster_sweep_ranker_uses_group_level_sample_weight() -> None:
     )
     assert _RecordingRanker.last_fit_y is not None
     assert _RecordingRanker.last_fit_y.dtype == np.int32
-    assert _RecordingRanker.last_fit_y.tolist() == [0, 1000, 500, 900]
+    assert _RecordingRanker.last_fit_y.tolist() == [0, 31, 16, 28]
 
 
 def test_fit_walk_forward_ranker_trials_uses_group_level_sample_weight() -> None:
