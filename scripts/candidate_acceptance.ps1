@@ -4681,15 +4681,8 @@ try {
 } catch {
     $report.gates.overall_pass = $false
     $report.reasons = @("UNHANDLED_EXCEPTION")
-    $invocation = $_.InvocationInfo
     $report.steps.exception = [ordered]@{
         message = $_.Exception.Message
-        exception_type = if ($null -eq $_.Exception) { "" } else { [string]$_.Exception.GetType().FullName }
-        script_name = if ($null -eq $invocation) { "" } else { [string]$invocation.ScriptName }
-        line = if ($null -eq $invocation) { 0 } else { [int]$invocation.ScriptLineNumber }
-        offset_in_line = if ($null -eq $invocation) { 0 } else { [int]$invocation.OffsetInLine }
-        position_message = if ($null -eq $invocation) { "" } else { [string]$invocation.PositionMessage }
-        script_stack_trace = [string]$_.ScriptStackTrace
     }
     $paths = Save-Report
     Write-Host ("[{0}][error] {1}" -f $LogTag, $_.Exception.Message)
