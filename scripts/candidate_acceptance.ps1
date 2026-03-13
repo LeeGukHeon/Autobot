@@ -951,12 +951,17 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
         [string]$OverrideText
     )
     $resolved = New-Object System.Collections.Generic.List[int]
+    $tokens = New-Object System.Collections.Generic.List[string]
     $seen = @{}
-    $tokens = @(
-        if (-not [string]::IsNullOrWhiteSpace($OverrideText)) {
-            $OverrideText -split '[,\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    if (-not [string]::IsNullOrWhiteSpace($OverrideText)) {
+        foreach ($token in @($OverrideText -split '[,\s]+')) {
+            $tokenText = [string]$token
+            if ([string]::IsNullOrWhiteSpace($tokenText)) {
+                continue
+            }
+            $tokens.Add($tokenText) | Out-Null
         }
-    )
+    }
     if ($tokens.Count -eq 0) {
         foreach ($value in 1..([Math]::Max([int]$RequestedBacktestLookbackDays, 1))) {
             if (-not $seen.ContainsKey($value)) {
@@ -965,7 +970,7 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
             }
         }
     } else {
-        foreach ($token in $tokens) {
+        foreach ($token in @($tokens.ToArray())) {
             $parsed = [int](To-Int64 ([string]$token) 0)
             if ($parsed -le 0) {
                 continue
