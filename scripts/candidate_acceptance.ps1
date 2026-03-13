@@ -365,13 +365,16 @@ function Get-PropValue {
 function Convert-ToStringArray {
     param([Parameter(Mandatory = $false)]$Value)
     if ($null -eq $Value) {
-        return ,@()
+        Write-Output -NoEnumerate @()
+        return
     }
     if ($Value -is [string]) {
         if ([string]::IsNullOrWhiteSpace($Value)) {
-            return ,@()
+            Write-Output -NoEnumerate @()
+            return
         }
-        return ,@($Value.Trim())
+        Write-Output -NoEnumerate @($Value.Trim())
+        return
     }
     $items = @()
     if ($Value -is [System.Array] -or $Value -is [System.Collections.IEnumerable]) {
@@ -381,13 +384,15 @@ function Convert-ToStringArray {
                 $items += $text.Trim()
             }
         }
-        return ,@($items)
+        Write-Output -NoEnumerate @($items)
+        return
     }
     $text = [string]$Value
     if ([string]::IsNullOrWhiteSpace($text)) {
-        return ,@()
+        Write-Output -NoEnumerate @()
+        return
     }
-    return ,@($text.Trim())
+    Write-Output -NoEnumerate @($text.Trim())
 }
 
 function To-Double {
@@ -873,7 +878,8 @@ function Get-SplitPolicyHistoryRecordKey {
 function Load-SplitPolicySelectorHistoryRecords {
     param([string]$PathValue)
     if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
-        return ,@()
+        Write-Output -NoEnumerate @()
+        return
     }
     $rawLines = Get-Content -Path $PathValue -Encoding UTF8
     $recordsByKey = @{}
@@ -904,7 +910,7 @@ function Load-SplitPolicySelectorHistoryRecords {
     foreach ($key in $orderedKeys) {
         $records.Add($recordsByKey[$key]) | Out-Null
     }
-    return ,@($records.ToArray())
+    Write-Output -NoEnumerate ($records.ToArray())
 }
 
 function Save-SplitPolicySelectorHistoryRecords {
@@ -977,7 +983,7 @@ function Resolve-SplitPolicyCandidateHoldoutDays {
             $resolved.Add($parsed) | Out-Null
         }
     }
-    return ,@($resolved.ToArray())
+    Write-Output -NoEnumerate ($resolved.ToArray())
 }
 
 function Resolve-SplitPolicyHoldoutWindows {
@@ -2534,7 +2540,7 @@ function Invoke-RestartUnits {
             active_output_preview = (Get-OutputPreview -Text ([string]$activeExec.Output))
         }
     }
-    return ,@($results)
+    Write-Output -NoEnumerate @($results)
 }
 
 function Get-UnitStates {
@@ -2566,7 +2572,7 @@ function Get-UnitStates {
             enabled_output_preview = (Get-OutputPreview -Text ([string]$enabledExec.Output))
         }
     }
-    return ,@($results)
+    Write-Output -NoEnumerate @($results)
 }
 
 function Merge-UniqueStringArray {
@@ -2588,7 +2594,7 @@ function Merge-UniqueStringArray {
         $seen[$text] = $true
         $values.Add($text) | Out-Null
     }
-    return ,@($values.ToArray())
+    Write-Output -NoEnumerate ($values.ToArray())
 }
 
 function Build-ReportMarkdown {
@@ -3079,12 +3085,14 @@ function Get-DateRangeAscending {
         [string]$EndDate
     )
     if ([string]::IsNullOrWhiteSpace($StartDate) -or [string]::IsNullOrWhiteSpace($EndDate)) {
-        return ,@()
+        Write-Output -NoEnumerate @()
+        return
     }
     $startObj = [DateTime]::ParseExact($StartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
     $endObj = [DateTime]::ParseExact($EndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
     if ($endObj -lt $startObj) {
-        return ,@()
+        Write-Output -NoEnumerate @()
+        return
     }
     $values = New-Object System.Collections.Generic.List[string]
     $cursor = $startObj
@@ -3092,7 +3100,7 @@ function Get-DateRangeAscending {
         $values.Add($cursor.ToString("yyyy-MM-dd")) | Out-Null
         $cursor = $cursor.AddDays(1)
     }
-    return ,@($values.ToArray())
+    Write-Output -NoEnumerate ($values.ToArray())
 }
 
 function Invoke-FeaturesBuildAndLoadReport {

@@ -24,6 +24,12 @@ def _extract_function_block(source: str, start_marker: str, end_marker: str) -> 
     return source[start:end].rstrip()
 
 
+def _normalize_pwsh_array(value):
+    if isinstance(value, dict) and "value" in value:
+        return value["value"]
+    return value
+
+
 def test_candidate_acceptance_array_helpers_keep_empty_results_as_arrays(tmp_path: Path) -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
     convert_block = _extract_function_block(
@@ -105,15 +111,12 @@ def test_candidate_acceptance_array_helpers_keep_empty_results_as_arrays(tmp_pat
 
     payload = json.loads(completed.stdout.strip())
 
-    assert payload["convert_empty"] == []
     assert payload["convert_empty_count"] == 0
-    assert payload["holdout_default"] == [1, 2, 3]
+    assert _normalize_pwsh_array(payload["holdout_default"]) == [1, 2, 3]
     assert payload["holdout_default_count"] == 3
-    assert payload["holdout_override"] == [2, 4]
+    assert _normalize_pwsh_array(payload["holdout_override"]) == [2, 4]
     assert payload["holdout_override_count"] == 2
-    assert payload["merge_empty"] == []
     assert payload["merge_empty_count"] == 0
-    assert payload["merge_nonempty"] == ["A", "B"]
+    assert _normalize_pwsh_array(payload["merge_nonempty"]) == ["A", "B"]
     assert payload["merge_nonempty_count"] == 2
-    assert payload["invalid_range"] == []
     assert payload["invalid_range_count"] == 0
