@@ -487,18 +487,18 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
 
     assert 'if (value == null) return null;' in js
     assert 'if (typeof value === "string" && value.trim() === "") return null;' in js
-    assert "손익 확정" in js
-    assert "미확정 종료" in js
-    assert "개인 체결 WS" in js
-    assert "후보 모델 추적 중" in js
-    assert "현재 수익률" in js
+    assert 'function tryParseStructuredText(value)' in js
+    assert 'function humanizeStructuredValue(value, depth = 0)' in js
+    assert 'function fmtDateLabel(value)' in js
+    assert 'function responseErrorText(response)' in js
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js
     assert "return bTs - aTs;" in js
-    assert "현재 미종결" in js
     assert "current_pending_orders_count" in js
     assert "setTab(state.activeTab, false, { scroll: false });" in js
+    assert "live-selector-card" in css
+    assert "live-command-shell" in css
     assert "position-focus" in css
     assert "mobile-menu-label" in html
 

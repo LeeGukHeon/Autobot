@@ -127,8 +127,103 @@
     }
   };
 
+  const WEEKDAY_TEXT = ["일", "월", "화", "수", "목", "금", "토"];
+
+  function isPlainObject(value) {
+    return Object.prototype.toString.call(value) === "[object Object]";
+  }
+
+  function keyLabel(key) {
+    const raw = String(key || "").trim();
+    const table = {
+      error: "오류",
+      message: "메시지",
+      detail: "상세",
+      details: "상세",
+      reason: "사유",
+      reason_code: "사유",
+      code: "코드",
+      status: "상태",
+      name: "이름",
+      description: "설명",
+      fatal_reason: "치명 사유"
+    };
+    return table[raw] || raw.replace(/_/g, " ");
+  }
+
+  function tryParseStructuredText(value) {
+    if (typeof value !== "string") return value;
+    const text = value.trim();
+    if (!text) return value;
+    if (!((text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]")))) {
+      return value;
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      return value;
+    }
+  }
+
+  function humanizeStructuredValue(value, depth = 0) {
+    const parsed = tryParseStructuredText(value);
+    if (parsed == null || parsed === "") return "-";
+    if (typeof parsed === "string") {
+      const text = parsed.trim();
+      if (!text) return "-";
+      return REASON_TEXT[text] || POLICY_TEXT[text] || text;
+    }
+    if (typeof parsed === "number" || typeof parsed === "boolean") {
+      return String(parsed);
+    }
+    if (Array.isArray(parsed)) {
+      const items = parsed
+        .map((item) => humanizeStructuredValue(item, depth + 1))
+        .filter((item) => item && item !== "-");
+      if (!items.length) return "-";
+      const head = items.slice(0, 4).join(" / ");
+      return items.length > 4 ? `${head} 외 ${items.length - 4}건` : head;
+    }
+    if (isPlainObject(parsed)) {
+      const preferredKeys = ["message", "error", "detail", "details", "reason", "reason_code", "code", "status"];
+      const preferredValues = preferredKeys
+        .map((key) => {
+          if (!(key in parsed)) return null;
+          const text = humanizeStructuredValue(parsed[key], depth + 1);
+          if (!text || text === "-") return null;
+          return key === "code" || key === "status" || key === "reason_code"
+            ? `${keyLabel(key)} ${text}`
+            : text;
+        })
+        .filter(Boolean);
+      if (preferredValues.length) {
+        return unique(preferredValues).join(" · ");
+      }
+      const entries = Object.entries(parsed)
+        .filter(([key]) => key !== "ok")
+        .slice(0, depth === 0 ? 4 : 3)
+        .map(([key, item]) => {
+          const text = humanizeStructuredValue(item, depth + 1);
+          return !text || text === "-" ? null : `${keyLabel(key)} ${text}`;
+        })
+        .filter(Boolean);
+      return entries.length ? entries.join(" · ") : "-";
+    }
+    return String(parsed);
+  }
+
+  function truncateText(value, limit = 180) {
+    const text = String(value == null ? "" : value).trim();
+    if (!text) return "-";
+    return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+  }
+
+  function normalizeDisplayValue(value, limit = 180) {
+    return truncateText(humanizeStructuredValue(value), limit);
+  }
+
   function esc(value) {
-    return String(value == null ? "-" : value)
+    return String(normalizeDisplayValue(value))
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
@@ -140,8 +235,7 @@
   }
 
   function translate(value) {
-    if (value == null || value === "") return "-";
-    return REASON_TEXT[value] || POLICY_TEXT[value] || String(value);
+    return humanizeStructuredValue(value);
   }
 
   function unique(values) {
@@ -202,6 +296,25 @@
     return num > 10000000000 ? num : num * 1000;
   }
 
+  function pad2(value) {
+    return String(Math.trunc(Number(value) || 0)).padStart(2, "0");
+  }
+
+  function toDateObject(value) {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+    const ts = coerceTs(value);
+    if (ts != null) return new Date(ts);
+    const text = String(value || "").trim();
+    if (!text) return null;
+    const dateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnly) {
+      return new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]), 12, 0, 0, 0);
+    }
+    const parsed = Date.parse(text);
+    if (Number.isNaN(parsed)) return null;
+    return new Date(parsed);
+  }
+
   function relativeTimeLabel(ts) {
     const deltaMs = ts - Date.now();
     const absSec = Math.abs(deltaMs) / 1000;
@@ -211,39 +324,37 @@
     return `${Math.round(absSec / 86400)}일 ${deltaMs >= 0 ? "뒤" : "전"}`;
   }
 
-  function fmtDateTime(value) {
-    const ts = coerceTs(value);
-    if (ts != null) {
-      const date = new Date(ts);
-      const now = new Date();
-      const sameYear = date.getFullYear() === now.getFullYear();
-      const base = new Intl.DateTimeFormat("ko-KR", sameYear ? {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-      } : {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-      }).format(date).replace(/\.\s/g, ".").replace(/\.$/, "");
-      return `${base} · ${relativeTimeLabel(ts)}`;
+  function formatAbsoluteDateTime(date, options = {}) {
+    const now = new Date();
+    const includeYear = options.includeYear == null ? date.getFullYear() !== now.getFullYear() : Boolean(options.includeYear);
+    const parts = [];
+    if (includeYear) parts.push(`${date.getFullYear()}년`);
+    parts.push(`${date.getMonth() + 1}월`);
+    parts.push(`${date.getDate()}일`);
+    parts.push(`(${WEEKDAY_TEXT[date.getDay()]})`);
+    if (options.includeTime !== false) {
+      parts.push(`${pad2(date.getHours())}:${pad2(date.getMinutes())}`);
     }
-    const text = String(value || "").trim();
-    if (!text) return "-";
-    const parsed = Date.parse(text);
-    if (Number.isNaN(parsed)) return text;
-    return fmtDateTime(parsed);
+    return parts.join(" ");
+  }
+
+  function fmtDateTime(value, options = {}) {
+    const date = toDateObject(value);
+    if (!date) return normalizeDisplayValue(value, 220);
+    const base = formatAbsoluteDateTime(date, options);
+    return options.includeRelative === false ? base : `${base} · ${relativeTimeLabel(date.getTime())}`;
+  }
+
+  function fmtDateLabel(value) {
+    const date = toDateObject(value);
+    if (!date) return normalizeDisplayValue(value, 120);
+    return formatAbsoluteDateTime(date, { includeTime: false });
   }
 
   function fmtAge(value) {
-    const ts = coerceTs(value);
-    if (ts == null) return "-";
-    return relativeTimeLabel(ts);
+    const date = toDateObject(value);
+    if (!date) return "-";
+    return relativeTimeLabel(date.getTime());
   }
 
   function boolLabel(value) {
@@ -301,6 +412,20 @@
 
   function compactRow({ title, summary = "", items = [], pillHtml = "", extraClass = "" }) {
     return `<article class="list-row ${extraClass}"><div class="list-row-head"><div><h4>${esc(title)}</h4>${summary ? `<p class="list-row-summary">${esc(summary)}</p>` : ""}</div>${pillHtml}</div>${items.length ? `<div class="list-meta">${items.join("")}</div>` : ""}</article>`;
+  }
+
+  function toneFromValue(value) {
+    const num = toNumber(value);
+    if (num == null || num === 0) return "neutral";
+    return num > 0 ? "good" : "bad";
+  }
+
+  function signalCard({ label, value, note = "", tone = "neutral" }) {
+    return `<article class="live-signal-card ${tone}"><span class="live-signal-label">${esc(label)}</span><strong>${esc(value)}</strong>${note ? `<p>${esc(note)}</p>` : ""}</article>`;
+  }
+
+  function surfaceCard({ title, copy = "", body = "", extraClass = "" }) {
+    return `<article class="live-surface-card ${extraClass}"><div class="live-surface-head"><div><h5>${esc(title)}</h5>${copy ? `<p class="live-surface-copy">${esc(copy)}</p>` : ""}</div></div>${body}</article>`;
   }
 
   function joinTranslated(values) {
@@ -361,15 +486,21 @@
     return `${translate(runtime.recommended_exit_mode)} 모드를 기본 청산 추천으로 쓰며, ${actionText}`;
   }
 
+  function formatErrorMessage(value) {
+    const text = normalizeDisplayValue(value, 240);
+    return text === "-" ? "알 수 없는 오류" : text;
+  }
+
   function setError(message) {
     const node = document.getElementById("fetch-error");
     if (!message) {
       node.hidden = true;
-      node.textContent = "";
+      node.innerHTML = "";
       return;
     }
+    const detail = formatErrorMessage(message);
     node.hidden = false;
-    node.textContent = message;
+    node.innerHTML = `<strong>실시간 연결 이슈</strong><span>${esc(detail)}</span>`;
   }
 
   function renderHero() {
@@ -738,31 +869,67 @@
     const tabBar = document.getElementById("live-tab-bar");
     const container = document.getElementById("live-state-list");
 
-    summaryStrip.innerHTML = states.map((liveState) => {
-      const highlight = Number(liveState.positions_count || 0) > 0 ? "good" : Number(liveState.open_orders_count || 0) > 0 ? "warn" : "neutral";
-      return `<div class="metric"><div class="k">${esc(liveState.label)}</div><div class="v">${esc(`${maybe(liveState.positions_count, "0")}개 보유 / ${maybe(liveState.open_orders_count, "0")}개 주문`)}</div><div style="margin-top:8px">${pill("브레이커", boolLabel(liveState.breaker_active), liveState.breaker_active ? "bad" : highlight)}</div></div>`;
-    }).join("") || empty("라이브 상태가 없습니다.");
-
     if (!state.activeLiveLabel || !states.some((item) => item.label === state.activeLiveLabel)) {
       state.activeLiveLabel = (states[0] || {}).label || null;
     }
 
-    tabBar.innerHTML = states.map((liveState) => {
-      const active = liveState.label === state.activeLiveLabel;
-      return `<button class="subtab-button ${active ? "active" : ""}" type="button" data-live-label="${esc(liveState.label)}">${esc(liveState.label)}</button>`;
-    }).join("");
+    summaryStrip.innerHTML = states.length
+      ? states.map((liveState) => {
+        const active = liveState.label === state.activeLiveLabel;
+        const todayState = liveState.today_trade_summary || {};
+        const privateWsTs = coerceTs((liveState.last_ws_event || {}).event_ts_ms) || coerceTs((liveState.daemon_last_run || {}).private_ws_last_event_ts_ms);
+        const selectorTone = liveState.breaker_active
+          ? "bad"
+          : Number(liveState.positions_count || 0) > 0
+            ? "good"
+            : Number(liveState.open_orders_count || 0) > 0
+              ? "warn"
+              : "neutral";
+        const selectorHeadline = liveState.breaker_active
+          ? "브레이커 감지"
+          : Number(liveState.positions_count || 0) > 0
+            ? "포지션 운용 중"
+            : Number(liveState.open_orders_count || 0) > 0
+              ? "주문 감시 중"
+              : "관찰 모드";
+        return `
+          <button class="live-selector-card ${active ? "active" : ""}" type="button" data-live-label="${esc(liveState.label)}">
+            <div class="live-selector-top">
+              <div>
+                <span class="live-selector-label">${esc(liveState.label)}</span>
+                <strong>${esc(selectorHeadline)}</strong>
+              </div>
+              ${pill("모드", translate((liveState.rollout_status || {}).mode), selectorTone)}
+            </div>
+            <div class="live-selector-kpis">
+              <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
+              <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
+              <div><span>오늘 손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total))}</strong></div>
+            </div>
+            <div class="live-selector-foot">${esc(`개인 WS ${privateWsTs == null ? "수신 없음" : fmtAge(privateWsTs)} · 종료 ${maybe(todayState.closed_count, "0")}건`)}</div>
+          </button>
+        `;
+      }).join("")
+      : empty("라이브 상태가 없습니다.");
 
-    tabBar.onclick = (event) => {
-      const button = event.target.closest(".subtab-button");
+    summaryStrip.onclick = (event) => {
+      const button = event.target.closest(".live-selector-card");
       if (!button) return;
       event.preventDefault();
       setLiveLabel(button.dataset.liveLabel);
       renderLive(snapshot);
     };
 
+    tabBar.innerHTML = "";
+    tabBar.hidden = true;
+
     const selected = states.find((item) => item.label === state.activeLiveLabel) || states[0];
     if (!selected) {
       container.innerHTML = empty("라이브 상태 DB를 찾지 못했습니다.");
+      return;
+    }
+    if (selected.exists === false) {
+      container.innerHTML = empty(`${selected.label || "라이브 상태"} DB를 찾지 못했습니다. ${selected.db_path || ""}`.trim());
       return;
     }
 
@@ -780,7 +947,10 @@
       const bTs = coerceTs(b.exit_ts_ms) || coerceTs(b.entry_ts_ms) || coerceTs(b.updated_ts) || 0;
       return bTs - aTs;
     });
-    const activeBreakers = unique((selected.active_breakers || []).map((item) => item.reason || item.code || item.name)).map(translate);
+    const activeBreakers = unique((selected.active_breakers || []).flatMap((item) => {
+      const codes = Array.isArray(item.reason_codes) ? item.reason_codes : [];
+      return codes.length ? codes : [item.reason || item.code || item.name || item.breaker_key];
+    })).map(translate);
     const primaryPosition = positions[0];
     const primaryPlan = riskPlans.find((item) => item.market === (primaryPosition || {}).market) || riskPlans[0];
     const primaryOrder = openOrders.find((item) => item.market === (primaryPosition || {}).market && item.side === "ask") || openOrders[0];
@@ -793,63 +963,140 @@
     const privateWsFreshness = privateWsLastTs == null ? "아직 수신 없음" : fmtAge(privateWsLastTs);
     const verifiedClosed = maybe(today.verified_closed_count, "0");
     const unverifiedClosed = maybe(today.unverified_closed_count, "0");
-
     const topSummary = primaryPosition && primaryPlan
       ? describeExit(primaryPlan, primaryPosition, primaryOrder)
-      : `${selected.label}는 현재 보유 포지션이 없습니다.`;
+      : positions.length
+        ? `${selected.label}는 ${positions.length}개 포지션을 운용 중입니다.`
+        : `${selected.label}는 현재 보유 포지션 없이 관찰 중입니다.`;
     const liveNarrative = positions.length
       ? `현재 ${positions.length}개 포지션을 관리 중입니다. 핵심 상태는 ${riskPlanNarrative(primaryPlan)}`
-      : `${selected.label}는 현재 보유 포지션 없이 관찰 중입니다.`;
-    const todaySummaryLine = `${maybe(today.date_label, "-")} ${maybe(today.timezone, "KST")} 기준으로 종료 ${maybe(today.closed_count, "0")}건 중 손익 확정 ${verifiedClosed}건, 미확정 ${unverifiedClosed}건입니다. 확정 거래 기준 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}, 순손익 ${fmtMoney(today.net_pnl_quote_total)}입니다. 현재 기준으로는 ${maybe(today.current_positions_count, "0")}개 보유, ${maybe(today.current_pending_orders_count, "0")}개 진입 대기입니다.`;
-    const positionFocus = primaryPosition ? `
-      <div class="position-focus">
-        <div class="position-focus-head">
-          <div>
-            <h5>현재 핵심 보유</h5>
-            <strong>${esc(primaryPosition.market || "-")}</strong>
-            <p>${esc(topSummary)}</p>
-          </div>
-          ${pill("실시간", primaryPosition.current_price == null ? "지연" : "동기화", primaryPosition.current_price == null ? "warn" : "good")}
-        </div>
-        <div class="metric-grid">
-          ${metric("현재가", fmtMoney(primaryPosition.current_price))}
-          ${metric("평균 매수가", fmtMoney(primaryPosition.avg_entry_price))}
-          ${metric("현재 수익률", fmtPct(primaryPosition.unrealized_pnl_pct))}
-          ${metric("평가손익", fmtMoney(primaryPosition.unrealized_pnl_quote))}
-        </div>
-      </div>
-    ` : "";
+      : `${selected.label}는 현재 포지션 없이 관찰 중이며, 주문 조건과 WS 신선도를 우선 확인하면 됩니다.`;
+    const todayLabel = fmtDateLabel(today.date_label);
+    const todaySummaryLine = `${todayLabel} ${maybe(today.timezone, "KST")} 기준 · 종료 ${maybe(today.closed_count, "0")}건 중 손익 확정 ${verifiedClosed}건, 미확정 ${unverifiedClosed}건입니다. 확정 거래 기준 승 ${maybe(today.wins, "0")} / 패 ${maybe(today.losses, "0")} / 보합 ${maybe(today.flats, "0")}, 순손익 ${fmtMoney(today.net_pnl_quote_total)}입니다. 현재 기준으로는 ${maybe(today.current_positions_count, "0")}개 보유, ${maybe(today.current_pending_orders_count, "0")}개 진입 대기, ${maybe(today.current_exit_orders_count, "0")}개 청산 대기입니다.`;
+    const leadTone = selected.breaker_active
+      ? "bad"
+      : positions.length
+        ? "good"
+        : openOrders.length
+          ? "warn"
+          : "neutral";
+    const spotlightValue = primaryPosition ? fmtPct(primaryPosition.unrealized_pnl_pct) : fmtMoney(today.net_pnl_quote_total);
+    const spotlightTone = primaryPosition ? toneFromValue(primaryPosition.unrealized_pnl_pct) : toneFromValue(today.net_pnl_quote_total);
+    const spotlightMetrics = primaryPosition
+      ? [
+        metric("현재가", fmtMoney(primaryPosition.current_price)),
+        metric("평균 매수가", fmtMoney(primaryPosition.avg_entry_price)),
+        metric("평가손익", fmtMoney(primaryPosition.unrealized_pnl_quote)),
+        metric(primaryPlan ? "다음 청산 체크" : "최근 갱신", primaryPlan ? fmtDateTime(primaryPlan.timeout_ts_ms) : fmtDateTime(primaryPosition.updated_ts))
+      ].join("")
+      : [
+        metric("오늘 종료", maybe(today.closed_count, "0")),
+        metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total)),
+        metric("진입 대기", maybe(today.current_pending_orders_count, "0")),
+        metric("최근 갱신", fmtDateTime(selected.updated_at))
+      ].join("");
+
+    const runtimeSignals = [
+      signalCard({
+        label: "운용 모드",
+        value: translate(rollout.mode),
+        note: selected.breaker_active ? "브레이커가 활성화돼 주문 허용 상태를 다시 봐야 합니다." : "현재 선택된 라이브 레인의 실전 모드입니다.",
+        tone: leadTone,
+      }),
+      signalCard({
+        label: "모델 포인터",
+        value: shortRun(runtime.live_runtime_model_run_id),
+        note: pointerStatus,
+        tone: runtime.model_pointer_divergence ? "bad" : "good",
+      }),
+      signalCard({
+        label: "공용 WS",
+        value: runtime.ws_public_stale ? "지연 감지" : "정상 수신",
+        note: runtime.ws_public_stale ? "데이터 플레인 신선도를 먼저 확인해야 합니다." : "라이브 입력 신선도가 유지되고 있습니다.",
+        tone: runtime.ws_public_stale ? "warn" : "good",
+      }),
+      signalCard({
+        label: "개인 체결 WS",
+        value: privateWsFreshness,
+        note: privateWsLastTs == null ? "아직 개인 체결 이벤트를 받지 못했습니다." : `최근 ${fmtDateTime(privateWsLastTs)} · 누적 ${privateWsEventsTotal}건`,
+        tone: privateWsLastTs == null ? "warn" : "good",
+      }),
+      signalCard({
+        label: "주문 방출",
+        value: boolLabel(rollout.order_emission_allowed),
+        note: rollout.order_emission_allowed ? "현재 실제 주문을 방출할 수 있습니다." : "주문 방출이 막혀 있습니다.",
+        tone: rollout.order_emission_allowed ? "good" : "bad",
+      }),
+      signalCard({
+        label: "브레이커",
+        value: activeBreakers.length ? `${activeBreakers.length}건` : "없음",
+        note: activeBreakers.join(" / ") || "활성 브레이커가 없습니다.",
+        tone: activeBreakers.length ? "bad" : "neutral",
+      }),
+    ].join("");
+
+    const issueRail = [
+      selected.error ? `<article class="live-inline-banner bad"><strong>상태 DB 오류</strong><span>${esc(selected.error)}</span></article>` : "",
+      activeBreakers.length
+        ? `<article class="live-inline-banner warn"><strong>즉시 확인할 브레이커</strong><span>${esc(activeBreakers.join(" / "))}</span></article>`
+        : `<article class="live-inline-banner neutral"><strong>브레이커 상태</strong><span>현재 활성 브레이커가 없습니다.</span></article>`,
+    ].join("");
+
+    const intentSection = intents.length
+      ? `<div class="live-intent-list">${intents.slice(0, 4).map((intent) => {
+        const tone = intent.status === "REJECTED_ADMISSIBILITY" || intent.skip_reason
+          ? "bad"
+          : intent.side === "ask"
+            ? "warn"
+            : "good";
+        return `
+          <article class="live-intent-card">
+            <div class="live-intent-head">
+              <div>
+                <strong>${esc(`${intent.market || "-"} · ${translate(intent.side)}`)}</strong>
+                <p>${esc(intentNarrative(intent))}</p>
+              </div>
+              ${pill("상태", translate(intent.status), tone)}
+            </div>
+            <div class="live-intent-meta">
+              <span>${esc(fmtDateTime(intent.ts_ms))}</span>
+              <span>${esc(`순엣지 ${fmtBps(intent.expected_net_edge_bps)}`)}</span>
+              <span>${esc(`Trade Action ${translate(intent.trade_action_recommended_action)}`)}</span>
+            </div>
+            <div class="live-intent-foot">${esc(tradeActionSummary(intent))}</div>
+          </article>
+        `;
+      }).join("")}</div>`
+      : empty("최근 의사결정 로그가 없습니다.");
 
     const positionSection = positions.length
-      ? `<div class="position-board">${positions.map((position) => `
-        <div class="position-row">
-          <div class="position-main">
-            <strong>${esc(position.market || "-")}</strong>
-            <p>${esc(`보유 ${fmtNumber(position.base_amount, 8)}개 · 평균 ${fmtMoney(position.avg_entry_price)} · 최근 갱신 ${fmtDateTime(position.updated_ts)}`)}</p>
-          </div>
-          <div class="position-side">
-            <div class="position-line"><span>현재가</span><strong>${esc(fmtMoney(position.current_price))}</strong></div>
-            <div class="position-line"><span>현재 수익률</span><strong class="${Number(position.unrealized_pnl_pct || 0) > 0 ? "good" : Number(position.unrealized_pnl_pct || 0) < 0 ? "bad" : ""}">${esc(fmtPct(position.unrealized_pnl_pct))}</strong></div>
-            <div class="position-line"><span>평가손익</span><strong class="${Number(position.unrealized_pnl_quote || 0) > 0 ? "good" : Number(position.unrealized_pnl_quote || 0) < 0 ? "bad" : ""}">${esc(fmtMoney(position.unrealized_pnl_quote))}</strong></div>
-          </div>
-        </div>
-      `).join("")}</div>`
+      ? `<div class="position-tiles">${positions.map((position) => {
+        const linkedPlan = riskPlans.find((item) => item.market === position.market);
+        const linkedOrder = openOrders.find((item) => item.market === position.market);
+        return `
+          <article class="position-tile">
+            <div class="position-tile-head">
+              <div>
+                <strong>${esc(position.market || "-")}</strong>
+                <p>${esc(`보유 ${fmtNumber(position.base_amount, 8)}개 · 최근 갱신 ${fmtDateTime(position.updated_ts)}`)}</p>
+              </div>
+              ${pill("실시간", position.current_price == null ? "지연" : "동기화", position.current_price == null ? "warn" : "good")}
+            </div>
+            <div class="position-tile-grid">
+              ${metric("현재가", fmtMoney(position.current_price))}
+              ${metric("평균 매수가", fmtMoney(position.avg_entry_price))}
+              ${metric("현재 수익률", fmtPct(position.unrealized_pnl_pct))}
+              ${metric("평가손익", fmtMoney(position.unrealized_pnl_quote))}
+            </div>
+            <div class="plan-tags">
+              <span class="plan-chip ${toneFromValue(position.unrealized_pnl_quote)}">${esc(`손익 ${fmtMoney(position.unrealized_pnl_quote)}`)}</span>
+              <span class="plan-chip">${esc(linkedPlan ? translate(linkedPlan.exit_mode) : "플랜 없음")}</span>
+              <span class="plan-chip">${esc(linkedOrder ? `${translate(linkedOrder.side)} 주문 대기` : "주문 없음")}</span>
+            </div>
+          </article>
+        `;
+      }).join("")}</div>`
       : empty("보유 종목이 없습니다.");
-
-    const orderSection = openOrders.length
-      ? terminalTable(
-        ["주문", "주문가", "남은 수량", "상태", "최근 갱신"],
-        openOrders.map((order) => ({
-          cells: [
-            cell(`${order.market || "-"} · ${translate(order.side)}`, translate(order.ord_type)),
-            cell(fmtMoney(order.price)),
-            cell(fmtNumber((toNumber(order.volume_req) || 0) - (toNumber(order.volume_filled) || 0), 8)),
-            cell(translate(order.raw_exchange_state || order.local_state || order.state)),
-            cell(fmtDateTime(order.updated_ts)),
-          ],
-        })),
-      )
-      : empty("미체결 주문이 없습니다.");
 
     const planSection = riskPlans.length
       ? `<div class="plan-board">${riskPlans.map((plan) => `
@@ -866,10 +1113,31 @@
             <span class="plan-chip ${plan.sl_enabled ? "bad" : ""}">손절 ${esc(plan.sl_enabled ? fmtPct(Number(plan.sl_pct)) : "미사용")}</span>
             <span class="plan-chip ${plan.trailing_enabled ? "warn" : ""}">추적 ${esc(plan.trailing_enabled ? fmtPct(Number(plan.trail_pct)) : "미사용")}</span>
             <span class="plan-chip">종료 예정 ${esc(fmtDateTime(plan.timeout_ts_ms))}</span>
+            <span class="plan-chip">재호가 ${esc(maybe(plan.replace_attempt, "0"))}회</span>
           </div>
         </div>
       `).join("")}</div>`
       : empty("활성 리스크 플랜이 없습니다.");
+
+    const orderSection = openOrders.length
+      ? `<div class="order-stack">${openOrders.map((order) => `
+        <article class="order-card">
+          <div class="order-card-head">
+            <div>
+              <strong>${esc(`${order.market || "-"} · ${translate(order.side)}`)}</strong>
+              <p>${esc(`${translate(order.ord_type)} · 상태 ${translate(order.raw_exchange_state || order.local_state || order.state)}`)}</p>
+            </div>
+            ${pill("대기", fmtNumber((toNumber(order.volume_req) || 0) - (toNumber(order.volume_filled) || 0), 8), Number((toNumber(order.volume_req) || 0) - (toNumber(order.volume_filled) || 0)) > 0 ? "warn" : "neutral")}
+          </div>
+          <div class="order-card-grid">
+            ${metric("주문가", fmtMoney(order.price))}
+            ${metric("요청 수량", fmtNumber(order.volume_req, 8))}
+            ${metric("체결 수량", fmtNumber(order.volume_filled, 8))}
+            ${metric("최근 갱신", fmtDateTime(order.updated_ts))}
+          </div>
+        </article>
+      `).join("")}</div>`
+      : empty("미체결 주문이 없습니다.");
 
     const tradeSection = recentTrades.length
       ? terminalTable(
@@ -895,7 +1163,93 @@
       )
       : empty("아직 거래 저널이 없습니다.");
 
-    container.innerHTML = `<article class="live-card priority"><div class="row"><h4>${esc(selected.label)}</h4>${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}</div><p class="section-copy">${esc(liveNarrative)}</p>${positionFocus}<div class="metric-grid">${metric("현재 모델", shortRun(runtime.live_runtime_model_run_id))}${metric("보유 포지션", maybe(selected.positions_count, "0"))}${metric("열린 주문", maybe(selected.open_orders_count, "0"))}${metric("주문 허용", boolLabel(rollout.order_emission_allowed))}</div><div class="detail-box" style="margin-top:12px"><h4>오늘 거래 요약</h4><p class="section-copy">${esc(todaySummaryLine)}</p><div class="metric-grid">${metric("오늘 종료", maybe(today.closed_count, "0"))}${metric("손익 확정", maybe(today.verified_closed_count, "0"))}${metric("미확정 종료", maybe(today.unverified_closed_count, "0"))}${metric("오늘 순손익", fmtMoney(today.net_pnl_quote_total))}${metric("현재 미종결", `${maybe(today.current_positions_count, "0")}개 보유 / ${maybe(today.current_pending_orders_count, "0")}개 대기`)}</div></div><div class="kv-grid">${kv("운용 모드", translate(rollout.mode))}${kv("포인터 상태", pointerStatus)}${kv("공용 WS", runtime.ws_public_stale ? "수신 오래됨" : "정상 수신")}${kv("개인 체결 WS", privateWsFreshness)}${kv("마지막 개인 WS", fmtDateTime(privateWsLastTs))}${kv("브레이커 사유", activeBreakers.join(" / ") || "없음")}</div><div class="live-sections terminal-layout"><section class="section-block section-primary"><h5>현재 보유</h5>${positionSection}</section><section class="section-block"><h5>매도 플랜</h5>${planSection}</section><section class="section-block"><h5>미체결 주문</h5>${orderSection}</section><section class="section-block section-primary"><h5>최근 거래</h5>${tradeSection}</section></div></article>`;
+    container.innerHTML = `
+      <div class="live-dashboard">
+        <section class="live-command-shell">
+          <article class="live-hero-card ${leadTone}">
+            <div class="live-hero-head">
+              <div>
+                <p class="eyebrow">Live Command</p>
+                <h4>${esc(selected.label)}</h4>
+                <p class="section-copy">${esc(liveNarrative)}</p>
+              </div>
+              <div class="live-pill-stack">
+                ${pill("브레이커", boolLabel(selected.breaker_active), selected.breaker_active ? "bad" : "good")}
+                ${pill("주문 허용", boolLabel(rollout.order_emission_allowed), rollout.order_emission_allowed ? "good" : "bad")}
+                ${pill("포인터", pointerStatus, runtime.model_pointer_divergence ? "bad" : "neutral")}
+              </div>
+            </div>
+            <div class="live-hero-grid">
+              <article class="live-spotlight ${spotlightTone}">
+                <span class="live-spotlight-kicker">${esc(primaryPosition ? "Primary Position" : "Session Overview")}</span>
+                <strong class="live-spotlight-market">${esc(primaryPosition ? (primaryPosition.market || selected.label) : selected.label)}</strong>
+                <p class="live-spotlight-summary">${esc(topSummary)}</p>
+                <div class="live-spotlight-value-wrap">
+                  <span>${esc(primaryPosition ? "현재 수익률" : "오늘 순손익")}</span>
+                  <strong class="live-spotlight-value ${spotlightTone}">${esc(spotlightValue)}</strong>
+                </div>
+                <div class="metric-grid">
+                  ${spotlightMetrics}
+                </div>
+              </article>
+              <article class="live-session-card">
+                <div class="live-session-head">
+                  <div>
+                    <h5>오늘 세션 요약</h5>
+                    <p>${esc(todaySummaryLine)}</p>
+                  </div>
+                  ${pill("개인 WS", privateWsFreshness, privateWsLastTs == null ? "warn" : "good")}
+                </div>
+                <div class="metric-grid">
+                  ${metric("승률", fmtPct(today.win_rate_pct))}
+                  ${metric("손익 확정", verifiedClosed)}
+                  ${metric("미확정 종료", unverifiedClosed)}
+                  ${metric("진입 대기", maybe(today.current_pending_orders_count, "0"))}
+                  ${metric("청산 대기", maybe(today.current_exit_orders_count, "0"))}
+                  ${metric("마지막 개인 WS", fmtDateTime(privateWsLastTs))}
+                </div>
+              </article>
+            </div>
+            <div class="live-signal-grid">
+              ${runtimeSignals}
+            </div>
+          </article>
+          <aside class="live-side-rail">
+            ${issueRail}
+            ${surfaceCard({
+              title: "최근 의사결정",
+              copy: intents.length ? "가장 최근 진입/정리 판단을 카드로 읽을 수 있게 정리했습니다." : "최근 의사결정 로그가 아직 없습니다.",
+              body: intentSection,
+              extraClass: "live-rail-card"
+            })}
+          </aside>
+        </section>
+        <section class="live-board-grid">
+          ${surfaceCard({
+            title: "포지션 보드",
+            copy: primaryPosition ? `핵심 보유는 ${primaryPosition.market || "-"}이며 현재 ${fmtPct(primaryPosition.unrealized_pnl_pct)} 수준입니다.` : "현재는 포지션 없이 관찰 모드입니다.",
+            body: positionSection,
+            extraClass: "live-span-2"
+          })}
+          ${surfaceCard({
+            title: "청산 플레이북",
+            copy: primaryPlan ? riskPlanNarrative(primaryPlan) : "현재 활성 리스크 플랜이 없습니다.",
+            body: planSection
+          })}
+          ${surfaceCard({
+            title: "주문 큐",
+            copy: openOrders.length ? "현재 열려 있는 진입/청산 주문을 카드형으로 정리했습니다." : "열려 있는 주문이 없습니다.",
+            body: orderSection
+          })}
+          ${surfaceCard({
+            title: "최근 거래",
+            copy: "최근 종료 거래를 시간순으로 읽을 수 있게 유지했습니다.",
+            body: tradeSection,
+            extraClass: "live-span-2"
+          })}
+        </section>
+      </div>
+    `;
   }
 
   function renderWs(snapshot) {
@@ -951,10 +1305,22 @@
     setTab(state.activeTab, false, { scroll: false });
   }
 
+  async function responseErrorText(response) {
+    try {
+      const text = await response.text();
+      const detail = normalizeDisplayValue(text, 220);
+      return detail && detail !== "-"
+        ? `snapshot 응답 실패 (${response.status}) · ${detail}`
+        : `snapshot 응답 실패 (${response.status})`;
+    } catch {
+      return `snapshot 응답 실패 (${response.status})`;
+    }
+  }
+
   async function refresh() {
     try {
       const response = await fetch("/api/snapshot", { cache: "no-store" });
-      if (!response.ok) throw new Error(`snapshot 응답 실패 (${response.status})`);
+      if (!response.ok) throw new Error(await responseErrorText(response));
       renderAll(await response.json());
       setError("");
     } catch (err) {
