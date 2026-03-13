@@ -887,14 +887,14 @@
     });
     document.getElementById("paper-grid").innerHTML = rows.length
       ? terminalTable(
-        ["런", "제출", "체결", "체결률", "실현 손익", "업데이트"],
+        ["런", "주문 제출", "주문 체결", "체결 비율", "손익", "업데이트"],
         rows.map((run) => ({
           cells: [
             cell(shortRun(run.run_id), `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`),
-            cell(maybe(run.orders_submitted, "0")),
-            cell(maybe(run.orders_filled, "0")),
-            cell(run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100)),
-            cell(fmtMoney(run.realized_pnl_quote), `평가 ${fmtMoney(run.unrealized_pnl_quote)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+            cell(maybe(run.orders_submitted, "0"), "전송된 주문 수"),
+            cell(maybe(run.orders_filled, "0"), "실제 체결된 주문 수"),
+            cell(run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100), "체결 / 제출"),
+            cell(fmtMoney(run.realized_pnl_quote, 2), `미실현 ${fmtMoney(run.unrealized_pnl_quote, 2)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
             cell(fmtDateTime(run.updated_at)),
           ],
         })),
