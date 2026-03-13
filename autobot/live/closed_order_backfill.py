@@ -124,7 +124,10 @@ def backfill_recent_bot_closed_orders(
                 volume_filled=float(_as_optional_float(item.get("executed_volume")) or 0.0),
                 state=str(item.get("state") or "").strip().lower() or "done",
                 created_ts=_parse_created_ts(item.get("created_at"), fallback_ts=now_ts_ms),
-                updated_ts=_parse_created_ts(item.get("done_at") or item.get("updated_at"), fallback_ts=now_ts_ms),
+                updated_ts=_parse_created_ts(
+                    item.get("done_at") or item.get("updated_at") or item.get("created_at"),
+                    fallback_ts=now_ts_ms,
+                ),
                 intent_id=intent_id,
                 tp_sl_link=_as_optional_str((existing or {}).get("tp_sl_link")),
                 local_state=normalized.local_state,

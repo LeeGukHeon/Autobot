@@ -11,7 +11,7 @@ live:
   startup:
     reconcile: true
     unknown_open_orders_policy: "halt"
-    unknown_positions_policy: "halt"
+    unknown_positions_policy: "attach_strategy_risk"
     allow_cancel_external_orders: false
   sync:
     poll_interval_sec: 15

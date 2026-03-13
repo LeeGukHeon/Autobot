@@ -10,15 +10,20 @@ from pathlib import Path
 from typing import Any, Literal
 import time
 
+from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
+from autobot.models.registry import load_json, resolve_run_dir
+from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
+
 from .identifier import extract_intent_id_from_identifier, is_bot_identifier
 from .admissibility import extract_min_total
 from .order_state import is_open_local_state, normalize_order_state
 from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from .trade_journal import activate_trade_journal_for_position, close_trade_journal_for_market
+from .model_handoff import resolve_live_model_ref_source
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
-UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk"]
+UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk", "attach_strategy_risk"]
 
 
 def reconcile_exchange_snapshot(
@@ -36,6 +41,10 @@ def reconcile_exchange_snapshot(
     default_risk_sl_pct: float = 2.0,
     default_risk_tp_pct: float = 3.0,
     default_risk_trailing_enabled: bool = False,
+    registry_root: str | None = None,
+    runtime_model_ref_source: str | None = None,
+    runtime_model_family: str | None = None,
+    runtime_interval_ms: int = 300000,
     quote_currency: str = "KRW",
     dry_run: bool = True,
     ts_ms: int | None = None,
@@ -423,6 +432,42 @@ def reconcile_exchange_snapshot(
                 }
             )
             continue
+        if not dry_run:
+            close_trade_journal_for_market(
+                store=store,
+                market=market,
+                position=local_position,
+                ts_ms=now_ts,
+                close_mode="external_manual_order",
+                close_reason_code="MANUAL_SELL_DETECTED",
+                plan_id=None,
+                exit_meta={
+                    "source": "reconcile_exchange_snapshot",
+                    "close_mode": "external_manual_order",
+                    "close_reason_code": "MANUAL_SELL_DETECTED",
+                    "manual_close": True,
+                },
+            )
+            store.delete_position(market=market)
+            for row in store.list_risk_plans(market=market):
+                store.upsert_risk_plan(
+                    _risk_plan_record_from_row(
+                        row,
+                        state="CLOSED",
+                        current_exit_order_uuid=None,
+                        current_exit_order_identifier=None,
+                        updated_ts=now_ts,
+                        last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
+                    )
+                )
+        actions.append(
+            {
+                "type": "close_position_as_manual_sell",
+                "market": market,
+                "close_mode": "external_manual_order",
+            }
+        )
+        continue
         retained_local_missing_markets.append(market)
     local_positions_missing_on_exchange = retained_local_missing_markets
 
@@ -430,7 +475,7 @@ def reconcile_exchange_snapshot(
         if unknown_positions_policy == "halt":
             halted_reasons.append("UNKNOWN_POSITIONS_DETECTED")
         else:
-            managed = unknown_positions_policy == "attach_default_risk"
+            managed = unknown_positions_policy in {"attach_default_risk", "attach_strategy_risk"}
             tp_json = "{}"
             sl_json = "{}"
             trailing_json = "{}"
@@ -454,6 +499,28 @@ def reconcile_exchange_snapshot(
                     trailing_json=trailing_json,
                     managed=managed,
                 )
+                strategy_plan_record: RiskPlanRecord | None = None
+                if unknown_positions_policy == "attach_strategy_risk":
+                    plan_payload = _build_strategy_import_plan_payload(
+                        registry_root=registry_root,
+                        runtime_model_ref_source=runtime_model_ref_source,
+                        runtime_model_family=runtime_model_family,
+                        fallback_tp_pct=default_risk_tp_pct,
+                        fallback_sl_pct=default_risk_sl_pct,
+                        fallback_trailing_enabled=default_risk_trailing_enabled,
+                        interval_ms=runtime_interval_ms,
+                    )
+                    if plan_payload is not None:
+                        record, strategy_plan_record = build_model_derived_risk_records(
+                            market=market,
+                            base_currency=str(position["base_currency"]),
+                            base_amount=float(position["base_amount"]),
+                            avg_entry_price=float(position["avg_entry_price"]),
+                            plan_payload=plan_payload,
+                            created_ts=now_ts,
+                            updated_ts=now_ts,
+                            intent_id=None,
+                        )
                 if not dry_run:
                     store.upsert_position(record)
                     if unknown_positions_policy == "attach_default_risk":
@@ -485,6 +552,8 @@ def reconcile_exchange_snapshot(
                                 updated_ts=now_ts,
                             )
                         )
+                    elif strategy_plan_record is not None:
+                        store.upsert_risk_plan(strategy_plan_record)
                 actions.append(
                     {
                         "type": "upsert_unknown_position",
@@ -498,6 +567,16 @@ def reconcile_exchange_snapshot(
                             "type": "upsert_default_risk_plan",
                             "market": market,
                             "plan_id": f"default-risk-{market}",
+                        }
+                    )
+                elif unknown_positions_policy == "attach_strategy_risk":
+                    actions.append(
+                        {
+                            "type": "upsert_strategy_managed_position",
+                            "market": market,
+                            "avg_entry_price": float(position["avg_entry_price"]),
+                            "base_amount": float(position["base_amount"]),
+                            "plan_attached": strategy_plan_record is not None,
                         }
                     )
 
@@ -1215,6 +1294,61 @@ def _match_model_managed_position_close(
         "close_mode": "missing_on_exchange_after_exit_plan",
         "plan_id": _as_optional_str(selected_plan.get("plan_id")),
     }
+
+
+def _build_strategy_import_plan_payload(
+    *,
+    registry_root: str | None,
+    runtime_model_ref_source: str | None,
+    runtime_model_family: str | None,
+    fallback_tp_pct: float,
+    fallback_sl_pct: float,
+    fallback_trailing_enabled: bool,
+    interval_ms: int,
+) -> dict[str, Any] | None:
+    registry_root_value = str(registry_root or "").strip()
+    model_ref_value = str(runtime_model_ref_source or "").strip()
+    model_family_value = str(runtime_model_family or "").strip()
+    if not registry_root_value or not model_ref_value or not model_family_value:
+        return None
+    try:
+        resolved_ref, resolved_family = resolve_live_model_ref_source(
+            model_ref=model_ref_value,
+            model_family=model_family_value,
+        )
+        run_dir = resolve_run_dir(Path(registry_root_value), model_ref=resolved_ref, model_family=resolved_family)
+        runtime_payload = normalize_runtime_recommendations_payload(load_json(run_dir / "runtime_recommendations.json"))
+    except Exception:
+        return None
+    exit_doc = dict(runtime_payload.get("exit") or {})
+    mode = str(exit_doc.get("recommended_exit_mode") or exit_doc.get("mode") or "hold").strip().lower() or "hold"
+    hold_bars = max(
+        int(
+            exit_doc.get("recommended_hold_bars")
+            or (exit_doc.get("risk_grid_point") or {}).get("hold_bars")
+            or (exit_doc.get("grid_point") or {}).get("hold_bars")
+            or 9
+        ),
+        1,
+    )
+    tp_ratio = max(float(fallback_tp_pct) / 100.0, 0.0) if mode == "risk" else 0.0
+    sl_ratio = max(float(fallback_sl_pct) / 100.0, 0.0)
+    trailing_ratio = 0.01 if bool(fallback_trailing_enabled) and mode == "risk" else 0.0
+    return normalize_model_exit_plan_payload(
+        {
+            "source": "model_alpha_v1",
+            "version": 1,
+            "mode": mode,
+            "hold_bars": hold_bars,
+            "interval_ms": max(int(interval_ms), 1),
+            "timeout_delta_ms": hold_bars * max(int(interval_ms), 1),
+            "tp_ratio": tp_ratio,
+            "sl_ratio": sl_ratio,
+            "trailing_ratio": trailing_ratio,
+            "expected_exit_fee_rate": 0.0005,
+            "expected_exit_slippage_bps": 2.5,
+        }
+    )
 
 
 def _build_ignored_dust_position_detail(

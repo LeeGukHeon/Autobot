@@ -5160,7 +5160,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         unknown_open_orders_policy = "halt"
 
     unknown_positions_policy = str(startup_cfg.get("unknown_positions_policy", "halt")).strip().lower()
-    if unknown_positions_policy not in {"halt", "import_as_unmanaged", "attach_default_risk"}:
+    if unknown_positions_policy not in {"halt", "import_as_unmanaged", "attach_default_risk", "attach_strategy_risk"}:
         unknown_positions_policy = "halt"
 
     env_bot_id = str(os.getenv("AUTOBOT_LIVE_BOT_ID", "")).strip().lower()

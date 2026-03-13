@@ -471,8 +471,8 @@ def close_trade_journal_for_market(
     exit_meta_payload.setdefault("close_reason_code", resolved_close_reason)
     exit_meta_payload["close_verification_status"] = close_verification_status
     exit_meta_payload["close_verified"] = close_verified
-    if not close_verified and resolved_exit_price is not None:
-        exit_meta_payload.setdefault("observed_exit_price", resolved_exit_price)
+    if not close_verified and resolved_exit_price is not None and exit_meta_payload.get("observed_exit_price") in {None, ""}:
+        exit_meta_payload["observed_exit_price"] = resolved_exit_price
     entry_meta_summary = _build_entry_meta_summary((existing or {}).get("entry_meta"))
     cost_metrics = _compute_cost_metrics(
         entry_meta=entry_meta_summary,
@@ -576,7 +576,11 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                 _as_optional_float((exit_order or {}).get("price")),
                 _as_optional_float(row.get("exit_price")),
             )
-            exit_ts = _coalesce_int(_as_optional_int((exit_order or {}).get("updated_ts")), _as_optional_int(row.get("exit_ts_ms")))
+            previous_exit_meta = _build_exit_meta_summary(row.get("exit_meta"))
+            previous_close_verified = bool(previous_exit_meta.get("close_verified")) if previous_exit_meta.get("close_verified") is not None else False
+            existing_exit_ts = _as_optional_int(row.get("exit_ts_ms"))
+            computed_exit_ts = _coalesce_int(_as_optional_int((exit_order or {}).get("updated_ts")), existing_exit_ts)
+            exit_ts = existing_exit_ts if previous_close_verified and existing_exit_ts is not None else computed_exit_ts
             close_verification_status = _derive_close_verification_status(
                 order=exit_order,
                 close_mode=_coalesce_str(_as_optional_str(row.get("close_mode")), _as_optional_str(exit_meta_payload.get("close_mode"))),
@@ -606,8 +610,8 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     "close_verified": close_verified,
                 }
             )
-            if not close_verified and exit_price is not None:
-                exit_meta_payload.setdefault("observed_exit_price", exit_price)
+            if not close_verified and exit_price is not None and exit_meta_payload.get("observed_exit_price") in {None, ""}:
+                exit_meta_payload["observed_exit_price"] = exit_price
             store.upsert_trade_journal(
                 TradeJournalRecord(
                     journal_id=str(row.get("journal_id")),
@@ -1060,6 +1064,9 @@ def _build_exit_meta_summary(exit_meta: Any) -> dict[str, Any]:
     return {
         "close_mode": payload.get("close_mode"),
         "close_reason_code": payload.get("close_reason_code"),
+        "close_verified": payload.get("close_verified"),
+        "close_verification_status": payload.get("close_verification_status"),
+        "observed_exit_price": payload.get("observed_exit_price"),
         "pnl_basis": payload.get("pnl_basis"),
         "gross_pnl_quote": payload.get("gross_pnl_quote"),
         "gross_pnl_pct": payload.get("gross_pnl_pct"),

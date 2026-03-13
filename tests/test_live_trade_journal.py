@@ -483,6 +483,96 @@ def test_recompute_trade_journal_records_clears_unverified_close_pnl(tmp_path) -
     assert row["exit_meta"]["observed_exit_price"] == 7.73
 
 
+def test_recompute_trade_journal_records_preserves_verified_exit_timestamp(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-verified",
+                identifier="AUTOBOT-entry-verified",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=1.0,
+                volume_filled=1.0,
+                state="done",
+                created_ts=1000,
+                updated_ts=1100,
+                intent_id="intent-verified",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-verified",
+                executed_funds=100.0,
+                paid_fee=0.05,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-verified",
+                identifier="AUTOBOT-exit-verified",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                price=103.0,
+                volume_req=1.0,
+                volume_filled=1.0,
+                state="done",
+                created_ts=1900,
+                updated_ts=999999,
+                intent_id="intent-exit-verified",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-verified",
+                executed_funds=103.0,
+                paid_fee=0.0515,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-verified",
+                market="KRW-BTC",
+                status="CLOSED",
+                entry_intent_id="intent-verified",
+                entry_order_uuid="entry-order-verified",
+                exit_order_uuid="exit-order-verified",
+                plan_id="plan-verified",
+                entry_submitted_ts_ms=1000,
+                entry_filled_ts_ms=1100,
+                exit_ts_ms=1900,
+                entry_price=100.0,
+                exit_price=103.0,
+                qty=1.0,
+                entry_notional_quote=100.05,
+                exit_notional_quote=102.9485,
+                realized_pnl_quote=2.8985,
+                realized_pnl_pct=2.8970514742628906,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="ORDER_STATE",
+                close_mode="managed_exit_order",
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {"sizing": {"fee_rate": 0.0005}, "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005}},
+                        "execution": {"requested_price": 100.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                exit_meta_json=json.dumps({"close_verified": True, "close_verification_status": "verified_exit_order"}, ensure_ascii=False, sort_keys=True),
+                updated_ts=1900,
+            )
+        )
+
+        recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_id(journal_id="journal-verified")
+
+    assert row is not None
+    assert row["exit_ts_ms"] == 1900
+
+
 def test_rebind_pending_entry_journal_order_moves_pending_entry_to_replaced_order(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(

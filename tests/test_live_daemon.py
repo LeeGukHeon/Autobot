@@ -552,7 +552,7 @@ def test_live_daemon_halts_and_cancels_bot_orders_on_unknown_external_order(tmp_
     assert ("manual-1", "MANUAL-ORDER-1") not in client.cancel_calls
 
 
-def test_live_daemon_halts_when_local_position_missing_on_exchange(tmp_path: Path, monkeypatch) -> None:
+def test_live_daemon_classifies_local_position_missing_on_exchange_as_manual_sell(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -582,8 +582,9 @@ def test_live_daemon_halts_when_local_position_missing_on_exchange(tmp_path: Pat
             ),
         )
 
-    assert summary["halted"] is True
-    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" in summary["halted_reasons"]
+    assert summary["halted"] is False
+    actions = summary["last_report"]["actions"]
+    assert any(item["type"] == "close_position_as_manual_sell" for item in actions)
 
 
 def test_live_daemon_single_slot_canary_halts_on_multi_slot_state(tmp_path: Path, monkeypatch) -> None:

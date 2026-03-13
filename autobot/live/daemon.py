@@ -218,7 +218,10 @@ def _refresh_runtime_contract_health(
         ws_public_contract=ws_public_contract,
     )
     _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
-    if bool(runtime_status.get("model_pointer_divergence")):
+    if bool(runtime_status.get("model_pointer_divergence")) and not _allow_pointer_divergence_for_settings(
+        settings=settings,
+        runtime_status=runtime_status,
+    ):
         arm_breaker(
             store,
             reason_codes=["MODEL_POINTER_DIVERGENCE"],
@@ -247,7 +250,10 @@ def _clear_runtime_recovery_reasons(
     ts_ms: int,
 ) -> None:
     reasons_to_clear = ["MODEL_POINTER_UNRESOLVED"]
-    if not bool(runtime_status.get("model_pointer_divergence")):
+    if not bool(runtime_status.get("model_pointer_divergence")) or _allow_pointer_divergence_for_settings(
+        settings=None,
+        runtime_status=runtime_status,
+    ):
         reasons_to_clear.append("MODEL_POINTER_DIVERGENCE")
     if not bool(runtime_status.get("ws_public_stale")):
         reasons_to_clear.append("WS_PUBLIC_STALE")
@@ -271,6 +277,23 @@ def _apply_runtime_status_to_summary(summary: dict[str, Any], runtime_status: di
     summary["ws_public_last_checkpoint_ts_ms"] = payload.get("ws_public_last_checkpoint_ts_ms")
     summary["ws_public_staleness_sec"] = payload.get("ws_public_staleness_sec")
     summary["model_pointer_divergence"] = bool(payload.get("model_pointer_divergence", False))
+
+
+def _allow_pointer_divergence_for_settings(
+    *,
+    settings: LiveDaemonSettings | None,
+    runtime_status: dict[str, Any],
+) -> bool:
+    current_contract = dict(runtime_status.get("current_contract") or {})
+    pointer_name = str(current_contract.get("resolved_pointer_name") or "").strip().lower()
+    requested_source = str(current_contract.get("model_ref_source_requested") or "").strip().lower()
+    if pointer_name == "latest_candidate":
+        return True
+    if requested_source == "latest_candidate_v4":
+        return True
+    if settings is not None and str(settings.rollout_mode).strip().lower() == "canary":
+        return True
+    return False
 
 
 def _small_account_single_slot_ready(settings: LiveDaemonSettings) -> bool:
@@ -1610,6 +1633,10 @@ def _run_sync_cycle(
         default_risk_sl_pct=float(settings.default_risk_sl_pct),
         default_risk_tp_pct=float(settings.default_risk_tp_pct),
         default_risk_trailing_enabled=bool(settings.default_risk_trailing_enabled),
+        registry_root=str(settings.registry_root),
+        runtime_model_ref_source=str(settings.runtime_model_ref_source),
+        runtime_model_family=str(settings.runtime_model_family),
+        runtime_interval_ms=300000,
         quote_currency=settings.quote_currency,
         dry_run=False,
         ts_ms=ts_ms,
