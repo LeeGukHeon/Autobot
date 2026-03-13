@@ -464,7 +464,7 @@ def _startup_sync(
         prior_cancel_summary=cycle_result["cancel_summary"],
         ts_ms=int(time.time() * 1000),
     )
-    if bool(cycle_result["report"].get("halted")) or bool(active_breaker_decision(store).active):
+    if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
         summary["halted"] = True
         summary["halted_reasons"] = list(
             active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", [])
@@ -489,7 +489,7 @@ def _startup_sync(
     )
     _apply_rollout_status_to_summary(summary, rollout_status)
     summary["breaker_report"] = breaker_status(store)
-    if bool(active_breaker_decision(store).active):
+    if not _runtime_loop_allowed(store):
         summary["halted"] = True
         summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         return False

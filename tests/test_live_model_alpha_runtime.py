@@ -515,6 +515,43 @@ def test_live_model_alpha_runtime_allows_protective_exit_under_halt_new_intents(
     assert plan["state"] == "EXITING"
 
 
+def test_live_model_alpha_runtime_startup_reconcile_stays_alive_under_halt_new_intents(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _NoIntentStrategy())
+
+    base_settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    settings = replace(
+        base_settings,
+        daemon=replace(base_settings.daemon, startup_reconcile=True),
+        risk_enabled=False,
+    )
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        arm_breaker(
+            store,
+            reason_codes=["LIVE_TEST_ORDER_REQUIRED"],
+            source="test",
+            ts_ms=now_ms - 1000,
+            action=ACTION_HALT_NEW_INTENTS,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=_ExecutorGateway(),
+            )
+        )
+
+    assert summary["halted"] is False
+    assert summary["cycles"] >= 1
+
+
 def test_live_model_alpha_runtime_caps_bid_notional_to_canary_limit(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
