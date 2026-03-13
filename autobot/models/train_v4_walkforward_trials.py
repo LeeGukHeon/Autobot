@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .train_v4_models import build_group_level_sample_weight
+from .train_v4_models import build_group_level_sample_weight, build_rank_relevance_labels
 
 
 def fit_walk_forward_weighted_trials(
@@ -311,9 +311,11 @@ def fit_walk_forward_ranker_trials(
     if train_group.size <= 0 or valid_group.size <= 0:
         raise RuntimeError("walk-forward ranker requires timestamp-grouped train and valid rows")
 
+    y_train_rank_label = build_rank_relevance_labels(y_train_rank)
+    y_valid_rank_label = build_rank_relevance_labels(y_valid_rank)
     row_train_w = np.asarray(w_train, dtype=np.float64)
-    if row_train_w.size != y_train_rank.size:
-        row_train_w = np.ones(y_train_rank.size, dtype=np.float64)
+    if row_train_w.size != y_train_rank_label.size:
+        row_train_w = np.ones(y_train_rank_label.size, dtype=np.float64)
     w_train_safe = build_group_level_sample_weight(row_train_w, train_group)
 
     best_key: tuple[float, ...] | None = None
@@ -342,19 +344,19 @@ def fit_walk_forward_ranker_trials(
         fit_kwargs = {
             "group": train_group.tolist(),
             "sample_weight": w_train_safe,
-            "eval_set": [(x_valid, np.nan_to_num(np.asarray(y_valid_rank, dtype=np.float32), nan=0.0))],
+            "eval_set": [(x_valid, y_valid_rank_label)],
             "eval_group": [valid_group.tolist()],
             "verbose": False,
         }
         try:
             estimator.fit(
                 x_train,
-                np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0),
+                y_train_rank_label,
                 early_stopping_rounds=50,
                 **fit_kwargs,
             )
         except TypeError:
-            estimator.fit(x_train, np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0), **fit_kwargs)
+            estimator.fit(x_train, y_train_rank_label, **fit_kwargs)
 
         valid_scores = 1.0 / (1.0 + np.exp(-np.asarray(estimator.predict(x_valid), dtype=np.float64)))
         valid_metrics = attach_ranking_metrics_fn(

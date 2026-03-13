@@ -10,12 +10,14 @@ from autobot.models.train_v4_walkforward_trials import fit_walk_forward_ranker_t
 
 class _RecordingRanker:
     last_fit_kwargs: dict | None = None
+    last_fit_y: np.ndarray | None = None
 
     def __init__(self, **kwargs):
         self.init_kwargs = kwargs
 
     def fit(self, x, y, **kwargs):
         type(self).last_fit_kwargs = dict(kwargs)
+        type(self).last_fit_y = np.asarray(y)
         return self
 
     def predict(self, x):
@@ -53,8 +55,18 @@ def test_build_group_level_sample_weight_averages_row_weights_by_query_group() -
     assert np.allclose(weights, np.asarray([1.0, 2.0, 6.0], dtype=np.float64))
 
 
+def test_build_rank_relevance_labels_converts_continuous_rank_scores_to_integers() -> None:
+    from autobot.models.train_v4_models import build_rank_relevance_labels
+
+    labels = build_rank_relevance_labels(np.asarray([0.0, 0.125, 0.5, 1.0], dtype=np.float64))
+
+    assert labels.dtype == np.int32
+    assert labels.tolist() == [0, 125, 500, 1000]
+
+
 def test_fit_booster_sweep_ranker_uses_group_level_sample_weight() -> None:
     _RecordingRanker.last_fit_kwargs = None
+    _RecordingRanker.last_fit_y = None
 
     fit_booster_sweep_ranker(
         x_train=np.asarray([[0.1], [0.2], [0.3], [0.4]], dtype=np.float64),
@@ -87,10 +99,14 @@ def test_fit_booster_sweep_ranker_uses_group_level_sample_weight() -> None:
         np.asarray(_RecordingRanker.last_fit_kwargs["sample_weight"], dtype=np.float64),
         np.asarray([1.0, 2.0], dtype=np.float64),
     )
+    assert _RecordingRanker.last_fit_y is not None
+    assert _RecordingRanker.last_fit_y.dtype == np.int32
+    assert _RecordingRanker.last_fit_y.tolist() == [0, 1000, 500, 900]
 
 
 def test_fit_walk_forward_ranker_trials_uses_group_level_sample_weight() -> None:
     _RecordingRanker.last_fit_kwargs = None
+    _RecordingRanker.last_fit_y = None
 
     result = fit_walk_forward_ranker_trials(
         options=SimpleNamespace(seed=11, nthread=1, fee_bps_est=5.0, safety_bps=1.0),
@@ -131,3 +147,5 @@ def test_fit_walk_forward_ranker_trials_uses_group_level_sample_weight() -> None
         np.asarray(_RecordingRanker.last_fit_kwargs["sample_weight"], dtype=np.float64),
         np.asarray([1.0, 2.0], dtype=np.float64),
     )
+    assert _RecordingRanker.last_fit_y is not None
+    assert _RecordingRanker.last_fit_y.dtype == np.int32

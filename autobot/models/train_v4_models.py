@@ -32,6 +32,13 @@ def build_group_level_sample_weight(row_weights: np.ndarray, group_counts: np.nd
     return np.clip(group_weights, 1e-6, None)
 
 
+def build_rank_relevance_labels(rank_values: np.ndarray) -> np.ndarray:
+    values = np.asarray(rank_values, dtype=np.float64)
+    finite = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+    clipped = np.clip(finite, 0.0, 1.0)
+    return np.rint(clipped * 1000.0).astype(np.int32, copy=False)
+
+
 def fit_fixed_classifier_model(
     *,
     options: Any,
@@ -158,6 +165,8 @@ def fit_fixed_ranker_model(
     if row_train_w.size != y_train.size:
         row_train_w = np.ones(y_train.size, dtype=np.float64)
     train_w = build_group_level_sample_weight(row_train_w, train_group)
+    y_train_rank = build_rank_relevance_labels(y_train)
+    y_valid_rank = build_rank_relevance_labels(y_valid)
     estimator = xgb.XGBRanker(
         objective="rank:pairwise",
         tree_method="hist",
@@ -177,19 +186,19 @@ def fit_fixed_ranker_model(
     fit_kwargs = {
         "group": train_group.tolist(),
         "sample_weight": train_w,
-        "eval_set": [(x_valid, np.nan_to_num(np.asarray(y_valid, dtype=np.float32), nan=0.0))],
+        "eval_set": [(x_valid, y_valid_rank)],
         "eval_group": [valid_group.tolist()],
         "verbose": False,
     }
     try:
         estimator.fit(
             x_train,
-            np.nan_to_num(np.asarray(y_train, dtype=np.float32), nan=0.0),
+            y_train_rank,
             early_stopping_rounds=50,
             **fit_kwargs,
         )
     except TypeError:
-        estimator.fit(x_train, np.nan_to_num(np.asarray(y_train, dtype=np.float32), nan=0.0), **fit_kwargs)
+        estimator.fit(x_train, y_train_rank, **fit_kwargs)
     return {"model_type": "xgboost_ranker", "scaler": None, "estimator": estimator}
 
 
@@ -464,7 +473,8 @@ def fit_booster_sweep_ranker(
     if train_group.size <= 0 or valid_group.size <= 0:
         raise RuntimeError("ranker lane requires at least one timestamp-group in train and valid splits")
 
-    y_train = np.nan_to_num(np.asarray(y_train_rank, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    y_train = build_rank_relevance_labels(y_train_rank)
+    y_valid = build_rank_relevance_labels(y_valid_rank)
     row_train_w = np.asarray(w_train, dtype=np.float64)
     if row_train_w.size != y_train.size:
         row_train_w = np.ones(y_train.size, dtype=np.float64)
@@ -491,7 +501,7 @@ def fit_booster_sweep_ranker(
         fit_kwargs = {
             "group": train_group.tolist(),
             "sample_weight": w_train_safe,
-            "eval_set": [(x_valid, np.nan_to_num(np.asarray(y_valid_rank, dtype=np.float32), nan=0.0))],
+            "eval_set": [(x_valid, y_valid)],
             "eval_group": [valid_group.tolist()],
             "verbose": False,
         }
