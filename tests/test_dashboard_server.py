@@ -24,6 +24,7 @@ def _init_live_db(path: Path) -> None:
         conn.execute("CREATE TABLE risk_plans (plan_id TEXT PRIMARY KEY, market TEXT, side TEXT, entry_price_str TEXT, qty_str TEXT, tp_enabled INTEGER, tp_price_str TEXT, tp_pct REAL, sl_enabled INTEGER, sl_price_str TEXT, sl_pct REAL, trailing_enabled INTEGER, trail_pct REAL, high_watermark_price_str TEXT, armed_ts_ms INTEGER, timeout_ts_ms INTEGER, state TEXT, last_eval_ts_ms INTEGER, last_action_ts_ms INTEGER, current_exit_order_uuid TEXT, current_exit_order_identifier TEXT, replace_attempt INTEGER, created_ts INTEGER, updated_ts INTEGER, plan_source TEXT, source_intent_id TEXT)")
         conn.execute("CREATE TABLE trade_journal (journal_id TEXT PRIMARY KEY, market TEXT, status TEXT, entry_intent_id TEXT, entry_order_uuid TEXT, exit_order_uuid TEXT, plan_id TEXT, entry_submitted_ts_ms INTEGER, entry_filled_ts_ms INTEGER, exit_ts_ms INTEGER, entry_price REAL, exit_price REAL, qty REAL, entry_notional_quote REAL, exit_notional_quote REAL, realized_pnl_quote REAL, realized_pnl_pct REAL, entry_reason_code TEXT, close_reason_code TEXT, close_mode TEXT, model_prob REAL, selection_policy_mode TEXT, trade_action TEXT, expected_edge_bps REAL, expected_downside_bps REAL, expected_net_edge_bps REAL, notional_multiplier REAL, entry_meta_json TEXT, exit_meta_json TEXT, updated_ts INTEGER)")
         conn.execute("CREATE TABLE checkpoints (name TEXT PRIMARY KEY, ts_ms INTEGER, payload_json TEXT)")
+        conn.execute("CREATE TABLE breaker_state (breaker_key TEXT PRIMARY KEY, active INTEGER, action TEXT, source TEXT, reason_codes_json TEXT, details_json TEXT, updated_ts INTEGER, armed_ts INTEGER)")
         conn.execute("CREATE TABLE breaker_states (breaker_key TEXT PRIMARY KEY, active INTEGER, action TEXT, source TEXT, reason_codes_json TEXT, details_json TEXT, updated_ts INTEGER, armed_ts INTEGER)")
         conn.execute(
             "INSERT INTO intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -367,6 +368,40 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["recent_trades"][0]["exit_recommendation_chosen_family"] == "hold"
     assert recent_intent["expected_net_edge_bps"] == 98.7
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
+
+
+def test_build_dashboard_snapshot_reads_breaker_state_table_name_used_by_live_db(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": False}})
+    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO breaker_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "live",
+                1,
+                "HALT_NEW_INTENTS",
+                "risk_replace",
+                json.dumps(["REPEATED_REPLACE_REJECTS"], ensure_ascii=False),
+                json.dumps({"counter_name": "replace_reject"}, ensure_ascii=False),
+                1234,
+                1234,
+            ),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    candidate_state = next(
+        item
+        for item in snapshot["live"]["states"]
+        if "live_candidate" in str(item.get("db_path", ""))
+    )
+
+    assert candidate_state["breaker_active"] is True
+    assert candidate_state["active_breakers"]
+    assert candidate_state["active_breakers"][0]["reason_codes"] == ["REPEATED_REPLACE_REJECTS"]
 
 
 def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_is_missing(tmp_path: Path) -> None:

@@ -931,7 +931,8 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             else []
         )
         deduped_trade_journal = _dedupe_trade_journal_rows(trade_journal)
-        breaker_states = _query_all(conn, "SELECT * FROM breaker_states ORDER BY updated_ts DESC") if "breaker_states" in tables else []
+        breaker_table_name = "breaker_state" if "breaker_state" in tables else ("breaker_states" if "breaker_states" in tables else "")
+        breaker_states = _query_all(conn, f"SELECT * FROM {breaker_table_name} ORDER BY updated_ts DESC") if breaker_table_name else []
         source_intent_lookup: dict[str, dict[str, Any]] = {}
         if "intents" in tables and risk_plans:
             source_ids = [str(row.get("source_intent_id") or "").strip() for row in risk_plans]
