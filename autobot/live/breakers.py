@@ -365,7 +365,13 @@ def reset_counter(
         },
         ts_ms=ts_ms,
     )
-    return breaker_status(store)
+    return clear_breaker_reasons(
+        store,
+        reason_codes=[counter_cfg["reason_code"]],
+        source=f"{source}_counter_reset",
+        ts_ms=ts_ms,
+        details={"counter_name": counter_name, "counter_reset": True},
+    )
 
 
 def classify_upbit_exception(exc: Exception) -> str | None:

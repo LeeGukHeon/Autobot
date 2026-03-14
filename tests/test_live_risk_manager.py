@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_NEW_INTENTS, arm_breaker
+from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_NEW_INTENTS, arm_breaker, record_counter_failure, breaker_status
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
 from autobot.live.state_store import LiveStateStore, OrderRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager
@@ -82,6 +82,28 @@ class _FakeExecutorGateway:
             reason="replaced",
             cancelled_order_uuid=prev_order_uuid or "prev-uuid",
             new_order_uuid=f"new-exit-uuid-{self._replace_seq}",
+            new_identifier=new_identifier,
+        )
+
+
+class _DoneOrderReplaceGateway(_FakeExecutorGateway):
+    def replace_order(
+        self,
+        *,
+        intent_id: str,
+        prev_order_uuid: str | None = None,
+        prev_order_identifier: str | None = None,
+        new_identifier: str,
+        new_price_str: str,
+        new_volume_str: str,
+        new_time_in_force: str | None = None,
+    ):  # noqa: ANN201
+        _ = intent_id, prev_order_uuid, prev_order_identifier, new_identifier, new_price_str, new_volume_str, new_time_in_force
+        return SimpleNamespace(
+            accepted=False,
+            reason="이미 체결된 주문입니다. | status=400 | error=done_order | POST /v1/orders/cancel_and_new",
+            cancelled_order_uuid=None,
+            new_order_uuid=None,
             new_identifier=new_identifier,
         )
 
@@ -496,3 +518,55 @@ def test_risk_manager_timeout_trigger_submits_exit(tmp_path: Path) -> None:
     assert persisted["state"] == "EXITING"
     assert persisted["timeout_ts_ms"] == 2000
     assert persisted["source_intent_id"] == "intent-1"
+
+
+def test_risk_manager_done_order_replace_reject_does_not_keep_breaker_active(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _DoneOrderReplaceGateway()
+    with LiveStateStore(db_path) as store:
+        record_counter_failure(
+            store,
+            counter_name="replace_reject",
+            limit=1,
+            source="test_seed",
+            ts_ms=900,
+            details={"attempt": 1},
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="replace-done-order",
+                market="KRW-XRP",
+                side="long",
+                entry_price_str="500",
+                qty_str="100",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                current_exit_order_uuid="exit-prev-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-old",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(order_timeout_sec=1, replace_max=2, exit_aggress_bps=10.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
+        )
+        actions = manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
+        persisted = store.risk_plan_by_id(plan_id="replace-done-order")
+        status = breaker_status(store)
+
+    assert any(item["type"] == "risk_replace_already_done" for item in actions)
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
+    assert persisted["last_action_ts_ms"] == 4000
+    assert status["active"] is False
+    assert status["counters"]["replace_reject"]["count"] == 0

@@ -12,6 +12,7 @@ from autobot.live.breakers import (
     classify_upbit_exception,
     evaluate_cycle_contracts,
     record_counter_failure,
+    reset_counter,
 )
 from autobot.live.state_store import LiveStateStore
 from autobot.upbit.exceptions import AuthError, RateLimitError
@@ -64,6 +65,29 @@ def test_breaker_counter_arms_after_threshold(tmp_path: Path) -> None:
     assert status_after_second["action"] == ACTION_HALT_NEW_INTENTS
     assert "REPEATED_REPLACE_REJECTS" in status_after_second["reason_codes"]
     assert status_after_second["counters"]["replace_reject"]["count"] == 2
+
+
+def test_reset_counter_clears_counter_reason_from_active_breaker(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        record_counter_failure(
+            store,
+            counter_name="replace_reject",
+            limit=1,
+            source="test",
+            ts_ms=1000,
+            details={"attempt": 1},
+        )
+        cleared = reset_counter(
+            store,
+            counter_name="replace_reject",
+            source="test",
+            ts_ms=2000,
+        )
+
+    assert cleared["active"] is False
+    assert "REPEATED_REPLACE_REJECTS" not in cleared["reason_codes"]
+    assert cleared["counters"]["replace_reject"]["count"] == 0
 
 
 def test_clear_breaker_reasons_preserves_structural_halts(tmp_path: Path) -> None:

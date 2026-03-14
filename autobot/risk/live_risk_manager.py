@@ -457,6 +457,24 @@ class LiveRiskManager:
             }
 
         reject_reason = str(getattr(result, "reason", "") or "")
+        if _is_done_order_replace_reject(reject_reason):
+            reset_counter(
+                self._store,
+                counter_name="replace_reject",
+                source="risk_replace_done_order",
+                ts_ms=ts_ms,
+            )
+            updated = replace(
+                plan,
+                last_action_ts_ms=ts_ms,
+                updated_ts=ts_ms,
+            )
+            return updated, {
+                "type": "risk_replace_already_done",
+                "plan_id": plan.plan_id,
+                "replace_attempt": replace_step,
+                "reason": reject_reason,
+            }
         record_counter_failure(
             self._store,
             counter_name="replace_reject",
@@ -703,3 +721,14 @@ def _as_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_done_order_replace_reject(reason: str | None) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "error=done_order" in text
+        or "already filled" in text
+        or "이미 체결된 주문" in str(reason or "")
+    )
