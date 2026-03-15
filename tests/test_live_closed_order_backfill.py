@@ -336,6 +336,108 @@ def test_backfill_recent_bot_closed_orders_accepts_tracked_exit_uuid_from_journa
     assert journal["realized_pnl_quote"] is not None
 
 
+def test_backfill_recent_bot_closed_orders_prorates_partial_exit_quantity(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-partial",
+                identifier="AUTOBOT-autobot-candidate-001-intent-partial-1700000000000-a",
+                market="KRW-AXS",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=3.0,
+                volume_filled=3.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-partial",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="entry-order-partial",
+                executed_funds=300.0,
+                paid_fee=0.15,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-partial",
+                market="KRW-AXS",
+                status="CLOSED",
+                entry_intent_id="intent-partial",
+                entry_order_uuid="entry-order-partial",
+                exit_order_uuid="exit-order-partial",
+                plan_id="plan-partial",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=2_000,
+                entry_price=100.0,
+                exit_price=None,
+                qty=3.0,
+                entry_notional_quote=300.15,
+                exit_notional_quote=None,
+                realized_pnl_quote=None,
+                realized_pnl_pct=None,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="POSITION_CLOSED",
+                close_mode="missing_on_exchange_after_exit_plan",
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {
+                            "sizing": {"fee_rate": 0.0005},
+                            "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005},
+                        },
+                        "execution": {"requested_price": 100.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                updated_ts=2_000,
+            )
+        )
+
+        client = _StubClosedOrdersClient(
+            [
+                {
+                    "uuid": "exit-order-partial",
+                    "identifier": "AUTOBOT-RISK-partial",
+                    "market": "KRW-AXS",
+                    "side": "ask",
+                    "ord_type": "limit",
+                    "state": "done",
+                    "price": "100",
+                    "volume": "2.5",
+                    "executed_volume": "2.5",
+                    "executed_funds": "250",
+                    "paid_fee": "0.125",
+                    "created_at": "2026-03-16T05:09:32Z",
+                    "done_at": "2026-03-16T05:09:32Z",
+                }
+            ]
+        )
+
+        report = backfill_recent_bot_closed_orders(
+            store=store,
+            client=client,
+            bot_id="autobot-candidate-001",
+            identifier_prefix="AUTOBOT",
+            now_ts_ms=1_700_000_200_000,
+        )
+        journal = store.trade_journal_by_id(journal_id="journal-partial")
+
+    assert report["orders_upserted"] == 1
+    assert journal is not None
+    assert journal["qty"] == pytest.approx(2.5)
+    assert journal["entry_notional_quote"] == pytest.approx(250.125)
+    assert journal["exit_notional_quote"] == pytest.approx(249.875)
+    assert journal["realized_pnl_quote"] == pytest.approx(-0.25)
+    assert journal["exit_meta"]["residual_entry_qty"] == pytest.approx(0.5)
+
+
 def test_backfill_recent_bot_closed_orders_preserves_existing_intent_contract_and_status(tmp_path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

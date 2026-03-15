@@ -512,9 +512,15 @@ def close_trade_journal_for_market(
             "exit_fee_bps": cost_metrics["exit_fee_bps"],
             "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
             "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
+            "entry_qty": cost_metrics["entry_qty"],
+            "exit_qty": cost_metrics["exit_qty"],
+            "closed_qty": cost_metrics["closed_qty"],
+            "residual_entry_qty": cost_metrics["residual_entry_qty"],
+            "residual_entry_quote": cost_metrics["residual_entry_quote"],
             "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
         }
     )
+    closed_qty = _coalesce_float(cost_metrics["closed_qty"], qty)
     store.upsert_trade_journal(
         TradeJournalRecord(
             journal_id=str((existing or {}).get("journal_id") or f"imported-{market_value}-{exit_ts}"),
@@ -529,7 +535,7 @@ def close_trade_journal_for_market(
             exit_ts_ms=exit_ts,
             entry_price=entry_price,
             exit_price=resolved_exit_price if close_verified else None,
-            qty=qty,
+            qty=closed_qty,
             entry_notional_quote=cost_metrics["entry_total_quote"],
             exit_notional_quote=cost_metrics["exit_total_quote"] if close_verified else None,
             realized_pnl_quote=cost_metrics["net_pnl_quote"] if close_verified else None,
@@ -636,11 +642,17 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     "exit_fee_bps": cost_metrics["exit_fee_bps"],
                     "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
                     "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
+                    "entry_qty": cost_metrics["entry_qty"],
+                    "exit_qty": cost_metrics["exit_qty"],
+                    "closed_qty": cost_metrics["closed_qty"],
+                    "residual_entry_qty": cost_metrics["residual_entry_qty"],
+                    "residual_entry_quote": cost_metrics["residual_entry_quote"],
                     "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
                     "close_verification_status": close_verification_status,
                     "close_verified": close_verified,
                 }
             )
+            closed_qty = _coalesce_float(cost_metrics["closed_qty"], qty)
             if not close_verified and exit_price is not None and exit_meta_payload.get("observed_exit_price") in {None, ""}:
                 exit_meta_payload["observed_exit_price"] = exit_price
             store.upsert_trade_journal(
@@ -657,7 +669,7 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     exit_ts_ms=exit_ts,
                     entry_price=entry_price,
                     exit_price=exit_price if close_verified else None,
-                    qty=qty,
+                    qty=closed_qty,
                     entry_notional_quote=cost_metrics["entry_total_quote"],
                     exit_notional_quote=cost_metrics["exit_total_quote"] if close_verified else None,
                     realized_pnl_quote=cost_metrics["net_pnl_quote"] if close_verified else None,
@@ -763,9 +775,15 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                         "exit_fee_bps": cost_metrics["exit_fee_bps"],
                         "entry_realized_slippage_bps": cost_metrics["entry_realized_slippage_bps"],
                         "exit_expected_slippage_bps": cost_metrics["exit_expected_slippage_bps"],
+                        "entry_qty": cost_metrics["entry_qty"],
+                        "exit_qty": cost_metrics["exit_qty"],
+                        "closed_qty": cost_metrics["closed_qty"],
+                        "residual_entry_qty": cost_metrics["residual_entry_qty"],
+                        "residual_entry_quote": cost_metrics["residual_entry_quote"],
                         "pnl_basis": "net_after_fees__slippage_embedded_in_fill_prices",
                     }
                 )
+                closed_qty = _coalesce_float(cost_metrics["closed_qty"], qty)
                 store.upsert_trade_journal(
                     TradeJournalRecord(
                         journal_id=str(row.get("journal_id")),
@@ -780,7 +798,7 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                         exit_ts_ms=exit_ts,
                         entry_price=entry_price,
                         exit_price=exit_price,
-                        qty=qty,
+                        qty=closed_qty,
                         entry_notional_quote=cost_metrics["entry_total_quote"],
                         exit_notional_quote=cost_metrics["exit_total_quote"],
                         realized_pnl_quote=cost_metrics["net_pnl_quote"],
@@ -1251,6 +1269,11 @@ def _build_exit_meta_summary(exit_meta: Any) -> dict[str, Any]:
         "exit_fee_bps": payload.get("exit_fee_bps"),
         "entry_realized_slippage_bps": payload.get("entry_realized_slippage_bps"),
         "exit_expected_slippage_bps": payload.get("exit_expected_slippage_bps"),
+        "entry_qty": payload.get("entry_qty"),
+        "exit_qty": payload.get("exit_qty"),
+        "closed_qty": payload.get("closed_qty"),
+        "residual_entry_qty": payload.get("residual_entry_qty"),
+        "residual_entry_quote": payload.get("residual_entry_quote"),
         "exit_order": {
             "uuid": exit_order.get("uuid"),
             "identifier": exit_order.get("identifier"),
@@ -1272,21 +1295,56 @@ def _compute_cost_metrics(
     exit_price: float | None,
     qty: float | None,
 ) -> dict[str, float | None]:
-    qty_value = _coalesce_float(_filled_qty_from_order(entry_order), _as_optional_float(qty))
+    entry_qty_value = _coalesce_float(_filled_qty_from_order(entry_order), _as_optional_float(qty))
+    exit_qty_value = _filled_qty_from_order(exit_order)
+    qty_value = entry_qty_value
+    if exit_qty_value is not None and exit_qty_value > 0.0:
+        if entry_qty_value is not None and entry_qty_value > 0.0:
+            qty_value = min(entry_qty_value, exit_qty_value)
+        else:
+            qty_value = exit_qty_value
     entry_price_value = _coalesce_float(_filled_price_from_order(entry_order), _as_optional_float(entry_price))
     exit_price_value = _coalesce_float(_filled_price_from_order(exit_order), _as_optional_float(exit_price))
     entry_notional = entry_price_value * qty_value if entry_price_value is not None and qty_value is not None else None
     exit_notional = exit_price_value * qty_value if exit_price_value is not None and qty_value is not None else None
     entry_fee_rate = _resolve_entry_fee_rate(entry_meta)
     exit_fee_rate = _resolve_exit_fee_rate(entry_meta, entry_fee_rate=entry_fee_rate)
-    entry_gross_quote = _coalesce_float(_as_optional_float((entry_order or {}).get("executed_funds")), entry_notional)
-    exit_gross_quote = _coalesce_float(_as_optional_float((exit_order or {}).get("executed_funds")), exit_notional)
+    entry_allocation_ratio = (
+        qty_value / entry_qty_value
+        if qty_value is not None and entry_qty_value is not None and entry_qty_value > 0.0
+        else None
+    )
+    exit_allocation_ratio = (
+        qty_value / exit_qty_value
+        if qty_value is not None and exit_qty_value is not None and exit_qty_value > 0.0
+        else None
+    )
+    raw_entry_gross_quote = _as_optional_float((entry_order or {}).get("executed_funds"))
+    raw_exit_gross_quote = _as_optional_float((exit_order or {}).get("executed_funds"))
+    raw_entry_fee_quote = _as_optional_float((entry_order or {}).get("paid_fee"))
+    raw_exit_fee_quote = _as_optional_float((exit_order or {}).get("paid_fee"))
+    entry_gross_quote = _coalesce_float(
+        raw_entry_gross_quote * entry_allocation_ratio
+        if raw_entry_gross_quote is not None and entry_allocation_ratio is not None
+        else None,
+        entry_notional,
+    )
+    exit_gross_quote = _coalesce_float(
+        raw_exit_gross_quote * exit_allocation_ratio
+        if raw_exit_gross_quote is not None and exit_allocation_ratio is not None
+        else None,
+        exit_notional,
+    )
     entry_fee_quote = _coalesce_float(
-        _as_optional_float((entry_order or {}).get("paid_fee")),
+        raw_entry_fee_quote * entry_allocation_ratio
+        if raw_entry_fee_quote is not None and entry_allocation_ratio is not None
+        else None,
         entry_notional * entry_fee_rate if entry_notional is not None else None,
     )
     exit_fee_quote = _coalesce_float(
-        _as_optional_float((exit_order or {}).get("paid_fee")),
+        raw_exit_fee_quote * exit_allocation_ratio
+        if raw_exit_fee_quote is not None and exit_allocation_ratio is not None
+        else None,
         exit_notional * exit_fee_rate if exit_notional is not None else None,
     )
     gross_pnl_quote = (
@@ -1335,7 +1393,26 @@ def _compute_cost_metrics(
         else None
     )
     exit_expected_slippage = _dig_float(entry_meta, "strategy", "meta", "model_exit_plan", "expected_exit_slippage_bps")
+    residual_entry_qty = (
+        max(float(entry_qty_value) - float(qty_value), 0.0)
+        if entry_qty_value is not None and qty_value is not None
+        else None
+    )
+    residual_entry_quote = (
+        (float(raw_entry_gross_quote) + float(raw_entry_fee_quote or 0.0)) - float(entry_total_quote)
+        if raw_entry_gross_quote is not None and entry_total_quote is not None
+        else (
+            (entry_price_value * residual_entry_qty) + ((entry_price_value * residual_entry_qty) * entry_fee_rate)
+            if entry_price_value is not None and residual_entry_qty is not None and residual_entry_qty > 0.0
+            else None
+        )
+    )
     return {
+        "entry_qty": entry_qty_value,
+        "exit_qty": exit_qty_value,
+        "closed_qty": qty_value,
+        "residual_entry_qty": residual_entry_qty,
+        "residual_entry_quote": residual_entry_quote,
         "entry_fee_rate": entry_fee_rate,
         "exit_fee_rate": exit_fee_rate,
         "entry_fee_bps": entry_fee_rate * 10_000.0 if entry_fee_rate is not None else None,

@@ -755,6 +755,106 @@ def test_recompute_trade_journal_records_closes_open_row_from_backfilled_done_as
     assert row["realized_pnl_quote"] is not None
 
 
+def test_recompute_trade_journal_records_allocates_partial_verified_exit_to_closed_qty(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-partial",
+                identifier="AUTOBOT-entry-partial",
+                market="KRW-AXS",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=3.0,
+                volume_filled=3.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-partial",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-partial",
+                executed_funds=300.0,
+                paid_fee=0.15,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-partial",
+                identifier="AUTOBOT-RISK-partial",
+                market="KRW-AXS",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=2.5,
+                volume_filled=2.5,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_100,
+                intent_id="inferred-exit-partial",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="exit-order-partial",
+                executed_funds=250.0,
+                paid_fee=0.125,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-partial",
+                market="KRW-AXS",
+                status="CLOSED",
+                entry_intent_id="intent-partial",
+                entry_order_uuid="entry-order-partial",
+                exit_order_uuid="exit-order-partial",
+                plan_id="plan-partial",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=2_100,
+                entry_price=100.0,
+                exit_price=100.0,
+                qty=3.0,
+                entry_notional_quote=300.15,
+                exit_notional_quote=249.875,
+                realized_pnl_quote=-50.275,
+                realized_pnl_pct=-16.74929184341187,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="CLOSED_ORDERS_BACKFILL",
+                close_mode="done_ask_order",
+                entry_meta_json=json.dumps(
+                    {
+                        "admissibility": {
+                            "sizing": {"fee_rate": 0.0005},
+                            "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005},
+                        },
+                        "execution": {"requested_price": 100.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                exit_meta_json=json.dumps({"close_verified": True, "close_verification_status": "verified_exit_order"}, ensure_ascii=False, sort_keys=True),
+                updated_ts=2_100,
+            )
+        )
+
+        recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_id(journal_id="journal-partial")
+
+    assert row is not None
+    assert row["qty"] == pytest.approx(2.5)
+    assert row["entry_notional_quote"] == pytest.approx(250.125)
+    assert row["exit_notional_quote"] == pytest.approx(249.875)
+    assert row["realized_pnl_quote"] == pytest.approx(-0.25)
+    assert row["realized_pnl_pct"] == pytest.approx(-0.09995002498750378)
+    assert row["exit_meta"]["closed_qty"] == pytest.approx(2.5)
+    assert row["exit_meta"]["residual_entry_qty"] == pytest.approx(0.5)
+    assert row["exit_meta"]["residual_entry_quote"] == pytest.approx(50.025)
+
+
 def test_recompute_trade_journal_records_replaces_far_stale_exit_order_uuid(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         store.upsert_order(
