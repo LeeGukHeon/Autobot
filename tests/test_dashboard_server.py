@@ -426,14 +426,9 @@ def test_build_dashboard_snapshot_uses_service_configured_live_db_paths(tmp_path
 
     assert main_state["label"] == "메인 라이브"
     assert Path(str(main_state["db_path"])) == legacy_main_db
-    assert not any(
-        item.get("label") == "레거시 라이브 DB" and Path(str(item.get("db_path"))) == legacy_main_db
-        for item in live_states
-    )
-    assert any(
-        item.get("label") == "보조 라이브 DB" and Path(str(item.get("db_path"))) == canonical_main_db
-        for item in live_states
-    )
+    assert len(live_states) == 2
+    assert not any(item.get("label") == "레거시 라이브 DB" for item in live_states)
+    assert not any(item.get("label") == "보조 라이브 DB" for item in live_states)
 
 
 def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_is_missing(tmp_path: Path) -> None:

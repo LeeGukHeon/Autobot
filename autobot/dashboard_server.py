@@ -1436,6 +1436,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         raw_root=project_root / "data" / "raw_ws" / "upbit" / "public",
     )
     acceptance = _summarize_acceptance(acceptance_latest)
+    live_db_candidates = [item for item in _resolve_live_db_candidates(project_root) if item.get("service_key")]
     return {
         "generated_at": _utc_now_iso(),
         "project_root": str(project_root),
@@ -1471,7 +1472,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
                     project_root,
                     service_key=str(item.get("service_key") or "").strip() or None,
                 )
-                for item in _resolve_live_db_candidates(project_root)
+                for item in live_db_candidates
             ],
         },
         "ws_public": ws_status,
