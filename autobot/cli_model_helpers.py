@@ -224,6 +224,7 @@ def backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
             {
                 "micro_order_policy": "off",
                 "use_learned_selection_recommendations": False,
+                "use_trade_level_action_policy": False,
             }
         )
         return overrides
@@ -255,6 +256,7 @@ def normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespac
         "min_prob": getattr(args, "min_prob", None),
         "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
         "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
+        "use_trade_level_action_policy": overrides.get("use_trade_level_action_policy"),
         "exit_mode": getattr(args, "exit_mode", None),
         "hold_bars": getattr(args, "hold_bars", None),
         "tp_pct": getattr(args, "tp_pct", None),

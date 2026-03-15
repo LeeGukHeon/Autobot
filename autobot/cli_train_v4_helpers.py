@@ -192,6 +192,7 @@ def build_v4_train_options(
                 use_learned_exit_mode=False,
                 use_learned_hold_bars=False,
                 use_learned_risk_recommendations=False,
+                use_trade_level_action_policy=False,
                 risk_scaling_mode="fixed",
                 risk_vol_feature=str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip()
                 or "rv_12",

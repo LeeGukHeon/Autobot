@@ -266,6 +266,7 @@ def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> Non
     assert normalized.duration_days == 7
     assert normalized.micro_order_policy == "off"
     assert normalized.use_learned_selection_recommendations is False
+    assert normalized.use_trade_level_action_policy is False
 
 
 def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_path: Path) -> None:
@@ -393,6 +394,7 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
     assert options.execution_acceptance_model_alpha.exit.hold_bars == 6
     assert options.execution_acceptance_model_alpha.exit.use_learned_exit_mode is False
     assert options.execution_acceptance_model_alpha.exit.use_learned_hold_bars is False
+    assert options.execution_acceptance_model_alpha.exit.use_trade_level_action_policy is False
     assert options.execution_acceptance_model_alpha.execution.use_learned_recommendations is False
 
 
@@ -518,3 +520,5 @@ def test_handle_backtest_command_v4_resolves_base_candles_dataset(monkeypatch, t
 
     assert _handle_backtest_command(args, tmp_path / "config", {}) == 0
     assert str(captured["run_settings"].dataset_name) == "candles_api_v1"
+    assert captured["run_settings"].model_alpha.selection.use_learned_recommendations is False
+    assert captured["run_settings"].model_alpha.exit.use_trade_level_action_policy is False

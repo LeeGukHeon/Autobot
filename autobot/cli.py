@@ -2847,10 +2847,25 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             model_alpha_exit_defaults.get("expected_exit_slippage_bps")
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
-        exit_use_learned_exit_mode = bool(model_alpha_exit_defaults.get("use_learned_exit_mode", True))
-        exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
+        exit_use_learned_exit_mode = bool(
+            getattr(args, "use_learned_exit_mode", model_alpha_exit_defaults.get("use_learned_exit_mode", True))
+        )
+        exit_use_learned_hold_bars = bool(
+            getattr(args, "use_learned_hold_bars", model_alpha_exit_defaults.get("use_learned_hold_bars", True))
+        )
         exit_use_learned_risk_recommendations = bool(
-            model_alpha_exit_defaults.get("use_learned_risk_recommendations", True)
+            getattr(
+                args,
+                "use_learned_risk_recommendations",
+                model_alpha_exit_defaults.get("use_learned_risk_recommendations", True),
+            )
+        )
+        exit_use_trade_level_action_policy = bool(
+            getattr(
+                args,
+                "use_trade_level_action_policy",
+                model_alpha_exit_defaults.get("use_trade_level_action_policy", True),
+            )
         )
         exit_risk_scaling_mode = str(model_alpha_exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed"
         exit_risk_vol_feature = str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip() or "rv_12"
@@ -2956,6 +2971,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                     use_learned_exit_mode=exit_use_learned_exit_mode,
                     use_learned_hold_bars=exit_use_learned_hold_bars,
                     use_learned_risk_recommendations=exit_use_learned_risk_recommendations,
+                    use_trade_level_action_policy=exit_use_trade_level_action_policy,
                     risk_scaling_mode=exit_risk_scaling_mode,
                     risk_vol_feature=exit_risk_vol_feature,
                     tp_vol_multiplier=exit_tp_vol_multiplier,
@@ -3262,10 +3278,25 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             model_alpha_exit_defaults.get("expected_exit_slippage_bps")
         )
         expected_exit_fee_bps_value = _optional_float_value(model_alpha_exit_defaults.get("expected_exit_fee_bps"))
-        exit_use_learned_exit_mode = bool(model_alpha_exit_defaults.get("use_learned_exit_mode", True))
-        exit_use_learned_hold_bars = bool(model_alpha_exit_defaults.get("use_learned_hold_bars", True))
+        exit_use_learned_exit_mode = bool(
+            getattr(args, "use_learned_exit_mode", model_alpha_exit_defaults.get("use_learned_exit_mode", True))
+        )
+        exit_use_learned_hold_bars = bool(
+            getattr(args, "use_learned_hold_bars", model_alpha_exit_defaults.get("use_learned_hold_bars", True))
+        )
         exit_use_learned_risk_recommendations = bool(
-            model_alpha_exit_defaults.get("use_learned_risk_recommendations", True)
+            getattr(
+                args,
+                "use_learned_risk_recommendations",
+                model_alpha_exit_defaults.get("use_learned_risk_recommendations", True),
+            )
+        )
+        exit_use_trade_level_action_policy = bool(
+            getattr(
+                args,
+                "use_trade_level_action_policy",
+                model_alpha_exit_defaults.get("use_trade_level_action_policy", True),
+            )
         )
         exit_risk_scaling_mode = str(model_alpha_exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed"
         exit_risk_vol_feature = str(model_alpha_exit_defaults.get("risk_vol_feature", "rv_12")).strip() or "rv_12"
@@ -3414,6 +3445,7 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     use_learned_exit_mode=exit_use_learned_exit_mode,
                     use_learned_hold_bars=exit_use_learned_hold_bars,
                     use_learned_risk_recommendations=exit_use_learned_risk_recommendations,
+                    use_trade_level_action_policy=exit_use_trade_level_action_policy,
                     risk_scaling_mode=exit_risk_scaling_mode,
                     risk_vol_feature=exit_risk_vol_feature,
                     tp_vol_multiplier=exit_tp_vol_multiplier,
@@ -5320,6 +5352,7 @@ def _build_model_alpha_settings_from_defaults(defaults: dict[str, Any]) -> Model
             use_learned_exit_mode=bool(exit_defaults.get("use_learned_exit_mode", True)),
             use_learned_hold_bars=bool(exit_defaults.get("use_learned_hold_bars", True)),
             use_learned_risk_recommendations=bool(exit_defaults.get("use_learned_risk_recommendations", True)),
+            use_trade_level_action_policy=bool(exit_defaults.get("use_trade_level_action_policy", True)),
             risk_scaling_mode=str(exit_defaults.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
             risk_vol_feature=str(exit_defaults.get("risk_vol_feature", "rv_12")).strip() or "rv_12",
             tp_vol_multiplier=_optional_float_value(exit_defaults.get("tp_vol_multiplier")),
