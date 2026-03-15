@@ -42,6 +42,7 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
         wrapper_path = tmp_path / "systemctl.cmd"
         wrapper_path.write_text(
             "@echo off\r\n"
+            "if not \"%FAKE_SYSTEMCTL_LOG%\"==\"\" echo %*>>\"%FAKE_SYSTEMCTL_LOG%\"\r\n"
             "if \"%1\"==\"is-active\" goto is_active\r\n"
             "exit /b 0\r\n"
             ":is_active\r\n"
@@ -56,10 +57,50 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
         wrapper_path = tmp_path / "systemctl"
         wrapper_path.write_text(
             "#!/bin/sh\n"
+            "if [ -n \"$FAKE_SYSTEMCTL_LOG\" ]; then\n"
+            "  echo \"$@\" >> \"$FAKE_SYSTEMCTL_LOG\"\n"
+            "fi\n"
             "if [ \"$1\" = \"is-active\" ]; then\n"
             "  exit 1\n"
             "fi\n"
             "exit 0\n",
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def _make_fake_python(tmp_path: Path, compare_payload: dict | None = None) -> Path:
+    payload_json = json.dumps(compare_payload or {"decision": {"promote": True, "decision": "promote_challenger"}})
+    if os.name == "nt":
+        wrapper_path = tmp_path / "fake_python.cmd"
+        wrapper_path.write_text(
+            "@echo off\r\n"
+            "set args=%*\r\n"
+            "echo %args% | findstr /C:\"autobot.common.paper_lane_evidence\" >nul\r\n"
+            "if not errorlevel 1 (\r\n"
+            f"  echo {payload_json}\r\n"
+            "  exit /b 0\r\n"
+            ")\r\n"
+            "echo %args% | findstr /C:\"autobot.cli model promote\" >nul\r\n"
+            "if not errorlevel 1 (\r\n"
+            "  echo {}\r\n"
+            "  exit /b 0\r\n"
+            ")\r\n"
+            "echo {}\r\n"
+            "exit /b 0\r\n",
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "fake_python"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            "args=\"$*\"\n"
+            "case \"$args\" in\n"
+            f"  *autobot.common.paper_lane_evidence*) printf '%s\\n' '{payload_json}' ;;\n"
+            "  *'autobot.cli model promote'*) printf '{}\\n' ;;\n"
+            "  *) printf '{}\\n' ;;\n"
+            "esac\n",
             encoding="utf-8",
         )
         wrapper_path.chmod(0o755)
@@ -517,3 +558,84 @@ def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None
     assert latest["steps"]["promote_previous_challenger"]["reason"] == "BOOTSTRAP_ONLY_POLICY"
     assert latest["steps"]["promote_previous_challenger"]["promotion_eligible"] is False
     assert not state_path.exists()
+
+
+def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-15",
+                "candidate_run_id": "candidate-run-promote",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rollout_dir = project_root / "logs" / "live_rollout"
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    (rollout_dir / "latest.autobot_live_alpha_service.json").write_text(
+        json.dumps(
+            {
+                "contract": {
+                    "armed": True,
+                    "mode": "live",
+                    "target_unit": "autobot-live-alpha.service",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    systemctl_log = tmp_path / "systemctl.log"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "promote_only",
+            "-PromotionTargetUnits",
+            "autobot-live-alpha.service",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_ACTIVE_UNITS": "",
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+        },
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    promote_step = latest["steps"]["promote_previous_challenger"]
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8")
+
+    assert promote_step["promoted"] is True
+    assert promote_step["restarted_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
+    assert promote_step["started_from_inactive_units"] == ["autobot-live-alpha.service"]
+    assert promote_step["skipped_units"] == []
+    assert "restart autobot-live-alpha.service" in systemctl_calls

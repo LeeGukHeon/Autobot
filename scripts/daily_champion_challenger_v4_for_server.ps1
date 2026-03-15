@@ -505,6 +505,7 @@ if ($runPromotionPhase) {
                 )
                 $promotionPerformed = $true
                 $restartedUnits = New-Object System.Collections.Generic.List[string]
+                $startedFromInactiveUnits = New-Object System.Collections.Generic.List[string]
                 $skippedUnits = New-Object System.Collections.Generic.List[object]
                 Restart-Unit -UnitName $ChampionUnitName
                 $restartedUnits.Add($ChampionUnitName) | Out-Null
@@ -525,22 +526,22 @@ if ($runPromotionPhase) {
                         }) | Out-Null
                         continue
                     }
-                    if (Test-SystemdUnitActive -UnitName $trimmedUnit) {
-                        Restart-Unit -UnitName $trimmedUnit
-                        $restartedUnits.Add($trimmedUnit) | Out-Null
-                    } else {
-                        $skippedUnits.Add([ordered]@{
-                            unit = $trimmedUnit
-                            reason = "UNIT_NOT_ACTIVE"
-                            is_live_target = [bool](Get-PropValue -ObjectValue $targetPolicy -Name "is_live_target" -DefaultValue $false)
-                        }) | Out-Null
+                    $targetWasActive = Test-SystemdUnitActive -UnitName $trimmedUnit
+                    Restart-Unit -UnitName $trimmedUnit
+                    $restartedUnits.Add($trimmedUnit) | Out-Null
+                    if (-not $targetWasActive) {
+                        $startedFromInactiveUnits.Add($trimmedUnit) | Out-Null
                     }
                 }
-                $primaryLiveTargetUnit = @(
+                $primaryLiveTargetUnit = [string](
                     $resolvedPromotionTargetUnits |
                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Trim().StartsWith("autobot-live") } |
                         Select-Object -First 1
                 )
+                $restartedUnitsArray = @($restartedUnits.ToArray())
+                $startedFromInactiveUnitsArray = @($startedFromInactiveUnits.ToArray())
+                $configuredTargetUnitsArray = @($resolvedPromotionTargetUnits)
+                $skippedUnitsArray = @($skippedUnits.ToArray())
                 $promoteCutover = [ordered]@{
                     batch_date = $resolvedBatchDate
                     previous_champion_run_id = $championRunIdAtStart
@@ -548,10 +549,11 @@ if ($runPromotionPhase) {
                     promoted_at_ts_ms = $promotedAtTsMs
                     promoted_at_utc = (Get-Date).ToUniversalTime().ToString("o")
                     champion_unit = $ChampionUnitName
-                    target_units = @($restartedUnits)
-                    configured_target_units = @($resolvedPromotionTargetUnits)
-                    skipped_target_units = @($skippedUnits)
-                    live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot -UnitName ([string]$primaryLiveTargetUnit))) -Name "contract" -DefaultValue @{})
+                    target_units = $restartedUnitsArray
+                    started_from_inactive_units = $startedFromInactiveUnitsArray
+                    configured_target_units = $configuredTargetUnitsArray
+                    skipped_target_units = $skippedUnitsArray
+                    live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot -UnitName $primaryLiveTargetUnit)) -Name "contract" -DefaultValue @{})
                 }
                 New-Item -ItemType Directory -Force -Path $promoteCutoverArchiveRoot | Out-Null
                 $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
@@ -563,8 +565,9 @@ if ($runPromotionPhase) {
                     output_preview = $promoteExec.Output
                     promoted = $true
                     candidate_run_id = $candidateRunId
-                    restarted_units = @($restartedUnits)
-                    skipped_units = @($skippedUnits)
+                    restarted_units = $restartedUnitsArray
+                    started_from_inactive_units = $startedFromInactiveUnitsArray
+                    skipped_units = $skippedUnitsArray
                     cutover_artifact = $promoteCutoverLatestPath
                 }
             } else {
