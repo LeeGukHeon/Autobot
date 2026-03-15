@@ -181,6 +181,16 @@ def build_trainer_research_evidence_from_promotion_v4(
     execution_present = bool(checks.get("execution_acceptance_present", False))
     execution_comparable = bool(checks.get("execution_balanced_pareto_comparable", False))
     execution_candidate_edge = bool(checks.get("execution_balanced_pareto_candidate_edge", False))
+    risk_control_required = bool(checks.get("risk_control_required", False))
+    risk_control_present = bool(checks.get("risk_control_present", False))
+    risk_control_ready = bool(checks.get("risk_control_ready", False))
+    risk_control_live_gate_enabled = bool(checks.get("risk_control_live_gate_enabled", False))
+    risk_control_size_ladder_ready = bool(checks.get("risk_control_size_ladder_ready", False))
+    risk_control_online_adaptation_enabled = bool(checks.get("risk_control_online_adaptation_enabled", False))
+    risk_control_martingale_enabled = bool(checks.get("risk_control_martingale_enabled", False))
+    risk_control_density_ratio_active = bool(checks.get("risk_control_density_ratio_active", False))
+    risk_control_governance_pass = bool(checks.get("risk_control_governance_pass", not risk_control_required))
+    risk_control_doc = dict((promotion or {}).get("risk_control_acceptance") or {})
 
     offline_decision = str(offline_compare.get("decision", "")).strip()
     spa_like_decision = str(spa_like_doc.get("decision", "")).strip()
@@ -235,9 +245,33 @@ def build_trainer_research_evidence_from_promotion_v4(
             elif not execution_candidate_edge:
                 execution_pass = False
                 reasons.append("EXECUTION_NOT_CANDIDATE_EDGE")
+    risk_control_pass = True
+    if risk_control_required:
+        risk_control_pass = bool(risk_control_governance_pass)
+        if not risk_control_present:
+            reasons.append("NO_RISK_CONTROL_CONTRACT")
+        elif not risk_control_ready:
+            reasons.append("RISK_CONTROL_NOT_READY")
+        else:
+            if not risk_control_live_gate_enabled:
+                reasons.append("RISK_CONTROL_LIVE_GATE_DISABLED")
+            if not risk_control_size_ladder_ready:
+                reasons.append("RISK_CONTROL_SIZE_LADDER_NOT_READY")
+            if not risk_control_online_adaptation_enabled:
+                reasons.append("RISK_CONTROL_ONLINE_ADAPTATION_DISABLED")
+            if not risk_control_martingale_enabled:
+                reasons.append("RISK_CONTROL_MARTINGALE_DISABLED")
+            if not risk_control_density_ratio_active:
+                reasons.append("RISK_CONTROL_DENSITY_RATIO_DISABLED")
 
-    available = walk_forward_present or execution_present or bool(offline_decision) or bool(execution_decision)
-    passed = offline_pass and execution_pass
+    available = (
+        walk_forward_present
+        or execution_present
+        or bool(offline_decision)
+        or bool(execution_decision)
+        or risk_control_present
+    )
+    passed = offline_pass and execution_pass and risk_control_pass
     if available and not reasons:
         reasons = ["TRAINER_EVIDENCE_PASS"]
 
@@ -249,6 +283,7 @@ def build_trainer_research_evidence_from_promotion_v4(
         "pass": passed,
         "offline_pass": offline_pass,
         "execution_pass": execution_pass,
+        "risk_control_pass": risk_control_pass,
         "reasons": reasons,
         "checks": {
             "existing_champion_present": existing_champion_present,
@@ -269,6 +304,15 @@ def build_trainer_research_evidence_from_promotion_v4(
             "execution_acceptance_present": execution_present,
             "execution_comparable": execution_comparable,
             "execution_candidate_edge": execution_candidate_edge,
+            "risk_control_required": risk_control_required,
+            "risk_control_present": risk_control_present,
+            "risk_control_ready": risk_control_ready,
+            "risk_control_live_gate_enabled": risk_control_live_gate_enabled,
+            "risk_control_size_ladder_ready": risk_control_size_ladder_ready,
+            "risk_control_online_adaptation_enabled": risk_control_online_adaptation_enabled,
+            "risk_control_martingale_enabled": risk_control_martingale_enabled,
+            "risk_control_density_ratio_active": risk_control_density_ratio_active,
+            "risk_control_governance_pass": risk_control_governance_pass,
         },
         "offline": {
             "policy": str(research.get("policy", "")).strip(),
@@ -296,6 +340,22 @@ def build_trainer_research_evidence_from_promotion_v4(
             "decision": execution_decision,
             "comparable": execution_comparable,
         },
+        "risk_control": {
+            "policy": str(risk_control_doc.get("policy", "")).strip(),
+            "status": str(risk_control_doc.get("status", "")).strip(),
+            "contract_status": str(risk_control_doc.get("contract_status", "")).strip(),
+            "required": risk_control_required,
+            "present": risk_control_present,
+            "pass": risk_control_pass,
+            "governance_pass": risk_control_governance_pass,
+            "live_gate_enabled": risk_control_live_gate_enabled,
+            "size_ladder_status": str(risk_control_doc.get("size_ladder_status", "")).strip(),
+            "online_adaptation_enabled": risk_control_online_adaptation_enabled,
+            "martingale_enabled": risk_control_martingale_enabled,
+            "density_ratio_mode": str(risk_control_doc.get("density_ratio_mode", "")).strip(),
+            "density_ratio_classifier_status": str(risk_control_doc.get("density_ratio_classifier_status", "")).strip(),
+            "reasons": list(risk_control_doc.get("reasons") or []),
+        },
         "support_lane": dict(support_lane or {}),
     }
 
@@ -306,6 +366,7 @@ def manual_promotion_decision_v4(
     run_id: str,
     walk_forward: dict[str, Any],
     execution_acceptance: dict[str, Any],
+    runtime_recommendations: dict[str, Any] | None,
 ) -> dict[str, Any]:
     champion_doc = load_json(options.registry_root / options.model_family / "champion.json")
     champion_run_id = str(champion_doc.get("run_id", "")).strip()
@@ -321,6 +382,10 @@ def manual_promotion_decision_v4(
         execution_acceptance.get("compare_to_champion", {})
         if isinstance(execution_acceptance, dict)
         else {}
+    )
+    risk_control_acceptance = _resolve_risk_control_acceptance(
+        runtime_recommendations=runtime_recommendations,
+        required=True,
     )
     if not champion_run_id:
         reasons.append("NO_EXISTING_CHAMPION")
@@ -361,6 +426,8 @@ def manual_promotion_decision_v4(
             reasons.append("EXECUTION_BALANCED_PARETO_FAIL")
         elif execution_status:
             reasons.append("EXECUTION_BALANCED_PARETO_HOLD")
+    reasons.extend(list(risk_control_acceptance.get("reasons") or []))
+    reasons = _dedupe_reasons(reasons)
     return {
         "run_id": run_id,
         "promote": False,
@@ -387,6 +454,15 @@ def manual_promotion_decision_v4(
             "execution_acceptance_present": execution_status in {"candidate_only", "compared"},
             "execution_balanced_pareto_comparable": bool(execution_compare.get("comparable", False)),
             "execution_balanced_pareto_candidate_edge": str(execution_compare.get("decision", "")) == "candidate_edge",
+            "risk_control_required": bool(risk_control_acceptance.get("required", False)),
+            "risk_control_present": bool(risk_control_acceptance.get("present", False)),
+            "risk_control_ready": bool(risk_control_acceptance.get("ready", False)),
+            "risk_control_live_gate_enabled": bool(risk_control_acceptance.get("live_gate_enabled", False)),
+            "risk_control_size_ladder_ready": bool(risk_control_acceptance.get("size_ladder_ready", False)),
+            "risk_control_online_adaptation_enabled": bool(risk_control_acceptance.get("online_adaptation_enabled", False)),
+            "risk_control_martingale_enabled": bool(risk_control_acceptance.get("martingale_enabled", False)),
+            "risk_control_density_ratio_active": bool(risk_control_acceptance.get("density_ratio_active", False)),
+            "risk_control_governance_pass": bool(risk_control_acceptance.get("pass", False)),
         },
         "research_acceptance": {
             "policy": str(compare_doc.get("policy", "balanced_pareto_offline")),
@@ -397,6 +473,7 @@ def manual_promotion_decision_v4(
             "hansen_spa": hansen_spa_doc,
         },
         "execution_acceptance": execution_acceptance,
+        "risk_control_acceptance": risk_control_acceptance,
         "candidate_ref": {
             "model_ref": "latest_candidate",
             "model_family": options.model_family,
@@ -411,6 +488,7 @@ def build_duplicate_candidate_promotion_decision_v4(
     walk_forward: dict[str, Any],
     execution_acceptance: dict[str, Any],
     duplicate_artifacts: dict[str, Any],
+    runtime_recommendations: dict[str, Any] | None,
 ) -> dict[str, Any]:
     walk_summary = walk_forward.get("summary", {}) if isinstance(walk_forward, dict) else {}
     research_compare = walk_forward.get("compare_to_champion", {}) if isinstance(walk_forward, dict) else {}
@@ -418,6 +496,10 @@ def build_duplicate_candidate_promotion_decision_v4(
     white_rc_doc = walk_forward.get("white_reality_check", {}) if isinstance(walk_forward, dict) else {}
     hansen_spa_doc = walk_forward.get("hansen_spa", {}) if isinstance(walk_forward, dict) else {}
     champion_ref = str(duplicate_artifacts.get("champion_ref", "")).strip()
+    risk_control_acceptance = _resolve_risk_control_acceptance(
+        runtime_recommendations=runtime_recommendations,
+        required=False,
+    )
     return {
         "run_id": run_id,
         "promote": False,
@@ -444,6 +526,15 @@ def build_duplicate_candidate_promotion_decision_v4(
             "execution_acceptance_present": False,
             "execution_balanced_pareto_comparable": False,
             "execution_balanced_pareto_candidate_edge": False,
+            "risk_control_required": False,
+            "risk_control_present": bool(risk_control_acceptance.get("present", False)),
+            "risk_control_ready": bool(risk_control_acceptance.get("ready", False)),
+            "risk_control_live_gate_enabled": bool(risk_control_acceptance.get("live_gate_enabled", False)),
+            "risk_control_size_ladder_ready": bool(risk_control_acceptance.get("size_ladder_ready", False)),
+            "risk_control_online_adaptation_enabled": bool(risk_control_acceptance.get("online_adaptation_enabled", False)),
+            "risk_control_martingale_enabled": bool(risk_control_acceptance.get("martingale_enabled", False)),
+            "risk_control_density_ratio_active": bool(risk_control_acceptance.get("density_ratio_active", False)),
+            "risk_control_governance_pass": True,
             "duplicate_candidate": True,
         },
         "research_acceptance": {
@@ -455,9 +546,93 @@ def build_duplicate_candidate_promotion_decision_v4(
             "hansen_spa": hansen_spa_doc,
         },
         "execution_acceptance": execution_acceptance,
+        "risk_control_acceptance": risk_control_acceptance,
         "candidate_ref": {
             "model_ref": "latest_candidate",
             "model_family": options.model_family,
         },
         "duplicate_artifacts": duplicate_artifacts,
     }
+
+
+def _resolve_risk_control_acceptance(
+    *,
+    runtime_recommendations: dict[str, Any] | None,
+    required: bool,
+) -> dict[str, Any]:
+    risk_control = dict(((runtime_recommendations or {}).get("risk_control")) or {})
+    live_gate = dict(risk_control.get("live_gate") or {})
+    size_ladder = dict(risk_control.get("size_ladder") or {})
+    online_adaptation = dict(risk_control.get("online_adaptation") or {})
+    density_ratio = dict((((risk_control.get("weighting") or {}).get("density_ratio")) or {}))
+    present = bool(risk_control)
+    status = str(risk_control.get("status", "")).strip().lower()
+    contract_status = str(risk_control.get("contract_status", "")).strip().lower()
+    ready = present and status == "ready" and contract_status != "invalid"
+    live_gate_enabled = bool(live_gate.get("enabled", False))
+    size_ladder_ready = str(size_ladder.get("status", "")).strip().lower() == "ready"
+    online_adaptation_enabled = bool(online_adaptation.get("enabled", False))
+    martingale_enabled = bool(online_adaptation.get("martingale_enabled", False))
+    density_ratio_active = bool(str(density_ratio.get("mode", "")).strip())
+    governance_pass = (
+        (not required)
+        or (
+            ready
+            and live_gate_enabled
+            and size_ladder_ready
+            and online_adaptation_enabled
+            and martingale_enabled
+            and density_ratio_active
+        )
+    )
+    reasons: list[str] = []
+    if required:
+        if not present:
+            reasons.append("NO_RISK_CONTROL_CONTRACT")
+        elif not ready:
+            if contract_status == "invalid":
+                reasons.append("RISK_CONTROL_CONTRACT_INVALID")
+            else:
+                reasons.append("RISK_CONTROL_NOT_READY")
+        else:
+            reasons.append("RISK_CONTROL_LIVE_GATE_PASS" if live_gate_enabled else "RISK_CONTROL_LIVE_GATE_DISABLED")
+            reasons.append("RISK_CONTROL_SIZE_LADDER_PASS" if size_ladder_ready else "RISK_CONTROL_SIZE_LADDER_NOT_READY")
+            reasons.append(
+                "RISK_CONTROL_ONLINE_ADAPTATION_PASS"
+                if online_adaptation_enabled
+                else "RISK_CONTROL_ONLINE_ADAPTATION_DISABLED"
+            )
+            reasons.append("RISK_CONTROL_MARTINGALE_PASS" if martingale_enabled else "RISK_CONTROL_MARTINGALE_DISABLED")
+            reasons.append("RISK_CONTROL_DENSITY_RATIO_PASS" if density_ratio_active else "RISK_CONTROL_DENSITY_RATIO_DISABLED")
+            reasons.append("RISK_CONTROL_GOVERNANCE_PASS" if governance_pass else "RISK_CONTROL_GOVERNANCE_FAIL")
+    else:
+        reasons.append("RISK_CONTROL_IGNORED_BY_POLICY")
+    return {
+        "policy": str(risk_control.get("policy", "")).strip(),
+        "required": bool(required),
+        "present": bool(present),
+        "status": str(risk_control.get("status", "")).strip(),
+        "contract_status": str(risk_control.get("contract_status", "")).strip(),
+        "ready": bool(ready),
+        "pass": bool(governance_pass),
+        "selected_threshold": risk_control.get("selected_threshold"),
+        "selected_coverage": risk_control.get("selected_coverage"),
+        "live_gate_enabled": bool(live_gate_enabled),
+        "size_ladder_status": str(size_ladder.get("status", "")).strip(),
+        "size_ladder_ready": bool(size_ladder_ready),
+        "online_adaptation_enabled": bool(online_adaptation_enabled),
+        "martingale_enabled": bool(martingale_enabled),
+        "density_ratio_mode": str(density_ratio.get("mode", "")).strip(),
+        "density_ratio_active": bool(density_ratio_active),
+        "density_ratio_classifier_status": str(density_ratio.get("classifier_status", "")).strip(),
+        "reasons": _dedupe_reasons(reasons),
+    }
+
+
+def _dedupe_reasons(reasons: list[str] | tuple[str, ...]) -> list[str]:
+    deduped: list[str] = []
+    for item in reasons:
+        text = str(item).strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped

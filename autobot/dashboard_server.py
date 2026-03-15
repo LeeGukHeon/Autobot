@@ -1039,7 +1039,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
             "recent_trades": [
                 _summarize_live_trade_journal(row)
                 for row in deduped_trade_journal
-                if str(row.get("status") or "").strip().upper() == "CLOSED"
+                if str(row.get("status") or "").strip().upper() in {"OPEN", "CLOSED", "CANCELLED_ENTRY"}
             ][:8],
             "today_trade_summary": today_trade_summary,
             "active_risk_plans": active_risk_plan_payloads,
@@ -1102,6 +1102,7 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
     risk_family = dict(exit_payload.get("risk_family") or {})
     family_compare = dict(exit_payload.get("family_compare") or {})
     trade_action = dict(normalized.get("trade_action") or {})
+    risk_control = dict(normalized.get("risk_control") or {})
     trade_action_summary = {
         "status": trade_action.get("status"),
         "source": trade_action.get("source"),
@@ -1188,6 +1189,62 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
         "contract_issues": list(_dig(normalized, "exit", "contract_issues") or []),
         "exit_mode_compare": _summarize_exit_mode_compare(exit_payload),
         "trade_action": trade_action_summary,
+        "risk_control": {
+            "status": risk_control.get("status"),
+            "contract_status": risk_control.get("contract_status"),
+            "decision_metric_name": risk_control.get("decision_metric_name"),
+            "selected_threshold": _coerce_float(risk_control.get("selected_threshold")),
+            "selected_coverage": _coerce_int(risk_control.get("selected_coverage")),
+            "selected_nonpositive_rate_ucb": _coerce_float(risk_control.get("selected_nonpositive_rate_ucb")),
+            "selected_severe_loss_rate_ucb": _coerce_float(risk_control.get("selected_severe_loss_rate_ucb")),
+            "live_gate_enabled": bool(_dig(risk_control, "live_gate", "enabled")),
+            "live_gate_metric_name": _dig(risk_control, "live_gate", "metric_name"),
+            "live_gate_skip_reason_code": _dig(risk_control, "live_gate", "skip_reason_code"),
+            "subgroup_feature_name": _dig(risk_control, "subgroup_family", "feature_name"),
+            "subgroup_bucket_count_effective": _coerce_int(_dig(risk_control, "subgroup_family", "bucket_count_effective")),
+            "subgroup_min_coverage": _coerce_int(_dig(risk_control, "subgroup_family", "min_coverage")),
+            "size_ladder_status": _dig(risk_control, "size_ladder", "status"),
+            "size_ladder_global_max_multiplier": _coerce_float(_dig(risk_control, "size_ladder", "global_max_multiplier")),
+            "weighting_mode": _dig(risk_control, "weighting", "mode"),
+            "weighting_half_life_windows": _coerce_float(_dig(risk_control, "weighting", "half_life_windows")),
+            "weighting_covariate_similarity_mode": _dig(risk_control, "weighting", "covariate_similarity", "mode"),
+            "weighting_density_ratio_mode": _dig(risk_control, "weighting", "density_ratio", "mode"),
+            "weighting_density_ratio_classifier_status": _dig(
+                risk_control, "weighting", "density_ratio", "classifier_status"
+            ),
+            "weighting_density_ratio_clip_fraction": _coerce_float(
+                _dig(risk_control, "weighting", "density_ratio", "clip_fraction")
+            ),
+            "online_adaptation_mode": _dig(risk_control, "online_adaptation", "mode"),
+            "online_adaptation_lookback_trades": _coerce_int(_dig(risk_control, "online_adaptation", "lookback_trades")),
+            "online_adaptation_martingale_halt_threshold": _coerce_float(
+                _dig(risk_control, "online_adaptation", "martingale_halt_threshold")
+            ),
+            "online_adaptation_martingale_escalation_threshold": _coerce_float(
+                _dig(risk_control, "online_adaptation", "martingale_escalation_threshold")
+            ),
+            "online_adaptation_martingale_clear_threshold": _coerce_float(
+                _dig(risk_control, "online_adaptation", "martingale_clear_threshold")
+            ),
+            "online_adaptation_martingale_halt_reason_code": _dig(
+                risk_control, "online_adaptation", "martingale_halt_reason_code"
+            ),
+            "online_adaptation_martingale_critical_reason_code": _dig(
+                risk_control, "online_adaptation", "martingale_critical_reason_code"
+            ),
+            "selected_subgroup_results": [
+                {
+                    "bucket_index": _coerce_int(item.get("bucket_index")),
+                    "label": item.get("label"),
+                    "coverage": _coerce_int(item.get("coverage")),
+                    "nonpositive_rate_ucb": _coerce_float(item.get("nonpositive_rate_ucb")),
+                    "severe_loss_rate_ucb": _coerce_float(item.get("severe_loss_rate_ucb")),
+                    "status": item.get("status"),
+                }
+                for item in (risk_control.get("selected_subgroup_results") or [])[:6]
+                if isinstance(item, dict)
+            ],
+        },
     }
 
 

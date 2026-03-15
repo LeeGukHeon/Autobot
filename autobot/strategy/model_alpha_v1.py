@@ -12,6 +12,11 @@ import polars as pl
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.models.dataset_loader import FeatureTsGroup
+from autobot.models.execution_risk_control import (
+    normalize_execution_risk_control_payload,
+    resolve_execution_risk_control_decision,
+    resolve_execution_risk_control_size_decision,
+)
 from autobot.models.predictor import ModelPredictor
 from autobot.models.selection_policy import DEFAULT_SELECTION_POLICY_MODE
 from autobot.models.trade_action_policy import normalize_trade_action_policy, resolve_trade_action
@@ -114,6 +119,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         )
         self._trade_action_policy = normalize_trade_action_policy(
             (getattr(predictor, "runtime_recommendations", {}) or {}).get("trade_action")
+        )
+        self._risk_control_policy = normalize_execution_risk_control_payload(
+            (getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control")
         )
         self._runtime_recommendation_state["trade_action_policy_status"] = str(
             self._trade_action_policy.get("status", "missing")
@@ -407,16 +415,49 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 base_settings=self._settings,
                 decision=trade_action_decision,
             )
-            notional_multiplier = (
+            requested_notional_multiplier = (
                 float(trade_action_decision.get("recommended_notional_multiplier", base_notional_multiplier))
                 if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
                 else float(base_notional_multiplier)
             )
-            if (
-                isinstance(trade_action_decision, dict)
-                and "recommended_notional_multiplier" in trade_action_decision
-                and float(notional_multiplier) <= 0.0
+            risk_control_decision = _resolve_runtime_risk_control_decision(
+                payload=self._risk_control_policy,
+                selection_score=float(row.get("model_prob", 0.0)),
+                trade_action=trade_action_decision,
+                enabled=bool(self._settings.exit.use_trade_level_action_policy),
+            )
+            if isinstance(risk_control_decision, dict) and bool(risk_control_decision.get("enabled")) and not bool(
+                risk_control_decision.get("allowed")
             ):
+                _inc_reason(
+                    skipped_reasons,
+                    str(risk_control_decision.get("reason_code", "RISK_CONTROL_BELOW_THRESHOLD")).strip()
+                    or "RISK_CONTROL_BELOW_THRESHOLD",
+                )
+                continue
+            size_ladder_decision = _resolve_runtime_risk_control_size_decision(
+                payload=self._risk_control_policy,
+                trade_action=trade_action_decision,
+                requested_multiplier=requested_notional_multiplier,
+                enabled=bool(self._settings.exit.use_trade_level_action_policy),
+            )
+            notional_multiplier = (
+                float(size_ladder_decision.get("resolved_multiplier"))
+                if isinstance(size_ladder_decision, dict) and size_ladder_decision.get("resolved_multiplier") is not None
+                else float(requested_notional_multiplier)
+            )
+            if (
+                isinstance(size_ladder_decision, dict)
+                and bool(size_ladder_decision.get("enabled"))
+                and not bool(size_ladder_decision.get("allowed"))
+            ):
+                _inc_reason(
+                    skipped_reasons,
+                    str(size_ladder_decision.get("reason_code", "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER")).strip()
+                    or "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER",
+                )
+                continue
+            if float(notional_multiplier) <= 0.0:
                 _inc_reason(skipped_reasons, "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE")
                 continue
             intents.append(
@@ -440,16 +481,24 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "selection_policy_mode": str(selection_mode),
                         "selection_policy_source": str(selection_policy_source),
                         "sizing_mode": (
-                            "trade_action_policy"
-                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                            else str(self._settings.position.sizing_mode)
+                            "risk_control_size_ladder"
+                            if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                            else (
+                                "trade_action_policy"
+                                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                                else str(self._settings.position.sizing_mode)
+                            )
                         ),
                         "base_notional_multiplier": float(base_notional_multiplier),
                         "notional_multiplier": float(notional_multiplier) * float(operational_risk_multiplier),
                         "notional_multiplier_source": (
-                            "trade_action_policy"
-                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                            else str(self._settings.position.sizing_mode)
+                            "risk_control_size_ladder"
+                            if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                            else (
+                                "trade_action_policy"
+                                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                                else str(self._settings.position.sizing_mode)
+                            )
                         ),
                         "model_exit_plan": build_model_alpha_exit_plan_payload(
                             settings=effective_exit_settings,
@@ -461,6 +510,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                             self._runtime_recommendation_state
                         ),
                         "trade_action": dict(trade_action_decision or {}),
+                        "risk_control_static": dict(risk_control_decision or {}),
+                        "size_ladder_static": dict(size_ladder_decision or {}),
                         "operational_overlay": dict(operational_state),
                     },
                 )
@@ -697,6 +748,44 @@ def _resolve_trade_action_decision(
         policy,
         selection_score=float(selection_score),
         row=row,
+    )
+    if not isinstance(decision, dict) or not decision:
+        return None
+    return decision
+
+
+def _resolve_runtime_risk_control_decision(
+    *,
+    payload: dict[str, Any] | None,
+    selection_score: float,
+    trade_action: dict[str, Any] | None,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    decision = resolve_execution_risk_control_decision(
+        risk_control_payload=payload,
+        selection_score=float(selection_score),
+        trade_action=trade_action,
+    )
+    if not isinstance(decision, dict) or not decision:
+        return None
+    return decision
+
+
+def _resolve_runtime_risk_control_size_decision(
+    *,
+    payload: dict[str, Any] | None,
+    trade_action: dict[str, Any] | None,
+    requested_multiplier: float,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    decision = resolve_execution_risk_control_size_decision(
+        risk_control_payload=payload,
+        trade_action=trade_action,
+        requested_multiplier=float(requested_multiplier),
     )
     if not isinstance(decision, dict) or not decision:
         return None

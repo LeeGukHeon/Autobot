@@ -341,6 +341,83 @@ def resolve_runtime_model_alpha_settings(
         except (TypeError, ValueError):
             pass
 
+    risk_control_doc = runtime_recommendations.get("risk_control")
+    if isinstance(risk_control_doc, dict):
+        contract_status = str(risk_control_doc.get("contract_status", "")).strip()
+        contract_issues = [
+            str(item).strip() for item in (risk_control_doc.get("contract_issues") or []) if str(item).strip()
+        ]
+        live_gate = dict(risk_control_doc.get("live_gate") or {})
+        if contract_status:
+            state["risk_control_contract_status"] = contract_status
+        if contract_issues:
+            state["risk_control_contract_issues"] = contract_issues
+        state["risk_control"] = {
+            "status": str(risk_control_doc.get("status", "")).strip(),
+            "decision_metric_name": str(risk_control_doc.get("decision_metric_name", "")).strip(),
+            "selected_threshold": _safe_optional_float(risk_control_doc.get("selected_threshold")),
+            "selected_coverage": _safe_optional_int(risk_control_doc.get("selected_coverage")),
+            "selected_nonpositive_rate_ucb": _safe_optional_float(
+                risk_control_doc.get("selected_nonpositive_rate_ucb")
+            ),
+            "selected_severe_loss_rate_ucb": _safe_optional_float(
+                risk_control_doc.get("selected_severe_loss_rate_ucb")
+            ),
+            "live_gate_enabled": bool(live_gate.get("enabled", False)),
+            "live_gate_metric_name": str(live_gate.get("metric_name", "")).strip(),
+            "live_gate_skip_reason_code": str(live_gate.get("skip_reason_code", "")).strip(),
+            "subgroup_feature_name": str(((risk_control_doc.get("subgroup_family") or {}).get("feature_name")) or "").strip(),
+            "subgroup_bucket_count_effective": _safe_optional_int(
+                ((risk_control_doc.get("subgroup_family") or {}).get("bucket_count_effective"))
+            ),
+            "subgroup_min_coverage": _safe_optional_int(
+                ((risk_control_doc.get("subgroup_family") or {}).get("min_coverage"))
+            ),
+            "size_ladder_status": str(((risk_control_doc.get("size_ladder") or {}).get("status")) or "").strip(),
+            "size_ladder_global_max_multiplier": _safe_optional_float(
+                ((risk_control_doc.get("size_ladder") or {}).get("global_max_multiplier"))
+            ),
+            "size_ladder_feature_name": str(((risk_control_doc.get("size_ladder") or {}).get("feature_name")) or "").strip(),
+            "weighting_mode": str(((risk_control_doc.get("weighting") or {}).get("mode")) or "").strip(),
+            "weighting_half_life_windows": _safe_optional_float(
+                ((risk_control_doc.get("weighting") or {}).get("half_life_windows"))
+            ),
+            "weighting_covariate_similarity_mode": str(
+                (((risk_control_doc.get("weighting") or {}).get("covariate_similarity") or {}).get("mode")) or ""
+            ).strip(),
+            "weighting_density_ratio_mode": str(
+                (((risk_control_doc.get("weighting") or {}).get("density_ratio") or {}).get("mode")) or ""
+            ).strip(),
+            "weighting_density_ratio_classifier_status": str(
+                (((risk_control_doc.get("weighting") or {}).get("density_ratio") or {}).get("classifier_status")) or ""
+            ).strip(),
+            "weighting_density_ratio_clip_fraction": _safe_optional_float(
+                (((risk_control_doc.get("weighting") or {}).get("density_ratio") or {}).get("clip_fraction"))
+            ),
+            "online_adaptation_mode": str(((risk_control_doc.get("online_adaptation") or {}).get("mode")) or "").strip(),
+            "online_adaptation_lookback_trades": _safe_optional_int(
+                ((risk_control_doc.get("online_adaptation") or {}).get("lookback_trades"))
+            ),
+            "online_adaptation_max_step_up": _safe_optional_int(
+                ((risk_control_doc.get("online_adaptation") or {}).get("max_step_up"))
+            ),
+            "online_adaptation_martingale_halt_threshold": _safe_optional_float(
+                ((risk_control_doc.get("online_adaptation") or {}).get("martingale_halt_threshold"))
+            ),
+            "online_adaptation_martingale_escalation_threshold": _safe_optional_float(
+                ((risk_control_doc.get("online_adaptation") or {}).get("martingale_escalation_threshold"))
+            ),
+            "online_adaptation_martingale_clear_threshold": _safe_optional_float(
+                ((risk_control_doc.get("online_adaptation") or {}).get("martingale_clear_threshold"))
+            ),
+            "online_adaptation_martingale_halt_reason_code": str(
+                ((risk_control_doc.get("online_adaptation") or {}).get("martingale_halt_reason_code")) or ""
+            ).strip(),
+            "online_adaptation_martingale_critical_reason_code": str(
+                ((risk_control_doc.get("online_adaptation") or {}).get("martingale_critical_reason_code")) or ""
+            ).strip(),
+        }
+
     return resolved, state
 
 
@@ -418,5 +495,14 @@ def _safe_optional_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None

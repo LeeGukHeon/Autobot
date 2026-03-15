@@ -11,6 +11,7 @@ from autobot.features.feature_spec import parse_date_to_ts_ms
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaExitSettings
 
 from .execution_acceptance import ExecutionAcceptanceOptions
+from .execution_risk_control import build_execution_risk_control_from_oos_rows
 
 
 def build_duplicate_candidate_execution_acceptance(
@@ -124,6 +125,84 @@ def build_trade_action_policy_v4(
         risk_policy_template=risk_policy_template,
         size_multiplier_min=float(options.execution_acceptance_model_alpha.position.size_multiplier_min),
         size_multiplier_max=float(options.execution_acceptance_model_alpha.position.size_multiplier_max),
+    )
+
+
+def build_execution_risk_control_v4(
+    *,
+    options: Any,
+    runtime_recommendations: dict[str, Any],
+    selection_calibration: dict[str, Any],
+    oos_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    exit_doc = dict((runtime_recommendations or {}).get("exit") or {})
+    trade_action_doc = dict((runtime_recommendations or {}).get("trade_action") or {})
+    base_exit = options.execution_acceptance_model_alpha.exit
+    base_execution = options.execution_acceptance_model_alpha.execution
+    hold_bars = max(
+        int(((exit_doc.get("grid_point") or {}).get("hold_bars", exit_doc.get("recommended_hold_bars", base_exit.hold_bars)) or base_exit.hold_bars)),
+        1,
+    )
+    risk_hold_bars = max(
+        int(
+            ((exit_doc.get("risk_grid_point") or {}).get("hold_bars", exit_doc.get("recommended_hold_bars", hold_bars)) or hold_bars)
+        ),
+        1,
+    )
+    expected_exit_fee_rate = _resolve_trade_action_expected_exit_fee_rate(base_exit)
+    expected_exit_slippage_bps = _resolve_trade_action_expected_exit_slippage_bps(
+        exit_settings=base_exit,
+        execution_settings=base_execution,
+    )
+    hold_policy_template = {
+        "mode": "hold",
+        "hold_bars": int(hold_bars),
+        "risk_scaling_mode": str(base_exit.risk_scaling_mode),
+        "risk_vol_feature": str(base_exit.risk_vol_feature),
+        "tp_vol_multiplier": base_exit.tp_vol_multiplier,
+        "sl_vol_multiplier": base_exit.sl_vol_multiplier,
+        "trailing_vol_multiplier": base_exit.trailing_vol_multiplier,
+        "tp_pct": float(base_exit.tp_pct),
+        "sl_pct": float(base_exit.sl_pct),
+        "trailing_pct": float(base_exit.trailing_pct),
+        "expected_exit_fee_rate": float(expected_exit_fee_rate),
+        "expected_exit_slippage_bps": float(expected_exit_slippage_bps),
+    }
+    risk_policy_template = {
+        "mode": "risk",
+        "hold_bars": int(risk_hold_bars),
+        "risk_scaling_mode": str(
+            ((exit_doc.get("risk_grid_point") or {}).get("risk_scaling_mode", exit_doc.get("recommended_risk_scaling_mode", base_exit.risk_scaling_mode)))
+        ),
+        "risk_vol_feature": str(
+            ((exit_doc.get("risk_grid_point") or {}).get("risk_vol_feature", exit_doc.get("recommended_risk_vol_feature", base_exit.risk_vol_feature)))
+        ),
+        "tp_vol_multiplier": (exit_doc.get("risk_grid_point") or {}).get(
+            "tp_vol_multiplier",
+            exit_doc.get("recommended_tp_vol_multiplier"),
+        ),
+        "sl_vol_multiplier": (exit_doc.get("risk_grid_point") or {}).get(
+            "sl_vol_multiplier",
+            exit_doc.get("recommended_sl_vol_multiplier"),
+        ),
+        "trailing_vol_multiplier": (exit_doc.get("risk_grid_point") or {}).get(
+            "trailing_vol_multiplier",
+            exit_doc.get("recommended_trailing_vol_multiplier"),
+        ),
+        "tp_pct": float(base_exit.tp_pct),
+        "sl_pct": float(base_exit.sl_pct),
+        "trailing_pct": float(base_exit.trailing_pct),
+        "expected_exit_fee_rate": float(expected_exit_fee_rate),
+        "expected_exit_slippage_bps": float(expected_exit_slippage_bps),
+    }
+    return build_execution_risk_control_from_oos_rows(
+        oos_rows=list(oos_rows or []),
+        selection_calibration=selection_calibration,
+        trade_action_policy=trade_action_doc,
+        hold_policy_template=hold_policy_template,
+        risk_policy_template=risk_policy_template,
+        weighting_covariate_similarity_enabled=True,
+        weighting_density_ratio_enabled=True,
     )
 
 

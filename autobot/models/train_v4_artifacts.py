@@ -196,6 +196,7 @@ def build_decision_surface_v4(
     execution_compare = dict((execution_acceptance or {}).get("compare_to_champion") or {})
     runtime_exit = dict((runtime_recommendations or {}).get("exit") or {})
     runtime_trade_action = dict((runtime_recommendations or {}).get("trade_action") or {})
+    runtime_risk_control = dict((runtime_recommendations or {}).get("risk_control") or {})
     factor_block_refit_support = dict((factor_block_selection or {}).get("refit_support") or {})
     factor_block_refit_summary = dict(factor_block_refit_support.get("summary") or {})
     research_support_summary = dict((research_support_lane or {}).get("summary") or {})
@@ -386,6 +387,106 @@ def build_decision_surface_v4(
             "trade_action_conditional_model": str(
                 ((runtime_trade_action.get("conditional_action_model") or {}).get("model")) or ""
             ).strip(),
+            "risk_control_status": str(runtime_risk_control.get("status", "")).strip() or "missing",
+            "risk_control_contract_status": str(runtime_risk_control.get("contract_status", "")).strip(),
+            "risk_control_decision_metric_name": str(runtime_risk_control.get("decision_metric_name", "")).strip(),
+            "risk_control_selected_threshold": (
+                float(runtime_risk_control.get("selected_threshold"))
+                if runtime_risk_control.get("selected_threshold") is not None
+                else None
+            ),
+            "risk_control_selected_coverage": (
+                int(runtime_risk_control.get("selected_coverage"))
+                if runtime_risk_control.get("selected_coverage") is not None
+                else None
+            ),
+            "risk_control_selected_nonpositive_rate_ucb": (
+                float(runtime_risk_control.get("selected_nonpositive_rate_ucb"))
+                if runtime_risk_control.get("selected_nonpositive_rate_ucb") is not None
+                else None
+            ),
+            "risk_control_selected_severe_loss_rate_ucb": (
+                float(runtime_risk_control.get("selected_severe_loss_rate_ucb"))
+                if runtime_risk_control.get("selected_severe_loss_rate_ucb") is not None
+                else None
+            ),
+            "risk_control_live_gate_enabled": bool(((runtime_risk_control.get("live_gate") or {}).get("enabled", False))),
+            "risk_control_live_gate_metric_name": str(
+                ((runtime_risk_control.get("live_gate") or {}).get("metric_name")) or ""
+            ).strip(),
+            "risk_control_live_gate_skip_reason_code": str(
+                ((runtime_risk_control.get("live_gate") or {}).get("skip_reason_code")) or ""
+            ).strip(),
+            "risk_control_subgroup_feature_name": str(
+                ((runtime_risk_control.get("subgroup_family") or {}).get("feature_name")) or ""
+            ).strip(),
+            "risk_control_subgroup_bucket_count_effective": (
+                int((runtime_risk_control.get("subgroup_family") or {}).get("bucket_count_effective"))
+                if (runtime_risk_control.get("subgroup_family") or {}).get("bucket_count_effective") is not None
+                else None
+            ),
+            "risk_control_subgroup_min_coverage": (
+                int((runtime_risk_control.get("subgroup_family") or {}).get("min_coverage"))
+                if (runtime_risk_control.get("subgroup_family") or {}).get("min_coverage") is not None
+                else None
+            ),
+            "risk_control_size_ladder_status": str(
+                ((runtime_risk_control.get("size_ladder") or {}).get("status")) or ""
+            ).strip(),
+            "risk_control_size_ladder_global_max_multiplier": (
+                float((runtime_risk_control.get("size_ladder") or {}).get("global_max_multiplier"))
+                if (runtime_risk_control.get("size_ladder") or {}).get("global_max_multiplier") is not None
+                else None
+            ),
+            "risk_control_weighting_mode": str(((runtime_risk_control.get("weighting") or {}).get("mode")) or "").strip(),
+            "risk_control_weighting_half_life_windows": (
+                float((runtime_risk_control.get("weighting") or {}).get("half_life_windows"))
+                if (runtime_risk_control.get("weighting") or {}).get("half_life_windows") is not None
+                else None
+            ),
+            "risk_control_weighting_covariate_similarity_mode": str(
+                (((runtime_risk_control.get("weighting") or {}).get("covariate_similarity") or {}).get("mode")) or ""
+            ).strip(),
+            "risk_control_weighting_density_ratio_mode": str(
+                (((runtime_risk_control.get("weighting") or {}).get("density_ratio") or {}).get("mode")) or ""
+            ).strip(),
+            "risk_control_weighting_density_ratio_classifier_status": str(
+                (((runtime_risk_control.get("weighting") or {}).get("density_ratio") or {}).get("classifier_status")) or ""
+            ).strip(),
+            "risk_control_weighting_density_ratio_clip_fraction": (
+                float((((runtime_risk_control.get("weighting") or {}).get("density_ratio") or {}).get("clip_fraction")))
+                if (((runtime_risk_control.get("weighting") or {}).get("density_ratio") or {}).get("clip_fraction")) is not None
+                else None
+            ),
+            "risk_control_online_adaptation_mode": str(
+                ((runtime_risk_control.get("online_adaptation") or {}).get("mode")) or ""
+            ).strip(),
+            "risk_control_online_lookback_trades": (
+                int((runtime_risk_control.get("online_adaptation") or {}).get("lookback_trades"))
+                if (runtime_risk_control.get("online_adaptation") or {}).get("lookback_trades") is not None
+                else None
+            ),
+            "risk_control_online_martingale_halt_threshold": (
+                float((runtime_risk_control.get("online_adaptation") or {}).get("martingale_halt_threshold"))
+                if (runtime_risk_control.get("online_adaptation") or {}).get("martingale_halt_threshold") is not None
+                else None
+            ),
+            "risk_control_online_martingale_escalation_threshold": (
+                float((runtime_risk_control.get("online_adaptation") or {}).get("martingale_escalation_threshold"))
+                if (runtime_risk_control.get("online_adaptation") or {}).get("martingale_escalation_threshold") is not None
+                else None
+            ),
+            "risk_control_online_martingale_clear_threshold": (
+                float((runtime_risk_control.get("online_adaptation") or {}).get("martingale_clear_threshold"))
+                if (runtime_risk_control.get("online_adaptation") or {}).get("martingale_clear_threshold") is not None
+                else None
+            ),
+            "risk_control_online_martingale_halt_reason_code": str(
+                ((runtime_risk_control.get("online_adaptation") or {}).get("martingale_halt_reason_code")) or ""
+            ).strip(),
+            "risk_control_online_martingale_critical_reason_code": str(
+                ((runtime_risk_control.get("online_adaptation") or {}).get("martingale_critical_reason_code")) or ""
+            ).strip(),
         },
         "promotion_contract": {
             "promotion_mode": str((promotion or {}).get("promotion_mode", "")).strip() or "candidate",
@@ -394,6 +495,9 @@ def build_decision_surface_v4(
             "trainer_research_prior_role": "audit_only_prior",
             "trainer_evidence_expected_consumer": "scripts/candidate_acceptance.ps1",
             "trainer_evidence_includes_execution_acceptance": bool(options.execution_acceptance_enabled),
+            "trainer_evidence_includes_risk_control_governance": True,
+            "trainer_risk_control_required": bool(((promotion or {}).get("risk_control_acceptance") or {}).get("required", False)),
+            "trainer_risk_control_pass": bool(((promotion or {}).get("risk_control_acceptance") or {}).get("pass", False)),
             "promotion_reasons": promotion_reasons,
         },
         "known_methodology_warnings": sorted(set(warnings)),

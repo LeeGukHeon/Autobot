@@ -445,6 +445,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             selection_calibration=selection_calibration,
             oos_rows=trade_action_oos_rows,
         )
+        runtime_recommendations["risk_control"] = _build_execution_risk_control_v4(
+            options=options,
+            runtime_recommendations=runtime_recommendations,
+            selection_calibration=selection_calibration,
+            oos_rows=trade_action_oos_rows,
+        )
     execution_artifact_cleanup = _purge_execution_artifact_run_dirs(
         output_root=options.execution_acceptance_output_root,
         execution_acceptance=execution_acceptance,
@@ -460,6 +466,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             walk_forward=walk_forward,
             execution_acceptance=execution_acceptance,
             duplicate_artifacts=duplicate_artifacts,
+            runtime_recommendations=runtime_recommendations,
         )
     else:
         promotion = _manual_promotion_decision_v4(
@@ -467,6 +474,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             run_id=run_id,
             walk_forward=walk_forward,
             execution_acceptance=execution_acceptance,
+            runtime_recommendations=runtime_recommendations,
         )
     promotion_path = run_dir / "promotion_decision.json"
     promotion_path.write_text(
@@ -1317,6 +1325,21 @@ def _build_trade_action_policy_v4(
     )
 
 
+def _build_execution_risk_control_v4(
+    *,
+    options: TrainV4CryptoCsOptions,
+    runtime_recommendations: dict[str, Any],
+    selection_calibration: dict[str, Any],
+    oos_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    return _train_v4_execution.build_execution_risk_control_v4(
+        options=options,
+        runtime_recommendations=runtime_recommendations,
+        selection_calibration=selection_calibration,
+        oos_rows=oos_rows,
+    )
+
+
 def _purge_execution_artifact_run_dirs(
     *,
     output_root: Path,
@@ -1743,12 +1766,14 @@ def _manual_promotion_decision_v4(
     run_id: str,
     walk_forward: dict[str, Any],
     execution_acceptance: dict[str, Any],
+    runtime_recommendations: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return _train_v4_governance.manual_promotion_decision_v4(
         options=options,
         run_id=run_id,
         walk_forward=walk_forward,
         execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
     )
 
 
@@ -1759,6 +1784,7 @@ def _build_duplicate_candidate_promotion_decision_v4(
     walk_forward: dict[str, Any],
     execution_acceptance: dict[str, Any],
     duplicate_artifacts: dict[str, Any],
+    runtime_recommendations: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return _train_v4_governance.build_duplicate_candidate_promotion_decision_v4(
         options=options,
@@ -1766,6 +1792,7 @@ def _build_duplicate_candidate_promotion_decision_v4(
         walk_forward=walk_forward,
         execution_acceptance=execution_acceptance,
         duplicate_artifacts=duplicate_artifacts,
+        runtime_recommendations=runtime_recommendations,
     )
 
 

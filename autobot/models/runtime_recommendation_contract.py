@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .execution_risk_control import normalize_execution_risk_control_payload
 from .research_acceptance import compare_execution_balanced_pareto
 
 _RUNTIME_RECOMMENDATIONS_VERSION = 1
@@ -184,6 +185,14 @@ def normalize_runtime_recommendations_payload(payload: dict[str, Any] | None) ->
             backfilled_fields.append("exit")
         elif exit_contract_status == "invalid":
             issues.append("EXIT_CONTRACT_INVALID")
+    risk_control_payload = normalized.get("risk_control")
+    if isinstance(risk_control_payload, dict):
+        normalized["risk_control"] = normalize_execution_risk_control_payload(risk_control_payload)
+        risk_control_status = str((normalized["risk_control"] or {}).get("contract_status", "")).strip().lower()
+        if risk_control_status == "backfilled":
+            backfilled_fields.append("risk_control")
+        elif risk_control_status == "invalid":
+            issues.append("RISK_CONTROL_CONTRACT_INVALID")
     normalized["contract_backfilled_fields"] = list(dict.fromkeys(backfilled_fields))
     normalized["contract_issues"] = list(dict.fromkeys(issues))
     if normalized["contract_issues"]:

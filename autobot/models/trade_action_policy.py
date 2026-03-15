@@ -46,22 +46,14 @@ def build_trade_action_policy_from_oos_rows(
         }
 
     trade_rows: list[dict[str, Any]] = []
-    window_count = 0
-    for window in oos_rows or ():
-        if not isinstance(window, dict):
-            continue
-        window_rows = _simulate_window_rows(
-            window=window,
-            selection_calibration=selection_calibration,
-            hold_policy_template=hold_template,
-            risk_policy_template=risk_template,
-            lpm_order=max(int(lpm_order), 1),
-            numerical_floor=float(numerical_floor),
-        )
-        if not window_rows:
-            continue
-        trade_rows.extend(window_rows)
-        window_count += 1
+    trade_rows, window_count = build_trade_action_oos_trade_rows(
+        oos_rows=list(oos_rows or []),
+        selection_calibration=selection_calibration,
+        hold_policy_template=hold_template,
+        risk_policy_template=risk_template,
+        lpm_order=max(int(lpm_order), 1),
+        numerical_floor=float(numerical_floor),
+    )
 
     if len(trade_rows) < max(int(min_bin_samples), 2):
         return {
@@ -323,6 +315,39 @@ def build_trade_action_policy_from_oos_rows(
             "tail_risk_method": str(tail_risk_contract.get("method", "")),
         },
     }
+
+
+def build_trade_action_oos_trade_rows(
+    *,
+    oos_rows: list[dict[str, Any]] | None,
+    selection_calibration: dict[str, Any] | None,
+    hold_policy_template: dict[str, Any] | None,
+    risk_policy_template: dict[str, Any] | None,
+    lpm_order: int = 2,
+    numerical_floor: float = 1e-6,
+) -> tuple[list[dict[str, Any]], int]:
+    hold_template = dict(hold_policy_template or {})
+    risk_template = dict(risk_policy_template or {})
+    if not hold_template or not risk_template:
+        return [], 0
+    trade_rows: list[dict[str, Any]] = []
+    window_count = 0
+    for window in oos_rows or ():
+        if not isinstance(window, dict):
+            continue
+        window_rows = _simulate_window_rows(
+            window=window,
+            selection_calibration=selection_calibration,
+            hold_policy_template=hold_template,
+            risk_policy_template=risk_template,
+            lpm_order=max(int(lpm_order), 1),
+            numerical_floor=float(numerical_floor),
+        )
+        if not window_rows:
+            continue
+        trade_rows.extend(window_rows)
+        window_count += 1
+    return trade_rows, window_count
 
 
 def normalize_trade_action_policy(policy: dict[str, Any] | None) -> dict[str, Any]:

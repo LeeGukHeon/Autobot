@@ -666,6 +666,176 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in second.intents)
 
 
+def test_model_alpha_risk_control_blocks_entry_before_intent_creation() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [4.0],
+            "close": [100.0],
+            "rv_36": [0.1],
+        }
+    )
+    runtime_recommendations = {
+        "trade_action": {
+            "version": 1,
+            "policy": TRADE_ACTION_POLICY_ID,
+            "status": "ready",
+            "risk_feature_name": "rv_36",
+            "edge_bounds": [0.0, 0.5, 1.0],
+            "risk_bounds": [0.0, 0.2, 1.0],
+            "min_bin_samples": 1,
+            "hold_policy_template": {"mode": "hold", "hold_bars": 6, "risk_vol_feature": "rv_36", "sl_pct": 0.02},
+            "risk_policy_template": {"mode": "risk", "hold_bars": 3, "risk_vol_feature": "rv_36", "tp_pct": 0.01},
+            "by_bin": [
+                {
+                    "edge_bin": 1,
+                    "risk_bin": 0,
+                    "sample_count": 5,
+                    "comparable": True,
+                    "recommended_action": "risk",
+                    "recommended_notional_multiplier": 1.25,
+                    "expected_edge": 0.01,
+                    "expected_downside_deviation": 0.005,
+                    "expected_action_value": 1.0,
+                    "expected_objective_score": 1.0,
+                }
+            ],
+        },
+        "risk_control": {
+            "version": 1,
+            "policy": "execution_risk_control_hoeffding_v1",
+            "status": "ready",
+            "decision_metric_name": "expected_action_value",
+            "selected_threshold": 2.0,
+            "selected_coverage": 31,
+            "selected_nonpositive_rate_ucb": 0.18,
+            "selected_severe_loss_rate_ucb": 0.11,
+            "live_gate": {
+                "enabled": True,
+                "metric_name": "expected_action_value",
+                "threshold": 2.0,
+                "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+            },
+            "subgroup_family": {
+                "enabled": False,
+                "feature_name": "",
+                "bucket_count_requested": 0,
+                "bucket_count_effective": 0,
+                "bounds": [],
+                "min_coverage": 0,
+            },
+        },
+    }
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+        ),
+        runtime_recommendations=runtime_recommendations,
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    assert result.intents == ()
+    assert result.skipped_reasons["RISK_CONTROL_BELOW_THRESHOLD"] == 1
+
+
+def test_model_alpha_risk_control_size_ladder_clamps_multiplier_in_shared_strategy() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [4.0],
+            "close": [100.0],
+            "rv_36": [0.1],
+        }
+    )
+    runtime_recommendations = {
+        "trade_action": {
+            "version": 1,
+            "policy": TRADE_ACTION_POLICY_ID,
+            "status": "ready",
+            "risk_feature_name": "rv_36",
+            "edge_bounds": [0.0, 0.5, 1.0],
+            "risk_bounds": [0.0, 0.2, 1.0],
+            "min_bin_samples": 1,
+            "hold_policy_template": {"mode": "hold", "hold_bars": 6, "risk_vol_feature": "rv_36", "sl_pct": 0.02},
+            "risk_policy_template": {"mode": "risk", "hold_bars": 3, "risk_vol_feature": "rv_36", "tp_pct": 0.01},
+            "by_bin": [
+                {
+                    "edge_bin": 1,
+                    "risk_bin": 0,
+                    "sample_count": 5,
+                    "comparable": True,
+                    "recommended_action": "risk",
+                    "recommended_notional_multiplier": 1.25,
+                    "expected_edge": 0.01,
+                    "expected_downside_deviation": 0.005,
+                    "expected_action_value": 1.0,
+                    "expected_objective_score": 1.0,
+                }
+            ],
+        },
+        "risk_control": {
+            "version": 1,
+            "policy": "execution_risk_control_hoeffding_v1",
+            "status": "ready",
+            "decision_metric_name": "expected_action_value",
+            "selected_threshold": 0.5,
+            "selected_coverage": 31,
+            "selected_nonpositive_rate_ucb": 0.18,
+            "selected_severe_loss_rate_ucb": 0.11,
+            "live_gate": {
+                "enabled": True,
+                "metric_name": "expected_action_value",
+                "threshold": 0.5,
+                "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+            },
+            "subgroup_family": {
+                "enabled": False,
+                "feature_name": "",
+                "bucket_count_requested": 0,
+                "bucket_count_effective": 0,
+                "bounds": [],
+                "min_coverage": 0,
+            },
+            "size_ladder": {
+                "enabled": True,
+                "status": "ready",
+                "feature_name": "",
+                "global_max_multiplier": 0.75,
+                "group_limits": [],
+            },
+        },
+    }
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+        ),
+        runtime_recommendations=runtime_recommendations,
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    assert float((bid_intent.meta or {}).get("notional_multiplier", 0.0)) == 0.75
+    assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "risk_control_size_ladder"
+    assert dict((bid_intent.meta or {}).get("risk_control_static") or {})["allowed"] is True
+    assert float(dict((bid_intent.meta or {}).get("size_ladder_static") or {})["resolved_multiplier"]) == 0.75
+
+
 def test_model_alpha_trade_action_policy_uses_volatility_alias_columns() -> None:
     frame = pl.DataFrame(
         {

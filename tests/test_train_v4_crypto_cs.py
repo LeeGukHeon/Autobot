@@ -1076,6 +1076,10 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert runtime_doc["exit"]["recommended_trailing_vol_multiplier"] == 0.75
     assert runtime_doc["trade_action"]["status"] == "ready"
     assert runtime_doc["trade_action"]["risk_feature_name"] == "rv_36"
+    assert "risk_control" in runtime_doc
+    assert runtime_doc["risk_control"]["status"] in {"ready", "skipped"}
+    if runtime_doc["risk_control"]["status"] == "ready":
+        assert "subgroup_family" in runtime_doc["risk_control"]
     assert candidate_exec_run.exists() is False
     assert champion_exec_run.exists() is False
     assert hold_exec_run.exists() is False
@@ -1083,7 +1087,11 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert execution_exec_run.exists() is False
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
+    assert promotion["risk_control_acceptance"]["required"] is True
+    assert promotion["checks"]["risk_control_required"] is True
     assert research_evidence_doc["execution"]["decision"] == "candidate_edge"
+    assert research_evidence_doc["risk_control"]["required"] is True
+    assert research_evidence_doc["checks"]["risk_control_required"] is True
     assert "EXECUTION_ACCEPTANCE_REUSES_TRAIN_WINDOW" in decision_surface_doc["known_methodology_warnings"]
     assert "RUNTIME_RECOMMENDATIONS_REUSE_TRAIN_WINDOW" in decision_surface_doc["known_methodology_warnings"]
     assert decision_surface_doc["execution_acceptance_contract"]["selection_use_learned_recommendations"] is False
@@ -1096,8 +1104,11 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_runtime_decision_source"] == "continuous_conditional_action_value"
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_tail_confidence_level"] == 0.9
     assert decision_surface_doc["runtime_recommendation_contract"]["trade_action_conditional_model"] == "conditional_action_linear_quantile_tail_v2"
+    assert "risk_control_status" in decision_surface_doc["runtime_recommendation_contract"]
+    assert "risk_control_subgroup_feature_name" in decision_surface_doc["runtime_recommendation_contract"]
     assert decision_surface_doc["promotion_contract"]["trainer_evidence_source"] == "certification_artifact.research_evidence"
     assert decision_surface_doc["promotion_contract"]["trainer_research_prior_path"] == "trainer_research_evidence.json"
+    assert decision_surface_doc["promotion_contract"]["trainer_evidence_includes_risk_control_governance"] is True
     execution_options = captured["options"]
     assert execution_options.top_n == 11
     assert execution_options.model_alpha_settings.selection.top_pct == 0.5
