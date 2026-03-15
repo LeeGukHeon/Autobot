@@ -404,6 +404,38 @@ def test_build_dashboard_snapshot_reads_breaker_state_table_name_used_by_live_db
     assert candidate_state["active_breakers"][0]["reason_codes"] == ["REPEATED_REPLACE_REJECTS"]
 
 
+def test_build_dashboard_snapshot_uses_service_configured_live_db_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_root = tmp_path
+    legacy_main_db = project_root / "data" / "state" / "live_state.db"
+    canonical_main_db = project_root / "data" / "state" / "live" / "live_state.db"
+    _init_live_db(legacy_main_db)
+    _init_live_db(canonical_main_db)
+
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        if unit_name == "autobot-live-alpha.service":
+            return {"Environment": "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_state.db"}
+        if unit_name == "autobot-live-alpha-candidate.service":
+            return {"Environment": "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_candidate/live_state.db"}
+        return {}
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+
+    snapshot = build_dashboard_snapshot(project_root)
+    live_states = snapshot["live"]["states"]
+    main_state = next(item for item in live_states if item.get("service_key") == "live_main")
+
+    assert main_state["label"] == "메인 라이브"
+    assert Path(str(main_state["db_path"])) == legacy_main_db
+    assert not any(
+        item.get("label") == "레거시 라이브 DB" and Path(str(item.get("db_path"))) == legacy_main_db
+        for item in live_states
+    )
+    assert any(
+        item.get("label") == "보조 라이브 DB" and Path(str(item.get("db_path"))) == canonical_main_db
+        for item in live_states
+    )
+
+
 def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_is_missing(tmp_path: Path) -> None:
     project_root = tmp_path
     run_dir = project_root / "data" / "paper" / "runs" / "paper-20260313-010000-demo"
@@ -645,6 +677,7 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert 'function fmtDateLabel(value)' in js
     assert 'function responseErrorText(response)' in js
     assert 'function shouldDisplayLiveState(snapshot, item)' in js
+    assert 'const explicit = String((item || {}).service_key || "").trim();' in js
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js

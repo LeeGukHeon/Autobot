@@ -47,6 +47,11 @@ $effectiveModelRegistryRoot = if ([string]::IsNullOrWhiteSpace($ModelRegistryRoo
 } else {
     $ModelRegistryRoot
 }
+$effectiveStateDbPath = if ([string]::IsNullOrWhiteSpace($StateDbPath)) {
+    if ($isCandidateUnit) { "data/state/live_candidate/live_state.db" } else { "data/state/live_state.db" }
+} else {
+    $StateDbPath
+}
 
 $liveArgList = @(
     "-m", "autobot.cli",
@@ -86,7 +91,7 @@ User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 Environment=AUTOBOT_LIVE_BOT_ID=$BotId
-Environment=AUTOBOT_LIVE_STATE_DB_PATH=$StateDbPath
+Environment=AUTOBOT_LIVE_STATE_DB_PATH=$effectiveStateDbPath
 Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=$effectiveModelRefSource
 Environment=AUTOBOT_LIVE_MODEL_FAMILY=$effectiveModelFamily
 Environment=AUTOBOT_LIVE_MODEL_REGISTRY_ROOT=$effectiveModelRegistryRoot
@@ -109,7 +114,7 @@ if ($DryRun) {
     Write-Host ("[live-install][dry-run] service_user={0}" -f $ServiceUser)
     Write-Host ("[live-install][dry-run] unit={0}" -f $UnitName)
     Write-Host ("[live-install][dry-run] bot_id={0}" -f $BotId)
-    Write-Host ("[live-install][dry-run] state_db_path={0}" -f $StateDbPath)
+    Write-Host ("[live-install][dry-run] state_db_path={0}" -f $effectiveStateDbPath)
     Write-Host ("[live-install][dry-run] model_ref_source={0}" -f $effectiveModelRefSource)
     Write-Host ("[live-install][dry-run] model_family={0}" -f $effectiveModelFamily)
     Write-Host $unitContent

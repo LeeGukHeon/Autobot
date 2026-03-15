@@ -919,6 +919,8 @@
   }
 
   function liveStateServiceKey(item) {
+    const explicit = String((item || {}).service_key || "").trim();
+    if (explicit) return explicit;
     const label = String((item || {}).label || "");
     if (label.includes("후보")) return "live_candidate";
     if (label.includes("메인")) return "live_main";

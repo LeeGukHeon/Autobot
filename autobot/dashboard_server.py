@@ -9,6 +9,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -247,6 +248,79 @@ def _unit_snapshot(unit_name: str, *, timer: bool = False) -> dict[str, Any]:
         "next_run_at": (payload.get("NextElapseUSecRealtime") or None) if timer else None,
         "last_trigger_at": (payload.get("LastTriggerUSec") or None) if timer else None,
     }
+
+
+def _parse_systemd_environment(raw_value: str | None) -> dict[str, str]:
+    text = str(raw_value or "").strip()
+    if not text:
+        return {}
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    payload: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        key = str(key).strip()
+        if not key:
+            continue
+        payload[key] = str(value).strip()
+    return payload
+
+
+def _service_state_db_path(project_root: Path, unit_name: str, fallback: Path) -> Path:
+    payload = _systemctl_show(unit_name, "Environment")
+    env = _parse_systemd_environment(payload.get("Environment"))
+    raw_path = str(env.get("AUTOBOT_LIVE_STATE_DB_PATH") or "").strip()
+    if not raw_path:
+        return fallback
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    return candidate
+
+
+def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
+    legacy_main_db = project_root / "data" / "state" / "live_state.db"
+    canonical_main_db = project_root / "data" / "state" / "live" / "live_state.db"
+    candidate_default_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+
+    configured_main_db = _service_state_db_path(project_root, "autobot-live-alpha.service", legacy_main_db)
+    configured_candidate_db = _service_state_db_path(
+        project_root,
+        "autobot-live-alpha-candidate.service",
+        candidate_default_db,
+    )
+    if not configured_main_db.exists() and canonical_main_db.exists():
+        configured_main_db = canonical_main_db
+
+    seen: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+
+    def _append(label: str, path: Path, *, service_key: str | None = None) -> None:
+        key = str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(
+            {
+                "label": label,
+                "path": path,
+                "service_key": service_key,
+            }
+        )
+
+    _append("메인 라이브", configured_main_db, service_key="live_main")
+    _append("후보 카나리아", configured_candidate_db, service_key="live_candidate")
+
+    if canonical_main_db != configured_main_db:
+        _append("보조 라이브 DB", canonical_main_db)
+    if legacy_main_db != configured_main_db:
+        _append("레거시 라이브 DB", legacy_main_db)
+
+    return candidates
 
 
 def _latest_paper_summaries(project_root: Path, limit: int = 4) -> list[dict[str, Any]]:
@@ -909,13 +983,30 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
     return summary
 
 
-def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict[str, Any]:
+def _load_live_db_summary(
+    db_path: Path,
+    label: str,
+    project_root: Path,
+    *,
+    service_key: str | None = None,
+) -> dict[str, Any]:
     if not db_path.exists():
-        return {"label": label, "db_path": str(db_path), "exists": False}
+        return {
+            "label": label,
+            "db_path": str(db_path),
+            "exists": False,
+            "service_key": str(service_key or "").strip() or None,
+        }
     try:
         conn = _open_ro_sqlite(db_path)
     except sqlite3.Error as exc:
-        return {"label": label, "db_path": str(db_path), "exists": True, "error": str(exc)}
+        return {
+            "label": label,
+            "db_path": str(db_path),
+            "exists": True,
+            "error": str(exc),
+            "service_key": str(service_key or "").strip() or None,
+        }
     try:
         tables = {row["name"] for row in _query_all(conn, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")}
         orders = _query_all(conn, "SELECT * FROM orders ORDER BY updated_ts DESC LIMIT 12") if "orders" in tables else []
@@ -1019,7 +1110,8 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         runtime_run_dir = _resolve_model_run_dir(project_root, runtime_health.get("live_runtime_model_run_id"))
         runtime_artifacts = _collect_recent_model_artifacts(project_root, str(runtime_run_dir)) if runtime_run_dir else {}
         trade_analysis: dict[str, Any] = {}
-        if "trade_journal" in tables and "후보" in str(label):
+        is_candidate_state = str(service_key or "").strip() == "live_candidate" or "후보" in str(label)
+        if "trade_journal" in tables and is_candidate_state:
             try:
                 trade_analysis = build_candidate_canary_report(db_path)
             except Exception:
@@ -1027,6 +1119,7 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         return {
             "label": label,
             "db_path": str(db_path),
+            "service_key": str(service_key or "").strip() or None,
             "exists": True,
             "positions_count": len(positions),
             "open_orders_count": len(open_order_rows),
@@ -1063,36 +1156,6 @@ def _load_live_db_summary(db_path: Path, label: str, project_root: Path) -> dict
         }
     finally:
         conn.close()
-
-
-def _resolve_live_db_candidates(project_root: Path) -> list[tuple[str, Path]]:
-    candidates: list[tuple[str, Path]] = []
-    main_db = project_root / "data" / "state" / "live" / "live_state.db"
-    if main_db.exists():
-        candidates.append(("메인 라이브", main_db))
-    legacy_db = project_root / "data" / "state" / "live_state.db"
-    if legacy_db.exists() and legacy_db != main_db:
-        candidates.append(("레거시 라이브", legacy_db))
-    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
-    if candidate_db.exists():
-        candidates.append(("후보 카나리아", candidate_db))
-    return candidates
-
-
-def _resolve_live_db_candidates(project_root: Path) -> list[tuple[str, Path]]:
-    candidates: list[tuple[str, Path]] = []
-    main_db = project_root / "data" / "state" / "live" / "live_state.db"
-    if main_db.exists():
-        candidates.append(("메인 라이브", main_db))
-    legacy_db = project_root / "data" / "state" / "live_state.db"
-    if legacy_db.exists() and legacy_db != main_db:
-        candidates.append(("레거시 라이브", legacy_db))
-    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
-    if candidate_db.exists():
-        candidates.append(("후보 카나리아", candidate_db))
-    return candidates
-
-
 def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_runtime_recommendations_payload(payload)
     exit_payload = dict(_dig(normalized, "exit") or {})
@@ -1401,7 +1464,15 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         },
         "live": {
             "rollout_latest": _load_json(live_rollout_latest),
-            "states": [_load_live_db_summary(path, label, project_root) for label, path in _resolve_live_db_candidates(project_root)],
+            "states": [
+                _load_live_db_summary(
+                    item["path"],
+                    str(item["label"]),
+                    project_root,
+                    service_key=str(item.get("service_key") or "").strip() or None,
+                )
+                for item in _resolve_live_db_candidates(project_root)
+            ],
         },
         "ws_public": ws_status,
     }

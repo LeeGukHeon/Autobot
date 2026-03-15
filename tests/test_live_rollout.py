@@ -586,6 +586,43 @@ def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_sou
     )
     stdout = completed.stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate_v4" in stdout
+    assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_candidate/live_state.db" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+
+
+def test_live_installer_main_defaults_to_server_live_state_path_when_blank() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-UnitName",
+            "autobot-live-alpha.service",
+            "-RolloutMode",
+            "canary",
+            "-RolloutTargetUnit",
+            "autobot-live-alpha.service",
+            "-SyncMode",
+            "poll",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion_v4" in stdout
+    assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_state.db" in stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
 
 
