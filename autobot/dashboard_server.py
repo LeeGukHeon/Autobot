@@ -1635,17 +1635,6 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     }
 
 
-@lru_cache(maxsize=8)
-def _cached_dashboard_snapshot(project_root_str: str, bucket: int) -> dict[str, Any]:
-    _ = bucket
-    return build_dashboard_snapshot(Path(project_root_str))
-
-
-def _get_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
-    bucket = int(time.time() // 5)
-    return _cached_dashboard_snapshot(str(project_root.resolve()), bucket)
-
-
 def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     handler.send_response(status)
@@ -1669,7 +1658,7 @@ def _sse_response(handler: BaseHTTPRequestHandler, project_root: Path, *, interv
         handler.wfile.write(b"retry: 5000\n\n")
         handler.wfile.flush()
         while True:
-            payload = _get_dashboard_snapshot(project_root)
+            payload = build_dashboard_snapshot(project_root)
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             handler.wfile.write(b"event: snapshot\n")
             handler.wfile.write(b"data: ")
@@ -1709,7 +1698,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            initial_snapshot = {"generated_at": _utc_now_iso()}
+            try:
+                initial_snapshot = build_dashboard_snapshot(self.project_root)
+            except Exception:
+                initial_snapshot = {"generated_at": _utc_now_iso()}
             body = _render_dashboard_index(initial_snapshot)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1750,7 +1742,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/snapshot":
             try:
-                payload = _get_dashboard_snapshot(self.project_root)
+                payload = build_dashboard_snapshot(self.project_root)
             except Exception as exc:  # pragma: no cover
                 _json_response(self, {"ok": False, "error": str(exc), "generated_at": _utc_now_iso()}, status=500)
                 return
