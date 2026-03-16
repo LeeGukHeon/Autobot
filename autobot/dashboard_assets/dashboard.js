@@ -891,19 +891,25 @@
     const rows = [...((snapshot.paper || {}).recent_runs || [])].sort((a, b) => {
       return (coerceTs(b.updated_at) || 0) - (coerceTs(a.updated_at) || 0);
     });
+    const roleService = (role) => {
+      if (role === "champion") return ((snapshot.services || {}).paper_champion || {});
+      if (role === "challenger") return ((snapshot.services || {}).paper_challenger || {});
+      return {};
+    };
     const groups = [
       { key: "champion", title: "페이퍼 챔피언", rows: rows.filter((run) => String(run.paper_runtime_role || "") === "champion") },
       { key: "challenger", title: "페이퍼 챌린저", rows: rows.filter((run) => String(run.paper_runtime_role || "") === "challenger") },
       { key: "other", title: "기타 페이퍼 런", rows: rows.filter((run) => !run.paper_runtime_role) },
     ].filter((group) => group.rows.length);
 
-    const renderRows = (paperRows) => terminalTable(
+    const renderRows = (paperRows, activeRunId) => terminalTable(
       ["런", "주문 제출", "주문 체결", "체결 비율", "손익", "업데이트"],
       paperRows.map((run) => ({
         cells: [
           cell(
             shortRun(run.run_id),
             [
+              run.run_id === activeRunId ? "실행 중" : null,
               maybe(run.paper_runtime_role_label),
               maybe(run.paper_runtime_model_run_id),
               `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`,
@@ -919,7 +925,19 @@
     );
 
     document.getElementById("paper-grid").innerHTML = groups.length
-      ? groups.map((group) => `<section class="paper-role-block"><h3>${group.title}</h3>${renderRows(group.rows)}</section>`).join("")
+      ? groups.map((group) => {
+        const service = roleService(group.key);
+        const serviceActive = String(service.active_state || "").trim().toLowerCase() === "active";
+        const activeRunId = serviceActive && group.rows.length ? group.rows[0].run_id : null;
+        const serviceMeta = group.key === "other"
+          ? ""
+          : `<div class="paper-role-meta">${
+            serviceActive
+              ? `${pill("상태", "실행 중", "good")}<span class="paper-role-start">${esc(fmtDateTime(service.started_at))}</span>`
+              : pill("상태", "대기", "neutral")
+          }</div>`;
+        return `<section class="paper-role-block"><div class="paper-role-head"><h3>${group.title}</h3>${serviceMeta}</div>${renderRows(group.rows, activeRunId)}</section>`;
+      }).join("")
       : empty("최근 페이퍼 런이 없습니다.");
   }
 

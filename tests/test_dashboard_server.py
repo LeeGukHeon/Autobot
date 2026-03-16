@@ -683,6 +683,9 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "페이퍼 챔피언" in js
     assert "페이퍼 챌린저" in js
     assert "paper_runtime_model_run_id" in js
+    assert 'pill("상태", "실행 중", "good")' in js
+    assert "paper-role-head" in css
+    assert "paper-role-start" in css
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js

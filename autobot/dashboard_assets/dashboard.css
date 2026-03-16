@@ -656,6 +656,37 @@ body {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+.paper-role-block {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.paper-role-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.paper-role-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.paper-role-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.paper-role-start {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .metric,
 .kv {
   min-height: 62px;
