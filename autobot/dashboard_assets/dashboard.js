@@ -1075,7 +1075,7 @@
               <div class="live-selector-kpis">
                 <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
                 <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
-                <div><span>총자본</span><strong>${esc(fmtMoney(account.total_equity_quote, 2))}</strong></div>
+                <div><span>총자본</span><strong>${esc(fmtMoney(account.total_equity_quote))}</strong></div>
                 <div><span>손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total, 2))}</strong></div>
               </div>
             </div>
@@ -1156,9 +1156,9 @@
       `대기 ${maybe(today.current_pending_orders_count, "0")} / ${maybe(today.current_exit_orders_count, "0")}`,
     ];
     const capitalSummaryTags = [
-      `현금 ${fmtMoney(account.cash_total_quote, 2)}`,
-      `총 자본 ${fmtMoney(account.total_equity_quote, 2)}`,
-      `자산 평가 ${fmtMoney(account.asset_market_value_quote_total, 2)}`,
+      `현금 ${fmtMoney(account.cash_total_quote)}`,
+      `총 자본 ${fmtMoney(account.total_equity_quote)}`,
+      `자산 평가 ${fmtMoney(account.asset_market_value_quote_total)}`,
       `보유 원가 ${fmtMoney(capital.position_cost_quote_total, 2)}`,
       `현재 평가 ${fmtMoney(capital.position_market_value_quote_total, 2)}`,
       `평가손익 ${fmtMoney(capital.position_unrealized_pnl_quote_total, 2)}`,
@@ -1371,6 +1371,8 @@
                   ${todaySummaryTags.map((item) => `<span class="live-session-tag">${esc(item)}</span>`).join("")}
                 </div>
                 <div class="metric-grid">
+                  ${metric("총 자본", fmtMoney(account.total_equity_quote))}
+                  ${metric("현금", fmtMoney(account.cash_total_quote))}
                   ${metric("승률", fmtPct(today.win_rate_pct))}
                   ${metric("확정", verifiedClosed)}
                   ${metric("미확정", unverifiedClosed)}
