@@ -9,6 +9,7 @@ from autobot.data.collect import (
     collect_ticks_from_plan,
     validate_ticks_raw_dataset,
 )
+from autobot.upbit import ValidationError
 
 
 def test_collect_and_validate_ticks_with_offline_fixture(tmp_path: Path) -> None:
@@ -83,6 +84,59 @@ def test_collect_and_validate_ticks_with_offline_fixture(tmp_path: Path) -> None
     assert validate_summary.fail_files == 0
     assert validate_summary.ok_files == 1
     assert validate_summary.rows_total == 3
+
+
+def test_collect_ticks_treats_delisted_market_404_as_warning(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw_ticks" / "upbit" / "trades"
+    meta_dir = tmp_path / "raw_ticks" / "upbit" / "_meta"
+    plan_path = meta_dir / "ticks_plan.json"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "targets": [
+            {
+                "market": "KRW-FLOW",
+                "days_ago": 1,
+                "target_key": "KRW-FLOW|1",
+                "reason": "TEST",
+            }
+        ]
+    }
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    class _DelistedClient:
+        def fetch_trades_ticks(
+            self,
+            *,
+            market: str,
+            days_ago: int,
+            start_cursor: str | None = None,
+            max_pages: int | None = None,
+            max_requests: int | None = None,
+            count: int = 200,
+        ) -> TicksFetchResult:
+            raise ValidationError(
+                "Code not found",
+                status_code=404,
+                endpoint="/v1/trades/ticks",
+                method="GET",
+            )
+
+    collect_summary = collect_ticks_from_plan(
+        TicksCollectOptions(
+            plan_path=plan_path,
+            raw_root=raw_root,
+            meta_dir=meta_dir,
+            dry_run=False,
+            retention_days=3650,
+        ),
+        client=_DelistedClient(),  # type: ignore[arg-type]
+    )
+
+    assert collect_summary.fail_targets == 0
+    assert collect_summary.warn_targets == 1
+    assert collect_summary.details[0]["status"] == "WARN"
+    assert collect_summary.details[0]["reasons"] == ["DELISTED_OR_INACTIVE_MARKET"]
 
 
 def _tick_row(timestamp_ms: int, trade_price: float, sequential_id: int) -> dict:

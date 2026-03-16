@@ -10,7 +10,7 @@ import shutil
 import time
 from typing import Any
 
-from ...upbit import RateLimitError, load_upbit_settings
+from ...upbit import RateLimitError, ValidationError, load_upbit_settings
 from .plan_ticks import TicksPlanOptions, generate_ticks_collection_plan
 from .ticks_checkpoint import load_ticks_checkpoint, save_ticks_checkpoint, update_ticks_checkpoint
 from .ticks_manifest import append_ticks_manifest_rows
@@ -268,6 +268,36 @@ def collect_ticks_from_plan(
             if bool(exc.banned):
                 abort_after_target = True
         except Exception as exc:
+            if _is_terminal_market_unavailable(exc):
+                detail["status"] = "WARN"
+                detail["error_message"] = str(exc)
+                detail["calls_made"] = int(detail.get("calls_made", 0))
+                detail["throttled_count"] = int(detail.get("throttled_count", 0))
+                detail["backoff_count"] = int(detail.get("backoff_count", 0))
+                detail["reasons"] = ["DELISTED_OR_INACTIVE_MARKET"]
+                warn_targets += 1
+                manifest_rows.append(
+                    {
+                        "run_id": run_id,
+                        "date": _expected_target_date(days_ago),
+                        "market": market,
+                        "days_ago": days_ago,
+                        "rows": 0,
+                        "min_ts_ms": None,
+                        "max_ts_ms": None,
+                        "dup_ratio": None,
+                        "status": "WARN",
+                        "reasons_json": json.dumps(["DELISTED_OR_INACTIVE_MARKET"], ensure_ascii=False),
+                        "calls_made": int(detail.get("calls_made", 0)),
+                        "pages_collected": 0,
+                        "part_file": "",
+                        "error_message": str(exc),
+                        "collected_at_ms": int(time.time() * 1000),
+                    }
+                )
+                details.append(detail)
+                continue
+
             detail["status"] = "FAIL"
             detail["error_message"] = str(exc)
             detail["calls_made"] = int(detail.get("calls_made", 0))
@@ -361,6 +391,22 @@ def collect_ticks_from_plan(
         details=tuple(details),
         failures=tuple(failures),
     )
+
+
+def _is_terminal_market_unavailable(exc: Exception) -> bool:
+    if not isinstance(exc, ValidationError):
+        return False
+    if int(getattr(exc, "status_code", 0) or 0) != 404:
+        return False
+    endpoint = str(getattr(exc, "endpoint", "") or "").strip().lower()
+    if "/v1/trades/ticks" not in endpoint:
+        return False
+    message = str(getattr(exc, "message", "") or exc).strip().lower()
+    if "code not found" in message:
+        return True
+    if "market not found" in message:
+        return True
+    return False
 
 
 def _load_or_build_plan(options: TicksCollectOptions) -> tuple[dict[str, Any], Path]:
