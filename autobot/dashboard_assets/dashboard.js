@@ -1035,6 +1035,7 @@
         const active = liveState.label === state.activeLiveLabel;
         const todayState = liveState.today_trade_summary || {};
         const capital = liveState.capital_summary || {};
+        const account = liveState.account_summary || {};
         const privateWsTs = coerceTs((liveState.last_ws_event || {}).event_ts_ms) || coerceTs((liveState.daemon_last_run || {}).private_ws_last_event_ts_ms);
         const selectorWsFreshness = privateWsTs == null ? "없음" : fmtAge(privateWsTs);
         const unit = liveStateService(snapshot, liveState);
@@ -1074,7 +1075,7 @@
               <div class="live-selector-kpis">
                 <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
                 <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
-                <div><span>자본</span><strong>${esc(fmtMoney(capital.position_market_value_quote_total, 2))}</strong></div>
+                <div><span>총자본</span><strong>${esc(fmtMoney(account.total_equity_quote, 2))}</strong></div>
                 <div><span>손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total, 2))}</strong></div>
               </div>
             </div>
@@ -1116,6 +1117,7 @@
     const intents = [...(selected.recent_intents || [])].sort((a, b) => (coerceTs(b.ts_ms) || 0) - (coerceTs(a.ts_ms) || 0));
     const today = selected.today_trade_summary || {};
     const capital = selected.capital_summary || {};
+    const account = selected.account_summary || {};
     const recentTrades = [...(selected.recent_trades || [])].sort((a, b) => {
       const aTs = coerceTs(a.exit_ts_ms) || coerceTs(a.entry_ts_ms) || coerceTs(a.updated_ts) || 0;
       const bTs = coerceTs(b.exit_ts_ms) || coerceTs(b.entry_ts_ms) || coerceTs(b.updated_ts) || 0;
@@ -1154,6 +1156,9 @@
       `대기 ${maybe(today.current_pending_orders_count, "0")} / ${maybe(today.current_exit_orders_count, "0")}`,
     ];
     const capitalSummaryTags = [
+      `현금 ${fmtMoney(account.cash_total_quote, 2)}`,
+      `총 자본 ${fmtMoney(account.total_equity_quote, 2)}`,
+      `자산 평가 ${fmtMoney(account.asset_market_value_quote_total, 2)}`,
       `보유 원가 ${fmtMoney(capital.position_cost_quote_total, 2)}`,
       `현재 평가 ${fmtMoney(capital.position_market_value_quote_total, 2)}`,
       `평가손익 ${fmtMoney(capital.position_unrealized_pnl_quote_total, 2)}`,

@@ -20,8 +20,9 @@ from urllib.parse import urlparse
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 from autobot.live.candidate_canary_report import build_candidate_canary_report
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
-from autobot.upbit.config import load_upbit_settings
+from autobot.upbit.config import load_upbit_settings, require_upbit_credentials
 from autobot.upbit.http_client import UpbitHttpClient
+from autobot.upbit.private import UpbitPrivateClient
 from autobot.upbit.public import UpbitPublicClient
 
 
@@ -193,6 +194,91 @@ def _load_live_market_tickers(project_root: Path, markets: list[str]) -> dict[st
     normalized = tuple(sorted({str(item).strip().upper() for item in markets if str(item).strip()}))
     bucket = int(time.time() // 2)
     return _cached_live_market_tickers(str(project_root.resolve()), bucket, normalized)
+
+
+@lru_cache(maxsize=8)
+def _cached_live_account_summary(project_root_str: str, bucket: int) -> dict[str, Any]:
+    _ = bucket
+    project_root = Path(project_root_str)
+    try:
+        settings = load_upbit_settings(project_root / "config")
+        credentials = require_upbit_credentials(settings)
+        with UpbitHttpClient(settings, credentials=credentials) as private_http:
+            private_client = UpbitPrivateClient(private_http)
+            accounts_payload = private_client.accounts()
+        if not isinstance(accounts_payload, list):
+            return {}
+        quote_currency = "KRW"
+        markets = []
+        normalized_accounts: list[dict[str, Any]] = []
+        for item in accounts_payload:
+            if not isinstance(item, dict):
+                continue
+            currency = str(item.get("currency") or "").strip().upper()
+            if not currency:
+                continue
+            free = _coerce_float(item.get("balance")) or 0.0
+            locked = _coerce_float(item.get("locked")) or 0.0
+            total = free + locked
+            avg_buy_price = _coerce_float(item.get("avg_buy_price"))
+            normalized_accounts.append(
+                {
+                    "currency": currency,
+                    "free": free,
+                    "locked": locked,
+                    "total": total,
+                    "avg_buy_price": avg_buy_price,
+                }
+            )
+            if currency != quote_currency:
+                markets.append(f"{quote_currency}-{currency}")
+        ticker_map = _cached_live_market_tickers(
+            str(project_root.resolve()),
+            bucket,
+            tuple(sorted(set(markets))),
+        )
+        cash_free_quote = 0.0
+        cash_locked_quote = 0.0
+        asset_market_value_quote_total = 0.0
+        asset_cost_quote_total = 0.0
+        priced_asset_count = 0
+        for item in normalized_accounts:
+            currency = str(item["currency"])
+            if currency == quote_currency:
+                cash_free_quote += float(item["free"])
+                cash_locked_quote += float(item["locked"])
+                continue
+            qty_total = float(item["total"])
+            avg_buy_price = _coerce_float(item.get("avg_buy_price"))
+            if avg_buy_price is not None:
+                asset_cost_quote_total += qty_total * float(avg_buy_price)
+            ticker = ticker_map.get(f"{quote_currency}-{currency}") or {}
+            trade_price = _coerce_float(ticker.get("trade_price"))
+            if trade_price is not None:
+                asset_market_value_quote_total += qty_total * float(trade_price)
+                priced_asset_count += 1
+            elif avg_buy_price is not None:
+                asset_market_value_quote_total += qty_total * float(avg_buy_price)
+        cash_total_quote = cash_free_quote + cash_locked_quote
+        total_equity_quote = cash_total_quote + asset_market_value_quote_total
+        return {
+            "quote_currency": quote_currency,
+            "cash_free_quote": cash_free_quote,
+            "cash_locked_quote": cash_locked_quote,
+            "cash_total_quote": cash_total_quote,
+            "asset_cost_quote_total": asset_cost_quote_total,
+            "asset_market_value_quote_total": asset_market_value_quote_total,
+            "total_equity_quote": total_equity_quote,
+            "priced_asset_count": priced_asset_count,
+            "accounts_count": len(normalized_accounts),
+        }
+    except Exception:
+        return {}
+
+
+def _load_live_account_summary(project_root: Path) -> dict[str, Any]:
+    bucket = int(time.time() // 5)
+    return _cached_live_account_summary(str(project_root.resolve()), bucket)
 
 
 def _systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
@@ -1017,6 +1103,7 @@ def _load_live_db_summary(
     project_root: Path,
     *,
     service_key: str | None = None,
+    account_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not db_path.exists():
         return {
@@ -1193,6 +1280,7 @@ def _load_live_db_summary(
             ][:8],
             "today_trade_summary": today_trade_summary,
             "capital_summary": capital_summary,
+            "account_summary": dict(account_summary or {}),
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {
@@ -1495,6 +1583,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     )
     acceptance = _summarize_acceptance(acceptance_latest)
     live_db_candidates = [item for item in _resolve_live_db_candidates(project_root) if item.get("service_key")]
+    live_account_summary = _load_live_account_summary(project_root)
     return {
         "generated_at": _utc_now_iso(),
         "project_root": str(project_root),
@@ -1529,6 +1618,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
                     str(item["label"]),
                     project_root,
                     service_key=str(item.get("service_key") or "").strip() or None,
+                    account_summary=live_account_summary,
                 )
                 for item in live_db_candidates
             ],

@@ -426,22 +426,33 @@ def test_build_dashboard_snapshot_summarizes_current_position_capital(tmp_path: 
     import autobot.dashboard_server as dashboard_server_module
 
     original_ticker_loader = dashboard_server_module._load_live_market_tickers
+    original_account_loader = dashboard_server_module._load_live_account_summary
     dashboard_server_module._load_live_market_tickers = lambda project_root, markets: {  # type: ignore[assignment]
         "KRW-BTC": {"trade_price": 104.0, "trade_timestamp": int(time.time() * 1000)}
+    }
+    dashboard_server_module._load_live_account_summary = lambda project_root: {  # type: ignore[assignment]
+        "cash_total_quote": 1000.0,
+        "asset_market_value_quote_total": 208.0,
+        "total_equity_quote": 1208.0,
     }
     try:
         snapshot = build_dashboard_snapshot(project_root)
     finally:
         dashboard_server_module._load_live_market_tickers = original_ticker_loader  # type: ignore[assignment]
+        dashboard_server_module._load_live_account_summary = original_account_loader  # type: ignore[assignment]
 
     candidate_state = next(item for item in snapshot["live"]["states"] if item.get("service_key") == "live_candidate")
     capital = candidate_state["capital_summary"]
+    account = candidate_state["account_summary"]
 
     assert capital["positions_count"] == 1
     assert capital["priced_positions_count"] == 1
     assert capital["position_cost_quote_total"] == pytest.approx(200.0)
     assert capital["position_market_value_quote_total"] == pytest.approx(208.0)
     assert capital["position_unrealized_pnl_quote_total"] == pytest.approx(8.0)
+    assert account["cash_total_quote"] == pytest.approx(1000.0)
+    assert account["asset_market_value_quote_total"] == pytest.approx(208.0)
+    assert account["total_equity_quote"] == pytest.approx(1208.0)
 
 
 def test_build_dashboard_snapshot_uses_service_configured_live_db_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -727,6 +738,9 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "paper-role-head" in css
     assert "paper-role-start" in css
     assert "paper-role-current" in css
+    assert "총자본" in js
+    assert "총 자본" in js
+    assert "현금" in js
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js
