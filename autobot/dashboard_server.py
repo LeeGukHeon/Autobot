@@ -337,24 +337,7 @@ def _latest_paper_summaries(project_root: Path, limit: int = 4) -> list[dict[str
         summary_path = run_dir / "summary.json"
         if summary_path.exists():
             payload = _load_json(summary_path)
-            items.append(
-                {
-                    "run_id": payload.get("run_id") or run_dir.name,
-                    "feature_provider": payload.get("feature_provider"),
-                    "micro_provider": payload.get("micro_provider"),
-                    "orders_submitted": _coerce_int(payload.get("orders_submitted")) or 0,
-                    "orders_filled": _coerce_int(payload.get("orders_filled")) or 0,
-                    "fill_rate": _coerce_float(payload.get("fill_rate")),
-                    "realized_pnl_quote": _coerce_float(payload.get("realized_pnl_quote")),
-                    "unrealized_pnl_quote": _coerce_float(payload.get("unrealized_pnl_quote")),
-                    "max_drawdown_pct": _coerce_float(payload.get("max_drawdown_pct")),
-                    "duration_sec": _coerce_float(payload.get("duration_sec")),
-                    "warmup_satisfied": bool(payload.get("warmup_satisfied", False)),
-                    "events": _coerce_int(payload.get("events")),
-                    "updated_at": _path_mtime_iso(summary_path),
-                    "summary_path": str(summary_path),
-                }
-            )
+            items.append(_paper_run_payload_to_summary(payload=payload, updated_at=_path_mtime_iso(summary_path), summary_path=str(summary_path), fallback_run_id=run_dir.name))
             continue
         items.append(_partial_paper_summary(run_dir))
     return items
@@ -383,21 +366,58 @@ def _partial_paper_summary(run_dir: Path) -> dict[str, Any]:
     orders_submitted = _jsonl_unique_count(orders_path, key="order_id")
     orders_filled = _jsonl_unique_count(fills_path, key="order_id")
     fill_rate = (float(orders_filled) / float(orders_submitted)) if orders_submitted > 0 else 0.0
+    payload = dict(started_payload)
+    payload.update(
+        {
+            "orders_submitted": orders_submitted,
+            "orders_filled": orders_filled,
+            "fill_rate": fill_rate,
+            "realized_pnl_quote": realized_pnl_quote,
+            "unrealized_pnl_quote": unrealized_pnl_quote,
+            "max_drawdown_pct": None,
+            "duration_sec": None,
+            "events": _jsonl_line_count(events_path),
+        }
+    )
+    return _paper_run_payload_to_summary(
+        payload=payload,
+        updated_at=_path_mtime_iso(run_dir),
+        summary_path=str(run_dir),
+        fallback_run_id=run_dir.name,
+    )
+
+
+def _paper_run_payload_to_summary(
+    *,
+    payload: dict[str, Any],
+    updated_at: str | None,
+    summary_path: str,
+    fallback_run_id: str,
+) -> dict[str, Any]:
+    role = str(payload.get("paper_runtime_role") or "").strip().lower()
+    role_label = "챔피언" if role == "champion" else "챌린저" if role == "challenger" else None
     return {
-        "run_id": str(started_payload.get("run_id") or run_dir.name),
-        "feature_provider": started_payload.get("feature_provider"),
-        "micro_provider": started_payload.get("micro_provider"),
-        "orders_submitted": orders_submitted,
-        "orders_filled": orders_filled,
-        "fill_rate": fill_rate,
-        "realized_pnl_quote": realized_pnl_quote,
-        "unrealized_pnl_quote": unrealized_pnl_quote,
-        "max_drawdown_pct": None,
-        "duration_sec": None,
-        "warmup_satisfied": bool(started_payload.get("warmup_satisfied", False)),
-        "events": _jsonl_line_count(events_path),
-        "updated_at": _path_mtime_iso(run_dir),
-        "summary_path": str(run_dir),
+        "run_id": payload.get("run_id") or fallback_run_id,
+        "feature_provider": payload.get("feature_provider"),
+        "micro_provider": payload.get("micro_provider"),
+        "orders_submitted": _coerce_int(payload.get("orders_submitted")) or 0,
+        "orders_filled": _coerce_int(payload.get("orders_filled")) or 0,
+        "fill_rate": _coerce_float(payload.get("fill_rate")),
+        "realized_pnl_quote": _coerce_float(payload.get("realized_pnl_quote")),
+        "unrealized_pnl_quote": _coerce_float(payload.get("unrealized_pnl_quote")),
+        "max_drawdown_pct": _coerce_float(payload.get("max_drawdown_pct")),
+        "duration_sec": _coerce_float(payload.get("duration_sec")),
+        "warmup_satisfied": bool(payload.get("warmup_satisfied", False)),
+        "events": _coerce_int(payload.get("events")),
+        "paper_runtime_role": role or None,
+        "paper_runtime_role_label": role_label,
+        "paper_unit_name": payload.get("paper_unit_name"),
+        "paper_lane": payload.get("paper_lane"),
+        "paper_runtime_model_ref": payload.get("paper_runtime_model_ref"),
+        "paper_runtime_model_ref_pinned": payload.get("paper_runtime_model_ref_pinned"),
+        "paper_runtime_model_run_id": payload.get("paper_runtime_model_run_id"),
+        "updated_at": updated_at,
+        "summary_path": summary_path,
     }
 
 

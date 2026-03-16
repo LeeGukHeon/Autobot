@@ -157,7 +157,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {"status": "shadow_pass", "next_action": "use_rank_governed_lane", "candidate_run_id": "rank-run-001", "lane_id": "rank_shadow"})
     _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {"selected_lane_id": "rank_governed_primary", "selected_acceptance_script": "v4_rank_governed_candidate_acceptance.ps1"})
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
-    _write_json(project_root / "data" / "paper" / "runs" / "paper-20260310-001000" / "summary.json", {"run_id": "paper-20260310-001000", "orders_submitted": 1, "orders_filled": 1, "realized_pnl_quote": 1234.0})
+    _write_json(project_root / "data" / "paper" / "runs" / "paper-20260310-001000" / "summary.json", {"run_id": "paper-20260310-001000", "orders_submitted": 1, "orders_filled": 1, "realized_pnl_quote": 1234.0, "paper_runtime_role": "champion", "paper_runtime_model_run_id": "champion-run-001"})
     meta_dir = project_root / "data" / "raw_ws" / "upbit" / "_meta"
     _write_json(meta_dir / "ws_public_health.json", {"run_id": "ws-run-1", "connected": True, "subscribed_markets_count": 50})
     _write_json(meta_dir / "ws_collect_report.json", {"run_id": "collect-1", "generated_at": "2026-03-10T00:00:00Z"})
@@ -332,6 +332,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["training"]["rank_shadow"]["governance_action"]["selected_lane_id"] == "rank_governed_primary"
     assert snapshot["challenger"]["reason"] == "TRAINER_EVIDENCE_REQUIRED_FAILED"
     assert snapshot["paper"]["recent_runs"][0]["run_id"] == "paper-20260310-001000"
+    assert snapshot["paper"]["recent_runs"][0]["paper_runtime_role"] == "champion"
+    assert snapshot["paper"]["recent_runs"][0]["paper_runtime_model_run_id"] == "champion-run-001"
     assert snapshot["live"]["states"][0]["positions_count"] == 0
     assert snapshot["live"]["states"][0]["open_orders_count"] == 1
     assert snapshot["live"]["states"][0]["active_risk_plans_count"] == 1
@@ -465,6 +467,8 @@ def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_i
                             "feature_provider": "LIVE_V4",
                             "micro_provider": "LIVE_WS",
                             "warmup_satisfied": True,
+                            "paper_runtime_role": "challenger",
+                            "paper_runtime_model_run_id": "candidate-run-123",
                         },
                     },
                     ensure_ascii=False,
@@ -491,6 +495,9 @@ def test_build_dashboard_snapshot_falls_back_to_partial_paper_run_when_summary_i
     assert recent_runs[0]["run_id"] == "paper-20260313-010000-demo"
     assert recent_runs[0]["feature_provider"] == "LIVE_V4"
     assert recent_runs[0]["micro_provider"] == "LIVE_WS"
+    assert recent_runs[0]["paper_runtime_role"] == "challenger"
+    assert recent_runs[0]["paper_runtime_role_label"] == "챌린저"
+    assert recent_runs[0]["paper_runtime_model_run_id"] == "candidate-run-123"
     assert recent_runs[0]["orders_submitted"] == 2
     assert recent_runs[0]["orders_filled"] == 1
     assert recent_runs[0]["fill_rate"] == pytest.approx(0.5)
@@ -673,6 +680,9 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert 'function responseErrorText(response)' in js
     assert 'function shouldDisplayLiveState(snapshot, item)' in js
     assert 'const explicit = String((item || {}).service_key || "").trim();' in js
+    assert "페이퍼 챔피언" in js
+    assert "페이퍼 챌린저" in js
+    assert "paper_runtime_model_run_id" in js
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js

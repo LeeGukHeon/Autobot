@@ -891,20 +891,35 @@
     const rows = [...((snapshot.paper || {}).recent_runs || [])].sort((a, b) => {
       return (coerceTs(b.updated_at) || 0) - (coerceTs(a.updated_at) || 0);
     });
-    document.getElementById("paper-grid").innerHTML = rows.length
-      ? terminalTable(
-        ["런", "주문 제출", "주문 체결", "체결 비율", "손익", "업데이트"],
-        rows.map((run) => ({
-          cells: [
-            cell(shortRun(run.run_id), `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`),
-            cell(maybe(run.orders_submitted, "0"), "전송된 주문 수"),
-            cell(maybe(run.orders_filled, "0"), "실제 체결된 주문 수"),
-            cell(run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100), "체결 / 제출"),
-            cell(fmtMoney(run.realized_pnl_quote, 2), `미실현 ${fmtMoney(run.unrealized_pnl_quote, 2)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
-            cell(fmtDateTime(run.updated_at)),
-          ],
-        })),
-      )
+    const groups = [
+      { key: "champion", title: "페이퍼 챔피언", rows: rows.filter((run) => String(run.paper_runtime_role || "") === "champion") },
+      { key: "challenger", title: "페이퍼 챌린저", rows: rows.filter((run) => String(run.paper_runtime_role || "") === "challenger") },
+      { key: "other", title: "기타 페이퍼 런", rows: rows.filter((run) => !run.paper_runtime_role) },
+    ].filter((group) => group.rows.length);
+
+    const renderRows = (paperRows) => terminalTable(
+      ["런", "주문 제출", "주문 체결", "체결 비율", "손익", "업데이트"],
+      paperRows.map((run) => ({
+        cells: [
+          cell(
+            shortRun(run.run_id),
+            [
+              maybe(run.paper_runtime_role_label),
+              maybe(run.paper_runtime_model_run_id),
+              `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`,
+            ].filter(Boolean).join(" · "),
+          ),
+          cell(maybe(run.orders_submitted, "0"), "전송된 주문 수"),
+          cell(maybe(run.orders_filled, "0"), "실제 체결된 주문 수"),
+          cell(run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100), "체결 / 제출"),
+          cell(fmtMoney(run.realized_pnl_quote, 2), `미실현 ${fmtMoney(run.unrealized_pnl_quote, 2)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+          cell(fmtDateTime(run.updated_at)),
+        ],
+      })),
+    );
+
+    document.getElementById("paper-grid").innerHTML = groups.length
+      ? groups.map((group) => `<section class="paper-role-block"><h3>${group.title}</h3>${renderRows(group.rows)}</section>`).join("")
       : empty("최근 페이퍼 런이 없습니다.");
   }
 
