@@ -1279,14 +1279,19 @@
         ["거래", "종료 시각", "보유 시간", "체결 확인", "순손익", "종료 방식"],
         recentTrades.slice(0, 3).map((trade) => {
           const direction = trade.status === "CLOSED" ? "거래 종료" : trade.status;
+          const isManualClose = String(trade.close_mode || "").trim() === "external_manual_order"
+            || String(trade.close_reason_code || "").trim() === "MANUAL_SELL_DETECTED";
           const verificationText = trade.close_display_confirmed
             ? "확정"
             : trade.close_verified === false
               ? "미확정"
               : "-";
           const pnlText = trade.realized_pnl_quote == null
-            ? (trade.close_display_confirmed ? "계산 전" : trade.close_verified === false ? "체결 확인 전" : "계산 전")
+            ? (isManualClose ? "수동 정리" : trade.close_display_confirmed ? "계산 전" : trade.close_verified === false ? "체결 확인 전" : "계산 전")
             : `${fmtMoney(trade.realized_pnl_quote, 2)} / ${fmtPct(trade.realized_pnl_pct)}`;
+          const pnlSecondary = trade.realized_pnl_quote == null
+            ? (isManualClose ? "손익 미집계" : (trade.exit_price == null ? "" : `종료가 ${fmtMoney(trade.exit_price, 2)}`))
+            : (trade.exit_price == null ? "" : `종료가 ${fmtMoney(trade.exit_price, 2)}`);
           const durationText = trade.hold_minutes == null ? "계산 전" : `${trade.hold_minutes}분`;
           return {
             rowClass: Number(trade.realized_pnl_quote || 0) > 0 ? "positive" : Number(trade.realized_pnl_quote || 0) < 0 ? "negative" : "",
@@ -1295,7 +1300,7 @@
               cell(fmtCompactDateTime(trade.exit_ts_ms)),
               cell(durationText),
               cell(verificationText),
-              cell(pnlText, trade.exit_price == null ? "" : `종료가 ${fmtMoney(trade.exit_price, 2)}`, Number(trade.realized_pnl_quote || 0) > 0 ? "good" : Number(trade.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+              cell(pnlText, pnlSecondary, Number(trade.realized_pnl_quote || 0) > 0 ? "good" : Number(trade.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
               cell(translate(trade.close_mode)),
             ],
           };
