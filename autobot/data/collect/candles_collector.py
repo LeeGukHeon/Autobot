@@ -10,6 +10,7 @@ import time
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from ...upbit import ValidationError
 from ...upbit import load_upbit_settings
 from ..inventory import ts_ms_to_utc_text
 from .candle_manifest import append_manifest_rows, manifest_path
@@ -353,6 +354,31 @@ def _collect_one_target(
         }
         return detail, manifest_row
     except Exception as exc:
+        if _is_terminal_market_unavailable(exc):
+            detail["status"] = "WARN"
+            detail["error_message"] = str(exc)
+            detail["reasons"] = ["DELISTED_OR_INACTIVE_MARKET"]
+            detail["calls_made"] = int(detail.get("calls_made", 0))
+            detail["throttled_count"] = int(detail.get("throttled_count", 0))
+            detail["backoff_count"] = int(detail.get("backoff_count", 0))
+            manifest_row = {
+                "dataset_name": options.out_dataset,
+                "source": "upbit_api",
+                "window_tag": window_tag,
+                "market": market,
+                "tf": tf,
+                "rows": 0,
+                "min_ts_ms": None,
+                "max_ts_ms": None,
+                "calls_made": int(detail.get("calls_made", 0)),
+                "status": "WARN",
+                "reasons_json": json.dumps(["DELISTED_OR_INACTIVE_MARKET"], ensure_ascii=False),
+                "error_message": str(exc),
+                "part_file": "",
+                "collected_at": int(time.time()),
+            }
+            return detail, manifest_row
+
         detail["status"] = "FAIL"
         detail["error_message"] = str(exc)
         detail["reasons"] = ["COLLECT_EXCEPTION"]
@@ -376,3 +402,19 @@ def _collect_one_target(
             "collected_at": int(time.time()),
         }
         return detail, manifest_row
+
+
+def _is_terminal_market_unavailable(exc: Exception) -> bool:
+    if not isinstance(exc, ValidationError):
+        return False
+    if int(getattr(exc, "status_code", 0) or 0) != 404:
+        return False
+    endpoint = str(getattr(exc, "endpoint", "") or "").strip().lower()
+    if "/v1/candles/minutes/" not in endpoint:
+        return False
+    message = str(getattr(exc, "message", "") or exc).strip().lower()
+    if "code not found" in message:
+        return True
+    if "market not found" in message:
+        return True
+    return False

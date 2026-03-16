@@ -10,6 +10,7 @@ from autobot.data.collect import (
     validate_candles_api_dataset,
 )
 from autobot.data.inventory import parse_utc_ts_ms
+from autobot.upbit import ValidationError
 
 
 def test_collect_and_validate_with_offline_fixture(tmp_path: Path) -> None:
@@ -93,6 +94,71 @@ def test_collect_and_validate_with_offline_fixture(tmp_path: Path) -> None:
     )
     assert validate_summary.fail_files == 0
     assert validate_summary.ok_files == 1
+
+
+def test_collect_treats_delisted_market_404_as_warning(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    collect_meta = tmp_path / "collect_meta"
+    collect_meta.mkdir(parents=True, exist_ok=True)
+
+    start_ts_ms = parse_utc_ts_ms("2026-03-16T00:00:00+00:00")
+    end_ts_ms = parse_utc_ts_ms("2026-03-16T00:10:00+00:00")
+    assert start_ts_ms is not None
+    assert end_ts_ms is not None
+
+    plan_path = collect_meta / "plan.json"
+    plan = {
+        "base_dataset": "candles_v1",
+        "window": {
+            "start_ts_ms": start_ts_ms,
+            "end_ts_ms": end_ts_ms,
+            "start_utc": "2026-03-16T00:00:00+00:00",
+            "end_utc": "2026-03-16T00:10:00+00:00",
+        },
+        "targets": [
+            {
+                "market": "KRW-FLOW",
+                "tf": "15m",
+                "need_from_ts_ms": start_ts_ms,
+                "need_to_ts_ms": end_ts_ms,
+                "reason": "MISSING_TAIL",
+            }
+        ],
+    }
+    plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+    class _DelistedClient:
+        def fetch_minutes_range(
+            self,
+            *,
+            market: str,
+            tf: str,
+            start_ts_ms: int,
+            end_ts_ms: int,
+            max_requests: int | None = None,
+        ) -> CandleFetchResult:
+            raise ValidationError(
+                "Code not found",
+                status_code=404,
+                endpoint=f"/v1/candles/minutes/{tf.removesuffix('m')}",
+                method="GET",
+            )
+
+    collect_summary = collect_candles_from_plan(
+        CandleCollectOptions(
+            plan_path=plan_path,
+            parquet_root=parquet_root,
+            out_dataset="candles_api_v1",
+            collect_meta_dir=collect_meta,
+            dry_run=False,
+        ),
+        client=_DelistedClient(),
+    )
+
+    assert collect_summary.fail_targets == 0
+    assert collect_summary.warn_targets == 1
+    assert collect_summary.details[0]["status"] == "WARN"
+    assert collect_summary.details[0]["reasons"] == ["DELISTED_OR_INACTIVE_MARKET"]
 
 
 def _candle_row(ts_ms: int, price: float) -> dict:
