@@ -542,6 +542,60 @@ def test_reconcile_ignores_unknown_dust_position_below_exchange_min_total(tmp_pa
     assert "ignore_unknown_dust_position" in action_types
 
 
+def test_reconcile_records_manual_close_when_ignored_dust_disappears(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        first_report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "MOODENG",
+                    "balance": "0.0081",
+                    "locked": "0",
+                    "avg_buy_price": "74.1",
+                }
+            ],
+            open_orders_payload=[],
+            fetch_market_chance=lambda market: {
+                "market": {
+                    "bid": {"min_total": "5000"},
+                    "ask": {"min_total": "5000"},
+                }
+            },
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=1_000,
+        )
+        second_report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            fetch_market_chance=lambda market: {
+                "market": {
+                    "bid": {"min_total": "5000"},
+                    "ask": {"min_total": "5000"},
+                }
+            },
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5_000,
+        )
+        rows = store.list_trade_journal(statuses=("CLOSED",), market="KRW-MOODENG")
+
+    assert first_report["counts"]["ignored_dust_positions"] == 1
+    assert second_report["counts"]["ignored_dust_positions"] == 0
+    assert any(item["type"] == "close_ignored_dust_position_as_manual_sell" for item in second_report["actions"])
+    assert rows
+    assert rows[0]["close_reason_code"] == "MANUAL_SELL_DETECTED"
+    assert rows[0]["close_mode"] == "external_manual_order"
+
+
 def test_reconcile_keeps_unknown_position_when_notional_is_above_min_total(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

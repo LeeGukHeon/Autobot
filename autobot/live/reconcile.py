@@ -24,6 +24,7 @@ from .model_handoff import resolve_live_model_ref_source
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
 UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk", "attach_strategy_risk"]
+IGNORED_DUST_POSITIONS_CHECKPOINT = "ignored_dust_positions"
 
 
 def reconcile_exchange_snapshot(
@@ -53,6 +54,8 @@ def reconcile_exchange_snapshot(
     actions: list[dict[str, Any]] = []
     warnings: list[str] = []
     halted_reasons: list[str] = []
+    previous_ignored_dust_checkpoint = store.get_checkpoint(name=IGNORED_DUST_POSITIONS_CHECKPOINT) if not dry_run else None
+    previous_ignored_dust_markets = dict((previous_ignored_dust_checkpoint or {}).get("payload", {}).get("markets", {}))
 
     local_orders = {item["uuid"]: item for item in store.list_orders(open_only=False)}
     local_open_orders = {uuid: item for uuid, item in local_orders.items() if is_open_local_state(item.get("local_state"))}
@@ -471,6 +474,53 @@ def reconcile_exchange_snapshot(
         retained_local_missing_markets.append(market)
     local_positions_missing_on_exchange = retained_local_missing_markets
 
+    current_ignored_dust_markets = {
+        str(item.get("market") or "").strip().upper(): dict(item)
+        for item in ignored_dust_positions
+        if str(item.get("market") or "").strip()
+    }
+    disappeared_ignored_dust_markets = sorted(
+        market
+        for market in previous_ignored_dust_markets
+        if market not in current_ignored_dust_markets and market not in exchange_positions and market not in local_positions
+    )
+    for market in disappeared_ignored_dust_markets:
+        previous_detail = dict(previous_ignored_dust_markets.get(market) or {})
+        if not previous_detail:
+            continue
+        synthetic_position = {
+            "market": market,
+            "base_currency": previous_detail.get("base_currency"),
+            "base_amount": _as_optional_float(previous_detail.get("base_amount")),
+            "avg_entry_price": _as_optional_float(previous_detail.get("avg_entry_price")),
+            "updated_ts": now_ts,
+        }
+        if not dry_run:
+            close_trade_journal_for_market(
+                store=store,
+                market=market,
+                position=synthetic_position,
+                ts_ms=now_ts,
+                close_mode="external_manual_order",
+                close_reason_code="MANUAL_SELL_DETECTED",
+                plan_id=None,
+                exit_meta={
+                    "source": "ignored_dust_checkpoint",
+                    "close_mode": "external_manual_order",
+                    "close_reason_code": "MANUAL_SELL_DETECTED",
+                    "manual_close": True,
+                    "ignored_dust_cleanup": True,
+                },
+            )
+        actions.append(
+            {
+                "type": "close_ignored_dust_position_as_manual_sell",
+                "market": market,
+                "close_mode": "external_manual_order",
+                "source": "ignored_dust_checkpoint",
+            }
+        )
+
     if unknown_position_markets:
         if unknown_positions_policy == "halt":
             halted_reasons.append("UNKNOWN_POSITIONS_DETECTED")
@@ -657,11 +707,21 @@ def reconcile_exchange_snapshot(
         ],
         "unknown_positions": [exchange_positions[market] for market in unknown_position_markets],
         "ignored_dust_positions": ignored_dust_positions,
+        "disappeared_ignored_dust_positions": [previous_ignored_dust_markets[market] for market in disappeared_ignored_dust_markets],
         "local_positions_missing_on_exchange": [local_positions[market] for market in local_positions_missing_on_exchange],
         "actions": actions,
         "warnings": warnings,
         "ts_ms": now_ts,
     }
+    if not dry_run:
+        store.set_checkpoint(
+            name=IGNORED_DUST_POSITIONS_CHECKPOINT,
+            payload={
+                "markets": current_ignored_dust_markets,
+                "updated_ts": now_ts,
+            },
+            ts_ms=now_ts,
+        )
     return report
 
 
