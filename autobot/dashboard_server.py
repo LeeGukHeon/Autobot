@@ -623,8 +623,14 @@ def _summarize_live_position(row: dict[str, Any], *, market_tickers: dict[str, d
     base_amount = _coerce_float(row.get("base_amount"))
     ticker = dict((market_tickers or {}).get(str(market or "").strip().upper()) or {})
     current_price = _coerce_float(ticker.get("trade_price"))
+    position_cost_quote = None
+    market_value_quote = None
     unrealized_pnl_quote = None
     unrealized_pnl_pct = None
+    if avg_entry_price is not None and base_amount is not None:
+        position_cost_quote = float(avg_entry_price) * float(base_amount)
+    if current_price is not None and base_amount is not None:
+        market_value_quote = float(current_price) * float(base_amount)
     if current_price is not None and avg_entry_price is not None and base_amount is not None:
         unrealized_pnl_quote = (float(current_price) - float(avg_entry_price)) * float(base_amount)
         if float(avg_entry_price) > 0:
@@ -637,6 +643,8 @@ def _summarize_live_position(row: dict[str, Any], *, market_tickers: dict[str, d
         "updated_ts": _coerce_int(row.get("updated_ts")),
         "current_price": current_price,
         "current_price_ts_ms": _coerce_int(ticker.get("trade_timestamp")),
+        "position_cost_quote": position_cost_quote,
+        "market_value_quote": market_value_quote,
         "unrealized_pnl_quote": unrealized_pnl_quote,
         "unrealized_pnl_pct": unrealized_pnl_pct,
     }
@@ -1092,6 +1100,22 @@ def _load_live_db_summary(
             project_root,
             [str(row.get("market") or "").strip().upper() for row in positions],
         )
+        summarized_positions = [_summarize_live_position(row, market_tickers=market_tickers) for row in positions[:8]]
+        position_cost_quote_total = sum(
+            float(item.get("position_cost_quote") or 0.0)
+            for item in summarized_positions
+            if item.get("position_cost_quote") is not None
+        )
+        position_market_value_quote_total = sum(
+            float(item.get("market_value_quote") or 0.0)
+            for item in summarized_positions
+            if item.get("market_value_quote") is not None
+        )
+        position_unrealized_pnl_quote_total = sum(
+            float(item.get("unrealized_pnl_quote") or 0.0)
+            for item in summarized_positions
+            if item.get("unrealized_pnl_quote") is not None
+        )
         today_trade_summary = _summarize_kst_trade_day(deduped_trade_journal, now_ts_ms=now_ts_ms)
         today_trade_summary["current_positions_count"] = len(positions)
         today_trade_summary["current_pending_orders_count"] = len(
@@ -1108,6 +1132,19 @@ def _load_live_db_summary(
                 if str(row.get("side") or "").strip().lower() == "ask"
             ]
         )
+        today_trade_summary["current_position_cost_quote_total"] = position_cost_quote_total
+        today_trade_summary["current_position_market_value_quote_total"] = position_market_value_quote_total
+        today_trade_summary["current_position_unrealized_pnl_quote_total"] = position_unrealized_pnl_quote_total
+        today_trade_summary["priced_positions_count"] = len(
+            [item for item in summarized_positions if item.get("market_value_quote") is not None]
+        )
+        capital_summary = {
+            "positions_count": len(positions),
+            "priced_positions_count": len([item for item in summarized_positions if item.get("market_value_quote") is not None]),
+            "position_cost_quote_total": position_cost_quote_total,
+            "position_market_value_quote_total": position_market_value_quote_total,
+            "position_unrealized_pnl_quote_total": position_unrealized_pnl_quote_total,
+        }
         active_risk_plan_payloads: list[dict[str, Any]] = []
         for row in active_risk_plans[:8]:
             payload = _summarize_live_risk_plan(row)
@@ -1146,7 +1183,7 @@ def _load_live_db_summary(
             "intents_count": len(intents),
             "active_risk_plans_count": len(active_risk_plans),
             "breaker_active": len(active_breakers) > 0,
-            "positions": [_summarize_live_position(row, market_tickers=market_tickers) for row in positions[:8]],
+            "positions": summarized_positions,
             "open_orders": [_summarize_live_order(row) for row in open_order_rows[:8]],
             "recent_intents": [_summarize_live_intent(row) for row in intents[:8]],
             "recent_trades": [
@@ -1155,6 +1192,7 @@ def _load_live_db_summary(
                 if str(row.get("status") or "").strip().upper() in {"OPEN", "CLOSED", "CANCELLED_ENTRY"}
             ][:8],
             "today_trade_summary": today_trade_summary,
+            "capital_summary": capital_summary,
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 {

@@ -1034,6 +1034,7 @@
       ? states.map((liveState) => {
         const active = liveState.label === state.activeLiveLabel;
         const todayState = liveState.today_trade_summary || {};
+        const capital = liveState.capital_summary || {};
         const privateWsTs = coerceTs((liveState.last_ws_event || {}).event_ts_ms) || coerceTs((liveState.daemon_last_run || {}).private_ws_last_event_ts_ms);
         const selectorWsFreshness = privateWsTs == null ? "없음" : fmtAge(privateWsTs);
         const unit = liveStateService(snapshot, liveState);
@@ -1073,6 +1074,7 @@
               <div class="live-selector-kpis">
                 <div><span>보유</span><strong>${esc(`${maybe(liveState.positions_count, "0")}개`)}</strong></div>
                 <div><span>주문</span><strong>${esc(`${maybe(liveState.open_orders_count, "0")}개`)}</strong></div>
+                <div><span>자본</span><strong>${esc(fmtMoney(capital.position_market_value_quote_total, 2))}</strong></div>
                 <div><span>손익</span><strong>${esc(fmtMoney(todayState.net_pnl_quote_total, 2))}</strong></div>
               </div>
             </div>
@@ -1113,6 +1115,7 @@
     const riskPlans = [...(selected.active_risk_plans || [])].sort((a, b) => (coerceTs(b.updated_ts) || 0) - (coerceTs(a.updated_ts) || 0));
     const intents = [...(selected.recent_intents || [])].sort((a, b) => (coerceTs(b.ts_ms) || 0) - (coerceTs(a.ts_ms) || 0));
     const today = selected.today_trade_summary || {};
+    const capital = selected.capital_summary || {};
     const recentTrades = [...(selected.recent_trades || [])].sort((a, b) => {
       const aTs = coerceTs(a.exit_ts_ms) || coerceTs(a.entry_ts_ms) || coerceTs(a.updated_ts) || 0;
       const bTs = coerceTs(b.exit_ts_ms) || coerceTs(b.entry_ts_ms) || coerceTs(b.updated_ts) || 0;
@@ -1149,6 +1152,12 @@
       `종료 ${maybe(today.closed_count, "0")}건`,
       `손익 ${fmtMoney(today.net_pnl_quote_total, 2)}`,
       `대기 ${maybe(today.current_pending_orders_count, "0")} / ${maybe(today.current_exit_orders_count, "0")}`,
+    ];
+    const capitalSummaryTags = [
+      `보유 원가 ${fmtMoney(capital.position_cost_quote_total, 2)}`,
+      `현재 평가 ${fmtMoney(capital.position_market_value_quote_total, 2)}`,
+      `평가손익 ${fmtMoney(capital.position_unrealized_pnl_quote_total, 2)}`,
+      `평가 포지션 ${maybe(capital.priced_positions_count, "0")} / ${maybe(capital.positions_count, "0")}`,
     ];
     const leadTone = selected.breaker_active
       ? "bad"
@@ -1363,6 +1372,9 @@
                   ${metric("진입 대기", maybe(today.current_pending_orders_count, "0"))}
                   ${metric("청산 대기", maybe(today.current_exit_orders_count, "0"))}
                   ${metric("마지막 개인 WS", fmtCompactDateTime(privateWsLastTs))}
+                </div>
+                <div class="live-session-tags">
+                  ${capitalSummaryTags.map((item) => `<span class="live-session-tag">${esc(item)}</span>`).join("")}
                 </div>
               </article>
             </div>

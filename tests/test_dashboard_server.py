@@ -339,10 +339,14 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["live"]["states"][0]["active_risk_plans_count"] == 1
     assert snapshot["live"]["states"][0]["recent_trades"][0]["realized_pnl_quote"] == 3.0
     assert snapshot["live"]["states"][0]["positions"] == []
+    assert snapshot["live"]["states"][0]["capital_summary"]["position_cost_quote_total"] == 0.0
+    assert snapshot["live"]["states"][0]["capital_summary"]["position_market_value_quote_total"] == 0.0
+    assert snapshot["live"]["states"][0]["capital_summary"]["position_unrealized_pnl_quote_total"] == 0.0
     assert today_summary["closed_count"] == 1
     assert today_summary["wins"] == 1
     assert today_summary["net_pnl_quote_total"] == 3.0
     assert today_summary["current_positions_count"] == 0
+    assert today_summary["current_position_market_value_quote_total"] == 0.0
     assert today_summary["current_pending_orders_count"] == 1
     assert snapshot["live"]["states"][0]["daemon_last_run"]["private_ws_events_total"] == 7
     assert snapshot["live"]["states"][0]["last_ws_event"]["event_type"] == "myOrder"
@@ -404,6 +408,40 @@ def test_build_dashboard_snapshot_reads_breaker_state_table_name_used_by_live_db
     assert candidate_state["breaker_active"] is True
     assert candidate_state["active_breakers"]
     assert candidate_state["active_breakers"][0]["reason_codes"] == ["REPEATED_REPLACE_REJECTS"]
+
+
+def test_build_dashboard_snapshot_summarizes_current_position_capital(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("KRW-BTC", "BTC", 2.0, 100.0, 1234, "{}", "{}", "{}", 1),
+        )
+    conn.close()
+
+    import autobot.dashboard_server as dashboard_server_module
+
+    original_ticker_loader = dashboard_server_module._load_live_market_tickers
+    dashboard_server_module._load_live_market_tickers = lambda project_root, markets: {  # type: ignore[assignment]
+        "KRW-BTC": {"trade_price": 104.0, "trade_timestamp": int(time.time() * 1000)}
+    }
+    try:
+        snapshot = build_dashboard_snapshot(project_root)
+    finally:
+        dashboard_server_module._load_live_market_tickers = original_ticker_loader  # type: ignore[assignment]
+
+    candidate_state = next(item for item in snapshot["live"]["states"] if item.get("service_key") == "live_candidate")
+    capital = candidate_state["capital_summary"]
+
+    assert capital["positions_count"] == 1
+    assert capital["priced_positions_count"] == 1
+    assert capital["position_cost_quote_total"] == pytest.approx(200.0)
+    assert capital["position_market_value_quote_total"] == pytest.approx(208.0)
+    assert capital["position_unrealized_pnl_quote_total"] == pytest.approx(8.0)
 
 
 def test_build_dashboard_snapshot_uses_service_configured_live_db_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
