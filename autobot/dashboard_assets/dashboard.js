@@ -905,11 +905,12 @@
     const renderRows = (paperRows, activeRunId) => terminalTable(
       ["런", "주문 제출", "주문 체결", "체결 비율", "손익", "업데이트"],
       paperRows.map((run) => ({
+        rowClass: run.run_id === activeRunId ? "current-paper-run" : "",
         cells: [
           cell(
             shortRun(run.run_id),
             [
-              run.run_id === activeRunId ? "실행 중" : null,
+              run.run_id === activeRunId ? "현재 실행 중" : null,
               maybe(run.paper_runtime_role_label),
               maybe(run.paper_runtime_model_run_id),
               `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`,
@@ -933,7 +934,7 @@
           ? ""
           : `<div class="paper-role-meta">${
             serviceActive
-              ? `${pill("상태", "실행 중", "good")}<span class="paper-role-start">${esc(fmtDateTime(service.started_at))}</span>`
+              ? `${pill("상태", "실행 중", "good")}<span class="paper-role-start">${esc(fmtDateTime(service.started_at))}</span><span class="paper-role-current">현재 run · ${esc(shortRun(activeRunId))}</span>`
               : pill("상태", "대기", "neutral")
           }</div>`;
         return `<section class="paper-role-block"><div class="paper-role-head"><h3>${group.title}</h3>${serviceMeta}</div>${renderRows(group.rows, activeRunId)}</section>`;

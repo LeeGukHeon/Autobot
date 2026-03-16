@@ -687,6 +687,17 @@ body {
   font-size: 0.78rem;
 }
 
+.paper-role-current {
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.terminal-row.current-paper-run {
+  border-color: rgba(100, 216, 255, 0.28);
+  background: rgba(100, 216, 255, 0.08);
+}
+
 .metric,
 .kv {
   min-height: 62px;
