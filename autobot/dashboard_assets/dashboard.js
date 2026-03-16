@@ -1164,6 +1164,12 @@
       `평가손익 ${fmtMoney(capital.position_unrealized_pnl_quote_total, 2)}`,
       `평가 포지션 ${maybe(capital.priced_positions_count, "0")} / ${maybe(capital.positions_count, "0")}`,
     ];
+    const sessionCompactLine = [
+      `미확정 ${unverifiedClosed}`,
+      `진입 대기 ${maybe(today.current_pending_orders_count, "0")}건`,
+      `청산 대기 ${maybe(today.current_exit_orders_count, "0")}건`,
+      `마지막 개인 WS ${fmtCompactDateTime(privateWsLastTs)}`,
+    ].join(" · ");
     const leadTone = selected.breaker_active
       ? "bad"
       : positions.length
@@ -1380,19 +1386,14 @@
                 <div class="live-session-tags">
                   ${todaySummaryTags.map((item) => `<span class="live-session-tag">${esc(item)}</span>`).join("")}
                 </div>
-                <div class="metric-grid">
+                <div class="metric-grid live-session-grid">
                   ${metric("총 자본", fmtMoney(account.total_equity_quote))}
                   ${metric("현금", fmtMoney(account.cash_total_quote))}
                   ${metric("승률", fmtPct(today.win_rate_pct))}
                   ${metric("확정", verifiedClosed)}
-                  ${metric("미확정", unverifiedClosed)}
-                  ${metric("진입 대기", maybe(today.current_pending_orders_count, "0"))}
-                  ${metric("청산 대기", maybe(today.current_exit_orders_count, "0"))}
-                  ${metric("마지막 개인 WS", fmtCompactDateTime(privateWsLastTs))}
                 </div>
-                <div class="live-session-tags">
-                  ${capitalSummaryTags.map((item) => `<span class="live-session-tag">${esc(item)}</span>`).join("")}
-                </div>
+                <p class="live-session-note">${esc(sessionCompactLine)}</p>
+                <p class="live-session-note">${esc(capitalSummaryTags.join(" · "))}</p>
               </article>
             </div>
             <div class="live-status-strip">

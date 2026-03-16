@@ -1042,6 +1042,17 @@ body {
   line-height: 1.45;
 }
 
+.live-session-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.live-session-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.65;
+}
+
 .live-signal-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
