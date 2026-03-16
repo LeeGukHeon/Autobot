@@ -82,7 +82,6 @@
     managed_exit_order: "관리형 청산",
     missing_on_exchange_after_exit_plan: "청산 후 거래소 미보유 확인",
     external_manual_order: "수동 외부 청산",
-    manual_close_detected: "수동 청산 확인",
     entry_order_timeout: "진입 주문 시간초과",
     verified_exit_order: "체결 확인 완료",
     unverified_position_sync: "포지션 동기화 기반",
@@ -1280,15 +1279,13 @@
         ["거래", "종료 시각", "보유 시간", "체결 확인", "순손익", "종료 방식"],
         recentTrades.slice(0, 3).map((trade) => {
           const direction = trade.status === "CLOSED" ? "거래 종료" : trade.status;
-          const verificationText = trade.close_verification_status === "manual_close_detected"
-            ? "수동 확인"
+          const verificationText = trade.close_display_confirmed
+            ? "확정"
             : trade.close_verified === false
               ? "미확정"
-              : trade.close_verified === true
-                ? "확정"
-                : "-";
+              : "-";
           const pnlText = trade.realized_pnl_quote == null
-            ? (trade.close_verification_status === "manual_close_detected" ? "수동 정리 기록" : trade.close_verified === false ? "체결 확인 전" : "계산 전")
+            ? (trade.close_display_confirmed ? "계산 전" : trade.close_verified === false ? "체결 확인 전" : "계산 전")
             : `${fmtMoney(trade.realized_pnl_quote, 2)} / ${fmtPct(trade.realized_pnl_pct)}`;
           const durationText = trade.hold_minutes == null ? "계산 전" : `${trade.hold_minutes}분`;
           return {

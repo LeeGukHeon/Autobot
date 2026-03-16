@@ -920,6 +920,13 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
     hold_minutes = None
     if entry_ts_ms is not None and exit_ts_ms is not None and exit_ts_ms >= entry_ts_ms:
         hold_minutes = max(0, int(round((exit_ts_ms - entry_ts_ms) / 60000)))
+    close_verified = bool(exit_meta.get("close_verified")) if exit_meta.get("close_verified") is not None else None
+    close_display_confirmed = close_verified is not False
+    if close_verified is False:
+        close_mode_value = str(row.get("close_mode") or "").strip().lower()
+        close_reason_value = str(row.get("close_reason_code") or "").strip().upper()
+        if close_mode_value == "external_manual_order" or close_reason_value == "MANUAL_SELL_DETECTED":
+            close_display_confirmed = True
     return {
         "journal_id": row.get("journal_id"),
         "market": row.get("market"),
@@ -974,8 +981,9 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         "notional_multiplier": _coerce_float(row.get("notional_multiplier")),
         "entry_meta": entry_meta,
         "exit_meta": exit_meta,
-        "close_verified": bool(exit_meta.get("close_verified")) if exit_meta.get("close_verified") is not None else None,
+        "close_verified": close_verified,
         "close_verification_status": exit_meta.get("close_verification_status"),
+        "close_display_confirmed": close_display_confirmed,
     }
 
 
@@ -1066,7 +1074,7 @@ def _summarize_kst_trade_day(rows: list[dict[str, Any]], *, now_ts_ms: int) -> d
             if exit_ts_ms is None or exit_ts_ms < start_ts_ms or exit_ts_ms >= end_ts_ms:
                 continue
             summary["closed_count"] += 1
-            if item.get("close_verified") is False:
+            if item.get("close_display_confirmed") is False:
                 summary["unverified_closed_count"] += 1
                 continue
             summary["verified_closed_count"] += 1
