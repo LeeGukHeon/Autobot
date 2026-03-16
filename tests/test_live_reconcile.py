@@ -473,6 +473,8 @@ def test_reconcile_classifies_missing_position_as_manual_sell(tmp_path: Path) ->
     assert journal["status"] == "CLOSED"
     assert journal["close_reason_code"] == "MANUAL_SELL_DETECTED"
     assert journal["close_mode"] == "external_manual_order"
+    assert journal["exit_meta"]["close_verification_status"] == "manual_close_detected"
+    assert journal["exit_meta"]["close_verified"] is False
 
 
 def test_reconcile_infers_intent_from_exchange_bot_order(tmp_path: Path) -> None:

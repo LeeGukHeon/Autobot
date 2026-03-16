@@ -1532,6 +1532,8 @@ def _derive_close_verification_status(*, order: dict[str, Any] | None, close_mod
     if _has_verified_exit_order(order=order):
         return "verified_exit_order"
     mode = _as_optional_str(close_mode)
+    if mode == "external_manual_order":
+        return "manual_close_detected"
     if mode == "position_sync":
         return "unverified_position_sync"
     return "unverified_missing_exit_order"

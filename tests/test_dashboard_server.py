@@ -741,6 +741,8 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "총자본" in js
     assert "총 자본" in js
     assert "현금" in js
+    assert "수동 청산 확인" in js
+    assert "수동 정리 기록" in js
     assert "EventSource" in js
     assert "/api/stream" in js
     assert 'stream.addEventListener("snapshot", applySnapshotEvent);' in js
