@@ -562,6 +562,44 @@ def test_resolve_execution_risk_control_online_state_requires_recovery_streak_to
     assert second["clear_halt"] is False
 
 
+def test_resolve_execution_risk_control_online_state_preserves_base_threshold_when_grid_omits_exact_value() -> None:
+    payload = {
+        "version": 1,
+        "policy": "execution_risk_control_hoeffding_v1",
+        "status": "ready",
+        "selected_threshold": 7.602947545899657,
+        "threshold_results": [
+            {"threshold": 7.954755951921612},
+            {"threshold": 8.05242376963567},
+        ],
+        "nonpositive_alpha": 0.45,
+        "severe_loss_alpha": 0.20,
+        "online_adaptation": {
+            "enabled": True,
+            "mode": "recent_closed_trade_hoeffding_stepup_v1",
+            "lookback_trades": 12,
+            "max_step_up": 2,
+            "recovery_streak_required": 2,
+            "halt_breach_streak": 3,
+            "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            "confidence_delta": 0.10,
+            "checkpoint_name": "execution_risk_control_online_buffer",
+        },
+    }
+
+    state = resolve_execution_risk_control_online_state(
+        risk_control_payload=payload,
+        previous_state={"step_up": 0, "breach_streak": 0, "recovery_streak": 0, "halt_triggered": False},
+        recent_trade_count=0,
+        recent_nonpositive_rate_ucb=0.0,
+        recent_severe_loss_rate_ucb=0.0,
+    )
+
+    assert state["step_up"] == 0
+    assert float(state["base_threshold"]) == float(payload["selected_threshold"])
+    assert float(state["adaptive_threshold"]) == float(payload["selected_threshold"])
+
+
 def test_resolve_execution_risk_control_online_state_clears_halt_after_recovery() -> None:
     payload = {
         "version": 1,

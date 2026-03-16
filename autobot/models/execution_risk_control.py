@@ -706,6 +706,8 @@ def resolve_execution_risk_control_online_state(
         }
     if not threshold_values:
         threshold_values = [float(base_threshold)]
+    elif not any(abs(float(value) - float(base_threshold)) < 1e-12 for value in threshold_values):
+        threshold_values = sorted([*threshold_values, float(base_threshold)])
     nonpositive_alpha = max(float(normalized.get("nonpositive_alpha", 1.0) or 1.0), 1e-6)
     severe_alpha = max(float(normalized.get("severe_loss_alpha", 1.0) or 1.0), 1e-6)
     breach_count = int(float(recent_nonpositive_rate_ucb) > nonpositive_alpha) + int(
