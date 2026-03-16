@@ -15,6 +15,7 @@ from autobot.live.breakers import (
     record_counter_failure,
     reset_counter,
 )
+from autobot.live.identifier import new_protective_order_identifier
 from autobot.live.order_state import normalize_order_state
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 
@@ -29,12 +30,14 @@ class LiveRiskManager:
         executor_gateway: Any | None,
         config: RiskManagerConfig | None = None,
         identifier_prefix: str = "AUTOBOT",
+        bot_id: str = "autobot-001",
         tick_size_resolver: Callable[[str], float | None] | None = None,
     ) -> None:
         self._store = store
         self._executor_gateway = executor_gateway
         self._config = config or RiskManagerConfig()
         self._identifier_prefix = str(identifier_prefix).strip().upper() or "AUTOBOT"
+        self._bot_id = str(bot_id).strip().lower() or "autobot-001"
         self._tick_size_resolver = tick_size_resolver
 
     def attach_default_risk(
@@ -232,7 +235,13 @@ class LiveRiskManager:
             return updated, {"type": "risk_blocked_by_breaker", "plan_id": plan.plan_id, "reason": trigger_reason}
         exit_price = self._resolve_exit_price(market=plan.market, last_price=last_price, step=1)
         volume = _format_decimal(plan.qty, self._config.volume_digits)
-        identifier = f"{self._identifier_prefix}-RISK-{plan.plan_id[:10]}-{ts_ms}"
+        identifier = new_protective_order_identifier(
+            prefix=self._identifier_prefix,
+            bot_id=self._bot_id,
+            marker="RISK",
+            scope_token=plan.plan_id[:10],
+            ts_ms=ts_ms,
+        )
         if self._executor_gateway is None or not hasattr(self._executor_gateway, "submit_intent"):
             updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
             return updated, {"type": "risk_triggered_no_executor", "plan_id": plan.plan_id, "reason": trigger_reason}
@@ -348,7 +357,14 @@ class LiveRiskManager:
             last_price=last_price,
             step=max(replace_step, 1),
         )
-        new_identifier = f"{self._identifier_prefix}-RISKREP-{plan.plan_id[:8]}-{replace_step}-{ts_ms}"
+        new_identifier = new_protective_order_identifier(
+            prefix=self._identifier_prefix,
+            bot_id=self._bot_id,
+            marker="RISKREP",
+            scope_token=plan.plan_id[:8],
+            step=replace_step,
+            ts_ms=ts_ms,
+        )
         result = self._executor_gateway.replace_order(
             intent_id=f"risk-replace-{plan.plan_id}-{replace_step}",
             prev_order_uuid=plan.current_exit_order_uuid,

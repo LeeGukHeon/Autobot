@@ -133,6 +133,7 @@ def test_risk_manager_tp_trigger_submits_exit(tmp_path: Path) -> None:
 
     assert any(item["type"] == "risk_exit_submitted" for item in actions)
     assert len(gateway.submit_calls) == 1
+    assert gateway.submit_calls[0].identifier.startswith("AUTOBOT-autobot-001-RISK-")
     assert gateway.submit_calls[0].side == "ask"
     assert gateway.submit_calls[0].market == "KRW-BTC"
     assert persisted is not None
@@ -258,6 +259,7 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
 
     assert any(item["type"] == "risk_exit_replaced" for item in replace_actions)
     assert len(gateway.replace_calls) == 1
+    assert str(gateway.replace_calls[0].new_identifier).startswith("AUTOBOT-autobot-001-RISKREP-")
     assert gateway.replace_calls[0].new_price_str == "480"
     assert persisted_after_replace is not None
     assert persisted_after_replace["state"] == "EXITING"
@@ -385,6 +387,7 @@ def test_risk_manager_replace_without_uuid_tracks_identifier_and_closes_on_ident
     assert any(item["type"] == "risk_exit_replaced" for item in replace_actions)
     assert not any(item["type"] == "risk_exit_replaced" for item in followup_actions)
     assert len(gateway.replace_calls) == 1
+    assert str(gateway.replace_calls[0].new_identifier).startswith("AUTOBOT-autobot-001-RISKREP-")
     assert persisted_after_replace is not None
     assert persisted_after_replace["state"] == "EXITING"
     assert persisted_after_replace["current_exit_order_uuid"] is None

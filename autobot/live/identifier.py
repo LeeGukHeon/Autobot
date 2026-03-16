@@ -25,6 +25,25 @@ def new_order_identifier(
     return f"{base}-rid_{run_token_value}" if run_token_value is not None else base
 
 
+def new_protective_order_identifier(
+    *,
+    prefix: str,
+    bot_id: str,
+    marker: str,
+    scope_token: str,
+    ts_ms: int | None = None,
+    step: int | None = None,
+) -> str:
+    prefix_value = _normalize_token(prefix, upper=True)
+    bot_id_value = _normalize_token(bot_id, upper=False)
+    marker_value = _normalize_token(marker, upper=True)
+    scope_value = _normalize_token(scope_token, upper=False)
+    ts_value = str(int(ts_ms if ts_ms is not None else time.time() * 1000))
+    if step is None:
+        return f"{prefix_value}-{bot_id_value}-{marker_value}-{scope_value}-{ts_value}"
+    return f"{prefix_value}-{bot_id_value}-{marker_value}-{scope_value}-{int(step)}-{ts_value}"
+
+
 def is_bot_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> bool:
     if identifier is None:
         return False
@@ -33,17 +52,7 @@ def is_bot_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> bo
         return False
     normalized_prefix = _normalize_token(prefix, upper=True)
     expected_prefix = f"{normalized_prefix}-{_normalize_token(bot_id, upper=False)}-"
-    if identifier_value.startswith(expected_prefix):
-        return True
-    identifier_upper = identifier_value.upper()
-    for marker in (
-        f"{normalized_prefix}-RISK-",
-        f"{normalized_prefix}-RISKREP-",
-        f"{normalized_prefix}-SUPREP-",
-    ):
-        if identifier_upper.startswith(marker):
-            return True
-    return False
+    return identifier_value.startswith(expected_prefix)
 
 
 def extract_intent_id_from_identifier(identifier: str | None, *, prefix: str, bot_id: str) -> str | None:

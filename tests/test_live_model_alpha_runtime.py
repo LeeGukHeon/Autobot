@@ -2988,6 +2988,7 @@ def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_pla
 
     assert report["replaced"] == 1
     assert len(gateway.replace_calls) == 1
+    assert str(gateway.replace_calls[0]["new_identifier"]).startswith("AUTOBOT-autobot-001-SUPREP-")
     assert previous is not None
     assert previous["state"] == "cancel"
     assert previous["local_state"] == "CANCELLED"

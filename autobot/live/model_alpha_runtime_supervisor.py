@@ -13,6 +13,7 @@ from autobot.execution.order_supervisor import (
     make_legacy_exec_profile,
     order_exec_profile_from_dict,
 )
+from autobot.live.identifier import new_protective_order_identifier
 from autobot.live.order_state import normalize_order_state
 
 from .state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
@@ -30,6 +31,8 @@ def supervise_open_strategy_orders(
     micro_snapshot_provider: Any,
     micro_order_policy: Any,
     ts_ms: int,
+    identifier_prefix: str = "AUTOBOT",
+    bot_id: str = "autobot-001",
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "evaluated": 0,
@@ -166,6 +169,8 @@ def supervise_open_strategy_orders(
                 action=action,
                 profile=effective_profile,
                 remaining_volume=remaining_volume,
+                identifier_prefix=identifier_prefix,
+                bot_id=bot_id,
                 ts_ms=int(ts_ms),
                 policy_diagnostics=policy_diagnostics,
             )
@@ -383,10 +388,19 @@ def _replace_open_order(
     remaining_volume: float,
     ts_ms: int,
     policy_diagnostics: dict[str, Any],
+    identifier_prefix: str = "AUTOBOT",
+    bot_id: str = "autobot-001",
 ) -> dict[str, Any]:
     reason_code = _as_optional_str(action.reason_code) or "TIMEOUT_REPLACE"
     replace_step = max(int(order.get("replace_seq") or 0), 0) + 1
-    new_identifier = f"AUTOBOT-SUPREP-{str(intent.get('intent_id') or '')[:12]}-{replace_step}-{int(ts_ms)}"
+    new_identifier = new_protective_order_identifier(
+        prefix=identifier_prefix,
+        bot_id=bot_id,
+        marker="SUPREP",
+        scope_token=str(intent.get("intent_id") or "")[:12],
+        step=replace_step,
+        ts_ms=int(ts_ms),
+    )
     result = executor_gateway.replace_order(
         intent_id=str(intent.get("intent_id") or ""),
         prev_order_uuid=_as_optional_str(order.get("uuid")),

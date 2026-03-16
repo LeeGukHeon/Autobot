@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from autobot.live.identifier import extract_intent_id_from_identifier, extract_run_token_from_identifier, is_bot_identifier, new_order_identifier
+from autobot.live.identifier import (
+    extract_intent_id_from_identifier,
+    extract_run_token_from_identifier,
+    is_bot_identifier,
+    new_order_identifier,
+    new_protective_order_identifier,
+)
 
 
 def test_identifier_generation_and_classification() -> None:
@@ -35,7 +41,33 @@ def test_identifier_generation_supports_run_token() -> None:
     )
 
 
-def test_identifier_classification_accepts_risk_and_supervisor_prefixes() -> None:
-    assert is_bot_identifier("AUTOBOT-RISK-model-risk-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")
-    assert is_bot_identifier("AUTOBOT-RISKREP-model-ri-1-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")
-    assert is_bot_identifier("AUTOBOT-SUPREP-intent-1-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")
+def test_identifier_classification_accepts_bot_scoped_protective_prefixes() -> None:
+    risk = new_protective_order_identifier(
+        prefix="AUTOBOT",
+        bot_id="autobot-001",
+        marker="RISK",
+        scope_token="plan-1",
+        ts_ms=1_700_000_000_000,
+    )
+    riskrep = new_protective_order_identifier(
+        prefix="AUTOBOT",
+        bot_id="autobot-001",
+        marker="RISKREP",
+        scope_token="plan-1",
+        step=1,
+        ts_ms=1_700_000_000_001,
+    )
+    suprep = new_protective_order_identifier(
+        prefix="AUTOBOT",
+        bot_id="autobot-001",
+        marker="SUPREP",
+        scope_token="intent-1",
+        step=2,
+        ts_ms=1_700_000_000_002,
+    )
+
+    assert is_bot_identifier(risk, prefix="AUTOBOT", bot_id="autobot-001")
+    assert is_bot_identifier(riskrep, prefix="AUTOBOT", bot_id="autobot-001")
+    assert is_bot_identifier(suprep, prefix="AUTOBOT", bot_id="autobot-001")
+    assert not is_bot_identifier(risk, prefix="AUTOBOT", bot_id="autobot-candidate-001")
+    assert not is_bot_identifier("AUTOBOT-RISK-model-risk-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")

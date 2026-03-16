@@ -291,6 +291,8 @@ async def run_live_model_alpha_runtime(
         micro_snapshot_provider=micro_provider,
         micro_order_policy=micro_order_policy,
         instrument_cache=instrument_cache,
+        identifier_prefix=str(daemon_settings.identifier_prefix),
+        bot_id=str(daemon_settings.bot_id),
         ts_ms=int(time.time() * 1000),
     )
     summary["last_order_supervision_report"] = initial_order_supervision
@@ -425,6 +427,8 @@ async def run_live_model_alpha_runtime(
                     micro_snapshot_provider=micro_provider,
                     micro_order_policy=micro_order_policy,
                     instrument_cache=instrument_cache,
+                    identifier_prefix=str(daemon_settings.identifier_prefix),
+                    bot_id=str(daemon_settings.bot_id),
                     ts_ms=int(time.time() * 1000),
                 )
                 summary["last_order_supervision_report"] = order_supervision
@@ -678,6 +682,7 @@ def _build_risk_manager(
             default_trail_pct=float(settings.risk_default_trail_pct),
         ),
         identifier_prefix=str(settings.daemon.identifier_prefix),
+        bot_id=str(settings.daemon.bot_id),
         tick_size_resolver=_resolve_tick_size,
     )
 
@@ -932,6 +937,8 @@ def _supervise_open_strategy_orders(
     micro_order_policy: MicroOrderPolicyV1 | None,
     instrument_cache: dict[str, dict[str, Any]],
     ts_ms: int,
+    identifier_prefix: str = "AUTOBOT",
+    bot_id: str = "autobot-001",
 ) -> dict[str, Any]:
     return _runtime_supervisor.supervise_open_strategy_orders(
         store=store,
@@ -942,6 +949,8 @@ def _supervise_open_strategy_orders(
         latest_prices=latest_prices,
         micro_snapshot_provider=micro_snapshot_provider,
         micro_order_policy=micro_order_policy,
+        identifier_prefix=identifier_prefix,
+        bot_id=bot_id,
         ts_ms=ts_ms,
     )
 
