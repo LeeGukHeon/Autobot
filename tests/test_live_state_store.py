@@ -317,6 +317,116 @@ def test_state_store_preserves_intent_id_when_exchange_refresh_omits_it(tmp_path
     assert row["tp_sl_link"] == "tp-sl-1"
 
 
+@pytest.mark.parametrize("side", ["bid", "ask"])
+def test_state_store_preserves_open_order_updated_ts_for_unchanged_reconcile_snapshot(
+    tmp_path: Path,
+    side: str,
+) -> None:
+    db_path = tmp_path / f"live_state_{side}.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid=f"uuid-{side}",
+                identifier=f"AUTOBOT-{side}-1",
+                market="KRW-DOGE",
+                side=side,
+                ord_type="limit",
+                price=145.0,
+                volume_req=39.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1100,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="private_ws",
+                root_order_uuid=f"uuid-{side}",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid=f"uuid-{side}",
+                identifier=f"AUTOBOT-{side}-1",
+                market="KRW-DOGE",
+                side=side,
+                ord_type="limit",
+                price=145.0,
+                volume_req=39.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=2000,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="reconcile_snapshot",
+                root_order_uuid=f"uuid-{side}",
+            )
+        )
+        row = store.order_by_uuid(uuid=f"uuid-{side}")
+
+    assert row is not None
+    assert row["updated_ts"] == 1100
+    assert row["event_source"] == "reconcile_snapshot"
+    assert row["last_event_name"] == "EXCHANGE_SNAPSHOT"
+
+
+@pytest.mark.parametrize("side", ["bid", "ask"])
+def test_state_store_advances_updated_ts_when_reconcile_snapshot_has_material_order_change(
+    tmp_path: Path,
+    side: str,
+) -> None:
+    db_path = tmp_path / f"live_state_change_{side}.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid=f"uuid-{side}",
+                identifier=f"AUTOBOT-{side}-1",
+                market="KRW-DOGE",
+                side=side,
+                ord_type="limit",
+                price=145.0,
+                volume_req=39.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1100,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="private_ws",
+                root_order_uuid=f"uuid-{side}",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid=f"uuid-{side}",
+                identifier=f"AUTOBOT-{side}-1",
+                market="KRW-DOGE",
+                side=side,
+                ord_type="limit",
+                price=145.0,
+                volume_req=39.0,
+                volume_filled=5.0,
+                state="trade",
+                created_ts=1000,
+                updated_ts=2000,
+                local_state="PARTIAL",
+                raw_exchange_state="trade",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="reconcile_snapshot",
+                root_order_uuid=f"uuid-{side}",
+            )
+        )
+        row = store.order_by_uuid(uuid=f"uuid-{side}")
+
+    assert row is not None
+    assert row["updated_ts"] == 2000
+    assert row["local_state"] == "PARTIAL"
+    assert row["volume_filled"] == 5.0
+
+
 def test_state_store_migrates_legacy_orders_schema_before_index_creation(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy_live_state.db"
     conn = sqlite3.connect(str(db_path))

@@ -356,6 +356,25 @@ class LiveStateStore:
         remaining_fee = (
             record.remaining_fee if record.remaining_fee is not None else (previous.get("remaining_fee") if previous is not None else None)
         )
+        resolved_raw_exchange_state = (
+            record.raw_exchange_state if record.raw_exchange_state is not None else normalized.exchange_state or record.state
+        )
+        next_updated_ts = int(record.updated_ts)
+        if _should_preserve_snapshot_updated_ts(
+            previous=previous,
+            record=record,
+            resolved_local_state=resolved_local_state,
+            resolved_raw_exchange_state=resolved_raw_exchange_state,
+            replace_seq=replace_seq,
+            root_order_uuid=root_order_uuid,
+            prev_order_uuid=prev_order_uuid,
+            prev_order_identifier=prev_order_identifier,
+            executed_funds=executed_funds,
+            paid_fee=paid_fee,
+            reserved_fee=reserved_fee,
+            remaining_fee=remaining_fee,
+        ):
+            next_updated_ts = int(previous.get("updated_ts") or next_updated_ts)
         with self._conn:
             if rebind_from_uuid is not None:
                 self._conn.execute("DELETE FROM orders WHERE uuid = ?", (rebind_from_uuid,))
@@ -414,11 +433,11 @@ class LiveStateStore:
                     float(record.volume_filled),
                     record.state,
                     created_ts,
-                    int(record.updated_ts),
+                    next_updated_ts,
                     intent_id,
                     tp_sl_link,
                     resolved_local_state,
-                    record.raw_exchange_state if record.raw_exchange_state is not None else normalized.exchange_state or record.state,
+                    resolved_raw_exchange_state,
                     record.last_event_name or normalized.event_name,
                     record.event_source,
                     replace_seq,
@@ -443,7 +462,7 @@ class LiveStateStore:
                     """,
                     (
                         f"illegal_order_transition:{record.uuid}",
-                        int(record.updated_ts),
+                        next_updated_ts,
                         json.dumps(
                             {
                                 "uuid": record.uuid,
@@ -1497,6 +1516,68 @@ def _can_rebind_pending_identifier(
     if existing_side and incoming_side and existing_side != incoming_side:
         return False
     return bool(incoming_uuid_value)
+
+
+def _should_preserve_snapshot_updated_ts(
+    *,
+    previous: dict[str, Any] | None,
+    record: OrderRecord,
+    resolved_local_state: str,
+    resolved_raw_exchange_state: str | None,
+    replace_seq: int,
+    root_order_uuid: str | None,
+    prev_order_uuid: str | None,
+    prev_order_identifier: str | None,
+    executed_funds: float | None,
+    paid_fee: float | None,
+    reserved_fee: float | None,
+    remaining_fee: float | None,
+) -> bool:
+    if previous is None:
+        return False
+    if str(record.event_source or "").strip().lower() != "reconcile_snapshot":
+        return False
+    if str(record.last_event_name or "").strip().upper() != "EXCHANGE_SNAPSHOT":
+        return False
+    previous_local_state = str(previous.get("local_state") or "").strip()
+    if not is_open_local_state(previous_local_state) or not is_open_local_state(resolved_local_state):
+        return False
+    return all(
+        (
+            _same_optional_text(previous.get("identifier"), record.identifier),
+            _same_optional_text(previous.get("market"), record.market),
+            _same_optional_text(previous.get("side"), record.side),
+            _same_optional_text(previous.get("ord_type"), record.ord_type),
+            _same_optional_float(previous.get("price"), record.price),
+            _same_optional_float(previous.get("volume_req"), record.volume_req),
+            _same_optional_float(previous.get("volume_filled"), record.volume_filled),
+            _same_optional_text(previous.get("state"), record.state),
+            _same_optional_text(previous.get("raw_exchange_state"), resolved_raw_exchange_state),
+            _same_optional_text(previous.get("local_state"), resolved_local_state),
+            int(previous.get("replace_seq") or 0) == int(replace_seq),
+            _same_optional_text(previous.get("root_order_uuid"), root_order_uuid),
+            _same_optional_text(previous.get("prev_order_uuid"), prev_order_uuid),
+            _same_optional_text(previous.get("prev_order_identifier"), prev_order_identifier),
+            _same_optional_float(previous.get("executed_funds"), executed_funds),
+            _same_optional_float(previous.get("paid_fee"), paid_fee),
+            _same_optional_float(previous.get("reserved_fee"), reserved_fee),
+            _same_optional_float(previous.get("remaining_fee"), remaining_fee),
+        )
+    )
+
+
+def _same_optional_text(left: object, right: object) -> bool:
+    left_text = str(left).strip() if left is not None else ""
+    right_text = str(right).strip() if right is not None else ""
+    return left_text == right_text
+
+
+def _same_optional_float(left: object, right: object, *, epsilon: float = 1e-12) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    return abs(float(left) - float(right)) <= float(epsilon)
 
 
 def _min_positive_int(*values: int) -> int | None:
