@@ -154,6 +154,11 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
     )
     if not isinstance(shared, dict):
         return None
+    def _first_field(name: str) -> Any:
+        for source in (shared, tp, sl, trailing):
+            if name in source and source.get(name) not in (None, ""):
+                return source.get(name)
+        return None
     hold_bars = max(_as_int(shared.get("hold_bars")) or 0, 0)
     timeout_delta_ms = max(_as_int(shared.get("timeout_delta_ms")) or 0, 0)
     interval_ms = int(timeout_delta_ms / hold_bars) if hold_bars > 0 and timeout_delta_ms > 0 else 0
@@ -173,6 +178,10 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
             "tp_pct": float(tp_pct or 0.0),
             "sl_pct": float(sl_pct or 0.0),
             "trailing_pct": float(trailing_pct),
+            "base_tp_pct": _as_float(_first_field("base_tp_pct")),
+            "base_sl_pct": _as_float(_first_field("base_sl_pct")),
+            "base_trailing_pct": _as_float(_first_field("base_trailing_pct")),
+            "base_timeout_delta_ms": _as_int(_first_field("base_timeout_delta_ms")),
             "high_watermark_price": high_watermark_price,
             "high_watermark_price_str": _as_optional_str(trailing.get("high_watermark_price_str")),
             "armed_ts_ms": armed_ts_ms,
@@ -206,6 +215,10 @@ def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str
         "mode": mode,
         "hold_bars": hold_bars,
         "timeout_delta_ms": timeout_delta_ms,
+        "base_tp_pct": _as_float(normalized_plan.get("base_tp_pct")),
+        "base_sl_pct": _as_float(normalized_plan.get("base_sl_pct")),
+        "base_trailing_pct": _as_float(normalized_plan.get("base_trailing_pct")),
+        "base_timeout_delta_ms": _as_int(normalized_plan.get("base_timeout_delta_ms")),
         "risk_scaling_mode": str(normalized_plan.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
         "risk_vol_feature": str(normalized_plan.get("risk_vol_feature", "")).strip(),
         "tp_vol_multiplier": _as_float(normalized_plan.get("tp_vol_multiplier")),

@@ -37,6 +37,8 @@ def resolve_dynamic_exit_overlay(
     trailing_pct: float | None,
     timeout_delta_ms: int | None,
 ) -> DynamicExitOverlayResult:
+    if timeout_delta_ms is not None and int(timeout_delta_ms) <= 0:
+        timeout_delta_ms = None
     if settings is None or not bool(settings.enabled) or micro_snapshot is None:
         return DynamicExitOverlayResult(
             applied=False,

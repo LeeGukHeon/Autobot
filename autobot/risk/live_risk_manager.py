@@ -17,7 +17,11 @@ from autobot.live.breakers import (
     reset_counter,
 )
 from autobot.live.identifier import new_protective_order_identifier
-from autobot.live.model_risk_plan import build_model_exit_plan_from_position, build_position_record_from_model_exit_plan
+from autobot.live.model_risk_plan import (
+    build_model_exit_plan_from_position,
+    build_position_record_from_model_exit_plan,
+    extract_model_exit_plan,
+)
 from autobot.live.order_state import normalize_order_state
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 from autobot.strategy.operational_overlay_v1 import ModelAlphaOperationalSettings, load_calibrated_operational_settings
@@ -625,21 +629,53 @@ class LiveRiskManager:
         plan_source = str(plan.plan_source or "").strip().lower()
         if plan_source not in {"model_alpha_v1", MODEL_ALPHA_MICRO_OVERLAY_PLAN_SOURCE}:
             return plan, None
+        base_plan = self._resolve_overlay_basis_plan(plan)
         timeout_delta_ms = (
-            max(int(plan.timeout_ts_ms) - int(plan.created_ts), 0)
-            if plan.timeout_ts_ms is not None
+            _as_int(base_plan.get("base_timeout_delta_ms"))
+            if isinstance(base_plan, dict)
             else None
         )
+        if timeout_delta_ms is None:
+            timeout_delta_ms = (
+                max(int(plan.timeout_ts_ms) - int(plan.created_ts), 0)
+                if plan.timeout_ts_ms is not None
+                else None
+            )
+        tp_basis = (
+            (_as_float(base_plan.get("base_tp_pct")) * 100.0)
+            if isinstance(base_plan, dict) and _as_float(base_plan.get("base_tp_pct")) is not None
+            else None
+        )
+        sl_basis = (
+            (_as_float(base_plan.get("base_sl_pct")) * 100.0)
+            if isinstance(base_plan, dict) and _as_float(base_plan.get("base_sl_pct")) is not None
+            else None
+        )
+        trailing_basis = _as_float(base_plan.get("base_trailing_pct")) if isinstance(base_plan, dict) else None
+        if tp_basis is None and isinstance(base_plan, dict):
+            tp_value = _as_float(base_plan.get("tp_pct"))
+            tp_basis = (tp_value * 100.0) if tp_value is not None else None
+        if sl_basis is None and isinstance(base_plan, dict):
+            sl_value = _as_float(base_plan.get("sl_pct"))
+            sl_basis = (sl_value * 100.0) if sl_value is not None else None
+        if trailing_basis is None and isinstance(base_plan, dict):
+            trailing_basis = _as_float(base_plan.get("trailing_pct"))
+        if tp_basis is None:
+            tp_basis = plan.tp_pct if bool(plan.tp_enabled) else None
+        if sl_basis is None:
+            sl_basis = plan.sl_pct if bool(plan.sl_enabled) else None
+        if trailing_basis is None:
+            trailing_basis = _as_float(plan.trail_pct) if bool(plan.trailing_enabled) else None
         overlay = resolve_dynamic_exit_overlay(
             settings=self._micro_overlay_settings,
             micro_snapshot=micro_snapshot,
             now_ts_ms=int(ts_ms),
             current_return_ratio=(float(last_price) / max(float(plan.entry_price), 1e-12)) - 1.0,
             elapsed_ms=max(int(ts_ms) - int(plan.created_ts), 0),
-            tp_pct=plan.tp_pct if bool(plan.tp_enabled) else None,
-            sl_pct=plan.sl_pct if bool(plan.sl_enabled) else None,
-            trailing_enabled=bool(plan.trailing_enabled),
-            trailing_pct=_as_float(plan.trail_pct),
+            tp_pct=tp_basis,
+            sl_pct=sl_basis,
+            trailing_enabled=bool((trailing_basis or 0.0) > 0.0),
+            trailing_pct=trailing_basis,
             timeout_delta_ms=timeout_delta_ms,
         )
 
@@ -674,6 +710,21 @@ class LiveRiskManager:
             "trail_pct": overlay.trailing_pct if bool(overlay.trailing_enabled) else None,
             "timeout_ts_ms": _as_int(timeout_ts_ms),
         }
+
+    def _resolve_overlay_basis_plan(self, plan: RiskPlan) -> dict[str, Any]:
+        source_intent_id = _as_optional_str(plan.source_intent_id)
+        if source_intent_id:
+            intent = self._store.intent_by_id(intent_id=source_intent_id)
+            if isinstance(intent, dict):
+                base_plan = extract_model_exit_plan(intent.get("meta"))
+                if isinstance(base_plan, dict) and base_plan:
+                    return base_plan
+        position = self._store.position_by_market(market=plan.market)
+        if isinstance(position, dict):
+            base_plan = build_model_exit_plan_from_position(position)
+            if isinstance(base_plan, dict) and base_plan:
+                return base_plan
+        return {}
 
     def _detect_trigger(self, plan: RiskPlan, *, last_price: float, ts_ms: int) -> str | None:
         tp_price = plan.resolve_tp_price()
@@ -756,6 +807,10 @@ class LiveRiskManager:
             int(base_plan.get("timeout_delta_ms", 0) or 0),
             0,
         )
+        base_tp_pct = _as_float(base_plan.get("base_tp_pct"))
+        base_sl_pct = _as_float(base_plan.get("base_sl_pct"))
+        base_trailing_pct = _as_float(base_plan.get("base_trailing_pct"))
+        base_timeout_delta_ms = _as_int(base_plan.get("base_timeout_delta_ms"))
         tp_ratio = (float(plan.tp_pct) / 100.0) if plan.tp_enabled and plan.tp_pct is not None else 0.0
         sl_ratio = (float(plan.sl_pct) / 100.0) if plan.sl_enabled and plan.sl_pct is not None else 0.0
         trailing_ratio = float(plan.trail_pct) if plan.trailing_enabled and plan.trail_pct is not None else 0.0
@@ -763,6 +818,16 @@ class LiveRiskManager:
         plan_payload.update(
             {
                 "source": "model_alpha_v1",
+                "base_tp_pct": base_tp_pct if base_tp_pct is not None else tp_ratio,
+                "base_sl_pct": base_sl_pct if base_sl_pct is not None else sl_ratio,
+                "base_trailing_pct": (
+                    base_trailing_pct if base_trailing_pct is not None else trailing_ratio
+                ),
+                "base_timeout_delta_ms": (
+                    int(base_timeout_delta_ms)
+                    if base_timeout_delta_ms is not None
+                    else int(timeout_delta_ms)
+                ),
                 "tp_ratio": tp_ratio,
                 "sl_ratio": sl_ratio,
                 "trailing_ratio": trailing_ratio,

@@ -973,6 +973,10 @@ def build_model_alpha_exit_plan_payload(
             "tp_pct": float(tp_pct) if mode == "risk" and float(tp_pct) > 0.0 else 0.0,
             "sl_pct": float(sl_pct) if float(sl_pct) > 0.0 else 0.0,
             "trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
+            "base_tp_pct": float(tp_pct) if mode == "risk" and float(tp_pct) > 0.0 else 0.0,
+            "base_sl_pct": float(sl_pct) if float(sl_pct) > 0.0 else 0.0,
+            "base_trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
+            "base_timeout_delta_ms": int(timeout_delta_ms),
             "expected_exit_fee_rate": float(exit_fee_rate),
             "expected_exit_slippage_bps": float(exit_slippage_bps),
             "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
@@ -1003,6 +1007,20 @@ def _reprice_position_exit_plan(
     scaling_mode = str(normalized.get("risk_scaling_mode", "")).strip().lower() or "fixed"
     if mode != "risk":
         return normalized
+    base_tp_pct = _safe_optional_float(normalized.get("base_tp_pct"))
+    base_sl_pct = _safe_optional_float(normalized.get("base_sl_pct"))
+    base_trailing_pct = _safe_optional_float(normalized.get("base_trailing_pct"))
+    base_timeout_delta_ms = _safe_optional_int(normalized.get("base_timeout_delta_ms"))
+    overlay_tp_basis = base_tp_pct if base_tp_pct is not None else _safe_optional_float(normalized.get("tp_pct"))
+    overlay_sl_basis = base_sl_pct if base_sl_pct is not None else _safe_optional_float(normalized.get("sl_pct"))
+    overlay_trailing_basis = (
+        base_trailing_pct if base_trailing_pct is not None else _safe_optional_float(normalized.get("trailing_pct"))
+    )
+    overlay_timeout_basis = (
+        base_timeout_delta_ms
+        if base_timeout_delta_ms is not None
+        else _safe_optional_int(normalized.get("timeout_delta_ms"))
+    )
     if scaling_mode == "volatility_scaled":
         risk_vol_feature = str(normalized.get("risk_vol_feature", "")).strip()
         tp_mult = _safe_optional_float(normalized.get("tp_vol_multiplier"))
@@ -1038,6 +1056,9 @@ def _reprice_position_exit_plan(
                             "intratrade_sigma_horizon": float(sigma_horizon),
                         }
                     )
+                    overlay_tp_basis = float(tp_pct)
+                    overlay_sl_basis = float(sl_pct)
+                    overlay_trailing_basis = float(trailing_pct)
     micro_snapshot = _micro_snapshot_from_row(row=row, ts_ms=ts_ms)
     current_return_ratio = (
         (float(current_price) / max(float(state.entry_price), 1e-12)) - 1.0
@@ -1050,11 +1071,11 @@ def _reprice_position_exit_plan(
         now_ts_ms=int(ts_ms),
         current_return_ratio=float(current_return_ratio),
         elapsed_ms=max(int(ts_ms) - int(state.entry_ts_ms), 0),
-        tp_pct=_safe_optional_float(normalized.get("tp_pct")),
-        sl_pct=_safe_optional_float(normalized.get("sl_pct")),
-        trailing_enabled=bool((_safe_optional_float(normalized.get("trailing_pct")) or 0.0) > 0.0),
-        trailing_pct=_safe_optional_float(normalized.get("trailing_pct")),
-        timeout_delta_ms=_safe_optional_int(normalized.get("timeout_delta_ms")),
+        tp_pct=overlay_tp_basis,
+        sl_pct=overlay_sl_basis,
+        trailing_enabled=bool((overlay_trailing_basis or 0.0) > 0.0),
+        trailing_pct=overlay_trailing_basis,
+        timeout_delta_ms=overlay_timeout_basis,
     )
     if overlay.applied:
         normalized.update(
