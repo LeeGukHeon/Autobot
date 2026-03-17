@@ -12,7 +12,7 @@ from .model_alpha_projection import find_latest_model_entry_intent
 from .model_risk_plan import build_model_derived_risk_records
 from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
-from .trade_journal import rebind_pending_entry_journal_order
+from .trade_journal import activate_trade_journal_for_position, rebind_pending_entry_journal_order
 
 
 def apply_private_ws_event(
@@ -239,6 +239,29 @@ def _apply_my_asset_event(
         store.upsert_position(managed_record)
         if managed_plan is not None and not store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING")):
             store.upsert_risk_plan(managed_plan)
+        entry_intent = find_latest_model_entry_intent(
+            store=store,
+            market=market,
+            position={
+                "market": managed_record.market,
+                "base_amount": managed_record.base_amount,
+                "avg_entry_price": managed_record.avg_entry_price,
+                "updated_ts": managed_record.updated_ts,
+            },
+        )
+        activate_trade_journal_for_position(
+            store=store,
+            market=market,
+            position={
+                "market": managed_record.market,
+                "base_amount": managed_record.base_amount,
+                "avg_entry_price": managed_record.avg_entry_price,
+                "updated_ts": managed_record.updated_ts,
+            },
+            ts_ms=int(event.ts_ms),
+            entry_intent=entry_intent,
+            plan_id=managed_plan.plan_id if managed_plan is not None else None,
+        )
         managed = True
     else:
         managed = bool(existing.get("managed")) if existing is not None else False

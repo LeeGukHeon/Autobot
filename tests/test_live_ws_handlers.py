@@ -2,12 +2,26 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 from autobot.live.model_alpha_projection import find_latest_model_entry_intent
 from autobot.live.state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord
 from autobot.live.trade_journal import record_entry_submission
 from autobot.live.ws_handlers import apply_private_ws_event
+from autobot.risk.live_risk_manager import LiveRiskManager
+from autobot.risk.models import RiskManagerConfig
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
+
+
+class _RiskExitGateway:
+    def submit_intent(self, *, intent, identifier: str, meta_json: str):  # noqa: ANN001, ANN201
+        _ = meta_json
+        return SimpleNamespace(
+            accepted=True,
+            reason="accepted",
+            upbit_uuid="exit-order-from-risk",
+            identifier=identifier,
+        )
 
 
 def test_ws_order_event_upserts_order_and_intent(tmp_path: Path) -> None:
@@ -623,3 +637,309 @@ def test_ws_asset_event_bootstraps_managed_position_and_risk_plan_from_model_ent
     assert len(plans) == 1
     assert plans[0]["plan_source"] == "model_alpha_v1"
     assert plans[0]["source_intent_id"] == "intent-entry-1"
+
+
+def test_ws_asset_event_bootstrap_also_activates_trade_journal_from_model_entry_intent(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-journal",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100_000_000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1_800_000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                }
+                            }
+                        },
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-journal"},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-journal",
+                identifier="AUTOBOT-autobot-001-intent-entry-journal-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100_000_000.0,
+                volume_req=0.01,
+                volume_filled=0.01,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-entry-journal",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="entry-order-journal",
+                executed_funds=1_000_000.0,
+                paid_fee=500.0,
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyAssetEvent(
+                ts_ms=2_000,
+                currency="BTC",
+                balance=0.01,
+                locked=0.0,
+                avg_buy_price=100_000_000.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        journal = store.trade_journal_by_entry_intent(entry_intent_id="intent-entry-journal")
+        plans = store.list_risk_plans(market="KRW-BTC")
+
+    assert action["type"] == "ws_asset_position_upsert"
+    assert journal is not None
+    assert journal["status"] == "OPEN"
+    assert journal["entry_intent_id"] == "intent-entry-journal"
+    assert journal["plan_id"] == plans[0]["plan_id"]
+
+
+def test_ws_asset_event_bootstrapped_risk_plan_links_exit_order_when_triggered(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-exit-link",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100_000_000.0,
+                volume=0.004,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "risk",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1_800_000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                }
+                            }
+                        },
+                        "submit_result": {"accepted": True},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+
+        apply_private_ws_event(
+            store=store,
+            event=MyAssetEvent(
+                ts_ms=2_000,
+                currency="BTC",
+                balance=0.004,
+                locked=0.0,
+                avg_buy_price=100_000_000.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        plan = store.list_risk_plans(market="KRW-BTC")[0]
+        journal = store.trade_journal_by_entry_intent(entry_intent_id="intent-entry-exit-link")
+
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=_RiskExitGateway(),
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+        )
+        actions = manager.evaluate_price(market="KRW-BTC", last_price=103_000_000.0, ts_ms=3_000)
+        updated_plan = store.risk_plan_by_id(plan_id=str(plan["plan_id"]))
+        exit_order = store.order_by_uuid(uuid="exit-order-from-risk")
+
+    assert any(item["type"] == "risk_exit_submitted" for item in actions)
+    assert journal is not None
+    assert journal["status"] == "OPEN"
+    assert updated_plan is not None
+    assert updated_plan["state"] == "EXITING"
+    assert updated_plan["source_intent_id"] == "intent-entry-exit-link"
+    assert updated_plan["current_exit_order_uuid"] == "exit-order-from-risk"
+    assert exit_order is not None
+    assert exit_order["tp_sl_link"] == updated_plan["plan_id"]
+    assert exit_order["volume_req"] == 0.004
+
+
+def test_ws_asset_event_bootstraps_managed_risk_from_single_entry_intent_before_order_event(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-no-order",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100_000_000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1_800_000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                }
+                            }
+                        },
+                        "submit_result": {"accepted": True},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyAssetEvent(
+                ts_ms=2_000,
+                currency="BTC",
+                balance=0.01,
+                locked=0.0,
+                avg_buy_price=100_000_000.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        position = store.position_by_market(market="KRW-BTC")
+        plans = store.list_risk_plans(market="KRW-BTC")
+
+    assert action["type"] == "ws_asset_position_upsert"
+    assert action["managed"] is True
+    assert position is not None
+    assert position["managed"] is True
+    assert len(plans) == 1
+    assert plans[0]["source_intent_id"] == "intent-entry-no-order"
+    assert plans[0]["qty_str"] == "0.01"
+    assert plans[0]["plan_source"] == "model_alpha_v1"
+
+
+def test_ws_asset_event_bootstraps_partial_position_risk_from_partial_bid_fill_first(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-partial-first",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100_000_000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1_800_000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                }
+                            }
+                        },
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-partial-first"},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-partial-first",
+                identifier="AUTOBOT-autobot-001-intent-entry-partial-first-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100_000_000.0,
+                volume_req=0.01,
+                volume_filled=0.004,
+                state="trade",
+                created_ts=1_000,
+                updated_ts=1_500,
+                intent_id="intent-entry-partial-first",
+                local_state="PARTIAL",
+                raw_exchange_state="trade",
+                last_event_name="ORDER_STATE",
+                event_source="private_ws",
+                replace_seq=0,
+                root_order_uuid="entry-order-partial-first",
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyAssetEvent(
+                ts_ms=2_000,
+                currency="BTC",
+                balance=0.004,
+                locked=0.0,
+                avg_buy_price=100_000_000.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        position = store.position_by_market(market="KRW-BTC")
+        plans = store.list_risk_plans(market="KRW-BTC")
+
+    assert action["type"] == "ws_asset_position_upsert"
+    assert action["managed"] is True
+    assert position is not None
+    assert position["base_amount"] == 0.004
+    assert len(plans) == 1
+    assert plans[0]["source_intent_id"] == "intent-entry-partial-first"
+    assert plans[0]["qty_str"] == "0.004"
+    assert plans[0]["tp"]["tp_pct"] == 2.0

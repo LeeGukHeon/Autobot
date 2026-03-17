@@ -1022,6 +1022,89 @@ def test_reconcile_imports_bot_owned_filled_entry_with_model_risk_plan(tmp_path:
     assert order["state"] == "done"
 
 
+def test_reconcile_imports_partially_filled_bot_entry_with_model_risk_plan(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        intent_meta = {
+            "runtime": {"live_runtime_model_run_id": "run-1"},
+            "model_exit_plan": {
+                "source": "model_alpha_v1",
+                "mode": "risk",
+                "hold_bars": 6,
+                "interval_ms": 300000,
+                "timeout_delta_ms": 1800000,
+                "tp_pct": 0.02,
+                "sl_pct": 0.01,
+                "trailing_pct": 0.015,
+            },
+            "submit_result": {"accepted": True, "order_uuid": "entry-order-partial"},
+        }
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-partial",
+                ts_ms=1000,
+                market="KRW-KITE",
+                side="bid",
+                price=442.0,
+                volume=13.56787669,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-partial",
+                identifier="AUTOBOT-autobot-001-intent-entry-partial-1000-a",
+                market="KRW-KITE",
+                side="bid",
+                ord_type="limit",
+                price=442.0,
+                volume_req=13.56787669,
+                volume_filled=5.0,
+                state="trade",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-entry-partial",
+                local_state="PARTIAL",
+                raw_exchange_state="trade",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-partial",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "KITE",
+                    "balance": "5.0",
+                    "locked": "0",
+                    "avg_buy_price": "442",
+                }
+            ],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans()
+
+    assert report["halted"] is False
+    assert any(item["type"] == "import_managed_position_from_bot_intent" for item in report["actions"])
+    assert len(positions) == 1
+    assert positions[0]["base_amount"] == 5.0
+    assert len(plans) == 1
+    assert plans[0]["source_intent_id"] == "intent-entry-partial"
+    assert plans[0]["qty_str"] == "5"
+    assert plans[0]["tp"]["tp_pct"] == 2.0
+
+
 def test_reconcile_does_not_import_manual_position_from_mismatched_old_bot_entry(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
