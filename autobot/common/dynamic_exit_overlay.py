@@ -32,6 +32,7 @@ def resolve_dynamic_exit_overlay(
     current_return_ratio: float,
     elapsed_ms: int,
     tp_pct: float | None,
+    tp_floor_pct: float | None = None,
     sl_pct: float | None,
     trailing_enabled: bool,
     trailing_pct: float | None,
@@ -101,6 +102,8 @@ def resolve_dynamic_exit_overlay(
     tighten_scale = min(max(float(risk_multiplier), 0.25), 1.0)
 
     next_tp_pct = _tighten_optional_pct(tp_pct, tighten_scale)
+    if next_tp_pct is not None and tp_floor_pct is not None and float(tp_floor_pct) > 0.0:
+        next_tp_pct = max(float(next_tp_pct), float(tp_floor_pct))
     next_sl_pct = _tighten_optional_pct(sl_pct, tighten_scale)
     next_trailing_enabled = bool(trailing_enabled)
     next_trailing_pct = trailing_pct

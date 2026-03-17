@@ -65,6 +65,28 @@ def test_build_model_alpha_exit_plan_payload_emits_canonical_aliases() -> None:
     assert payload["trailing_vol_multiplier"] == 0.75
 
 
+def test_build_model_alpha_exit_plan_payload_keeps_tp_above_cost_floor() -> None:
+    payload = build_model_alpha_exit_plan_payload(
+        settings=ModelAlphaSettings(
+            exit=ModelAlphaExitSettings(
+                mode="risk",
+                hold_bars=6,
+                tp_pct=0.0001,
+                sl_pct=0.01,
+                trailing_pct=0.0,
+                expected_exit_fee_bps=5.0,
+                expected_exit_slippage_bps=2.5,
+            )
+        ),
+        row=None,
+        interval_ms=300_000,
+        observed_entry_fee_rate=0.0005,
+    )
+
+    assert payload["min_tp_floor_pct"] > 0.0001
+    assert payload["tp_pct"] == 0.0001
+
+
 def test_extract_model_exit_plan_normalizes_nested_intent_meta() -> None:
     payload = extract_model_exit_plan(
         {

@@ -652,6 +652,7 @@ class LiveRiskManager:
             else None
         )
         trailing_basis = _as_float(base_plan.get("base_trailing_pct")) if isinstance(base_plan, dict) else None
+        tp_floor_pct = _as_float(base_plan.get("min_tp_floor_pct")) if isinstance(base_plan, dict) else None
         if tp_basis is None and isinstance(base_plan, dict):
             tp_value = _as_float(base_plan.get("tp_pct"))
             tp_basis = (tp_value * 100.0) if tp_value is not None else None
@@ -673,6 +674,7 @@ class LiveRiskManager:
             current_return_ratio=(float(last_price) / max(float(plan.entry_price), 1e-12)) - 1.0,
             elapsed_ms=max(int(ts_ms) - int(plan.created_ts), 0),
             tp_pct=tp_basis,
+            tp_floor_pct=(float(tp_floor_pct) * 100.0) if tp_floor_pct is not None else None,
             sl_pct=sl_basis,
             trailing_enabled=bool((trailing_basis or 0.0) > 0.0),
             trailing_pct=trailing_basis,

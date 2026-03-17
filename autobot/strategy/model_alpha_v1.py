@@ -962,6 +962,11 @@ def build_model_alpha_exit_plan_payload(
         settings=settings,
         observed_entry_fee_rate=max(float(observed_entry_fee_rate), 0.0),
     )
+    min_tp_floor_pct = _resolve_min_tp_floor_pct(
+        entry_fee_rate=max(float(observed_entry_fee_rate), 0.0),
+        exit_fee_rate=float(exit_fee_rate),
+        exit_slippage_bps=float(exit_slippage_bps),
+    )
     return normalize_model_exit_plan_payload(
         {
             "source": "model_alpha_v1",
@@ -977,6 +982,7 @@ def build_model_alpha_exit_plan_payload(
             "base_sl_pct": float(sl_pct) if float(sl_pct) > 0.0 else 0.0,
             "base_trailing_pct": float(trailing_pct) if mode == "risk" and float(trailing_pct) > 0.0 else 0.0,
             "base_timeout_delta_ms": int(timeout_delta_ms),
+            "min_tp_floor_pct": float(min_tp_floor_pct),
             "expected_exit_fee_rate": float(exit_fee_rate),
             "expected_exit_slippage_bps": float(exit_slippage_bps),
             "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
@@ -1235,6 +1241,21 @@ def _default_expected_exit_slippage_bps(price_mode: str) -> float:
     if mode == "CROSS_1T":
         return 6.0
     return 2.5
+
+
+def _resolve_min_tp_floor_pct(
+    *,
+    entry_fee_rate: float,
+    exit_fee_rate: float,
+    exit_slippage_bps: float,
+) -> float:
+    entry_multiplier = 1.0 + max(float(entry_fee_rate), 0.0)
+    exit_multiplier = max(1.0 - (max(float(exit_slippage_bps), 0.0) / 10_000.0), 0.0) * (
+        1.0 - max(float(exit_fee_rate), 0.0)
+    )
+    if exit_multiplier <= 0.0:
+        return 0.0
+    return max((entry_multiplier / exit_multiplier) - 1.0, 0.0)
 
 
 def _net_return_after_costs(
