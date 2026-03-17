@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_NEW_INTENTS, arm_breaker, record_counter_failure, breaker_status
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
-from autobot.live.state_store import LiveStateStore, OrderRecord, RiskPlanRecord
+from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager
 from autobot.risk.models import RiskManagerConfig
 from autobot.strategy.micro_snapshot import MicroSnapshot
@@ -213,6 +214,19 @@ def test_risk_manager_micro_overlay_arms_profit_lock_trailing_and_exits_on_drawd
     db_path = tmp_path / "live_state.db"
     gateway = _FakeExecutorGateway()
     with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=1.0,
+                avg_entry_price=100.0,
+                updated_ts=1000,
+                tp_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": True, "source": "model_alpha_v1", "sl_pct": 5.0}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
         store.upsert_risk_plan(
             RiskPlanRecord(
                 plan_id="overlay-1",
@@ -253,6 +267,7 @@ def test_risk_manager_micro_overlay_arms_profit_lock_trailing_and_exits_on_drawd
             ),
         )
         persisted_mid = store.risk_plan_by_id(plan_id="overlay-1")
+        position_mid = store.position_by_market(market="KRW-BTC")
         second_actions = manager.evaluate_price(
             market="KRW-BTC",
             last_price=102.8,
@@ -273,6 +288,9 @@ def test_risk_manager_micro_overlay_arms_profit_lock_trailing_and_exits_on_drawd
     assert persisted_mid["trailing"]["enabled"] is True
     assert persisted_mid["trailing"]["trail_pct"] is not None
     assert persisted_mid["trailing"]["trail_pct"] < 0.02
+    assert position_mid is not None
+    assert position_mid["trailing"]["enabled"] is True
+    assert position_mid["trailing"]["high_watermark_price_str"] == "104"
     assert any(item["type"] == "risk_exit_submitted" for item in second_actions)
     assert persisted_final is not None
     assert persisted_final["state"] == "EXITING"
@@ -282,6 +300,19 @@ def test_risk_manager_micro_overlay_does_not_change_plan_when_micro_state_is_hea
     db_path = tmp_path / "live_state.db"
     gateway = _FakeExecutorGateway()
     with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ETH",
+                base_currency="ETH",
+                base_amount=1.0,
+                avg_entry_price=100.0,
+                updated_ts=1000,
+                tp_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": True, "source": "model_alpha_v1", "sl_pct": 5.0}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
         store.upsert_risk_plan(
             RiskPlanRecord(
                 plan_id="overlay-healthy",

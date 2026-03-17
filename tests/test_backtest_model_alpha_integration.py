@@ -1143,6 +1143,49 @@ def test_model_alpha_risk_exit_uses_volatility_scaled_thresholds() -> None:
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in enough.intents)
 
 
+def test_model_alpha_restart_fill_restores_peak_price_from_exit_plan() -> None:
+    strategy = _build_strategy(
+        groups=[],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="risk", hold_bars=6, tp_pct=0.2, sl_pct=0.2, trailing_pct=0.05),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            meta={
+                "model_exit_plan": {
+                    "source": "model_alpha_v1",
+                    "mode": "risk",
+                    "hold_bars": 6,
+                    "interval_ms": 300_000,
+                    "timeout_delta_ms": 1_800_000,
+                    "tp_pct": 0.20,
+                    "sl_pct": 0.20,
+                    "trailing_pct": 0.05,
+                    "high_watermark_price": 110.0,
+                    "high_watermark_price_str": "110",
+                }
+            },
+        )
+    )
+    result = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 104.0},
+        open_markets={"KRW-BTC"},
+    )
+
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TRAILING" for intent in result.intents)
+
+
 def test_model_alpha_risk_exit_reprices_with_current_volatility_and_remaining_horizon() -> None:
     frame = pl.DataFrame(
         {

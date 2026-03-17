@@ -160,6 +160,8 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
     tp_pct = _from_percent_points(_as_float(tp.get("tp_pct")))
     sl_pct = _from_percent_points(_as_float(sl.get("sl_pct")))
     trailing_pct = max(_as_float(trailing.get("trail_pct")) or 0.0, 0.0)
+    high_watermark_price = _as_float(trailing.get("high_watermark_price_str"))
+    armed_ts_ms = _as_int(trailing.get("armed_ts_ms"))
     return normalize_model_exit_plan_payload(
         {
             "source": "model_alpha_v1",
@@ -171,6 +173,9 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
             "tp_pct": float(tp_pct or 0.0),
             "sl_pct": float(sl_pct or 0.0),
             "trailing_pct": float(trailing_pct),
+            "high_watermark_price": high_watermark_price,
+            "high_watermark_price_str": _as_optional_str(trailing.get("high_watermark_price_str")),
+            "armed_ts_ms": armed_ts_ms,
             "risk_scaling_mode": str(shared.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
             "risk_vol_feature": str(shared.get("risk_vol_feature", "")).strip(),
             "tp_vol_multiplier": _as_float(shared.get("tp_vol_multiplier")),
@@ -191,6 +196,11 @@ def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str
     sl_pct = _to_percent_points(_as_float(normalized_plan.get("sl_ratio")))
     trailing_pct = max(_as_float(normalized_plan.get("trailing_ratio")) or 0.0, 0.0)
     trailing_enabled = trailing_pct > 0.0
+    high_watermark_price = _as_float(normalized_plan.get("high_watermark_price"))
+    high_watermark_price_str = _as_optional_str(normalized_plan.get("high_watermark_price_str"))
+    if high_watermark_price_str is None and high_watermark_price is not None:
+        high_watermark_price_str = _format_decimal(high_watermark_price)
+    armed_ts_ms = _as_int(normalized_plan.get("armed_ts_ms"))
     shared = {
         "source": "model_alpha_v1",
         "mode": mode,
@@ -225,6 +235,8 @@ def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str
             **shared,
             "enabled": trailing_enabled,
             "trail_pct": trailing_pct if trailing_enabled else None,
+            "high_watermark_price_str": high_watermark_price_str,
+            "armed_ts_ms": armed_ts_ms,
         },
         ensure_ascii=False,
         sort_keys=True,

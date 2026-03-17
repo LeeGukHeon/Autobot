@@ -16,6 +16,7 @@ from autobot.live.breakers import (
     reset_counter,
 )
 from autobot.live.identifier import new_protective_order_identifier
+from autobot.live.model_risk_plan import build_model_exit_plan_from_position, build_position_record_from_model_exit_plan
 from autobot.live.order_state import normalize_order_state
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 from autobot.strategy.operational_overlay_v1 import (
@@ -773,6 +774,58 @@ class LiveRiskManager:
             source_intent_id=plan.source_intent_id,
         )
         self._store.upsert_risk_plan(record)
+        self._sync_managed_position_from_plan(plan)
+
+    def _sync_managed_position_from_plan(self, plan: RiskPlan) -> None:
+        plan_source = str(plan.plan_source or "").strip().lower()
+        if plan_source not in {"model_alpha_v1", MODEL_ALPHA_MICRO_OVERLAY_PLAN_SOURCE}:
+            return
+        position = self._store.position_by_market(market=plan.market)
+        if not isinstance(position, dict):
+            return
+        base_plan = build_model_exit_plan_from_position(position)
+        if base_plan is None:
+            base_plan = {
+                "source": "model_alpha_v1",
+                "version": 1,
+                "mode": "risk" if bool(plan.tp_enabled or plan.trailing_enabled) else "hold",
+                "hold_bars": 0,
+                "interval_ms": 0,
+                "timeout_delta_ms": 0,
+            }
+        timeout_delta_ms = max(int(plan.timeout_ts_ms) - int(plan.created_ts), 0) if plan.timeout_ts_ms is not None else max(
+            int(base_plan.get("timeout_delta_ms", 0) or 0),
+            0,
+        )
+        tp_ratio = (float(plan.tp_pct) / 100.0) if plan.tp_enabled and plan.tp_pct is not None else 0.0
+        sl_ratio = (float(plan.sl_pct) / 100.0) if plan.sl_enabled and plan.sl_pct is not None else 0.0
+        trailing_ratio = float(plan.trail_pct) if plan.trailing_enabled and plan.trail_pct is not None else 0.0
+        plan_payload = dict(base_plan)
+        plan_payload.update(
+            {
+                "source": "model_alpha_v1",
+                "tp_ratio": tp_ratio,
+                "sl_ratio": sl_ratio,
+                "trailing_ratio": trailing_ratio,
+                "tp_pct": tp_ratio,
+                "sl_pct": sl_ratio,
+                "trailing_pct": trailing_ratio,
+                "timeout_delta_ms": int(timeout_delta_ms),
+                "high_watermark_price": float(plan.high_watermark_price) if plan.high_watermark_price is not None else None,
+                "high_watermark_price_str": _optional_decimal(plan.high_watermark_price, self._config.price_digits),
+                "armed_ts_ms": plan.armed_ts_ms,
+            }
+        )
+        position_record = build_position_record_from_model_exit_plan(
+            market=str(position.get("market") or plan.market),
+            base_currency=str(position.get("base_currency") or str(plan.market).split("-")[-1]),
+            base_amount=max(_as_float(position.get("base_amount")) or float(plan.qty), 0.0),
+            avg_entry_price=max(_as_float(position.get("avg_entry_price")) or float(plan.entry_price), 0.0),
+            plan_payload=plan_payload,
+            updated_ts=int(plan.updated_ts),
+            managed=bool(position.get("managed", True)),
+        )
+        self._store.upsert_position(position_record)
 
 
 def _risk_plan_from_row(row: dict[str, Any]) -> RiskPlan:

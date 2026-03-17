@@ -552,10 +552,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             notional = max(float(event.price) * float(event.volume), 1e-12)
             fee_rate = max(float(event.fee_quote), 0.0) / notional
             exit_plan = _extract_model_exit_plan_from_fill_meta(event.meta)
+            peak_price = max(price, _safe_optional_float(exit_plan.get("high_watermark_price")) or 0.0)
+            peak_price = max(peak_price, _safe_optional_float(exit_plan.get("high_watermark_price_str")) or 0.0)
             self._positions[market] = _PositionState(
                 entry_ts_ms=int(event.ts_ms),
                 entry_price=price,
-                peak_price=price,
+                peak_price=peak_price,
                 entry_fee_rate=fee_rate,
                 exit_plan=exit_plan,
             )

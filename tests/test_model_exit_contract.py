@@ -125,6 +125,8 @@ def test_build_model_exit_plan_from_position_backfills_ratio_aliases() -> None:
                 "hold_bars": 6,
                 "timeout_delta_ms": 1_800_000,
                 "trail_pct": 0.015,
+                "high_watermark_price_str": "110.5",
+                "armed_ts_ms": 1234,
             },
         }
     )
@@ -139,3 +141,5 @@ def test_build_model_exit_plan_from_position_backfills_ratio_aliases() -> None:
     assert payload["tp_vol_multiplier"] == 2.0
     assert payload["sl_vol_multiplier"] == 1.0
     assert payload["trailing_vol_multiplier"] == 0.5
+    assert payload["high_watermark_price"] == 110.5
+    assert payload["armed_ts_ms"] == 1234
