@@ -443,6 +443,9 @@ def test_live_installer_dry_run_exposes_rollout_mode() -> None:
     assert "--use-private-ws" in stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion_v4" in stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+    assert "RestartPreventExitStatus=2" in stdout
+    assert "StartLimitIntervalSec=60" in stdout
+    assert "StartLimitBurst=4" in stdout
 
 
 def test_live_installer_dry_run_supports_strategy_runtime() -> None:

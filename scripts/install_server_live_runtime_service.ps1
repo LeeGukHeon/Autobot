@@ -84,6 +84,8 @@ $unitContent = @"
 Description=Autobot Live Runtime
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=4
 
 [Service]
 Type=simple
@@ -103,8 +105,6 @@ ExecStart=$execStart
 Restart=on-failure
 RestartPreventExitStatus=2
 RestartSec=15
-StartLimitIntervalSec=60
-StartLimitBurst=4
 TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
