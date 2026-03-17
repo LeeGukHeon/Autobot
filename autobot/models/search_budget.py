@@ -20,14 +20,14 @@ class V4SearchBudgetPolicy:
     soft_booster_trial_cap: int = 8
     hard_booster_trial_cap: int = 5
     soft_runtime_profile: str = "compact"
-    hard_runtime_profile: str = "tiny"
+    hard_runtime_profile: str = "compact"
 
 
 @dataclass(frozen=True)
 class V4PromotionEligibleBudgetContract:
     contract_id: str = "v4_promotion_eligible_budget_v1"
     min_booster_sweep_trials: int = 10
-    required_runtime_recommendation_profile: str = "full"
+    required_runtime_recommendation_profile: str = "compact"
     require_cpcv_lite_auto_disabled: bool = True
 
 
@@ -252,25 +252,19 @@ def _normalize_run_scope(value: str | None) -> str:
 
 
 def _baseline_runtime_profile_for_run_scope(run_scope: str) -> str:
-    normalized = _normalize_run_scope(run_scope)
-    if normalized == "scheduled_daily":
-        return "compact"
-    return "full"
+    return "compact"
 
 
 def _promotion_contract_for_run_scope(
     contract: V4PromotionEligibleBudgetContract,
     run_scope: str,
 ) -> V4PromotionEligibleBudgetContract:
-    normalized = _normalize_run_scope(run_scope)
-    if normalized == "scheduled_daily":
-        return V4PromotionEligibleBudgetContract(
-            contract_id=str(contract.contract_id),
-            min_booster_sweep_trials=int(contract.min_booster_sweep_trials),
-            required_runtime_recommendation_profile="compact",
-            require_cpcv_lite_auto_disabled=bool(contract.require_cpcv_lite_auto_disabled),
-        )
-    return contract
+    return V4PromotionEligibleBudgetContract(
+        contract_id=str(contract.contract_id),
+        min_booster_sweep_trials=int(contract.min_booster_sweep_trials),
+        required_runtime_recommendation_profile="compact",
+        require_cpcv_lite_auto_disabled=bool(contract.require_cpcv_lite_auto_disabled),
+    )
 
 
 def _directory_size_bytes(root: Path) -> int:
@@ -297,8 +291,7 @@ def _runtime_profile_rank(value: str) -> int:
 
 
 def _max_runtime_profile(left: str, right: str) -> str:
-    profiles = {0: "full", 1: "compact", 2: "tiny"}
-    return profiles[max(_runtime_profile_rank(left), _runtime_profile_rank(right))]
+    return "compact"
 
 
 def _normalize_run_scope(value: Any) -> str:

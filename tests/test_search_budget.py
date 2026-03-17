@@ -38,6 +38,37 @@ def test_resolve_v4_search_budget_defaults_to_compact_profile_for_scheduled_dail
     assert decision["resource_state"]["project_used_gb"] >= 0.0
 
 
+def test_resolve_v4_search_budget_defaults_to_compact_profile_for_split_history(tmp_path: Path) -> None:
+    logs_root = tmp_path / "logs"
+    logs_root.mkdir(parents=True, exist_ok=True)
+
+    decision = resolve_v4_search_budget(
+        project_root=tmp_path,
+        logs_root=logs_root,
+        registry_root=tmp_path / "registry",
+        model_family="train_v4_crypto_cs",
+        run_scope="scheduled_split_policy_history",
+        requested_booster_sweep_trials=10,
+        factor_block_selection_context={},
+        cpcv_requested=False,
+        policy=V4SearchBudgetPolicy(
+            soft_disk_used_gb=10_000.0,
+            hard_disk_used_gb=20_000.0,
+        ),
+    )
+
+    assert decision["status"] == "default"
+    assert decision["lane_class_requested"] == "promotion_eligible"
+    assert decision["lane_class_effective"] == "promotion_eligible"
+    assert decision["budget_contract_id"] == "v4_promotion_eligible_budget_v1"
+    assert decision["promotion_eligible_contract"]["requested"] is True
+    assert decision["promotion_eligible_contract"]["satisfied"] is True
+    assert decision["promotion_eligible_contract"]["required_runtime_recommendation_profile"] == "compact"
+    assert decision["applied"]["booster_sweep_trials"] == 10
+    assert decision["applied"]["runtime_recommendation_profile"] == "compact"
+    assert decision["markers"] == []
+
+
 def test_resolve_v4_search_budget_reduces_trials_under_pressure(tmp_path: Path) -> None:
     logs_root = tmp_path / "logs"
     logs_root.mkdir(parents=True, exist_ok=True)
@@ -76,6 +107,42 @@ def test_resolve_v4_search_budget_reduces_trials_under_pressure(tmp_path: Path) 
     assert "SOFT_DISK_BUDGET_PRESSURE" in decision["markers"]
     assert "SOFT_WALL_TIME_PRESSURE" in decision["markers"]
     assert "PROJECT_USED_GB_AT_OR_ABOVE_SOFT_THRESHOLD" in decision["reasons"]
+
+
+def test_resolve_v4_search_budget_keeps_compact_profile_under_hard_pressure(tmp_path: Path) -> None:
+    logs_root = tmp_path / "logs"
+    logs_root.mkdir(parents=True, exist_ok=True)
+    (logs_root / "train_v4_report.manual_daily.json").write_text(
+        json.dumps({"duration_sec": 20_000}),
+        encoding="utf-8",
+    )
+
+    decision = resolve_v4_search_budget(
+        project_root=tmp_path,
+        logs_root=logs_root,
+        registry_root=tmp_path / "registry",
+        model_family="train_v4_crypto_cs",
+        run_scope="manual_daily",
+        requested_booster_sweep_trials=12,
+        factor_block_selection_context={},
+        cpcv_requested=False,
+        policy=V4SearchBudgetPolicy(
+            soft_disk_used_gb=0.0,
+            hard_disk_used_gb=0.0,
+            soft_wall_time_sec=7_200,
+            hard_wall_time_sec=10_800,
+            soft_booster_trial_cap=8,
+            hard_booster_trial_cap=5,
+            soft_runtime_profile="compact",
+            hard_runtime_profile="tiny",
+        ),
+    )
+
+    assert decision["status"] == "throttled"
+    assert decision["applied"]["booster_sweep_trials"] == 5
+    assert decision["applied"]["runtime_recommendation_profile"] == "compact"
+    assert "HARD_DISK_BUDGET_PRESSURE" in decision["markers"]
+    assert "HARD_WALL_TIME_PRESSURE" in decision["markers"]
 
 
 def test_resolve_v4_search_budget_enables_cpcv_auto_for_guarded_policy(tmp_path: Path) -> None:
