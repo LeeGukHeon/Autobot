@@ -670,11 +670,12 @@ def _rollup_from_1m(*, one_m: pl.DataFrame, tf: str) -> pl.DataFrame:
 
 def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str], extra_columns: Sequence[str] = ()) -> pl.DataFrame:
     schema: dict[str, pl.DataType] = {"ts_ms": pl.Int64, "market": pl.Utf8}
+    feature_col_set = {str(col) for col in feature_columns}
     for col in feature_columns:
         schema[str(col)] = pl.Float32
     for col in extra_columns:
         name = str(col)
-        if name == "close":
+        if name == "close" or name in feature_col_set:
             continue
         schema[name] = pl.Float64
     schema["close"] = pl.Float64
@@ -686,7 +687,7 @@ def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str]
         "ts_ms",
         "market",
         *[str(col) for col in feature_columns],
-        *[str(col) for col in extra_columns if str(col) != "close"],
+        *[str(col) for col in extra_columns if str(col) != "close" and str(col) not in feature_col_set],
         "close",
     ]
     present = [name for name in ordered if name in frame.columns]

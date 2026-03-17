@@ -216,7 +216,14 @@ def _project_requested_columns(
     feature_columns: Sequence[str],
     extra_columns: Sequence[str] = (),
 ) -> tuple[pl.DataFrame, tuple[str, ...]]:
-    required_order = ["ts_ms", "market", *[str(col) for col in extra_columns if str(col) != "close"], "close", *list(feature_columns)]
+    feature_col_set = {str(col) for col in feature_columns}
+    required_order = [
+        "ts_ms",
+        "market",
+        *[str(col) for col in extra_columns if str(col) != "close" and str(col) not in feature_col_set],
+        "close",
+        *list(feature_columns),
+    ]
     working = frame
     missing_columns: list[str] = []
     if "ts_ms" not in working.columns:

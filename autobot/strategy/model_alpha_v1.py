@@ -10,6 +10,7 @@ import numpy as np
 import polars as pl
 
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
+from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.execution_risk_control import (
@@ -27,6 +28,7 @@ from autobot.strategy.operational_overlay_v1 import (
     resolve_operational_max_positions,
     resolve_operational_risk_multiplier,
 )
+from autobot.strategy.micro_snapshot import MicroSnapshot
 
 from . import model_alpha_runtime_contract as _runtime_contract
 
@@ -582,6 +584,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             state=state,
             settings=self._settings,
             ts_ms=ts_ms,
+            current_price=ref_price,
             row=row,
             interval_ms=self._interval_ms,
         )
@@ -871,22 +874,28 @@ def _resolve_position_exit_plan(
     state: _PositionState,
     settings: ModelAlphaSettings,
     ts_ms: int,
+    current_price: float | None,
     row: dict[str, Any] | None,
     interval_ms: int,
 ) -> dict[str, Any]:
-    if isinstance(state.exit_plan, dict) and state.exit_plan:
-        return _reprice_position_exit_plan(
-            state=state,
-            plan=state.exit_plan,
+    base_plan = (
+        dict(state.exit_plan)
+        if isinstance(state.exit_plan, dict) and state.exit_plan
+        else build_model_alpha_exit_plan_payload(
+            settings=settings,
             row=row,
-            ts_ms=ts_ms,
             interval_ms=interval_ms,
+            observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
         )
-    return build_model_alpha_exit_plan_payload(
-        settings=settings,
+    )
+    return _reprice_position_exit_plan(
+        state=state,
+        plan=base_plan,
         row=row,
+        ts_ms=ts_ms,
+        current_price=current_price,
+        operational_settings=settings.operational,
         interval_ms=interval_ms,
-        observed_entry_fee_rate=max(float(state.entry_fee_rate), 0.0),
     )
 
 
@@ -922,6 +931,15 @@ def _safe_optional_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -976,54 +994,85 @@ def _reprice_position_exit_plan(
     plan: dict[str, Any],
     row: dict[str, Any] | None,
     ts_ms: int,
+    current_price: float | None,
+    operational_settings: ModelAlphaOperationalSettings,
     interval_ms: int,
 ) -> dict[str, Any]:
     normalized = normalize_model_exit_plan_payload(plan)
     mode = str(normalized.get("mode", "hold")).strip().lower() or "hold"
     scaling_mode = str(normalized.get("risk_scaling_mode", "")).strip().lower() or "fixed"
-    if mode != "risk" or scaling_mode != "volatility_scaled":
+    if mode != "risk":
         return normalized
+    if scaling_mode == "volatility_scaled":
+        risk_vol_feature = str(normalized.get("risk_vol_feature", "")).strip()
+        tp_mult = _safe_optional_float(normalized.get("tp_vol_multiplier"))
+        sl_mult = _safe_optional_float(normalized.get("sl_vol_multiplier"))
+        trailing_mult = _safe_optional_float(normalized.get("trailing_vol_multiplier"))
+        if risk_vol_feature and any(value is not None for value in (tp_mult, sl_mult, trailing_mult)):
+            sigma_bar = _resolve_row_risk_volatility(row=row, feature_name=risk_vol_feature)
+            if sigma_bar is not None and sigma_bar > 0:
+                total_hold_bars = max(int(normalized.get("hold_bars", 0) or 0), 1)
+                plan_interval_ms = max(int(normalized.get("bar_interval_ms", interval_ms) or interval_ms), 1)
+                elapsed_bars = max(int((int(ts_ms) - int(state.entry_ts_ms)) // plan_interval_ms), 0)
+                remaining_bars = max(total_hold_bars - elapsed_bars, 1)
+                sigma_horizon = float(sigma_bar) * math.sqrt(float(remaining_bars))
+                if math.isfinite(sigma_horizon) and sigma_horizon > 0:
+                    repriced_tp = max(float(tp_mult) * sigma_horizon, 0.0) if tp_mult is not None else None
+                    repriced_sl = max(float(sl_mult) * sigma_horizon, 0.0) if sl_mult is not None else None
+                    repriced_trailing = max(float(trailing_mult) * sigma_horizon, 0.0) if trailing_mult is not None else None
 
-    risk_vol_feature = str(normalized.get("risk_vol_feature", "")).strip()
-    tp_mult = _safe_optional_float(normalized.get("tp_vol_multiplier"))
-    sl_mult = _safe_optional_float(normalized.get("sl_vol_multiplier"))
-    trailing_mult = _safe_optional_float(normalized.get("trailing_vol_multiplier"))
-    if not risk_vol_feature or all(value is None for value in (tp_mult, sl_mult, trailing_mult)):
-        return normalized
-
-    sigma_bar = _resolve_row_risk_volatility(row=row, feature_name=risk_vol_feature)
-    if sigma_bar is None or sigma_bar <= 0:
-        return normalized
-
-    total_hold_bars = max(int(normalized.get("hold_bars", 0) or 0), 1)
-    plan_interval_ms = max(int(normalized.get("bar_interval_ms", interval_ms) or interval_ms), 1)
-    elapsed_bars = max(int((int(ts_ms) - int(state.entry_ts_ms)) // plan_interval_ms), 0)
-    remaining_bars = max(total_hold_bars - elapsed_bars, 1)
-    sigma_horizon = float(sigma_bar) * math.sqrt(float(remaining_bars))
-    if not math.isfinite(sigma_horizon) or sigma_horizon <= 0:
-        return normalized
-
-    repriced_tp = max(float(tp_mult) * sigma_horizon, 0.0) if tp_mult is not None else None
-    repriced_sl = max(float(sl_mult) * sigma_horizon, 0.0) if sl_mult is not None else None
-    repriced_trailing = max(float(trailing_mult) * sigma_horizon, 0.0) if trailing_mult is not None else None
-
-    tp_pct = _tighten_only_exit_threshold(normalized.get("tp_pct"), repriced_tp)
-    sl_pct = _tighten_only_exit_threshold(normalized.get("sl_pct"), repriced_sl)
-    trailing_pct = _tighten_only_exit_threshold(normalized.get("trailing_pct"), repriced_trailing)
-    normalized.update(
-        {
-            "tp_ratio": float(tp_pct),
-            "sl_ratio": float(sl_pct),
-            "trailing_ratio": float(trailing_pct),
-            "tp_pct": float(tp_pct),
-            "sl_pct": float(sl_pct),
-            "trailing_pct": float(trailing_pct),
-            "intratrade_reprice_applied": True,
-            "intratrade_remaining_bars": int(remaining_bars),
-            "intratrade_sigma_bar": float(sigma_bar),
-            "intratrade_sigma_horizon": float(sigma_horizon),
-        }
+                    tp_pct = _tighten_only_exit_threshold(normalized.get("tp_pct"), repriced_tp)
+                    sl_pct = _tighten_only_exit_threshold(normalized.get("sl_pct"), repriced_sl)
+                    trailing_pct = _tighten_only_exit_threshold(normalized.get("trailing_pct"), repriced_trailing)
+                    normalized.update(
+                        {
+                            "tp_ratio": float(tp_pct),
+                            "sl_ratio": float(sl_pct),
+                            "trailing_ratio": float(trailing_pct),
+                            "tp_pct": float(tp_pct),
+                            "sl_pct": float(sl_pct),
+                            "trailing_pct": float(trailing_pct),
+                            "intratrade_reprice_applied": True,
+                            "intratrade_remaining_bars": int(remaining_bars),
+                            "intratrade_sigma_bar": float(sigma_bar),
+                            "intratrade_sigma_horizon": float(sigma_horizon),
+                        }
+                    )
+    micro_snapshot = _micro_snapshot_from_row(row=row, ts_ms=ts_ms)
+    current_return_ratio = (
+        (float(current_price) / max(float(state.entry_price), 1e-12)) - 1.0
+        if current_price is not None and float(current_price) > 0.0
+        else 0.0
     )
+    overlay = resolve_dynamic_exit_overlay(
+        settings=operational_settings,
+        micro_snapshot=micro_snapshot,
+        now_ts_ms=int(ts_ms),
+        current_return_ratio=float(current_return_ratio),
+        elapsed_ms=max(int(ts_ms) - int(state.entry_ts_ms), 0),
+        tp_pct=_safe_optional_float(normalized.get("tp_pct")),
+        sl_pct=_safe_optional_float(normalized.get("sl_pct")),
+        trailing_enabled=bool((_safe_optional_float(normalized.get("trailing_pct")) or 0.0) > 0.0),
+        trailing_pct=_safe_optional_float(normalized.get("trailing_pct")),
+        timeout_delta_ms=_safe_optional_int(normalized.get("timeout_delta_ms")),
+    )
+    if overlay.applied:
+        normalized.update(
+            {
+                "tp_ratio": float(overlay.tp_pct or 0.0),
+                "sl_ratio": float(overlay.sl_pct or 0.0),
+                "trailing_ratio": float(overlay.trailing_pct or 0.0),
+                "tp_pct": float(overlay.tp_pct or 0.0),
+                "sl_pct": float(overlay.sl_pct or 0.0),
+                "trailing_pct": float(overlay.trailing_pct or 0.0),
+                "timeout_delta_ms": int(overlay.timeout_delta_ms or 0),
+                "micro_overlay_applied": True,
+                "micro_overlay_quality_score": overlay.quality_score,
+                "micro_overlay_trade_imbalance": overlay.trade_imbalance,
+                "micro_overlay_activation_strength": overlay.activation_strength,
+                "micro_overlay_risk_multiplier": overlay.risk_multiplier,
+            }
+        )
     return normalized
 
 
@@ -1033,6 +1082,56 @@ def _tighten_only_exit_threshold(entry_value: Any, repriced_value: float | None)
     if entry_threshold <= 0.0 or next_threshold <= 0.0:
         return float(entry_threshold)
     return float(min(entry_threshold, next_threshold))
+
+
+def _micro_snapshot_from_row(*, row: dict[str, Any] | None, ts_ms: int) -> MicroSnapshot | None:
+    if not isinstance(row, dict):
+        return None
+    trade_events = max(_safe_optional_int(row.get("m_trade_events")) or 0, 0)
+    book_events = max(_safe_optional_int(row.get("m_book_events")) or 0, 0)
+    trade_coverage_ms = max(_safe_optional_int(row.get("m_trade_coverage_ms")) or 0, 0)
+    book_coverage_ms = max(_safe_optional_int(row.get("m_book_coverage_ms")) or 0, 0)
+    trade_imbalance = _safe_optional_float(row.get("m_trade_imbalance"))
+    spread_bps = _safe_optional_float(row.get("m_spread_proxy"))
+    depth_top5_notional_krw = _safe_optional_float(row.get("m_depth_top5_notional_krw"))
+    if depth_top5_notional_krw is None:
+        bid_depth = _safe_optional_float(row.get("m_depth_bid_top5_mean")) or 0.0
+        ask_depth = _safe_optional_float(row.get("m_depth_ask_top5_mean")) or 0.0
+        depth_top5_notional_krw = max(float(bid_depth) + float(ask_depth), 0.0)
+    last_event_ts_ms = max(
+        [
+            int(value)
+            for value in (
+                _safe_optional_int(row.get("m_trade_max_ts_ms")),
+                _safe_optional_int(row.get("m_book_max_ts_ms")),
+                int(ts_ms),
+            )
+            if value is not None
+        ],
+        default=int(ts_ms),
+    )
+    book_available = bool((_safe_optional_float(row.get("m_micro_book_available")) or 0.0) > 0.0 or book_events > 0)
+    micro_available = bool((_safe_optional_float(row.get("m_micro_available")) or 0.0) > 0.0)
+    if not micro_available and trade_events <= 0 and book_events <= 0 and spread_bps is None and depth_top5_notional_krw is None:
+        return None
+    close_value = _safe_optional_float(row.get("close")) or 0.0
+    trade_volume_base = _safe_optional_float(row.get("m_trade_volume_base")) or 0.0
+    trade_notional_krw = max(float(close_value) * float(trade_volume_base), 0.0)
+    return MicroSnapshot(
+        market=str(row.get("market", "")).strip().upper(),
+        snapshot_ts_ms=int(ts_ms),
+        last_event_ts_ms=int(last_event_ts_ms),
+        trade_events=int(trade_events),
+        trade_coverage_ms=int(trade_coverage_ms),
+        trade_notional_krw=float(trade_notional_krw),
+        trade_imbalance=trade_imbalance,
+        trade_source="dataset",
+        spread_bps_mean=spread_bps,
+        depth_top5_notional_krw=depth_top5_notional_krw,
+        book_events=int(book_events),
+        book_coverage_ms=int(book_coverage_ms),
+        book_available=bool(book_available),
+    )
 
 
 def _resolve_runtime_risk_exit_thresholds(

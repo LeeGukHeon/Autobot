@@ -304,7 +304,12 @@ def iter_feature_rows_grouped_by_ts(
     if not selected_markets:
         return
 
-    normalized_extra_cols = tuple(str(col).strip() for col in extra_columns if str(col).strip())
+    feature_col_set = {str(col).strip() for col in feature_cols if str(col).strip()}
+    normalized_extra_cols = tuple(
+        str(col).strip()
+        for col in extra_columns
+        if str(col).strip() and str(col).strip() not in feature_col_set
+    )
     ordered_cols = ("ts_ms", "market", *feature_cols, *normalized_extra_cols)
     heap: list[tuple[int, int, dict[str, Any], Iterator[dict[str, Any]]]] = []
     seq = 0
@@ -451,6 +456,8 @@ def _scan_market_rows(
             raise ValueError(f"feature column missing in {market}: {col}")
         expressions.append(_feature_to_float_expr(col, schema=schema))
     for col in extra_columns:
+        if col in feature_columns:
+            continue
         source_name = _aux_column_source_name(column=col, available_names=names)
         if source_name in names:
             dtype = schema.get(source_name)

@@ -16,7 +16,24 @@ def resolve_model_alpha_runtime_row_columns(*, predictor: ModelPredictor) -> tup
     trade_action_policy = normalize_trade_action_policy(
         runtime_recommendations.get("trade_action") if isinstance(runtime_recommendations, dict) else {}
     )
+    feature_names = {str(name).strip() for name in getattr(predictor, "feature_columns", ()) if str(name).strip()}
     ordered: list[str] = ["close"]
+    for name in (
+        "m_trade_events",
+        "m_book_events",
+        "m_trade_coverage_ms",
+        "m_book_coverage_ms",
+        "m_trade_max_ts_ms",
+        "m_book_max_ts_ms",
+        "m_trade_imbalance",
+        "m_spread_proxy",
+        "m_depth_bid_top5_mean",
+        "m_depth_ask_top5_mean",
+        "m_micro_available",
+        "m_micro_book_available",
+    ):
+        if name not in ordered and name not in feature_names:
+            ordered.append(name)
     state_feature_names = trade_action_policy.get("state_feature_names") or []
     for raw_name in state_feature_names:
         name = str(raw_name).strip()

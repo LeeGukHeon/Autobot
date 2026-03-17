@@ -1186,6 +1186,89 @@ def test_model_alpha_restart_fill_restores_peak_price_from_exit_plan() -> None:
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TRAILING" for intent in result.intents)
 
 
+def test_model_alpha_risk_exit_applies_common_micro_overlay_from_row_features() -> None:
+    frame1 = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [104.0],
+            "m_trade_events": [32.0],
+            "m_book_events": [24.0],
+            "m_trade_coverage_ms": [5_000.0],
+            "m_book_coverage_ms": [5_000.0],
+            "m_trade_max_ts_ms": [301_000.0],
+            "m_book_max_ts_ms": [301_000.0],
+            "m_trade_imbalance": [-0.9],
+            "m_spread_proxy": [45.0],
+            "m_depth_bid_top5_mean": [20_000.0],
+            "m_depth_ask_top5_mean": [20_000.0],
+            "m_micro_available": [1.0],
+            "m_micro_book_available": [1.0],
+        }
+    )
+    frame2 = pl.DataFrame(
+        {
+            "ts_ms": [601_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [102.8],
+            "m_trade_events": [32.0],
+            "m_book_events": [24.0],
+            "m_trade_coverage_ms": [5_000.0],
+            "m_book_coverage_ms": [5_000.0],
+            "m_trade_max_ts_ms": [601_000.0],
+            "m_book_max_ts_ms": [601_000.0],
+            "m_trade_imbalance": [-0.9],
+            "m_spread_proxy": [45.0],
+            "m_depth_bid_top5_mean": [20_000.0],
+            "m_depth_ask_top5_mean": [20_000.0],
+            "m_micro_available": [1.0],
+            "m_micro_book_available": [1.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(301_000, frame1), (601_000, frame2)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(
+                mode="risk",
+                hold_bars=6,
+                risk_scaling_mode="fixed",
+                tp_pct=0.20,
+                sl_pct=0.20,
+                trailing_pct=0.0,
+            ),
+        ),
+    )
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+        )
+    )
+    first = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 104.0},
+        open_markets={"KRW-BTC"},
+    )
+    second = strategy.on_ts(
+        ts_ms=601_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 102.8},
+        open_markets={"KRW-BTC"},
+    )
+
+    assert not any(intent.reason_code == "MODEL_ALPHA_EXIT_TRAILING" for intent in first.intents)
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TRAILING" for intent in second.intents)
+
+
 def test_model_alpha_risk_exit_reprices_with_current_volatility_and_remaining_horizon() -> None:
     frame = pl.DataFrame(
         {

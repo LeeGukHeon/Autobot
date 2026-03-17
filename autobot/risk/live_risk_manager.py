@@ -6,6 +6,7 @@ import json
 import time
 from typing import Any
 
+from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
 from autobot.execution.intent import new_order_intent
 from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
@@ -19,12 +20,7 @@ from autobot.live.identifier import new_protective_order_identifier
 from autobot.live.model_risk_plan import build_model_exit_plan_from_position, build_position_record_from_model_exit_plan
 from autobot.live.order_state import normalize_order_state
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
-from autobot.strategy.operational_overlay_v1 import (
-    ModelAlphaOperationalSettings,
-    compute_micro_quality_composite,
-    load_calibrated_operational_settings,
-    resolve_operational_risk_multiplier,
-)
+from autobot.strategy.operational_overlay_v1 import ModelAlphaOperationalSettings, load_calibrated_operational_settings
 
 from .models import RiskManagerConfig, RiskPlan
 
@@ -629,76 +625,39 @@ class LiveRiskManager:
         plan_source = str(plan.plan_source or "").strip().lower()
         if plan_source not in {"model_alpha_v1", MODEL_ALPHA_MICRO_OVERLAY_PLAN_SOURCE}:
             return plan, None
-
-        micro_quality = compute_micro_quality_composite(
+        timeout_delta_ms = (
+            max(int(plan.timeout_ts_ms) - int(plan.created_ts), 0)
+            if plan.timeout_ts_ms is not None
+            else None
+        )
+        overlay = resolve_dynamic_exit_overlay(
+            settings=self._micro_overlay_settings,
             micro_snapshot=micro_snapshot,
-            now_ts_ms=ts_ms,
-            settings=self._micro_overlay_settings,
+            now_ts_ms=int(ts_ms),
+            current_return_ratio=(float(last_price) / max(float(plan.entry_price), 1e-12)) - 1.0,
+            elapsed_ms=max(int(ts_ms) - int(plan.created_ts), 0),
+            tp_pct=plan.tp_pct if bool(plan.tp_enabled) else None,
+            sl_pct=plan.sl_pct if bool(plan.sl_enabled) else None,
+            trailing_enabled=bool(plan.trailing_enabled),
+            trailing_pct=_as_float(plan.trail_pct),
+            timeout_delta_ms=timeout_delta_ms,
         )
-        if micro_quality is None:
+
+        if not overlay.applied:
             return plan, None
 
-        quality_score = _clamp01(micro_quality.score)
-        conservative_threshold = max(float(self._micro_overlay_settings.micro_quality_conservative_threshold), 1e-6)
-        quality_penalty = _clamp01((conservative_threshold - quality_score) / conservative_threshold)
-        trade_imbalance = _as_float(getattr(micro_snapshot, "trade_imbalance", None)) or 0.0
-        adverse_flow = _clamp01(max(-float(trade_imbalance), 0.0))
-        activation_strength = max(float(quality_penalty), float(adverse_flow))
-        risk_multiplier = resolve_operational_risk_multiplier(
-            settings=self._micro_overlay_settings,
-            regime_score=quality_score,
-            breadth_ratio=None,
-            micro_quality_score=quality_score,
+        timeout_ts_ms = (
+            int(plan.created_ts) + int(overlay.timeout_delta_ms)
+            if overlay.timeout_delta_ms is not None
+            else None
         )
-        tighten_scale = min(max(float(risk_multiplier), 0.25), 1.0)
-
-        tp_pct = plan.tp_pct
-        if plan.tp_enabled and tp_pct is not None and tp_pct > 0.0:
-            tp_pct = min(float(tp_pct), float(tp_pct) * float(tighten_scale))
-
-        sl_pct = plan.sl_pct
-        if plan.sl_enabled and sl_pct is not None and sl_pct > 0.0:
-            sl_pct = min(float(sl_pct), float(sl_pct) * float(tighten_scale))
-
-        trailing_enabled = bool(plan.trailing_enabled)
-        trail_pct = _as_float(plan.trail_pct)
-        current_return_ratio = (float(last_price) / max(float(plan.entry_price), 1e-12)) - 1.0
-        if current_return_ratio > 0.0 and activation_strength > 0.0:
-            allowed_drawdown_share = max(0.20, 0.60 - (0.40 * float(activation_strength)))
-            profit_lock_trail = max(float(current_return_ratio) * float(allowed_drawdown_share), 0.0015)
-            trailing_enabled = True
-            trail_pct = (
-                min(float(trail_pct), float(profit_lock_trail))
-                if trail_pct is not None and trail_pct > 0.0
-                else float(profit_lock_trail)
-            )
-        elif trailing_enabled and trail_pct is not None and trail_pct > 0.0 and activation_strength > 0.0:
-            trail_pct = min(float(trail_pct), float(trail_pct) * float(tighten_scale))
-
-        timeout_ts_ms = plan.timeout_ts_ms
-        if timeout_ts_ms is not None and int(timeout_ts_ms) > int(ts_ms) and activation_strength > 0.0:
-            remaining_ms = max(int(timeout_ts_ms) - int(ts_ms), 0)
-            compressed_remaining_ms = max(int(float(remaining_ms) * float(tighten_scale)), 60_000)
-            timeout_ts_ms = min(int(timeout_ts_ms), int(ts_ms) + int(compressed_remaining_ms))
-
-        changed = any(
-            [
-                not _same_optional_float(plan.tp_pct, tp_pct),
-                not _same_optional_float(plan.sl_pct, sl_pct),
-                bool(plan.trailing_enabled) != bool(trailing_enabled),
-                not _same_optional_float(plan.trail_pct, trail_pct),
-                _as_int(plan.timeout_ts_ms) != _as_int(timeout_ts_ms),
-            ]
-        )
-        if not changed:
-            return plan, None
 
         updated = replace(
             plan,
-            tp_pct=tp_pct,
-            sl_pct=sl_pct,
-            trailing_enabled=bool(trailing_enabled),
-            trail_pct=trail_pct if bool(trailing_enabled) else None,
+            tp_pct=overlay.tp_pct,
+            sl_pct=overlay.sl_pct,
+            trailing_enabled=bool(overlay.trailing_enabled),
+            trail_pct=overlay.trailing_pct if bool(overlay.trailing_enabled) else None,
             timeout_ts_ms=_as_int(timeout_ts_ms),
             updated_ts=ts_ms,
             plan_source=MODEL_ALPHA_MICRO_OVERLAY_PLAN_SOURCE,
@@ -706,13 +665,13 @@ class LiveRiskManager:
         return updated, {
             "type": "risk_micro_overlay_applied",
             "plan_id": plan.plan_id,
-            "quality_score": float(quality_score),
-            "trade_imbalance": float(trade_imbalance),
-            "activation_strength": float(activation_strength),
-            "risk_multiplier": float(risk_multiplier),
-            "tp_pct": tp_pct,
-            "sl_pct": sl_pct,
-            "trail_pct": trail_pct if bool(trailing_enabled) else None,
+            "quality_score": overlay.quality_score,
+            "trade_imbalance": overlay.trade_imbalance,
+            "activation_strength": overlay.activation_strength,
+            "risk_multiplier": overlay.risk_multiplier,
+            "tp_pct": overlay.tp_pct,
+            "sl_pct": overlay.sl_pct,
+            "trail_pct": overlay.trailing_pct if bool(overlay.trailing_enabled) else None,
             "timeout_ts_ms": _as_int(timeout_ts_ms),
         }
 
@@ -870,8 +829,6 @@ def _same_optional_float(left: float | None, right: float | None, *, tol: float 
     return abs(float(left) - float(right)) <= float(tol)
 
 
-def _clamp01(value: float) -> float:
-    return max(min(float(value), 1.0), 0.0)
 
 
 def _plan_matches(plan: RiskPlan, *, uuid: str | None, identifier: str | None) -> bool:
