@@ -23,6 +23,11 @@ def test_normalize_partial_open_state_maps_to_partial() -> None:
     assert normalized.local_state == LOCAL_ORDER_STATE_PARTIAL
 
 
+def test_normalize_trade_state_maps_to_partial() -> None:
+    normalized = normalize_order_state(exchange_state="trade", event_name="ORDER_STATE", executed_volume=0.001)
+    assert normalized.local_state == LOCAL_ORDER_STATE_PARTIAL
+
+
 def test_cancel_reject_preserves_open_local_state() -> None:
     normalized = normalize_order_state(exchange_state="cancel_reject", event_name="CANCEL_RESULT", executed_volume=0.0)
     assert normalized.local_state == LOCAL_ORDER_STATE_OPEN

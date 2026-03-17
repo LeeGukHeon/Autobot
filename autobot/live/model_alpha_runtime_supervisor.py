@@ -16,6 +16,7 @@ from autobot.execution.order_supervisor import (
 from autobot.live.identifier import new_protective_order_identifier
 from autobot.live.order_state import normalize_order_state
 
+from .admissibility import extract_min_total
 from .state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 from .trade_journal import cancel_pending_entry_journal, rebind_pending_entry_journal_order
 
@@ -258,11 +259,14 @@ def _resolve_market_rules(
     tick_size = _safe_optional_float((instrument_payload or {}).get("tick_size"))
     if tick_size is None or tick_size <= 0.0:
         return None
-    market_payload = dict((chance_payload or {}).get("market") or {}) if isinstance(chance_payload, dict) else {}
-    side_payload = dict(market_payload.get(side) or {}) if isinstance(market_payload.get(side), dict) else {}
-    min_total = _safe_optional_float(side_payload.get("min_total"))
-    if min_total is None:
-        min_total = 0.0
+    try:
+        min_total = extract_min_total(
+            chance_payload if isinstance(chance_payload, dict) else {},
+            side=side,
+            market=market,
+        )
+    except Exception:
+        return None
     return {
         "tick_size": float(tick_size),
         "min_total": max(float(min_total), 0.0),
@@ -353,7 +357,10 @@ def _abort_open_order(
             "policy_diagnostics": dict(policy_diagnostics),
         },
     )
-    if str(order.get("side") or "").strip().lower() == "bid":
+    if (
+        str(order.get("side") or "").strip().lower() == "bid"
+        and _safe_float(order.get("volume_filled"), default=0.0) <= 0.0
+    ):
         cancel_pending_entry_journal(
             store=store,
             market=str(order.get("market") or ""),

@@ -147,7 +147,7 @@ def normalize_order_state(
             exchange_state=raw_state,
             event_name=event,
         )
-    if raw_state == "partial":
+    if raw_state in {"partial", "trade"}:
         return NormalizedOrderState(
             local_state=LOCAL_ORDER_STATE_PARTIAL,
             exchange_state=raw_state,

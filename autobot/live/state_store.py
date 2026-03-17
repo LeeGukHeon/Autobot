@@ -1003,6 +1003,36 @@ class LiveStateStore:
         rows = self._conn.execute(query, tuple(params)).fetchall()
         return [_row_to_order_lineage(row) for row in rows]
 
+    def latest_order_lineage_for_identifier(self, *, identifier: str) -> dict[str, Any] | None:
+        identifier_value = str(identifier or "").strip()
+        if not identifier_value:
+            return None
+        row = self._conn.execute(
+            """
+            SELECT * FROM order_lineage
+            WHERE new_identifier = ? OR prev_identifier = ?
+            ORDER BY edge_id DESC
+            LIMIT 1
+            """,
+            (identifier_value, identifier_value),
+        ).fetchone()
+        return _row_to_order_lineage(row) if row is not None else None
+
+    def latest_order_lineage_for_uuid(self, *, uuid: str) -> dict[str, Any] | None:
+        uuid_value = str(uuid or "").strip()
+        if not uuid_value:
+            return None
+        row = self._conn.execute(
+            """
+            SELECT * FROM order_lineage
+            WHERE new_uuid = ? OR prev_uuid = ?
+            ORDER BY edge_id DESC
+            LIMIT 1
+            """,
+            (uuid_value, uuid_value),
+        ).fetchone()
+        return _row_to_order_lineage(row) if row is not None else None
+
     def export_state(self) -> dict[str, Any]:
         return {
             "db_path": str(self._db_path),

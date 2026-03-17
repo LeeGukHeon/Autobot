@@ -368,20 +368,22 @@ def close_trade_journal_for_market(
     latest_done_exit = _resolve_exit_order_for_journal(
         store=store,
         market=market_value,
-        plan_id=_as_optional_str((existing or {}).get("plan_id")),
-        exit_order_uuid=_as_optional_str((existing or {}).get("exit_order_uuid")),
+        plan_id=_coalesce_str(resolved_plan, _as_optional_str((existing or {}).get("plan_id"))),
+        exit_order_uuid=_coalesce_str(
+            _as_optional_str(exit_order_uuid),
+            _as_optional_str((existing or {}).get("exit_order_uuid")),
+        ),
         min_updated_ts=min_exit_order_ts,
         target_exit_ts=_as_optional_int((existing or {}).get("exit_ts_ms")),
     )
-    if existing is None:
-        lookup_exit_uuid = _coalesce_str(
-            _as_optional_str(exit_order_uuid),
-            _as_optional_str((latest_done_exit or {}).get("uuid")),
-        )
-        if lookup_exit_uuid is not None:
-            existing = store.trade_journal_by_exit_order_uuid(exit_order_uuid=lookup_exit_uuid)
+    if existing is None and exit_order_uuid is not None:
+        existing = store.trade_journal_by_exit_order_uuid(exit_order_uuid=str(exit_order_uuid).strip())
     if existing is None:
         existing = _latest_matching_live_trade_journal(store=store, market=market_value, position=position)
+    if existing is None:
+        lookup_exit_uuid = _as_optional_str((latest_done_exit or {}).get("uuid"))
+        if lookup_exit_uuid is not None:
+            existing = store.trade_journal_by_exit_order_uuid(exit_order_uuid=lookup_exit_uuid)
     if existing is None:
         risk_plan = _risk_plan_for_close(store=store, market=market_value, plan_id=resolved_plan)
         fallback_intent_id = _as_optional_str((risk_plan or {}).get("source_intent_id"))
@@ -415,6 +417,22 @@ def close_trade_journal_for_market(
             }
     if existing is None:
         return None
+
+    min_exit_order_ts = _coalesce_int(
+        _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
+        _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
+    )
+    latest_done_exit = _resolve_exit_order_for_journal(
+        store=store,
+        market=market_value,
+        plan_id=_coalesce_str(resolved_plan, _as_optional_str((existing or {}).get("plan_id"))),
+        exit_order_uuid=_coalesce_str(
+            _as_optional_str(exit_order_uuid),
+            _as_optional_str((existing or {}).get("exit_order_uuid")),
+        ),
+        min_updated_ts=min_exit_order_ts,
+        target_exit_ts=_as_optional_int((existing or {}).get("exit_ts_ms")),
+    )
 
     entry_order = _resolve_entry_order_for_journal(
         store=store,
@@ -821,13 +839,14 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                 updated += 1
                 compacted += 1
                 continue
-            if (
-                status_value.strip().upper() == TRADE_JOURNAL_STATUS_PENDING
+            promote_entry_to_open = (
+                status_value.strip().upper() in {TRADE_JOURNAL_STATUS_PENDING, TRADE_JOURNAL_STATUS_CANCELLED}
                 and isinstance(entry_order, dict)
-                and str(entry_order.get("local_state") or "").strip().upper() == "DONE"
                 and _filled_qty_from_order(entry_order) not in (None, 0.0)
-            ):
+            )
+            if promote_entry_to_open:
                 status_value = TRADE_JOURNAL_STATUS_OPEN
+                exit_meta_payload = {}
             if (
                 status_value.strip().upper() == TRADE_JOURNAL_STATUS_PENDING
                 and isinstance(entry_order, dict)
@@ -852,7 +871,11 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     status=status_value,
                     entry_intent_id=entry_intent_id,
                     entry_order_uuid=_as_optional_str(row.get("entry_order_uuid")),
-                    exit_order_uuid=_as_optional_str(row.get("exit_order_uuid")),
+                    exit_order_uuid=(
+                        None
+                        if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN
+                        else _as_optional_str(row.get("exit_order_uuid"))
+                    ),
                     plan_id=_as_optional_str(row.get("plan_id")),
                     entry_submitted_ts_ms=_as_optional_int(row.get("entry_submitted_ts_ms")),
                     entry_filled_ts_ms=_coalesce_int(
@@ -867,20 +890,37 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                             _as_optional_int((entry_order or {}).get("updated_ts")),
                         )
                     ),
-                    entry_price=_as_optional_float(row.get("entry_price")),
+                    entry_price=(
+                        _coalesce_float(_filled_price_from_order(entry_order), _as_optional_float(row.get("entry_price")))
+                        if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN
+                        else _as_optional_float(row.get("entry_price"))
+                    ),
                     exit_price=_as_optional_float(row.get("exit_price")),
-                    qty=_as_optional_float(row.get("qty")),
-                    entry_notional_quote=_as_optional_float(row.get("entry_notional_quote")),
+                    qty=(
+                        _coalesce_float(_filled_qty_from_order(entry_order), _as_optional_float(row.get("qty")))
+                        if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN
+                        else _as_optional_float(row.get("qty"))
+                    ),
+                    entry_notional_quote=(
+                        _compute_open_entry_notional_quote(
+                            entry_order=entry_order,
+                            fallback_price=_as_optional_float(row.get("entry_price")),
+                            fallback_qty=_as_optional_float(row.get("qty")),
+                            fallback_notional=_as_optional_float(row.get("entry_notional_quote")),
+                        )
+                        if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN
+                        else _as_optional_float(row.get("entry_notional_quote"))
+                    ),
                     exit_notional_quote=_as_optional_float(row.get("exit_notional_quote")),
                     realized_pnl_quote=_as_optional_float(row.get("realized_pnl_quote")),
                     realized_pnl_pct=_as_optional_float(row.get("realized_pnl_pct")),
                     entry_reason_code=_as_optional_str(row.get("entry_reason_code")),
                     close_reason_code=_coalesce_str(
-                        _as_optional_str(row.get("close_reason_code")),
+                        None if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN else _as_optional_str(row.get("close_reason_code")),
                         _as_optional_str(exit_meta_payload.get("close_reason_code")),
                     ),
                     close_mode=_coalesce_str(
-                        _as_optional_str(row.get("close_mode")),
+                        None if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN else _as_optional_str(row.get("close_mode")),
                         _as_optional_str(exit_meta_payload.get("close_mode")),
                     ),
                     model_prob=_as_optional_float(row.get("model_prob")),
@@ -892,7 +932,11 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                     notional_multiplier=_as_optional_float(row.get("notional_multiplier")),
                     entry_meta_json=_json_dumps(entry_meta_summary),
                     exit_meta_json=_json_dumps(exit_meta_payload),
-                    updated_ts=_as_optional_int(row.get("updated_ts")) or 0,
+                    updated_ts=(
+                        _coalesce_int(_as_optional_int((entry_order or {}).get("updated_ts")), _as_optional_int(row.get("updated_ts")), 0)
+                        if status_value.strip().upper() == TRADE_JOURNAL_STATUS_OPEN
+                        else _as_optional_int(row.get("updated_ts")) or 0
+                    ),
                 )
             )
         compacted += 1
@@ -1011,10 +1055,11 @@ def _resolve_entry_order_for_journal(
     entry_intent_id: str | None = None,
     target_entry_ts: int | None = None,
 ) -> dict[str, Any] | None:
+    direct = None
     if entry_order_uuid:
         direct = next((item for item in store.list_orders(open_only=False) if str(item.get("uuid") or "") == str(entry_order_uuid)), None)
         if direct is not None and str(direct.get("side") or "").strip().lower() == "bid":
-            return direct
+            pass
     candidates: list[dict[str, Any]] = []
     for order in store.list_orders(open_only=False):
         if str(order.get("market") or "").strip().upper() != market:
@@ -1025,7 +1070,15 @@ def _resolve_entry_order_for_journal(
             continue
         candidates.append(order)
     if not candidates:
-        return None
+        return direct
+    aggregated = _aggregate_entry_order_candidates(
+        candidates=candidates,
+        preferred_order=direct,
+    )
+    if aggregated is not None:
+        return aggregated
+    if direct is not None and str(direct.get("side") or "").strip().lower() == "bid":
+        return direct
     if target_entry_ts is not None:
         return min(
             candidates,
@@ -1090,7 +1143,7 @@ def _resolve_exit_order_for_journal(
                 int(item.get("updated_ts") or 0),
             ),
         )
-    return min(pool, key=lambda item: int(item.get("updated_ts") or 0))
+    return max(pool, key=lambda item: int(item.get("updated_ts") or 0))
 
 
 def _latest_plan_for_market(*, store: LiveStateStore, market: str) -> dict[str, Any] | None:
@@ -1459,6 +1512,95 @@ def _filled_qty_from_order(order: dict[str, Any] | None) -> float | None:
     if not isinstance(order, dict):
         return None
     return _coalesce_float(_as_optional_float(order.get("volume_filled")), _as_optional_float(order.get("volume_req")))
+
+
+def _compute_open_entry_notional_quote(
+    *,
+    entry_order: dict[str, Any] | None,
+    fallback_price: float | None,
+    fallback_qty: float | None,
+    fallback_notional: float | None,
+) -> float | None:
+    if not isinstance(entry_order, dict):
+        return fallback_notional
+    executed_funds = _as_optional_float(entry_order.get("executed_funds"))
+    paid_fee = _as_optional_float(entry_order.get("paid_fee"))
+    if executed_funds is not None:
+        return float(executed_funds) + float(paid_fee or 0.0)
+    price = _coalesce_float(_filled_price_from_order(entry_order), fallback_price)
+    qty = _coalesce_float(_filled_qty_from_order(entry_order), fallback_qty)
+    if price is not None and qty is not None:
+        return float(price) * float(qty)
+    return fallback_notional
+
+
+def _aggregate_entry_order_candidates(
+    *,
+    candidates: list[dict[str, Any]],
+    preferred_order: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    filled_candidates = [
+        item
+        for item in candidates
+        if (_filled_qty_from_order(item) or 0.0) > 0.0
+    ]
+    if len(filled_candidates) <= 1:
+        return None
+    root_order_uuid = _coalesce_str(
+        _as_optional_str((preferred_order or {}).get("root_order_uuid")),
+        _as_optional_str((preferred_order or {}).get("uuid")),
+    )
+    if root_order_uuid is not None:
+        rooted = [
+            item
+            for item in filled_candidates
+            if _coalesce_str(_as_optional_str(item.get("root_order_uuid")), _as_optional_str(item.get("uuid"))) == root_order_uuid
+        ]
+        if rooted:
+            filled_candidates = rooted
+    total_filled_qty = sum(float(_filled_qty_from_order(item) or 0.0) for item in filled_candidates)
+    if total_filled_qty <= 0.0:
+        return None
+    total_executed_funds = 0.0
+    have_executed_funds = False
+    total_paid_fee = 0.0
+    have_paid_fee = False
+    for item in filled_candidates:
+        executed_funds = _as_optional_float(item.get("executed_funds"))
+        if executed_funds is not None:
+            total_executed_funds += float(executed_funds)
+            have_executed_funds = True
+        paid_fee = _as_optional_float(item.get("paid_fee"))
+        if paid_fee is not None:
+            total_paid_fee += float(paid_fee)
+            have_paid_fee = True
+    latest_order = max(
+        filled_candidates,
+        key=lambda item: (
+            int(item.get("updated_ts") or 0),
+            int(item.get("created_ts") or 0),
+            str(item.get("uuid") or ""),
+        ),
+    )
+    aggregated = dict(preferred_order or latest_order)
+    aggregated["volume_filled"] = float(total_filled_qty)
+    aggregated["executed_funds"] = float(total_executed_funds) if have_executed_funds else aggregated.get("executed_funds")
+    aggregated["paid_fee"] = float(total_paid_fee) if have_paid_fee else aggregated.get("paid_fee")
+    aggregated["created_ts"] = min(int(item.get("created_ts") or 0) for item in filled_candidates)
+    aggregated["updated_ts"] = max(int(item.get("updated_ts") or 0) for item in filled_candidates)
+    aggregated["state"] = str(latest_order.get("state") or aggregated.get("state") or "")
+    aggregated["local_state"] = str(latest_order.get("local_state") or aggregated.get("local_state") or "")
+    aggregated["last_event_name"] = _coalesce_str(
+        _as_optional_str(latest_order.get("last_event_name")),
+        _as_optional_str(aggregated.get("last_event_name")),
+    )
+    aggregated["event_source"] = _coalesce_str(
+        _as_optional_str(latest_order.get("event_source")),
+        _as_optional_str(aggregated.get("event_source")),
+    )
+    return aggregated
 
 
 def _extract_executed_funds_from_payload(payload: dict[str, Any] | None) -> float | None:

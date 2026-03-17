@@ -12,6 +12,7 @@ from .model_alpha_projection import find_latest_model_entry_intent
 from .model_risk_plan import build_model_derived_risk_records
 from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
+from .trade_journal import rebind_pending_entry_journal_order
 
 
 def apply_private_ws_event(
@@ -47,6 +48,11 @@ def _apply_my_order_event(
     if existing is None and not is_bot_identifier(identifier_value, prefix=identifier_prefix, bot_id=bot_id):
         return {"type": "ws_order_skip", "reason": "external_order", "uuid": event.uuid, "identifier": identifier_value}
 
+    lineage, previous_order = _recover_order_lineage_context(
+        store=store,
+        uuid=event.uuid,
+        identifier=identifier_value,
+    )
     intent_id = _as_optional_str(existing.get("intent_id")) if existing else None
     if not intent_id:
         intent_id = extract_intent_id_from_identifier(
@@ -54,6 +60,8 @@ def _apply_my_order_event(
             prefix=identifier_prefix,
             bot_id=bot_id,
         )
+    if not intent_id:
+        intent_id = _as_optional_str((lineage or {}).get("intent_id"))
     if not intent_id:
         intent_id = f"inferred-{event.uuid}"
     existing_intent = store.intent_by_id(intent_id=intent_id)
@@ -81,18 +89,44 @@ def _apply_my_order_event(
         volume_req=event.volume,
         volume_filled=float(event.executed_volume or 0.0),
         state=str(event.state or "wait").strip().lower(),
-        created_ts=int(existing.get("created_ts")) if existing and existing.get("created_ts") else int(event.ts_ms),
+        created_ts=(
+            int(existing.get("created_ts"))
+            if existing and existing.get("created_ts")
+            else int((previous_order or {}).get("created_ts") or event.ts_ms)
+        ),
         updated_ts=int(event.ts_ms),
         intent_id=intent_id,
-        tp_sl_link=_as_optional_str(existing.get("tp_sl_link")) if existing else None,
+        tp_sl_link=(
+            _as_optional_str(existing.get("tp_sl_link"))
+            if existing
+            else _as_optional_str((previous_order or {}).get("tp_sl_link"))
+        ),
         local_state=normalized.local_state,
         raw_exchange_state=normalized.exchange_state,
         last_event_name=normalized.event_name,
         event_source="private_ws",
-        replace_seq=int(existing.get("replace_seq") or 0) if existing else 0,
-        root_order_uuid=_as_optional_str(existing.get("root_order_uuid")) if existing else event.uuid,
-        prev_order_uuid=_as_optional_str(existing.get("prev_order_uuid")) if existing else None,
-        prev_order_identifier=_as_optional_str(existing.get("prev_order_identifier")) if existing else None,
+        replace_seq=(
+            int(existing.get("replace_seq") or 0)
+            if existing
+            else int((lineage or {}).get("replace_seq") or (previous_order or {}).get("replace_seq") or 0)
+        ),
+        root_order_uuid=(
+            _as_optional_str(existing.get("root_order_uuid"))
+            if existing
+            else _as_optional_str((previous_order or {}).get("root_order_uuid"))
+            or _as_optional_str((lineage or {}).get("prev_uuid"))
+            or event.uuid
+        ),
+        prev_order_uuid=(
+            _as_optional_str(existing.get("prev_order_uuid"))
+            if existing
+            else _as_optional_str((lineage or {}).get("prev_uuid"))
+        ),
+        prev_order_identifier=(
+            _as_optional_str(existing.get("prev_order_identifier"))
+            if existing
+            else _as_optional_str((lineage or {}).get("prev_identifier"))
+        ),
         executed_funds=executed_funds,
         paid_fee=_as_optional_float(raw.get("paid_fee") or raw.get("pf")),
         reserved_fee=_as_optional_float(raw.get("reserved_fee") or raw.get("rf")),
@@ -100,6 +134,18 @@ def _apply_my_order_event(
         exchange_payload_json=json.dumps(raw, ensure_ascii=False, sort_keys=True) if raw else "{}",
     )
     store.upsert_order(order_record)
+    if (
+        previous_order is not None
+        and str(event.side or "").strip().lower() == "bid"
+        and _as_optional_str((lineage or {}).get("prev_uuid")) != str(event.uuid)
+    ):
+        rebind_pending_entry_journal_order(
+            store=store,
+            entry_intent_id=intent_id,
+            previous_entry_order_uuid=_as_optional_str((lineage or {}).get("prev_uuid")),
+            new_entry_order_uuid=event.uuid,
+            ts_ms=int(event.ts_ms),
+        )
 
     status = "UPDATED_FROM_WS"
     if existing is None and existing_intent is None:
@@ -127,11 +173,19 @@ def _apply_my_order_event(
     store.upsert_intent(
         IntentRecord(
             intent_id=intent_id,
-            ts_ms=int(event.ts_ms),
-            market=event.market,
-            side=str(event.side or "bid"),
-            price=event.price,
-            volume=event.volume,
+            ts_ms=_coalesce_int(_as_optional_int((existing_intent or {}).get("ts_ms")), int(event.ts_ms)) or int(event.ts_ms),
+            market=str((existing_intent or {}).get("market") or event.market or "").strip().upper(),
+            side=str(event.side or (existing_intent or {}).get("side") or "bid"),
+            price=(
+                event.price
+                if event.price is not None
+                else _as_optional_float((existing_intent or {}).get("price"))
+            ),
+            volume=(
+                event.volume
+                if event.volume is not None
+                else _as_optional_float((existing_intent or {}).get("volume"))
+            ),
             reason_code=_as_optional_str(existing_intent.get("reason_code")) if existing_intent is not None else "PRIVATE_WS_ORDER_EVENT",
             meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
             status=status,
@@ -256,6 +310,31 @@ def _as_optional_str(value: object) -> str | None:
     return text or None
 
 
+def _recover_order_lineage_context(
+    *,
+    store: LiveStateStore,
+    uuid: str | None,
+    identifier: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    lineage = (
+        store.latest_order_lineage_for_identifier(identifier=identifier)
+        if _as_optional_str(identifier) is not None
+        else None
+    )
+    if lineage is None and _as_optional_str(uuid) is not None:
+        lineage = store.latest_order_lineage_for_uuid(uuid=str(uuid))
+    if lineage is None:
+        return None, None
+    previous_order = None
+    prev_uuid = _as_optional_str(lineage.get("prev_uuid"))
+    prev_identifier = _as_optional_str(lineage.get("prev_identifier"))
+    if prev_uuid is not None:
+        previous_order = store.order_by_uuid(uuid=prev_uuid)
+    if previous_order is None and prev_identifier is not None:
+        previous_order = store.order_by_identifier(identifier=prev_identifier)
+    return lineage, previous_order
+
+
 def _as_optional_float(value: object) -> float | None:
     if value is None:
         return None
@@ -263,3 +342,20 @@ def _as_optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coalesce_int(*values: int | None) -> int | None:
+    for value in values:
+        resolved = _as_optional_int(value)
+        if resolved is not None:
+            return resolved
+    return None

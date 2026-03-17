@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from autobot.live.reconcile import reconcile_exchange_snapshot
-from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord, TradeJournalRecord
+from autobot.live.state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord, PositionRecord, RiskPlanRecord, TradeJournalRecord
+from autobot.live.trade_journal import record_entry_submission
 
 
 def test_reconcile_halts_on_unknown_external_open_order(tmp_path: Path) -> None:
@@ -507,6 +508,142 @@ def test_reconcile_infers_intent_from_exchange_bot_order(tmp_path: Path) -> None
     assert order is not None
     assert str(order["intent_id"]).startswith("inferred-bot-2")
     assert any(str(item["intent_id"]).startswith("inferred-bot-2") for item in intents)
+
+
+def test_reconcile_recovers_replaced_entry_intent_from_lineage(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    replacement_identifier = "AUTOBOT-autobot-001-SUPREP-intent-entry-1-1700000001000"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100000000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "model_prob": 0.84,
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1800000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                },
+                            }
+                        },
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-1"},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        record_entry_submission(
+            store=store,
+            market="KRW-BTC",
+            intent_id="intent-entry",
+            requested_price=100000000.0,
+            requested_volume=0.01,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={
+                "strategy": {
+                    "meta": {
+                        "model_prob": 0.84,
+                        "model_exit_plan": {
+                            "source": "model_alpha_v1",
+                            "mode": "hold",
+                            "hold_bars": 6,
+                            "interval_ms": 300000,
+                            "timeout_delta_ms": 1800000,
+                            "tp_pct": 0.02,
+                            "sl_pct": 0.01,
+                            "trailing_pct": 0.015,
+                        },
+                    }
+                },
+                "submit_result": {"accepted": True, "order_uuid": "entry-order-1"},
+            },
+            ts_ms=1_000,
+            order_uuid="entry-order-1",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-1",
+                identifier="AUTOBOT-autobot-001-intent-entry-1000-abc123",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="cancel",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-entry",
+                local_state="CANCELLED",
+                raw_exchange_state="cancel",
+                last_event_name="ORDER_REPLACED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="entry-order-1",
+            )
+        )
+        store.append_order_lineage(
+            OrderLineageRecord(
+                ts_ms=1_100,
+                event_source="live_order_supervisor",
+                intent_id="intent-entry",
+                prev_uuid="entry-order-1",
+                prev_identifier="AUTOBOT-autobot-001-intent-entry-1000-abc123",
+                new_uuid=None,
+                new_identifier=replacement_identifier,
+                replace_seq=1,
+            )
+        )
+
+        reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[
+                {
+                    "uuid": "entry-order-2",
+                    "identifier": replacement_identifier,
+                    "market": "KRW-BTC",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "price": "100000000",
+                    "volume": "0.01",
+                    "state": "wait",
+                }
+            ],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5_000,
+        )
+        order = store.order_by_uuid(uuid="entry-order-2")
+        journal = store.trade_journal_by_entry_intent(entry_intent_id="intent-entry")
+        intents = store.list_intents()
+
+    assert order is not None
+    assert order["intent_id"] == "intent-entry"
+    assert order["replace_seq"] == 1
+    assert order["prev_order_uuid"] == "entry-order-1"
+    assert journal is not None
+    assert journal["entry_order_uuid"] == "entry-order-2"
+    assert not any(str(item["intent_id"]).startswith("inferred-entry-order-2") for item in intents)
 
 
 def test_reconcile_ignores_unknown_dust_position_below_exchange_min_total(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ import websockets
 from ..auth_jwt import UpbitJwtSigner
 from ..config import UpbitCredentials, UpbitWebSocketSettings
 from .models import MyAssetEvent, MyOrderEvent
-from .parsers import decode_ws_message, parse_private_event
+from .parsers import decode_ws_message, parse_private_events
 from .payloads import build_private_subscribe_payload
 from .ws_rate_limiter import WebSocketRateLimiter
 
@@ -151,16 +151,16 @@ class UpbitWebSocketPrivateClient:
             except json.JSONDecodeError:
                 continue
 
-            event = parse_private_event(payload)
-            if event is None:
+            events = parse_private_events(payload)
+            if not events:
                 continue
-
-            now_ms = int(time.time() * 1000)
-            self._stats["received_events"] = int(self._stats["received_events"]) + 1
-            self._stats["last_event_ts_ms"] = int(event.ts_ms)
-            self._stats["last_event_latency_ms"] = max(now_ms - int(event.ts_ms), 0)
             last_received = time.monotonic()
-            await queue.put(event)
+            for event in events:
+                now_ms = int(time.time() * 1000)
+                self._stats["received_events"] = int(self._stats["received_events"]) + 1
+                self._stats["last_event_ts_ms"] = int(event.ts_ms)
+                self._stats["last_event_latency_ms"] = max(now_ms - int(event.ts_ms), 0)
+                await queue.put(event)
 
     async def _send_json(self, websocket: Any, payload: Any) -> None:
         await self._send_limiter.acquire()

@@ -7,7 +7,7 @@ from typing import Any
 from .identifier import extract_intent_id_from_identifier, extract_run_token_from_identifier, is_bot_identifier
 from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord
-from .trade_journal import recompute_trade_journal_records
+from .trade_journal import recompute_trade_journal_records, rebind_pending_entry_journal_order
 
 
 def backfill_recent_bot_closed_orders(
@@ -72,11 +72,14 @@ def backfill_recent_bot_closed_orders(
         if not (tracked_identifier or tracked_order or tracked_plan):
             skipped += 1
             continue
+        lineage, previous_order = _recover_order_lineage_context(store=store, uuid=uuid, identifier=identifier)
         intent_id = _as_optional_str((existing or {}).get("intent_id")) or extract_intent_id_from_identifier(
             identifier,
             prefix=identifier_prefix,
             bot_id=bot_id,
         )
+        if intent_id is None:
+            intent_id = _as_optional_str((lineage or {}).get("intent_id"))
         if intent_id is None and uuid is not None:
             intent_id = f"inferred-{uuid}"
         existing_intent = store.intent_by_id(intent_id=intent_id) if intent_id else None
@@ -142,15 +145,34 @@ def backfill_recent_bot_closed_orders(
                     fallback_ts=now_ts_ms,
                 ),
                 intent_id=intent_id,
-                tp_sl_link=_as_optional_str((existing or {}).get("tp_sl_link")),
+                tp_sl_link=_coalesce_str(
+                    _as_optional_str((existing or {}).get("tp_sl_link")),
+                    _as_optional_str((previous_order or {}).get("tp_sl_link")),
+                ),
                 local_state=normalized.local_state,
                 raw_exchange_state=normalized.exchange_state,
                 last_event_name=normalized.event_name,
                 event_source="closed_orders_backfill",
-                replace_seq=int((existing or {}).get("replace_seq") or 0),
-                root_order_uuid=_as_optional_str((existing or {}).get("root_order_uuid")) or uuid,
-                prev_order_uuid=_as_optional_str((existing or {}).get("prev_order_uuid")),
-                prev_order_identifier=_as_optional_str((existing or {}).get("prev_order_identifier")),
+                replace_seq=int(
+                    (existing or {}).get("replace_seq")
+                    or (lineage or {}).get("replace_seq")
+                    or (previous_order or {}).get("replace_seq")
+                    or 0
+                ),
+                root_order_uuid=(
+                    _as_optional_str((existing or {}).get("root_order_uuid"))
+                    or _as_optional_str((previous_order or {}).get("root_order_uuid"))
+                    or _as_optional_str((lineage or {}).get("prev_uuid"))
+                    or uuid
+                ),
+                prev_order_uuid=_coalesce_str(
+                    _as_optional_str((existing or {}).get("prev_order_uuid")),
+                    _as_optional_str((lineage or {}).get("prev_uuid")),
+                ),
+                prev_order_identifier=_coalesce_str(
+                    _as_optional_str((existing or {}).get("prev_order_identifier")),
+                    _as_optional_str((lineage or {}).get("prev_identifier")),
+                ),
                 executed_funds=executed_funds,
                 paid_fee=_as_optional_float(item.get("paid_fee")),
                 reserved_fee=_as_optional_float(item.get("reserved_fee")),
@@ -158,6 +180,22 @@ def backfill_recent_bot_closed_orders(
                 exchange_payload_json=json.dumps(item, ensure_ascii=False, sort_keys=True),
             )
         )
+        if (
+            uuid is not None
+            and previous_order is not None
+            and str(item.get("side") or "").strip().lower() == "bid"
+            and _as_optional_str((lineage or {}).get("prev_uuid")) != uuid
+        ):
+            rebind_pending_entry_journal_order(
+                store=store,
+                entry_intent_id=intent_id,
+                previous_entry_order_uuid=_as_optional_str((lineage or {}).get("prev_uuid")),
+                new_entry_order_uuid=uuid,
+                ts_ms=_parse_created_ts(
+                    item.get("done_at") or item.get("updated_at") or item.get("created_at"),
+                    fallback_ts=now_ts_ms,
+                ),
+            )
         upserted += 1
 
     recompute = recompute_trade_journal_records(store=store) if upserted > 0 else None
@@ -207,3 +245,36 @@ def _as_optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coalesce_str(*values: str | None) -> str | None:
+    for value in values:
+        resolved = _as_optional_str(value)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _recover_order_lineage_context(
+    *,
+    store: LiveStateStore,
+    uuid: str | None,
+    identifier: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    lineage = (
+        store.latest_order_lineage_for_identifier(identifier=identifier)
+        if _as_optional_str(identifier) is not None
+        else None
+    )
+    if lineage is None and _as_optional_str(uuid) is not None:
+        lineage = store.latest_order_lineage_for_uuid(uuid=str(uuid))
+    if lineage is None:
+        return None, None
+    previous_order = None
+    prev_uuid = _as_optional_str(lineage.get("prev_uuid"))
+    prev_identifier = _as_optional_str(lineage.get("prev_identifier"))
+    if prev_uuid is not None:
+        previous_order = store.order_by_uuid(uuid=prev_uuid)
+    if previous_order is None and prev_identifier is not None:
+        previous_order = store.order_by_identifier(identifier=prev_identifier)
+    return lineage, previous_order

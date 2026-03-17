@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
-from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord
+from autobot.live.model_alpha_projection import find_latest_model_entry_intent
+from autobot.live.state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord
+from autobot.live.trade_journal import record_entry_submission
 from autobot.live.ws_handlers import apply_private_ws_event
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
@@ -152,6 +154,379 @@ def test_ws_order_event_preserves_existing_intent_execution_meta(tmp_path: Path)
     assert intent["meta"]["strategy"]["meta"]["model_prob"] == 0.81
     assert intent["meta"]["source"] == "private_ws"
     assert intent["meta"]["order_uuid"] == "ws-order-1"
+    assert intent["ts_ms"] == 1699999999000
+
+
+def test_ws_order_event_maps_upbit_trade_state_to_partial(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-trade-state",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100000000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps({}, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="ws-order-trade-state",
+                identifier="AUTOBOT-autobot-001-intent-trade-state-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-trade-state",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="ws-order-trade-state",
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=2_000,
+                uuid="ws-order-trade-state",
+                identifier="AUTOBOT-autobot-001-intent-trade-state-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="trade",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.004,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        order = store.order_by_uuid(uuid="ws-order-trade-state")
+
+    assert action["type"] == "ws_order_upsert"
+    assert order is not None
+    assert order["state"] == "trade"
+    assert order["local_state"] == "PARTIAL"
+    assert order["volume_filled"] == 0.004
+
+
+def test_ws_order_event_treats_two_partial_fills_with_same_uuid_as_same_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-double-partial",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100000000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps({}, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="ws-order-double-partial",
+                identifier="AUTOBOT-autobot-001-intent-double-partial-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-double-partial",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="ws-order-double-partial",
+            )
+        )
+
+        first_action = apply_private_ws_event(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=2_000,
+                uuid="ws-order-double-partial",
+                identifier="AUTOBOT-autobot-001-intent-double-partial-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="trade",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.004,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        second_action = apply_private_ws_event(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=3_000,
+                uuid="ws-order-double-partial",
+                identifier="AUTOBOT-autobot-001-intent-double-partial-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="trade",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.007,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        orders = store.list_orders(open_only=False)
+        order = store.order_by_uuid(uuid="ws-order-double-partial")
+        intent = store.intent_by_id(intent_id="intent-double-partial")
+
+    assert first_action["type"] == "ws_order_upsert"
+    assert second_action["type"] == "ws_order_upsert"
+    assert len(orders) == 1
+    assert order is not None
+    assert order["uuid"] == "ws-order-double-partial"
+    assert order["local_state"] == "PARTIAL"
+    assert order["volume_filled"] == 0.007
+    assert order["updated_ts"] == 3_000
+    assert intent is not None
+    assert intent["intent_id"] == "intent-double-partial"
+    assert intent["status"] == "UPDATED_FROM_WS"
+
+
+def test_ws_order_event_preserves_existing_intent_price_and_volume_when_event_fields_are_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-keep-fields",
+                ts_ms=1699999999000,
+                market="KRW-BTC",
+                side="bid",
+                price=100000000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "execution": {"requested_price": 100000000.0},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="ws-order-keep-fields",
+                identifier="AUTOBOT-autobot-001-intent-keep-fields-1-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1699999999000,
+                updated_ts=1699999999000,
+                intent_id="intent-keep-fields",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="ws-order-keep-fields",
+            )
+        )
+
+        apply_private_ws_event(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=1700000000000,
+                uuid="ws-order-keep-fields",
+                identifier="AUTOBOT-autobot-001-intent-keep-fields-1-a",
+                market="KRW-BTC",
+                side=None,
+                ord_type="limit",
+                state="wait",
+                price=None,
+                volume=None,
+                executed_volume=0.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        intent = store.intent_by_id(intent_id="intent-keep-fields")
+
+    assert intent is not None
+    assert intent["market"] == "KRW-BTC"
+    assert intent["side"] == "bid"
+    assert intent["price"] == 100000000.0
+    assert intent["volume"] == 0.01
+
+
+def test_ws_order_event_recovers_replaced_entry_intent_from_lineage(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    replacement_identifier = "AUTOBOT-autobot-001-SUPREP-intent-entry-1-1700000001000"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100000000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "model_prob": 0.84,
+                                "model_exit_plan": {
+                                    "source": "model_alpha_v1",
+                                    "mode": "hold",
+                                    "hold_bars": 6,
+                                    "interval_ms": 300000,
+                                    "timeout_delta_ms": 1800000,
+                                    "tp_pct": 0.02,
+                                    "sl_pct": 0.01,
+                                    "trailing_pct": 0.015,
+                                },
+                            }
+                        },
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-1"},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        record_entry_submission(
+            store=store,
+            market="KRW-BTC",
+            intent_id="intent-entry",
+            requested_price=100000000.0,
+            requested_volume=0.01,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={
+                "strategy": {
+                    "meta": {
+                        "model_prob": 0.84,
+                        "model_exit_plan": {
+                            "source": "model_alpha_v1",
+                            "mode": "hold",
+                            "hold_bars": 6,
+                            "interval_ms": 300000,
+                            "timeout_delta_ms": 1800000,
+                            "tp_pct": 0.02,
+                            "sl_pct": 0.01,
+                            "trailing_pct": 0.015,
+                        },
+                    }
+                },
+                "submit_result": {"accepted": True, "order_uuid": "entry-order-1"},
+            },
+            ts_ms=1_000,
+            order_uuid="entry-order-1",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-1",
+                identifier="AUTOBOT-autobot-001-intent-entry-1000-abc123",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="cancel",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-entry",
+                local_state="CANCELLED",
+                raw_exchange_state="cancel",
+                last_event_name="ORDER_REPLACED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="entry-order-1",
+            )
+        )
+        store.append_order_lineage(
+            OrderLineageRecord(
+                ts_ms=1_100,
+                event_source="live_order_supervisor",
+                intent_id="intent-entry",
+                prev_uuid="entry-order-1",
+                prev_identifier="AUTOBOT-autobot-001-intent-entry-1000-abc123",
+                new_uuid=None,
+                new_identifier=replacement_identifier,
+                replace_seq=1,
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=1700000002000,
+                uuid="entry-order-2",
+                identifier=replacement_identifier,
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="done",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.01,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        order = store.order_by_uuid(uuid="entry-order-2")
+        journal = store.trade_journal_by_entry_intent(entry_intent_id="intent-entry")
+        entry_intent = find_latest_model_entry_intent(
+            store=store,
+            market="KRW-BTC",
+            position={"market": "KRW-BTC", "base_amount": 0.01, "avg_entry_price": 100000000.0},
+        )
+        intents = store.list_intents()
+
+    assert action["type"] == "ws_order_upsert"
+    assert action["intent_id"] == "intent-entry"
+    assert order is not None
+    assert order["intent_id"] == "intent-entry"
+    assert order["replace_seq"] == 1
+    assert order["prev_order_uuid"] == "entry-order-1"
+    assert journal is not None
+    assert journal["entry_order_uuid"] == "entry-order-2"
+    assert entry_intent is not None
+    assert entry_intent["intent_id"] == "intent-entry"
+    assert entry_intent["order_uuid"] == "entry-order-2"
+    assert not any(str(item["intent_id"]).startswith("inferred-entry-order-2") for item in intents)
 
 
 def test_ws_asset_event_upserts_and_deletes_position(tmp_path: Path) -> None:

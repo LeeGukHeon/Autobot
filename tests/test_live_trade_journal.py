@@ -194,6 +194,160 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
     assert row["exit_meta"]["entry_realized_slippage_bps"] == pytest.approx(20.04008016032014)
 
 
+def test_trade_journal_aggregates_partial_entry_across_replaced_order_chain(tmp_path) -> None:
+    meta_payload = {
+        "strategy": {
+            "meta": {
+                "model_prob": 0.91,
+                "selection_policy_mode": "rank_effective_quantile",
+                "notional_multiplier": 1.0,
+                "trade_action": {
+                    "recommended_action": "risk",
+                    "expected_edge": 0.0123,
+                    "expected_downside_deviation": 0.0045,
+                },
+            }
+        },
+        "admissibility": {
+            "snapshot": {"bid_fee": 0.0005, "ask_fee": 0.0005},
+            "decision": {"expected_net_edge_bps": 98.7},
+        },
+        "execution": {"initial_ref_price": 99.8, "requested_price": 100.0},
+        "submit_result": {"accepted": True, "order_uuid": "entry-order-old"},
+    }
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-chain-1",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100.0,
+                volume=1.0,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(meta_payload, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        record_entry_submission(
+            store=store,
+            market="KRW-BTC",
+            intent_id="intent-chain-1",
+            requested_price=100.0,
+            requested_volume=1.0,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload=meta_payload,
+            ts_ms=1_000,
+            order_uuid="entry-order-old",
+        )
+        rebind_pending_entry_journal_order(
+            store=store,
+            entry_intent_id="intent-chain-1",
+            previous_entry_order_uuid="entry-order-old",
+            new_entry_order_uuid="entry-order-new",
+            ts_ms=1_500,
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-old",
+                identifier="AUTOBOT-entry-chain-old",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=1.0,
+                volume_filled=0.4,
+                state="cancel",
+                created_ts=1_000,
+                updated_ts=1_500,
+                intent_id="intent-chain-1",
+                local_state="CANCELLED",
+                raw_exchange_state="cancel",
+                last_event_name="ORDER_REPLACED",
+                event_source="test",
+                root_order_uuid="entry-order-old",
+                executed_funds=40.0,
+                paid_fee=0.02,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-new",
+                identifier="AUTOBOT-entry-chain-new",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100.0,
+                volume_req=0.6,
+                volume_filled=0.6,
+                state="done",
+                created_ts=1_500,
+                updated_ts=1_800,
+                intent_id="intent-chain-1",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                replace_seq=1,
+                root_order_uuid="entry-order-old",
+                prev_order_uuid="entry-order-old",
+                executed_funds=60.0,
+                paid_fee=0.03,
+            )
+        )
+        activate_trade_journal_for_position(
+            store=store,
+            market="KRW-BTC",
+            position={"market": "KRW-BTC", "base_amount": 1.0, "avg_entry_price": 100.0, "updated_ts": 1_900},
+            ts_ms=1_900,
+            entry_intent={"intent_id": "intent-chain-1", "created_ts": 1_000, "order_uuid": "entry-order-new"},
+            plan_id="plan-chain-1",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-chain-1",
+                identifier="AUTOBOT-exit-chain-1",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                price=103.0,
+                volume_req=1.0,
+                volume_filled=1.0,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_100,
+                intent_id="exit-intent-chain-1",
+                tp_sl_link="plan-chain-1",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-chain-1",
+                executed_funds=103.0,
+                paid_fee=0.0515,
+            )
+        )
+
+        close_trade_journal_for_market(
+            store=store,
+            market="KRW-BTC",
+            position={"market": "KRW-BTC", "base_amount": 1.0, "avg_entry_price": 100.0, "updated_ts": 1_900},
+            ts_ms=2_200,
+            plan_id="plan-chain-1",
+        )
+        row = store.trade_journal_by_entry_intent(entry_intent_id="intent-chain-1")
+
+    assert row is not None
+    assert row["status"] == "CLOSED"
+    assert row["entry_order_uuid"] == "entry-order-new"
+    assert row["qty"] == pytest.approx(1.0)
+    assert row["entry_notional_quote"] == pytest.approx(100.05)
+    assert row["exit_notional_quote"] == pytest.approx(102.9485)
+    assert row["realized_pnl_quote"] == pytest.approx(2.8985)
+    assert row["realized_pnl_pct"] == pytest.approx(2.8970514742628906)
+
+
 def test_backfill_order_execution_details_updates_done_order_settlement_fields(tmp_path) -> None:
     class _Client:
         def order(self, *, uuid=None, identifier=None):  # noqa: ANN001, ANN201
@@ -441,6 +595,383 @@ def test_close_trade_journal_reuses_matching_open_row_before_importing_position_
     assert rows[0]["exit_meta"]["close_verified"] is False
     assert rows[0]["exit_meta"]["close_verification_status"] == "unverified_position_sync"
     assert rows[0]["exit_meta"]["observed_exit_price"] == 7.73
+
+
+def test_close_trade_journal_prefers_matching_plan_exit_order_when_importing_without_existing_journal(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-plan",
+                identifier="AUTOBOT-entry-plan",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=135.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-plan",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-plan",
+                executed_funds=5535.0,
+                paid_fee=2.7675,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-old",
+                identifier="AUTOBOT-RISK-plan-old",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=136.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_100,
+                intent_id="inferred-exit-old",
+                tp_sl_link="plan-old",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-old",
+                executed_funds=5576.0,
+                paid_fee=2.788,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-new",
+                identifier="AUTOBOT-RISK-plan-new",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=137.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=3_000,
+                updated_ts=3_100,
+                intent_id="inferred-exit-new",
+                tp_sl_link="plan-new",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-new",
+                executed_funds=5617.0,
+                paid_fee=2.8085,
+            )
+        )
+
+        journal_id = close_trade_journal_for_market(
+            store=store,
+            market="KRW-DOGE",
+            position={"market": "KRW-DOGE", "base_amount": 41.0, "avg_entry_price": 135.0, "updated_ts": 3_100},
+            ts_ms=3_200,
+            plan_id="plan-new",
+        )
+        row = store.trade_journal_by_id(journal_id=journal_id or "")
+
+    assert journal_id == "imported-KRW-DOGE-3200"
+    assert row is not None
+    assert row["plan_id"] == "plan-new"
+    assert row["exit_order_uuid"] == "exit-order-new"
+    assert row["close_mode"] == "managed_exit_order"
+    assert row["exit_meta"]["close_verified"] is True
+
+
+def test_close_trade_journal_prefers_explicit_exit_order_uuid_without_existing_journal(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-explicit",
+                identifier="AUTOBOT-entry-explicit",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=135.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-explicit",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-explicit",
+                executed_funds=5535.0,
+                paid_fee=2.7675,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-other",
+                identifier="AUTOBOT-RISK-other",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=136.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_100,
+                intent_id="inferred-exit-other",
+                tp_sl_link="plan-other",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-other",
+                executed_funds=5576.0,
+                paid_fee=2.788,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-explicit",
+                identifier="AUTOBOT-RISK-explicit",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=137.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=3_000,
+                updated_ts=3_100,
+                intent_id="inferred-exit-explicit",
+                tp_sl_link="plan-explicit",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-explicit",
+                executed_funds=5617.0,
+                paid_fee=2.8085,
+            )
+        )
+
+        journal_id = close_trade_journal_for_market(
+            store=store,
+            market="KRW-DOGE",
+            position={"market": "KRW-DOGE", "base_amount": 41.0, "avg_entry_price": 135.0, "updated_ts": 3_100},
+            ts_ms=3_200,
+            exit_order_uuid="exit-order-explicit",
+        )
+        row = store.trade_journal_by_id(journal_id=journal_id or "")
+
+    assert journal_id == "imported-KRW-DOGE-3200"
+    assert row is not None
+    assert row["exit_order_uuid"] == "exit-order-explicit"
+    assert row["close_mode"] == "managed_exit_order"
+    assert row["exit_meta"]["close_verified"] is True
+
+
+def test_close_trade_journal_prefers_most_recent_done_exit_when_no_target_exit_ts(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="entry-order-recent-exit",
+                identifier="AUTOBOT-entry-recent-exit",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=135.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=1_000,
+                updated_ts=1_100,
+                intent_id="intent-recent-exit",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="entry-order-recent-exit",
+                executed_funds=5535.0,
+                paid_fee=2.7675,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-recent-exit",
+                market="KRW-DOGE",
+                status="OPEN",
+                entry_intent_id="intent-recent-exit",
+                entry_order_uuid="entry-order-recent-exit",
+                exit_order_uuid=None,
+                plan_id=None,
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                entry_price=135.0,
+                qty=41.0,
+                entry_notional_quote=5537.7675,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                updated_ts=1_100,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-earlier",
+                identifier="AUTOBOT-RISK-earlier",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=136.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_100,
+                intent_id="inferred-exit-earlier",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-earlier",
+                executed_funds=5576.0,
+                paid_fee=2.788,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-latest",
+                identifier="AUTOBOT-RISK-latest",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=137.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=3_000,
+                updated_ts=3_100,
+                intent_id="inferred-exit-latest",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-latest",
+                executed_funds=5617.0,
+                paid_fee=2.8085,
+            )
+        )
+
+        journal_id = close_trade_journal_for_market(
+            store=store,
+            market="KRW-DOGE",
+            position={"market": "KRW-DOGE", "base_amount": 41.0, "avg_entry_price": 135.0, "updated_ts": 3_100},
+            ts_ms=3_200,
+        )
+        row = store.trade_journal_by_id(journal_id=journal_id or "")
+
+    assert journal_id == "journal-recent-exit"
+    assert row is not None
+    assert row["exit_order_uuid"] == "exit-order-latest"
+    assert row["exit_ts_ms"] == 3_100
+    assert row["exit_meta"]["close_verified"] is True
+
+
+def test_close_trade_journal_prefers_matching_open_row_over_historical_closed_row_from_other_exit(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-open-current",
+                market="KRW-DOGE",
+                status="OPEN",
+                entry_intent_id="intent-current",
+                entry_order_uuid="entry-order-current",
+                exit_order_uuid=None,
+                plan_id=None,
+                entry_submitted_ts_ms=5_000,
+                entry_filled_ts_ms=5_100,
+                entry_price=140.0,
+                qty=40.0,
+                entry_notional_quote=5600.0,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                updated_ts=5_100,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-closed-old",
+                market="KRW-DOGE",
+                status="CLOSED",
+                entry_intent_id="intent-old",
+                entry_order_uuid="entry-order-old",
+                exit_order_uuid="exit-order-old",
+                plan_id=None,
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=2_100,
+                entry_price=135.0,
+                exit_price=136.0,
+                qty=41.0,
+                entry_notional_quote=5537.7675,
+                exit_notional_quote=5573.212,
+                realized_pnl_quote=35.4445,
+                realized_pnl_pct=0.64,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="ORDER_STATE",
+                close_mode="done_ask_order",
+                updated_ts=2_100,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-old",
+                identifier="AUTOBOT-RISK-old",
+                market="KRW-DOGE",
+                side="ask",
+                ord_type="limit",
+                price=136.0,
+                volume_req=41.0,
+                volume_filled=41.0,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_100,
+                intent_id="inferred-exit-old",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-old",
+                executed_funds=5576.0,
+                paid_fee=2.788,
+            )
+        )
+
+        journal_id = close_trade_journal_for_market(
+            store=store,
+            market="KRW-DOGE",
+            position={"market": "KRW-DOGE", "base_amount": 40.0, "avg_entry_price": 140.0, "updated_ts": 6_000},
+            ts_ms=6_000,
+            exit_price=141.0,
+        )
+        open_row = store.trade_journal_by_id(journal_id="journal-open-current")
+        closed_row = store.trade_journal_by_id(journal_id="journal-closed-old")
+
+    assert journal_id == "journal-open-current"
+    assert open_row is not None
+    assert open_row["status"] == "CLOSED"
+    assert open_row["exit_order_uuid"] is None
+    assert open_row["exit_meta"]["close_verified"] is False
+    assert open_row["exit_meta"]["close_verification_status"] == "unverified_position_sync"
+    assert open_row["exit_meta"]["observed_exit_price"] == 141.0
+    assert closed_row is not None
+    assert closed_row["journal_id"] == "journal-closed-old"
+    assert closed_row["exit_order_uuid"] == "exit-order-old"
 
 
 def test_recompute_trade_journal_records_clears_unverified_close_pnl(tmp_path) -> None:
@@ -1182,3 +1713,64 @@ def test_recompute_trade_journal_records_promotes_filled_pending_entry_to_open(t
     assert row["status"] == "OPEN"
     assert row["entry_filled_ts_ms"] == 2_000
     assert row["exit_ts_ms"] is None
+
+
+def test_recompute_trade_journal_records_recovers_partially_filled_cancelled_entry_to_open(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        record_entry_submission(
+            store=store,
+            market="KRW-FLOW",
+            intent_id="intent-flow-partial-1",
+            requested_price=78.4,
+            requested_volume=70.5,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.62}}},
+            ts_ms=1_000,
+            order_uuid="flow-partial-order-1",
+        )
+        cancel_pending_entry_journal(
+            store=store,
+            market="KRW-FLOW",
+            ts_ms=2_000,
+            entry_intent_id="intent-flow-partial-1",
+            entry_order_uuid="flow-partial-order-1",
+            close_reason_code="ORDER_TIMEOUT",
+            close_mode="entry_order_timeout",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="flow-partial-order-1",
+                identifier="flow-partial-order-1",
+                market="KRW-FLOW",
+                side="bid",
+                ord_type="limit",
+                price=78.4,
+                volume_req=70.5,
+                volume_filled=12.5,
+                state="cancel",
+                created_ts=1_000,
+                updated_ts=2_000,
+                intent_id="intent-flow-partial-1",
+                local_state="CANCELLED",
+                raw_exchange_state="cancel",
+                last_event_name="ORDER_TIMEOUT",
+                event_source="test",
+                root_order_uuid="flow-partial-order-1",
+                executed_funds=980.0,
+                paid_fee=0.49,
+            )
+        )
+
+        compact_report = recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_entry_intent(entry_intent_id="intent-flow-partial-1")
+
+    assert compact_report["rows_compacted"] == 1
+    assert row is not None
+    assert row["status"] == "OPEN"
+    assert row["entry_filled_ts_ms"] == 2_000
+    assert row["exit_ts_ms"] is None
+    assert row["close_reason_code"] is None
+    assert row["close_mode"] is None
+    assert row["qty"] == 12.5
+    assert row["entry_notional_quote"] == pytest.approx(980.49)
+    assert row["exit_meta"] == {}

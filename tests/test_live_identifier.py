@@ -69,5 +69,8 @@ def test_identifier_classification_accepts_bot_scoped_protective_prefixes() -> N
     assert is_bot_identifier(risk, prefix="AUTOBOT", bot_id="autobot-001")
     assert is_bot_identifier(riskrep, prefix="AUTOBOT", bot_id="autobot-001")
     assert is_bot_identifier(suprep, prefix="AUTOBOT", bot_id="autobot-001")
+    assert extract_intent_id_from_identifier(risk, prefix="AUTOBOT", bot_id="autobot-001") is None
+    assert extract_intent_id_from_identifier(riskrep, prefix="AUTOBOT", bot_id="autobot-001") is None
+    assert extract_intent_id_from_identifier(suprep, prefix="AUTOBOT", bot_id="autobot-001") is None
     assert not is_bot_identifier(risk, prefix="AUTOBOT", bot_id="autobot-candidate-001")
     assert not is_bot_identifier("AUTOBOT-RISK-model-risk-1773391515252", prefix="AUTOBOT", bot_id="autobot-001")

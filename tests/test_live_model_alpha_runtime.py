@@ -64,6 +64,18 @@ class _ChanceFailurePrivateClient(_PrivateClient):
         raise RuntimeError("chance failed")
 
 
+class _BidOnlyChancePrivateClient(_PrivateClient):
+    def chance(self, *, market: str):  # noqa: ANN201
+        _ = market
+        return {
+            "market": {
+                "bid": {"min_total": "5000"},
+            },
+            "bid_fee": "0.0005",
+            "ask_fee": "0.0005",
+        }
+
+
 class _AccountsFailurePrivateClient(_PrivateClient):
     def accounts(self):  # noqa: ANN201
         raise RuntimeError("accounts failed")
@@ -3231,6 +3243,89 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order_when_execution_me
     assert intent["status"] == "CANCELLED"
 
 
+def test_supervise_open_strategy_orders_aborts_partially_filled_bid_without_cancelling_entry_journal(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-partial-abort-1",
+                ts_ms=1_000,
+                market="KRW-AVNT",
+                side="bid",
+                price=245.0,
+                volume=22.0,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "source": "private_ws",
+                        "stream_type": "myOrder",
+                        "order_uuid": "avnt-order-partial-1",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="UPDATED_FROM_WS",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="avnt-order-partial-1",
+                identifier="AUTOBOT-autobot-candidate-001-intent-avnt-partial-1-run",
+                market="KRW-AVNT",
+                side="bid",
+                ord_type="limit",
+                price=245.0,
+                volume_req=22.0,
+                volume_filled=5.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-partial-abort-1",
+                local_state="PARTIAL",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="avnt-order-partial-1",
+            )
+        )
+        record_entry_submission(
+            store=store,
+            market="KRW-AVNT",
+            intent_id="intent-partial-abort-1",
+            requested_price=245.0,
+            requested_volume=22.0,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"source": "private_ws"},
+            ts_ms=1_000,
+            order_uuid="avnt-order-partial-1",
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_NoInstrumentPublicClient(),
+            executor_gateway=gateway,
+            latest_prices={"KRW-AVNT": 245.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=360_000,
+        )
+        order = store.order_by_uuid(uuid="avnt-order-partial-1")
+        journal = store.trade_journal_by_entry_intent(entry_intent_id="intent-partial-abort-1")
+
+    assert report["aborted"] == 1
+    assert len(gateway.cancel_calls) == 1
+    assert order is not None
+    assert order["local_state"] == "CANCELLED"
+    assert order["volume_filled"] == 5.0
+    assert journal is not None
+    assert journal["status"] == "PENDING_ENTRY"
+
+
 def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_plan(tmp_path: Path) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
@@ -3443,3 +3538,83 @@ def test_supervise_open_strategy_orders_aborts_stale_ask_order_when_execution_me
     assert plan is not None
     assert plan["state"] == "TRIGGERED"
     assert plan["current_exit_order_uuid"] is None
+
+
+def test_supervise_open_strategy_orders_falls_back_to_other_side_min_total_when_side_missing(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    gateway = _OrderSupervisionGateway()
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=2,
+        price_mode="JOIN",
+    )
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-dust-fallback",
+                ts_ms=1_000,
+                market="KRW-KITE",
+                side="ask",
+                price=100.0,
+                volume=40.0,
+                reason_code="MODEL_ALPHA_EXIT_TIMEOUT",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 100.0,
+                            "effective_ref_price": 100.0,
+                            "requested_price": 100.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="kite-order-dust-fallback",
+                identifier="kite-order-dust-fallback",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=40.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-kite-dust-fallback",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="kite-order-dust-fallback",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_BidOnlyChancePrivateClient(),
+            public_client=_StaticPublicClient("KRW-KITE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-KITE": 100.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=10_000,
+        )
+        order = store.order_by_uuid(uuid="kite-order-dust-fallback")
+
+    assert report["aborted"] == 1
+    assert report["replaced"] == 0
+    assert report["results"][0]["reason_code"] == "MIN_NOTIONAL_DUST_ABORT"
+    assert len(gateway.cancel_calls) == 1
+    assert len(gateway.replace_calls) == 0
+    assert order is not None
+    assert order["state"] == "cancel"

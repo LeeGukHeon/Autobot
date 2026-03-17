@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 import uuid
 
+_PROTECTIVE_IDENTIFIER_MARKERS = {"RISK", "RISKREP", "SUPREP"}
+
 
 def new_order_identifier(
     *,
@@ -62,6 +64,9 @@ def extract_intent_id_from_identifier(identifier: str | None, *, prefix: str, bo
     expected_prefix = f"{_normalize_token(prefix, upper=True)}-{_normalize_token(bot_id, upper=False)}-"
     suffix = identifier_value[len(expected_prefix) :]
     if not suffix:
+        return None
+    marker = suffix.split("-", 1)[0].strip().upper()
+    if marker in _PROTECTIVE_IDENTIFIER_MARKERS:
         return None
     run_token = None
     if "-rid_" in suffix:

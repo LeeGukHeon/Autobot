@@ -19,7 +19,7 @@ from .admissibility import extract_min_total
 from .order_state import is_open_local_state, normalize_order_state
 from .model_risk_plan import build_model_derived_risk_records, extract_model_exit_plan
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
-from .trade_journal import activate_trade_journal_for_position, close_trade_journal_for_market
+from .trade_journal import activate_trade_journal_for_position, close_trade_journal_for_market, rebind_pending_entry_journal_order
 from .model_handoff import resolve_live_model_ref_source
 
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
@@ -107,13 +107,59 @@ def reconcile_exchange_snapshot(
         if record is None:
             continue
         local_existing = local_orders.get(record.uuid)
+        lineage, previous_order = _recover_order_lineage_context(
+            store=store,
+            uuid=record.uuid,
+            identifier=_as_optional_str(record.identifier),
+        )
         existing_intent_id = _as_optional_str(local_existing.get("intent_id")) if local_existing else None
         if not existing_intent_id:
+            existing_intent_id = _as_optional_str((lineage or {}).get("intent_id"))
+        if not existing_intent_id:
             existing_intent_id = f"inferred-{record.uuid}"
-        record = replace(record, intent_id=existing_intent_id)
+        existing_intent = store.intent_by_id(intent_id=existing_intent_id) if existing_intent_id else None
+        record = replace(
+            record,
+            intent_id=existing_intent_id,
+            tp_sl_link=_coalesce_str(
+                _as_optional_str((local_existing or {}).get("tp_sl_link")),
+                _as_optional_str((previous_order or {}).get("tp_sl_link")),
+            ),
+            replace_seq=max(
+                int(record.replace_seq),
+                int((lineage or {}).get("replace_seq") or 0),
+                int((previous_order or {}).get("replace_seq") or 0),
+            ),
+            root_order_uuid=(
+                _as_optional_str(record.root_order_uuid)
+                or _as_optional_str((previous_order or {}).get("root_order_uuid"))
+                or _as_optional_str((lineage or {}).get("prev_uuid"))
+                or record.uuid
+            ),
+            prev_order_uuid=_coalesce_str(
+                _as_optional_str(record.prev_order_uuid),
+                _as_optional_str((lineage or {}).get("prev_uuid")),
+            ),
+            prev_order_identifier=_coalesce_str(
+                _as_optional_str(record.prev_order_identifier),
+                _as_optional_str((lineage or {}).get("prev_identifier")),
+            ),
+        )
         if not dry_run:
             store.upsert_order(record)
-        inferred_intent = local_existing is None or not _as_optional_str(local_existing.get("intent_id"))
+            if (
+                previous_order is not None
+                and str(record.side or "").strip().lower() == "bid"
+                and _as_optional_str((lineage or {}).get("prev_uuid")) != record.uuid
+            ):
+                rebind_pending_entry_journal_order(
+                    store=store,
+                    entry_intent_id=existing_intent_id,
+                    previous_entry_order_uuid=_as_optional_str((lineage or {}).get("prev_uuid")),
+                    new_entry_order_uuid=record.uuid,
+                    ts_ms=now_ts,
+                )
+        inferred_intent = existing_intent is None and (local_existing is None or not _as_optional_str(local_existing.get("intent_id")))
         if inferred_intent:
             intent_payload = {
                 "source": "exchange",
@@ -1519,6 +1565,39 @@ def _as_optional_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _coalesce_str(*values: str | None) -> str | None:
+    for value in values:
+        resolved = _as_optional_str(value)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _recover_order_lineage_context(
+    *,
+    store: LiveStateStore,
+    uuid: str | None,
+    identifier: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    lineage = (
+        store.latest_order_lineage_for_identifier(identifier=identifier)
+        if _as_optional_str(identifier) is not None
+        else None
+    )
+    if lineage is None and _as_optional_str(uuid) is not None:
+        lineage = store.latest_order_lineage_for_uuid(uuid=str(uuid))
+    if lineage is None:
+        return None, None
+    previous_order = None
+    prev_uuid = _as_optional_str(lineage.get("prev_uuid"))
+    prev_identifier = _as_optional_str(lineage.get("prev_identifier"))
+    if prev_uuid is not None:
+        previous_order = store.order_by_uuid(uuid=prev_uuid)
+    if previous_order is None and prev_identifier is not None:
+        previous_order = store.order_by_identifier(identifier=prev_identifier)
+    return lineage, previous_order
 
 
 def _as_optional_float(value: object) -> float | None:
