@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -5,7 +6,7 @@ import time
 
 import pytest
 
-from autobot.dashboard_server import _load_dashboard_asset, _unit_snapshot, build_dashboard_snapshot
+from autobot.dashboard_server import _json_response, _load_dashboard_asset, _unit_snapshot, build_dashboard_snapshot
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -789,6 +790,23 @@ def test_dashboard_server_no_longer_embeds_legacy_html_js_fallback() -> None:
 
     assert "INDEX_HTML =" not in source
     assert "window.renderLive = function renderLive(live)" not in source
+
+
+def test_json_response_swallows_connection_reset_during_end_headers() -> None:
+    class _FailingHandler:
+        def __init__(self) -> None:
+            self.wfile = io.BytesIO()
+
+        def send_response(self, status: int) -> None:
+            self.status = status
+
+        def send_header(self, name: str, value: str) -> None:
+            _ = name, value
+
+        def end_headers(self) -> None:
+            raise ConnectionResetError("peer reset")
+
+    _json_response(_FailingHandler(), {"ok": True})
 
 
 def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path: Path) -> None:

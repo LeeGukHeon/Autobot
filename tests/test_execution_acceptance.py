@@ -50,7 +50,8 @@ def test_run_execution_acceptance_compares_candidate_to_champion(tmp_path: Path,
 
     assert report["status"] == "compared"
     assert report["champion_ref"] == "run_champion"
-    assert report["compare_to_champion"]["decision"] == "candidate_edge"
+    assert report["compare_to_champion"]["decision"] == "insufficient_evidence"
+    assert "INSUFFICIENT_COMMON_VALIDATION_FOLDS" in report["compare_to_champion"].get("reasons", [])
 
 
 def test_run_execution_acceptance_returns_candidate_only_when_no_champion(tmp_path: Path, monkeypatch) -> None:

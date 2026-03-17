@@ -100,8 +100,11 @@ Environment=AUTOBOT_LIVE_TARGET_UNIT=$effectiveTargetUnit
 Environment=AUTOBOT_LIVE_SYNC_MODE=$SyncMode
 SyslogIdentifier=$($UnitName -replace '\.service$', '')
 ExecStart=$execStart
-Restart=always
+Restart=on-failure
+RestartPreventExitStatus=2
 RestartSec=15
+StartLimitIntervalSec=60
+StartLimitBurst=4
 TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal

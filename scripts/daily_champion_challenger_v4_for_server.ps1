@@ -8,6 +8,8 @@ param(
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
+    [string[]]$BlockOnActiveUnits = @(),
+    [string[]]$AcceptanceArgs = @(),
     [double]$ChallengerMinHours = 12.0,
     [int]$ChallengerMinOrdersFilled = 2,
     [double]$ChallengerMinRealizedPnlQuote = 0.0,
@@ -378,6 +380,8 @@ $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstall
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
 $resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
+$resolvedBlockOnActiveUnits = @(Get-StringArray -Value $BlockOnActiveUnits)
+$resolvedAcceptanceArgs = @(Get-StringArray -Value $AcceptanceArgs)
 $stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
@@ -645,6 +649,13 @@ if ($runSpawnPhase) {
     }
     if ($DryRun) {
         $acceptArgs += "-DryRun"
+    }
+    if ($resolvedBlockOnActiveUnits.Count -gt 0) {
+        $acceptArgs += "-BlockOnActiveUnits"
+        $acceptArgs += (Join-DelimitedStringArray -Values $resolvedBlockOnActiveUnits)
+    }
+    if ($resolvedAcceptanceArgs.Count -gt 0) {
+        $acceptArgs += $resolvedAcceptanceArgs
     }
 
     $acceptExec = Invoke-CommandCapture -Exe $psExe -ArgList $acceptArgs -AllowFailure

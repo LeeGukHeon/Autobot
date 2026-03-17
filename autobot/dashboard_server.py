@@ -1675,12 +1675,27 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
 
 def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    _send_bytes_response(
+        handler,
+        status=status,
+        content_type="application/json; charset=utf-8",
+        body=body,
+    )
+
+
+def _send_bytes_response(
+    handler: BaseHTTPRequestHandler,
+    *,
+    status: int,
+    content_type: str,
+    body: bytes,
+) -> None:
     handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store, max-age=0")
-    handler.end_headers()
     try:
+        handler.end_headers()
         handler.wfile.write(body)
     except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
         return
@@ -1691,8 +1706,8 @@ def _sse_response(handler: BaseHTTPRequestHandler, project_root: Path, *, interv
     handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
     handler.send_header("Cache-Control", "no-store, max-age=0")
     handler.send_header("Connection", "keep-alive")
-    handler.end_headers()
     try:
+        handler.end_headers()
         handler.wfile.write(b"retry: 5000\n\n")
         handler.wfile.flush()
         while True:
@@ -1741,39 +1756,30 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 initial_snapshot = {"generated_at": _utc_now_iso()}
             body = _render_dashboard_index(initial_snapshot)
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.end_headers()
-            try:
-                self.wfile.write(body)
-            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
-                return
+            _send_bytes_response(
+                self,
+                status=HTTPStatus.OK,
+                content_type="text/html; charset=utf-8",
+                body=body,
+            )
             return
         if parsed.path == "/static/dashboard.css":
             body = bytes(_load_dashboard_asset("dashboard.css", binary=True))
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/css; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.end_headers()
-            try:
-                self.wfile.write(body)
-            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
-                return
+            _send_bytes_response(
+                self,
+                status=HTTPStatus.OK,
+                content_type="text/css; charset=utf-8",
+                body=body,
+            )
             return
         if parsed.path == "/static/dashboard.js":
             body = bytes(_load_dashboard_asset("dashboard.js", binary=True))
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/javascript; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.end_headers()
-            try:
-                self.wfile.write(body)
-            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
-                return
+            _send_bytes_response(
+                self,
+                status=HTTPStatus.OK,
+                content_type="application/javascript; charset=utf-8",
+                body=body,
+            )
             return
         if parsed.path == "/healthz":
             _json_response(self, {"ok": True, "ts": _utc_now_iso()})

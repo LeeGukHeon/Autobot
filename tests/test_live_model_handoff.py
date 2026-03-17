@@ -366,6 +366,87 @@ def test_live_daemon_canary_tolerates_candidate_pointer_divergence(tmp_path: Pat
     assert summary["champion_pointer_run_id"] == "run-old"
 
 
+def test_live_daemon_candidate_reuses_previous_pinned_run_when_candidate_pointer_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
+    registry_root, _, ws_raw_root, ws_meta_dir = _seed_runtime_contract(
+        tmp_path,
+        champion_run_id="run-old",
+        ws_updated_at_ms=9_900,
+    )
+    family_dir = registry_root / "train_v4_crypto_cs"
+    (family_dir / "run-prev-candidate").mkdir(parents=True, exist_ok=True)
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        now_ms = 10_000
+        store.set_runtime_contract(
+            payload={
+                "live_runtime_model_run_id": "run-prev-candidate",
+                "model_family_resolved": "train_v4_crypto_cs",
+            },
+            ts_ms=9_500,
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = run_live_sync_daemon(
+            store=store,
+            client=_QuietClient(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-candidate-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=False,
+                registry_root=str(registry_root),
+                runtime_model_ref_source="latest_candidate_v4",
+                runtime_model_family="train_v4_crypto_cs",
+                ws_public_raw_root=str(ws_raw_root),
+                ws_public_meta_dir=str(ws_meta_dir),
+                ws_public_stale_threshold_sec=180,
+                micro_aggregate_report_path=str(tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
+                rollout_mode="canary",
+                rollout_target_unit="autobot-live-alpha.service",
+                small_account_canary_enabled=True,
+                small_account_max_positions=1,
+                small_account_max_open_orders_per_market=1,
+            ),
+        )
+        runtime_contract = store.runtime_contract()
+
+    assert summary["halted"] is False
+    assert summary["live_runtime_model_run_id"] == "run-prev-candidate"
+    assert runtime_contract is not None
+    assert runtime_contract["startup_resolution_fallback"] == "previous_pinned_run"
+    assert runtime_contract["startup_resolution_warning"] == "LATEST_CANDIDATE_POINTER_UNRESOLVED"
+    assert runtime_contract["requested_pointer_name"] == "latest_candidate"
+
+
 def test_live_startup_halts_when_ws_public_is_stale(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)

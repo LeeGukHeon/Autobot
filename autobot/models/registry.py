@@ -347,10 +347,10 @@ def _search_run_id(registry_root: Path, run_id: str) -> list[Path]:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    body = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    tmp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    tmp_path.write_text(body, encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _write_yaml_like_json(path: Path, payload: Any) -> None:

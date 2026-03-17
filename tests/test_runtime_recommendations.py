@@ -126,7 +126,25 @@ def test_resolve_model_alpha_runtime_row_columns_includes_trade_action_state_inp
 
     columns = resolve_model_alpha_runtime_row_columns(predictor=predictor)
 
-    assert columns == ("close", "rv_12", "rv_36", "atr_pct_14", "atr_14")
+    assert columns == (
+        "close",
+        "m_trade_events",
+        "m_book_events",
+        "m_trade_coverage_ms",
+        "m_book_coverage_ms",
+        "m_trade_max_ts_ms",
+        "m_book_max_ts_ms",
+        "m_trade_imbalance",
+        "m_spread_proxy",
+        "m_depth_bid_top5_mean",
+        "m_depth_ask_top5_mean",
+        "m_micro_available",
+        "m_micro_book_available",
+        "rv_12",
+        "rv_36",
+        "atr_pct_14",
+        "atr_14",
+    )
 
 
 def test_normalize_runtime_recommendations_backfills_legacy_exit_mode_compare() -> None:

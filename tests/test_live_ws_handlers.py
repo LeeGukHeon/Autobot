@@ -5,7 +5,15 @@ import json
 from types import SimpleNamespace
 
 from autobot.live.model_alpha_projection import find_latest_model_entry_intent
-from autobot.live.state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord
+from autobot.live.state_store import (
+    IntentRecord,
+    LiveStateStore,
+    OrderLineageRecord,
+    OrderRecord,
+    PositionRecord,
+    RiskPlanRecord,
+    TradeJournalRecord,
+)
 from autobot.live.trade_journal import record_entry_submission
 from autobot.live.ws_handlers import apply_private_ws_event
 from autobot.risk.live_risk_manager import LiveRiskManager
@@ -577,6 +585,90 @@ def test_ws_asset_event_upserts_and_deletes_position(tmp_path: Path) -> None:
     assert upsert_action["type"] == "ws_asset_position_upsert"
     assert delete_action["type"] == "ws_asset_position_delete"
     assert positions == []
+
+
+def test_ws_asset_event_delete_closes_managed_plan_and_journal_immediately(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ETH",
+                base_currency="ETH",
+                base_amount=0.15,
+                avg_entry_price=3_000_000.0,
+                updated_ts=1_000,
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-eth-1",
+                market="KRW-ETH",
+                side="long",
+                entry_price_str="3000000",
+                qty_str="0.15",
+                tp_enabled=True,
+                tp_price_str="3090000",
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_price_str="2940000",
+                sl_pct=2.0,
+                trailing_enabled=False,
+                trail_pct=None,
+                state="ACTIVE",
+                last_eval_ts_ms=1_000,
+                last_action_ts_ms=1_000,
+                created_ts=1_000,
+                updated_ts=1_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-eth-1",
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-eth-1",
+                market="KRW-ETH",
+                status="OPEN",
+                entry_intent_id="intent-eth-1",
+                plan_id="plan-eth-1",
+                entry_submitted_ts_ms=900,
+                entry_filled_ts_ms=1_000,
+                entry_price=3_000_000.0,
+                qty=0.15,
+                entry_notional_quote=450_000.0,
+                updated_ts=1_000,
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyAssetEvent(
+                ts_ms=2_000,
+                currency="ETH",
+                balance=0.0,
+                locked=0.0,
+                avg_buy_price=0.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        position = store.position_by_market(market="KRW-ETH")
+        plan = store.risk_plan_by_id(plan_id="plan-eth-1")
+        journal = store.trade_journal_by_id(journal_id="journal-eth-1")
+
+    assert action["type"] == "ws_asset_position_delete"
+    assert action["closed_plan_ids"] == ["plan-eth-1"]
+    assert action["closed_journal_ids"] == ["journal-eth-1"]
+    assert position is None
+    assert plan is not None
+    assert plan["state"] == "CLOSED"
+    assert journal is not None
+    assert journal["status"] == "CLOSED"
+    assert journal["close_reason_code"] == "POSITION_CLOSED"
+    assert journal["close_mode"] == "position_sync"
+    assert journal["exit_meta"]["source"] == "private_ws_asset_event"
+    assert journal["exit_meta"]["asset_balance_zero"] is True
 
 
 def test_ws_asset_event_bootstraps_managed_position_and_risk_plan_from_model_entry_intent(tmp_path: Path) -> None:

@@ -110,17 +110,57 @@ LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT = "live_rollout_auto_test_order_
 LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_MIN_INTERVAL_SEC = 300
 
 
+def _resolve_runtime_model_contract_with_candidate_fallback(
+    *,
+    store: LiveStateStore,
+    settings: LiveDaemonSettings,
+    ts_ms: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    previous_contract = store.runtime_contract() or {}
+    previous_pinned_run_id = str(previous_contract.get("live_runtime_model_run_id", "")).strip()
+    requested_model_ref = str(settings.runtime_model_ref_source).strip()
+    requested_model_family = str(settings.runtime_model_family).strip()
+    registry_root = Path(str(settings.registry_root))
+    try:
+        current_contract = resolve_live_runtime_model_contract(
+            registry_root=registry_root,
+            model_ref=requested_model_ref,
+            model_family=requested_model_family,
+            ts_ms=ts_ms,
+        )
+    except FileNotFoundError as exc:
+        fallback_enabled = requested_model_ref in {"latest_candidate_v4", "candidate_v4", "latest_candidate", "candidate"}
+        fallback_family = str(previous_contract.get("model_family_resolved", "")).strip() or requested_model_family
+        if not (fallback_enabled and previous_pinned_run_id and fallback_family):
+            raise
+        current_contract = resolve_live_runtime_model_contract(
+            registry_root=registry_root,
+            model_ref=previous_pinned_run_id,
+            model_family=fallback_family,
+            ts_ms=ts_ms,
+        )
+        current_contract.update(
+            {
+                "model_ref_source_requested": requested_model_ref,
+                "model_family_requested": requested_model_family,
+                "requested_pointer_name": "latest_candidate",
+                "startup_resolution_fallback": "previous_pinned_run",
+                "startup_resolution_warning": "LATEST_CANDIDATE_POINTER_UNRESOLVED",
+                "startup_resolution_error": str(exc),
+            }
+        )
+    return current_contract, previous_contract
+
+
 def _runtime_model_binding_after_resume(
     *,
     store: LiveStateStore,
     settings: LiveDaemonSettings,
     ts_ms: int,
 ) -> dict[str, Any]:
-    previous_contract = store.runtime_contract() or {}
-    current_contract = resolve_live_runtime_model_contract(
-        registry_root=Path(str(settings.registry_root)),
-        model_ref=str(settings.runtime_model_ref_source),
-        model_family=str(settings.runtime_model_family),
+    current_contract, previous_contract = _resolve_runtime_model_contract_with_candidate_fallback(
+        store=store,
+        settings=settings,
         ts_ms=ts_ms,
     )
     previous_pinned_run_id = str(previous_contract.get("live_runtime_model_run_id", "")).strip()
@@ -170,10 +210,9 @@ def _refresh_runtime_contract_health(
     ts_ms: int,
 ) -> dict[str, Any]:
     try:
-        current_contract = resolve_live_runtime_model_contract(
-            registry_root=Path(str(settings.registry_root)),
-            model_ref=str(settings.runtime_model_ref_source),
-            model_family=str(settings.runtime_model_family),
+        current_contract, _ = _resolve_runtime_model_contract_with_candidate_fallback(
+            store=store,
+            settings=settings,
             ts_ms=ts_ms,
         )
     except Exception as exc:
@@ -1162,6 +1201,8 @@ def _apply_executor_event(
         new_uuid = _as_optional_str(payload.get("new_uuid"))
         new_identifier = _as_optional_str(payload.get("new_identifier"))
         replace_seq = _as_optional_int(payload.get("replace_attempt_count")) or 0
+        persist_errors: list[dict[str, str | None]] = []
+        checkpoint_error: str | None = None
         previous_order = None
         if store is not None:
             if prev_uuid:
@@ -1182,8 +1223,8 @@ def _apply_executor_event(
                         replace_seq=replace_seq,
                     )
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                persist_errors.append({"step": "append_order_lineage", "error": str(exc)})
             if previous_order is not None and prev_uuid:
                 try:
                     store.upsert_order(
@@ -1220,8 +1261,8 @@ def _apply_executor_event(
                             ),
                         )
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    persist_errors.append({"step": "mark_previous_order_replaced", "error": str(exc)})
             if new_uuid:
                 normalized = normalize_order_state(exchange_state="wait", event_name="ORDER_REPLACED")
                 try:
@@ -1254,8 +1295,8 @@ def _apply_executor_event(
                             exchange_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
                         )
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    persist_errors.append({"step": "upsert_replacement_order", "error": str(exc)})
         if hasattr(store, "set_checkpoint"):
             try:
                 store.set_checkpoint(
@@ -1269,9 +1310,27 @@ def _apply_executor_event(
                     },
                     ts_ms=ts_ms,
                 )
-            except Exception:
-                pass
-        return {"type": "executor_order_replaced", "payload": payload}
+            except Exception as exc:
+                checkpoint_error = str(exc)
+        if persist_errors:
+            error_payload = {
+                "prev_uuid": prev_uuid,
+                "prev_identifier": prev_identifier,
+                "new_uuid": new_uuid,
+                "new_identifier": new_identifier,
+                "replace_attempt_count": replace_seq,
+                "errors": persist_errors,
+            }
+            if checkpoint_error:
+                error_payload["checkpoint_error"] = checkpoint_error
+            raise RuntimeError(
+                "EXECUTOR_REPLACE_PERSIST_FAILED: "
+                + json.dumps(error_payload, ensure_ascii=False, sort_keys=True)
+            )
+        action = {"type": "executor_order_replaced", "payload": payload}
+        if checkpoint_error:
+            action["checkpoint_error"] = checkpoint_error
+        return action
 
     if normalized_type in {"ORDER_UPDATE", "FILL"} or event_name in {
         "ORDER_ACCEPTED",
@@ -1460,6 +1519,19 @@ def _apply_executor_event_with_breakers(
                 details={"error": str(exc), "event_type": _event_type(event)},
             )
             return {"type": "executor_breaker_identifier_collision", "error": str(exc)}
+        if "EXECUTOR_REPLACE_PERSIST_FAILED:" in str(exc):
+            breaker_report = arm_breaker(
+                store,
+                reason_codes=["EXECUTOR_REPLACE_PERSIST_FAILED"],
+                source="executor_event",
+                ts_ms=_event_ts_ms(event),
+                details={"error": str(exc), "event_type": _event_type(event)},
+            )
+            return {
+                "type": "executor_breaker_replace_persist_failed",
+                "error": str(exc),
+                "breaker_report": breaker_report,
+            }
         raise
 
     payload = _event_payload(event)

@@ -7,7 +7,7 @@ import pytest
 import time
 
 import autobot.live.daemon as daemon_module
-from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, arm_breaker
+from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_NEW_INTENTS, arm_breaker, breaker_status
 from autobot.live.daemon import (
     LiveDaemonSettings,
     run_live_sync_daemon,
@@ -802,6 +802,51 @@ def test_apply_executor_event_supports_timeout_and_replaced_contract(tmp_path: P
     assert order_lineage[0]["new_uuid"] == "new-1"
     assert replaced_order is not None
     assert replaced_order["local_state"] == "REPLACING"
+
+
+def test_apply_executor_event_with_breakers_halts_on_replace_persist_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with LiveStateStore(tmp_path / "replace_breaker.db") as store:
+        def _raise_persist_error(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(store, "append_order_lineage", _raise_persist_error)
+
+        action = daemon_module._apply_executor_event_with_breakers(
+            store=store,
+            event={
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 1700000000600,
+                "payload": {
+                    "event_name": "ORDER_REPLACED",
+                    "prev_uuid": "prev-2",
+                    "prev_identifier": "AUTOBOT-prev-2",
+                    "new_uuid": "new-2",
+                    "new_identifier": "AUTOBOT-new-2",
+                },
+            },
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                use_executor_ws=True,
+            ),
+        )
+        report = breaker_status(store)
+
+    assert action["type"] == "executor_breaker_replace_persist_failed"
+    assert "EXECUTOR_REPLACE_PERSIST_FAILED" in action["error"]
+    assert report["active"] is True
+    assert report["action"] == ACTION_HALT_NEW_INTENTS
+    assert "EXECUTOR_REPLACE_PERSIST_FAILED" in report["reason_codes"]
 
 
 def test_private_ws_terminal_event_resets_replace_reject_counter(tmp_path: Path) -> None:

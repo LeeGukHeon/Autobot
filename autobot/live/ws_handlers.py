@@ -8,11 +8,15 @@ from typing import Any
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
 from .identifier import extract_intent_id_from_identifier, extract_run_token_from_identifier, is_bot_identifier
-from .model_alpha_projection import find_latest_model_entry_intent
+from .model_alpha_projection import close_market_risk_plans, find_latest_model_entry_intent
 from .model_risk_plan import build_model_derived_risk_records
 from .order_state import normalize_order_state
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
-from .trade_journal import activate_trade_journal_for_position, rebind_pending_entry_journal_order
+from .trade_journal import (
+    activate_trade_journal_for_position,
+    close_trade_journal_for_market,
+    rebind_pending_entry_journal_order,
+)
 
 
 def apply_private_ws_event(
@@ -223,9 +227,59 @@ def _apply_my_asset_event(
     total = float(event.balance or 0.0) + float(event.locked or 0.0)
     existing = store.position_by_market(market=market)
     if total <= 0.0:
+        active_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
+        closed_journal_ids: list[str] = []
+        closed_plan_ids = [
+            str(plan.get("plan_id") or "").strip()
+            for plan in active_plans
+            if str(plan.get("plan_id") or "").strip()
+        ]
+        position_payload = dict(existing or {})
+        position_payload.setdefault("market", market)
+        position_payload.setdefault(
+            "base_amount",
+            _as_optional_float((existing or {}).get("base_amount")) or 0.0,
+        )
+        position_payload.setdefault(
+            "avg_entry_price",
+            _as_optional_float((existing or {}).get("avg_entry_price")) or float(event.avg_buy_price or 0.0),
+        )
+        close_meta = {
+            "source": "private_ws_asset_event",
+            "asset_balance_zero": True,
+            "asset_event_ts_ms": int(event.ts_ms),
+        }
+        if active_plans:
+            for plan in active_plans:
+                journal_id = close_trade_journal_for_market(
+                    store=store,
+                    market=market,
+                    position=position_payload,
+                    ts_ms=int(event.ts_ms),
+                    plan_id=_as_optional_str(plan.get("plan_id")),
+                    exit_meta=close_meta,
+                )
+                if journal_id and journal_id not in closed_journal_ids:
+                    closed_journal_ids.append(journal_id)
+            close_market_risk_plans(store=store, market=market, ts_ms=int(event.ts_ms))
+        elif existing is not None:
+            journal_id = close_trade_journal_for_market(
+                store=store,
+                market=market,
+                position=position_payload,
+                ts_ms=int(event.ts_ms),
+                exit_meta=close_meta,
+            )
+            if journal_id:
+                closed_journal_ids.append(journal_id)
         if existing is not None:
             store.delete_position(market=market)
-        return {"type": "ws_asset_position_delete", "market": market}
+        return {
+            "type": "ws_asset_position_delete",
+            "market": market,
+            "closed_plan_ids": closed_plan_ids,
+            "closed_journal_ids": closed_journal_ids,
+        }
 
     managed_record, managed_plan = _resolve_model_managed_asset_position(
         store=store,
