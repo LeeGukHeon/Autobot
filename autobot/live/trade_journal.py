@@ -853,16 +853,22 @@ def recompute_trade_journal_records(*, store: LiveStateStore) -> dict[str, Any]:
                 and str(entry_order.get("local_state") or "").strip().upper() == "CANCELLED"
                 and _filled_qty_from_order(entry_order) in (None, 0.0)
             ):
-                exit_meta_payload["close_mode"] = _coalesce_str(
-                    _as_optional_str(exit_meta_payload.get("close_mode")),
-                    "entry_order_timeout",
+                derived_close_mode = _derive_pending_cancel_close_mode(
+                    row=row,
+                    entry_order=entry_order,
+                    exit_meta_payload=exit_meta_payload,
                 )
-                exit_meta_payload["close_reason_code"] = _coalesce_str(
-                    _as_optional_str(exit_meta_payload.get("close_reason_code")),
-                    _as_optional_str(entry_order.get("last_event_name")),
-                    "ENTRY_ORDER_TIMEOUT",
+                derived_close_reason = _derive_pending_cancel_close_reason(
+                    row=row,
+                    entry_order=entry_order,
+                    exit_meta_payload=exit_meta_payload,
                 )
+                exit_meta_payload["close_mode"] = derived_close_mode
+                exit_meta_payload["close_reason_code"] = derived_close_reason
                 exit_meta_payload["entry_cancelled"] = True
+                if derived_close_mode == "external_manual_cancel":
+                    exit_meta_payload["cancel_source"] = "closed_orders_backfill"
+                    exit_meta_payload["cancel_provenance"] = "external_or_manual_cancel"
                 status_value = TRADE_JOURNAL_STATUS_CANCELLED
             store.upsert_trade_journal(
                 TradeJournalRecord(
@@ -1670,6 +1676,43 @@ def _derive_close_mode(*, order: dict[str, Any] | None) -> str | None:
     return "done_ask_order"
 
 
+def _derive_pending_cancel_close_mode(
+    *,
+    row: dict[str, Any],
+    entry_order: dict[str, Any] | None,
+    exit_meta_payload: dict[str, Any],
+) -> str:
+    explicit = _coalesce_str(
+        _as_optional_str(row.get("close_mode")),
+        _as_optional_str(exit_meta_payload.get("close_mode")),
+    )
+    if explicit is not None:
+        return explicit
+    if _is_manual_cancel_backfill(entry_order):
+        return "external_manual_cancel"
+    return "entry_order_timeout"
+
+
+def _derive_pending_cancel_close_reason(
+    *,
+    row: dict[str, Any],
+    entry_order: dict[str, Any] | None,
+    exit_meta_payload: dict[str, Any],
+) -> str:
+    explicit = _coalesce_str(
+        _as_optional_str(row.get("close_reason_code")),
+        _as_optional_str(exit_meta_payload.get("close_reason_code")),
+    )
+    if explicit is not None:
+        return explicit
+    if _is_manual_cancel_backfill(entry_order):
+        return "MANUAL_CANCELLED_ENTRY"
+    return _coalesce_str(
+        _as_optional_str((entry_order or {}).get("last_event_name")),
+        "ENTRY_ORDER_TIMEOUT",
+    ) or "ENTRY_ORDER_TIMEOUT"
+
+
 def _derive_close_verification_status(*, order: dict[str, Any] | None, close_mode: str | None) -> str:
     if _has_verified_exit_order(order=order):
         return "verified_exit_order"
@@ -1696,6 +1739,16 @@ def _has_verified_exit_order(*, order: dict[str, Any] | None) -> bool:
     if state == "done" or local_state == "DONE":
         return True
     return False
+
+
+def _is_manual_cancel_backfill(entry_order: dict[str, Any] | None) -> bool:
+    if not isinstance(entry_order, dict):
+        return False
+    return (
+        _as_optional_str(entry_order.get("event_source")) == "closed_orders_backfill"
+        and _as_optional_str(entry_order.get("last_event_name")) == "CLOSED_ORDERS_BACKFILL"
+        and str(entry_order.get("state") or "").strip().lower() == "cancel"
+    )
 
 
 def _position_matches_trade_journal(*, position: dict[str, Any], row: dict[str, Any]) -> bool:

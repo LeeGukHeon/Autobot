@@ -1668,6 +1668,53 @@ def test_recompute_trade_journal_records_compacts_cancelled_pending_entry(tmp_pa
     assert row["exit_ts_ms"] == 2_000
 
 
+def test_recompute_trade_journal_records_marks_backfilled_manual_cancelled_entry_explicitly(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        record_entry_submission(
+            store=store,
+            market="KRW-DOGE",
+            intent_id="intent-doge-manual-cancel-1",
+            requested_price=145.0,
+            requested_volume=39.0,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.91}}},
+            ts_ms=1_000,
+            order_uuid="doge-order-manual-cancel-1",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="doge-order-manual-cancel-1",
+                identifier="doge-order-manual-cancel-1",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=145.0,
+                volume_req=39.0,
+                volume_filled=0.0,
+                state="cancel",
+                created_ts=1_000,
+                updated_ts=2_000,
+                intent_id="intent-doge-manual-cancel-1",
+                local_state="CANCELLED",
+                raw_exchange_state="cancel",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                root_order_uuid="doge-order-manual-cancel-1",
+            )
+        )
+
+        compact_report = recompute_trade_journal_records(store=store)
+        row = store.trade_journal_by_entry_intent(entry_intent_id="intent-doge-manual-cancel-1")
+
+    assert compact_report["rows_compacted"] == 1
+    assert row is not None
+    assert row["status"] == "CANCELLED_ENTRY"
+    assert row["close_reason_code"] == "MANUAL_CANCELLED_ENTRY"
+    assert row["close_mode"] == "external_manual_cancel"
+    assert row["exit_meta"]["cancel_source"] == "closed_orders_backfill"
+    assert row["exit_meta"]["cancel_provenance"] == "external_or_manual_cancel"
+
+
 def test_recompute_trade_journal_records_promotes_filled_pending_entry_to_open(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(

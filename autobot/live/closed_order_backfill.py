@@ -127,6 +127,11 @@ def backfill_recent_bot_closed_orders(
             event_name="CLOSED_ORDERS_BACKFILL",
             executed_volume=_as_optional_float(item.get("executed_volume")),
         )
+        resolved_event_name = _resolve_backfill_event_name(
+            payload=item,
+            existing=existing,
+            previous_order=previous_order,
+        )
         executed_funds = _extract_executed_funds(item)
         store.upsert_order(
             OrderRecord(
@@ -151,7 +156,7 @@ def backfill_recent_bot_closed_orders(
                 ),
                 local_state=normalized.local_state,
                 raw_exchange_state=normalized.exchange_state,
-                last_event_name=normalized.event_name,
+                last_event_name=resolved_event_name,
                 event_source="closed_orders_backfill",
                 replace_seq=int(
                     (existing or {}).get("replace_seq")
@@ -219,6 +224,39 @@ def _extract_executed_funds(payload: dict[str, Any]) -> float | None:
         if funds:
             return float(sum(funds))
     return None
+
+
+def _resolve_backfill_event_name(
+    *,
+    payload: dict[str, Any],
+    existing: dict[str, Any] | None,
+    previous_order: dict[str, Any] | None,
+) -> str:
+    state = str(payload.get("state") or "").strip().lower()
+    executed_volume = float(_as_optional_float(payload.get("executed_volume")) or 0.0)
+    if state not in {"cancel", "cancelled"} or executed_volume > 0.0:
+        return "CLOSED_ORDERS_BACKFILL"
+    preserved_reason = _coalesce_str(
+        _meaningful_cancel_reason(_as_optional_str((existing or {}).get("last_event_name"))),
+        _meaningful_cancel_reason(_as_optional_str((previous_order or {}).get("last_event_name"))),
+    )
+    return preserved_reason or "MANUAL_CANCEL_DETECTED"
+
+
+def _meaningful_cancel_reason(value: str | None) -> str | None:
+    reason = _as_optional_str(value)
+    if reason is None:
+        return None
+    if reason in {
+        "ORDER_STATE",
+        "EXCHANGE_SNAPSHOT",
+        "CLOSED_ORDERS_BACKFILL",
+        "SUBMIT_ACCEPTED",
+        "ORDER_ACCEPTED",
+        "PRIVATE_WS_ORDER_EVENT",
+    }:
+        return None
+    return reason
 
 
 def _parse_created_ts(raw: object, *, fallback_ts: int) -> int:
