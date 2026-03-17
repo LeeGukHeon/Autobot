@@ -6,6 +6,7 @@ import pytest
 from autobot.live.closed_order_backfill import backfill_recent_bot_closed_orders
 from autobot.live.reconcile import reconcile_exchange_snapshot
 from autobot.live.state_store import IntentRecord, LiveStateStore, OrderRecord, RiskPlanRecord, TradeJournalRecord
+from autobot.live.trade_journal import record_entry_submission
 
 
 class _StubClosedOrdersClient:
@@ -622,3 +623,78 @@ def test_backfill_then_reconcile_recovers_model_plan_for_filled_bid(tmp_path) ->
     assert plans[0]["source_intent_id"] == "intent-awe"
     assert plans[0]["tp"]["tp_pct"] == pytest.approx(3.0)
     assert plans[0]["sl"]["sl_pct"] == pytest.approx(2.0)
+
+
+def test_backfill_recent_bot_closed_orders_marks_pending_entry_manual_cancel_provenance(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        record_entry_submission(
+            store=store,
+            market="KRW-DOGE",
+            intent_id="intent-doge-manual-cancel",
+            requested_price=145.0,
+            requested_volume=39.0,
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"strategy": {"meta": {"model_prob": 0.91}}},
+            ts_ms=1_000,
+            order_uuid="doge-order-manual-cancel",
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="doge-order-manual-cancel",
+                identifier="AUTOBOT-autobot-candidate-001-intent-doge-manual-cancel-1700000000000-a",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=145.0,
+                volume_req=39.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_500,
+                intent_id="intent-doge-manual-cancel",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="reconcile_snapshot",
+                root_order_uuid="doge-order-manual-cancel",
+            )
+        )
+
+        client = _StubClosedOrdersClient(
+            [
+                {
+                    "uuid": "doge-order-manual-cancel",
+                    "identifier": "AUTOBOT-autobot-candidate-001-intent-doge-manual-cancel-1700000000000-a",
+                    "market": "KRW-DOGE",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "state": "cancel",
+                    "price": "145",
+                    "volume": "39",
+                    "executed_volume": "0",
+                    "created_at": "2026-03-17T13:15:02Z",
+                    "done_at": "2026-03-17T13:16:02Z",
+                }
+            ]
+        )
+
+        report = backfill_recent_bot_closed_orders(
+            store=store,
+            client=client,
+            bot_id="autobot-candidate-001",
+            identifier_prefix="AUTOBOT",
+            now_ts_ms=1_700_000_200_000,
+        )
+        order = store.order_by_uuid(uuid="doge-order-manual-cancel")
+        journal = store.trade_journal_by_entry_intent(entry_intent_id="intent-doge-manual-cancel")
+
+    assert report["orders_upserted"] == 1
+    assert order is not None
+    assert order["local_state"] == "CANCELLED"
+    assert order["last_event_name"] == "MANUAL_CANCEL_DETECTED"
+    assert journal is not None
+    assert journal["status"] == "CANCELLED_ENTRY"
+    assert journal["close_reason_code"] == "MANUAL_CANCELLED_ENTRY"
+    assert journal["close_mode"] == "external_manual_cancel"
+    assert journal["exit_meta"]["cancel_source"] == "closed_orders_backfill"
