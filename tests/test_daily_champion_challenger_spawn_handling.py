@@ -189,6 +189,29 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
     return script_path
 
 
+def _make_failing_runtime_install_script(tmp_path: Path) -> Path:
+    script_path = tmp_path / "fake_runtime_install_fail.ps1"
+    script_path.write_text(
+        textwrap.dedent(
+            """
+            param(
+                [string]$ProjectRoot = "",
+                [string]$PythonExe = "",
+                [string]$PaperUnitName = "",
+                [string]$PaperModelRefPinned = "",
+                [string]$PaperCliArgs = ""
+            )
+
+            Write-Error "runtime install failed"
+            exit 1
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return script_path
+
+
 def _run_spawn_only(
     project_root: Path,
     acceptance_script: Path,
@@ -364,6 +387,79 @@ def test_spawn_only_still_fails_when_acceptance_reports_runtime_exception(tmp_pa
 
     assert completed.returncode != 0
     assert "candidate acceptance failed unexpectedly" in completed.stderr or "candidate acceptance failed unexpectedly" in completed.stdout
+
+
+def test_spawn_only_restores_active_challenger_on_fatal_acceptance_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "exception": {"message": "boom"},
+                "train": {"candidate_run_id": "candidate-run-rollback"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["UNHANDLED_EXCEPTION"],
+        },
+        exit_code=2,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        active_units=["autobot-paper-v4-challenger.service"],
+    )
+
+    assert completed.returncode == 2
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    rollback = latest["steps"]["rollback"]
+    assert rollback["attempted"] is True
+    assert rollback["restored_units"] == ["autobot-paper-v4-challenger.service"]
+
+
+def test_spawn_only_runtime_install_failure_rolls_back_without_stale_state(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-install-fail"},
+            },
+            "gates": {
+                "backtest": {"pass": True},
+                "overall_pass": False,
+            },
+            "reasons": [],
+        },
+        exit_code=0,
+    )
+    runtime_install_script = _make_failing_runtime_install_script(tmp_path)
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        active_units=["autobot-paper-v4-challenger.service"],
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+        ],
+    )
+
+    assert completed.returncode == 2
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    rollback = latest["steps"]["rollback"]
+    assert rollback["attempted"] is True
+    assert rollback["restored_units"] == ["autobot-paper-v4-challenger.service"]
+    assert not (project_root / "logs" / "model_v4_challenger" / "current_state.json").exists()
 
 
 def test_spawn_only_accepts_comma_joined_promotion_target_units_from_installer(tmp_path: Path) -> None:
@@ -636,6 +732,6 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
 
     assert promote_step["promoted"] is True
     assert promote_step["restarted_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
-    assert promote_step["started_from_inactive_units"] == ["autobot-live-alpha.service"]
+    assert promote_step["started_from_inactive_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
     assert promote_step["skipped_units"] == []
     assert "restart autobot-live-alpha.service" in systemctl_calls

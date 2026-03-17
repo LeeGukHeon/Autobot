@@ -372,6 +372,131 @@ function Start-OrUpdate-ChallengerUnit {
     return Invoke-CommandCapture -Exe $psExe -ArgList $args
 }
 
+function Try-Restart-UnitBestEffort {
+    param(
+        [string]$UnitName,
+        [System.Collections.Generic.List[string]]$RestoredUnits,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+    if ([string]::IsNullOrWhiteSpace($UnitName) -or $DryRun) {
+        return
+    }
+    try {
+        Restart-Unit -UnitName $UnitName
+        if ($null -ne $RestoredUnits) {
+            $RestoredUnits.Add($UnitName) | Out-Null
+        }
+    } catch {
+        if ($null -ne $Errors) {
+            $Errors.Add(("restart:{0}:{1}" -f $UnitName, $_.Exception.Message)) | Out-Null
+        }
+    }
+}
+
+function Try-Stop-UnitBestEffort {
+    param(
+        [string]$UnitName,
+        [System.Collections.Generic.List[string]]$StoppedUnits,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+    if ([string]::IsNullOrWhiteSpace($UnitName) -or $DryRun) {
+        return
+    }
+    try {
+        & sudo systemctl stop $UnitName
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to stop unit: $UnitName"
+        }
+        if ($null -ne $StoppedUnits) {
+            $StoppedUnits.Add($UnitName) | Out-Null
+        }
+    } catch {
+        if ($null -ne $Errors) {
+            $Errors.Add(("stop:{0}:{1}" -f $UnitName, $_.Exception.Message)) | Out-Null
+        }
+    }
+}
+
+function Invoke-RollbackOnFailure {
+    $restoredUnits = New-Object System.Collections.Generic.List[string]
+    $stoppedUnits = New-Object System.Collections.Generic.List[string]
+    $removedPaths = New-Object System.Collections.Generic.List[string]
+    $errors = New-Object System.Collections.Generic.List[string]
+    $rollback = [ordered]@{
+        attempted = $true
+        repromoted_previous_champion = $false
+        restored_units = @()
+        stopped_units = @()
+        removed_paths = @()
+        errors = @()
+    }
+    if ($DryRun) {
+        $rollback.reason = "DRY_RUN"
+        return $rollback
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($statePath) -and (Test-Path $statePath)) {
+        try {
+            Remove-Item -Path $statePath -Force -ErrorAction Stop
+            $removedPaths.Add($statePath) | Out-Null
+        } catch {
+            $errors.Add(("remove_state:{0}" -f $_.Exception.Message)) | Out-Null
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($promoteCutoverLatestPath) -and (Test-Path $promoteCutoverLatestPath)) {
+        try {
+            Remove-Item -Path $promoteCutoverLatestPath -Force -ErrorAction Stop
+            $removedPaths.Add($promoteCutoverLatestPath) | Out-Null
+        } catch {
+            $errors.Add(("remove_cutover_latest:{0}" -f $_.Exception.Message)) | Out-Null
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:rollbackPromoteCutoverArchivePath) -and (Test-Path $script:rollbackPromoteCutoverArchivePath)) {
+        try {
+            Remove-Item -Path $script:rollbackPromoteCutoverArchivePath -Force -ErrorAction Stop
+            $removedPaths.Add($script:rollbackPromoteCutoverArchivePath) | Out-Null
+        } catch {
+            $errors.Add(("remove_cutover_archive:{0}" -f $_.Exception.Message)) | Out-Null
+        }
+    }
+
+    if ($script:rollbackPromotionPerformed) {
+        if (-not [string]::IsNullOrWhiteSpace($script:rollbackPreviousChampionRunId)) {
+            try {
+                Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList @(
+                    "-m", "autobot.cli",
+                    "model", "promote",
+                    "--model-ref", $script:rollbackPreviousChampionRunId,
+                    "--model-family", "train_v4_crypto_cs"
+                ) | Out-Null
+                $rollback.repromoted_previous_champion = $true
+            } catch {
+                $errors.Add(("repromote:{0}" -f $_.Exception.Message)) | Out-Null
+            }
+        }
+        foreach ($unit in @($script:rollbackStartedInactivePromotionUnits.ToArray())) {
+            Try-Stop-UnitBestEffort -UnitName $unit -StoppedUnits $stoppedUnits -Errors $errors
+        }
+        if ($script:rollbackChampionWasActive) {
+            Try-Restart-UnitBestEffort -UnitName $ChampionUnitName -RestoredUnits $restoredUnits -Errors $errors
+        }
+        foreach ($unit in @($script:rollbackPreviouslyActivePromotionUnits.ToArray())) {
+            if ([string]::IsNullOrWhiteSpace($unit) -or ($unit -eq $ChampionUnitName)) {
+                continue
+            }
+            Try-Restart-UnitBestEffort -UnitName $unit -RestoredUnits $restoredUnits -Errors $errors
+        }
+    } elseif ($script:rollbackChallengerWasActive) {
+        Try-Restart-UnitBestEffort -UnitName $ChallengerUnitName -RestoredUnits $restoredUnits -Errors $errors
+    }
+
+    $rollback.restored_units = @($restoredUnits.ToArray())
+    $rollback.stopped_units = @($stoppedUnits.ToArray())
+    $rollback.removed_paths = @($removedPaths.ToArray())
+    $rollback.errors = @($errors.ToArray())
+    return $rollback
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -406,11 +531,40 @@ $report = [ordered]@{
     challenger_next = @{}
 }
 $candidateRunId = ""
+$exitCode = 0
+$script:rollbackPromotionPerformed = $false
+$script:rollbackPreviousChampionRunId = ""
+$script:rollbackChampionWasActive = $false
+$script:rollbackChallengerWasActive = $false
+$script:rollbackPromoteCutoverArchivePath = ""
+$script:rollbackPreviouslyActivePromotionUnits = New-Object System.Collections.Generic.List[string]
+$script:rollbackStartedInactivePromotionUnits = New-Object System.Collections.Generic.List[string]
+
+trap {
+    $exitCode = 2
+    $report.exception = [ordered]@{
+        message = $_.Exception.Message
+    }
+    $report.steps.rollback = Invoke-RollbackOnFailure
+    $report.completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    if (-not $DryRun) {
+        Write-JsonFile -PathValue $reportPath -Payload $report
+        Write-JsonFile -PathValue $latestReportPath -Payload $report
+    }
+    Write-Host ("[daily-cc][error] mode={0} reason={1}" -f $Mode, $_.Exception.Message)
+    Write-Host ("[daily-cc] batch_date={0}" -f $resolvedBatchDate)
+    Write-Host ("[daily-cc] report={0}" -f $reportPath)
+    Write-Host ("[daily-cc] latest={0}" -f $latestReportPath)
+    Write-Host ("[daily-cc] challenger_candidate_run_id={0}" -f $candidateRunId)
+    exit $exitCode
+}
 
 $previousState = Load-JsonOrEmpty -PathValue $statePath
 $hasPreviousState = Test-ObjectHasValues -ObjectValue $previousState
 $challengerWasActive = Test-SystemdUnitActive -UnitName $ChallengerUnitName
 $championWasActive = Test-SystemdUnitActive -UnitName $ChampionUnitName
+$script:rollbackChallengerWasActive = $challengerWasActive
+$script:rollbackChampionWasActive = $championWasActive
 $report.steps.unit_snapshot = [ordered]@{
     challenger_was_active = $challengerWasActive
     champion_was_active = $championWasActive
@@ -467,6 +621,7 @@ if ($runPromotionPhase) {
     if ($hasPreviousState) {
         $candidateRunId = [string](Get-PropValue -ObjectValue $previousState -Name "candidate_run_id" -DefaultValue "")
         $championRunIdAtStart = [string](Get-PropValue -ObjectValue $previousState -Name "champion_run_id_at_start" -DefaultValue "")
+        $script:rollbackPreviousChampionRunId = $championRunIdAtStart
         $startedTsMs = [int64](Get-PropValue -ObjectValue $previousState -Name "started_ts_ms" -DefaultValue 0)
         $previousLaneMode = [string](Get-PropValue -ObjectValue $previousState -Name "lane_mode" -DefaultValue "")
         $previousPromotionEligible = [bool](Get-PropValue -ObjectValue $previousState -Name "promotion_eligible" -DefaultValue $true)
@@ -508,11 +663,16 @@ if ($runPromotionPhase) {
                     "--model-family", "train_v4_crypto_cs"
                 )
                 $promotionPerformed = $true
+                $script:rollbackPromotionPerformed = $true
                 $restartedUnits = New-Object System.Collections.Generic.List[string]
                 $startedFromInactiveUnits = New-Object System.Collections.Generic.List[string]
                 $skippedUnits = New-Object System.Collections.Generic.List[object]
                 Restart-Unit -UnitName $ChampionUnitName
                 $restartedUnits.Add($ChampionUnitName) | Out-Null
+                if (-not $championWasActive) {
+                    $startedFromInactiveUnits.Add($ChampionUnitName) | Out-Null
+                    $script:rollbackStartedInactivePromotionUnits.Add($ChampionUnitName) | Out-Null
+                }
                 foreach ($unit in $resolvedPromotionTargetUnits) {
                     $trimmedUnit = [string]$unit
                     if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
@@ -533,8 +693,11 @@ if ($runPromotionPhase) {
                     $targetWasActive = Test-SystemdUnitActive -UnitName $trimmedUnit
                     Restart-Unit -UnitName $trimmedUnit
                     $restartedUnits.Add($trimmedUnit) | Out-Null
-                    if (-not $targetWasActive) {
+                    if ($targetWasActive) {
+                        $script:rollbackPreviouslyActivePromotionUnits.Add($trimmedUnit) | Out-Null
+                    } else {
                         $startedFromInactiveUnits.Add($trimmedUnit) | Out-Null
+                        $script:rollbackStartedInactivePromotionUnits.Add($trimmedUnit) | Out-Null
                     }
                 }
                 $primaryLiveTargetUnit = [string](
@@ -563,6 +726,7 @@ if ($runPromotionPhase) {
                 $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
                 Write-JsonFile -PathValue $promoteCutoverLatestPath -Payload $promoteCutover
                 Write-JsonFile -PathValue $promoteCutoverArchivePath -Payload $promoteCutover
+                $script:rollbackPromoteCutoverArchivePath = $promoteCutoverArchivePath
                 $report.steps.promote_previous_challenger = [ordered]@{
                     attempted = $true
                     command = $promoteExec.Command
@@ -809,6 +973,10 @@ if ($runSpawnPhase) {
     }
 }
 
+$report.steps.rollback = [ordered]@{
+    attempted = $false
+    reason = "NOT_REQUIRED"
+}
 $report.completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
 if (-not $DryRun) {
     Write-JsonFile -PathValue $reportPath -Payload $report
@@ -820,4 +988,4 @@ Write-Host ("[daily-cc] batch_date={0}" -f $resolvedBatchDate)
 Write-Host ("[daily-cc] report={0}" -f $reportPath)
 Write-Host ("[daily-cc] latest={0}" -f $latestReportPath)
 Write-Host ("[daily-cc] challenger_candidate_run_id={0}" -f $candidateRunId)
-exit 0
+exit $exitCode
