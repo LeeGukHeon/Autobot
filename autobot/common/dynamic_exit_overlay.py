@@ -108,7 +108,11 @@ def resolve_dynamic_exit_overlay(
     next_trailing_enabled = bool(trailing_enabled)
     next_trailing_pct = trailing_pct
 
-    if float(current_return_ratio) > 0.0:
+    profit_lock_activation_ratio = _resolve_profit_lock_activation_ratio(
+        settings=settings,
+        tp_pct=tp_pct,
+    )
+    if float(current_return_ratio) > 0.0 and (bool(trailing_enabled) or float(current_return_ratio) >= profit_lock_activation_ratio):
         allowed_drawdown_share = max(0.20, 0.60 - (0.40 * float(activation_strength)))
         profit_lock_trail = max(float(current_return_ratio) * float(allowed_drawdown_share), 0.0015)
         next_trailing_enabled = True
@@ -153,6 +157,17 @@ def _tighten_optional_pct(value: float | None, tighten_scale: float) -> float | 
     if value is None or float(value) <= 0.0:
         return value
     return min(float(value), float(value) * float(tighten_scale))
+
+
+def _resolve_profit_lock_activation_ratio(
+    *,
+    settings: ModelAlphaOperationalSettings,
+    tp_pct: float | None,
+) -> float:
+    thresholds = [max(float(settings.profit_lock_arm_min_return_pct), 0.0) / 100.0]
+    if tp_pct is not None and float(tp_pct) > 0.0:
+        thresholds.append(float(tp_pct) * max(float(settings.profit_lock_arm_tp_fraction), 0.0))
+    return max(thresholds)
 
 
 def _same_optional_float(left: float | None, right: float | None, *, tol: float = 1e-12) -> bool:

@@ -3083,6 +3083,14 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                         int(model_alpha_operational_defaults.get("aggressive_max_chase_bps_bonus", 5)),
                         0,
                     ),
+                    profit_lock_arm_min_return_pct=max(
+                        float(model_alpha_operational_defaults.get("profit_lock_arm_min_return_pct", 0.75)),
+                        0.0,
+                    ),
+                    profit_lock_arm_tp_fraction=max(
+                        float(model_alpha_operational_defaults.get("profit_lock_arm_tp_fraction", 0.20)),
+                        0.0,
+                    ),
                     runtime_timeout_ms_floor=max(
                         int(model_alpha_operational_defaults.get("runtime_timeout_ms_floor", 5_000)),
                         1_000,
@@ -3556,6 +3564,14 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                     aggressive_max_chase_bps_bonus=max(
                         int(model_alpha_operational_defaults.get("aggressive_max_chase_bps_bonus", 5)),
                         0,
+                    ),
+                    profit_lock_arm_min_return_pct=max(
+                        float(model_alpha_operational_defaults.get("profit_lock_arm_min_return_pct", 0.75)),
+                        0.0,
+                    ),
+                    profit_lock_arm_tp_fraction=max(
+                        float(model_alpha_operational_defaults.get("profit_lock_arm_tp_fraction", 0.20)),
+                        0.0,
                     ),
                     runtime_timeout_ms_floor=max(
                         int(model_alpha_operational_defaults.get("runtime_timeout_ms_floor", 5_000)),
@@ -5394,6 +5410,14 @@ def _build_model_alpha_settings_from_defaults(defaults: dict[str, Any]) -> Model
             ),
             micro_quality_aggressive_threshold=max(
                 float(operational_defaults.get("micro_quality_aggressive_threshold", 0.75)),
+                0.0,
+            ),
+            profit_lock_arm_min_return_pct=max(
+                float(operational_defaults.get("profit_lock_arm_min_return_pct", 0.75)),
+                0.0,
+            ),
+            profit_lock_arm_tp_fraction=max(
+                float(operational_defaults.get("profit_lock_arm_tp_fraction", 0.20)),
                 0.0,
             ),
             max_execution_spread_bps_for_join=max(

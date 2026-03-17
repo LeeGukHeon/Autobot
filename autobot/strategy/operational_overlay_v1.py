@@ -52,6 +52,8 @@ class ModelAlphaOperationalSettings:
     aggressive_max_replaces_bonus: int = 1
     conservative_max_chase_bps_scale: float = 0.75
     aggressive_max_chase_bps_bonus: int = 5
+    profit_lock_arm_min_return_pct: float = 0.75
+    profit_lock_arm_tp_fraction: float = 0.20
     runtime_timeout_ms_floor: int = 5_000
     runtime_replace_interval_ms_floor: int = 1_500
     empirical_state_score_model_enabled: bool = False

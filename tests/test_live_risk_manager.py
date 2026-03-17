@@ -302,6 +302,76 @@ def test_risk_manager_micro_overlay_arms_profit_lock_trailing_and_exits_on_drawd
     assert persisted_final["state"] == "EXITING"
 
 
+def test_risk_manager_micro_overlay_does_not_arm_profit_lock_on_tiny_positive_return(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=1.0,
+                avg_entry_price=100.0,
+                updated_ts=1000,
+                tp_json=json.dumps({"enabled": True, "source": "model_alpha_v1", "tp_pct": 6.0}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": True, "source": "model_alpha_v1", "sl_pct": 5.0}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="overlay-small-profit",
+                market="KRW-BTC",
+                side="long",
+                entry_price_str="100",
+                qty_str="1",
+                tp_enabled=True,
+                tp_pct=6.0,
+                sl_enabled=True,
+                sl_pct=5.0,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=0,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-overlay-small-profit",
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+            micro_overlay_settings=ModelAlphaOperationalSettings(enabled=True),
+        )
+        actions = manager.evaluate_price(
+            market="KRW-BTC",
+            last_price=100.25,
+            ts_ms=2000,
+            micro_snapshot=_micro_snapshot(
+                market="KRW-BTC",
+                ts_ms=2000,
+                trade_imbalance=-0.9,
+                spread_bps_mean=45.0,
+                depth_top5_notional_krw=40_000.0,
+            ),
+        )
+        persisted = store.risk_plan_by_id(plan_id="overlay-small-profit")
+        position = store.position_by_market(market="KRW-BTC")
+
+    assert any(item["type"] == "risk_micro_overlay_applied" for item in actions)
+    assert persisted is not None
+    assert persisted["plan_source"] == "model_alpha_v1_micro_overlay"
+    assert persisted["trailing"]["enabled"] is False
+    assert persisted["trailing"]["trail_pct"] in (None, 0.0)
+    assert position is not None
+    assert position["trailing"]["enabled"] is False
+    assert gateway.submit_calls == []
+
+
 def test_risk_manager_micro_overlay_does_not_compound_sl_forever_across_ticks(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     gateway = _FakeExecutorGateway()

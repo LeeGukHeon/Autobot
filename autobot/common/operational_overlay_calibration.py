@@ -39,6 +39,8 @@ _DEFAULT_BASE_SETTINGS: dict[str, Any] = {
     "aggressive_max_replaces_bonus": 1,
     "conservative_max_chase_bps_scale": 0.75,
     "aggressive_max_chase_bps_bonus": 5,
+    "profit_lock_arm_min_return_pct": 0.75,
+    "profit_lock_arm_tp_fraction": 0.20,
     "runtime_timeout_ms_floor": 5_000,
     "runtime_replace_interval_ms_floor": 1_500,
     "empirical_state_score_model_enabled": False,
