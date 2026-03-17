@@ -671,6 +671,55 @@ def test_build_dashboard_snapshot_hides_synthetic_trade_rows_when_canonical_trad
     assert recent_trades[0]["journal_id"] == "journal-1"
 
 
+def test_build_dashboard_snapshot_keeps_distinct_cancelled_entry_rows(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    _init_live_db(project_root / "data" / "state" / "live" / "live_state.db")
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        row = conn.execute(
+            "SELECT * FROM trade_journal WHERE journal_id = ?",
+            ("journal-1",),
+        ).fetchone()
+        assert row is not None
+        first = list(row)
+        first[0] = "cancelled-entry-1"
+        first[2] = "CANCELLED_ENTRY"
+        first[3] = "intent-cancel-1"
+        first[4] = "entry-order-cancel-1"
+        first[5] = None
+        first[6] = None
+        first[15] = None
+        first[16] = None
+        first[18] = "MANUAL_CANCELLED_ENTRY"
+        first[19] = "external_manual_cancel"
+        first[28] = json.dumps({}, ensure_ascii=False)
+        first[29] = int(first[29]) + 1
+        second = list(first)
+        second[0] = "cancelled-entry-2"
+        second[3] = "intent-cancel-2"
+        second[4] = "entry-order-cancel-2"
+        second[29] = int(first[29]) + 1
+        conn.execute(
+            "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(first),
+        )
+        conn.execute(
+            "INSERT INTO trade_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(second),
+        )
+    conn.close()
+
+    snapshot = build_dashboard_snapshot(project_root)
+    today_summary = snapshot["live"]["states"][0]["today_trade_summary"]
+    recent_trades = snapshot["live"]["states"][0]["recent_trades"]
+    cancelled_entries = [item for item in recent_trades if item["status"] == "CANCELLED_ENTRY"]
+
+    assert today_summary["cancelled_count"] == 2
+    assert len(cancelled_entries) == 2
+
+
 def test_build_dashboard_snapshot_excludes_unverified_close_from_pnl_summary(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})

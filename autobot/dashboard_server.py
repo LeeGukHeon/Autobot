@@ -995,7 +995,17 @@ def _trade_journal_dedupe_key(
     item = _summarize_live_trade_journal(row)
     status = str(item.get("status") or "").strip().upper()
     journal_id = str(item.get("journal_id") or "").strip()
-    if status in {"CLOSED", "CANCELLED_ENTRY"}:
+    if status == "CANCELLED_ENTRY":
+        return (
+            status,
+            journal_id,
+            str(item.get("entry_intent_id") or "").strip(),
+            str(item.get("entry_order_uuid") or "").strip(),
+            _coerce_int(item.get("exit_ts_ms")),
+            _coerce_float(item.get("qty")),
+            _coerce_float(item.get("entry_price")),
+        )
+    if status == "CLOSED":
         exit_uuid = str(item.get("exit_order_uuid") or "").strip()
         return (
             status,
