@@ -1256,6 +1256,8 @@
             </div>
             <p class="position-plan-copy">${esc(linkedPlan ? compactPlanSummary(linkedPlan) : "청산 플랜 없음")}</p>
             <div class="plan-tags">
+              <span class="plan-chip">${esc(linkedPlan ? `모드 ${translate(linkedPlan.exit_mode)}` : "모드 없음")}</span>
+              <span class="plan-chip">${esc(linkedPlan ? `동적 ${linkedPlan.dynamic_exit_active ? "ON" : "OFF"}` : "동적 OFF")}</span>
               <span class="plan-chip ${toneFromValue(position.unrealized_pnl_quote)}">${esc(`손익 ${fmtMoney(position.unrealized_pnl_quote, 2)}`)}</span>
               <span class="plan-chip">${esc(linkedPlan ? translate(linkedPlan.state) : "플랜 없음")}</span>
               <span class="plan-chip">${esc(linkedOrder ? `${translate(linkedOrder.side)} 주문 대기` : "주문 없음")}</span>
@@ -1274,6 +1276,10 @@
               <p>${esc(compactPlanSummary(plan))}</p>
             </div>
             ${pill("플랜", translate(plan.state), String(plan.state).toUpperCase() === "ACTIVE" ? "good" : "warn")}
+          </div>
+          <div class="plan-tags">
+            <span class="plan-chip">${esc(`모드 ${translate(plan.exit_mode)}`)}</span>
+            <span class="plan-chip">${esc(`동적 ${plan.dynamic_exit_active ? "ON" : "OFF"}`)}</span>
           </div>
         </div>
       `).join("")}</div>`

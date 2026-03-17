@@ -754,11 +754,13 @@ def _summarize_live_order(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summarize_live_risk_plan(row: dict[str, Any]) -> dict[str, Any]:
+    plan_source = str(row.get("plan_source") or "").strip()
     return {
         "plan_id": row.get("plan_id"),
         "market": row.get("market"),
         "state": row.get("state"),
-        "plan_source": row.get("plan_source"),
+        "plan_source": plan_source,
+        "dynamic_exit_active": plan_source.lower() == "model_alpha_v1_micro_overlay",
         "source_intent_id": row.get("source_intent_id"),
         "entry_price": _coerce_float(row.get("entry_price_str")),
         "qty": _coerce_float(row.get("qty_str")),
