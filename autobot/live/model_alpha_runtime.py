@@ -714,6 +714,7 @@ def _canary_entry_guard_reason(
     settings: LiveModelAlphaRuntimeSettings,
     market: str,
     side: str,
+    accounts_payload: Any | None = None,
 ) -> str | None:
     if str(side).strip().lower() != "bid":
         return None
@@ -721,12 +722,48 @@ def _canary_entry_guard_reason(
         return None
     market_value = str(market).strip().upper()
     active_markets = _snapshot_open_markets(store)
+    active_markets.update(
+        _active_markets_from_accounts_payload(
+            accounts_payload=accounts_payload,
+            quote=str(settings.quote),
+            min_order_krw=float(settings.min_order_krw),
+        )
+    )
     if market_value in active_markets:
         return "CANARY_MARKET_ALREADY_ACTIVE"
     max_positions = max(int(settings.daemon.small_account_max_positions), 1)
     if len(active_markets) >= max_positions:
         return "CANARY_SLOT_UNAVAILABLE"
     return None
+
+
+def _active_markets_from_accounts_payload(
+    *,
+    accounts_payload: Any,
+    quote: str,
+    min_order_krw: float,
+) -> set[str]:
+    active_markets: set[str] = set()
+    quote_currency = str(quote).strip().upper() or "KRW"
+    min_total = max(float(min_order_krw), 0.0)
+    if not isinstance(accounts_payload, list):
+        return active_markets
+    for item in accounts_payload:
+        if not isinstance(item, dict):
+            continue
+        currency = str(item.get("currency", "")).strip().upper()
+        if not currency or currency == quote_currency:
+            continue
+        balance = _safe_optional_float(item.get("balance")) or 0.0
+        locked = _safe_optional_float(item.get("locked")) or 0.0
+        total = max(float(balance) + float(locked), 0.0)
+        if total <= 0.0:
+            continue
+        avg_buy_price = _safe_optional_float(item.get("avg_buy_price"))
+        if avg_buy_price is not None and avg_buy_price > 0.0 and (total * float(avg_buy_price)) < min_total:
+            continue
+        active_markets.add(f"{quote_currency}-{currency}")
+    return active_markets
 
 
 def _bootstrap_strategy_positions(

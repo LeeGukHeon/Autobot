@@ -788,11 +788,13 @@ def handle_strategy_intent(
     side = str(strategy_intent.side).strip().lower()
     if not market or side not in {"bid", "ask"}:
         return "skipped"
+    accounts_payload = client.accounts()
     canary_guard_reason = canary_entry_guard_reason_fn(
         store=store,
         settings=settings,
         market=market,
         side=side,
+        accounts_payload=accounts_payload,
     )
     if canary_guard_reason:
         record_strategy_intent_fn(
@@ -807,8 +809,6 @@ def handle_strategy_intent(
             ts_ms=ts_ms,
         )
         return "skipped"
-
-    accounts_payload = client.accounts()
     chance_payload = client.chance(market=market)
     instruments_payload = instrument_cache.get(market)
     if instruments_payload is None:

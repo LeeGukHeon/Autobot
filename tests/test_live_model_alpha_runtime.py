@@ -1901,6 +1901,70 @@ def test_live_model_alpha_runtime_exposes_open_order_markets_to_strategy(tmp_pat
     assert "KRW-ETH" in seen_open_markets[-1]
 
 
+def test_live_model_alpha_runtime_canary_blocks_new_bid_when_exchange_accounts_show_other_active_market(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _PrivateClientWithMePosition(_PrivateClient):
+        def accounts(self):  # noqa: ANN201
+            return [
+                {"currency": "KRW", "balance": "50000", "locked": "0", "avg_buy_price": "0"},
+                {"currency": "ME", "balance": "30.39811615", "locked": "0", "avg_buy_price": "184"},
+                {"currency": "BTC", "balance": "0", "locked": "0", "avg_buy_price": "0"},
+            ]
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClientWithMePosition(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        intents = store.list_intents()
+
+    assert summary["submitted_intents_total"] == 0
+    assert summary["skipped_intents_total"] == 1
+    assert executor.calls == []
+    assert len(intents) == 1
+    assert intents[0]["meta"].get("skip_reason") == "CANARY_SLOT_UNAVAILABLE"
+
+
 def test_live_model_alpha_runtime_canary_skips_new_bid_when_other_market_order_is_open(
     tmp_path: Path,
     monkeypatch,
