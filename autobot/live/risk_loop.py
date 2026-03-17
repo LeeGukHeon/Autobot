@@ -11,6 +11,7 @@ def apply_ticker_event(
     *,
     risk_manager: LiveRiskManager,
     event: Any,
+    micro_snapshot_provider: Any | None = None,
 ) -> list[dict[str, Any]]:
     market = str(getattr(event, "market", "")).strip().upper()
     trade_price = getattr(event, "trade_price", None)
@@ -21,7 +22,18 @@ def apply_ticker_event(
         price_value = float(trade_price)
     except (TypeError, ValueError):
         return []
-    return risk_manager.evaluate_price(market=market, last_price=price_value, ts_ms=_as_int(ts_ms))
+    ts_value = _as_int(ts_ms)
+    micro_snapshot = (
+        micro_snapshot_provider.get(market, int(ts_value))
+        if micro_snapshot_provider is not None and ts_value is not None and hasattr(micro_snapshot_provider, "get")
+        else None
+    )
+    return risk_manager.evaluate_price(
+        market=market,
+        last_price=price_value,
+        ts_ms=ts_value,
+        micro_snapshot=micro_snapshot,
+    )
 
 
 def apply_executor_event(

@@ -9,6 +9,8 @@ from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
 from autobot.live.state_store import LiveStateStore, OrderRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager
 from autobot.risk.models import RiskManagerConfig
+from autobot.strategy.micro_snapshot import MicroSnapshot
+from autobot.strategy.operational_overlay_v1 import ModelAlphaOperationalSettings
 
 
 @dataclass
@@ -107,6 +109,32 @@ class _DoneOrderReplaceGateway(_FakeExecutorGateway):
             new_identifier=new_identifier,
         )
 
+def _micro_snapshot(
+    *,
+    market: str,
+    ts_ms: int,
+    trade_imbalance: float,
+    spread_bps_mean: float,
+    depth_top5_notional_krw: float,
+    trade_coverage_ms: int = 5_000,
+    book_coverage_ms: int = 5_000,
+) -> MicroSnapshot:
+    return MicroSnapshot(
+        market=market,
+        snapshot_ts_ms=ts_ms,
+        last_event_ts_ms=ts_ms,
+        trade_events=32,
+        trade_coverage_ms=trade_coverage_ms,
+        trade_notional_krw=150_000.0,
+        trade_imbalance=trade_imbalance,
+        trade_source="ws",
+        spread_bps_mean=spread_bps_mean,
+        depth_top5_notional_krw=depth_top5_notional_krw,
+        book_events=24,
+        book_coverage_ms=book_coverage_ms,
+        book_available=True,
+    )
+
 
 def test_risk_manager_tp_trigger_submits_exit(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
@@ -179,6 +207,128 @@ def test_risk_manager_trailing_watermark_then_trigger(tmp_path: Path) -> None:
     assert persisted is not None
     assert persisted["state"] == "EXITING"
     assert float(persisted["trailing"]["high_watermark_price_str"]) == 110.0
+
+
+def test_risk_manager_micro_overlay_arms_profit_lock_trailing_and_exits_on_drawdown(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="overlay-1",
+                market="KRW-BTC",
+                side="long",
+                entry_price_str="100",
+                qty_str="1",
+                tp_enabled=False,
+                sl_enabled=True,
+                sl_pct=5.0,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=0,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-overlay-1",
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+            micro_overlay_settings=ModelAlphaOperationalSettings(enabled=True),
+        )
+        first_actions = manager.evaluate_price(
+            market="KRW-BTC",
+            last_price=104.0,
+            ts_ms=2000,
+            micro_snapshot=_micro_snapshot(
+                market="KRW-BTC",
+                ts_ms=2000,
+                trade_imbalance=-0.9,
+                spread_bps_mean=45.0,
+                depth_top5_notional_krw=40_000.0,
+            ),
+        )
+        persisted_mid = store.risk_plan_by_id(plan_id="overlay-1")
+        second_actions = manager.evaluate_price(
+            market="KRW-BTC",
+            last_price=102.8,
+            ts_ms=2500,
+            micro_snapshot=_micro_snapshot(
+                market="KRW-BTC",
+                ts_ms=2500,
+                trade_imbalance=-0.9,
+                spread_bps_mean=45.0,
+                depth_top5_notional_krw=40_000.0,
+            ),
+        )
+        persisted_final = store.risk_plan_by_id(plan_id="overlay-1")
+
+    assert any(item["type"] == "risk_micro_overlay_applied" for item in first_actions)
+    assert persisted_mid is not None
+    assert persisted_mid["plan_source"] == "model_alpha_v1_micro_overlay"
+    assert persisted_mid["trailing"]["enabled"] is True
+    assert persisted_mid["trailing"]["trail_pct"] is not None
+    assert persisted_mid["trailing"]["trail_pct"] < 0.02
+    assert any(item["type"] == "risk_exit_submitted" for item in second_actions)
+    assert persisted_final is not None
+    assert persisted_final["state"] == "EXITING"
+
+
+def test_risk_manager_micro_overlay_does_not_change_plan_when_micro_state_is_healthy(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="overlay-healthy",
+                market="KRW-ETH",
+                side="long",
+                entry_price_str="100",
+                qty_str="1",
+                tp_enabled=False,
+                sl_enabled=True,
+                sl_pct=5.0,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=0,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-overlay-healthy",
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+            micro_overlay_settings=ModelAlphaOperationalSettings(enabled=True),
+        )
+        actions = manager.evaluate_price(
+            market="KRW-ETH",
+            last_price=104.0,
+            ts_ms=2000,
+            micro_snapshot=_micro_snapshot(
+                market="KRW-ETH",
+                ts_ms=2000,
+                trade_imbalance=0.8,
+                spread_bps_mean=2.0,
+                depth_top5_notional_krw=15_000_000.0,
+                trade_coverage_ms=60_000,
+                book_coverage_ms=60_000,
+            ),
+        )
+        persisted = store.risk_plan_by_id(plan_id="overlay-healthy")
+
+    assert not any(item["type"] == "risk_micro_overlay_applied" for item in actions)
+    assert persisted is not None
+    assert persisted["plan_source"] == "model_alpha_v1"
+    assert persisted["trailing"]["enabled"] is False
 
 
 def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:

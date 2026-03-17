@@ -340,7 +340,11 @@ async def run_live_model_alpha_runtime(
             _ingest_live_micro_from_ticker(provider=micro_provider, ticker=ticker)
 
             if settings.risk_enabled and risk_manager is not None and _protective_order_emission_allowed(store):
-                risk_actions = apply_ticker_event(risk_manager=risk_manager, event=ticker)
+                risk_actions = apply_ticker_event(
+                    risk_manager=risk_manager,
+                    event=ticker,
+                    micro_snapshot_provider=micro_provider,
+                )
                 summary["risk_actions_total"] = int(summary["risk_actions_total"]) + int(len(risk_actions))
 
             now_monotonic = time.monotonic()
@@ -684,6 +688,7 @@ def _build_risk_manager(
         identifier_prefix=str(settings.daemon.identifier_prefix),
         bot_id=str(settings.daemon.bot_id),
         tick_size_resolver=_resolve_tick_size,
+        micro_overlay_settings=settings.model_alpha.operational,
     )
 
 
