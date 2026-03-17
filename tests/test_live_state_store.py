@@ -7,7 +7,14 @@ import pytest
 
 import autobot.live.state_store as state_store_module
 from autobot.live.breakers import arm_breaker
-from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, PositionRecord
+from autobot.live.state_store import (
+    LiveStateStore,
+    OrderLineageRecord,
+    OrderRecord,
+    PositionRecord,
+    RiskPlanRecord,
+    TradeJournalRecord,
+)
 
 
 def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
@@ -159,6 +166,101 @@ def test_state_store_rejects_identifier_collision(tmp_path: Path) -> None:
                     updated_ts=1001,
                 )
             )
+
+
+def test_state_store_rebinds_pending_order_identifier_without_collision(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="pending-intent-1",
+                identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                price=1000.0,
+                volume_req=1.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-1",
+                tp_sl_link="plan-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                root_order_uuid="pending-intent-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-1",
+                market="KRW-BTC",
+                side="long",
+                entry_price_str="900",
+                qty_str="1",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="EXITING",
+                current_exit_order_uuid="pending-intent-1",
+                current_exit_order_identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                created_ts=900,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-1",
+                market="KRW-BTC",
+                status="OPEN",
+                entry_intent_id="intent-1",
+                entry_order_uuid="entry-uuid-1",
+                exit_order_uuid="pending-intent-1",
+                plan_id="plan-1",
+                entry_submitted_ts_ms=900,
+                entry_filled_ts_ms=950,
+                entry_price=900.0,
+                qty=1.0,
+                updated_ts=1000,
+            )
+        )
+
+        store.upsert_order(
+            OrderRecord(
+                uuid="real-order-1",
+                identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                price=1000.0,
+                volume_req=1.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1200,
+                updated_ts=1200,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="private_ws",
+            )
+        )
+        migrated = store.order_by_uuid(uuid="real-order-1")
+        pending = store.order_by_uuid(uuid="pending-intent-1")
+        plan = store.risk_plan_by_id(plan_id="plan-1")
+        journal = store.trade_journal_by_id(journal_id="journal-1")
+
+    assert pending is None
+    assert migrated is not None
+    assert migrated["intent_id"] == "intent-1"
+    assert migrated["tp_sl_link"] == "plan-1"
+    assert migrated["created_ts"] == 1000
+    assert migrated["root_order_uuid"] == "real-order-1"
+    assert plan is not None
+    assert plan["current_exit_order_uuid"] == "real-order-1"
+    assert journal is not None
+    assert journal["exit_order_uuid"] == "real-order-1"
 
 
 def test_state_store_preserves_intent_id_when_exchange_refresh_omits_it(tmp_path: Path) -> None:

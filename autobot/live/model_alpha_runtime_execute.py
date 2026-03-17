@@ -522,6 +522,33 @@ def resolve_live_strategy_execution(
                     "size_ladder": size_ladder_decision,
                 },
             )
+        live_exit_plan_present = any(
+            str(item.get("state", "")).strip().upper() == "EXITING"
+            or bool(
+                str(item.get("current_exit_order_uuid") or "").strip()
+                or str(item.get("current_exit_order_identifier") or "").strip()
+            )
+            for item in store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
+        )
+        if live_exit_plan_present:
+            return resolution_cls(
+                allowed=False,
+                skip_reason="DUPLICATE_EXIT_ORDER",
+                requested_price=effective_ref_price,
+                requested_volume=None,
+                sizing_payload=None,
+                meta_payload={
+                    "strategy": {"market": market, "side": side, "meta": strategy_meta},
+                    "size_ladder": size_ladder_decision,
+                    "trade_gate": {
+                        **trade_gate_payload,
+                        "reason_code": "DUPLICATE_EXIT_ORDER",
+                        "severity": "BLOCK",
+                        "gate_reasons": ["DUPLICATE_EXIT_ORDER"],
+                        "diagnostics": {"source": "risk_plan"},
+                    },
+                },
+            )
         if exchange_view.has_open_order(market, side="ask"):
             return resolution_cls(
                 allowed=False,
@@ -788,7 +815,21 @@ def handle_strategy_intent(
     side = str(strategy_intent.side).strip().lower()
     if not market or side not in {"bid", "ask"}:
         return "skipped"
-    accounts_payload = client.accounts()
+    try:
+        accounts_payload = client.accounts()
+    except Exception as exc:
+        record_strategy_intent_fn(
+            store=store,
+            market=market,
+            side=side,
+            price=safe_optional_float_fn(getattr(strategy_intent, "ref_price", None)),
+            volume=safe_optional_float_fn(getattr(strategy_intent, "volume", None)),
+            reason_code=str(strategy_intent.reason_code),
+            meta_payload={"skip_reason": "ACCOUNTS_LOOKUP_FAILED", "error": str(exc)},
+            status="SKIPPED",
+            ts_ms=ts_ms,
+        )
+        return "skipped"
     canary_guard_reason = canary_entry_guard_reason_fn(
         store=store,
         settings=settings,
@@ -809,10 +850,38 @@ def handle_strategy_intent(
             ts_ms=ts_ms,
         )
         return "skipped"
-    chance_payload = client.chance(market=market)
+    try:
+        chance_payload = client.chance(market=market)
+    except Exception as exc:
+        record_strategy_intent_fn(
+            store=store,
+            market=market,
+            side=side,
+            price=safe_optional_float_fn(getattr(strategy_intent, "ref_price", None)),
+            volume=safe_optional_float_fn(getattr(strategy_intent, "volume", None)),
+            reason_code=str(strategy_intent.reason_code),
+            meta_payload={"skip_reason": "CHANCE_LOOKUP_FAILED", "error": str(exc)},
+            status="SKIPPED",
+            ts_ms=ts_ms,
+        )
+        return "skipped"
     instruments_payload = instrument_cache.get(market)
     if instruments_payload is None:
-        loaded = public_client.orderbook_instruments([market])
+        try:
+            loaded = public_client.orderbook_instruments([market])
+        except Exception as exc:
+            record_strategy_intent_fn(
+                store=store,
+                market=market,
+                side=side,
+                price=safe_optional_float_fn(getattr(strategy_intent, "ref_price", None)),
+                volume=safe_optional_float_fn(getattr(strategy_intent, "volume", None)),
+                reason_code=str(strategy_intent.reason_code),
+                meta_payload={"skip_reason": "INSTRUMENTS_LOOKUP_FAILED", "error": str(exc)},
+                status="SKIPPED",
+                ts_ms=ts_ms,
+            )
+            return "skipped"
         if isinstance(loaded, list):
             for item in loaded:
                 if isinstance(item, dict):
@@ -834,14 +903,28 @@ def handle_strategy_intent(
         )
         return "skipped"
 
-    snapshot = build_live_order_admissibility_snapshot_fn(
-        market=market,
-        side=side,
-        chance_payload=chance_payload if isinstance(chance_payload, dict) else {},
-        instruments_payload=[instruments_payload],
-        accounts_payload=accounts_payload,
-        ts_ms=ts_ms,
-    )
+    try:
+        snapshot = build_live_order_admissibility_snapshot_fn(
+            market=market,
+            side=side,
+            chance_payload=chance_payload if isinstance(chance_payload, dict) else {},
+            instruments_payload=[instruments_payload],
+            accounts_payload=accounts_payload,
+            ts_ms=ts_ms,
+        )
+    except Exception as exc:
+        record_strategy_intent_fn(
+            store=store,
+            market=market,
+            side=side,
+            price=safe_optional_float_fn(getattr(strategy_intent, "ref_price", None)),
+            volume=safe_optional_float_fn(getattr(strategy_intent, "volume", None)),
+            reason_code=str(strategy_intent.reason_code),
+            meta_payload={"skip_reason": "ADMISSIBILITY_SNAPSHOT_BUILD_FAILED", "error": str(exc)},
+            status="SKIPPED",
+            ts_ms=ts_ms,
+        )
+        return "skipped"
     exchange_view = exchange_view_cls(
         store=store,
         accounts_payload=accounts_payload,

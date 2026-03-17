@@ -299,12 +299,39 @@ class LiveRiskManager:
             reset_counter(self._store, counter_name="rate_limit_error", source="risk_submit_ok", ts_ms=ts_ms)
             reset_counter(self._store, counter_name="auth_error", source="risk_submit_ok", ts_ms=ts_ms)
             reset_counter(self._store, counter_name="nonce_error", source="risk_submit_ok", ts_ms=ts_ms)
+            order_uuid = _as_optional_str(getattr(result, "upbit_uuid", None)) or f"pending-{intent.intent_id}"
+            order_identifier = _as_optional_str(getattr(result, "identifier", None)) or identifier
+            self._store.upsert_order(
+                OrderRecord(
+                    uuid=order_uuid,
+                    identifier=order_identifier,
+                    market=plan.market,
+                    side="ask",
+                    ord_type="limit",
+                    price=exit_price,
+                    volume_req=plan.qty,
+                    volume_filled=0.0,
+                    state="wait",
+                    created_ts=ts_ms,
+                    updated_ts=ts_ms,
+                    intent_id=intent.intent_id,
+                    tp_sl_link=plan.plan_id,
+                    local_state="OPEN",
+                    raw_exchange_state="wait",
+                    last_event_name="SUBMIT_ACCEPTED",
+                    event_source="risk_manager",
+                    replace_seq=int(plan.replace_attempt),
+                    root_order_uuid=order_uuid,
+                    prev_order_uuid=None,
+                    prev_order_identifier=None,
+                )
+            )
             updated = replace(
                 plan,
                 state="EXITING",
                 last_action_ts_ms=ts_ms,
-                current_exit_order_uuid=_as_optional_str(getattr(result, "upbit_uuid", None)),
-                current_exit_order_identifier=_as_optional_str(getattr(result, "identifier", None)) or identifier,
+                current_exit_order_uuid=order_uuid,
+                current_exit_order_identifier=order_identifier,
                 updated_ts=ts_ms,
             )
             return updated, {

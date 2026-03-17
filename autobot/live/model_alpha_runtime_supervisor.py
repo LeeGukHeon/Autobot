@@ -68,9 +68,15 @@ def supervise_open_strategy_orders(
             continue
         profile = _resolve_exec_profile(execution_meta)
         replace_count = max(int(order.get("replace_seq") or 0), 0)
+        last_activity_ts_ms = max(
+            int(order.get("updated_ts") or 0),
+            int(order.get("created_ts") or 0),
+            int(intent.get("ts_ms") or 0),
+        )
         if _timeout_abort_due(
             profile=profile,
             created_ts_ms=int(order.get("created_ts") or intent.get("ts_ms") or ts_ms),
+            last_action_ts_ms=last_activity_ts_ms,
             now_ts_ms=int(ts_ms),
             replace_count=replace_count,
         ):
@@ -142,8 +148,8 @@ def supervise_open_strategy_orders(
             side=side,
             now_ts_ms=int(ts_ms),
             created_ts_ms=int(order.get("created_ts") or intent.get("ts_ms") or ts_ms),
-            last_action_ts_ms=int(order.get("created_ts") or intent.get("ts_ms") or ts_ms),
-            last_replace_ts_ms=int(order.get("created_ts") or intent.get("ts_ms") or ts_ms),
+            last_action_ts_ms=last_activity_ts_ms,
+            last_replace_ts_ms=last_activity_ts_ms,
             replace_count=replace_count,
             remaining_volume=remaining_volume,
             ref_price=current_ref_price,
@@ -294,12 +300,14 @@ def _timeout_abort_due(
     *,
     profile: OrderExecProfile,
     created_ts_ms: int,
+    last_action_ts_ms: int,
     now_ts_ms: int,
     replace_count: int,
 ) -> bool:
     if int(replace_count) < int(profile.max_replaces):
         return False
-    age_ms = max(int(now_ts_ms) - int(created_ts_ms), 0)
+    baseline_ts_ms = max(int(last_action_ts_ms), int(created_ts_ms))
+    age_ms = max(int(now_ts_ms) - baseline_ts_ms, 0)
     return age_ms >= max(int(profile.timeout_ms), int(profile.replace_interval_ms))
 
 

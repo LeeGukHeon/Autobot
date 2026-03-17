@@ -188,3 +188,63 @@ def test_ws_asset_event_upserts_and_deletes_position(tmp_path: Path) -> None:
     assert upsert_action["type"] == "ws_asset_position_upsert"
     assert delete_action["type"] == "ws_asset_position_delete"
     assert positions == []
+
+
+def test_ws_asset_event_bootstraps_managed_position_and_risk_plan_from_model_entry_intent(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-entry-1",
+                ts_ms=1_000,
+                market="KRW-BTC",
+                side="bid",
+                price=100_000_000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(
+                    {
+                        "model_exit_plan": {
+                            "source": "model_alpha_v1",
+                            "mode": "hold",
+                            "hold_bars": 6,
+                            "timeout_delta_ms": 1_800_000,
+                            "tp_pct": 0.02,
+                            "sl_pct": 0.01,
+                            "trailing_pct": 0.015,
+                        },
+                        "submit_result": {"accepted": True, "order_uuid": "entry-order-1"},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+
+        action = apply_private_ws_event(
+            store=store,
+            event=MyAssetEvent(
+                ts_ms=2_000,
+                currency="BTC",
+                balance=0.01,
+                locked=0.0,
+                avg_buy_price=100_000_000.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+        )
+        position = store.position_by_market(market="KRW-BTC")
+        plans = store.list_risk_plans(market="KRW-BTC")
+
+    assert action["type"] == "ws_asset_position_upsert"
+    assert action["managed"] is True
+    assert position is not None
+    assert position["managed"] is True
+    assert position["tp"]["tp_pct"] == 2.0
+    assert position["sl"]["sl_pct"] == 1.0
+    assert position["trailing"]["trail_pct"] == 0.015
+    assert len(plans) == 1
+    assert plans[0]["plan_source"] == "model_alpha_v1"
+    assert plans[0]["source_intent_id"] == "intent-entry-1"

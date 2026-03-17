@@ -161,6 +161,7 @@ def test_risk_manager_tp_trigger_submits_exit(tmp_path: Path) -> None:
         )
         actions = manager.evaluate_price(market="KRW-BTC", last_price=104.0, ts_ms=2000)
         persisted = store.risk_plan_by_id(plan_id=plan.plan_id)
+        exit_order = store.order_by_uuid(uuid="exit-uuid-1")
 
     assert any(item["type"] == "risk_exit_submitted" for item in actions)
     assert len(gateway.submit_calls) == 1
@@ -170,6 +171,9 @@ def test_risk_manager_tp_trigger_submits_exit(tmp_path: Path) -> None:
     assert persisted is not None
     assert persisted["state"] == "EXITING"
     assert persisted["current_exit_order_uuid"] == "exit-uuid-1"
+    assert exit_order is not None
+    assert exit_order["tp_sl_link"] == plan.plan_id
+    assert exit_order["local_state"] == "OPEN"
 
 
 def test_risk_manager_trailing_watermark_then_trigger(tmp_path: Path) -> None:

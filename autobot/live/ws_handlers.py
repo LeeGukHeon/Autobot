@@ -8,8 +8,10 @@ from typing import Any
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
 from .identifier import extract_intent_id_from_identifier, extract_run_token_from_identifier, is_bot_identifier
+from .model_alpha_projection import find_latest_model_entry_intent
+from .model_risk_plan import build_model_derived_risk_records
 from .order_state import normalize_order_state
-from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord
+from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 
 
 def apply_private_ws_event(
@@ -171,34 +173,80 @@ def _apply_my_asset_event(
             store.delete_position(market=market)
         return {"type": "ws_asset_position_delete", "market": market}
 
-    managed = bool(existing.get("managed")) if existing is not None else False
-    tp_json = json.dumps(existing.get("tp") if existing is not None else {}, ensure_ascii=False, sort_keys=True)
-    sl_json = json.dumps(existing.get("sl") if existing is not None else {}, ensure_ascii=False, sort_keys=True)
-    trailing_json = json.dumps(
-        existing.get("trailing") if existing is not None else {},
-        ensure_ascii=False,
-        sort_keys=True,
+    managed_record, managed_plan = _resolve_model_managed_asset_position(
+        store=store,
+        market=market,
+        currency=currency,
+        base_amount=total,
+        avg_entry_price=float(event.avg_buy_price or 0.0),
+        ts_ms=int(event.ts_ms),
     )
-    store.upsert_position(
-        PositionRecord(
-            market=market,
-            base_currency=currency,
-            base_amount=total,
-            avg_entry_price=float(event.avg_buy_price or 0.0),
-            updated_ts=int(event.ts_ms),
-            tp_json=tp_json,
-            sl_json=sl_json,
-            trailing_json=trailing_json,
-            managed=managed,
+    if managed_record is not None:
+        store.upsert_position(managed_record)
+        if managed_plan is not None and not store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING")):
+            store.upsert_risk_plan(managed_plan)
+        managed = True
+    else:
+        managed = bool(existing.get("managed")) if existing is not None else False
+        tp_json = json.dumps(existing.get("tp") if existing is not None else {}, ensure_ascii=False, sort_keys=True)
+        sl_json = json.dumps(existing.get("sl") if existing is not None else {}, ensure_ascii=False, sort_keys=True)
+        trailing_json = json.dumps(
+            existing.get("trailing") if existing is not None else {},
+            ensure_ascii=False,
+            sort_keys=True,
         )
-    )
+        store.upsert_position(
+            PositionRecord(
+                market=market,
+                base_currency=currency,
+                base_amount=total,
+                avg_entry_price=float(event.avg_buy_price or 0.0),
+                updated_ts=int(event.ts_ms),
+                tp_json=tp_json,
+                sl_json=sl_json,
+                trailing_json=trailing_json,
+                managed=managed,
+            )
+        )
     return {
         "type": "ws_asset_position_upsert",
         "market": market,
         "base_amount": total,
         "avg_entry_price": float(event.avg_buy_price or 0.0),
         "managed": managed,
+        "plan_id": managed_plan.plan_id if managed_plan is not None else None,
     }
+
+
+def _resolve_model_managed_asset_position(
+    *,
+    store: LiveStateStore,
+    market: str,
+    currency: str,
+    base_amount: float,
+    avg_entry_price: float,
+    ts_ms: int,
+) -> tuple[PositionRecord | None, RiskPlanRecord | None]:
+    active_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
+    if active_plans:
+        return None, None
+    entry_intent = find_latest_model_entry_intent(
+        store=store,
+        market=market,
+        position={"market": market, "base_amount": base_amount, "avg_entry_price": avg_entry_price},
+    )
+    if entry_intent is None:
+        return None, None
+    return build_model_derived_risk_records(
+        market=market,
+        base_currency=currency,
+        base_amount=base_amount,
+        avg_entry_price=avg_entry_price,
+        plan_payload=entry_intent["plan_payload"],
+        created_ts=int(entry_intent["created_ts"]),
+        updated_ts=int(ts_ms),
+        intent_id=entry_intent["intent_id"],
+    )
 
 
 def _as_optional_str(value: object) -> str | None:

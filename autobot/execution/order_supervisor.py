@@ -162,8 +162,9 @@ def evaluate_supervisor_action(
 ) -> SupervisorAction:
     normalized = normalize_order_exec_profile(profile)
     now_value = int(now_ts_ms)
+    last_activity_ts_ms = max(int(created_ts_ms), int(last_action_ts_ms))
     due_by_interval = (now_value - int(last_action_ts_ms)) >= int(normalized.replace_interval_ms)
-    due_by_timeout = (now_value - int(created_ts_ms)) >= int(normalized.timeout_ms)
+    due_by_timeout = (now_value - last_activity_ts_ms) >= int(normalized.timeout_ms)
     if not due_by_interval and not due_by_timeout:
         return SupervisorAction(action=SUPERVISOR_ACTION_WAIT)
 

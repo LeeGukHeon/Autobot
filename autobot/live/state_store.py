@@ -301,13 +301,24 @@ class LiveStateStore:
     def upsert_order(self, record: OrderRecord) -> None:
         previous = self.order_by_uuid(uuid=record.uuid)
         identifier = str(record.identifier or "").strip()
+        rebind_from_uuid: str | None = None
         if identifier:
             existing_identifier = self.order_by_identifier(identifier=identifier)
             if existing_identifier is not None and str(existing_identifier.get("uuid") or "") != record.uuid:
-                raise ValueError(
-                    f"IDENTIFIER_COLLISION: identifier={identifier} existing_uuid={existing_identifier.get('uuid')} "
-                    f"incoming_uuid={record.uuid}"
-                )
+                if _can_rebind_pending_identifier(
+                    existing_identifier=existing_identifier,
+                    incoming_uuid=record.uuid,
+                    market=record.market,
+                    side=record.side,
+                ):
+                    rebind_from_uuid = str(existing_identifier.get("uuid") or "").strip() or None
+                    if previous is None:
+                        previous = existing_identifier
+                else:
+                    raise ValueError(
+                        f"IDENTIFIER_COLLISION: identifier={identifier} existing_uuid={existing_identifier.get('uuid')} "
+                        f"incoming_uuid={record.uuid}"
+                    )
         previous_local_state = str(previous.get("local_state") or "").strip() if previous is not None else None
         normalized = normalize_order_state(
             exchange_state=record.raw_exchange_state if record.raw_exchange_state is not None else record.state,
@@ -316,8 +327,42 @@ class LiveStateStore:
         )
         requested_local_state = record.local_state or normalized.local_state
         resolved_local_state, transition_ok = resolve_transition(previous_local_state, requested_local_state)
+        created_ts = _min_positive_int(
+            int(record.created_ts),
+            int(previous.get("created_ts") or 0) if previous is not None else 0,
+        ) or int(record.created_ts)
         root_order_uuid = record.root_order_uuid or (previous.get("root_order_uuid") if previous is not None else None) or record.uuid
+        if _is_pending_order_uuid(root_order_uuid) and not _is_pending_order_uuid(record.uuid):
+            root_order_uuid = record.uuid
+        intent_id = record.intent_id or (str(previous.get("intent_id") or "").strip() if previous is not None else None) or None
+        tp_sl_link = record.tp_sl_link or (str(previous.get("tp_sl_link") or "").strip() if previous is not None else None) or None
+        replace_seq = max(
+            int(record.replace_seq),
+            int(previous.get("replace_seq") or 0) if previous is not None else 0,
+        )
+        prev_order_uuid = record.prev_order_uuid or (str(previous.get("prev_order_uuid") or "").strip() if previous is not None else None) or None
+        prev_order_identifier = (
+            record.prev_order_identifier
+            or (str(previous.get("prev_order_identifier") or "").strip() if previous is not None else None)
+            or None
+        )
+        executed_funds = (
+            record.executed_funds if record.executed_funds is not None else (previous.get("executed_funds") if previous is not None else None)
+        )
+        paid_fee = record.paid_fee if record.paid_fee is not None else (previous.get("paid_fee") if previous is not None else None)
+        reserved_fee = (
+            record.reserved_fee if record.reserved_fee is not None else (previous.get("reserved_fee") if previous is not None else None)
+        )
+        remaining_fee = (
+            record.remaining_fee if record.remaining_fee is not None else (previous.get("remaining_fee") if previous is not None else None)
+        )
         with self._conn:
+            if rebind_from_uuid is not None:
+                self._conn.execute("DELETE FROM orders WHERE uuid = ?", (rebind_from_uuid,))
+                self._rebind_order_uuid_references(
+                    previous_uuid=rebind_from_uuid,
+                    new_uuid=str(record.uuid),
+                )
             self._conn.execute(
                 """
                 INSERT INTO orders (
@@ -368,22 +413,22 @@ class LiveStateStore:
                     record.volume_req,
                     float(record.volume_filled),
                     record.state,
-                    int(record.created_ts),
+                    created_ts,
                     int(record.updated_ts),
-                    record.intent_id,
-                    record.tp_sl_link,
+                    intent_id,
+                    tp_sl_link,
                     resolved_local_state,
                     record.raw_exchange_state if record.raw_exchange_state is not None else normalized.exchange_state or record.state,
                     record.last_event_name or normalized.event_name,
                     record.event_source,
-                    int(record.replace_seq),
+                    replace_seq,
                     root_order_uuid,
-                    record.prev_order_uuid,
-                    record.prev_order_identifier,
-                    record.executed_funds,
-                    record.paid_fee,
-                    record.reserved_fee,
-                    record.remaining_fee,
+                    prev_order_uuid,
+                    prev_order_identifier,
+                    executed_funds,
+                    paid_fee,
+                    reserved_fee,
+                    remaining_fee,
                     record.exchange_payload_json,
                 ),
             )
@@ -413,6 +458,38 @@ class LiveStateStore:
                         ),
                     ),
                 )
+
+    def _rebind_order_uuid_references(self, *, previous_uuid: str, new_uuid: str) -> None:
+        if not previous_uuid or not new_uuid or previous_uuid == new_uuid:
+            return
+        self._conn.execute(
+            "UPDATE trade_journal SET entry_order_uuid = ? WHERE entry_order_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
+        self._conn.execute(
+            "UPDATE trade_journal SET exit_order_uuid = ? WHERE exit_order_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
+        self._conn.execute(
+            "UPDATE risk_plans SET current_exit_order_uuid = ? WHERE current_exit_order_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
+        self._conn.execute(
+            "UPDATE orders SET root_order_uuid = ? WHERE root_order_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
+        self._conn.execute(
+            "UPDATE orders SET prev_order_uuid = ? WHERE prev_order_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
+        self._conn.execute(
+            "UPDATE order_lineage SET prev_uuid = ? WHERE prev_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
+        self._conn.execute(
+            "UPDATE order_lineage SET new_uuid = ? WHERE new_uuid = ?",
+            (new_uuid, previous_uuid),
+        )
 
     def mark_order_state(self, *, uuid: str, state: str, updated_ts: int | None = None) -> None:
         now_ts = int(updated_ts if updated_ts is not None else time.time() * 1000)
@@ -1363,6 +1440,40 @@ def _row_to_breaker_event(row: sqlite3.Row) -> dict[str, Any]:
         "reason_codes": _parse_json_list(row["reason_codes_json"]),
         "details": _parse_json(row["details_json"]),
     }
+
+
+def _is_pending_order_uuid(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return text.startswith("pending-") or text.startswith("pending:")
+
+
+def _can_rebind_pending_identifier(
+    *,
+    existing_identifier: dict[str, Any],
+    incoming_uuid: str,
+    market: str | None,
+    side: str | None,
+) -> bool:
+    existing_uuid = str(existing_identifier.get("uuid") or "").strip()
+    incoming_uuid_value = str(incoming_uuid or "").strip()
+    if not _is_pending_order_uuid(existing_uuid) or _is_pending_order_uuid(incoming_uuid_value):
+        return False
+    existing_market = str(existing_identifier.get("market") or "").strip().upper()
+    incoming_market = str(market or "").strip().upper()
+    if existing_market and incoming_market and existing_market != incoming_market:
+        return False
+    existing_side = str(existing_identifier.get("side") or "").strip().lower()
+    incoming_side = str(side or "").strip().lower()
+    if existing_side and incoming_side and existing_side != incoming_side:
+        return False
+    return bool(incoming_uuid_value)
+
+
+def _min_positive_int(*values: int) -> int | None:
+    candidates = [int(value) for value in values if int(value) > 0]
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def _parse_json(raw: object) -> dict[str, Any]:

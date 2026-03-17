@@ -7,6 +7,7 @@ from autobot.execution.order_supervisor import (
     REASON_MIN_NOTIONAL_DUST_ABORT,
     SUPERVISOR_ACTION_ABORT,
     SUPERVISOR_ACTION_REPLACE,
+    SUPERVISOR_ACTION_WAIT,
     OrderExecProfile,
     build_limit_price_from_mode,
     evaluate_supervisor_action,
@@ -113,3 +114,31 @@ def test_timeout_replace_action() -> None:
     )
     assert action.action == SUPERVISOR_ACTION_REPLACE
     assert action.target_price is not None
+
+
+def test_recent_order_activity_defers_timeout_replace() -> None:
+    profile = OrderExecProfile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=3,
+        price_mode=PRICE_MODE_PASSIVE_MAKER,
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1,
+    )
+    action = evaluate_supervisor_action(
+        profile=profile,
+        side="bid",
+        now_ts_ms=10_000,
+        created_ts_ms=1_000,
+        last_action_ts_ms=9_500,
+        last_replace_ts_ms=9_500,
+        replace_count=0,
+        remaining_volume=1.0,
+        ref_price=10_000.0,
+        tick_size=1.0,
+        initial_ref_price=10_000.0,
+        min_total=5_000.0,
+        replaces_last_minute=0,
+        max_replaces_per_min_per_market=10,
+    )
+    assert action.action == SUPERVISOR_ACTION_WAIT

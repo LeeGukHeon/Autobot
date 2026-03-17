@@ -58,6 +58,17 @@ class _PrivateClient:
         return {"ok": True, "uuid": uuid, "identifier": identifier}
 
 
+class _ChanceFailurePrivateClient(_PrivateClient):
+    def chance(self, *, market: str):  # noqa: ANN201
+        _ = market
+        raise RuntimeError("chance failed")
+
+
+class _AccountsFailurePrivateClient(_PrivateClient):
+    def accounts(self):  # noqa: ANN201
+        raise RuntimeError("accounts failed")
+
+
 class _PublicClient:
     def markets(self, *, is_details: bool = False):  # noqa: ANN201
         _ = is_details
@@ -386,6 +397,47 @@ def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: P
     assert summary["submitted_intents_total"] == 0
     assert intents
     assert intents[0]["status"] == "SHADOW"
+
+
+@pytest.mark.parametrize(
+    ("client_factory", "expected_reason"),
+    [
+        (_ChanceFailurePrivateClient, "CHANCE_LOOKUP_FAILED"),
+        (_AccountsFailurePrivateClient, "ACCOUNTS_LOOKUP_FAILED"),
+    ],
+)
+def test_live_model_alpha_runtime_skips_lookup_failures_without_halting(
+    tmp_path: Path,
+    monkeypatch,
+    client_factory,
+    expected_reason: str,
+) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="shadow")
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=client_factory(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=None,
+            )
+        )
+        intents = store.list_intents()
+
+    assert summary["halted"] is False
+    assert summary["skipped_intents_total"] == 1
+    assert summary["stream_stop_reason"] == "STREAM_COMPLETED"
+    assert intents
+    assert intents[0]["status"] == "SKIPPED"
+    assert intents[0]["meta"]["skip_reason"] == expected_reason
 
 
 def test_live_model_alpha_runtime_canary_submits_when_armed(tmp_path: Path, monkeypatch) -> None:
@@ -3012,6 +3064,89 @@ def test_supervise_open_strategy_orders_aborts_stale_bid_order(tmp_path: Path) -
     assert journal["status"] == "CANCELLED_ENTRY"
     assert journal["close_reason_code"] == "MAX_REPLACES_REACHED"
     assert journal["close_mode"] == "entry_order_timeout"
+
+
+def test_supervise_open_strategy_orders_waits_when_order_was_recently_updated(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=1,
+        price_mode="JOIN",
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1,
+    )
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-recent-1",
+                ts_ms=1_000,
+                market="KRW-DOGE",
+                side="bid",
+                price=134.0,
+                volume=41.9,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 135.0,
+                            "effective_ref_price": 135.0,
+                            "requested_price": 134.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                        "strategy": {"meta": {"model_prob": 0.79}},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="recent-order-1",
+                identifier="recent-order-1",
+                market="KRW-DOGE",
+                side="bid",
+                ord_type="limit",
+                price=134.0,
+                volume_req=41.9,
+                volume_filled=10.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=9_900,
+                intent_id="intent-recent-1",
+                local_state="PARTIAL",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="private_ws",
+                replace_seq=0,
+                root_order_uuid="recent-order-1",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_StaticPublicClient("KRW-DOGE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-DOGE": 135.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=10_000,
+        )
+        order = store.order_by_uuid(uuid="recent-order-1")
+
+    assert report["waited"] == 1
+    assert report["replaced"] == 0
+    assert report["aborted"] == 0
+    assert gateway.replace_calls == []
+    assert gateway.cancel_calls == []
+    assert order is not None
+    assert order["local_state"] == "PARTIAL"
 
 
 def test_supervise_open_strategy_orders_aborts_stale_bid_order_when_execution_meta_is_missing(tmp_path: Path) -> None:
