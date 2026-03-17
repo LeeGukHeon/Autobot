@@ -1744,9 +1744,10 @@ def _has_verified_exit_order(*, order: dict[str, Any] | None) -> bool:
 def _is_manual_cancel_backfill(entry_order: dict[str, Any] | None) -> bool:
     if not isinstance(entry_order, dict):
         return False
+    last_event_name = _as_optional_str(entry_order.get("last_event_name"))
     return (
         _as_optional_str(entry_order.get("event_source")) == "closed_orders_backfill"
-        and _as_optional_str(entry_order.get("last_event_name")) == "CLOSED_ORDERS_BACKFILL"
+        and last_event_name in {"CLOSED_ORDERS_BACKFILL", "MANUAL_CANCEL_DETECTED"}
         and str(entry_order.get("state") or "").strip().lower() == "cancel"
     )
 
