@@ -9,6 +9,7 @@ param(
     [string]$PaperRuntimeRole = "",
     [string]$PaperLaneName = "v4",
     [string]$PaperModelRefPinned = "",
+    [switch]$BootstrapChampion,
     [switch]$NoBootstrapChampion,
     [switch]$NoStart,
     [switch]$NoEnable,
@@ -108,15 +109,24 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $runtimeSpec = Get-PaperRuntimeSpec -Preset $PaperPreset -UnitName $PaperUnitName
 $effectiveRuntimeRole = if ([string]::IsNullOrWhiteSpace($PaperRuntimeRole)) { [string]$runtimeSpec.RuntimeRole } else { [string]$PaperRuntimeRole }
 $resolvedPaperCliArgs = @(Expand-DelimitedStringArray -Value $PaperCliArgs)
+$requiresChampionPointer = (
+    -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
+    -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
+)
+$championPointerMissing = (
+    $requiresChampionPointer `
+    -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $runtimeSpec.ModelFamily -PointerName "champion")
+)
+if ($BootstrapChampion -and $NoBootstrapChampion) {
+    throw "BootstrapChampion and NoBootstrapChampion cannot both be set"
+}
 
 if (
     -not $DryRun `
     -and `
-    -not $NoBootstrapChampion `
-    -and -not $NoStart `
-    -and -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
-    -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_") `
-    -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $runtimeSpec.ModelFamily -PointerName "champion")
+    $BootstrapChampion `
+    -and `
+    $championPointerMissing
 ) {
     $bootstrapCompleted = $false
     foreach ($bootstrapRef in @($runtimeSpec.BootstrapRefs)) {
@@ -140,6 +150,17 @@ if (
     if (-not $bootstrapCompleted -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $runtimeSpec.ModelFamily -PointerName "champion")) {
         throw ("runtime preset '{0}' requires champion pointer for family '{1}', but bootstrap failed" -f $PaperPreset, $runtimeSpec.ModelFamily)
     }
+}
+if (
+    -not $DryRun `
+    -and `
+    -not $NoStart `
+    -and `
+    $championPointerMissing `
+    -and `
+    (-not $BootstrapChampion)
+) {
+    throw ("runtime preset '{0}' requires champion pointer for family '{1}', but install no longer auto-bootstraps. Promote explicitly or rerun with -BootstrapChampion." -f $PaperPreset, $runtimeSpec.ModelFamily)
 }
 
 $paperArgList = @(
@@ -184,6 +205,7 @@ WantedBy=multi-user.target
 
 if ($DryRun) {
     Write-Host ("[paper-install][dry-run] unit={0}" -f $PaperUnitName)
+    Write-Host ("[paper-install][dry-run] bootstrap_champion={0}" -f ([bool]$BootstrapChampion))
     Write-Host $paperUnitContent
     exit 0
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -52,6 +53,91 @@ class _PointerFlipClient(_QuietClient):
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _make_fake_sudo(tmp_path: Path) -> Path:
+    if os.name == "nt":
+        wrapper_path = tmp_path / "sudo.cmd"
+        wrapper_path.write_text("@echo off\r\n%*\r\n", encoding="utf-8")
+    else:
+        wrapper_path = tmp_path / "sudo"
+        wrapper_path.write_text("#!/bin/sh\n\"$@\"\n", encoding="utf-8")
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def _make_fake_systemctl(tmp_path: Path) -> Path:
+    if os.name == "nt":
+        wrapper_path = tmp_path / "systemctl.cmd"
+        wrapper_path.write_text(
+            "@echo off\r\n"
+            "if not \"%FAKE_SYSTEMCTL_LOG%\"==\"\" echo %*>>\"%FAKE_SYSTEMCTL_LOG%\"\r\n"
+            "if \"%1\"==\"is-active\" exit /b 1\r\n"
+            "exit /b 0\r\n",
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "systemctl"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"$FAKE_SYSTEMCTL_LOG\" ]; then\n"
+            "  echo \"$@\" >> \"$FAKE_SYSTEMCTL_LOG\"\n"
+            "fi\n"
+            "if [ \"$1\" = \"is-active\" ]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def _make_fake_install(tmp_path: Path) -> Path:
+    if os.name == "nt":
+        wrapper_path = tmp_path / "install.cmd"
+        wrapper_path.write_text(
+            "@echo off\r\n"
+            "if not \"%FAKE_INSTALL_LOG%\"==\"\" echo %*>>\"%FAKE_INSTALL_LOG%\"\r\n"
+            "exit /b 0\r\n",
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "install"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"$FAKE_INSTALL_LOG\" ]; then\n"
+            "  echo \"$@\" >> \"$FAKE_INSTALL_LOG\"\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def _make_fake_python_logger(tmp_path: Path) -> Path:
+    if os.name == "nt":
+        wrapper_path = tmp_path / "fake_python.cmd"
+        wrapper_path.write_text(
+            "@echo off\r\n"
+            "if not \"%FAKE_PYTHON_LOG%\"==\"\" echo %*>>\"%FAKE_PYTHON_LOG%\"\r\n"
+            "echo {}\r\n"
+            "exit /b 0\r\n",
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "fake_python"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"$FAKE_PYTHON_LOG\" ]; then\n"
+            "  echo \"$@\" >> \"$FAKE_PYTHON_LOG\"\n"
+            "fi\n"
+            "printf '{}\\n'\n",
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
 
 
 def _ts_ms_to_iso(ts_ms: int) -> str:
@@ -512,3 +598,101 @@ def test_runtime_installer_dry_run_exposes_model_contract_envs() -> None:
     stdout = completed.stdout
     assert "Environment=AUTOBOT_RUNTIME_MODEL_REF_SOURCE=champion_v4" in stdout
     assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+
+
+def test_runtime_installer_requires_explicit_bootstrap_when_champion_missing(tmp_path: Path) -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer test")
+    project_root = tmp_path / "project"
+    (project_root / "models" / "registry" / "train_v4_crypto_cs").mkdir(parents=True, exist_ok=True)
+    wrappers_dir = tmp_path / "wrappers"
+    wrappers_dir.mkdir()
+    _make_fake_sudo(wrappers_dir)
+    _make_fake_systemctl(wrappers_dir)
+    _make_fake_install(wrappers_dir)
+    fake_python = _make_fake_python_logger(wrappers_dir)
+    python_log = tmp_path / "python.log"
+
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-NoEnable",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(wrappers_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_PYTHON_LOG": str(python_log),
+        },
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "no longer auto-bootstraps" in (completed.stdout + completed.stderr)
+    assert not python_log.exists() or python_log.read_text(encoding="utf-8").strip() == ""
+
+
+def test_runtime_installer_only_bootstraps_when_explicitly_requested(tmp_path: Path) -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer test")
+    project_root = tmp_path / "project"
+    (project_root / "models" / "registry" / "train_v4_crypto_cs").mkdir(parents=True, exist_ok=True)
+    wrappers_dir = tmp_path / "wrappers"
+    wrappers_dir.mkdir()
+    _make_fake_sudo(wrappers_dir)
+    _make_fake_systemctl(wrappers_dir)
+    _make_fake_install(wrappers_dir)
+    fake_python = _make_fake_python_logger(wrappers_dir)
+    python_log = tmp_path / "python.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    install_log = tmp_path / "install.log"
+
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-BootstrapChampion",
+            "-NoEnable",
+            "-NoStart",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(wrappers_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_PYTHON_LOG": str(python_log),
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+            "FAKE_INSTALL_LOG": str(install_log),
+        },
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    assert "[paper-install][bootstrap]" in completed.stdout
+    python_args = python_log.read_text(encoding="utf-8")
+    assert "autobot.cli model promote" in python_args
+    assert "latest_candidate_v4" in python_args
+    assert "daemon-reload" in systemctl_log.read_text(encoding="utf-8")
+    assert install_log.exists()

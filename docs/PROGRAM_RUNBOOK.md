@@ -639,6 +639,7 @@ Operational intent:
 - local changes are committed and pushed to GitHub
 - server changes are applied by `git pull origin main`
 - services are restarted only if the changed code path requires runtime reload
+- if a systemd unit template or installer contract changes, rerun the corresponding installer script; `git pull` plus service restart alone is not sufficient
 
 ## 14. Daily Training / Candidate / Promotion Loop
 

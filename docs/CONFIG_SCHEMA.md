@@ -570,7 +570,8 @@
   - when the loaded model run contains `selection_recommendations.json`, runtime uses the learned recommendation entry for the active `registry_threshold_key` instead of these fallback breadth values
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
   - current default install target is `autobot-paper-v4.service` + `live_v4`
-  - `live_v3/live_v4/offline_v4` preset installs now auto-bootstrap the corresponding `champion` pointer from the latest candidate/latest run when the family has no champion yet
+  - `live_v3/live_v4/offline_v4` preset installs no longer auto-bootstrap the corresponding `champion` pointer
+  - if the family has no `champion` pointer, promote explicitly first or rerun the installer with `-BootstrapChampion`
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
   - direct invocation defaults now match the shared fixed compare profile:
     - `top_pct=0.50`

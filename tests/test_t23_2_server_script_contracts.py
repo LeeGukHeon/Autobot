@@ -177,3 +177,11 @@ def test_t23_2_runtime_installer_accepts_serialized_paper_cli_args() -> None:
 
     assert "--model-ref" in stdout
     assert "run-123" in stdout
+    assert "bootstrap_champion=False" in stdout
+
+
+def test_t23_2_runtime_installer_keeps_explicit_bootstrap_switch() -> None:
+    source = (REPO_ROOT / "scripts" / "install_server_runtime_services.ps1").read_text(encoding="utf-8")
+
+    assert '[switch]$BootstrapChampion' in source
+    assert 'install no longer auto-bootstraps' in source
