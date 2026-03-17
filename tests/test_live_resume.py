@@ -78,6 +78,76 @@ def test_resume_relinks_open_exit_order(tmp_path: Path) -> None:
     assert plan["trailing"]["high_watermark_price_str"] == "110000000"
 
 
+def test_resume_relinks_open_exit_order_by_identifier_when_uuid_is_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-by-id-1",
+                identifier="AUTOBOT-RISK-ID-ONLY",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                price=101000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1001,
+                intent_id="intent-exit-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-by-id-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-by-id-1",
+                market="KRW-BTC",
+                side="long",
+                entry_price_str="100000000",
+                qty_str="0.01",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=950,
+                last_action_ts_ms=960,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier="AUTOBOT-RISK-ID-ONLY",
+                replace_attempt=0,
+                created_ts=900,
+                updated_ts=960,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-entry-id-only",
+            )
+        )
+
+        report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
+        plan = store.risk_plan_by_id(plan_id="plan-by-id-1")
+
+    assert report["halted"] is False
+    assert report["counts"]["plans_resumed_exiting"] == 1
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "exit-by-id-1"
+    assert plan["current_exit_order_identifier"] == "AUTOBOT-RISK-ID-ONLY"
+    assert plan["source_intent_id"] == "intent-entry-id-only"
+
+
 def test_resume_preserves_model_derived_risk_plan_metadata(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -125,6 +195,81 @@ def test_resume_preserves_model_derived_risk_plan_metadata(tmp_path: Path) -> No
     assert plan["timeout_ts_ms"] == 1801000
     assert plan["plan_source"] == "model_alpha_v1"
     assert plan["source_intent_id"] == "intent-1"
+
+
+def test_resume_preserves_partial_position_model_metadata_when_exit_relinks(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=5.0,
+                avg_entry_price=442.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-partial-kite-1",
+                identifier="AUTOBOT-RISK-PARTIAL-KITE",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=445.0,
+                volume_req=5.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1001,
+                intent_id="intent-exit-partial-kite",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-partial-kite-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-partial-kite",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="442",
+                qty_str="5",
+                tp_enabled=True,
+                tp_pct=2.0,
+                sl_enabled=True,
+                sl_pct=1.0,
+                trailing_enabled=True,
+                trail_pct=0.015,
+                state="EXITING",
+                last_eval_ts_ms=950,
+                last_action_ts_ms=960,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier="AUTOBOT-RISK-PARTIAL-KITE",
+                replace_attempt=0,
+                created_ts=900,
+                updated_ts=960,
+                timeout_ts_ms=1801000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-entry-partial-kite",
+            )
+        )
+
+        report = resume_risk_plans_after_reconcile(store=store, ts_ms=2000)
+        plan = store.risk_plan_by_id(plan_id="model-risk-partial-kite")
+
+    assert report["halted"] is False
+    assert report["counts"]["plans_resumed_exiting"] == 1
+    assert plan is not None
+    assert plan["state"] == "EXITING"
+    assert plan["current_exit_order_uuid"] == "exit-partial-kite-1"
+    assert plan["qty_str"] == "5"
+    assert plan["plan_source"] == "model_alpha_v1"
+    assert plan["source_intent_id"] == "intent-entry-partial-kite"
+    assert plan["tp"]["tp_pct"] == 2.0
+    assert plan["sl"]["sl_pct"] == 1.0
 
 
 def test_resume_closes_plan_when_position_missing(tmp_path: Path) -> None:
