@@ -17,6 +17,7 @@ from autobot.live.identifier import new_protective_order_identifier
 from autobot.live.order_state import normalize_order_state
 
 from .admissibility import extract_min_total
+from .breakers import arm_breaker
 from .state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 from .trade_journal import cancel_pending_entry_journal, rebind_pending_entry_journal_order
 
@@ -101,7 +102,7 @@ def supervise_open_strategy_orders(
             else:
                 report["failed"] = int(report["failed"]) + 1
             continue
-        market_rules = _resolve_market_rules(
+        market_rules, market_rules_error = _resolve_market_rules(
             client=client,
             public_client=public_client,
             instrument_cache=instrument_cache,
@@ -109,6 +110,19 @@ def supervise_open_strategy_orders(
             side=side,
         )
         if market_rules is None:
+            reason_code = market_rules_error or "MARKET_RULES_UNAVAILABLE"
+            report["evaluated"] = int(report["evaluated"]) + 1
+            report["failed"] = int(report["failed"]) + 1
+            _inc_reason(report["reason_counts"], reason_code)
+            report["results"].append(
+                {
+                    "ok": False,
+                    "action": "SKIP",
+                    "market": market,
+                    "side": side,
+                    "reason_code": reason_code,
+                }
+            )
             continue
         current_ref_price = _resolve_ref_price(
             order=order,
@@ -238,17 +252,17 @@ def _resolve_market_rules(
     instrument_cache: dict[str, dict[str, Any]],
     market: str,
     side: str,
-) -> dict[str, float] | None:
+) -> tuple[dict[str, float] | None, str | None]:
     try:
         chance_payload = client.chance(market=market)
     except Exception:
-        return None
+        return None, "MARKET_RULES_CHANCE_FAILED"
     instrument_payload = instrument_cache.get(market)
     if instrument_payload is None:
         try:
             loaded = public_client.orderbook_instruments([market])
         except Exception:
-            loaded = None
+            return None, "MARKET_RULES_INSTRUMENTS_FAILED"
         if isinstance(loaded, list):
             for item in loaded:
                 if isinstance(item, dict):
@@ -258,7 +272,7 @@ def _resolve_market_rules(
         instrument_payload = instrument_cache.get(market)
     tick_size = _safe_optional_float((instrument_payload or {}).get("tick_size"))
     if tick_size is None or tick_size <= 0.0:
-        return None
+        return None, "MARKET_RULES_TICK_SIZE_UNAVAILABLE"
     try:
         min_total = extract_min_total(
             chance_payload if isinstance(chance_payload, dict) else {},
@@ -266,11 +280,11 @@ def _resolve_market_rules(
             market=market,
         )
     except Exception:
-        return None
+        return None, "MARKET_RULES_MIN_TOTAL_UNAVAILABLE"
     return {
         "tick_size": float(tick_size),
         "min_total": max(float(min_total), 0.0),
-    }
+    }, None
 
 
 def _resolve_ref_price(
@@ -434,16 +448,22 @@ def _replace_open_order(
             "reason_code": reason_code,
             "error": str(getattr(result, "reason", "") or ""),
         }
-    new_uuid = _as_optional_str(getattr(result, "new_order_uuid", None))
+    resolved_new_uuid = _as_optional_str(getattr(result, "new_order_uuid", None))
     new_identifier_value = _as_optional_str(getattr(result, "new_identifier", None)) or new_identifier
-    if new_uuid is None:
+    if resolved_new_uuid is None:
         try:
             lookup = client.order(uuid=None, identifier=new_identifier_value)
         except Exception:
             lookup = None
         if isinstance(lookup, dict):
-            new_uuid = _as_optional_str(lookup.get("uuid"))
+            resolved_new_uuid = _as_optional_str(lookup.get("uuid"))
             new_identifier_value = _as_optional_str(lookup.get("identifier")) or new_identifier_value
+    pending_uuid = _pending_replace_uuid(
+        intent=intent,
+        replace_step=replace_step,
+        ts_ms=int(ts_ms),
+    )
+    new_uuid = resolved_new_uuid or pending_uuid
     _mark_order_cancelled(
         store=store,
         order=order,
@@ -451,33 +471,33 @@ def _replace_open_order(
         event_name="ORDER_REPLACED",
         event_source="live_order_supervisor",
     )
-    if new_uuid is not None:
-        normalized = normalize_order_state(exchange_state="wait", event_name="ORDER_REPLACED")
-        store.upsert_order(
-            OrderRecord(
-                uuid=new_uuid,
-                identifier=new_identifier_value,
-                market=str(order.get("market") or ""),
-                side=_as_optional_str(order.get("side")),
-                ord_type=_as_optional_str(order.get("ord_type")) or "limit",
-                price=float(action.target_price or order.get("price") or 0.0),
-                volume_req=max(float(remaining_volume), 0.0),
-                volume_filled=0.0,
-                state="wait",
-                created_ts=int(ts_ms),
-                updated_ts=int(ts_ms),
-                intent_id=_as_optional_str(intent.get("intent_id")),
-                tp_sl_link=_as_optional_str(order.get("tp_sl_link")),
-                local_state=normalized.local_state,
-                raw_exchange_state=normalized.exchange_state,
-                last_event_name=normalized.event_name,
-                event_source="live_order_supervisor",
-                replace_seq=replace_step,
-                root_order_uuid=_as_optional_str(order.get("root_order_uuid")) or _as_optional_str(order.get("uuid")) or new_uuid,
-                prev_order_uuid=_as_optional_str(order.get("uuid")),
-                prev_order_identifier=_as_optional_str(order.get("identifier")),
-            )
+    normalized = normalize_order_state(exchange_state="wait", event_name="ORDER_REPLACED")
+    store.upsert_order(
+        OrderRecord(
+            uuid=new_uuid,
+            identifier=new_identifier_value,
+            market=str(order.get("market") or ""),
+            side=_as_optional_str(order.get("side")),
+            ord_type=_as_optional_str(order.get("ord_type")) or "limit",
+            price=float(action.target_price or order.get("price") or 0.0),
+            volume_req=max(float(remaining_volume), 0.0),
+            volume_filled=0.0,
+            state="wait",
+            created_ts=int(ts_ms),
+            updated_ts=int(ts_ms),
+            intent_id=_as_optional_str(intent.get("intent_id")),
+            tp_sl_link=_as_optional_str(order.get("tp_sl_link")),
+            local_state=normalized.local_state,
+            raw_exchange_state=normalized.exchange_state,
+            last_event_name=normalized.event_name,
+            event_source="live_order_supervisor",
+            replace_seq=replace_step,
+            root_order_uuid=_as_optional_str(order.get("root_order_uuid")) or _as_optional_str(order.get("uuid")) or new_uuid,
+            prev_order_uuid=_as_optional_str(order.get("uuid")),
+            prev_order_identifier=_as_optional_str(order.get("identifier")),
         )
+    )
+    lineage_warning: str | None = None
     try:
         store.append_order_lineage(
             OrderLineageRecord(
@@ -491,8 +511,21 @@ def _replace_open_order(
                 replace_seq=replace_step,
             )
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        lineage_warning = str(exc)
+        arm_breaker(
+            store,
+            reason_codes=["SUPERVISOR_REPLACE_PERSIST_FAILED"],
+            source="live_order_supervisor",
+            ts_ms=int(ts_ms),
+            details={
+                "intent_id": _as_optional_str(intent.get("intent_id")),
+                "prev_uuid": _as_optional_str(order.get("uuid")),
+                "new_uuid": new_uuid,
+                "new_identifier": new_identifier_value,
+                "error": lineage_warning,
+            },
+        )
     _update_intent_status(
         store=store,
         intent=intent,
@@ -502,7 +535,8 @@ def _replace_open_order(
             "reason_code": reason_code,
             "ts_ms": int(ts_ms),
             "replace_step": replace_step,
-            "new_order_uuid": new_uuid,
+            "new_order_uuid": resolved_new_uuid,
+            "pending_order_uuid": None if resolved_new_uuid is not None else pending_uuid,
             "new_identifier": new_identifier_value,
             "effective_profile": {
                 "timeout_ms": int(profile.timeout_ms),
@@ -539,7 +573,11 @@ def _replace_open_order(
         "side": order.get("side"),
         "reason_code": reason_code,
         "prev_order_uuid": order.get("uuid"),
-        "new_order_uuid": new_uuid,
+        "new_order_uuid": resolved_new_uuid,
+        "pending_order_uuid": None if resolved_new_uuid is not None else pending_uuid,
+        "new_identifier": new_identifier_value,
+        "warning_reason_code": "SUPERVISOR_REPLACE_PERSIST_FAILED" if lineage_warning is not None else None,
+        "warning": lineage_warning,
     }
 
 
@@ -627,6 +665,11 @@ def _update_linked_plan_after_replace(
         replace_attempt=replace_step,
         last_action_ts_ms=ts_ms,
     )
+
+
+def _pending_replace_uuid(*, intent: dict[str, Any], replace_step: int, ts_ms: int) -> str:
+    intent_token = _as_optional_str(intent.get("intent_id")) or "unknown"
+    return f"pending:replace:{intent_token}:{int(replace_step)}:{int(ts_ms)}"
 
 
 def _upsert_plan_from_row(

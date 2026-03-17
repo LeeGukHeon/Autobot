@@ -825,3 +825,188 @@ def test_risk_manager_done_order_replace_reject_does_not_keep_breaker_active(tmp
     assert persisted["last_action_ts_ms"] == 4000
     assert status["active"] is False
     assert status["counters"]["replace_reject"]["count"] == 0
+
+
+def test_risk_manager_exit_stuck_after_replace_budget_exhausted_arms_breaker(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="stuck-exit-1",
+                market="KRW-XRP",
+                side="long",
+                entry_price_str="500",
+                qty_str="100",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                current_exit_order_uuid="exit-prev-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-old",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(order_timeout_sec=1, replace_max=0, exit_aggress_bps=10.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
+        )
+        actions = manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
+        persisted = store.risk_plan_by_id(plan_id="stuck-exit-1")
+        status = breaker_status(store)
+
+    assert any(item["type"] == "risk_exit_stuck_max_replaces" for item in actions)
+    assert gateway.replace_calls == []
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
+    assert persisted["last_action_ts_ms"] == 4000
+    assert status["active"] is True
+    assert status["action"] == ACTION_HALT_NEW_INTENTS
+    assert "RISK_EXIT_STUCK_MAX_REPLACES" in status["reason_codes"]
+
+
+def test_risk_manager_replace_lineage_failure_arms_breaker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-prev-uuid",
+                identifier="AUTOBOT-RISK-old",
+                market="KRW-XRP",
+                side="ask",
+                ord_type="limit",
+                price=490.0,
+                volume_req=100.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-risk-old",
+                tp_sl_link="replace-breaker",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="exit-prev-uuid",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="replace-breaker",
+                market="KRW-XRP",
+                side="long",
+                entry_price_str="500",
+                qty_str="100",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                current_exit_order_uuid="exit-prev-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-old",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+
+        def _raise_lineage(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            raise RuntimeError("lineage db locked")
+
+        monkeypatch.setattr(store, "append_order_lineage", _raise_lineage)
+
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(order_timeout_sec=1, replace_max=2, exit_aggress_bps=10.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
+        )
+        actions = manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
+        persisted = store.risk_plan_by_id(plan_id="replace-breaker")
+        status = breaker_status(store)
+
+    assert any(item["type"] == "risk_exit_replaced" for item in actions)
+    assert actions[0]["warning_reason_code"] == "RISK_EXIT_REPLACE_PERSIST_FAILED"
+    assert persisted is not None
+    assert persisted["replace_attempt"] == 1
+    assert persisted["current_exit_order_identifier"] == actions[0]["identifier"]
+    assert status["active"] is True
+    assert status["action"] == ACTION_HALT_NEW_INTENTS
+    assert "RISK_EXIT_REPLACE_PERSIST_FAILED" in status["reason_codes"]
+
+
+def test_risk_manager_cancel_reject_arms_breaker_after_repeat(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="cancel-reject-1",
+                market="KRW-XRP",
+                side="long",
+                entry_price_str="500",
+                qty_str="100",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                current_exit_order_uuid="exit-prev-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-old",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        manager = LiveRiskManager(store=store, executor_gateway=gateway, config=RiskManagerConfig())
+        first = manager.handle_executor_event(
+            {
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 2000,
+                "payload": {
+                    "event_name": "CANCEL_RESULT",
+                    "identifier": "AUTOBOT-RISK-old",
+                    "state": "cancel_reject",
+                },
+            }
+        )
+        second = manager.handle_executor_event(
+            {
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 3000,
+                "payload": {
+                    "event_name": "CANCEL_RESULT",
+                    "identifier": "AUTOBOT-RISK-old",
+                    "state": "cancel_reject",
+                },
+            }
+        )
+        persisted = store.risk_plan_by_id(plan_id="cancel-reject-1")
+        status = breaker_status(store)
+
+    assert first is not None
+    assert first["type"] == "risk_cancel_reject"
+    assert second is not None
+    assert second["type"] == "risk_cancel_reject"
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
+    assert persisted["last_action_ts_ms"] == 3000
+    assert status["active"] is True
+    assert status["action"] == ACTION_HALT_NEW_INTENTS
+    assert "REPEATED_CANCEL_REJECTS" in status["reason_codes"]

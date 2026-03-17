@@ -183,13 +183,36 @@ class LiveRiskManager:
                     actions.append(action)
             elif updated.state == "EXITING":
                 timeout_ms = max(int(self._config.order_timeout_sec), 1) * 1000
-                if (
-                    updated.last_action_ts_ms > 0
-                    and now_ts - updated.last_action_ts_ms >= timeout_ms
-                    and updated.replace_attempt < max(int(self._config.replace_max), 0)
-                ):
-                    updated, action = self._replace_exit_order(updated, last_price=last_price, ts_ms=now_ts)
-                    actions.append(action)
+                if updated.last_action_ts_ms > 0 and now_ts - updated.last_action_ts_ms >= timeout_ms:
+                    if updated.replace_attempt < max(int(self._config.replace_max), 0):
+                        updated, action = self._replace_exit_order(updated, last_price=last_price, ts_ms=now_ts)
+                        actions.append(action)
+                    else:
+                        breaker_report = arm_breaker(
+                            self._store,
+                            reason_codes=["RISK_EXIT_STUCK_MAX_REPLACES"],
+                            source="risk_manager",
+                            ts_ms=now_ts,
+                            details={
+                                "plan_id": updated.plan_id,
+                                "market": updated.market,
+                                "replace_attempt": int(updated.replace_attempt),
+                                "replace_max": int(self._config.replace_max),
+                                "last_action_ts_ms": int(updated.last_action_ts_ms),
+                                "current_exit_order_uuid": updated.current_exit_order_uuid,
+                                "current_exit_order_identifier": updated.current_exit_order_identifier,
+                            },
+                        )
+                        updated = replace(updated, last_action_ts_ms=now_ts, updated_ts=now_ts)
+                        actions.append(
+                            {
+                                "type": "risk_exit_stuck_max_replaces",
+                                "plan_id": updated.plan_id,
+                                "replace_attempt": int(updated.replace_attempt),
+                                "replace_max": int(self._config.replace_max),
+                                "breaker_report": breaker_report,
+                            }
+                        )
 
             self._upsert_plan(updated)
         return actions
@@ -232,6 +255,7 @@ class LiveRiskManager:
             if not _plan_matches(plan, uuid=uuid, identifier=identifier):
                 continue
             if state == "done":
+                reset_counter(self._store, counter_name="cancel_reject", source="risk_event_done", ts_ms=ts_ms)
                 updated = replace(
                     plan,
                     state="CLOSED",
@@ -240,8 +264,31 @@ class LiveRiskManager:
                 )
                 self._upsert_plan(updated)
                 return {"type": "risk_closed", "plan_id": plan.plan_id}
-            if state in {"cancel", "cancelled", "cancel_reject"}:
-                updated = replace(plan, state="EXITING", updated_ts=ts_ms)
+            if state == "cancel_reject":
+                breaker_report = record_counter_failure(
+                    self._store,
+                    counter_name="cancel_reject",
+                    limit=2,
+                    source="risk_cancel",
+                    ts_ms=ts_ms,
+                    details={
+                        "plan_id": plan.plan_id,
+                        "uuid": uuid,
+                        "identifier": identifier,
+                        "state": state,
+                    },
+                )
+                updated = replace(plan, state="EXITING", last_action_ts_ms=ts_ms, updated_ts=ts_ms)
+                self._upsert_plan(updated)
+                return {
+                    "type": "risk_cancel_reject",
+                    "plan_id": plan.plan_id,
+                    "state": state,
+                    "breaker_report": breaker_report,
+                }
+            if state in {"cancel", "cancelled"}:
+                reset_counter(self._store, counter_name="cancel_reject", source="risk_cancel_cleared", ts_ms=ts_ms)
+                updated = replace(plan, state="EXITING", last_action_ts_ms=ts_ms, updated_ts=ts_ms)
                 self._upsert_plan(updated)
                 return {"type": "risk_exit_still_open", "plan_id": plan.plan_id, "state": state}
         return None
@@ -492,6 +539,7 @@ class LiveRiskManager:
                         prev_order_identifier=previous_identifier,
                     )
                 )
+            lineage_warning: str | None = None
             try:
                 self._store.append_order_lineage(
                     OrderLineageRecord(
@@ -505,8 +553,21 @@ class LiveRiskManager:
                         replace_seq=replace_step,
                     )
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                lineage_warning = str(exc)
+                arm_breaker(
+                    self._store,
+                    reason_codes=["RISK_EXIT_REPLACE_PERSIST_FAILED"],
+                    source="risk_replace",
+                    ts_ms=ts_ms,
+                    details={
+                        "plan_id": plan.plan_id,
+                        "previous_uuid": previous_uuid,
+                        "new_uuid": new_uuid,
+                        "new_identifier": new_identifier_value,
+                        "error": lineage_warning,
+                    },
+                )
             updated = replace(
                 plan,
                 state="EXITING",
@@ -516,12 +577,16 @@ class LiveRiskManager:
                 last_action_ts_ms=ts_ms,
                 updated_ts=ts_ms,
             )
-            return updated, {
+            action = {
                 "type": "risk_exit_replaced",
                 "plan_id": plan.plan_id,
                 "replace_attempt": replace_step,
                 "identifier": updated.current_exit_order_identifier,
             }
+            if lineage_warning is not None:
+                action["warning_reason_code"] = "RISK_EXIT_REPLACE_PERSIST_FAILED"
+                action["warning"] = lineage_warning
+            return updated, action
 
         reject_reason = str(getattr(result, "reason", "") or "")
         if _is_done_order_replace_reject(reject_reason):

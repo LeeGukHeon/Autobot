@@ -3444,6 +3444,130 @@ def test_supervise_open_strategy_orders_replaces_stale_ask_order_and_updates_pla
     assert lineage[0]["new_uuid"] == "replaced-order-1"
 
 
+def test_supervise_open_strategy_orders_keeps_pending_replace_binding_when_new_uuid_is_unresolved(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _PendingReplaceGateway(_OrderSupervisionGateway):
+        def replace_order(self, **kwargs):  # noqa: ANN003, ANN201
+            self.replace_calls.append(dict(kwargs))
+            return SimpleNamespace(
+                accepted=True,
+                reason="replace_accepted_new_order_pending_lookup",
+                cancelled_order_uuid=kwargs.get("prev_order_uuid"),
+                new_order_uuid=None,
+                new_identifier=kwargs.get("new_identifier"),
+            )
+
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=1,
+        price_mode="JOIN",
+        max_chase_bps=10,
+        min_replace_interval_ms_global=1,
+    )
+    gateway = _PendingReplaceGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-pending-replace",
+                ts_ms=1_000,
+                market="KRW-KITE",
+                side="ask",
+                price=100.0,
+                volume=50.0,
+                reason_code="MODEL_ALPHA_EXIT_TIMEOUT",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 100.0,
+                            "effective_ref_price": 100.0,
+                            "requested_price": 100.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                        "strategy": {"meta": {"model_prob": 0.88}},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-kite-pending-replace",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="95",
+                qty_str="50",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="EXITING",
+                current_exit_order_uuid="kite-order-pending",
+                current_exit_order_identifier="kite-order-pending",
+                replace_attempt=0,
+                created_ts=1_000,
+                updated_ts=1_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-kite-entry",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="kite-order-pending",
+                identifier="kite-order-pending",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=50.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=9_000,
+                intent_id="intent-kite-pending-replace",
+                tp_sl_link="plan-kite-pending-replace",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="kite-order-pending",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_StaticPublicClient("KRW-KITE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-KITE": 105.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=10_000,
+        )
+        previous = store.order_by_uuid(uuid="kite-order-pending")
+        plan = store.risk_plan_by_id(plan_id="plan-kite-pending-replace")
+        lineage = store.list_order_lineage(intent_id="intent-kite-pending-replace")
+        pending_uuid = str(report["results"][0]["pending_order_uuid"])
+        pending_order = store.order_by_uuid(uuid=pending_uuid)
+
+    assert report["replaced"] == 1
+    assert report["results"][0]["new_order_uuid"] is None
+    assert report["results"][0]["pending_order_uuid"].startswith("pending:replace:")
+    assert previous is not None
+    assert previous["local_state"] == "CANCELLED"
+    assert pending_order is not None
+    assert pending_order["identifier"] == report["results"][0]["new_identifier"]
+    assert pending_order["local_state"] == "REPLACING"
+    assert plan is not None
+    assert plan["current_exit_order_uuid"] == pending_uuid
+    assert len(lineage) == 1
+    assert lineage[0]["new_uuid"] == pending_uuid
+
+
 def test_supervise_open_strategy_orders_aborts_stale_ask_order_when_execution_meta_is_missing(tmp_path: Path) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
@@ -3618,3 +3742,85 @@ def test_supervise_open_strategy_orders_falls_back_to_other_side_min_total_when_
     assert len(gateway.replace_calls) == 0
     assert order is not None
     assert order["state"] == "cancel"
+
+
+def test_supervise_open_strategy_orders_reports_market_rule_failure_instead_of_silent_skip(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=1,
+        price_mode="JOIN",
+        max_chase_bps=10,
+        min_replace_interval_ms_global=1,
+    )
+    gateway = _OrderSupervisionGateway()
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-market-rules-fail",
+                ts_ms=1_000,
+                market="KRW-KITE",
+                side="ask",
+                price=100.0,
+                volume=50.0,
+                reason_code="MODEL_ALPHA_EXIT_TIMEOUT",
+                status="SUBMITTED",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 100.0,
+                            "effective_ref_price": 100.0,
+                            "requested_price": 100.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="kite-order-market-rules-fail",
+                identifier="kite-order-market-rules-fail",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=50.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-kite-market-rules-fail",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="kite-order-market-rules-fail",
+            )
+        )
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_ChanceFailurePrivateClient(),
+            public_client=_StaticPublicClient("KRW-KITE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-KITE": 105.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=10_000,
+        )
+
+    assert report["evaluated"] == 1
+    assert report["failed"] == 1
+    assert report["replaced"] == 0
+    assert report["aborted"] == 0
+    assert report["reason_counts"]["MARKET_RULES_CHANCE_FAILED"] == 1
+    assert report["results"][0]["reason_code"] == "MARKET_RULES_CHANCE_FAILED"
+    assert gateway.replace_calls == []
+    assert gateway.cancel_calls == []
