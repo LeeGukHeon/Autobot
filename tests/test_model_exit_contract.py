@@ -39,6 +39,11 @@ def test_build_model_alpha_exit_plan_payload_emits_canonical_aliases() -> None:
             exit=ModelAlphaExitSettings(
                 mode="risk",
                 hold_bars=6,
+                risk_scaling_mode="volatility_scaled",
+                risk_vol_feature="rv_36",
+                tp_vol_multiplier=2.5,
+                sl_vol_multiplier=1.5,
+                trailing_vol_multiplier=0.75,
                 tp_pct=0.02,
                 sl_pct=0.01,
                 trailing_pct=0.005,
@@ -53,6 +58,11 @@ def test_build_model_alpha_exit_plan_payload_emits_canonical_aliases() -> None:
     assert payload["tp_ratio"] == 0.02
     assert payload["sl_ratio"] == 0.01
     assert payload["trailing_ratio"] == 0.005
+    assert payload["risk_scaling_mode"] == "volatility_scaled"
+    assert payload["risk_vol_feature"] == "rv_36"
+    assert payload["tp_vol_multiplier"] == 2.5
+    assert payload["sl_vol_multiplier"] == 1.5
+    assert payload["trailing_vol_multiplier"] == 0.75
 
 
 def test_extract_model_exit_plan_normalizes_nested_intent_meta() -> None:
@@ -91,6 +101,11 @@ def test_build_model_exit_plan_from_position_backfills_ratio_aliases() -> None:
                         "mode": "risk",
                         "hold_bars": 6,
                         "timeout_delta_ms": 1_800_000,
+                        "risk_scaling_mode": "volatility_scaled",
+                        "risk_vol_feature": "rv_12",
+                        "tp_vol_multiplier": 2.0,
+                        "sl_vol_multiplier": 1.0,
+                        "trailing_vol_multiplier": 0.5,
                         "tp_pct": 2.0,
                     }
                 )
@@ -119,3 +134,8 @@ def test_build_model_exit_plan_from_position_backfills_ratio_aliases() -> None:
     assert payload["tp_ratio"] == 0.02
     assert payload["sl_ratio"] == 0.01
     assert payload["trailing_ratio"] == 0.015
+    assert payload["risk_scaling_mode"] == "volatility_scaled"
+    assert payload["risk_vol_feature"] == "rv_12"
+    assert payload["tp_vol_multiplier"] == 2.0
+    assert payload["sl_vol_multiplier"] == 1.0
+    assert payload["trailing_vol_multiplier"] == 0.5

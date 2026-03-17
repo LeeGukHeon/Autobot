@@ -579,6 +579,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         plan = _resolve_position_exit_plan(
             state=state,
             settings=self._settings,
+            ts_ms=ts_ms,
             row=row,
             interval_ms=self._interval_ms,
         )
@@ -867,11 +868,18 @@ def _resolve_position_exit_plan(
     *,
     state: _PositionState,
     settings: ModelAlphaSettings,
+    ts_ms: int,
     row: dict[str, Any] | None,
     interval_ms: int,
 ) -> dict[str, Any]:
     if isinstance(state.exit_plan, dict) and state.exit_plan:
-        return dict(state.exit_plan)
+        return _reprice_position_exit_plan(
+            state=state,
+            plan=state.exit_plan,
+            row=row,
+            ts_ms=ts_ms,
+            interval_ms=interval_ms,
+        )
     return build_model_alpha_exit_plan_payload(
         settings=settings,
         row=row,
@@ -948,12 +956,81 @@ def build_model_alpha_exit_plan_payload(
             "expected_exit_fee_rate": float(exit_fee_rate),
             "expected_exit_slippage_bps": float(exit_slippage_bps),
             "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
+            "risk_vol_feature": str(settings.exit.risk_vol_feature),
+            "tp_vol_multiplier": _safe_optional_float(settings.exit.tp_vol_multiplier),
+            "sl_vol_multiplier": _safe_optional_float(settings.exit.sl_vol_multiplier),
+            "trailing_vol_multiplier": _safe_optional_float(settings.exit.trailing_vol_multiplier),
             "use_learned_exit_mode": bool(settings.exit.use_learned_exit_mode),
             "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
             "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
             "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
         }
     )
+
+
+def _reprice_position_exit_plan(
+    *,
+    state: _PositionState,
+    plan: dict[str, Any],
+    row: dict[str, Any] | None,
+    ts_ms: int,
+    interval_ms: int,
+) -> dict[str, Any]:
+    normalized = normalize_model_exit_plan_payload(plan)
+    mode = str(normalized.get("mode", "hold")).strip().lower() or "hold"
+    scaling_mode = str(normalized.get("risk_scaling_mode", "")).strip().lower() or "fixed"
+    if mode != "risk" or scaling_mode != "volatility_scaled":
+        return normalized
+
+    risk_vol_feature = str(normalized.get("risk_vol_feature", "")).strip()
+    tp_mult = _safe_optional_float(normalized.get("tp_vol_multiplier"))
+    sl_mult = _safe_optional_float(normalized.get("sl_vol_multiplier"))
+    trailing_mult = _safe_optional_float(normalized.get("trailing_vol_multiplier"))
+    if not risk_vol_feature or all(value is None for value in (tp_mult, sl_mult, trailing_mult)):
+        return normalized
+
+    sigma_bar = _resolve_row_risk_volatility(row=row, feature_name=risk_vol_feature)
+    if sigma_bar is None or sigma_bar <= 0:
+        return normalized
+
+    total_hold_bars = max(int(normalized.get("hold_bars", 0) or 0), 1)
+    plan_interval_ms = max(int(normalized.get("bar_interval_ms", interval_ms) or interval_ms), 1)
+    elapsed_bars = max(int((int(ts_ms) - int(state.entry_ts_ms)) // plan_interval_ms), 0)
+    remaining_bars = max(total_hold_bars - elapsed_bars, 1)
+    sigma_horizon = float(sigma_bar) * math.sqrt(float(remaining_bars))
+    if not math.isfinite(sigma_horizon) or sigma_horizon <= 0:
+        return normalized
+
+    repriced_tp = max(float(tp_mult) * sigma_horizon, 0.0) if tp_mult is not None else None
+    repriced_sl = max(float(sl_mult) * sigma_horizon, 0.0) if sl_mult is not None else None
+    repriced_trailing = max(float(trailing_mult) * sigma_horizon, 0.0) if trailing_mult is not None else None
+
+    tp_pct = _tighten_only_exit_threshold(normalized.get("tp_pct"), repriced_tp)
+    sl_pct = _tighten_only_exit_threshold(normalized.get("sl_pct"), repriced_sl)
+    trailing_pct = _tighten_only_exit_threshold(normalized.get("trailing_pct"), repriced_trailing)
+    normalized.update(
+        {
+            "tp_ratio": float(tp_pct),
+            "sl_ratio": float(sl_pct),
+            "trailing_ratio": float(trailing_pct),
+            "tp_pct": float(tp_pct),
+            "sl_pct": float(sl_pct),
+            "trailing_pct": float(trailing_pct),
+            "intratrade_reprice_applied": True,
+            "intratrade_remaining_bars": int(remaining_bars),
+            "intratrade_sigma_bar": float(sigma_bar),
+            "intratrade_sigma_horizon": float(sigma_horizon),
+        }
+    )
+    return normalized
+
+
+def _tighten_only_exit_threshold(entry_value: Any, repriced_value: float | None) -> float:
+    entry_threshold = max(_safe_optional_float(entry_value) or 0.0, 0.0)
+    next_threshold = max(_safe_optional_float(repriced_value) or 0.0, 0.0)
+    if entry_threshold <= 0.0 or next_threshold <= 0.0:
+        return float(entry_threshold)
+    return float(min(entry_threshold, next_threshold))
 
 
 def _resolve_runtime_risk_exit_thresholds(

@@ -171,6 +171,11 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
             "tp_pct": float(tp_pct or 0.0),
             "sl_pct": float(sl_pct or 0.0),
             "trailing_pct": float(trailing_pct),
+            "risk_scaling_mode": str(shared.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
+            "risk_vol_feature": str(shared.get("risk_vol_feature", "")).strip(),
+            "tp_vol_multiplier": _as_float(shared.get("tp_vol_multiplier")),
+            "sl_vol_multiplier": _as_float(shared.get("sl_vol_multiplier")),
+            "trailing_vol_multiplier": _as_float(shared.get("trailing_vol_multiplier")),
             "expected_exit_fee_rate": 0.0,
             "expected_exit_slippage_bps": 0.0,
         }
@@ -191,6 +196,11 @@ def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str
         "mode": mode,
         "hold_bars": hold_bars,
         "timeout_delta_ms": timeout_delta_ms,
+        "risk_scaling_mode": str(normalized_plan.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
+        "risk_vol_feature": str(normalized_plan.get("risk_vol_feature", "")).strip(),
+        "tp_vol_multiplier": _as_float(normalized_plan.get("tp_vol_multiplier")),
+        "sl_vol_multiplier": _as_float(normalized_plan.get("sl_vol_multiplier")),
+        "trailing_vol_multiplier": _as_float(normalized_plan.get("trailing_vol_multiplier")),
     }
     tp_json = json.dumps(
         {
