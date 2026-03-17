@@ -685,6 +685,7 @@ def resolve_execution_risk_control_online_state(
     recent_trade_count: int,
     recent_nonpositive_rate_ucb: float,
     recent_severe_loss_rate_ucb: float,
+    recent_max_exit_ts_ms: int | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_execution_risk_control_payload(risk_control_payload)
     online_cfg = dict(normalized.get("online_adaptation") or {})
@@ -720,8 +721,21 @@ def resolve_execution_risk_control_online_state(
     previous_step_up = max(int(previous.get("step_up", 0) or 0), 0)
     previous_breach_streak = max(int(previous.get("breach_streak", 0) or 0), 0)
     previous_recovery_streak = max(int(previous.get("recovery_streak", 0) or 0), 0)
+    previous_halt_triggered = bool(previous.get("halt_triggered"))
+    previous_last_processed_exit_ts_ms = _safe_optional_int(previous.get("last_processed_exit_ts_ms"))
+    has_new_evidence = (
+        recent_max_exit_ts_ms is not None
+        and (
+            previous_last_processed_exit_ts_ms is None
+            or int(recent_max_exit_ts_ms) > int(previous_last_processed_exit_ts_ms)
+        )
+    )
 
-    if breach_count > 0:
+    if not has_new_evidence and previous_last_processed_exit_ts_ms is not None:
+        step_up = previous_step_up
+        breach_streak = previous_breach_streak
+        recovery_streak = previous_recovery_streak
+    elif breach_count > 0:
         step_up = min(max(previous_step_up, breach_count), max_step_up)
         breach_streak = previous_breach_streak + 1
         recovery_streak = 0
@@ -743,7 +757,9 @@ def resolve_execution_risk_control_online_state(
     adaptive_index = min(base_index + int(step_up), max(len(threshold_values) - 1, 0))
     adaptive_threshold = float(threshold_values[adaptive_index])
     halt_triggered = bool(breach_streak >= halt_breach_streak)
-    clear_halt = bool(previous.get("halt_triggered")) and (not halt_triggered) and int(step_up) == 0 and breach_count == 0
+    if not has_new_evidence and previous_last_processed_exit_ts_ms is not None:
+        halt_triggered = previous_halt_triggered
+    clear_halt = bool(previous_halt_triggered) and (not halt_triggered) and int(step_up) == 0 and breach_count == 0 and bool(has_new_evidence)
     halt_reason_code = (
         str(online_cfg.get("halt_reason_code", DEFAULT_ONLINE_HALT_REASON_CODE)).strip()
         or DEFAULT_ONLINE_HALT_REASON_CODE
@@ -767,6 +783,12 @@ def resolve_execution_risk_control_online_state(
         "halt_action": "HALT_NEW_INTENTS",
         "clear_halt": bool(clear_halt),
         "clear_reason_codes": [halt_reason_code] if clear_halt else [],
+        "new_evidence": bool(has_new_evidence),
+        "last_processed_exit_ts_ms": (
+            int(recent_max_exit_ts_ms)
+            if has_new_evidence and recent_max_exit_ts_ms is not None
+            else previous_last_processed_exit_ts_ms
+        ),
     }
 
 

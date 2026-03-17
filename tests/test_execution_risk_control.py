@@ -546,6 +546,7 @@ def test_resolve_execution_risk_control_online_state_requires_recovery_streak_to
         recent_trade_count=2,
         recent_nonpositive_rate_ucb=0.0,
         recent_severe_loss_rate_ucb=0.0,
+        recent_max_exit_ts_ms=1,
     )
     second = resolve_execution_risk_control_online_state(
         risk_control_payload=payload,
@@ -553,6 +554,7 @@ def test_resolve_execution_risk_control_online_state_requires_recovery_streak_to
         recent_trade_count=2,
         recent_nonpositive_rate_ucb=0.0,
         recent_severe_loss_rate_ucb=0.0,
+        recent_max_exit_ts_ms=2,
     )
 
     assert first["step_up"] == 2
@@ -627,6 +629,7 @@ def test_resolve_execution_risk_control_online_state_clears_halt_after_recovery(
         recent_trade_count=2,
         recent_nonpositive_rate_ucb=0.0,
         recent_severe_loss_rate_ucb=0.0,
+        recent_max_exit_ts_ms=1,
     )
 
     assert next_state["step_up"] == 0
@@ -661,6 +664,7 @@ def test_resolve_execution_risk_control_online_state_triggers_halt_on_breach_str
         recent_trade_count=2,
         recent_nonpositive_rate_ucb=1.0,
         recent_severe_loss_rate_ucb=1.0,
+        recent_max_exit_ts_ms=1,
     )
     second = resolve_execution_risk_control_online_state(
         risk_control_payload=payload,
@@ -668,11 +672,55 @@ def test_resolve_execution_risk_control_online_state_triggers_halt_on_breach_str
         recent_trade_count=2,
         recent_nonpositive_rate_ucb=1.0,
         recent_severe_loss_rate_ucb=1.0,
+        recent_max_exit_ts_ms=2,
     )
 
     assert first["halt_triggered"] is False
     assert second["halt_triggered"] is True
     assert second["halt_reason_code"] == "RISK_CONTROL_ONLINE_BREACH_STREAK"
+
+
+def test_resolve_execution_risk_control_online_state_does_not_increment_streak_without_new_evidence() -> None:
+    payload = {
+        "version": 1,
+        "policy": "execution_risk_control_hoeffding_v1",
+        "status": "ready",
+        "selected_threshold": 1.0,
+        "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+        "nonpositive_alpha": 0.30,
+        "severe_loss_alpha": 0.20,
+        "online_adaptation": {
+            "enabled": True,
+            "mode": "recent_closed_trade_hoeffding_stepup_v1",
+            "lookback_trades": 12,
+            "max_step_up": 2,
+            "recovery_streak_required": 2,
+            "halt_breach_streak": 2,
+            "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            "confidence_delta": 0.20,
+            "checkpoint_name": "execution_risk_control_online_buffer",
+        },
+    }
+    previous = {
+        "step_up": 2,
+        "breach_streak": 7,
+        "recovery_streak": 0,
+        "halt_triggered": True,
+        "last_processed_exit_ts_ms": 100,
+    }
+    next_state = resolve_execution_risk_control_online_state(
+        risk_control_payload=payload,
+        previous_state=previous,
+        recent_trade_count=2,
+        recent_nonpositive_rate_ucb=1.0,
+        recent_severe_loss_rate_ucb=1.0,
+        recent_max_exit_ts_ms=100,
+    )
+
+    assert next_state["new_evidence"] is False
+    assert next_state["step_up"] == 2
+    assert next_state["breach_streak"] == 7
+    assert next_state["halt_triggered"] is True
 
 
 def test_resolve_execution_risk_control_martingale_state_triggers_halt() -> None:

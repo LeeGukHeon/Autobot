@@ -286,6 +286,7 @@ def resolve_execution_risk_control_online_threshold(
         recent_trade_count=int(count),
         recent_nonpositive_rate_ucb=float(nonpositive_ucb),
         recent_severe_loss_rate_ucb=float(severe_ucb),
+        recent_max_exit_ts_ms=max((int(item["exit_ts_ms"]) for item in recent), default=None),
     )
     base_state["recent_nonpositive_rate"] = float(nonpositive_rate)
     base_state["recent_severe_loss_rate"] = float(severe_rate)
