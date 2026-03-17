@@ -142,3 +142,55 @@ def test_evaluate_cycle_contracts_clears_recovered_position_mismatch_reason(tmp_
 
     assert status["active"] is False
     assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" not in status["reason_codes"]
+
+
+def test_arm_breaker_coalesces_duplicate_identical_arm_events(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        first = arm_breaker(
+            store,
+            reason_codes=["MODEL_POINTER_UNRESOLVED"],
+            source="live_model_handoff",
+            ts_ms=1000,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={"note": "first"},
+        )
+        second = arm_breaker(
+            store,
+            reason_codes=["MODEL_POINTER_UNRESOLVED"],
+            source="live_model_handoff",
+            ts_ms=2000,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={"note": "second"},
+        )
+
+    assert first["active"] is True
+    assert second["active"] is True
+    assert second["updated_ts"] == 2000
+    assert second["reason_codes"] == ["MODEL_POINTER_UNRESOLVED"]
+    assert len(second["recent_events"]) == 1
+    assert second["recent_events"][0]["event_kind"] == "ARM"
+    assert second["details"]["note"] == "second"
+
+
+def test_arm_breaker_keeps_new_arm_event_when_source_changes(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        arm_breaker(
+            store,
+            reason_codes=["MODEL_POINTER_UNRESOLVED"],
+            source="live_model_handoff",
+            ts_ms=1000,
+            action=ACTION_HALT_NEW_INTENTS,
+        )
+        status = arm_breaker(
+            store,
+            reason_codes=["MODEL_POINTER_UNRESOLVED"],
+            source="sync_cycle",
+            ts_ms=2000,
+            action=ACTION_HALT_NEW_INTENTS,
+        )
+
+    assert len(status["recent_events"]) == 2
+    assert status["recent_events"][0]["source"] == "sync_cycle"
+    assert status["recent_events"][1]["source"] == "live_model_handoff"

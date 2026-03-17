@@ -186,6 +186,32 @@ def arm_breaker(
     detail_payload.update(dict(details or {}))
     if effective_action == ACTION_WARN:
         return record_warning(store, reason_codes=merged_reasons, source=source, ts_ms=ts_ms, details=detail_payload)
+    current_source = str(current.get("source") or "").strip() if current is not None else ""
+    current_reasons = (
+        _normalize_reason_codes([str(item) for item in current.get("reason_codes", [])])
+        if current is not None
+        else []
+    )
+    if (
+        current is not None
+        and bool(current.get("active"))
+        and str(current.get("action") or "").strip().upper() == effective_action
+        and current_source == str(source).strip()
+        and current_reasons == merged_reasons
+    ):
+        store.upsert_breaker_state(
+            BreakerStateRecord(
+                breaker_key=BREAKER_KEY_LIVE,
+                active=True,
+                action=effective_action,
+                source=source,
+                reason_codes_json=json.dumps(merged_reasons, ensure_ascii=False, sort_keys=True),
+                details_json=json.dumps(detail_payload, ensure_ascii=False, sort_keys=True),
+                updated_ts=int(ts_ms),
+                armed_ts=int(current.get("armed_ts") or ts_ms),
+            )
+        )
+        return breaker_status(store)
     store.upsert_breaker_state(
         BreakerStateRecord(
             breaker_key=BREAKER_KEY_LIVE,
