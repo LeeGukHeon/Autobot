@@ -822,6 +822,19 @@ def run_live_sync_daemon_with_executor_events(
                     ts_ms=int(time.time() * 1000),
                 )
                 summary["breaker_report"] = breaker_status(store)
+                should_halt, cancel_summary = _immediate_breaker_event_response(
+                    store=store,
+                    client=client,
+                    settings=settings,
+                    prior_cancel_summary=summary.get("last_breaker_cancel_summary"),
+                    ts_ms=int(time.time() * 1000),
+                )
+                if cancel_summary is not None:
+                    summary["last_breaker_cancel_summary"] = cancel_summary
+                if should_halt:
+                    summary["halted"] = True
+                    summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+                    break
 
             if not executor_thread.is_alive() and event_queue.empty() and not stop_event.is_set():
                 summary["breaker_report"] = arm_breaker(
@@ -1053,6 +1066,19 @@ async def run_live_sync_daemon_with_private_ws(
                     ts_ms=int(time.time() * 1000),
                 )
                 summary["breaker_report"] = breaker_status(store)
+                should_halt, cancel_summary = _immediate_breaker_event_response(
+                    store=store,
+                    client=client,
+                    settings=settings,
+                    prior_cancel_summary=summary.get("last_breaker_cancel_summary"),
+                    ts_ms=int(time.time() * 1000),
+                )
+                if cancel_summary is not None:
+                    summary["last_breaker_cancel_summary"] = cancel_summary
+                if should_halt:
+                    summary["halted"] = True
+                    summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+                    break
 
             if ws_task.done() and event_queue.empty() and not stop_event.is_set():
                 exc = None
@@ -1461,7 +1487,7 @@ def _apply_executor_event_with_breakers(
             ts_ms=ts_ms,
             details={"event_name": event_name, "payload": payload},
         )
-    elif event_name == "ORDER_REPLACED":
+    elif event_name == "ORDER_REPLACED" or state in {"cancel", "cancelled", "done"}:
         reset_counter(store, counter_name="replace_reject", source="executor_event", ts_ms=ts_ms)
     return action
 
@@ -1519,6 +1545,8 @@ def _apply_private_ws_event_with_breakers(
                 ts_ms=ts_ms,
                 details={"uuid": event.uuid, "identifier": event.identifier},
             )
+        elif state in {"cancel", "cancelled", "done"}:
+            reset_counter(store, counter_name="replace_reject", source="private_ws", ts_ms=ts_ms)
     return action
 
 
@@ -1724,6 +1752,39 @@ def _maybe_enforce_breaker(
         ts_ms=ts_ms,
     )
     return cancel_summary
+
+
+def _immediate_breaker_event_response(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    settings: LiveDaemonSettings,
+    prior_cancel_summary: dict[str, Any] | None,
+    ts_ms: int,
+) -> tuple[bool, dict[str, Any] | None]:
+    decision = active_breaker_decision(store)
+    if not decision.active:
+        return False, None
+    synthetic_report = {
+        "exchange_bot_open_orders": [
+            {
+                "uuid": item.get("uuid"),
+                "identifier": item.get("identifier"),
+                "market": item.get("market"),
+                "side": item.get("side"),
+            }
+            for item in store.list_orders(open_only=True)
+        ]
+    }
+    cancel_summary = _maybe_enforce_breaker(
+        store=store,
+        client=client,
+        settings=settings,
+        report=synthetic_report,
+        prior_cancel_summary=prior_cancel_summary,
+        ts_ms=ts_ms,
+    )
+    return True, cancel_summary
 
 
 def _run_sync_cycle(

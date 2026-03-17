@@ -14,7 +14,7 @@ from autobot.live.daemon import (
     run_live_sync_daemon_with_executor_events,
     run_live_sync_daemon_with_private_ws,
 )
-from autobot.live.state_store import LiveStateStore, PositionRecord
+from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent
 
 
@@ -152,6 +152,92 @@ class _FakeExecutorGateway:
                     "message": "ok",
                 },
             }
+
+
+class _CancelRejectPrivateWsClient:
+    stats = {"received_events": 1}
+
+    async def stream_private(self, *, channels=("myOrder", "myAsset")):  # noqa: ANN201
+        _ = channels
+        yield MyOrderEvent(
+            ts_ms=1700000000100,
+            uuid="bot-1",
+            identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+            market="KRW-BTC",
+            side="bid",
+            ord_type="limit",
+            state="cancel_reject",
+            price=100000000.0,
+            volume=0.01,
+            executed_volume=0.0,
+        )
+        while True:
+            await asyncio.sleep(10)
+
+
+class _CancelRejectExecutorGateway:
+    def stream_events(self):  # noqa: ANN201
+        yield {
+            "event_type": "ORDER_UPDATE",
+            "ts_ms": 1700000000100,
+            "payload": {
+                "event_name": "ORDER_STATE",
+                "uuid": "bot-1",
+                "identifier": "AUTOBOT-autobot-001-intent-1-123-abc",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "state": "cancel_reject",
+                "price": "100000000",
+                "volume": "0.01",
+                "executed_volume": "0",
+            },
+        }
+        while True:
+            time.sleep(10)
+
+
+class _IdentifierCollisionPrivateWsClient:
+    stats = {"received_events": 1}
+
+    async def stream_private(self, *, channels=("myOrder", "myAsset")):  # noqa: ANN201
+        _ = channels
+        yield MyOrderEvent(
+            ts_ms=1700000000100,
+            uuid="bot-2",
+            identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+            market="KRW-BTC",
+            side="bid",
+            ord_type="limit",
+            state="wait",
+            price=100000000.0,
+            volume=0.01,
+            executed_volume=0.0,
+        )
+        while True:
+            await asyncio.sleep(10)
+
+
+class _IdentifierCollisionExecutorGateway:
+    def stream_events(self):  # noqa: ANN201
+        yield {
+            "event_type": "ORDER_UPDATE",
+            "ts_ms": 1700000000100,
+            "payload": {
+                "event_name": "ORDER_STATE",
+                "uuid": "bot-2",
+                "identifier": "AUTOBOT-autobot-001-intent-1-123-abc",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "state": "wait",
+                "price": "100000000",
+                "volume": "0.01",
+                "executed_volume": "0",
+            },
+        }
+        while True:
+            time.sleep(10)
 
 
 class _FakeUnknownExternalClient(_FakePrivateClient):
@@ -428,6 +514,214 @@ def test_live_daemon_executor_events_updates_state(tmp_path: Path, monkeypatch) 
     assert any(item["name"] == "last_executor_event" for item in checkpoints)
 
 
+def test_live_daemon_private_ws_halts_immediately_when_event_arms_breaker(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="bot-1",
+                identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="bot-1",
+            )
+        )
+        client = _FakePrivateClient()
+        summary = asyncio.run(
+            run_live_sync_daemon_with_private_ws(
+                store=store,
+                client=client,
+                ws_client=_CancelRejectPrivateWsClient(),
+                settings=LiveDaemonSettings(
+                    bot_id="autobot-001",
+                    identifier_prefix="AUTOBOT",
+                    unknown_open_orders_policy="ignore",
+                    unknown_positions_policy="import_as_unmanaged",
+                    allow_cancel_external_orders=False,
+                    poll_interval_sec=1,
+                    startup_reconcile=False,
+                    duration_sec=1,
+                    use_private_ws=True,
+                    breaker_cancel_reject_limit=1,
+                    **_runtime_contract_settings(tmp_path),
+                ),
+            )
+        )
+
+    assert summary["halted"] is True
+    assert "REPEATED_CANCEL_REJECTS" in summary["halted_reasons"]
+    assert client.cancel_calls == []
+    assert summary["last_breaker_cancel_summary"] is None
+
+
+def test_live_daemon_private_ws_cancels_immediately_on_identifier_collision_full_kill(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="bot-1",
+                identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="bot-1",
+            )
+        )
+        client = _FakePrivateClient()
+        summary = asyncio.run(
+            run_live_sync_daemon_with_private_ws(
+                store=store,
+                client=client,
+                ws_client=_IdentifierCollisionPrivateWsClient(),
+                settings=LiveDaemonSettings(
+                    bot_id="autobot-001",
+                    identifier_prefix="AUTOBOT",
+                    unknown_open_orders_policy="ignore",
+                    unknown_positions_policy="import_as_unmanaged",
+                    allow_cancel_external_orders=False,
+                    poll_interval_sec=1,
+                    startup_reconcile=False,
+                    duration_sec=1,
+                    use_private_ws=True,
+                    **_runtime_contract_settings(tmp_path),
+                ),
+            )
+        )
+
+    assert summary["halted"] is True
+    assert "IDENTIFIER_COLLISION" in summary["halted_reasons"]
+    assert ("bot-1", "AUTOBOT-autobot-001-intent-1-123-abc") in client.cancel_calls
+    assert summary["last_breaker_cancel_summary"] is not None
+    assert summary["last_breaker_cancel_summary"]["executed"] == 1
+
+
+def test_live_daemon_executor_halts_immediately_when_event_arms_breaker(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="bot-1",
+                identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="bot-1",
+            )
+        )
+        client = _FakePrivateClient()
+        summary = run_live_sync_daemon_with_executor_events(
+            store=store,
+            client=client,
+            executor_gateway=_CancelRejectExecutorGateway(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                startup_reconcile=False,
+                duration_sec=1,
+                use_executor_ws=True,
+                breaker_cancel_reject_limit=1,
+                **_runtime_contract_settings(tmp_path),
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "REPEATED_CANCEL_REJECTS" in summary["halted_reasons"]
+    assert client.cancel_calls == []
+    assert summary["last_breaker_cancel_summary"] is None
+
+
+def test_live_daemon_executor_cancels_immediately_on_identifier_collision_full_kill(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="bot-1",
+                identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="bot-1",
+            )
+        )
+        client = _FakePrivateClient()
+        summary = run_live_sync_daemon_with_executor_events(
+            store=store,
+            client=client,
+            executor_gateway=_IdentifierCollisionExecutorGateway(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                startup_reconcile=False,
+                duration_sec=1,
+                use_executor_ws=True,
+                **_runtime_contract_settings(tmp_path),
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "IDENTIFIER_COLLISION" in summary["halted_reasons"]
+    assert ("bot-1", "AUTOBOT-autobot-001-intent-1-123-abc") in client.cancel_calls
+    assert summary["last_breaker_cancel_summary"] is not None
+    assert summary["last_breaker_cancel_summary"]["executed"] == 1
+
+
 def test_apply_executor_event_supports_payload_event_name_contract(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -508,6 +802,127 @@ def test_apply_executor_event_supports_timeout_and_replaced_contract(tmp_path: P
     assert order_lineage[0]["new_uuid"] == "new-1"
     assert replaced_order is not None
     assert replaced_order["local_state"] == "REPLACING"
+
+
+def test_private_ws_terminal_event_resets_replace_reject_counter(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        daemon_module._apply_private_ws_event_with_breakers(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=1000,
+                uuid="replace-1",
+                identifier="AUTOBOT-autobot-001-intent-replace-1-1000-a",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                state="replace_reject",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.0,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                use_private_ws=True,
+            ),
+        )
+        daemon_module._apply_private_ws_event_with_breakers(
+            store=store,
+            event=MyOrderEvent(
+                ts_ms=2000,
+                uuid="replace-1",
+                identifier="AUTOBOT-autobot-001-intent-replace-1-1000-a",
+                market="KRW-BTC",
+                side="ask",
+                ord_type="limit",
+                state="done",
+                price=100000000.0,
+                volume=0.01,
+                executed_volume=0.01,
+            ),
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                use_private_ws=True,
+            ),
+        )
+        counter = store.get_checkpoint(name="breaker_counter:replace_reject")
+
+    assert counter is not None
+    assert counter["payload"]["count"] == 0
+
+
+def test_executor_terminal_event_resets_replace_reject_counter(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    settings = LiveDaemonSettings(
+        bot_id="autobot-001",
+        identifier_prefix="AUTOBOT",
+        unknown_open_orders_policy="ignore",
+        unknown_positions_policy="import_as_unmanaged",
+        allow_cancel_external_orders=False,
+        poll_interval_sec=1,
+        use_executor_ws=True,
+    )
+    with LiveStateStore(db_path) as store:
+        daemon_module._apply_executor_event_with_breakers(
+            store=store,
+            event={
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 1000,
+                "payload": {
+                    "event_name": "ORDER_STATE",
+                    "uuid": "replace-1",
+                    "identifier": "AUTOBOT-autobot-001-intent-replace-1-1000-a",
+                    "market": "KRW-BTC",
+                    "side": "ask",
+                    "ord_type": "limit",
+                    "state": "replace_reject",
+                },
+            },
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+            settings=settings,
+        )
+        daemon_module._apply_executor_event_with_breakers(
+            store=store,
+            event={
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 2000,
+                "payload": {
+                    "event_name": "ORDER_STATE",
+                    "uuid": "replace-1",
+                    "identifier": "AUTOBOT-autobot-001-intent-replace-1-1000-a",
+                    "market": "KRW-BTC",
+                    "side": "ask",
+                    "ord_type": "limit",
+                    "state": "done",
+                },
+            },
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            quote_currency="KRW",
+            settings=settings,
+        )
+        counter = store.get_checkpoint(name="breaker_counter:replace_reject")
+
+    assert counter is not None
+    assert counter["payload"]["count"] == 0
 
 
 def test_live_daemon_settings_reject_dual_ws_sources() -> None:

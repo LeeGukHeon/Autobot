@@ -885,6 +885,84 @@ def test_reconcile_imports_bot_owned_filled_entry_with_model_risk_plan(tmp_path:
     assert order["state"] == "done"
 
 
+def test_reconcile_does_not_import_manual_position_from_mismatched_old_bot_entry(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        intent_meta = {
+            "model_exit_plan": {
+                "source": "model_alpha_v1",
+                "mode": "hold",
+                "hold_bars": 6,
+                "timeout_delta_ms": 1800000,
+                "tp_pct": 0.02,
+                "sl_pct": 0.01,
+                "trailing_pct": 0.015,
+            },
+            "submit_result": {"accepted": True, "order_uuid": "old-bid-1"},
+        }
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="old-intent",
+                ts_ms=1000,
+                market="KRW-BTC",
+                side="bid",
+                price=100000000.0,
+                volume=0.01,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                meta_json=json.dumps(intent_meta, ensure_ascii=False, sort_keys=True),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="old-bid-1",
+                identifier="AUTOBOT-autobot-001-old-intent-1000-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.01,
+                state="done",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="old-intent",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="old-bid-1",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "BTC",
+                    "balance": "0.5",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                }
+            ],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans()
+
+    assert report["halted"] is True
+    assert "UNKNOWN_POSITIONS_DETECTED" in report["halted_reasons"]
+    assert not any(item["type"] == "import_managed_position_from_bot_intent" for item in report["actions"])
+    assert positions == []
+    assert plans == []
+
+
 def test_reconcile_imports_managed_position_after_order_detail_sync_preserves_intent(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

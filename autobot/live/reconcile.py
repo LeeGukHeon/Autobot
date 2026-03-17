@@ -1244,6 +1244,8 @@ def _match_model_managed_position_import(
 ) -> dict[str, Any] | None:
     if latest_bid_order is None:
         return None
+    if not _bot_entry_matches_exchange_position(position=position, latest_bid_order=latest_bid_order):
+        return None
     intent_id = _as_optional_str(latest_bid_order.get("intent_id"))
     if intent_id is None:
         return None
@@ -1304,6 +1306,33 @@ def _match_model_managed_position_import(
         "risk_plan_record": risk_plan_record,
         "exit_order_record": exit_order_record,
     }
+
+
+def _bot_entry_matches_exchange_position(
+    *,
+    position: dict[str, Any],
+    latest_bid_order: dict[str, Any],
+) -> bool:
+    volume_filled = max(float(_as_optional_float(latest_bid_order.get("volume_filled")) or 0.0), 0.0)
+    volume_req = max(float(_as_optional_float(latest_bid_order.get("volume_req")) or 0.0), 0.0)
+    matched_qty = volume_filled if volume_filled > 0.0 else volume_req
+    matched_price = max(float(_as_optional_float(latest_bid_order.get("price")) or 0.0), 0.0)
+    if matched_qty <= 0.0 or matched_price <= 0.0:
+        return False
+
+    local_state = str(latest_bid_order.get("local_state") or "").strip().upper()
+    state = str(latest_bid_order.get("state") or "").strip().lower()
+    if volume_filled <= 0.0 and local_state not in {"DONE", "PARTIAL"} and state != "done":
+        return False
+
+    target_qty = max(float(_as_optional_float(position.get("base_amount")) or 0.0), 0.0)
+    target_price = max(float(_as_optional_float(position.get("avg_entry_price")) or 0.0), 0.0)
+    if target_qty <= 0.0 or target_price <= 0.0:
+        return False
+
+    qty_gap_ratio = abs(matched_qty - target_qty) / max(matched_qty, target_qty, 1e-12)
+    price_gap_ratio = abs(matched_price - target_price) / max(matched_price, target_price, 1e-12)
+    return qty_gap_ratio <= 0.05 and price_gap_ratio <= 0.05
 
 
 def _match_model_managed_position_close(
