@@ -1577,6 +1577,41 @@ def _collect_recent_model_artifacts(project_root: Path, candidate_run_dir: str |
     return payload
 
 
+def _load_training_pointer_summary(project_root: Path, model_family: str = "train_v4_crypto_cs") -> dict[str, Any]:
+    family_root = project_root / "models" / "registry" / model_family
+    if not family_root.exists():
+        return {"model_family": model_family, "exists": False}
+
+    def _load_pointer(name: str) -> dict[str, Any]:
+        payload = _load_json(family_root / f"{name}.json")
+        run_id = str(payload.get("run_id") or "").strip()
+        run_dir = family_root / run_id if run_id else None
+        train_config = _load_json(run_dir / "train_config.yaml") if run_dir and run_dir.exists() else {}
+        return {
+            "pointer_name": name,
+            "run_id": run_id or None,
+            "updated_at_utc": payload.get("updated_at_utc"),
+            "exists": bool(run_id),
+            "run_dir": str(run_dir) if run_dir and run_dir.exists() else None,
+            "run_scope": train_config.get("run_scope"),
+            "task": train_config.get("task"),
+            "start": train_config.get("start"),
+            "end": train_config.get("end"),
+        }
+
+    champion = _load_pointer("champion")
+    latest_candidate = _load_pointer("latest_candidate")
+    latest = _load_pointer("latest")
+    return {
+        "model_family": model_family,
+        "exists": True,
+        "champion": champion,
+        "latest_candidate": latest_candidate,
+        "latest": latest,
+        "latest_matches_candidate": latest.get("run_id") == latest_candidate.get("run_id"),
+    }
+
+
 def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     project_root = project_root.resolve()
     acceptance_latest = project_root / "logs" / "model_v4_acceptance" / "latest.json"
@@ -1612,6 +1647,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "training": {
             "acceptance": acceptance,
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
+            "pointers": _load_training_pointer_summary(project_root),
             "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
         },
         "challenger": _summarize_challenger(challenger_latest, challenger_state),

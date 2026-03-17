@@ -684,6 +684,7 @@
 
   function renderOverview(snapshot) {
     const acceptance = (snapshot.training || {}).acceptance || {};
+    const pointers = (snapshot.training || {}).pointers || {};
     const liveStates = (snapshot.live || {}).states || [];
     const candidateLive = liveStates.find((item) => String(item.label || "").includes("후보")) || {};
     const challenger = snapshot.challenger || {};
@@ -701,7 +702,8 @@
           : "현재는 챔피언 중심 운영 상태입니다.";
 
     document.getElementById("overview-kpis").innerHTML = [
-      metric("후보 run", shortRun(acceptance.candidate_run_id)),
+      metric("운영 후보", shortRun(((pointers.latest_candidate || {}).run_id) || acceptance.candidate_run_id)),
+      metric("최근 학습", shortRun(((pointers.latest || {}).run_id))),
       metric("판정", acceptance.overall_pass === true ? "통과" : acceptance.overall_pass === false ? "탈락" : "-"),
       metric("후보 포지션", maybe(candidateLive.positions_count, "0")),
       metric("후보 리스크 플랜", maybe(candidateLive.active_risk_plans_count, "0"))
@@ -758,6 +760,7 @@
   function renderTraining(snapshot) {
     const acceptance = (snapshot.training || {}).acceptance || {};
     const training = snapshot.training || {};
+    const pointers = training.pointers || {};
     const challenger = snapshot.challenger || {};
     const rankShadow = training.rank_shadow || {};
     const summary = joinTranslated([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]);
@@ -768,11 +771,19 @@
       "아직 최근 검증 결과가 없습니다.";
     document.getElementById("training-subhead").textContent = summary;
     document.getElementById("training-kpis").innerHTML = [
-      metric("후보 run", shortRun(acceptance.candidate_run_id)),
+      metric("운영 후보", shortRun(((pointers.latest_candidate || {}).run_id) || acceptance.candidate_run_id)),
+      metric("최근 학습", shortRun((pointers.latest || {}).run_id)),
       metric("배치 날짜", maybe(acceptance.batch_date)),
       metric("판정 기준", translate(acceptance.decision_basis)),
       metric("갱신 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
+
+    const championPointer = pointers.champion || {};
+    const latestCandidatePointer = pointers.latest_candidate || {};
+    const latestPointer = pointers.latest || {};
+    const pointerSummary = pointers.latest_matches_candidate === false
+      ? "운영 후보는 latest_candidate를 따르고, 최근 학습 latest는 별도 run일 수 있습니다."
+      : "현재 최근 학습과 운영 후보가 같은 run입니다.";
 
     const acceptanceNarrative = acceptance.overall_pass === true
       ? "백테스트와 보조 증거를 기준으로 이번 후보를 다음 단계로 넘길 수 있는 상태입니다."
@@ -788,11 +799,23 @@
     document.getElementById("training-details").innerHTML = `<div class="dense-list">${
       [
         compactRow({
+          title: "포인터 상태",
+          summary: pointerSummary,
+          items: [
+            compactStat("챔피언", shortRun(championPointer.run_id)),
+            compactStat("운영 후보", shortRun(latestCandidatePointer.run_id)),
+            compactStat("최근 학습", shortRun(latestPointer.run_id)),
+            compactStat("운영 후보 scope", maybe(latestCandidatePointer.run_scope)),
+            compactStat("최근 학습 scope", maybe(latestPointer.run_scope)),
+            compactStat("최근 학습 task", maybe(latestPointer.task)),
+          ],
+        }),
+        compactRow({
           title: "이번 후보 해석",
           summary: acceptanceNarrative,
           items: [
             compactStat("모델 계열", maybe(acceptance.model_family)),
-            compactStat("후보 run", shortRun(acceptance.candidate_run_id)),
+            compactStat("acceptance 후보", shortRun(acceptance.candidate_run_id)),
             compactStat("이전 챔피언", shortRun(acceptance.champion_before_run_id)),
             compactStat("현재 챔피언", shortRun(acceptance.champion_after_run_id)),
             compactStat("백테스트", boolLabel(acceptance.backtest_pass)),
