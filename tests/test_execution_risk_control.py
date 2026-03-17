@@ -534,6 +534,7 @@ def test_resolve_execution_risk_control_online_state_requires_recovery_streak_to
             "lookback_trades": 12,
             "max_step_up": 2,
             "recovery_streak_required": 2,
+            "min_halt_trade_count": 1,
             "halt_breach_streak": 3,
             "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
             "confidence_delta": 0.20,
@@ -582,6 +583,7 @@ def test_resolve_execution_risk_control_online_state_preserves_base_threshold_wh
             "lookback_trades": 12,
             "max_step_up": 2,
             "recovery_streak_required": 2,
+            "min_halt_trade_count": 1,
             "halt_breach_streak": 3,
             "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
             "confidence_delta": 0.10,
@@ -617,6 +619,7 @@ def test_resolve_execution_risk_control_online_state_clears_halt_after_recovery(
             "lookback_trades": 12,
             "max_step_up": 2,
             "recovery_streak_required": 1,
+            "min_halt_trade_count": 1,
             "halt_breach_streak": 2,
             "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
             "confidence_delta": 0.20,
@@ -652,6 +655,7 @@ def test_resolve_execution_risk_control_online_state_triggers_halt_on_breach_str
             "lookback_trades": 12,
             "max_step_up": 2,
             "recovery_streak_required": 2,
+            "min_halt_trade_count": 2,
             "halt_breach_streak": 2,
             "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
             "confidence_delta": 0.20,
@@ -695,6 +699,7 @@ def test_resolve_execution_risk_control_online_state_does_not_increment_streak_w
             "lookback_trades": 12,
             "max_step_up": 2,
             "recovery_streak_required": 2,
+            "min_halt_trade_count": 2,
             "halt_breach_streak": 2,
             "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
             "confidence_delta": 0.20,
@@ -721,6 +726,42 @@ def test_resolve_execution_risk_control_online_state_does_not_increment_streak_w
     assert next_state["step_up"] == 2
     assert next_state["breach_streak"] == 7
     assert next_state["halt_triggered"] is True
+
+
+def test_resolve_execution_risk_control_online_state_requires_min_trade_count_for_halt() -> None:
+    payload = {
+        "version": 1,
+        "policy": "execution_risk_control_hoeffding_v1",
+        "status": "ready",
+        "selected_threshold": 1.0,
+        "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+        "nonpositive_alpha": 0.30,
+        "severe_loss_alpha": 0.20,
+        "online_adaptation": {
+            "enabled": True,
+            "mode": "recent_closed_trade_hoeffding_stepup_v1",
+            "lookback_trades": 12,
+            "max_step_up": 2,
+            "recovery_streak_required": 2,
+            "min_halt_trade_count": 5,
+            "halt_breach_streak": 1,
+            "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            "confidence_delta": 0.20,
+            "checkpoint_name": "execution_risk_control_online_buffer",
+        },
+    }
+    state = resolve_execution_risk_control_online_state(
+        risk_control_payload=payload,
+        previous_state={},
+        recent_trade_count=2,
+        recent_nonpositive_rate_ucb=1.0,
+        recent_severe_loss_rate_ucb=1.0,
+        recent_max_exit_ts_ms=1,
+    )
+
+    assert state["breach_streak"] == 1
+    assert state["halt_sample_ready"] is False
+    assert state["halt_triggered"] is False
 
 
 def test_resolve_execution_risk_control_martingale_state_triggers_halt() -> None:

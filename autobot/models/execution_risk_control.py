@@ -36,6 +36,7 @@ DEFAULT_WEIGHTING_DENSITY_RATIO_CROSSFIT_FOLDS = 3
 DEFAULT_ONLINE_LOOKBACK_TRADES = 12
 DEFAULT_ONLINE_MAX_STEP_UP = 2
 DEFAULT_ONLINE_RECOVERY_STREAK_REQUIRED = 2
+DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT = 5
 DEFAULT_ONLINE_HALT_BREACH_STREAK = 3
 DEFAULT_ONLINE_HALT_REASON_CODE = "RISK_CONTROL_ONLINE_BREACH_STREAK"
 DEFAULT_ONLINE_MARTINGALE_HALT_REASON_CODE = "RISK_CONTROL_MARTINGALE_EVIDENCE"
@@ -383,6 +384,7 @@ def build_execution_risk_control_from_oos_rows(
             "lookback_trades": int(DEFAULT_ONLINE_LOOKBACK_TRADES),
             "max_step_up": int(DEFAULT_ONLINE_MAX_STEP_UP),
             "recovery_streak_required": int(DEFAULT_ONLINE_RECOVERY_STREAK_REQUIRED),
+            "min_halt_trade_count": int(DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT),
             "halt_breach_streak": int(DEFAULT_ONLINE_HALT_BREACH_STREAK),
             "halt_reason_code": DEFAULT_ONLINE_HALT_REASON_CODE,
             "martingale_enabled": True,
@@ -481,6 +483,7 @@ def normalize_execution_risk_control_payload(payload: dict[str, Any] | None) -> 
             "lookback_trades": 0,
             "max_step_up": 0,
             "recovery_streak_required": 0,
+            "min_halt_trade_count": 0,
             "halt_breach_streak": 0,
             "halt_reason_code": "",
             "martingale_enabled": False,
@@ -503,6 +506,10 @@ def normalize_execution_risk_control_payload(payload: dict[str, Any] | None) -> 
         online_adaptation["max_step_up"] = int(online_adaptation.get("max_step_up", 0) or 0)
         online_adaptation["recovery_streak_required"] = int(
             online_adaptation.get("recovery_streak_required", 0) or 0
+        )
+        online_adaptation["min_halt_trade_count"] = int(
+            online_adaptation.get("min_halt_trade_count", DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT)
+            or DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT
         )
         online_adaptation["halt_breach_streak"] = int(online_adaptation.get("halt_breach_streak", 0) or 0)
         online_adaptation["halt_reason_code"] = str(online_adaptation.get("halt_reason_code", "")).strip()
@@ -716,6 +723,10 @@ def resolve_execution_risk_control_online_state(
     )
     max_step_up = max(int(online_cfg.get("max_step_up", 0) or 0), 0)
     recovery_streak_required = max(int(online_cfg.get("recovery_streak_required", 0) or 0), 1)
+    min_halt_trade_count = max(
+        int(online_cfg.get("min_halt_trade_count", DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT) or DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT),
+        1,
+    )
     halt_breach_streak = max(int(online_cfg.get("halt_breach_streak", 0) or 0), 1)
     previous = dict(previous_state or {})
     previous_step_up = max(int(previous.get("step_up", 0) or 0), 0)
@@ -756,10 +767,18 @@ def resolve_execution_risk_control_online_state(
             break
     adaptive_index = min(base_index + int(step_up), max(len(threshold_values) - 1, 0))
     adaptive_threshold = float(threshold_values[adaptive_index])
-    halt_triggered = bool(breach_streak >= halt_breach_streak)
+    halt_sample_ready = int(recent_trade_count) >= int(min_halt_trade_count)
+    halt_triggered = bool(halt_sample_ready and breach_streak >= halt_breach_streak)
     if not has_new_evidence and previous_last_processed_exit_ts_ms is not None:
         halt_triggered = previous_halt_triggered
-    clear_halt = bool(previous_halt_triggered) and (not halt_triggered) and int(step_up) == 0 and breach_count == 0 and bool(has_new_evidence)
+    clear_halt = (
+        bool(previous_halt_triggered)
+        and bool(halt_sample_ready)
+        and (not halt_triggered)
+        and int(step_up) == 0
+        and breach_count == 0
+        and bool(has_new_evidence)
+    )
     halt_reason_code = (
         str(online_cfg.get("halt_reason_code", DEFAULT_ONLINE_HALT_REASON_CODE)).strip()
         or DEFAULT_ONLINE_HALT_REASON_CODE
@@ -777,6 +796,8 @@ def resolve_execution_risk_control_online_state(
         "step_up": int(step_up),
         "breach_streak": int(breach_streak),
         "recovery_streak": int(recovery_streak),
+        "min_halt_trade_count": int(min_halt_trade_count),
+        "halt_sample_ready": bool(halt_sample_ready),
         "halt_triggered": bool(halt_triggered),
         "halt_reason_code": halt_reason_code,
         "halt_reason_codes": [halt_reason_code] if halt_triggered else [],

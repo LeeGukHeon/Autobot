@@ -1089,6 +1089,7 @@ def test_live_model_alpha_runtime_halts_new_intents_when_online_breach_streak_tr
                     "lookback_trades": 2,
                     "max_step_up": 2,
                     "recovery_streak_required": 2,
+                    "min_halt_trade_count": 2,
                     "halt_breach_streak": 1,
                     "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
                     "confidence_delta": 0.20,
@@ -1178,6 +1179,149 @@ def test_live_model_alpha_runtime_halts_new_intents_when_online_breach_streak_tr
     assert breaker_state is not None
     assert breaker_state["active"] is True
     assert "RISK_CONTROL_ONLINE_BREACH_STREAK" in breaker_state["reason_codes"]
+
+
+def test_live_model_alpha_runtime_does_not_halt_online_breach_before_min_trade_count(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _MediumActionValueStrategy:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices, open_markets
+            return StrategyStepResult(
+                intents=(
+                    StrategyOrderIntent(
+                        market="KRW-BTC",
+                        side="bid",
+                        ref_price=50_000_000.0,
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        prob=0.91,
+                        score=0.91,
+                        meta={"model_prob": 0.91, "trade_action": {"recommended_action": "risk", "expected_action_value": 1.5}},
+                    ),
+                ),
+                scored_rows=1,
+                eligible_rows=1,
+                selected_rows=1,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    predictor = SimpleNamespace(
+        run_dir=Path("run-live"),
+        runtime_recommendations={
+            "risk_control": {
+                "version": 1,
+                "policy": "execution_risk_control_hoeffding_v1",
+                "status": "ready",
+                "decision_metric_name": "expected_action_value",
+                "selected_threshold": 1.0,
+                "selected_coverage": 31,
+                "selected_nonpositive_rate_ucb": 0.18,
+                "selected_severe_loss_rate_ucb": 0.11,
+                "nonpositive_alpha": 0.30,
+                "severe_loss_alpha": 0.20,
+                "severe_loss_return_threshold": 0.01,
+                "confidence_delta": 0.20,
+                "live_gate": {"enabled": True, "metric_name": "expected_action_value", "threshold": 1.0, "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD"},
+                "subgroup_family": {"enabled": False, "feature_name": "", "bucket_count_requested": 0, "bucket_count_effective": 0, "bounds": [], "min_coverage": 0},
+                "weighting": {"enabled": True, "mode": "window_recency_exponential_v1", "half_life_windows": 2.0, "max_window_index": 1},
+                "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+                "online_adaptation": {
+                    "enabled": True,
+                    "mode": "recent_closed_trade_hoeffding_stepup_v1",
+                    "lookback_trades": 2,
+                    "max_step_up": 2,
+                    "recovery_streak_required": 2,
+                    "min_halt_trade_count": 5,
+                    "halt_breach_streak": 1,
+                    "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+                    "confidence_delta": 0.20,
+                    "checkpoint_name": "execution_risk_control_online_buffer",
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: predictor)
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _MediumActionValueStrategy())
+    monkeypatch.setattr(runtime_module, "recompute_trade_journal_records", lambda **_: {"rows_total": 2, "rows_updated": 0, "rows_compacted": 0})
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(mode="canary", target_unit="autobot-live-alpha.service", arm_token="demo-token", ts_ms=now_ms - 1000),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        for index in range(2):
+            store.upsert_trade_journal(
+                TradeJournalRecord(
+                    journal_id=f"journal-halt-min-{index}",
+                    market="KRW-BTC",
+                    status="CLOSED",
+                    entry_intent_id=f"intent-halt-min-{index}",
+                    entry_order_uuid=f"entry-halt-min-{index}",
+                    exit_order_uuid=f"exit-halt-min-{index}",
+                    plan_id=f"plan-halt-min-{index}",
+                    entry_submitted_ts_ms=now_ms - (10_000 * (index + 2)),
+                    entry_filled_ts_ms=now_ms - (10_000 * (index + 2)),
+                    exit_ts_ms=now_ms - (5_000 * (index + 1)),
+                    entry_price=100.0,
+                    exit_price=98.0,
+                    qty=1.0,
+                    entry_notional_quote=100.0,
+                    exit_notional_quote=98.0,
+                    realized_pnl_quote=-2.0,
+                    realized_pnl_pct=-0.02,
+                    entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                    close_reason_code="STATE_MARK",
+                    close_mode="done_ask_order",
+                    model_prob=0.9,
+                    selection_policy_mode="rank_effective_quantile",
+                    trade_action="risk",
+                    expected_edge_bps=50.0,
+                    expected_downside_bps=20.0,
+                    expected_net_edge_bps=30.0,
+                    notional_multiplier=1.0,
+                    entry_meta_json=json.dumps({"runtime": {"live_runtime_model_run_id": "run-live"}}, ensure_ascii=False, sort_keys=True),
+                    exit_meta_json=json.dumps({"close_verified": True}, ensure_ascii=False, sort_keys=True),
+                    updated_ts=now_ms - (5_000 * (index + 1)),
+                )
+            )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        intents = store.list_intents()
+        breaker_state = store.breaker_state(breaker_key="live")
+
+    assert summary["submitted_intents_total"] == 0
+    assert summary["skipped_intents_total"] == 1
+    assert intents[0]["meta"]["skip_reason"] == "RISK_CONTROL_BELOW_THRESHOLD"
+    assert intents[0]["meta"]["risk_control_online"]["halt_sample_ready"] is False
+    assert intents[0]["meta"]["risk_control_online"]["halt_triggered"] is False
+    assert breaker_state is None or breaker_state["active"] is False
 
 
 def test_live_model_alpha_runtime_halts_new_intents_when_martingale_evidence_triggers(tmp_path: Path, monkeypatch) -> None:
