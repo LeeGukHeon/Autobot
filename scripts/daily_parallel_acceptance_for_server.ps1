@@ -10,6 +10,8 @@ param(
     [string]$Tf = "5m",
     [int]$V3TrainLookbackDays = 30,
     [int]$V4TrainLookbackDays = 30,
+    [int]$LanePollIntervalSec = 30,
+    [int]$LaneStallTimeoutSec = 21600,
     [switch]$SkipDailyPipeline,
     [switch]$SkipFeaturesBuild,
     [switch]$SkipV3,
@@ -131,6 +133,124 @@ function Start-AcceptanceProcess {
     }
 }
 
+function Get-FileProgressState {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
+        return [PSCustomObject]@{
+            Exists = $false
+            Length = 0
+            LastWriteTicks = 0
+        }
+    }
+    $item = Get-Item -Path $PathValue -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        return [PSCustomObject]@{
+            Exists = $false
+            Length = 0
+            LastWriteTicks = 0
+        }
+    }
+    return [PSCustomObject]@{
+        Exists = $true
+        Length = [int64]$item.Length
+        LastWriteTicks = [int64]$item.LastWriteTimeUtc.Ticks
+    }
+}
+
+function Get-ProgressFingerprint {
+    param([string[]]$Paths)
+    $tokens = @()
+    foreach ($pathValue in @($Paths)) {
+        $state = Get-FileProgressState -PathValue $pathValue
+        $tokens += ("{0}|{1}|{2}|{3}" -f ([string]$pathValue), [int]$state.Exists, [int64]$state.Length, [int64]$state.LastWriteTicks)
+    }
+    return ($tokens -join ";")
+}
+
+function Stop-ProcessTreeBestEffort {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) {
+        return
+    }
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        $taskkillPath = Join-Path $env:SystemRoot "System32\taskkill.exe"
+        if (Test-Path $taskkillPath) {
+            & $taskkillPath /PID $ProcessId /T /F *> $null
+            return
+        }
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $killScript = "pkill -TERM -P $ProcessId >/dev/null 2>&1 || true; kill -TERM $ProcessId >/dev/null 2>&1 || true; sleep 2; pkill -KILL -P $ProcessId >/dev/null 2>&1 || true; kill -KILL $ProcessId >/dev/null 2>&1 || true"
+    & /bin/bash -lc $killScript *> $null
+}
+
+function Wait-AcceptanceProcessWithWatchdog {
+    param(
+        [string]$LaneName,
+        [Parameter(Mandatory = $true)]$Process,
+        [string]$StdoutPath,
+        [string]$StderrPath,
+        [string]$LatestReportPath,
+        [DateTime]$StartedAtUtc,
+        [int]$PollIntervalSec,
+        [int]$StallTimeoutSec
+    )
+    $effectivePollIntervalSec = [Math]::Max([int]$PollIntervalSec, 1)
+    $effectiveStallTimeoutSec = [Math]::Max([int]$StallTimeoutSec, 0)
+    $progressPaths = @($StdoutPath, $StderrPath, $LatestReportPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $lastFingerprint = Get-ProgressFingerprint -Paths $progressPaths
+    $lastProgressAtUtc = [DateTime]::UtcNow
+
+    while (-not $Process.HasExited) {
+        Start-Sleep -Seconds $effectivePollIntervalSec
+        try {
+            $Process.Refresh()
+        } catch {
+        }
+        $currentFingerprint = Get-ProgressFingerprint -Paths $progressPaths
+        if ($currentFingerprint -ne $lastFingerprint) {
+            $lastFingerprint = $currentFingerprint
+            $lastProgressAtUtc = [DateTime]::UtcNow
+        }
+        $nowUtc = [DateTime]::UtcNow
+        $runtimeSec = [int][Math]::Max(($nowUtc - $StartedAtUtc).TotalSeconds, 0)
+        $idleSec = [int][Math]::Max(($nowUtc - $lastProgressAtUtc).TotalSeconds, 0)
+        if ($effectiveStallTimeoutSec -gt 0 -and $idleSec -ge $effectiveStallTimeoutSec) {
+            Stop-ProcessTreeBestEffort -ProcessId ([int]$Process.Id)
+            Start-Sleep -Seconds 1
+            try {
+                $Process.Refresh()
+            } catch {
+            }
+            return [PSCustomObject]@{
+                ExitCode = if ($Process.HasExited) { [int]$Process.ExitCode } else { 124 }
+                Stalled = $true
+                RuntimeSec = $runtimeSec
+                IdleSec = $idleSec
+                LastProgressAtUtc = $lastProgressAtUtc
+                PollIntervalSec = $effectivePollIntervalSec
+                StallTimeoutSec = $effectiveStallTimeoutSec
+                ReasonCodes = @("HUNG_PROCESS")
+                ProgressPaths = @($progressPaths)
+            }
+        }
+    }
+
+    $finishedAtUtc = [DateTime]::UtcNow
+    return [PSCustomObject]@{
+        ExitCode = [int]$Process.ExitCode
+        Stalled = $false
+        RuntimeSec = [int][Math]::Max(($finishedAtUtc - $StartedAtUtc).TotalSeconds, 0)
+        IdleSec = [int][Math]::Max(($finishedAtUtc - $lastProgressAtUtc).TotalSeconds, 0)
+        LastProgressAtUtc = $lastProgressAtUtc
+        PollIntervalSec = $effectivePollIntervalSec
+        StallTimeoutSec = $effectiveStallTimeoutSec
+        ReasonCodes = @()
+        ProgressPaths = @($progressPaths)
+    }
+}
+
 function Resolve-ReportedJsonPathFromLog {
     param(
         [string]$LogPath,
@@ -235,6 +355,10 @@ $report = [ordered]@{
     batch_date = $effectiveBatchDate
     steps = [ordered]@{}
     lanes = [ordered]@{}
+    monitoring = [ordered]@{
+        lane_poll_interval_sec = [int]([Math]::Max($LanePollIntervalSec, 1))
+        lane_stall_timeout_sec = [int]([Math]::Max($LaneStallTimeoutSec, 0))
+    }
     overall_pass = $false
 }
 
@@ -340,6 +464,7 @@ try {
             $laneProcesses += [PSCustomObject]@{
                 name = "v3"
                 log_tag = "v3-accept"
+                latest_report_path = (Join-Path $resolvedProjectRoot "logs/model_v3_acceptance/latest.json")
                 meta = Start-AcceptanceProcess -PwshExe $psExe -ArgList $v3Args -LogPrefix "v3_accept" -LogDir $logsDir -WorkingDirectory $resolvedProjectRoot
             }
         }
@@ -371,6 +496,7 @@ try {
             $laneProcesses += [PSCustomObject]@{
                 name = "v4"
                 log_tag = "v4-accept"
+                latest_report_path = (Join-Path $resolvedProjectRoot "logs/model_v4_acceptance/latest.json")
                 meta = Start-AcceptanceProcess -PwshExe $psExe -ArgList $v4Args -LogPrefix "v4_accept" -LogDir $logsDir -WorkingDirectory $resolvedProjectRoot
             }
         }
@@ -380,12 +506,16 @@ try {
 
     if (-not $DryRun) {
         foreach ($lane in $laneProcesses) {
-            Wait-Process -Id $lane.meta.Process.Id
-            $latestReportPath = if ($lane.name -eq "v3") {
-                Join-Path $resolvedProjectRoot "logs/model_v3_acceptance/latest.json"
-            } else {
-                Join-Path $resolvedProjectRoot "logs/model_v4_acceptance/latest.json"
-            }
+            $waitResult = Wait-AcceptanceProcessWithWatchdog `
+                -LaneName $lane.name `
+                -Process $lane.meta.Process `
+                -StdoutPath $lane.meta.StdoutPath `
+                -StderrPath $lane.meta.StderrPath `
+                -LatestReportPath $lane.latest_report_path `
+                -StartedAtUtc $lane.meta.StartedAtUtc `
+                -PollIntervalSec $LanePollIntervalSec `
+                -StallTimeoutSec $LaneStallTimeoutSec
+            $latestReportPath = $lane.latest_report_path
             $runReportPath = Resolve-ReportedJsonPathFromLog -LogPath $lane.meta.StdoutPath -LogTag $lane.log_tag
             $freshLatestPath = Resolve-FreshLatestJsonPath -LatestPath $latestReportPath -StartedAtUtc $lane.meta.StartedAtUtc
             $effectiveReportPath = if (-not [string]::IsNullOrWhiteSpace($runReportPath) -and (Test-Path $runReportPath)) {
@@ -398,10 +528,13 @@ try {
                 Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $effectiveReport -Name "gates" -DefaultValue @{}) -Name "overall_pass" -DefaultValue $false
             ) $false
             $latestReasons = @(Get-PropValue -ObjectValue $effectiveReport -Name "reasons" -DefaultValue @())
+            if ($waitResult.Stalled) {
+                $latestReasons = @($latestReasons) + @($waitResult.ReasonCodes)
+            }
             $nonfatalScoutRejection = Test-NonFatalScoutReport -AcceptanceReport $effectiveReport
             $report.lanes[$lane.name] = [ordered]@{
                 attempted = $true
-                exit_code = [int]$lane.meta.Process.ExitCode
+                exit_code = [int]$waitResult.ExitCode
                 command = $lane.meta.Command
                 stdout_log = $lane.meta.StdoutPath
                 stderr_log = $lane.meta.StderrPath
@@ -412,6 +545,13 @@ try {
                 latest_overall_pass = [bool]$latestOverallPass
                 latest_reasons = @($latestReasons)
                 nonfatal_scout_rejection = [bool]$nonfatalScoutRejection
+                watchdog_stalled = [bool]$waitResult.Stalled
+                watchdog_reason_codes = @($waitResult.ReasonCodes)
+                watchdog_runtime_sec = [int]$waitResult.RuntimeSec
+                watchdog_idle_sec = [int]$waitResult.IdleSec
+                watchdog_last_progress_at_utc = if ($waitResult.LastProgressAtUtc) { ([DateTime]$waitResult.LastProgressAtUtc).ToString("o") } else { $null }
+                watchdog_poll_interval_sec = [int]$waitResult.PollIntervalSec
+                watchdog_stall_timeout_sec = [int]$waitResult.StallTimeoutSec
             }
         }
     }
@@ -421,7 +561,8 @@ try {
             $true
         } else {
             $v3LatestOverallPass = Get-PropValue -ObjectValue $report.lanes.v3 -Name "latest_overall_pass" -DefaultValue $false
-            [bool]($v3LatestOverallPass -or ($report.lanes.v3.dry_run -eq $true -and $report.lanes.v3.exit_code -eq 0))
+            $v3WatchdogStalled = Get-PropValue -ObjectValue $report.lanes.v3 -Name "watchdog_stalled" -DefaultValue $false
+            [bool]((-not $v3WatchdogStalled) -and ($v3LatestOverallPass -or ($report.lanes.v3.dry_run -eq $true -and $report.lanes.v3.exit_code -eq 0)))
         }
     } else { $true }
     $v4Pass = if ($report.lanes.Contains("v4")) {
@@ -430,7 +571,8 @@ try {
         } else {
             $v4LatestOverallPass = Get-PropValue -ObjectValue $report.lanes.v4 -Name "latest_overall_pass" -DefaultValue $false
             $v4NonfatalScoutRejection = Get-PropValue -ObjectValue $report.lanes.v4 -Name "nonfatal_scout_rejection" -DefaultValue $false
-            [bool]($v4LatestOverallPass -or $v4NonfatalScoutRejection -or ($report.lanes.v4.dry_run -eq $true -and $report.lanes.v4.exit_code -eq 0))
+            $v4WatchdogStalled = Get-PropValue -ObjectValue $report.lanes.v4 -Name "watchdog_stalled" -DefaultValue $false
+            [bool]((-not $v4WatchdogStalled) -and ($v4LatestOverallPass -or $v4NonfatalScoutRejection -or ($report.lanes.v4.dry_run -eq $true -and $report.lanes.v4.exit_code -eq 0)))
         }
     } else { $true }
     $report.overall_pass = $v3Pass -and $v4Pass
