@@ -463,6 +463,8 @@ Main installers in repo:
   - paper units
 - `scripts/install_server_live_runtime_service.ps1`
   - live units
+- `scripts/install_server_ws_public_service.ps1`
+  - public WS daemon unit
 - `scripts/install_server_dashboard_service.ps1`
   - dashboard
 - `scripts/install_server_daily_split_challenger_services.ps1`
@@ -472,10 +474,9 @@ Main installers in repo:
 - `scripts/install_server_storage_retention_service.ps1`
   - retention timer
 
-Important gap:
+`autobot-ws-public.service` now has an in-repo OCI installer contract via:
 
-- there is currently no in-repo OCI installer for `autobot-ws-public.service`
-- the unit exists on server, but its installation contract is not represented in this repo
+- `scripts/install_server_ws_public_service.ps1`
 
 ## 8. Daily Operations
 
@@ -658,7 +659,6 @@ If changing dashboard:
 These are current known issues, not operator mistakes.
 
 - dashboard is network-exposed by default unless the operator constrains it externally
-- `autobot-ws-public.service` install contract is missing from repo
 - live/paper runtime micro overlay is not the same as offline `micro_v1`
 - ws-public freshness breaker currently relies too much on metadata update times
 - v4 pointer mutation happens before all post-train artifacts are fully durable

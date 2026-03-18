@@ -8,6 +8,11 @@
   - OCI service / timer / rollout inspection
   - targeted pytest runs
 
+Follow-up status:
+
+- after the initial review pass, the repo now includes an OCI installer for `autobot-ws-public.service`
+- transport coverage was also extended with targeted `UpbitHttpClient` regression tests
+
 ## 1. Tests Run During Review
 
 Executed locally:
