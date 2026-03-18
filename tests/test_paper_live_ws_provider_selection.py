@@ -17,7 +17,7 @@ from autobot.upbit.config import (
     UpbitTimeoutSettings,
     UpbitWebSocketSettings,
 )
-from autobot.upbit.ws.models import TickerEvent
+from autobot.upbit.ws.models import OrderbookEvent, OrderbookUnit, TickerEvent, TradeEvent
 
 
 class _FakeWsClient:
@@ -29,6 +29,32 @@ class _FakeWsClient:
         for event in self._events:
             await asyncio.sleep(0.01)
             yield event
+
+
+class _FakeWsClientWithMicro(_FakeWsClient):
+    async def stream_trade(self, markets: list[str], *, duration_sec: float | None = None):
+        _ = (markets, duration_sec)
+        yield TradeEvent(
+            market="KRW-BTC",
+            ts_ms=2_500,
+            trade_price=101.0,
+            trade_volume=0.25,
+            ask_bid="BID",
+            sequential_id=10,
+        )
+
+    async def stream_orderbook(self, markets: list[str], *, duration_sec: float | None = None, level: int | str | None = 0):
+        _ = (markets, duration_sec, level)
+        yield OrderbookEvent(
+            market="KRW-BTC",
+            ts_ms=2_600,
+            total_ask_size=10.0,
+            total_bid_size=9.0,
+            units=(
+                OrderbookUnit(ask_price=101.2, ask_size=1.2, bid_price=100.8, bid_size=1.3),
+                OrderbookUnit(ask_price=101.3, ask_size=1.1, bid_price=100.7, bid_size=1.2),
+            ),
+        )
 
 
 class _StaticRulesProvider:
@@ -128,3 +154,45 @@ def test_paper_live_ws_provider_selection_allows_micro_gate_only_runtime(tmp_pat
     assert isinstance(provider, LiveWsMicroSnapshotProvider)
     assert engine._runtime_state["micro_provider_decision"]["effective_provider"] == "LIVE_WS"
     assert engine._runtime_state["micro_provider_decision"]["provider_decision"] == "LIVE_WS_FORCED"
+
+
+def test_paper_live_ws_provider_consumes_real_trade_and_orderbook_streams(tmp_path: Path) -> None:
+    events = [
+        TickerEvent(market="KRW-BTC", ts_ms=1_000, trade_price=100.0, acc_trade_price_24h=1_000_000_000.0),
+        TickerEvent(market="KRW-BTC", ts_ms=3_000, trade_price=101.0, acc_trade_price_24h=1_001_000_000.0),
+    ]
+    settings = _make_settings()
+    run_settings = PaperRunSettings(
+        duration_sec=1,
+        quote="KRW",
+        top_n=1,
+        print_every_sec=60,
+        decision_interval_sec=0.1,
+        universe_refresh_sec=1,
+        universe_hold_sec=0,
+        starting_krw=50_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=2,
+        out_root_dir=str(tmp_path),
+        micro_order_policy=MicroOrderPolicySettings(enabled=True, on_missing="static_fallback"),
+        paper_micro_provider="live_ws",
+        paper_micro_warmup_sec=1,
+        paper_micro_warmup_min_trade_events_per_market=1,
+    )
+    engine = PaperRunEngine(
+        upbit_settings=settings,
+        run_settings=run_settings,
+        ws_client=_FakeWsClientWithMicro(events),
+        market_loader=lambda quote: ["KRW-BTC"] if quote == "KRW" else [],
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    )
+
+    asyncio.run(engine.run())
+
+    provider = engine._micro_snapshot_provider
+    assert isinstance(provider, LiveWsMicroSnapshotProvider)
+    snapshot = provider.get("KRW-BTC", 3_000)
+    assert snapshot is not None
+    assert snapshot.trade_events >= 1
+    assert snapshot.book_available is True
+    assert snapshot.book_events >= 1

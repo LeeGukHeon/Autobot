@@ -71,7 +71,7 @@ from autobot.upbit import (
     load_upbit_credentials,
 )
 from autobot.upbit.ws import UpbitWebSocketPublicClient
-from autobot.upbit.ws.models import TickerEvent
+from autobot.upbit.ws.models import OrderbookEvent, TickerEvent, TradeEvent
 
 from .live_features_v3 import LiveFeatureProviderV3
 from .live_features_v4 import LiveFeatureProviderV4
@@ -1062,6 +1062,42 @@ class PaperRunEngine:
                 if int(self._run_settings.duration_sec) > 0
                 else None
             )
+            public_trade_queue: asyncio.Queue[TradeEvent] | None = None
+            public_orderbook_queue: asyncio.Queue[OrderbookEvent] | None = None
+            public_micro_tasks: list[asyncio.Task[None]] = []
+            public_micro_stop_event: asyncio.Event | None = None
+            if live_ws_provider is not None:
+                public_micro_stop_event = asyncio.Event()
+                if hasattr(self._ws_client, "stream_trade"):
+                    public_trade_queue = asyncio.Queue()
+
+                    async def _public_trade_pump() -> None:
+                        assert public_trade_queue is not None
+                        assert public_micro_stop_event is not None
+                        async for trade_event in self._ws_client.stream_trade(markets, duration_sec=stream_duration_sec):
+                            if public_micro_stop_event.is_set():
+                                break
+                            await public_trade_queue.put(trade_event)
+
+                    public_micro_tasks.append(asyncio.create_task(_public_trade_pump()))
+                if hasattr(self._ws_client, "stream_orderbook"):
+                    public_orderbook_queue = asyncio.Queue()
+
+                    async def _public_orderbook_pump() -> None:
+                        assert public_orderbook_queue is not None
+                        assert public_micro_stop_event is not None
+                        async for orderbook_event in self._ws_client.stream_orderbook(
+                            markets,
+                            duration_sec=stream_duration_sec,
+                            level=live_ws_provider.settings.orderbook_level,
+                        ):
+                            if public_micro_stop_event.is_set():
+                                break
+                            await public_orderbook_queue.put(orderbook_event)
+
+                    public_micro_tasks.append(asyncio.create_task(_public_orderbook_pump()))
+                if public_micro_tasks:
+                    await asyncio.sleep(0)
             async for ticker in self._ws_client.stream_ticker(markets, duration_sec=stream_duration_sec):
                 if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                     break
@@ -1072,7 +1108,13 @@ class PaperRunEngine:
                 if _is_live_feature_provider(live_feature_provider):
                     live_feature_provider.ingest_ticker(ticker)
                 if live_ws_provider is not None:
-                    self._ingest_live_micro_from_ticker(provider=live_ws_provider, ticker=ticker)
+                    self._drain_live_public_micro_events(
+                        provider=live_ws_provider,
+                        trade_queue=public_trade_queue,
+                        orderbook_queue=public_orderbook_queue,
+                    )
+                    if not public_micro_tasks:
+                        self._ingest_live_micro_from_ticker(provider=live_ws_provider, ticker=ticker)
                     trade_counts = self._runtime_state.get("live_ws_trade_events_by_market", {})
                     if isinstance(trade_counts, dict):
                         warmup_trade_events_total = int(
@@ -1244,6 +1286,12 @@ class PaperRunEngine:
                     next_report_at = now_monotonic + max(self._run_settings.print_every_sec, 1.0)
 
             final_ts_ms = int(time.time() * 1000)
+            if live_ws_provider is not None:
+                self._drain_live_public_micro_events(
+                    provider=live_ws_provider,
+                    trade_queue=public_trade_queue,
+                    orderbook_queue=public_orderbook_queue,
+                )
             if warmup_enabled and not warmup_completed:
                 warmup_elapsed_sec = min(
                     max(time.monotonic() - warmup_started_monotonic, 0.0),
@@ -1308,6 +1356,12 @@ class PaperRunEngine:
                     "micro_cache_markets_with_samples": int(warmup_markets_with_samples),
                 },
             )
+            if public_micro_stop_event is not None:
+                public_micro_stop_event.set()
+            if public_micro_tasks:
+                for task in public_micro_tasks:
+                    task.cancel()
+                await asyncio.gather(*public_micro_tasks, return_exceptions=True)
 
         fill_ratio = (orders_filled / orders_submitted) if orders_submitted > 0 else 0.0
         fill_rate = fill_ratio
@@ -2422,6 +2476,77 @@ class PaperRunEngine:
         )
         trade_counts[market] = int(trade_counts.get(market, 0)) + 1
         last_event_by_market[market] = int(ticker.ts_ms)
+
+    def _ingest_live_micro_trade_event(
+        self,
+        *,
+        provider: LiveWsMicroSnapshotProvider,
+        event: TradeEvent,
+    ) -> None:
+        market = str(event.market).strip().upper()
+        if not market or float(event.trade_price) <= 0 or float(event.trade_volume) <= 0:
+            return
+        provider.ingest_trade(
+            {
+                "market": market,
+                "ts_ms": int(event.ts_ms),
+                "trade_ts_ms": int(event.ts_ms),
+                "price": float(event.trade_price),
+                "volume": float(event.trade_volume),
+                "ask_bid": str(event.ask_bid).strip().upper(),
+            }
+        )
+        trade_counts = self._runtime_state.setdefault("live_ws_trade_events_by_market", {})
+        last_event_by_market = self._runtime_state.setdefault("live_ws_last_event_ts_ms_by_market", {})
+        if isinstance(trade_counts, dict):
+            trade_counts[market] = int(trade_counts.get(market, 0)) + 1
+        if isinstance(last_event_by_market, dict):
+            last_event_by_market[market] = int(event.ts_ms)
+
+    def _ingest_live_micro_orderbook_event(
+        self,
+        *,
+        provider: LiveWsMicroSnapshotProvider,
+        event: OrderbookEvent,
+    ) -> None:
+        market = str(event.market).strip().upper()
+        if not market:
+            return
+        payload: dict[str, Any] = {
+            "market": market,
+            "ts_ms": int(event.ts_ms),
+        }
+        for idx, unit in enumerate(event.units[: max(int(provider.settings.orderbook_topk), 1)], start=1):
+            payload[f"ask{idx}_price"] = unit.ask_price
+            payload[f"ask{idx}_size"] = unit.ask_size
+            payload[f"bid{idx}_price"] = unit.bid_price
+            payload[f"bid{idx}_size"] = unit.bid_size
+        provider.ingest_orderbook(payload)
+        last_event_by_market = self._runtime_state.setdefault("live_ws_last_event_ts_ms_by_market", {})
+        if isinstance(last_event_by_market, dict):
+            last_event_by_market[market] = int(event.ts_ms)
+
+    def _drain_live_public_micro_events(
+        self,
+        *,
+        provider: LiveWsMicroSnapshotProvider,
+        trade_queue: asyncio.Queue[TradeEvent] | None,
+        orderbook_queue: asyncio.Queue[OrderbookEvent] | None,
+    ) -> None:
+        if trade_queue is not None:
+            while True:
+                try:
+                    trade_event = trade_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._ingest_live_micro_trade_event(provider=provider, event=trade_event)
+        if orderbook_queue is not None:
+            while True:
+                try:
+                    orderbook_event = orderbook_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._ingest_live_micro_orderbook_event(provider=provider, event=orderbook_event)
 
     def _load_quote_markets(self, quote: str) -> list[str]:
         quote_prefix = f"{quote.strip().upper()}-"

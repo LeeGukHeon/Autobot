@@ -5,7 +5,14 @@ import json
 from types import SimpleNamespace
 
 from autobot.upbit.ws.models import MyAssetEvent, MyOrderEvent
-from autobot.upbit.ws.parsers import decode_ws_message, parse_private_event, parse_private_events, parse_ticker_event
+from autobot.upbit.ws.parsers import (
+    decode_ws_message,
+    parse_orderbook_event,
+    parse_private_event,
+    parse_private_events,
+    parse_ticker_event,
+    parse_trade_event,
+)
 from autobot.upbit.ws.private_client import UpbitWebSocketPrivateClient
 
 
@@ -55,6 +62,49 @@ def test_decode_ws_message_accepts_bytes() -> None:
     decoded = decode_ws_message(raw)
     assert isinstance(decoded, dict)
     assert decoded["code"] == "KRW-BTC"
+
+
+def test_parse_trade_event_default_payload() -> None:
+    payload = {
+        "type": "trade",
+        "code": "KRW-BTC",
+        "trade_timestamp": 1700000001000,
+        "trade_price": 100.5,
+        "trade_volume": 0.12,
+        "ask_bid": "ASK",
+        "sequential_id": 1001,
+    }
+    event = parse_trade_event(payload)
+    assert event is not None
+    assert event.market == "KRW-BTC"
+    assert event.ts_ms == 1700000001000
+    assert event.trade_price == 100.5
+    assert event.trade_volume == 0.12
+    assert event.ask_bid == "ASK"
+    assert event.sequential_id == 1001
+
+
+def test_parse_orderbook_event_default_payload() -> None:
+    payload = {
+        "type": "orderbook",
+        "code": "KRW-BTC",
+        "timestamp": 1700000002000,
+        "total_ask_size": 10.0,
+        "total_bid_size": 9.0,
+        "orderbook_units": [
+            {"ask_price": 101.1, "ask_size": 1.1, "bid_price": 100.9, "bid_size": 1.2},
+            {"ask_price": 101.2, "ask_size": 1.3, "bid_price": 100.8, "bid_size": 1.4},
+        ],
+    }
+    event = parse_orderbook_event(payload)
+    assert event is not None
+    assert event.market == "KRW-BTC"
+    assert event.ts_ms == 1700000002000
+    assert event.total_ask_size == 10.0
+    assert event.total_bid_size == 9.0
+    assert len(event.units) == 2
+    assert event.units[0].ask_price == 101.1
+    assert event.units[0].bid_size == 1.2
 
 
 def test_parse_private_order_event_simple_list_payload() -> None:

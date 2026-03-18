@@ -12,8 +12,8 @@ from typing import Any, AsyncIterator, Sequence
 import websockets
 
 from ..config import UpbitWebSocketSettings
-from .models import Subscription, TickerEvent
-from .parsers import decode_ws_message, parse_ticker_event
+from .models import OrderbookEvent, Subscription, TickerEvent, TradeEvent
+from .parsers import decode_ws_message, parse_orderbook_event, parse_ticker_event, parse_trade_event
 from .payloads import build_subscribe_payload
 from .ws_rate_limiter import WebSocketRateLimiter
 
@@ -33,6 +33,55 @@ class UpbitWebSocketPublicClient:
         *,
         duration_sec: float | None = None,
     ) -> AsyncIterator[TickerEvent]:
+        async for event in self._stream_public_events(
+            markets=markets,
+            duration_sec=duration_sec,
+            subscription_type="ticker",
+            parser=parse_ticker_event,
+            orderbook_level=None,
+        ):
+            yield event
+
+    async def stream_trade(
+        self,
+        markets: Sequence[str],
+        *,
+        duration_sec: float | None = None,
+    ) -> AsyncIterator[TradeEvent]:
+        async for event in self._stream_public_events(
+            markets=markets,
+            duration_sec=duration_sec,
+            subscription_type="trade",
+            parser=parse_trade_event,
+            orderbook_level=None,
+        ):
+            yield event
+
+    async def stream_orderbook(
+        self,
+        markets: Sequence[str],
+        *,
+        duration_sec: float | None = None,
+        level: int | str | None = 0,
+    ) -> AsyncIterator[OrderbookEvent]:
+        async for event in self._stream_public_events(
+            markets=markets,
+            duration_sec=duration_sec,
+            subscription_type="orderbook",
+            parser=parse_orderbook_event,
+            orderbook_level=level,
+        ):
+            yield event
+
+    async def _stream_public_events(
+        self,
+        *,
+        markets: Sequence[str],
+        duration_sec: float | None,
+        subscription_type: str,
+        parser: Any,
+        orderbook_level: int | str | None,
+    ) -> AsyncIterator[Any]:
         codes = _normalize_codes(markets)
         if not codes:
             raise ValueError("markets is required")
@@ -46,7 +95,17 @@ class UpbitWebSocketPublicClient:
         queue: asyncio.Queue[TickerEvent] = asyncio.Queue()
         stop_event = asyncio.Event()
         worker_tasks = [
-            asyncio.create_task(self._run_ticker_connection(index=idx, codes=chunk, queue=queue, stop_event=stop_event))
+            asyncio.create_task(
+                self._run_public_connection(
+                    index=idx,
+                    codes=chunk,
+                    queue=queue,
+                    stop_event=stop_event,
+                    subscription_type=subscription_type,
+                    parser=parser,
+                    orderbook_level=orderbook_level,
+                )
+            )
             for idx, chunk in enumerate(chunks, start=1)
         ]
 
@@ -79,13 +138,16 @@ class UpbitWebSocketPublicClient:
                 timer_task.cancel()
                 await asyncio.gather(timer_task, return_exceptions=True)
 
-    async def _run_ticker_connection(
+    async def _run_public_connection(
         self,
         *,
         index: int,
         codes: tuple[str, ...],
-        queue: asyncio.Queue[TickerEvent],
+        queue: asyncio.Queue[Any],
         stop_event: asyncio.Event,
+        subscription_type: str,
+        parser: Any,
+        orderbook_level: int | str | None,
     ) -> None:
         attempt = 0
         while not stop_event.is_set():
@@ -95,13 +157,15 @@ class UpbitWebSocketPublicClient:
                 ticket=ticket,
                 subscriptions=[
                     Subscription(
-                        type="ticker",
+                        type=subscription_type,
                         codes=codes,
                         is_only_realtime=True,
                     )
                 ],
                 fmt=self._settings.format,
             )
+            if subscription_type == "orderbook" and orderbook_level is not None:
+                payload[1]["level"] = orderbook_level
 
             try:
                 async with websockets.connect(
@@ -113,7 +177,12 @@ class UpbitWebSocketPublicClient:
                 ) as websocket:
                     attempt = 0
                     await self._send_json(websocket, payload)
-                    await self._recv_ticker_loop(websocket=websocket, queue=queue, stop_event=stop_event)
+                    await self._recv_public_loop(
+                        websocket=websocket,
+                        queue=queue,
+                        stop_event=stop_event,
+                        parser=parser,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -122,12 +191,13 @@ class UpbitWebSocketPublicClient:
                 await asyncio.sleep(self._reconnect_delay_sec(attempt))
                 attempt += 1
 
-    async def _recv_ticker_loop(
+    async def _recv_public_loop(
         self,
         *,
         websocket: Any,
-        queue: asyncio.Queue[TickerEvent],
+        queue: asyncio.Queue[Any],
         stop_event: asyncio.Event,
+        parser: Any,
     ) -> None:
         keepalive_interval = min(max(self._settings.keepalive.ping_interval_sec, 1.0), 110.0)
         ping_timeout = max(self._settings.keepalive.ping_timeout_sec, 1.0)
@@ -153,7 +223,7 @@ class UpbitWebSocketPublicClient:
             except json.JSONDecodeError:
                 continue
 
-            event = parse_ticker_event(payload)
+            event = parser(payload)
             if event is None:
                 continue
             last_received = time.monotonic()
@@ -196,4 +266,3 @@ def _normalize_codes(markets: Sequence[str]) -> tuple[str, ...]:
 def _chunk_codes(codes: Sequence[str], *, size: int) -> list[tuple[str, ...]]:
     chunk_size = max(int(size), 1)
     return [tuple(codes[idx : idx + chunk_size]) for idx in range(0, len(codes), chunk_size)]
-

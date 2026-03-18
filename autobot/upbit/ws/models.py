@@ -26,6 +26,36 @@ class TickerEvent:
 
 
 @dataclass(frozen=True)
+class TradeEvent:
+    market: str
+    ts_ms: int
+    trade_price: float
+    trade_volume: float
+    ask_bid: str
+    sequential_id: int | None = None
+    stream_type: str = "trade"
+
+
+@dataclass(frozen=True)
+class OrderbookUnit:
+    ask_price: float | None
+    ask_size: float | None
+    bid_price: float | None
+    bid_size: float | None
+
+
+@dataclass(frozen=True)
+class OrderbookEvent:
+    market: str
+    ts_ms: int
+    total_ask_size: float | None
+    total_bid_size: float | None
+    units: tuple[OrderbookUnit, ...]
+    level: int | str | None = None
+    stream_type: str = "orderbook"
+
+
+@dataclass(frozen=True)
 class MyOrderEvent:
     ts_ms: int
     uuid: str | None

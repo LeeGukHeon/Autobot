@@ -25,7 +25,7 @@ from autobot.live.trade_journal import record_entry_submission
 from autobot.risk.live_risk_manager import LiveRiskManager, RiskManagerConfig
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
-from autobot.upbit.ws.models import MyOrderEvent, TickerEvent
+from autobot.upbit.ws.models import MyOrderEvent, OrderbookEvent, OrderbookUnit, TickerEvent, TradeEvent
 
 
 class _PrivateClient:
@@ -133,6 +133,32 @@ class _PublicWsClient:
             ts_ms=int(time.time() * 1000),
             trade_price=50_000_000.0,
             acc_trade_price_24h=10_000_000_000.0,
+        )
+
+
+class _PublicWsClientWithMicro(_PublicWsClient):
+    async def stream_trade(self, markets, duration_sec=None):  # noqa: ANN201
+        _ = markets, duration_sec
+        yield TradeEvent(
+            market="KRW-BTC",
+            ts_ms=int(time.time() * 1000),
+            trade_price=50_000_000.0,
+            trade_volume=0.01,
+            ask_bid="BID",
+            sequential_id=1,
+        )
+
+    async def stream_orderbook(self, markets, duration_sec=None, level=0):  # noqa: ANN201
+        _ = markets, duration_sec, level
+        yield OrderbookEvent(
+            market="KRW-BTC",
+            ts_ms=int(time.time() * 1000),
+            total_ask_size=10.0,
+            total_bid_size=9.0,
+            units=(
+                OrderbookUnit(ask_price=50_001_000.0, ask_size=1.0, bid_price=49_999_000.0, bid_size=1.1),
+                OrderbookUnit(ask_price=50_002_000.0, ask_size=1.2, bid_price=49_998_000.0, bid_size=1.3),
+            ),
         )
 
 
@@ -858,6 +884,46 @@ def test_live_model_alpha_runtime_consumes_private_ws_order_events(tmp_path: Pat
     assert summary["private_ws_last_event_ts_ms"] == now_ms
     assert order is not None
     assert order["local_state"] == "OPEN"
+
+
+def test_live_model_alpha_runtime_prefers_real_public_micro_streams_when_available(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    captured_provider: dict[str, object] = {}
+
+    class _CapturingFeatureProvider(_FeatureProvider):
+        def __init__(self, provider):  # noqa: ANN001
+            super().__init__()
+            captured_provider["provider"] = provider
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(
+        runtime_module,
+        "_build_live_feature_provider",
+        lambda **kwargs: _CapturingFeatureProvider(kwargs["micro_snapshot_provider"]),
+    )
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _NoIntentStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="shadow")
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClientWithMicro(),
+                settings=settings,
+                executor_gateway=None,
+            )
+        )
+
+    provider = captured_provider.get("provider")
+    assert provider is not None
+    snapshot = provider.get("KRW-BTC", int(summary["ended_ts_ms"]))  # type: ignore[union-attr]
+    assert snapshot is not None
+    assert snapshot.trade_events >= 1  # type: ignore[union-attr]
+    assert snapshot.book_available is True  # type: ignore[union-attr]
+    assert snapshot.book_events >= 1  # type: ignore[union-attr]
 
 
 def test_live_model_alpha_runtime_does_not_halt_on_clean_private_ws_completion(tmp_path: Path, monkeypatch) -> None:

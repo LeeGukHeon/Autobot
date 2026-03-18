@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from .models import MyAssetEvent, MyOrderEvent, TickerEvent
+from .models import MyAssetEvent, MyOrderEvent, OrderbookEvent, OrderbookUnit, TickerEvent, TradeEvent
 
 
 def decode_ws_message(raw_message: bytes | str) -> Any:
@@ -40,6 +40,71 @@ def parse_ticker_event(payload: Any) -> TickerEvent | None:
         stream_type=stream_type,
         market_state=market_state,
         market_warning=market_warning,
+    )
+
+
+def parse_trade_event(payload: Any) -> TradeEvent | None:
+    message = _extract_mapping(payload)
+    if message is None:
+        return None
+
+    market = _to_str(_coalesce(message, "code", "cd", "market"))
+    ts_ms = _to_int(_coalesce(message, "trade_timestamp", "ttms", "timestamp", "tms"))
+    trade_price = _to_float(_coalesce(message, "trade_price", "tp"))
+    trade_volume = _to_float(_coalesce(message, "trade_volume", "tv"))
+    ask_bid = _to_str(_coalesce(message, "ask_bid", "ab"))
+    sequential_id = _to_int(_coalesce(message, "sequential_id", "sid"))
+    if market is None or ts_ms is None or trade_price is None or trade_volume is None or ask_bid is None:
+        return None
+
+    stream_type = _to_str(_coalesce(message, "type", "ty")) or "trade"
+    return TradeEvent(
+        market=market.upper(),
+        ts_ms=ts_ms,
+        trade_price=trade_price,
+        trade_volume=trade_volume,
+        ask_bid=ask_bid.upper(),
+        sequential_id=sequential_id,
+        stream_type=stream_type,
+    )
+
+
+def parse_orderbook_event(payload: Any) -> OrderbookEvent | None:
+    message = _extract_mapping(payload)
+    if message is None:
+        return None
+
+    market = _to_str(_coalesce(message, "code", "cd", "market"))
+    ts_ms = _to_int(_coalesce(message, "timestamp", "tms"))
+    units_raw = _coalesce(message, "orderbook_units", "obu")
+    if market is None or ts_ms is None or not isinstance(units_raw, list):
+        return None
+
+    units: list[OrderbookUnit] = []
+    for item in units_raw:
+        if not isinstance(item, dict):
+            continue
+        units.append(
+            OrderbookUnit(
+                ask_price=_to_float(_coalesce(item, "ask_price", "ap")),
+                ask_size=_to_float(_coalesce(item, "ask_size", "as")),
+                bid_price=_to_float(_coalesce(item, "bid_price", "bp")),
+                bid_size=_to_float(_coalesce(item, "bid_size", "bs")),
+            )
+        )
+    if not units:
+        return None
+
+    stream_type = _to_str(_coalesce(message, "type", "ty")) or "orderbook"
+    level = _coalesce(message, "level", "lv", "orderbook_level")
+    return OrderbookEvent(
+        market=market.upper(),
+        ts_ms=ts_ms,
+        total_ask_size=_to_float(_coalesce(message, "total_ask_size", "tas")),
+        total_bid_size=_to_float(_coalesce(message, "total_bid_size", "tbs")),
+        units=tuple(units),
+        level=level,
+        stream_type=stream_type,
     )
 
 

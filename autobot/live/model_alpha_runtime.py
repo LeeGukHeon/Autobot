@@ -42,7 +42,7 @@ from autobot.strategy.operational_overlay_v1 import (
     resolve_operational_execution_overlay,
 )
 from autobot.strategy.trade_gate_v1 import GateSettings, TradeGateV1
-from autobot.upbit.ws.models import TickerEvent
+from autobot.upbit.ws.models import OrderbookEvent, TickerEvent, TradeEvent
 
 from .admissibility import (
     AccountBalanceSnapshot,
@@ -307,6 +307,10 @@ async def run_live_model_alpha_runtime(
     private_ws_queue: asyncio.Queue[MyOrderEvent | MyAssetEvent] | None = None
     private_ws_task: asyncio.Task[None] | None = None
     private_ws_stop_event: asyncio.Event | None = None
+    public_trade_queue: asyncio.Queue[TradeEvent] | None = None
+    public_orderbook_queue: asyncio.Queue[OrderbookEvent] | None = None
+    public_micro_tasks: list[asyncio.Task[None]] = []
+    public_micro_stop_event: asyncio.Event | None = None
     if private_ws_client is not None:
         private_ws_queue = asyncio.Queue()
         private_ws_stop_event = asyncio.Event()
@@ -321,6 +325,38 @@ async def run_live_model_alpha_runtime(
 
         private_ws_task = asyncio.create_task(_private_ws_pump())
         await asyncio.sleep(0)
+    if isinstance(micro_provider, LiveWsMicroSnapshotProvider):
+        public_micro_stop_event = asyncio.Event()
+        if hasattr(public_ws_client, "stream_trade"):
+            public_trade_queue = asyncio.Queue()
+
+            async def _public_trade_pump() -> None:
+                assert public_trade_queue is not None
+                assert public_micro_stop_event is not None
+                async for trade_event in public_ws_client.stream_trade(markets, duration_sec=daemon_settings.duration_sec):
+                    if public_micro_stop_event.is_set():
+                        break
+                    await public_trade_queue.put(trade_event)
+
+            public_micro_tasks.append(asyncio.create_task(_public_trade_pump()))
+        if hasattr(public_ws_client, "stream_orderbook"):
+            public_orderbook_queue = asyncio.Queue()
+
+            async def _public_orderbook_pump() -> None:
+                assert public_orderbook_queue is not None
+                assert public_micro_stop_event is not None
+                async for orderbook_event in public_ws_client.stream_orderbook(
+                    markets,
+                    duration_sec=daemon_settings.duration_sec,
+                    level=micro_provider.settings.orderbook_level,
+                ):
+                    if public_micro_stop_event.is_set():
+                        break
+                    await public_orderbook_queue.put(orderbook_event)
+
+            public_micro_tasks.append(asyncio.create_task(_public_orderbook_pump()))
+        if public_micro_tasks:
+            await asyncio.sleep(0)
     try:
         async for ticker in public_ws_client.stream_ticker(markets, duration_sec=daemon_settings.duration_sec):
             if private_ws_queue is not None:
@@ -333,11 +369,17 @@ async def run_live_model_alpha_runtime(
                     daemon_settings=daemon_settings,
                     summary=summary,
                 )
+            _drain_public_micro_events(
+                trade_queue=public_trade_queue,
+                orderbook_queue=public_orderbook_queue,
+                provider=micro_provider,
+            )
             summary["ticker_events"] = int(summary["ticker_events"]) + 1
             market_data.update(ticker)
             universe.update_ticker(ticker)
             feature_provider.ingest_ticker(ticker)
-            _ingest_live_micro_from_ticker(provider=micro_provider, ticker=ticker)
+            if not public_micro_tasks:
+                _ingest_live_micro_from_ticker(provider=micro_provider, ticker=ticker)
 
             if (
                 settings.risk_enabled
@@ -470,6 +512,11 @@ async def run_live_model_alpha_runtime(
                         daemon_settings=daemon_settings,
                         summary=summary,
                     )
+                _drain_public_micro_events(
+                    trade_queue=public_trade_queue,
+                    orderbook_queue=public_orderbook_queue,
+                    provider=micro_provider,
+                )
                 if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
                     summary["halted"] = True
                     summary["halted_reasons"] = list(
@@ -501,6 +548,11 @@ async def run_live_model_alpha_runtime(
                 daemon_settings=daemon_settings,
                 summary=summary,
             )
+        _drain_public_micro_events(
+            trade_queue=public_trade_queue,
+            orderbook_queue=public_orderbook_queue,
+            provider=micro_provider,
+        )
         if not _runtime_loop_allowed(store):
             summary["halted"] = True
             summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
@@ -512,6 +564,12 @@ async def run_live_model_alpha_runtime(
         if private_ws_task is not None:
             private_ws_task.cancel()
             await asyncio.gather(private_ws_task, return_exceptions=True)
+        if public_micro_stop_event is not None:
+            public_micro_stop_event.set()
+        if public_micro_tasks:
+            for task in public_micro_tasks:
+                task.cancel()
+            await asyncio.gather(*public_micro_tasks, return_exceptions=True)
         if private_ws_client is not None and hasattr(private_ws_client, "stats"):
             summary["private_ws_stats"] = private_ws_client.stats
 
@@ -1396,6 +1454,68 @@ def _ingest_live_micro_from_ticker(
             "ask_bid": "BID",
         }
     )
+
+
+def _ingest_live_micro_trade_event(
+    *,
+    provider: LiveWsMicroSnapshotProvider,
+    event: TradeEvent,
+) -> None:
+    market = str(event.market).strip().upper()
+    if not market or float(event.trade_price) <= 0 or float(event.trade_volume) <= 0:
+        return
+    provider.ingest_trade(
+        {
+            "market": market,
+            "ts_ms": int(event.ts_ms),
+            "trade_ts_ms": int(event.ts_ms),
+            "price": float(event.trade_price),
+            "volume": float(event.trade_volume),
+            "ask_bid": str(event.ask_bid).strip().upper(),
+        }
+    )
+
+
+def _ingest_live_micro_orderbook_event(
+    *,
+    provider: LiveWsMicroSnapshotProvider,
+    event: OrderbookEvent,
+) -> None:
+    market = str(event.market).strip().upper()
+    if not market:
+        return
+    payload: dict[str, Any] = {
+        "market": market,
+        "ts_ms": int(event.ts_ms),
+    }
+    for idx, unit in enumerate(event.units[: max(int(provider.settings.orderbook_topk), 1)], start=1):
+        payload[f"ask{idx}_price"] = unit.ask_price
+        payload[f"ask{idx}_size"] = unit.ask_size
+        payload[f"bid{idx}_price"] = unit.bid_price
+        payload[f"bid{idx}_size"] = unit.bid_size
+    provider.ingest_orderbook(payload)
+
+
+def _drain_public_micro_events(
+    *,
+    trade_queue: asyncio.Queue[TradeEvent] | None,
+    orderbook_queue: asyncio.Queue[OrderbookEvent] | None,
+    provider: LiveWsMicroSnapshotProvider,
+) -> None:
+    if trade_queue is not None:
+        while True:
+            try:
+                trade_event = trade_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _ingest_live_micro_trade_event(provider=provider, event=trade_event)
+    if orderbook_queue is not None:
+        while True:
+            try:
+                orderbook_event = orderbook_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _ingest_live_micro_orderbook_event(provider=provider, event=orderbook_event)
 
 
 def _as_optional_str(value: object) -> str | None:
