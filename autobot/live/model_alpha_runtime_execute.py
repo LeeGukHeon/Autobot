@@ -236,11 +236,23 @@ def resolve_execution_risk_control_online_threshold(
             "enabled": False,
             "base_threshold": _safe_optional_float(payload.get("selected_threshold")),
             "adaptive_threshold": _safe_optional_float(payload.get("selected_threshold")),
+            "checkpoint_name": _execution_risk_control_checkpoint_name(
+                base_name=str(online_adaptation.get("checkpoint_name") or "execution_risk_control_online_buffer"),
+                run_id=run_id,
+            ),
+            "checkpoint_base_name": str(
+                online_adaptation.get("checkpoint_name") or "execution_risk_control_online_buffer"
+            ).strip()
+            or "execution_risk_control_online_buffer",
         }
     checkpoint_name = str(
         online_adaptation.get("checkpoint_name") or "execution_risk_control_online_buffer"
     ).strip() or "execution_risk_control_online_buffer"
-    previous_checkpoint = store.get_checkpoint(name=checkpoint_name)
+    resolved_checkpoint_name = _execution_risk_control_checkpoint_name(
+        base_name=checkpoint_name,
+        run_id=run_id,
+    )
+    previous_checkpoint = store.get_checkpoint(name=resolved_checkpoint_name)
     previous_state = dict((previous_checkpoint or {}).get("payload") or {})
     lookback_trades = max(int(online_adaptation.get("lookback_trades", 0) or 0), 1)
     delta = max(float(online_adaptation.get("confidence_delta", 0.0) or 0.0), 1e-12)
@@ -275,7 +287,10 @@ def resolve_execution_risk_control_online_threshold(
             previous_state=previous_state,
             observations=[],
         )
-        return _merge_online_risk_states(base_state=base_state, martingale_state=martingale_state)
+        merged = _merge_online_risk_states(base_state=base_state, martingale_state=martingale_state)
+        merged["checkpoint_name"] = resolved_checkpoint_name
+        merged["checkpoint_base_name"] = checkpoint_name
+        return merged
     nonpositive_rate = sum(1 for item in recent if float(item["pnl_pct"]) <= 0.0) / float(count)
     severe_rate = sum(1 for item in recent if float(item["pnl_pct"]) <= -float(severe_threshold)) / float(count)
     nonpositive_ucb = _hoeffding_ucb_rate(nonpositive_rate, count, delta)
@@ -295,7 +310,18 @@ def resolve_execution_risk_control_online_threshold(
         previous_state=previous_state,
         observations=recent,
     )
-    return _merge_online_risk_states(base_state=base_state, martingale_state=martingale_state)
+    merged = _merge_online_risk_states(base_state=base_state, martingale_state=martingale_state)
+    merged["checkpoint_name"] = resolved_checkpoint_name
+    merged["checkpoint_base_name"] = checkpoint_name
+    return merged
+
+
+def _execution_risk_control_checkpoint_name(*, base_name: str, run_id: str) -> str:
+    normalized_base = str(base_name).strip() or "execution_risk_control_online_buffer"
+    normalized_run_id = str(run_id).strip()
+    if not normalized_run_id:
+        return normalized_base
+    return f"{normalized_base}:{normalized_run_id}"
 
 
 def _hoeffding_ucb_rate(empirical_rate: float, sample_count: int, delta: float) -> float:
@@ -1005,8 +1031,12 @@ def handle_strategy_intent(
             (((runtime_recommendations.get("risk_control") or {}).get("online_adaptation") or {}).get("checkpoint_name"))
             or "execution_risk_control_online_buffer"
         ).strip()
-        if checkpoint_name:
-            store.set_checkpoint(name=checkpoint_name, payload=online_threshold, ts_ms=ts_ms)
+        resolved_checkpoint_name = _execution_risk_control_checkpoint_name(
+            base_name=checkpoint_name,
+            run_id=str(getattr(predictor.run_dir, "name", "")),
+        )
+        if resolved_checkpoint_name:
+            store.set_checkpoint(name=resolved_checkpoint_name, payload=online_threshold, ts_ms=ts_ms)
     if bool(online_threshold.get("clear_halt")):
         clear_reason_codes = [
             str(item).strip() for item in (online_threshold.get("clear_reason_codes") or []) if str(item).strip()

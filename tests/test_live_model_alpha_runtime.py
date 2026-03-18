@@ -1245,6 +1245,64 @@ def test_live_model_alpha_runtime_halts_new_intents_when_online_breach_streak_tr
     assert "RISK_CONTROL_ONLINE_BREACH_STREAK" in breaker_state["reason_codes"]
 
 
+def test_resolve_execution_risk_control_online_threshold_isolates_checkpoint_by_run_id(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime_execute as runtime_execute
+
+    payload = {
+        "version": 1,
+        "policy": "execution_risk_control_hoeffding_v1",
+        "status": "ready",
+        "selected_threshold": 1.0,
+        "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+        "nonpositive_alpha": 0.30,
+        "severe_loss_alpha": 0.20,
+        "online_adaptation": {
+            "enabled": True,
+            "mode": "recent_closed_trade_hoeffding_stepup_v1",
+            "lookback_trades": 12,
+            "max_step_up": 2,
+            "recovery_streak_required": 2,
+            "min_halt_trade_count": 1,
+            "halt_breach_streak": 3,
+            "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            "confidence_delta": 0.20,
+            "checkpoint_name": "execution_risk_control_online_buffer",
+        },
+    }
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        old_checkpoint_name = runtime_execute._execution_risk_control_checkpoint_name(
+            base_name="execution_risk_control_online_buffer",
+            run_id="run-old",
+        )
+        store.set_checkpoint(
+            name=old_checkpoint_name,
+            payload={
+                "step_up": 2,
+                "breach_streak": 0,
+                "recovery_streak": 0,
+                "halt_triggered": False,
+            },
+            ts_ms=1,
+        )
+
+        old_state = runtime_execute.resolve_execution_risk_control_online_threshold(
+            store=store,
+            run_id="run-old",
+            risk_control_payload=payload,
+        )
+        new_state = runtime_execute.resolve_execution_risk_control_online_threshold(
+            store=store,
+            run_id="run-new",
+            risk_control_payload=payload,
+        )
+
+    assert old_state["checkpoint_name"] == "execution_risk_control_online_buffer:run-old"
+    assert new_state["checkpoint_name"] == "execution_risk_control_online_buffer:run-new"
+    assert float(old_state["adaptive_threshold"]) == 2.0
+    assert float(new_state["adaptive_threshold"]) == 1.0
+
+
 def test_live_model_alpha_runtime_does_not_halt_online_breach_before_min_trade_count(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
