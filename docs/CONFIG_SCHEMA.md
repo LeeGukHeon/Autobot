@@ -11,17 +11,21 @@
 
 ### Live State
 - `live.state.db_path`: path (default: `data/state/live_state.db`)
+  - newer server/runtime layouts may also use `data/state/live/live_state.db`
 - `live.state.run_lock`: bool (default: `true`)
 
 ### Live Startup
 - `live.startup.reconcile`: bool (default: `true`)
 - `live.startup.unknown_open_orders_policy`: `halt | ignore | cancel` (default: `halt`)
-- `live.startup.unknown_positions_policy`: `halt | import_as_unmanaged | attach_default_risk` (default: `halt`)
+- `live.startup.unknown_positions_policy`: `halt | import_as_unmanaged | attach_default_risk | attach_strategy_risk` (default: `halt`)
 - `live.startup.allow_cancel_external_orders`: bool (default: `false`)
 
 ### Live Sync
 - `live.sync.poll_interval_sec`: integer (default: `15`)
 - `live.sync.use_private_ws`: bool (default: `false`)
+- `live.sync.use_executor_ws`: bool (default: `false`)
+  - executor event stream 기반 동기화 사용
+  - `use_private_ws=true` 와 동시 사용 불가
   - `true`면 `live run`에서 private WS(`myOrder`,`myAsset`) 이벤트 기반 동기화를 사용
   - REST polling은 안전망으로 유지(저빈도)
 

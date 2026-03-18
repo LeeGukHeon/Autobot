@@ -277,7 +277,11 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
         raise ValueError(f"micro dataset not found: {micro_root}")
 
     if config.build.require_micro_validate_pass:
-        _assert_micro_validate_ok(micro_root)
+        _assert_micro_validate_ok(
+            micro_root,
+            from_ts_ms=start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
 
     base_root = _resolve_base_candles_root(
         parquet_root=config.parquet_root,
@@ -1548,13 +1552,102 @@ def _resolve_base_candles_root(*, parquet_root: Path, base_candles_value: str) -
     return None
 
 
-def _assert_micro_validate_ok(micro_root: Path) -> None:
-    report = _read_json(micro_root / "_meta" / "validate_report.json")
+def _assert_micro_validate_ok(
+    micro_root: Path,
+    *,
+    from_ts_ms: int | None = None,
+    to_ts_ms: int | None = None,
+) -> None:
+    report_path = micro_root / "_meta" / "validate_report.json"
+    report = _read_json(report_path)
     if not report:
-        return
+        raise ValueError(f"micro validate report missing: {report_path}")
+
     fail_files = int(report.get("fail_files") or 0)
     if fail_files > 0:
         raise ValueError(f"micro validate report has fail_files={fail_files}; fix micro dataset before features_v3 build")
+
+    checked_files = _coerce_int(report.get("checked_files"))
+    if checked_files is not None and checked_files <= 0:
+        raise ValueError("micro validate report has no checked files; rerun micro validation before features_v3 build")
+
+    if not _micro_validate_report_overlaps_window(report, from_ts_ms=from_ts_ms, to_ts_ms=to_ts_ms):
+        raise ValueError("micro validate report does not overlap the requested build window; rerun micro validation")
+
+    if _micro_validate_report_is_stale(report_path=report_path, report=report):
+        raise ValueError("micro validate report is stale; rerun micro validation before features_v3 build")
+
+
+def _micro_validate_report_overlaps_window(
+    report: dict[str, Any],
+    *,
+    from_ts_ms: int | None,
+    to_ts_ms: int | None,
+) -> bool:
+    if from_ts_ms is None or to_ts_ms is None:
+        return True
+
+    details = report.get("details")
+    if not isinstance(details, list) or not details:
+        return False
+
+    try:
+        start_day = datetime.fromtimestamp(int(from_ts_ms) / 1000.0, tz=timezone.utc).date()
+        end_day = datetime.fromtimestamp(int(to_ts_ms) / 1000.0, tz=timezone.utc).date()
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        day_value = str(item.get("date") or "").strip()
+        if not day_value:
+            continue
+        try:
+            day = date.fromisoformat(day_value)
+        except ValueError:
+            continue
+        if start_day <= day <= end_day:
+            return True
+    return False
+
+
+def _micro_validate_report_is_stale(*, report_path: Path, report: dict[str, Any]) -> bool:
+    report_ts_ms = _parse_report_timestamp_ms(report)
+    if report_ts_ms is None:
+        try:
+            report_ts_ms = int(report_path.stat().st_mtime * 1000)
+        except OSError:
+            report_ts_ms = None
+
+    latest_micro_ts_ms = _latest_micro_dataset_mtime_ms(report_path.parent.parent)
+    if report_ts_ms is None or latest_micro_ts_ms is None:
+        return False
+    # Allow a small clock granularity buffer so freshly generated reports do not
+    # fail on filesystems with second-level timestamp resolution.
+    return int(report_ts_ms) + 5_000 < int(latest_micro_ts_ms)
+
+
+def _latest_micro_dataset_mtime_ms(micro_root: Path) -> int | None:
+    latest: int | None = None
+    for path in micro_root.rglob("*.parquet"):
+        try:
+            mtime_ms = int(path.stat().st_mtime * 1000)
+        except OSError:
+            continue
+        latest = mtime_ms if latest is None else max(latest, mtime_ms)
+    return latest
+
+
+def _parse_report_timestamp_ms(report: dict[str, Any]) -> int | None:
+    value = str(report.get("generated_at") or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(parsed.timestamp() * 1000)
 
 
 def _warmup_ms(*, config: FeaturesV3Config, base_tf: str) -> int:

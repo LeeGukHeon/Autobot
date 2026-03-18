@@ -1023,6 +1023,7 @@ def test_live_daemon_classifies_local_position_missing_on_exchange_as_manual_sel
                 base_amount=0.01,
                 avg_entry_price=100000000.0,
                 updated_ts=1000,
+                managed=False,
             )
         )
         client = _FakePositionMissingClient()
@@ -1045,6 +1046,41 @@ def test_live_daemon_classifies_local_position_missing_on_exchange_as_manual_sel
     assert summary["halted"] is False
     actions = summary["last_report"]["actions"]
     assert any(item["type"] == "close_position_as_manual_sell" for item in actions)
+
+
+def test_live_daemon_halts_on_managed_position_missing_without_close_evidence(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+                managed=True,
+            )
+        )
+        client = _FakePositionMissingClient()
+        summary = run_live_sync_daemon(
+            store=store,
+            client=client,
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=True,
+                **_runtime_contract_settings(tmp_path),
+            ),
+        )
+
+    assert summary["halted"] is True
+    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" in summary["halted_reasons"]
 
 
 def test_live_daemon_single_slot_canary_halts_on_multi_slot_state(tmp_path: Path, monkeypatch) -> None:

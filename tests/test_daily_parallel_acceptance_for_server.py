@@ -185,3 +185,73 @@ Write-Host ("[v4-accept] report={0}" -f $runReportPath)
     assert latest["overall_pass"] is True
     assert latest["lanes"]["v4"]["watchdog_stalled"] is False
     assert latest["lanes"]["v4"]["effective_report_source"] == "run_report"
+
+
+def test_daily_parallel_acceptance_treats_bootstrap_only_v4_lane_as_success(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    scripts_dir = project_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "daily_micro_pipeline_for_server.ps1").write_text("# noop\n", encoding="utf-8")
+    (scripts_dir / "v3_candidate_acceptance.ps1").write_text("# noop\n", encoding="utf-8")
+    (scripts_dir / "v4_scout_candidate_acceptance.ps1").write_text(
+        """
+param(
+    [string]$ProjectRoot = "",
+    [string]$PythonExe = "",
+    [string]$BatchDate = "",
+    [switch]$SkipDailyPipeline,
+    [switch]$SkipReportRefresh
+)
+$outDir = Join-Path $ProjectRoot "logs/model_v4_acceptance"
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+$reportPath = Join-Path $outDir "run-v4-report.json"
+@{
+    reasons = @("BOOTSTRAP_ONLY_POLICY")
+    candidate = @{
+        lane_mode = "bootstrap_latest_inclusive"
+        promotion_eligible = $false
+    }
+    split_policy = @{
+        lane_mode = "bootstrap_latest_inclusive"
+        promotion_eligible = $false
+    }
+    gates = @{
+        overall_pass = $false
+    }
+} | ConvertTo-Json -Depth 6 | Set-Content -Path $reportPath -Encoding UTF8
+Copy-Item -Path $reportPath -Destination (Join-Path $outDir "latest.json") -Force
+Write-Host ("[v4-accept] report={0}" -f $reportPath)
+exit 2
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-BatchDate",
+            "2026-03-08",
+            "-SkipDailyPipeline",
+            "-SkipFeaturesBuild",
+            "-SkipV3",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "daily_parallel_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert latest["overall_pass"] is True
+    assert latest["lanes"]["v4"]["nonfatal_bootstrap_rejection"] is True

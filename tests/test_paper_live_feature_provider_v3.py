@@ -25,6 +25,7 @@ from autobot.upbit.config import (
     UpbitTimeoutSettings,
     UpbitWebSocketSettings,
 )
+from autobot.strategy.micro_snapshot import LiveWsMicroSnapshotProvider
 from autobot.upbit.ws.models import TickerEvent
 
 
@@ -114,6 +115,39 @@ def test_live_feature_provider_v3_skips_when_missing_feature_ratio_too_high(tmp_
     assert int((stats.get("skip_reasons") or {}).get("MISSING_FEATURE_RATIO_HIGH", 0)) == 1
     assert float(stats.get("missing_feature_ratio", 0.0)) > 0.2
     assert isinstance(stats.get("missing_feature_topk"), list)
+
+
+def test_live_feature_provider_v3_treats_old_micro_snapshot_as_stale(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
+
+    micro_provider = LiveWsMicroSnapshotProvider()
+    micro_provider.ingest_trade(
+        {
+            "market": "KRW-BTC",
+            "trade_ts_ms": 240_000,
+            "price": 100.0,
+            "volume": 0.1,
+            "ask_bid": "BID",
+        }
+    )
+
+    provider = LiveFeatureProviderV3(
+        feature_columns=("m_trade_events", "m_trade_source"),
+        tf="5m",
+        micro_snapshot_provider=micro_provider,
+        micro_max_age_ms=1_000,
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        missing_feature_skip_ratio=1.0,
+    )
+
+    frame = provider.build_frame(ts_ms=300_000, markets=["KRW-BTC"])
+    assert frame.height == 1
+    row = frame.row(0, named=True)
+    assert float(row["m_trade_events"]) == 0.0
+    assert float(row["m_trade_source"]) == 0.0
 
 
 def test_paper_engine_model_alpha_live_v3_scores_without_no_feature_rows(tmp_path: Path) -> None:

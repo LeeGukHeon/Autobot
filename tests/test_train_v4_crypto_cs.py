@@ -390,6 +390,42 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     )
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.render_model_card", lambda **kwargs: "# card")
 
+    pointer_events: list[str] = []
+
+    def _write_pointer(path: Path, payload: dict[str, object]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _fake_update_latest_pointer(registry_root: Path, model_family: str, run_id: str, *, family: str | None = None) -> Path:
+        run_dir = registry_root / model_family / run_id if model_family != "_global" else registry_root / "latest.json"
+        if model_family != "_global":
+            assert (registry_root / model_family / run_id / "runtime_recommendations.json").exists()
+            assert (registry_root / model_family / run_id / "lane_governance.json").exists()
+        pointer_events.append(f"latest:{model_family}:{run_id}")
+        path = registry_root / f"latest.json" if model_family == "_global" else registry_root / model_family / "latest.json"
+        return _write_pointer(path, {"run_id": run_id, "model_family": family, "updated_at_utc": "2026-03-18T00:00:00Z"})
+
+    def _fake_update_latest_candidate_pointer(
+        registry_root: Path,
+        model_family: str,
+        run_id: str,
+        *,
+        family: str | None = None,
+    ) -> Path:
+        if model_family != "_global":
+            assert (registry_root / model_family / run_id / "runtime_recommendations.json").exists()
+            assert (registry_root / model_family / run_id / "lane_governance.json").exists()
+        pointer_events.append(f"latest_candidate:{model_family}:{run_id}")
+        path = registry_root / f"latest_candidate.json" if model_family == "_global" else registry_root / model_family / "latest_candidate.json"
+        return _write_pointer(path, {"run_id": run_id, "model_family": family, "updated_at_utc": "2026-03-18T00:00:00Z"})
+
+    monkeypatch.setattr("autobot.models.train_v4_crypto_cs.update_latest_pointer", _fake_update_latest_pointer)
+    monkeypatch.setattr(
+        "autobot.models.train_v4_crypto_cs.update_latest_candidate_pointer",
+        _fake_update_latest_candidate_pointer,
+    )
+
     options = TrainV4CryptoCsOptions(
         dataset_root=tmp_path / "features_v4",
         registry_root=tmp_path / "registry",
@@ -467,13 +503,21 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
     assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
     assert load_json(options.registry_root / "latest_candidate.json")["run_id"] == result.run_id
+    assert load_json(options.registry_root / options.model_family / "latest.json")["run_id"] == result.run_id
+    assert load_json(options.registry_root / "latest.json")["run_id"] == result.run_id
+    assert pointer_events == [
+        f"latest:train_v4_crypto_cs:{result.run_id}",
+        f"latest:_global:{result.run_id}",
+        f"latest_candidate:train_v4_crypto_cs:{result.run_id}",
+        f"latest_candidate:_global:{result.run_id}",
+    ]
     reasons = load_json(result.promotion_path)["reasons"]
     assert "MANUAL_PROMOTION_REQUIRED" in reasons
     assert "NO_EXISTING_CHAMPION" in reasons
     assert "NO_WALK_FORWARD_EVIDENCE" in reasons
 
 
-def test_train_v4_manual_scope_keeps_latest_candidate_pointers_clean(tmp_path, monkeypatch) -> None:
+def test_train_v4_split_policy_history_scope_keeps_latest_pointers_clean(tmp_path, monkeypatch) -> None:
     dataset = SimpleNamespace(
         rows=3,
         X=np.array([[0.1], [0.2], [0.3]], dtype=np.float64),
@@ -573,20 +617,22 @@ def test_train_v4_manual_scope_keeps_latest_candidate_pointers_clean(tmp_path, m
         ev_scan_steps=10,
         ev_min_selected=1,
         min_rows_for_train=1,
-        run_scope="manual_daily",
+        run_scope="scheduled_split_policy_history",
     )
 
     result = train_and_register_v4_crypto_cs(options)
 
     assert result.status == "candidate"
-    assert result.train_report_path.name == "train_v4_report.manual_daily.json"
-    assert load_json(result.train_report_path)["run_scope"] == "manual_daily"
+    assert result.train_report_path.name == "train_v4_report.scheduled_split_policy_history.json"
+    assert load_json(result.train_report_path)["run_scope"] == "scheduled_split_policy_history"
     assert result.experiment_ledger_path is not None
-    assert result.experiment_ledger_path.name == "experiment_ledger.manual_daily.jsonl"
+    assert result.experiment_ledger_path.name == "experiment_ledger.scheduled_split_policy_history.jsonl"
     assert result.experiment_ledger_summary_path is not None
-    assert result.experiment_ledger_summary_path.name == "latest_experiment_ledger_summary.manual_daily.json"
+    assert result.experiment_ledger_summary_path.name == "latest_experiment_ledger_summary.scheduled_split_policy_history.json"
     assert not (options.registry_root / options.model_family / "latest_candidate.json").exists()
     assert not (options.registry_root / "latest_candidate.json").exists()
+    assert not (options.registry_root / options.model_family / "latest.json").exists()
+    assert not (options.registry_root / "latest.json").exists()
 
 
 def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monkeypatch) -> None:

@@ -43,6 +43,31 @@ def test_registry_save_and_resolve_latest(tmp_path: Path) -> None:
     assert latest == run_dir
 
 
+def test_registry_save_can_skip_pointer_publication(tmp_path: Path) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    run_id = make_run_id(seed=24)
+    save_run(
+        RegistrySavePayload(
+            registry_root=registry_root,
+            model_family="train_v1",
+            run_id=run_id,
+            model_bundle={"model_type": "dummy", "estimator": {"coef": [1.0]}},
+            metrics={},
+            thresholds={},
+            feature_spec={},
+            label_spec={},
+            train_config={},
+            data_fingerprint={},
+            leaderboard_row={"run_id": run_id, "test_precision_top5": 0.55},
+            model_card_text="# card",
+        ),
+        publish_pointers=False,
+    )
+
+    assert not (registry_root / "train_v1" / "latest.json").exists()
+    assert not (registry_root / "latest.json").exists()
+
+
 def test_registry_list_and_champion_pointer(tmp_path: Path) -> None:
     registry_root = tmp_path / "models" / "registry"
     run_id = make_run_id(seed=7)

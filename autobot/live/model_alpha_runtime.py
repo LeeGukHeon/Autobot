@@ -339,7 +339,11 @@ async def run_live_model_alpha_runtime(
             feature_provider.ingest_ticker(ticker)
             _ingest_live_micro_from_ticker(provider=micro_provider, ticker=ticker)
 
-            if settings.risk_enabled and risk_manager is not None and _protective_order_emission_allowed(store):
+            if (
+                settings.risk_enabled
+                and risk_manager is not None
+                and _protective_order_emission_allowed(store)
+            ):
                 risk_actions = apply_ticker_event(
                     risk_manager=risk_manager,
                     event=ticker,
@@ -1275,7 +1279,12 @@ def _order_emission_allowed(store: LiveStateStore) -> bool:
 
 
 def _protective_order_emission_allowed(store: LiveStateStore) -> bool:
-    return protective_orders_allowed(store)
+    if not protective_orders_allowed(store):
+        return False
+    rollout_status = store.live_rollout_status() or {}
+    if str(rollout_status.get("mode") or "").strip().lower() == "shadow":
+        return False
+    return True
 
 
 def _runtime_loop_allowed(store: LiveStateStore) -> bool:
@@ -1334,15 +1343,16 @@ def _drain_private_ws_events(
                 exc = private_ws_task.exception()
             except Exception:
                 exc = None
-        arm_breaker(
-            store,
-            reason_codes=["STALE_PRIVATE_WS_STREAM"],
-            source="strategy_private_ws",
-            ts_ms=int(time.time() * 1000),
-            action=ACTION_HALT_NEW_INTENTS,
-            details={"task_error": str(exc) if exc is not None else None},
-        )
-        summary["breaker_report"] = breaker_status(store)
+        if exc is not None:
+            arm_breaker(
+                store,
+                reason_codes=["STALE_PRIVATE_WS_STREAM"],
+                source="strategy_private_ws",
+                ts_ms=int(time.time() * 1000),
+                action=ACTION_HALT_NEW_INTENTS,
+                details={"task_error": str(exc)},
+            )
+            summary["breaker_report"] = breaker_status(store)
 
 
 def _resolve_live_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:
@@ -1360,7 +1370,22 @@ def _ingest_live_micro_from_ticker(
     market = str(ticker.market).strip().upper()
     if not market or float(ticker.trade_price) <= 0:
         return
-    volume = max(float(ticker.acc_trade_price_24h) / max(float(ticker.trade_price), 1e-8) * 1e-12, 1e-12)
+    acc_by_market = getattr(provider, "_autobot_acc_notional_by_market", None)
+    if not isinstance(acc_by_market, dict):
+        acc_by_market = {}
+        setattr(provider, "_autobot_acc_notional_by_market", acc_by_market)
+    current_acc = max(float(ticker.acc_trade_price_24h), 0.0)
+    prev_acc = _safe_optional_float(acc_by_market.get(market))
+    if prev_acc is None:
+        notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+    elif current_acc >= prev_acc:
+        notional_delta = max(current_acc - prev_acc, 0.0)
+        if notional_delta <= 0:
+            notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+    else:
+        notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+    acc_by_market[market] = float(current_acc)
+    volume = max(notional_delta / max(float(ticker.trade_price), 1e-8), 1e-12)
     provider.ingest_trade(
         {
             "market": market,

@@ -299,7 +299,11 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
     if not micro_root.exists():
         raise ValueError(f"micro dataset not found: {micro_root}")
     if config.build.require_micro_validate_pass:
-        _assert_micro_validate_ok(micro_root)
+        _assert_micro_validate_ok(
+            micro_root,
+            from_ts_ms=start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
 
     base_root = _resolve_base_candles_root(
         parquet_root=config.parquet_root,

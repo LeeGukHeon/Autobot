@@ -2278,7 +2278,20 @@ def _run_manual_v4_daily_pipeline(args: argparse.Namespace, config_dir: Path) ->
         ]
         if "SCOUT_ONLY_BUDGET_EVIDENCE" in reasons or "SCOUT_ONLY_BUDGET_EVIDENCE" in budget_reasons:
             return 0
+        if _manual_v4_daily_bootstrap_only_nonfatal(report):
+            return 0
     return exit_code
+
+
+def _manual_v4_daily_bootstrap_only_nonfatal(report: dict[str, Any]) -> bool:
+    reasons = [str(item).strip() for item in report.get("reasons", []) if str(item).strip()]
+    if "BOOTSTRAP_ONLY_POLICY" in reasons:
+        return True
+    candidate = report.get("candidate", {}) if isinstance(report.get("candidate"), dict) else {}
+    split_policy = report.get("split_policy", {}) if isinstance(report.get("split_policy"), dict) else {}
+    lane_mode = str(candidate.get("lane_mode", "")).strip() or str(split_policy.get("lane_mode", "")).strip()
+    promotion_eligible = bool(candidate.get("promotion_eligible", True))
+    return lane_mode == "bootstrap_latest_inclusive" and not promotion_eligible
 
 
 def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
@@ -4306,7 +4319,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                     store.release_run_lock(bot_id=bot_id)
     except (ConfigError, UpbitError, ValueError) as exc:
         print(f"[live][error] {exc}")
-        return 2
+        return 3
 
 
 def _handle_exec_command(args: argparse.Namespace, base_config: dict[str, Any]) -> int:

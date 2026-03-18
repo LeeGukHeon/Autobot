@@ -140,7 +140,7 @@ def test_resolve_v4_search_budget_keeps_compact_profile_under_hard_pressure(tmp_
 
     assert decision["status"] == "throttled"
     assert decision["applied"]["booster_sweep_trials"] == 5
-    assert decision["applied"]["runtime_recommendation_profile"] == "compact"
+    assert decision["applied"]["runtime_recommendation_profile"] == "tiny"
     assert "HARD_DISK_BUDGET_PRESSURE" in decision["markers"]
     assert "HARD_WALL_TIME_PRESSURE" in decision["markers"]
 

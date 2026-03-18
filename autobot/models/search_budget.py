@@ -291,7 +291,7 @@ def _runtime_profile_rank(value: str) -> int:
 
 
 def _max_runtime_profile(left: str, right: str) -> str:
-    return "compact"
+    return left if _runtime_profile_rank(left) >= _runtime_profile_rank(right) else right
 
 
 def _normalize_run_scope(value: Any) -> str:

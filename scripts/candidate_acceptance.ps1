@@ -3325,7 +3325,7 @@ try {
         if ($script:splitPolicyLaneMode -eq "promotion_strict") {
             $selectedSummary = Get-PropValue -ObjectValue $splitPolicyResolution -Name "selected_summary" -DefaultValue @{}
             $selectedWindows = Get-PropValue -ObjectValue $splitPolicyResolution -Name "current_windows" -DefaultValue @{}
-            $selectedAttempt = Get-PropValue -ObjectValue $selectedSummary -Name "current_trainability" -DefaultValue @{}
+            $selectedHistoricalAttempt = Get-PropValue -ObjectValue $selectedSummary -Name "current_trainability" -DefaultValue @{}
             $script:splitPolicyStrictTrainability = $selectedSummary
             $script:certificationStartDate = [string](Get-PropValue -ObjectValue $selectedWindows -Name "certification_start" -DefaultValue $certificationStartDate)
             $script:trainStartDate = [string](Get-PropValue -ObjectValue $selectedWindows -Name "train_start" -DefaultValue $trainStartDate)
@@ -3333,6 +3333,34 @@ try {
             $certificationStartDate = $script:certificationStartDate
             $trainStartDate = $script:trainStartDate
             $trainEndDate = $script:trainEndDate
+            $selectedHoldoutProbe = Invoke-FeaturesBuildAndLoadReport `
+                -PythonPath $resolvedPythonExe `
+                -StartDate $trainStartDate `
+                -EndDate $trainEndDate
+            $selectedAttempt = New-TrainabilityAttemptRecord `
+                -Probe $selectedHoldoutProbe `
+                -StartDate $trainStartDate `
+                -EndDate $trainEndDate
+            if (-not $selectedHoldoutProbe.Usable) {
+                $report.steps.features_build = [ordered]@{
+                    attempted = $true
+                    feature_set = $FeatureSet
+                    label_set = $LabelSet
+                    start = $trainStartDate
+                    end = $trainEndDate
+                    resolution_status = "SELECTED_HOLDOUT_REBUILD_FAILED"
+                    selected_holdout_days = $script:splitPolicySelectedHoldoutDays
+                    selection_method = "forward_validation_lcb"
+                    current_trainability = $selectedAttempt
+                    historical_trainability = $selectedHistoricalAttempt
+                }
+                $report.reasons = @("INSUFFICIENT_TRAINABLE_V4_ROWS")
+                $report.gates.overall_pass = $false
+                Sync-SplitPolicyState
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
             $report.steps.features_build = [ordered]@{
                 attempted = $true
                 feature_set = $FeatureSet
@@ -3343,6 +3371,8 @@ try {
                 selected_holdout_days = $script:splitPolicySelectedHoldoutDays
                 selection_method = "forward_validation_lcb"
                 current_trainability = $selectedAttempt
+                historical_trainability = $selectedHistoricalAttempt
+                selected_holdout_rebuild = $selectedAttempt
             }
             $report.steps.features_build.exit_code = [int](Get-PropValue -ObjectValue $selectedAttempt -Name "exit_code" -DefaultValue 0)
             $report.steps.features_build.command = [string](Get-PropValue -ObjectValue $selectedAttempt -Name "command" -DefaultValue "")

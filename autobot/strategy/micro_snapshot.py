@@ -297,7 +297,7 @@ class LiveWsMicroSnapshotProvider:
         depth_values = [value for value in depths if value is not None]
         depth_mean = (sum(depth_values) / float(len(depth_values))) if depth_values else None
 
-        last_event_ts_ms = max(trade_max_ts, book_max_ts, ts_value)
+        last_event_ts_ms = max(trade_max_ts, book_max_ts)
         return MicroSnapshot(
             market=market_value,
             snapshot_ts_ms=ts_value,
@@ -372,7 +372,9 @@ def _snapshot_from_row(*, market: str, row: dict[str, Any]) -> MicroSnapshot:
 
     trade_max_ts = _to_int(row.get("trade_max_ts_ms")) or 0
     book_max_ts = _to_int(row.get("book_max_ts_ms")) or 0
-    last_event_ts = max(trade_max_ts, book_max_ts, int(ts_ms))
+    last_event_ts = max(trade_max_ts, book_max_ts)
+    if last_event_ts <= 0:
+        last_event_ts = int(ts_ms)
     return MicroSnapshot(
         market=market,
         snapshot_ts_ms=int(ts_ms),

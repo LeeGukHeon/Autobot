@@ -210,6 +210,24 @@ def _write_micro_validate_ok(micro_root: Path) -> None:
     meta_dir = micro_root / "_meta"
     meta_dir.mkdir(parents=True, exist_ok=True)
     (meta_dir / "validate_report.json").write_text(
-        json.dumps({"fail_files": 0, "warn_files": 0, "ok_files": 1}, ensure_ascii=False),
+        json.dumps(
+            {
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "checked_files": 1,
+                "fail_files": 0,
+                "warn_files": 0,
+                "ok_files": 1,
+                "details": [
+                    {
+                        "file": str(micro_root / "tf=5m" / "market=KRW-GOOD" / "date=2026-01-02" / "part-000.parquet"),
+                        "tf": "5m",
+                        "market": "KRW-GOOD",
+                        "date": "2026-01-02",
+                        "rows": 12,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )

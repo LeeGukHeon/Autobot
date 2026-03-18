@@ -1,454 +1,360 @@
 # AUTOBOT PROGRAM RUNBOOK
 
-- Version: 2026-03-12
-- Scope: current codebase in `autobot/`
-- Supersedes:
-  - `docs/RUNBOOK_LIVE.md`
-  - `docs/RUNBOOK_CONTROL_CENTER.md`
+- Version: 2026-03-18
+- Scope: current `autobot/` codebase, server automation scripts, and observed OCI runtime state on 2026-03-18
+- Purpose: this is the single reference for architecture, lifecycle, operations, recovery, and current known sharp edges
 
-## 1. Purpose
+## 1. What This Program Is
 
-This document is the single operational and architectural overview for the current program.
+Autobot is a single-repo Upbit KRW spot trading platform that keeps one shared architecture across:
 
-It is not a historical design log. Historical intent remains in:
-
-- `docs/ADR/`
-- `docs/TICKETS/`
-- `docs/reports/`
-
-Supporting reference docs remain in:
-
-- `docs/API_NOTES.md`
-- `docs/CONFIG_SCHEMA.md`
-- `docs/EXIT_STATE_CONTRACT.md`
-
-This file explains what the program is now, how the pieces connect, and which contracts are authoritative.
-
-## 2. Current System Summary
-
-The current system is a single-package Upbit trading platform with one shared architecture across:
-
-- offline data collection
+- market data collection
+- microstructure aggregation
 - feature generation
-- model training and registry
-- backtest
+- model training and registry management
+- certification / candidate acceptance
 - paper runtime
 - live runtime
 - dashboard / operations
 
-Current source-of-truth package:
+Current production lane is the v4 family:
+
+- trainer: `train_v4_crypto_cs`
+- primary strategy runtime: `ModelAlphaStrategyV1`
+- main aliases:
+  - `champion_v4`
+  - `latest_v4`
+  - `latest_candidate_v4`
+
+This is not a notebook-only research repo. It already behaves like a production-style beta trading platform with:
+
+- persistent live state
+- restart-safe reconcile / resume
+- candidate vs champion separation
+- paper and live runtime handoff
+- rollout / breaker / dashboard concepts
+
+## 2. Source Of Truth
+
+Main SSOT is root package `autobot/`.
+
+Important top-level directories:
 
 - `autobot/`
-
-Current production model lane:
-
-- model family: `train_v4_crypto_cs`
-- champion pointer: `champion_v4`
-- candidate pointer: `latest_candidate_v4`
-- runtime strategy: `model_alpha_v1`
-- current learned runtime contract:
-  - shared selection policy
-  - learned execution profile
-  - hold/risk exit family comparison
-  - trade-level conditional tail-risk action policy
-
-## 3. What The Program Is And Is Not
-
-The program is:
-
-- a cross-sectional KRW crypto trading system for Upbit
-- a unified research-to-runtime stack
-- a restart-safe live system with persistent state, journal, risk plans, and breakers
-- a governed champion/candidate loop with paper and canary paths
-
-The program is not:
-
-- a multi-exchange platform
-- a futures/leveraged system
-- a nanosecond/HFT engine
-- a single-script research notebook stack
-
-## 4. Package SSOT
-
-Top-level package roles:
-
-- `autobot/backtest`
-  - candle-based simulation engine
-  - shared strategy adapter and execution simulation
-- `autobot/common`
-  - shared validation, calibration, evidence, and utility helpers
-- `autobot/execution`
-  - intent contract and order supervisor logic
-- `autobot/features`
-  - feature-set construction, especially `feature_set_v4`
-- `autobot/live`
-  - state DB, reconcile, daemon, rollout, runtime, journal, breakers
-- `autobot/models`
-  - trainer, registry, predictor, runtime recommendation contracts
-- `autobot/paper`
-  - live-paper runtime and simulated exchange
-- `autobot/risk`
-  - live risk manager and config models
-- `autobot/strategy`
-  - strategy contracts, candidate generation, gates, model-alpha runtime logic
-- `autobot/upbit`
-  - REST/WS clients and exchange contract handling
+  - real application package
+- `config/`
+  - runtime and training defaults
+- `scripts/`
+  - server installers, daily loops, acceptance wrappers, local helpers
+- `docs/`
+  - ADRs, tickets, reports, this runbook
+- `models/registry/`
+  - trained model families, runs, pointers
+- `data/`
+  - parquet datasets, raw WS/ticks, paper outputs, state DBs
+- `logs/`
+  - acceptance, challenger, rollout, reports, calibration
+- `tests/`
+  - regression coverage for contracts and critical paths
 
 Important note:
 
 - `python/autobot/` is not the development SSOT.
-- Root `autobot/` is the real package.
+- root `autobot/` is the real package.
 
-## 5. End-To-End System Flow
+## 3. Repo Map By Responsibility
 
-### 5.1 Data Plane
+Core package areas:
 
-The program maintains two main market data planes:
+- `autobot/data`
+  - candles, ticks, ws-public raw collection
+  - micro merge / validate / stats
+- `autobot/features`
+  - v1/v2/v3/v4 feature pipelines
+- `autobot/models`
+  - dataset loading, v4 trainer, registry, runtime recommendations, governance
+- `autobot/backtest`
+  - candle-based simulation
+- `autobot/paper`
+  - public-data paper runtime and simulated exchange
+- `autobot/live`
+  - reconcile, daemon, rollout, runtime, state store, journal, breakers
+- `autobot/risk`
+  - live risk manager
+- `autobot/strategy`
+  - strategy policy, micro gate/order policy, runtime overlays
+- `autobot/upbit`
+  - REST and WS clients, auth, rate limit handling
+- `autobot/dashboard_server.py`
+  - operational read-only dashboard backend
 
-- candle/history plane
-  - stored under `data/parquet`
-  - used by training, backtest, and live/paper feature providers
-- public WS / micro plane
-  - stored under `data/raw_ws/upbit/public`
-  - health and metadata stored under `data/raw_ws/upbit/_meta`
-  - used by paper/live runtime freshness checks and micro overlays
+## 4. End-To-End Lifecycle
 
-Main CLI entry families:
+### 4.1 Data Lifecycle
 
-- `python -m autobot.cli data ...`
-- `python -m autobot.cli collect ...`
-- `python -m autobot.cli micro ...`
-- `python -m autobot.cli features ...`
+The data plane has four layers.
 
-Important command groups in `autobot/cli.py`:
+1. Candles
 
-- `data ingest|sniff|validate|inventory`
-- `collect plan-candles|candles`
-- `collect plan-ticks|ticks`
-- `collect plan-ws-public|ws-public`
-- `features build|stats`
+- planned by `autobot/data/collect/plan_candles.py`
+- collected by `autobot/data/collect/candles_collector.py`
+- validated by `autobot/data/collect/validate_candles_api.py`
+- stored under `data/parquet/candles_*`
 
-### 5.2 Feature Plane
+2. Raw ticks
 
-Current active strategy lane is based on v4 features.
+- planned by `autobot/data/collect/plan_ticks.py`
+- collected by `autobot/data/collect/ticks_collector.py`
+- validated by `autobot/data/collect/validate_ticks.py`
+- stored under `data/raw_ticks/upbit/trades`
 
-Key pieces:
+3. Raw public WS
 
-- feature contract source: `autobot/features/feature_set_v4.py`
-- feature loading and projection: `autobot/models/dataset_loader.py`
-- live feature providers:
-  - `autobot/paper/live_features_v3.py`
-  - `autobot/paper/live_features_v4.py`
+- planned by `autobot/data/collect/plan_ws_public.py`
+- collected by `autobot/data/collect/ws_public_collector.py`
+- validated by `autobot/data/collect/validate_ws_public.py`
+- raw data stored under `data/raw_ws/upbit/public`
+- health and reports stored under `data/raw_ws/upbit/_meta`
 
-Important runtime rule:
+4. `micro_v1`
 
-- the model feature frame is not just `predictor.feature_columns`
-- it must also include runtime auxiliary columns required by learned strategy contracts
-- current example:
-  - `selection_score`
-  - `rv_12`
-  - `rv_36`
-  - `atr_pct_14`
+- merged by `autobot/data/micro/merge_micro_v1.py`
+- validated by `autobot/data/micro/validate_micro_v1.py`
+- stored under `data/parquet/micro_v1`
 
-This wiring is currently resolved through:
+Operationally, the server’s “daily micro” step is not optional background noise. It is the upstream dependency for:
 
-- `resolve_model_alpha_runtime_row_columns()` in `autobot/strategy/model_alpha_v1.py`
+- v3/v4 feature builds
+- candidate acceptance
+- paper runtime micro overlays
+- live runtime freshness / gate decisions
 
-### 5.3 Training Plane
+### 4.2 Feature Lifecycle
 
-Main trainer entry:
+Feature families:
+
+- legacy: v1
+- micro-aware: v2
+- multi-TF + micro mandatory: v3
+- current primary lane: v4
+
+Current primary feature contract is v4:
+
+- pipeline: `autobot/features/pipeline_v4.py`
+- feature set definition: `autobot/features/feature_set_v4.py`
+
+Feature builds write:
+
+- partitioned parquet feature dataset
+- `_meta/manifest.parquet`
+- `_meta/feature_spec.json`
+- `_meta/label_spec.json`
+- `_meta/build_report.json`
+
+Training and runtime depend on those artifacts, not on implicit column guessing alone.
+
+### 4.3 Training Lifecycle
+
+Main entry:
 
 - `python -m autobot.cli model train --trainer v4_crypto_cs ...`
 
-Current trainer implementation:
+Primary implementation:
 
 - `autobot/models/train_v4_crypto_cs.py`
 
-The trainer produces:
+High-level flow:
 
-- model bundle
+1. load feature dataset through `autobot/models/dataset_loader.py`
+2. build train/valid/test and walk-forward splits
+3. run booster sweep and primary fit
+4. compute thresholds and leaderboard row
+5. save core run into registry
+6. compute walk-forward, CPCV-lite, factor-block, runtime recommendations, execution acceptance, promotion evidence, lane governance
+7. persist runtime/governance artifacts
+8. append experiment ledger summary
+9. emit train report into `logs/`
+
+Important registry artifacts consumed later by paper/live/dashboard:
+
 - `train_config.yaml`
 - `thresholds.json`
 - `selection_recommendations.json`
 - `selection_policy.json`
 - `selection_calibration.json`
 - `runtime_recommendations.json`
-- walk-forward / evidence / acceptance artifacts
+- `execution_acceptance_report.json`
+- `promotion_decision.json`
+- `trainer_research_evidence.json`
+- `economic_objective_profile.json`
+- `lane_governance.json`
+- `decision_surface.json`
 
-The most important runtime artifact is:
+### 4.4 Registry And Pointers
 
-- `runtime_recommendations.json`
-
-This artifact is the bridge from training to:
-
-- backtest
-- paper
-- live
-- dashboard
-
-### 5.4 Model Registry And Pointers
-
-Registry is under:
+Registry root:
 
 - `models/registry/<model_family>/<run_id>/`
 
-Runtime pointer aliases are resolved through registry JSON pointers.
+Family pointers:
 
-Current important aliases:
+- `latest.json`
+- `latest_candidate.json`
+- `champion.json`
 
-- `champion_v4` -> `champion` of `train_v4_crypto_cs`
-- `latest_v4` -> `latest` of `train_v4_crypto_cs`
-- `latest_candidate_v4` -> `latest_candidate` of `train_v4_crypto_cs`
+Important behavior:
 
-Relevant code:
+- `save_run()` in `autobot/models/registry.py` always advances `latest`
+- v4 only advances `latest_candidate` automatically for `run_scope=scheduled_daily`
+- promotion is pointer mutation, not code mutation
 
-- `autobot/models/predictor.py`
-- `autobot/live/model_handoff.py`
+Live/paper do not load “the trainer”. They load a concrete registry run resolved from:
 
-Promotion is pointer mutation, not direct code mutation.
+- alias
+- pointer
+- or pinned `run_id`
 
-### 5.5 Backtest
+### 4.5 Acceptance / Champion-Challenger Lifecycle
 
-Current backtest engine:
+Main acceptance wrapper family:
 
-- `autobot/backtest/engine.py`
+- `scripts/candidate_acceptance.ps1`
+- `scripts/v4_scout_candidate_acceptance.ps1`
+- `scripts/v4_promotable_candidate_acceptance.ps1`
+- `scripts/v4_rank_shadow_candidate_acceptance.ps1`
+- `scripts/v4_governed_candidate_acceptance.ps1`
 
-Backtest characteristics:
+Main orchestration wrapper:
 
-- candle-driven simulation
-- shared `StrategyOrderIntent` / `StrategyFillEvent` interface
-- uses registry-backed predictor and same strategy contracts
-- uses simulated exchange and market rules
-- supports model-alpha strategy path
+- `scripts/daily_champion_challenger_v4_for_server.ps1`
 
-Backtest is not a toy path.
-It uses the same learned runtime recommendations that paper/live consume.
+Split daily loop on server:
 
-### 5.6 Paper Runtime
+- `23:50` previous challenger promotion window
+- `00:10` new challenger spawn window
+- `04:40` rank-shadow cycle
 
-Current paper engine:
+Typical daily flow:
+
+1. refresh daily data / micro
+2. train candidate
+3. run certification backtest
+4. optionally run paper soak or bootstrap-only path
+5. install challenger paper unit pinned to candidate run
+6. next day promotion window decides whether yesterday’s challenger becomes champion
+7. if promoted, restart configured champion target units
+
+### 4.6 Paper Lifecycle
+
+Paper entry:
+
+- `python -m autobot.cli paper alpha ...`
+
+Primary engine:
 
 - `autobot/paper/engine.py`
 
 Paper characteristics:
 
-- real public market data + simulated execution
-- top-N universe scan
-- shared predictor loading
-- shared `ModelAlphaStrategyV1`
-- same exit/action contracts as live
-- rolling evidence generation
+- consumes real public market data
+- uses shared `ModelAlphaStrategyV1`
+- uses registry-backed predictor
+- simulates fills through `PaperExecutionGateway`
+- writes run artifacts under `data/paper/runs`
+- produces summary data used by acceptance and dashboard
 
-Current server paper units are installed around:
+Primary OCI paper units:
 
 - `autobot-paper-v4.service`
 - `autobot-paper-v4-challenger.service`
 
-### 5.7 Live Runtime
+Observed extra installed unit on OCI as of 2026-03-18:
 
-Live runtime is split into two layers.
+- `autobot-paper-alpha.service`
+  - legacy / extra installed unit
+  - not the primary v4 lane
 
-#### Layer A: live control / sync daemon
+### 4.7 Live Lifecycle
 
-Key file:
+Live startup has two cooperating layers.
+
+Layer A: continuity / control / sync
 
 - `autobot/live/daemon.py`
 
 Responsibilities:
 
 - startup reconcile
-- runtime model handoff and pointer health
-- ws-public freshness health
-- rollout gate
-- private WS or polling sync
+- runtime contract binding
+- ws-public freshness check
+- rollout evaluation
 - breaker evaluation
-- persistent runtime checkpoints
+- cancel/apply actions
+- private WS or polling sync
 
-#### Layer B: model-alpha strategy runtime
-
-Key file:
+Layer B: model runtime
 
 - `autobot/live/model_alpha_runtime.py`
 
 Responsibilities:
 
-- load predictor from registry
+- load predictor from pinned runtime contract
 - build live feature provider
 - run `ModelAlphaStrategyV1`
-- translate decisions into intents/orders
-- manage risk-plan bootstrap and live projection
-- sync positions/orders/trade journal after fills/restarts
+- generate intents
+- run admissibility / trade gate / micro gate / risk control
+- submit orders or shadow intents
+- supervise open orders
+- backfill journal / closed orders / risk plans
+- restore state after restart
 
-Current main live units:
+Primary live units:
 
 - `autobot-live-alpha.service`
 - `autobot-live-alpha-candidate.service`
 
-### 5.8 Dashboard
+Current rollout commands exist in CLI and are operationally important:
 
-Dashboard server:
+- `python -m autobot.cli live rollout status`
+- `python -m autobot.cli live rollout arm`
+- `python -m autobot.cli live rollout disarm`
+- `python -m autobot.cli live rollout test-order`
+- `python -m autobot.cli live breaker status`
+- `python -m autobot.cli live breaker arm`
+- `python -m autobot.cli live breaker clear`
+
+### 4.8 Dashboard Lifecycle
+
+Dashboard entry:
 
 - `python -m autobot.dashboard_server`
 
-Files:
+Backend:
 
-- backend: `autobot/dashboard_server.py`
-- frontend: `autobot/dashboard_assets/dashboard.js`
+- `autobot/dashboard_server.py`
 
-Dashboard reads:
+Frontend:
+
+- `autobot/dashboard_assets/`
+
+Dashboard pulls from:
 
 - systemd unit state
-- model acceptance logs
-- rank shadow logs
+- registry pointers and recent model artifacts
+- challenger / acceptance / rank-shadow logs
 - paper summaries
 - live state DBs
-- registry artifacts
 - ws-public health metadata
+- Upbit public/private API for account- and ticker-derived summaries
 
-The dashboard is operationally important because it is the read-only synthesis layer across training, paper, live, and rollout.
+This last point matters operationally:
 
-## 6. Current Strategy Stack
+- the dashboard is not a pure local-file reader
+- it has credential and rate-limit implications
 
-### 6.1 Base Runtime Strategy
+## 5. State And Artifact SSOT
 
-Current strategy runtime:
-
-- `ModelAlphaStrategyV1`
-- file: `autobot/strategy/model_alpha_v1.py`
-
-This file currently handles:
-
-- selection policy resolution
-- learned runtime overrides
-- entry sizing
-- trade-action application
-- exit recommendation interpretation
-- fill-to-position state transitions
-
-It is the main runtime policy brain for the v4 lane.
-
-### 6.2 Selection
-
-Selection is no longer just a fixed heuristic threshold.
-
-Current structure:
-
-- model scores
-- optional selection calibration
-- learned selection recommendations
-- normalized selection policy
-
-Artifacts involved:
-
-- `selection_recommendations.json`
-- `selection_policy.json`
-- `selection_calibration.json`
-
-### 6.3 Trade Action
-
-Current trade-action policy is learned at trade level from OOS replay.
-
-Key file:
-
-- `autobot/models/trade_action_policy.py`
-
-Current model id:
-
-- `conditional_action_linear_quantile_tail_v2`
-
-Current trade-action contract includes:
-
-- state features:
-  - `selection_score`
-  - `rv_12`
-  - `rv_36`
-  - `atr_pct_14`
-- expected edge
-- downside deviation
-- expected ES
-- expected CTM
-- expected action value
-- recommended action: `hold` or `risk`
-- recommended notional multiplier
-
-Important current principle:
-
-- insufficient state support does not silently degrade to a hidden heuristic
-- it returns explicit insufficient-evidence style decisions
-
-### 6.4 Exit Recommendation
-
-Current exit contract is not a single fixed mode.
-
-It uses:
-
-- hold family
-- risk family
-- family compare
-- chosen family
-- chosen rule id
-
-Important current fields:
-
-- `chosen_family`
-- `chosen_rule_id`
-- `family_compare_status`
-
-Current design intent:
-
-- `hold` is a legitimate stopping-rule family
-- `risk` is a legitimate stopping-rule family
-- the system compares them on a common runtime recommendation contract
-- evidence-poor comparisons can abstain rather than quietly defaulting
-
-### 6.5 Execution Overlay And Admissibility
-
-The program separates:
-
-- learned strategy intent
-- execution/admissibility constraints
-
-This is important.
-
-The following are exchange/execution layer concerns, not methodology layer concerns:
-
-- tick size
-- min total
-- fee reserve
-- dust remainder
-- balance availability
-
-These are handled through the live admissibility path, not by strategy heuristics pretending to be model logic.
-
-## 7. Runtime Contract Artifacts
-
-Current runtime contract files loaded by `ModelPredictor`:
-
-- `train_config.yaml`
-- `thresholds.json`
-- `selection_recommendations.json`
-- `selection_policy.json`
-- `selection_calibration.json`
-- `runtime_recommendations.json`
-
-Current contract consumer:
-
-- `autobot/models/predictor.py`
-
-Current strategy/runtime normalization path:
-
-- `resolve_runtime_model_alpha_settings()` in `autobot/strategy/model_alpha_v1.py`
-
-This means:
-
-- training output is not just offline reporting
-- it directly mutates runtime behavior through normalized contracts
-
-## 8. Live State DB
-
-Current live state DB is the operational SSOT for runtime continuity.
-
-Core tables from `autobot/live/state_store.py`:
+Important live DB tables in `autobot/live/state_store.py`:
 
 - `positions`
 - `orders`
@@ -461,330 +367,328 @@ Core tables from `autobot/live/state_store.py`:
 - `order_lineage`
 - `run_locks`
 
-Operational meanings:
+Important log / artifact roots:
 
-- `positions`
-  - current held inventory and attached policy JSONs
-- `orders`
-  - local/exchange-tracked order state
-- `intents`
-  - pre-order decisions and admission context
-- `risk_plans`
-  - active managed exit state machine
-- `trade_journal`
-  - trade-level audit and realized result view
-- `checkpoints`
-  - runtime contracts, health, rollout, and resume metadata
-- `breaker_state`
-  - active risk/control halts
-- `order_lineage`
-  - replace/cancel ancestry
+- `logs/model_v4_acceptance`
+- `logs/model_v4_challenger`
+- `logs/model_v4_rank_shadow_cycle`
+- `logs/live_rollout`
+- `logs/operational_overlay`
 
-## 9. Current Exit State Representation
+Important rollout artifacts:
 
-The same exit decision currently appears in several projections:
+- `logs/live_rollout/latest.json`
+- scoped live rollout files such as `latest.autobot_live_alpha.service.json`
+- test-order artifacts
+- arm / disarm archives
 
-- `strategy.meta.model_exit_plan`
-- `positions.tp_json/sl_json/trailing_json`
-- `risk_plans`
-- `trade_journal.entry_meta.strategy.meta.model_exit_plan`
-- dashboard summaries derived from those records
+Important current DB-path caveat:
 
-This works, but it is one of the remaining structural pressure points in the codebase.
+- code, dashboard, and server units still support both:
+  - legacy main DB: `data/state/live_state.db`
+  - canonical-style main DB: `data/state/live/live_state.db`
+- candidate DB currently uses:
+  - `data/state/live_candidate/live_state.db`
 
-The live runtime now actively backfills missing projections to keep them aligned, but the representation is still duplicated rather than perfectly canonical.
+## 6. OCI Runtime Topology
 
-Current canonical-contract design for the next hardening slices is documented in:
+Canonical server repo root:
 
-- `docs/EXIT_STATE_CONTRACT.md`
+- `/home/ubuntu/MyApps/Autobot`
 
-## 10. Runtime Modes And Pointers
+Operator access pattern:
 
-Current server-level mental model:
+- use the local helper `Desktop/connect_oci.bat`
+- use `git push` locally, then `git pull origin main` on OCI
+- if unit content changes, rerun the installer script; `git pull` alone is not enough
 
-- champion paper:
-  - runs `champion_v4`
-- challenger paper:
-  - runs `latest_candidate_v4`
-- main live:
-  - typically pinned to champion
-- candidate live canary:
-  - pinned to candidate
+Systemd is the real scheduler on OCI.
 
-Important point:
+Observed on 2026-03-18:
 
-- live runtime pins a concrete run id after startup
-- dashboard and health checkpoints compare that pinned run id against pointer state
-- if pointer divergence or ws-public staleness appears, breakers can halt new intents
+- cron for `ubuntu` was empty
+- local and server Git SHA both matched `159de4b7019bef95fd59ebe3e6eb9d10d1e41da2`
 
-## 11. Rollout Model
-
-Current rollout semantics use:
-
-- `shadow`
-- `canary`
-- `live`
-
-Relevant files:
-
-- `autobot/live/rollout.py`
-- `autobot/live/daemon.py`
-
-Current rollout behavior is not just UI metadata.
-It is part of runtime gating for:
-
-- start allowance
-- order emission allowance
-- target live unit
-- test-order freshness
-
-## 12. Server Service Map
-
-Current dashboard-monitored units:
+### 6.1 Continuous Services
 
 - `autobot-paper-v4.service`
 - `autobot-paper-v4-challenger.service`
-- `autobot-ws-public.service`
 - `autobot-live-alpha.service`
 - `autobot-live-alpha-candidate.service`
-- `autobot-v4-challenger-spawn.service`
-- `autobot-v4-challenger-promote.service`
-- `autobot-v4-rank-shadow.service`
-- `autobot-v4-challenger-spawn.timer`
-- `autobot-v4-challenger-promote.timer`
-- `autobot-v4-rank-shadow.timer`
+- `autobot-ws-public.service`
 - `autobot-dashboard.service`
+- `autobot-storage-retention.service`
+  - timer-driven oneshot service
 
-Install scripts live under:
+### 6.2 Timers
+
+- `autobot-v4-challenger-promote.timer`
+  - `23:50`
+- `autobot-v4-challenger-spawn.timer`
+  - `00:10`
+- `autobot-v4-rank-shadow.timer`
+  - `04:40`
+- `autobot-storage-retention.timer`
+  - `06:30`
+
+### 6.3 Observed OCI State On 2026-03-18
+
+Observed from live OCI inspection on 2026-03-18:
+
+- `autobot-paper-v4.service`: active
+- `autobot-paper-v4-challenger.service`: active
+- `autobot-live-alpha.service`: inactive
+- `autobot-live-alpha-candidate.service`: active
+- `autobot-ws-public.service`: active
+- `autobot-dashboard.service`: active
+
+Observed rollout snapshot on OCI:
+
+- global latest rollout artifact targeted `autobot-live-alpha-candidate.service`
+- main live scoped rollout artifact was explicitly disarmed with note:
+  - `main live parked pending promote evidence`
+- candidate live rollout was armed in `canary` mode but had breaker-active state
+
+Operational interpretation:
+
+- main live being inactive on OCI is currently consistent with rollout parking
+- candidate live being active does not mean order emission is allowed
+- rollout status must be checked before assuming a live unit can trade
+
+## 7. Server Install Scripts
+
+Main installers in repo:
 
 - `scripts/install_server_runtime_services.ps1`
+  - paper units
 - `scripts/install_server_live_runtime_service.ps1`
+  - live units
 - `scripts/install_server_dashboard_service.ps1`
+  - dashboard
+- `scripts/install_server_daily_split_challenger_services.ps1`
+  - spawn/promote split timers
 - `scripts/install_server_rank_shadow_service.ps1`
-- `scripts/install_server_daily_acceptance_service.ps1`
-- `scripts/install_server_daily_parallel_acceptance_service.ps1`
+  - rank-shadow timer
+- `scripts/install_server_storage_retention_service.ps1`
+  - retention timer
 
-## 13. Server Access And Core Ops
+Important gap:
 
-Current Oracle server access facts used by operations:
+- there is currently no in-repo OCI installer for `autobot-ws-public.service`
+- the unit exists on server, but its installation contract is not represented in this repo
 
-- SSH host:
-  - `ubuntu@168.107.44.206`
-- Windows SSH executable absolute path:
-  - `C:\Windows\System32\OpenSSH\ssh.exe`
-- SSH key absolute path:
-  - `C:\Users\Administrator\Desktop\OCI_SSH_KEY\ssh-key-2026-03-05.key`
-- local helper reference:
-  - `C:\Users\Administrator\Desktop\connect_oci.bat`
-- server repo root:
-  - `/home/ubuntu/MyApps/Autobot`
+## 8. Daily Operations
 
-Hard rule for this environment:
+### 8.1 Basic Checks
 
-- use the SSH key by absolute path
-- do not assume `ssh` is on PATH
-
-Canonical Windows SSH pattern:
-
-```powershell
-& "C:\Windows\System32\OpenSSH\ssh.exe" -i "C:\Users\Administrator\Desktop\OCI_SSH_KEY\ssh-key-2026-03-05.key" ubuntu@168.107.44.206
-```
-
-Canonical repo update pattern:
+Use these on OCI:
 
 ```bash
 cd /home/ubuntu/MyApps/Autobot
-git pull origin main
-```
-
-Common service checks:
-
-```bash
+git status --short
 systemctl status autobot-paper-v4.service --no-pager
+systemctl status autobot-paper-v4-challenger.service --no-pager
 systemctl status autobot-live-alpha.service --no-pager
 systemctl status autobot-live-alpha-candidate.service --no-pager
-systemctl status autobot-dashboard.service --no-pager
 systemctl status autobot-ws-public.service --no-pager
+systemctl status autobot-dashboard.service --no-pager
+systemctl list-timers --all | grep autobot
 ```
 
-Common restarts:
-
-```bash
-sudo systemctl restart autobot-paper-v4.service
-sudo systemctl restart autobot-live-alpha.service
-sudo systemctl restart autobot-live-alpha-candidate.service
-sudo systemctl restart autobot-dashboard.service
-```
-
-Common logs:
+### 8.2 Logs
 
 ```bash
 journalctl -u autobot-paper-v4.service -n 200 --no-pager
+journalctl -u autobot-paper-v4-challenger.service -n 200 --no-pager
 journalctl -u autobot-live-alpha.service -n 200 --no-pager
 journalctl -u autobot-live-alpha-candidate.service -n 200 --no-pager
+journalctl -u autobot-v4-challenger-spawn.service -n 200 --no-pager
+journalctl -u autobot-v4-challenger-promote.service -n 200 --no-pager
+journalctl -u autobot-v4-rank-shadow.service -n 200 --no-pager
 journalctl -u autobot-dashboard.service -n 200 --no-pager
 ```
 
-Useful live candidate DB path:
+### 8.3 Rollout And Breaker Checks
 
-- `/home/ubuntu/MyApps/Autobot/data/state/live_candidate/live_state.db`
+```bash
+python -m autobot.cli live rollout status
+python -m autobot.cli live breaker status
+```
 
-Useful main live DB path:
+Typical rollout actions:
 
-- `/home/ubuntu/MyApps/Autobot/data/state/live/live_state.db`
+```bash
+python -m autobot.cli live rollout arm --mode canary --target-unit autobot-live-alpha-candidate.service --arm-token <TOKEN>
+python -m autobot.cli live rollout test-order --market KRW-BTC --side bid --ord-type limit --price 5000 --volume 1
+python -m autobot.cli live rollout disarm --arm-token <TOKEN> --note "parking main live"
+```
 
-Operational intent:
+### 8.4 Deploy Pattern
 
-- code changes are made locally
-- local changes are committed and pushed to GitHub
-- server changes are applied by `git pull origin main`
-- services are restarted only if the changed code path requires runtime reload
-- if a systemd unit template or installer contract changes, rerun the corresponding installer script; `git pull` plus service restart alone is not sufficient
+1. make change locally
+2. run tests locally
+3. commit and push
+4. SSH to OCI
+5. `git pull origin main`
+6. rerun installer script if systemd unit content changed
+7. restart affected services
+8. verify rollout/breaker/state DB/dashboard
 
-## 14. Daily Training / Candidate / Promotion Loop
+## 9. Recovery Playbooks
 
-Current training automation is script-driven rather than hidden in a black box.
+### 9.1 Main Live Is Inactive
 
-Key scripts:
+Check in this order:
 
-- `scripts/daily_champion_challenger_v4_for_server.ps1`
-- `scripts/v4_governed_candidate_acceptance.ps1`
-- `scripts/v4_promotable_candidate_acceptance.ps1`
-- `scripts/v4_scout_candidate_acceptance.ps1`
-- `scripts/v4_rank_shadow_candidate_acceptance.ps1`
+1. `systemctl status autobot-live-alpha.service --no-pager`
+2. `python -m autobot.cli live rollout status`
+3. `python -m autobot.cli live breaker status`
+4. inspect scoped rollout artifact under `logs/live_rollout/`
+5. verify whether the unit is intentionally parked or unexpectedly halted
 
-CLI shortcut:
+If the unit is parked by rollout:
 
-- `python -m autobot.cli model daily-v4 --mode spawn_only ...`
+- arm the correct rollout contract
+- run `live rollout test-order`
+- confirm `start_allowed=true`
+- restart the live unit
 
-Important current rule in code:
+### 9.2 Candidate Pointer Or Candidate Live Fails To Start
 
-- `daily-v4` only supports `spawn_only`
-- direct runtime mutation is intentionally blocked from that CLI path
+Check:
 
-This is a deliberate governance guard.
+- `models/registry/train_v4_crypto_cs/latest_candidate.json`
+- candidate run directory existence
+- required artifacts in that run:
+  - `runtime_recommendations.json`
+  - `promotion_decision.json`
+  - `trainer_research_evidence.json`
+  - `lane_governance.json`
+- `journalctl -u autobot-live-alpha-candidate.service -n 200 --no-pager`
 
-## 15. Local Helper Scripts
+If the pointer is bad, repoint or retrain before restarting paper/live candidate units.
 
-The old standalone runbooks are removed, but the helper scripts still exist.
+### 9.3 Challenger Loop Gets Stuck
 
-Current interpretation:
+Inspect:
 
-- `scripts/AutobotCenter.cmd`
-- `scripts/autobot_center.ps1`
+- `logs/model_v4_challenger/current_state.json`
+- `logs/model_v4_challenger/latest.json`
+- `logs/model_v4_challenger/latest_promote_cutover.json`
+- spawn/promote service logs
 
-These are convenience launchers for local/manual operation.
-They are not the authoritative operational contract.
+Current challenger orchestration depends on these artifacts. If they are stale or contradictory, fix state before rerunning timers.
 
-For server truth, prefer:
+### 9.4 WS Public Looks Healthy But Trading Logic Still Feels Stale
 
-- systemd unit install scripts under `scripts/install_server_*.ps1`
-- CLI entry points in `autobot/cli.py`
-- this runbook
+Do not trust only `updated_at_ms`.
 
-## 16. What To Edit For Each Kind Of Change
+Also inspect:
 
-If changing training artifacts:
+- actual trade/orderbook receive timestamps
+- latest raw part timestamps under `data/raw_ws/upbit/public`
+- `ws_validate_report.json`
+- `aggregate_report.json`
+
+Current freshness logic is metadata-heavy, so manual validation may be required.
+
+### 9.5 DB Path Confusion
+
+If dashboard/live summaries do not match expectations:
+
+- inspect unit environment for `AUTOBOT_LIVE_STATE_DB_PATH`
+- verify whether the unit is using legacy or canonical DB path
+- verify dashboard is reading the same path
+
+## 10. What To Edit By Concern
+
+If changing data collection:
+
+- `autobot/data/collect/*`
+- `autobot/data/micro/*`
+- `scripts/daily_micro_pipeline*.ps1`
+
+If changing feature contracts:
+
+- `autobot/features/pipeline_v4.py`
+- `autobot/features/feature_set_v4.py`
+- `autobot/models/dataset_loader.py`
+
+If changing training / registry / governance:
 
 - `autobot/models/train_v4_crypto_cs.py`
-- `autobot/models/runtime_recommendations.py`
-- `autobot/models/runtime_recommendation_contract.py`
+- `autobot/models/train_v4_*`
+- `autobot/models/registry.py`
+- `scripts/candidate_acceptance.ps1`
 
-If changing runtime strategy behavior:
+If changing paper runtime:
 
-- `autobot/strategy/model_alpha_v1.py`
-- `autobot/models/trade_action_policy.py`
-
-If changing backtest/paper/live feature projection:
-
-- `autobot/models/dataset_loader.py`
+- `autobot/paper/engine.py`
 - `autobot/paper/live_features_v3.py`
 - `autobot/paper/live_features_v4.py`
 
-If changing live continuity or reconcile:
+If changing live runtime / continuity:
 
-- `autobot/live/daemon.py`
 - `autobot/live/model_alpha_runtime.py`
+- `autobot/live/model_alpha_runtime_execute.py`
+- `autobot/live/daemon.py`
 - `autobot/live/reconcile.py`
 - `autobot/live/state_store.py`
 
-If changing exit-plan persistence or journal visibility:
+If changing risk behavior:
 
+- `autobot/risk/live_risk_manager.py`
 - `autobot/live/model_risk_plan.py`
-- `autobot/live/trade_journal.py`
+- `autobot/live/breakers.py`
+
+If changing rollout / promotion:
+
+- `autobot/live/rollout.py`
+- `scripts/daily_champion_challenger_v4_for_server.ps1`
+- `scripts/install_server_live_runtime_service.ps1`
+- `scripts/install_server_daily_split_challenger_services.ps1`
+
+If changing dashboard:
+
 - `autobot/dashboard_server.py`
-- `autobot/dashboard_assets/dashboard.js`
+- `autobot/dashboard_assets/*`
 
-If changing server unit installation:
+## 11. Current Known Sharp Edges
 
-- `scripts/install_server_*.ps1`
+These are current known issues, not operator mistakes.
 
-## 17. Current Strengths
+- dashboard is network-exposed by default unless the operator constrains it externally
+- `autobot-ws-public.service` install contract is missing from repo
+- live/paper runtime micro overlay is not the same as offline `micro_v1`
+- ws-public freshness breaker currently relies too much on metadata update times
+- v4 pointer mutation happens before all post-train artifacts are fully durable
+- split-policy history probes can disturb family pointers if not isolated
+- `shadow` mode can still emit real protective exits when live risk is enabled
+- startup / candidate / challenger state depends on several filesystem artifacts, not one transactional state machine
 
-The current codebase is strong in these areas:
+## 12. Recommended Reading Order
 
-- shared architecture across backtest, paper, and live
-- registry-driven runtime contracts
-- explicit candidate/champion pointer model
-- restart-safe live state and reconcile path
-- trade journal and dashboard observability
-- learned trade-action and learned exit-family comparison already wired into runtime
-- reasonable regression coverage on critical paths
-
-## 18. Current Weak Spots
-
-The current codebase is still weak or expensive in these areas:
-
-- very large central files
-  - `autobot/cli.py`
-  - `autobot/models/train_v4_crypto_cs.py`
-  - `autobot/live/model_alpha_runtime.py`
-  - `autobot/dashboard_server.py`
-  - `autobot/strategy/model_alpha_v1.py`
-- duplicated exit-state projections
-- duplicated dashboard rendering paths
-- some runtime contracts still rely on normalization/backfill glue instead of a single canonical representation
-
-These are software hardening issues more than methodology issues.
-
-## 19. Operational Interpretation
-
-The program should currently be thought of as:
-
-- a production-style beta trading platform
-- not a throwaway research project
-- but also not yet a fully hardened institutional platform
-
-The architecture is already coherent.
-The remaining work is mostly:
-
-- contract unification
-- modularization
-- end-to-end hardening
-- more rigorous ops smoke coverage
-
-## 20. Authoritative Reading Order
-
-For someone new to the codebase, the shortest correct reading order is:
+For a new maintainer, the shortest correct reading order is:
 
 1. this file
 2. `README.md`
-3. `docs/ADR/0004-package-ssot.md`
-4. `autobot/cli.py`
-5. `autobot/models/predictor.py`
-6. `autobot/models/train_v4_crypto_cs.py`
-7. `autobot/strategy/model_alpha_v1.py`
-8. `autobot/models/trade_action_policy.py`
-9. `autobot/paper/engine.py`
-10. `autobot/live/daemon.py`
-11. `autobot/live/model_alpha_runtime.py`
+3. `autobot/cli.py`
+4. `autobot/models/predictor.py`
+5. `autobot/models/train_v4_crypto_cs.py`
+6. `scripts/candidate_acceptance.ps1`
+7. `scripts/daily_champion_challenger_v4_for_server.ps1`
+8. `autobot/paper/engine.py`
+9. `autobot/live/daemon.py`
+10. `autobot/live/model_alpha_runtime.py`
+11. `autobot/live/reconcile.py`
 12. `autobot/live/state_store.py`
 13. `autobot/dashboard_server.py`
 
-## 21. Final Rule
+## 13. Final Rule
 
-When there is a conflict between an old note and current code:
+When docs and code disagree:
 
 - current code wins
-- this runbook should be updated to match the code
-- old ticket/report text should be treated as historical context, not current truth
+- current OCI systemd state beats historical ticket text
+- this runbook should be updated to match reality
+- older ticket and report docs should be treated as methodology history, not operational truth

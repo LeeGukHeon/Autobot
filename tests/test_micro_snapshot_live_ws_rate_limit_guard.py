@@ -26,3 +26,21 @@ def test_live_ws_provider_track_markets_respects_subscribe_guard() -> None:
     )
     assert provider.track_markets(["KRW-BTC"], now_monotonic=0.0)
     assert not provider.track_markets(["KRW-BTC", "KRW-ETH"], now_monotonic=1.0)
+
+
+def test_live_ws_provider_reports_actual_last_event_timestamp() -> None:
+    provider = LiveWsMicroSnapshotProvider(LiveWsProviderSettings(enabled=True))
+    provider.ingest_trade(
+        {
+            "market": "KRW-BTC",
+            "trade_ts_ms": 1_700_000_000_000,
+            "price": 100.0,
+            "volume": 0.1,
+            "ask_bid": "BID",
+        }
+    )
+
+    snapshot = provider.get("KRW-BTC", 1_700_000_050_000)
+    assert snapshot is not None
+    assert snapshot.snapshot_ts_ms == 1_700_000_050_000
+    assert snapshot.last_event_ts_ms == 1_700_000_000_000

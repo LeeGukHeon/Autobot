@@ -97,6 +97,45 @@ def test_reconcile_closes_local_only_open_order(tmp_path: Path) -> None:
     assert orders[0]["state"] == "cancel"
 
 
+def test_reconcile_defers_local_only_open_order_when_detail_lookup_fails(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="local-1",
+                identifier="AUTOBOT-autobot-001-intent-1-1000-a",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                local_state="OPEN",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            fetch_order_detail=lambda uuid, identifier: (_ for _ in ()).throw(RuntimeError("temporary lookup failure")),
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+        )
+        orders = store.list_orders(open_only=False)
+
+    assert report["halted"] is False
+    assert any(item["type"] == "defer_local_order_closure" for item in report["actions"])
+    assert orders[0]["uuid"] == "local-1"
+    assert orders[0]["state"] == "wait"
+
+
 def test_reconcile_cancel_policy_creates_bot_cancel_action(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -122,6 +161,50 @@ def test_reconcile_cancel_policy_creates_bot_cancel_action(tmp_path: Path) -> No
 
     action_types = {item["type"] for item in report["actions"] if isinstance(item, dict)}
     assert "cancel_bot_open_order" in action_types
+
+
+def test_reconcile_cancel_policy_does_not_cancel_known_local_bot_open_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="bot-1",
+                identifier="AUTOBOT-autobot-001-intent-1-123-abc",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price=100000000.0,
+                volume_req=0.01,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                local_state="OPEN",
+            )
+        )
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[
+                {
+                    "uuid": "bot-1",
+                    "identifier": "AUTOBOT-autobot-001-intent-1-123-abc",
+                    "market": "KRW-BTC",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "state": "wait",
+                }
+            ],
+            unknown_open_orders_policy="cancel",
+            unknown_positions_policy="halt",
+            dry_run=True,
+        )
+
+    action_types = {item["type"] for item in report["actions"] if isinstance(item, dict)}
+    assert "cancel_bot_open_order" not in action_types
+    assert report["counts"]["unknown_bot_open_orders"] == 0
 
 
 def test_reconcile_treats_risk_identifier_as_bot_order(tmp_path: Path) -> None:
@@ -476,6 +559,40 @@ def test_reconcile_classifies_missing_position_as_manual_sell(tmp_path: Path) ->
     assert journal["close_mode"] == "external_manual_order"
     assert journal["exit_meta"]["close_verification_status"] == "unverified_missing_exit_order"
     assert journal["exit_meta"]["close_verified"] is False
+
+
+def test_reconcile_retains_managed_missing_position_without_close_evidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+                managed=True,
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        positions = store.list_positions()
+
+    assert report["halted"] is False
+    assert report["counts"]["local_positions_missing_on_exchange"] == 1
+    assert any(item["type"] == "retain_local_position_missing_on_exchange" for item in report["actions"])
+    assert len(positions) == 1
+    assert positions[0]["market"] == "KRW-BTC"
 
 
 def test_reconcile_infers_intent_from_exchange_bot_order(tmp_path: Path) -> None:

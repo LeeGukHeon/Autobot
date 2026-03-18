@@ -335,6 +335,22 @@ function Test-NonFatalScoutReport {
     return ($budgetReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE")
 }
 
+function Test-BootstrapOnlyNonFatalRejection {
+    param([Parameter(Mandatory = $false)]$AcceptanceReport)
+    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
+    if ($reasons -contains "BOOTSTRAP_ONLY_POLICY") {
+        return $true
+    }
+    $candidate = Get-PropValue -ObjectValue $AcceptanceReport -Name "candidate" -DefaultValue @{}
+    $splitPolicy = Get-PropValue -ObjectValue $AcceptanceReport -Name "split_policy" -DefaultValue @{}
+    $laneMode = [string](Get-PropValue -ObjectValue $candidate -Name "lane_mode" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($laneMode)) {
+        $laneMode = [string](Get-PropValue -ObjectValue $splitPolicy -Name "lane_mode" -DefaultValue "")
+    }
+    $promotionEligible = [bool](Get-PropValue -ObjectValue $candidate -Name "promotion_eligible" -DefaultValue $true)
+    return (($laneMode -eq "bootstrap_latest_inclusive") -and (-not $promotionEligible))
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -532,6 +548,7 @@ try {
                 $latestReasons = @($latestReasons) + @($waitResult.ReasonCodes)
             }
             $nonfatalScoutRejection = Test-NonFatalScoutReport -AcceptanceReport $effectiveReport
+            $nonfatalBootstrapRejection = Test-BootstrapOnlyNonFatalRejection -AcceptanceReport $effectiveReport
             $report.lanes[$lane.name] = [ordered]@{
                 attempted = $true
                 exit_code = [int]$waitResult.ExitCode
@@ -545,6 +562,7 @@ try {
                 latest_overall_pass = [bool]$latestOverallPass
                 latest_reasons = @($latestReasons)
                 nonfatal_scout_rejection = [bool]$nonfatalScoutRejection
+                nonfatal_bootstrap_rejection = [bool]$nonfatalBootstrapRejection
                 watchdog_stalled = [bool]$waitResult.Stalled
                 watchdog_reason_codes = @($waitResult.ReasonCodes)
                 watchdog_runtime_sec = [int]$waitResult.RuntimeSec
@@ -571,8 +589,9 @@ try {
         } else {
             $v4LatestOverallPass = Get-PropValue -ObjectValue $report.lanes.v4 -Name "latest_overall_pass" -DefaultValue $false
             $v4NonfatalScoutRejection = Get-PropValue -ObjectValue $report.lanes.v4 -Name "nonfatal_scout_rejection" -DefaultValue $false
+            $v4NonfatalBootstrapRejection = Get-PropValue -ObjectValue $report.lanes.v4 -Name "nonfatal_bootstrap_rejection" -DefaultValue $false
             $v4WatchdogStalled = Get-PropValue -ObjectValue $report.lanes.v4 -Name "watchdog_stalled" -DefaultValue $false
-            [bool]((-not $v4WatchdogStalled) -and ($v4LatestOverallPass -or $v4NonfatalScoutRejection -or ($report.lanes.v4.dry_run -eq $true -and $report.lanes.v4.exit_code -eq 0)))
+            [bool]((-not $v4WatchdogStalled) -and ($v4LatestOverallPass -or $v4NonfatalScoutRejection -or $v4NonfatalBootstrapRejection -or ($report.lanes.v4.dry_run -eq $true -and $report.lanes.v4.exit_code -eq 0)))
         }
     } else { $true }
     $report.overall_pass = $v3Pass -and $v4Pass

@@ -1147,6 +1147,7 @@ def test_candidate_acceptance_selects_holdout_by_forward_validation_lcb_when_his
         {"command": "features build", "start": "2026-03-01", "end": "2026-03-07"},
         {"command": "features build", "start": "2026-03-01", "end": "2026-03-06"},
         {"command": "features build", "start": "2026-03-01", "end": "2026-03-05"},
+        {"command": "features build", "start": "2026-03-01", "end": "2026-03-05"},
     ]
     assert [entry for entry in invocations if entry["command"] == "model train"] == [
         {"command": "model train", "start": "2026-03-01", "end": "2026-03-05"}

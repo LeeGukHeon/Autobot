@@ -40,7 +40,7 @@ def make_run_id(*, seed: int | None = None) -> str:
     return f"{now}-s{int(seed)}-{token}"
 
 
-def save_run(payload: RegistrySavePayload) -> Path:
+def save_run(payload: RegistrySavePayload, *, publish_pointers: bool = True) -> Path:
     run_dir = payload.registry_root / payload.model_family / payload.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -63,8 +63,9 @@ def save_run(payload: RegistrySavePayload) -> Path:
         _write_json(run_dir / "runtime_recommendations.json", payload.runtime_recommendations)
     (run_dir / "model_card.md").write_text(payload.model_card_text.rstrip() + "\n", encoding="utf-8")
 
-    update_latest_pointer(payload.registry_root, payload.model_family, payload.run_id)
-    update_latest_pointer(payload.registry_root, "_global", payload.run_id, family=payload.model_family)
+    if publish_pointers:
+        update_latest_pointer(payload.registry_root, payload.model_family, payload.run_id)
+        update_latest_pointer(payload.registry_root, "_global", payload.run_id, family=payload.model_family)
     return run_dir
 
 

@@ -144,11 +144,26 @@ def _ts_ms_to_iso(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
 
 
-def _seed_runtime_contract(tmp_path: Path, *, champion_run_id: str, ws_updated_at_ms: int) -> tuple[Path, Path, Path, Path]:
+def _seed_runtime_contract(
+    tmp_path: Path,
+    *,
+    champion_run_id: str,
+    ws_updated_at_ms: int,
+    ws_last_rx_ts_ms: int | dict[str, int] | None = None,
+    collect_generated_at_ms: int | None = None,
+    validate_generated_at_ms: int | None = None,
+) -> tuple[Path, Path, Path, Path]:
     registry_root = tmp_path / "models" / "registry"
     family_dir = registry_root / "train_v4_crypto_cs"
     (family_dir / champion_run_id).mkdir(parents=True, exist_ok=True)
     _write_json(family_dir / "champion.json", {"run_id": champion_run_id})
+
+    if ws_last_rx_ts_ms is None:
+        last_rx_ts_ms = {"trade": ws_updated_at_ms, "orderbook": ws_updated_at_ms}
+    elif isinstance(ws_last_rx_ts_ms, dict):
+        last_rx_ts_ms = {str(key): int(value) for key, value in ws_last_rx_ts_ms.items()}
+    else:
+        last_rx_ts_ms = {"trade": int(ws_last_rx_ts_ms), "orderbook": int(ws_last_rx_ts_ms)}
 
     ws_raw_root = tmp_path / "data" / "raw_ws" / "upbit" / "public"
     ws_meta_dir = tmp_path / "data" / "raw_ws" / "upbit" / "_meta"
@@ -158,22 +173,24 @@ def _seed_runtime_contract(tmp_path: Path, *, champion_run_id: str, ws_updated_a
             "run_id": "ws-run-1",
             "updated_at_ms": ws_updated_at_ms,
             "connected": True,
-            "last_rx_ts_ms": {"trade": ws_updated_at_ms, "orderbook": ws_updated_at_ms},
+            "last_rx_ts_ms": last_rx_ts_ms,
             "subscribed_markets_count": 20,
         },
     )
+    collect_at_ms = collect_generated_at_ms if collect_generated_at_ms is not None else max(ws_updated_at_ms - 50, 0)
+    validate_at_ms = validate_generated_at_ms if validate_generated_at_ms is not None else max(ws_updated_at_ms - 25, 0)
     _write_json(
         ws_meta_dir / "ws_collect_report.json",
         {
             "run_id": "ws-collect-1",
-            "generated_at": _ts_ms_to_iso(max(ws_updated_at_ms - 50, 0)),
+            "generated_at": _ts_ms_to_iso(max(int(collect_at_ms), 0)),
         },
     )
     _write_json(
         ws_meta_dir / "ws_validate_report.json",
         {
             "run_id": "ws-validate-1",
-            "generated_at": _ts_ms_to_iso(max(ws_updated_at_ms - 25, 0)),
+            "generated_at": _ts_ms_to_iso(max(int(validate_at_ms), 0)),
             "checked_files": 4,
             "ok_files": 4,
             "warn_files": 0,
@@ -296,8 +313,54 @@ def test_live_startup_prefers_fresh_health_checkpoint_even_if_slightly_ahead_of_
     assert summary["halted"] is False
     assert summary["ws_public_staleness_sec"] == pytest.approx(0.0, abs=1e-9)
     assert ws_contract is not None
-    assert ws_contract["ws_public_last_checkpoint_source"] == "health_snapshot.updated_at_ms"
+    assert ws_contract["ws_public_last_checkpoint_source"] == "health_snapshot.last_rx_ts_ms"
     assert ws_contract["ws_public_last_checkpoint_ts_ms"] == 10_050
+    assert ws_contract["ws_public_stale"] is False
+
+
+def test_live_startup_uses_actual_receive_timestamp_even_if_reports_are_rewritten(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
+    registry_root, _, ws_raw_root, ws_meta_dir = _seed_runtime_contract(
+        tmp_path,
+        champion_run_id="run-fresh",
+        ws_updated_at_ms=1_000,
+        ws_last_rx_ts_ms=9_950,
+        collect_generated_at_ms=10_000,
+        validate_generated_at_ms=10_000,
+    )
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = run_live_sync_daemon(
+            store=store,
+            client=_QuietClient(),
+            settings=LiveDaemonSettings(
+                bot_id="autobot-001",
+                identifier_prefix="AUTOBOT",
+                unknown_open_orders_policy="ignore",
+                unknown_positions_policy="import_as_unmanaged",
+                allow_cancel_external_orders=False,
+                poll_interval_sec=1,
+                max_cycles=1,
+                startup_reconcile=False,
+                registry_root=str(registry_root),
+                runtime_model_ref_source="champion_v4",
+                runtime_model_family="train_v4_crypto_cs",
+                ws_public_raw_root=str(ws_raw_root),
+                ws_public_meta_dir=str(ws_meta_dir),
+                ws_public_stale_threshold_sec=180,
+                micro_aggregate_report_path=str(tmp_path / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
+            ),
+        )
+        ws_contract = store.ws_public_contract()
+
+    assert summary["halted"] is False
+    assert summary["ws_public_staleness_sec"] == pytest.approx(0.05, rel=0.01)
+    assert ws_contract is not None
+    assert ws_contract["ws_public_last_checkpoint_source"] == "health_snapshot.last_rx_ts_ms"
+    assert ws_contract["ws_public_last_checkpoint_ts_ms"] == 9_950
     assert ws_contract["ws_public_stale"] is False
 
 

@@ -701,6 +701,82 @@ def test_live_model_alpha_runtime_allows_protective_exit_under_halt_new_intents(
     assert plan["state"] == "EXITING"
 
 
+def test_live_model_alpha_runtime_shadow_mode_suppresses_protective_exit_orders(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _NoIntentStrategy())
+
+    settings = replace(
+        _runtime_settings(tmp_path, rollout_mode="shadow"),
+        risk_enabled=True,
+    )
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ENSO",
+                base_currency="ENSO",
+                base_amount=3.0,
+                avg_entry_price=1872.0,
+                updated_ts=now_ms - 60_000,
+                tp_json="{}",
+                sl_json="{}",
+                trailing_json="{}",
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="plan-enso-shadow",
+                market="KRW-ENSO",
+                side="long",
+                entry_price_str="1872.0",
+                qty_str="3.0",
+                tp_enabled=True,
+                tp_price_str=None,
+                tp_pct=3.5,
+                sl_enabled=False,
+                sl_price_str=None,
+                sl_pct=None,
+                trailing_enabled=False,
+                trail_pct=None,
+                high_watermark_price_str=None,
+                armed_ts_ms=None,
+                timeout_ts_ms=now_ms - 1_000,
+                state="ACTIVE",
+                last_eval_ts_ms=now_ms - 60_000,
+                last_action_ts_ms=0,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier=None,
+                replace_attempt=0,
+                created_ts=now_ms - 60_000,
+                updated_ts=now_ms - 60_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-enso-1",
+            )
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_StaticPublicClient("KRW-ENSO", 1.0),
+                public_ws_client=_StaticPublicWsClient("KRW-ENSO", 1950.0),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        plan = store.risk_plan_by_id(plan_id="plan-enso-shadow")
+
+    assert summary["halted"] is False
+    assert summary["risk_actions_total"] == 0
+    assert executor.calls == []
+    assert plan is not None
+    assert plan["state"] == "ACTIVE"
+
+
 def test_live_model_alpha_runtime_startup_reconcile_stays_alive_under_halt_new_intents(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
@@ -782,6 +858,41 @@ def test_live_model_alpha_runtime_consumes_private_ws_order_events(tmp_path: Pat
     assert summary["private_ws_last_event_ts_ms"] == now_ms
     assert order is not None
     assert order["local_state"] == "OPEN"
+
+
+def test_live_model_alpha_runtime_does_not_halt_on_clean_private_ws_completion(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _FinitePrivateWsClient:
+        stats = {"received_events": 0}
+
+        async def stream_private(self, *, duration_sec=None):  # noqa: ANN201
+            _ = duration_sec
+            if False:
+                yield None
+            return
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _NoIntentStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=None,
+                private_ws_client=_FinitePrivateWsClient(),
+            )
+        )
+
+    assert summary["halted"] is False
+    assert summary["stream_stop_reason"] == "STREAM_COMPLETED"
+    assert "STALE_PRIVATE_WS_STREAM" not in summary["halted_reasons"]
 
 
 def test_live_model_alpha_runtime_caps_bid_notional_to_canary_limit(tmp_path: Path, monkeypatch) -> None:

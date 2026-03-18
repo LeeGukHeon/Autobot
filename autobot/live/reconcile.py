@@ -59,6 +59,11 @@ def reconcile_exchange_snapshot(
 
     local_orders = {item["uuid"]: item for item in store.list_orders(open_only=False)}
     local_open_orders = {uuid: item for uuid, item in local_orders.items() if is_open_local_state(item.get("local_state"))}
+    local_open_order_identifiers = {
+        _as_optional_str(item.get("identifier"))
+        for item in local_open_orders.values()
+        if _as_optional_str(item.get("identifier")) is not None
+    }
     exchange_open_orders = [item for item in _as_dict_list(open_orders_payload) if item.get("uuid")]
 
     exchange_bot_open_orders: list[dict[str, Any]] = []
@@ -76,9 +81,15 @@ def reconcile_exchange_snapshot(
         if not market_key:
             continue
         exchange_bot_open_orders_by_market.setdefault(market_key.upper(), []).append(item)
+    unknown_bot_open_orders = [
+        item
+        for item in exchange_bot_open_orders
+        if str(item.get("uuid") or "").strip() not in local_open_orders
+        and _as_optional_str(item.get("identifier")) not in local_open_order_identifiers
+    ]
 
     if unknown_open_orders_policy == "cancel":
-        for item in exchange_bot_open_orders:
+        for item in unknown_bot_open_orders:
             actions.append(
                 {
                     "type": "cancel_bot_open_order",
@@ -194,11 +205,13 @@ def reconcile_exchange_snapshot(
     for local_uuid in local_only_open_uuids:
         local_item = local_open_orders[local_uuid]
         detail_payload: Any = None
+        detail_lookup_failed = False
         if fetch_order_detail is not None:
             try:
                 detail_payload = fetch_order_detail(local_uuid, _as_optional_str(local_item.get("identifier")))
             except Exception as exc:  # pragma: no cover - defensive path
                 warnings.append(f"order detail lookup failed uuid={local_uuid}: {exc}")
+                detail_lookup_failed = True
 
         detail_record = _order_record_from_payload(detail_payload, ts_ms=now_ts) if isinstance(detail_payload, dict) else None
         if detail_record is not None:
@@ -219,6 +232,17 @@ def reconcile_exchange_snapshot(
                     "type": "sync_local_order_from_detail",
                     "uuid": detail_record.uuid,
                     "state": detail_record.state,
+                }
+            )
+            continue
+        if detail_lookup_failed:
+            actions.append(
+                {
+                    "type": "defer_local_order_closure",
+                    "uuid": local_uuid,
+                    "identifier": local_item.get("identifier"),
+                    "market": local_item.get("market"),
+                    "reason": "ORDER_DETAIL_LOOKUP_FAILED",
                 }
             )
             continue
@@ -481,6 +505,17 @@ def reconcile_exchange_snapshot(
                 }
             )
             continue
+        if bool(local_position.get("managed", True)):
+            retained_local_missing_markets.append(market)
+            warnings.append(f"managed position missing on exchange without close evidence market={market}")
+            actions.append(
+                {
+                    "type": "retain_local_position_missing_on_exchange",
+                    "market": market,
+                    "managed": True,
+                }
+            )
+            continue
         if not dry_run:
             close_trade_journal_for_market(
                 store=store,
@@ -517,7 +552,6 @@ def reconcile_exchange_snapshot(
             }
         )
         continue
-        retained_local_missing_markets.append(market)
     local_positions_missing_on_exchange = retained_local_missing_markets
 
     current_ignored_dust_markets = {
@@ -715,6 +749,7 @@ def reconcile_exchange_snapshot(
         "counts": {
             "exchange_open_orders": len(exchange_open_orders),
             "exchange_bot_open_orders": len(exchange_bot_open_orders),
+            "unknown_bot_open_orders": len(unknown_bot_open_orders),
             "external_open_orders": len(external_open_orders),
             "local_open_orders": len(local_open_orders),
             "local_only_open_orders": len(local_only_open_uuids),

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from autobot.features.feature_spec import FeatureSetV1Config, FeatureWindows, TimeRangeConfig, UniverseConfig
 from autobot.features.labeling_v2_crypto_cs import LabelV2CryptoCsConfig
@@ -220,6 +221,65 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert frame.get_column("volume_z_x_trend").null_count() == 0
 
 
+def test_pipeline_v4_requires_micro_validate_report_overlap(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    features_root = tmp_path / "features"
+    _write_candles(parquet_root / "candles_api_v1")
+    _write_candles_history(parquet_root / "candles_v1")
+    _write_micro(parquet_root / "micro_v1", report_date="2025-12-31")
+
+    config = FeaturesV4Config(
+        build=FeaturesV4BuildConfig(
+            output_dataset="features_v4_test",
+            tf="5m",
+            base_candles_dataset="candles_api_v1",
+            micro_dataset="micro_v1",
+            high_tfs=("15m", "60m", "240m"),
+            high_tf_staleness_multiplier=2.0,
+            one_m_required_bars=5,
+            one_m_max_missing_ratio=0.2,
+            sample_weight_half_life_days=60.0,
+            min_rows_for_train=1,
+            require_micro_validate_pass=True,
+        ),
+        parquet_root=parquet_root,
+        features_root=features_root,
+        universe=UniverseConfig(quote="KRW", mode="static_start", top_n=2, lookback_days=7, fixed_list=()),
+        time_range=TimeRangeConfig(start="2026-01-01", end="2026-01-03"),
+        feature_set_v1=FeatureSetV1Config(
+            windows=FeatureWindows(ret=(1, 3, 6, 12), rv=(12, 36), ema=(12, 36), rsi=14, atr=14, vol_z=36),
+            enable_factor_features=False,
+            factor_markets=(),
+            enable_liquidity_rank=False,
+        ),
+        label_v2=LabelV2CryptoCsConfig(
+            horizon_bars=2,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
+        validation=FeaturesV4ValidateConfig(leakage_fail_on_future_ts=True),
+        float_dtype="float32",
+    )
+
+    with pytest.raises(ValueError, match="micro validate report does not overlap"):
+        build_features_dataset_v4(
+            config,
+            FeatureBuildV4Options(
+                tf="5m",
+                quote="KRW",
+                top_n=2,
+                start="2026-01-01",
+                end="2026-01-03",
+                feature_set="v4",
+                label_set="v2",
+                dry_run=False,
+            ),
+        )
+
+
 def _write_candles(dataset_root: Path) -> None:
     start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
     _write_tf(dataset_root, tf="1m", market="KRW-BTC", start_ts=start_ts, count=3_200, interval_ms=60_000, slope=0.22)
@@ -260,11 +320,17 @@ def _write_tf(dataset_root: Path, *, tf: str, market: str, start_ts: int, count:
     ).write_parquet(part_dir / "part.parquet")
 
 
-def _write_micro(dataset_root: Path) -> None:
+def _write_micro(
+    dataset_root: Path,
+    *,
+    data_date: str = "2026-01-01",
+    report_date: str | None = None,
+) -> None:
     start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
     ts = [start_ts + i * 300_000 for i in range(520)]
+    report_date_value = report_date or data_date
     for market in ("KRW-BTC", "KRW-ETH"):
-        part_dir = dataset_root / "tf=5m" / f"market={market}" / "date=2026-01-01"
+        part_dir = dataset_root / "tf=5m" / f"market={market}" / f"date={data_date}"
         part_dir.mkdir(parents=True, exist_ok=True)
         pl.DataFrame(
             {
@@ -295,6 +361,31 @@ def _write_micro(dataset_root: Path) -> None:
     meta_dir = dataset_root / "_meta"
     meta_dir.mkdir(parents=True, exist_ok=True)
     (meta_dir / "validate_report.json").write_text(
-        json.dumps({"fail_files": 0, "warn_files": 0, "ok_files": 2}, ensure_ascii=False),
+        json.dumps(
+                {
+                    "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "checked_files": 2,
+                    "fail_files": 0,
+                    "warn_files": 0,
+                    "ok_files": 2,
+                    "details": [
+                        {
+                            "file": str(dataset_root / "tf=5m" / "market=KRW-BTC" / f"date={report_date_value}" / "part-000.parquet"),
+                            "tf": "5m",
+                            "market": "KRW-BTC",
+                            "date": report_date_value,
+                            "rows": len(ts),
+                        },
+                        {
+                            "file": str(dataset_root / "tf=5m" / "market=KRW-ETH" / f"date={report_date_value}" / "part-000.parquet"),
+                            "tf": "5m",
+                            "market": "KRW-ETH",
+                            "date": report_date_value,
+                            "rows": len(ts),
+                        },
+                    ],
+                },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )

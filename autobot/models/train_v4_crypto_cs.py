@@ -94,6 +94,7 @@ from .registry import (
     load_json,
     make_run_id,
     save_run,
+    update_latest_pointer,
     update_latest_candidate_pointer,
 )
 from .split import (
@@ -383,16 +384,9 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             selection_recommendations=selection_recommendations,
             selection_policy=selection_policy,
             selection_calibration=selection_calibration,
-        )
+        ),
+        publish_pointers=False,
     )
-    if normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
-        update_latest_candidate_pointer(options.registry_root, options.model_family, run_id)
-        update_latest_candidate_pointer(
-            options.registry_root,
-            "_global",
-            run_id,
-            family=options.model_family,
-        )
     support_artifacts = _train_v4_persistence.persist_v4_support_artifacts(
         run_dir=run_dir,
         options=options,
@@ -518,6 +512,21 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     economic_objective_profile_path = runtime_artifacts["economic_objective_profile_path"]
     lane_governance_path = runtime_artifacts["lane_governance_path"]
     decision_surface_path = runtime_artifacts["decision_surface_path"]
+    if normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
+        update_latest_pointer(options.registry_root, options.model_family, run_id)
+        update_latest_pointer(
+            options.registry_root,
+            "_global",
+            run_id,
+            family=options.model_family,
+        )
+        update_latest_candidate_pointer(options.registry_root, options.model_family, run_id)
+        update_latest_candidate_pointer(
+            options.registry_root,
+            "_global",
+            run_id,
+            family=options.model_family,
+        )
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
 
     finished_at = time.time()

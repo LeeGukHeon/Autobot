@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -396,6 +398,56 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
     assert options.execution_acceptance_model_alpha.exit.use_learned_hold_bars is False
     assert options.execution_acceptance_model_alpha.exit.use_trade_level_action_policy is False
     assert options.execution_acceptance_model_alpha.execution.use_learned_recommendations is False
+
+
+def test_manual_v4_daily_pipeline_treats_bootstrap_only_rejection_as_success(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config"
+    wrapper_script = project_root / "scripts" / "v4_scout_candidate_acceptance.ps1"
+    wrapper_script.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_script.write_text("# noop\n", encoding="utf-8")
+    latest_dir = project_root / "logs" / "model_v4_acceptance_manual"
+
+    def _fake_run(command, cwd=None, text=None):  # noqa: ANN001
+        out_dir = latest_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "run-v4-report.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "reasons": ["BOOTSTRAP_ONLY_POLICY"],
+                    "candidate": {
+                        "lane_mode": "bootstrap_latest_inclusive",
+                        "promotion_eligible": False,
+                    },
+                    "split_policy": {
+                        "lane_mode": "bootstrap_latest_inclusive",
+                        "promotion_eligible": False,
+                    },
+                    "gates": {"overall_pass": False},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out_dir / "latest.json").write_text(report_path.read_text(encoding="utf-8"), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 2, stdout=f"[v4-accept] report={report_path}\n", stderr="")
+
+    monkeypatch.setattr(cli_mod, "_resolve_powershell_exe", lambda: "pwsh")
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+
+    exit_code = cli_mod._run_manual_v4_daily_pipeline(
+        argparse.Namespace(
+            mode="spawn_only",
+            lane="cls_scout",
+            batch_date="2026-03-08",
+            run_paper_soak=False,
+            paper_soak_duration_sec=0,
+            dry_run=False,
+        ),
+        config_dir,
+    )
+
+    assert exit_code == 0
 
 
 def test_handle_backtest_command_v4_resolves_base_candles_dataset(monkeypatch, tmp_path: Path) -> None:

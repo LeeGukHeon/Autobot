@@ -82,8 +82,6 @@ def load_ws_public_runtime_contract(
 
     last_checkpoint_ts_ms, last_checkpoint_source = _resolve_ws_public_checkpoint_ts_ms(
         health_snapshot=health_snapshot,
-        collect_report=collect_report,
-        validate_report=validate_report,
         ts_ms=ts_ms,
     )
     staleness_sec = (
@@ -156,34 +154,24 @@ def build_live_runtime_sync_status(
 def _resolve_ws_public_checkpoint_ts_ms(
     *,
     health_snapshot: dict[str, Any],
-    collect_report: dict[str, Any],
-    validate_report: dict[str, Any],
     ts_ms: int,
 ) -> tuple[int | None, str | None]:
     _ = ts_ms
-    candidates: list[tuple[int, str]] = []
-    updated_at_ms = _coerce_int(health_snapshot.get("updated_at_ms"))
-    if updated_at_ms is not None:
-        candidates.append((updated_at_ms, "health_snapshot.updated_at_ms"))
     last_rx = health_snapshot.get("last_rx_ts_ms")
     if isinstance(last_rx, dict):
+        channel_values: list[int] = []
         for channel in ("trade", "orderbook"):
             value = _coerce_int(last_rx.get(channel))
             if value is not None:
-                candidates.append((value, f"health_snapshot.last_rx_ts_ms.{channel}"))
-    collect_generated = _parse_iso_to_ts_ms(collect_report.get("generated_at"))
-    if collect_generated is not None:
-        candidates.append((collect_generated, "collect_report.generated_at"))
-    validate_generated = _parse_iso_to_ts_ms(validate_report.get("generated_at"))
-    if validate_generated is not None:
-        candidates.append((validate_generated, "validate_report.generated_at"))
-    if not candidates:
-        return None, None
-    # Producer checkpoints can legitimately be a few milliseconds ahead of the
-    # caller due to local file update/read timing. Prefer the freshest producer
-    # timestamp and let staleness clamp negative deltas to zero.
-    latest_ts_ms, source = max(candidates, key=lambda item: item[0])
-    return latest_ts_ms, source
+                channel_values.append(value)
+        if channel_values:
+            # Freshness must come from actual receive timestamps so report rewrites
+            # cannot hide a dead feed.
+            return max(channel_values), "health_snapshot.last_rx_ts_ms"
+    updated_at_ms = _coerce_int(health_snapshot.get("updated_at_ms"))
+    if updated_at_ms is not None:
+        return updated_at_ms, "health_snapshot.updated_at_ms"
+    return None, None
 
 
 def _parse_iso_to_ts_ms(value: Any) -> int | None:
