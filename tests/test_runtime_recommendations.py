@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 from autobot.models.predictor import ModelPredictor
@@ -472,6 +473,197 @@ def test_rank_execution_rows_prefers_pairwise_winner() -> None:
     assert ranked
     assert ranked[0]["grid_point"]["hold_bars"] == 6
     assert ranked[0]["wins"] >= ranked[-1]["wins"]
+
+
+def test_rank_execution_rows_penalizes_bad_payoff_and_exit_skew() -> None:
+    rows = [
+        {
+            "grid_point": {"hold_bars": 3},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 105.0,
+                "fill_rate": 0.92,
+                "max_drawdown_pct": 1.0,
+                "slippage_bps_mean": 3.0,
+                "execution_validation": {
+                    "comparable": True,
+                    "comparable_fold_count": 6,
+                    "objective_score": 1.00,
+                    "objective_std": 0.05,
+                    "nonnegative_ratio_mean": 0.70,
+                    "max_window_drawdown_pct": 1.0,
+                    "worst_window_return": -0.01,
+                },
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "wins": 2,
+                    "losses": 2,
+                    "avg_win_quote": 20.0,
+                    "avg_loss_quote": 100.0,
+                    "payoff_ratio": 0.2,
+                    "tp_exit_count": 0,
+                    "sl_exit_count": 2,
+                    "timeout_exit_count": 2,
+                    "trailing_exit_count": 0,
+                    "market_loss_concentration": 0.90,
+                    "exit_reason_counts": {
+                        "MODEL_ALPHA_EXIT_SL": 2,
+                        "MODEL_ALPHA_EXIT_TIMEOUT": 2,
+                    },
+                },
+            },
+        },
+        {
+            "grid_point": {"hold_bars": 6},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 95.0,
+                "fill_rate": 0.91,
+                "max_drawdown_pct": 1.1,
+                "slippage_bps_mean": 3.2,
+                "execution_validation": {
+                    "comparable": True,
+                    "comparable_fold_count": 6,
+                    "objective_score": 0.95,
+                    "objective_std": 0.05,
+                    "nonnegative_ratio_mean": 0.69,
+                    "max_window_drawdown_pct": 1.1,
+                    "worst_window_return": -0.01,
+                },
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "wins": 2,
+                    "losses": 2,
+                    "avg_win_quote": 90.0,
+                    "avg_loss_quote": 50.0,
+                    "payoff_ratio": 1.8,
+                    "tp_exit_count": 2,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 1,
+                    "trailing_exit_count": 0,
+                    "market_loss_concentration": 0.45,
+                    "exit_reason_counts": {
+                        "MODEL_ALPHA_EXIT_TP": 2,
+                        "MODEL_ALPHA_EXIT_SL": 1,
+                        "MODEL_ALPHA_EXIT_TIMEOUT": 1,
+                    },
+                },
+            },
+        },
+    ]
+
+    ranked = _rank_execution_rows(rows)
+
+    assert ranked[0]["grid_point"]["hold_bars"] == 6
+    assert ranked[0]["execution_structure_penalty_total"] < ranked[1]["execution_structure_penalty_total"]
+    assert ranked[0]["utility_total"] > ranked[1]["utility_total"]
+
+
+def test_rank_execution_rows_loads_execution_structure_from_trades_csv(tmp_path: Path) -> None:
+    run_dir = tmp_path / "backtest-run"
+    run_dir.mkdir(parents=True)
+    with (run_dir / "trades.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "ts_ms",
+                "market",
+                "side",
+                "ref_price",
+                "tick_bps",
+                "order_price",
+                "fill_price",
+                "slippage_bps",
+                "price_mode",
+                "price",
+                "volume",
+                "notional_quote",
+                "fee_quote",
+                "order_id",
+                "intent_id",
+                "reason_code",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "ts_ms": 1_000,
+                "market": "KRW-BTC",
+                "side": "bid",
+                "fill_price": 100.0,
+                "price": 100.0,
+                "volume": 1.0,
+                "fee_quote": 1.0,
+                "reason_code": "MODEL_ALPHA_ENTRY_V1",
+            }
+        )
+        writer.writerow(
+            {
+                "ts_ms": 301_000,
+                "market": "KRW-BTC",
+                "side": "ask",
+                "fill_price": 95.0,
+                "price": 95.0,
+                "volume": 1.0,
+                "fee_quote": 1.0,
+                "reason_code": "MODEL_ALPHA_EXIT_SL",
+            }
+        )
+        writer.writerow(
+            {
+                "ts_ms": 601_000,
+                "market": "KRW-BTC",
+                "side": "bid",
+                "fill_price": 100.0,
+                "price": 100.0,
+                "volume": 1.0,
+                "fee_quote": 1.0,
+                "reason_code": "MODEL_ALPHA_ENTRY_V1",
+            }
+        )
+        writer.writerow(
+            {
+                "ts_ms": 901_000,
+                "market": "KRW-BTC",
+                "side": "ask",
+                "fill_price": 101.0,
+                "price": 101.0,
+                "volume": 1.0,
+                "fee_quote": 1.0,
+                "reason_code": "MODEL_ALPHA_EXIT_TIMEOUT",
+            }
+        )
+
+    rows = [
+        {
+            "grid_point": {"hold_bars": 3},
+            "summary": {
+                "run_dir": str(run_dir),
+                    "orders_filled": 4,
+                    "realized_pnl_quote": -6.0,
+                "fill_rate": 1.0,
+                "max_drawdown_pct": 2.0,
+                "slippage_bps_mean": 1.0,
+                "execution_validation": {
+                    "comparable": True,
+                    "comparable_fold_count": 6,
+                    "objective_score": 0.9,
+                    "objective_std": 0.1,
+                    "nonnegative_ratio_mean": 0.5,
+                    "max_window_drawdown_pct": 2.0,
+                    "worst_window_return": -0.02,
+                },
+            },
+        }
+    ]
+
+    ranked = _rank_execution_rows(rows)
+
+    assert ranked[0]["execution_structure"]["closed_trade_count"] == 2
+    assert ranked[0]["execution_structure"]["sl_exit_count"] == 1
+    assert ranked[0]["execution_structure"]["timeout_exit_count"] == 1
+    assert ranked[0]["execution_structure"]["payoff_ratio"] < 1.0
+    assert ranked[0]["execution_structure_penalty_total"] > 0.0
 
 
 def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:

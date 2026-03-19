@@ -271,6 +271,56 @@ def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> Non
     assert normalized.use_trade_level_action_policy is False
 
 
+def test_normalize_backtest_alpha_args_runtime_parity_enables_learned_runtime_contract() -> None:
+    args = argparse.Namespace(
+        backtest_command="alpha",
+        preset="runtime_parity",
+        dataset_name=None,
+        parquet_root=None,
+        tf=None,
+        market=None,
+        markets=None,
+        quote=None,
+        top_n=None,
+        universe_mode=None,
+        model_ref=None,
+        model_family=None,
+        feature_set=None,
+        top_pct=None,
+        min_prob=None,
+        min_cands_per_ts=None,
+        exit_mode=None,
+        hold_bars=None,
+        tp_pct=None,
+        sl_pct=None,
+        trailing_pct=None,
+        cooldown_bars=None,
+        max_positions_total=None,
+        execution_price_mode=None,
+        execution_timeout_bars=None,
+        execution_replace_max=None,
+        start=None,
+        end=None,
+        from_ts_ms=None,
+        to_ts_ms=None,
+        days=7,
+        dense_grid=False,
+        starting_krw=None,
+        per_trade_krw=None,
+        max_positions=None,
+    )
+    normalized = _normalize_backtest_alpha_args(args)
+    assert normalized.backtest_command == "run"
+    assert normalized.strategy == "model_alpha_v1"
+    assert normalized.preset == "runtime_parity"
+    assert normalized.use_learned_selection_recommendations is True
+    assert normalized.use_learned_exit_mode is True
+    assert normalized.use_learned_hold_bars is True
+    assert normalized.use_learned_risk_recommendations is True
+    assert normalized.use_trade_level_action_policy is True
+    assert normalized.use_learned_execution_recommendations is True
+
+
 def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(

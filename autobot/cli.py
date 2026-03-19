@@ -1002,9 +1002,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backtest_alpha_parser.add_argument(
         "--preset",
-        choices=("default", "acceptance"),
+        choices=("default", "acceptance", "runtime_parity"),
         default="default",
-        help="Shortcut preset. acceptance disables micro_order_policy for cleaner alpha validation.",
+        help="Shortcut preset. acceptance freezes compare settings; runtime_parity uses learned runtime contracts.",
     )
     backtest_alpha_parser.add_argument("--dataset-name", help="Candle dataset name, ex: candles_api_v1")
     backtest_alpha_parser.add_argument("--parquet-root", help="Parquet root, ex: data/parquet")
@@ -2900,7 +2900,11 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
             or model_alpha_execution_defaults.get("price_mode", "JOIN")
         ).strip().upper() or "JOIN"
         execution_use_learned_recommendations = bool(
-            model_alpha_execution_defaults.get("use_learned_recommendations", True)
+            getattr(
+                args,
+                "use_learned_execution_recommendations",
+                model_alpha_execution_defaults.get("use_learned_recommendations", True),
+            )
         )
         paper_tf_value = str(args.tf or defaults.get("tf", "5m")).strip().lower() or "5m"
         max_positions_value = max(
@@ -3339,7 +3343,11 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
             or model_alpha_execution_defaults.get("price_mode", "JOIN")
         ).strip().upper() or "JOIN"
         execution_use_learned_recommendations = bool(
-            model_alpha_execution_defaults.get("use_learned_recommendations", True)
+            getattr(
+                args,
+                "use_learned_execution_recommendations",
+                model_alpha_execution_defaults.get("use_learned_recommendations", True),
+            )
         )
 
         max_positions_value = max(

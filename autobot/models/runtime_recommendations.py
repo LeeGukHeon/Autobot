@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from collections import deque
+from pathlib import Path
 from typing import Any
 
 from autobot.strategy.model_alpha_v1 import (
@@ -489,11 +492,14 @@ def _compact_exit_rule_row(row: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(row, dict):
         return {}
     summary = dict(row.get("summary", {}))
+    execution_structure = dict(row.get("execution_structure", {}))
     return {
         "rule_id": str(row.get("rule_id", "")).strip(),
         "kind": str(row.get("kind", "")).strip(),
         "grid_point": dict(row.get("grid_point", {})),
         "utility_total": float(row.get("utility_total", 0.0) or 0.0),
+        "utility_total_raw": float(row.get("utility_total_raw", row.get("utility_total", 0.0)) or 0.0),
+        "execution_structure_penalty_total": float(row.get("execution_structure_penalty_total", 0.0) or 0.0),
         "objective_score": float(row.get("utility_total", 0.0) or 0.0),
         "comparable_pairs": int(row.get("comparable_pairs", 0) or 0),
         "validation_comparable": bool(row.get("validation_comparable", False)),
@@ -502,6 +508,14 @@ def _compact_exit_rule_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "max_drawdown_pct": float(summary.get("max_drawdown_pct", 0.0) or 0.0),
         "slippage_bps_mean": float(summary.get("slippage_bps_mean", 0.0) or 0.0),
         "orders_filled": int(summary.get("orders_filled", 0) or 0),
+        "payoff_ratio": float(execution_structure.get("payoff_ratio", 0.0) or 0.0),
+        "avg_win_quote": float(execution_structure.get("avg_win_quote", 0.0) or 0.0),
+        "avg_loss_quote": float(execution_structure.get("avg_loss_quote", 0.0) or 0.0),
+        "tp_exit_share": float(execution_structure.get("tp_exit_share", 0.0) or 0.0),
+        "sl_exit_share": float(execution_structure.get("sl_exit_share", 0.0) or 0.0),
+        "timeout_exit_share": float(execution_structure.get("timeout_exit_share", 0.0) or 0.0),
+        "closed_trade_count": int(execution_structure.get("closed_trade_count", 0) or 0),
+        "execution_structure": execution_structure,
         "summary": summary,
     }
 
@@ -531,7 +545,15 @@ def _rank_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["summary"] = summary
         row["validation"] = dict(validation)
         row["comparable_pairs"] = int(validation.get("comparable_fold_count", 0) or 0)
-        row["utility_total"] = float(validation.get("objective_score", 0.0) or 0.0)
+        row["utility_total_raw"] = float(validation.get("objective_score", 0.0) or 0.0)
+        execution_structure = _resolve_execution_structure_metrics(summary)
+        row["execution_structure"] = execution_structure
+        execution_structure_penalty = _build_execution_structure_penalty(execution_structure)
+        row["execution_structure_penalty"] = execution_structure_penalty
+        row["execution_structure_penalty_total"] = float(execution_structure_penalty.get("total", 0.0) or 0.0)
+        row["utility_total"] = float(row.get("utility_total_raw", 0.0)) - float(
+            row.get("execution_structure_penalty_total", 0.0) or 0.0
+        )
         row["implementation_utility_total"] = -float(validation.get("objective_std", 0.0) or 0.0)
         row["validation_nonnegative_ratio_mean"] = float(validation.get("nonnegative_ratio_mean", 0.0) or 0.0)
         row["validation_max_window_drawdown_pct"] = float(validation.get("max_window_drawdown_pct", 0.0) or 0.0)
@@ -554,6 +576,202 @@ def _rank_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reverse=True,
     )
     return normalized
+
+
+def _resolve_execution_structure_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    existing = summary.get("execution_structure")
+    if isinstance(existing, dict) and existing:
+        return _normalize_execution_structure_metrics(existing)
+    run_dir_raw = str(summary.get("run_dir", "")).strip()
+    if not run_dir_raw:
+        return _normalize_execution_structure_metrics({})
+    trades_path = Path(run_dir_raw) / "trades.csv"
+    if not trades_path.exists():
+        return _normalize_execution_structure_metrics({})
+    metrics = _build_execution_structure_metrics_from_trades(trades_path)
+    summary["execution_structure"] = metrics
+    return metrics
+
+
+def _build_execution_structure_metrics_from_trades(trades_path: Path) -> dict[str, Any]:
+    try:
+        with trades_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError:
+        return _normalize_execution_structure_metrics({})
+
+    position_queues: dict[str, deque[dict[str, float]]] = {}
+    round_trip_pnls: list[float] = []
+    exit_reason_counts: dict[str, int] = {}
+    market_loss_abs_totals: dict[str, float] = {}
+
+    for row in rows:
+        market = str(row.get("market", "")).strip().upper()
+        side = str(row.get("side", "")).strip().lower()
+        volume = _safe_optional_float(row.get("volume")) or 0.0
+        price = _safe_optional_float(row.get("fill_price"))
+        if price is None:
+            price = _safe_optional_float(row.get("price")) or 0.0
+        fee_quote = _safe_optional_float(row.get("fee_quote")) or 0.0
+        if not market or volume <= 0.0 or price <= 0.0:
+            continue
+
+        if side == "bid":
+            queue = position_queues.setdefault(market, deque())
+            queue.append(
+                {
+                    "remaining_volume": float(volume),
+                    "price": float(price),
+                    "fee_per_unit": float(fee_quote) / float(volume) if float(volume) > 0.0 else 0.0,
+                }
+            )
+            continue
+
+        if side != "ask":
+            continue
+
+        queue = position_queues.setdefault(market, deque())
+        remaining_volume = float(volume)
+        gross_pnl_quote = 0.0
+        entry_fee_quote = 0.0
+        matched_volume = 0.0
+        while queue and remaining_volume > 1e-12:
+            entry_lot = queue[0]
+            lot_remaining = max(float(entry_lot.get("remaining_volume", 0.0)), 0.0)
+            if lot_remaining <= 1e-12:
+                queue.popleft()
+                continue
+            matched = min(lot_remaining, remaining_volume)
+            gross_pnl_quote += (float(price) - float(entry_lot.get("price", 0.0))) * float(matched)
+            entry_fee_quote += float(entry_lot.get("fee_per_unit", 0.0)) * float(matched)
+            matched_volume += float(matched)
+            remaining_volume -= float(matched)
+            next_remaining = max(lot_remaining - float(matched), 0.0)
+            if next_remaining <= 1e-12:
+                queue.popleft()
+            else:
+                entry_lot["remaining_volume"] = float(next_remaining)
+                queue[0] = entry_lot
+
+        if matched_volume <= 1e-12:
+            continue
+
+        exit_fee_quote = float(fee_quote) * (float(matched_volume) / float(volume)) if float(volume) > 0.0 else 0.0
+        net_pnl_quote = float(gross_pnl_quote) - float(entry_fee_quote) - float(exit_fee_quote)
+        round_trip_pnls.append(float(net_pnl_quote))
+        if net_pnl_quote < 0.0:
+            market_loss_abs_totals[market] = float(market_loss_abs_totals.get(market, 0.0)) + abs(float(net_pnl_quote))
+        reason_code = str(row.get("reason_code", "")).strip().upper() or "UNKNOWN"
+        exit_reason_counts[reason_code] = int(exit_reason_counts.get(reason_code, 0)) + 1
+
+    wins = [float(value) for value in round_trip_pnls if float(value) > 0.0]
+    losses = [abs(float(value)) for value in round_trip_pnls if float(value) < 0.0]
+    closed_trade_count = len(round_trip_pnls)
+    avg_win_quote = (sum(wins) / len(wins)) if wins else 0.0
+    avg_loss_quote = (sum(losses) / len(losses)) if losses else 0.0
+    payoff_ratio = (avg_win_quote / avg_loss_quote) if avg_loss_quote > 0.0 else (float("inf") if avg_win_quote > 0.0 else 0.0)
+    tp_exit_count = sum(count for reason, count in exit_reason_counts.items() if reason.endswith("_TP"))
+    sl_exit_count = sum(count for reason, count in exit_reason_counts.items() if reason.endswith("_SL"))
+    trailing_exit_count = sum(count for reason, count in exit_reason_counts.items() if reason.endswith("_TRAILING"))
+    timeout_exit_count = sum(count for reason, count in exit_reason_counts.items() if "TIMEOUT" in reason)
+    total_negative_abs = sum(float(value) for value in market_loss_abs_totals.values())
+    market_loss_concentration = (
+        max((float(value) / total_negative_abs) for value in market_loss_abs_totals.values())
+        if total_negative_abs > 0.0 and market_loss_abs_totals
+        else 0.0
+    )
+    return _normalize_execution_structure_metrics(
+        {
+            "closed_trade_count": closed_trade_count,
+            "wins": len(wins),
+            "losses": len(losses),
+            "avg_win_quote": avg_win_quote,
+            "avg_loss_quote": avg_loss_quote,
+            "payoff_ratio": payoff_ratio if payoff_ratio != float("inf") else 9_999.0,
+            "tp_exit_count": tp_exit_count,
+            "sl_exit_count": sl_exit_count,
+            "trailing_exit_count": trailing_exit_count,
+            "timeout_exit_count": timeout_exit_count,
+            "exit_reason_counts": exit_reason_counts,
+            "market_loss_concentration": market_loss_concentration,
+        }
+    )
+
+
+def _normalize_execution_structure_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    closed_trade_count = max(int(payload.get("closed_trade_count", 0) or 0), 0)
+    tp_exit_count = max(int(payload.get("tp_exit_count", 0) or 0), 0)
+    sl_exit_count = max(int(payload.get("sl_exit_count", 0) or 0), 0)
+    trailing_exit_count = max(int(payload.get("trailing_exit_count", 0) or 0), 0)
+    timeout_exit_count = max(int(payload.get("timeout_exit_count", 0) or 0), 0)
+    denom = max(closed_trade_count, 1)
+    return {
+        "closed_trade_count": closed_trade_count,
+        "wins": max(int(payload.get("wins", 0) or 0), 0),
+        "losses": max(int(payload.get("losses", 0) or 0), 0),
+        "avg_win_quote": max(float(payload.get("avg_win_quote", 0.0) or 0.0), 0.0),
+        "avg_loss_quote": max(float(payload.get("avg_loss_quote", 0.0) or 0.0), 0.0),
+        "payoff_ratio": max(float(payload.get("payoff_ratio", 0.0) or 0.0), 0.0),
+        "tp_exit_count": tp_exit_count,
+        "sl_exit_count": sl_exit_count,
+        "trailing_exit_count": trailing_exit_count,
+        "timeout_exit_count": timeout_exit_count,
+        "tp_exit_share": float(tp_exit_count) / float(denom),
+        "sl_exit_share": float(sl_exit_count) / float(denom),
+        "trailing_exit_share": float(trailing_exit_count) / float(denom),
+        "timeout_exit_share": float(timeout_exit_count) / float(denom),
+        "market_loss_concentration": max(min(float(payload.get("market_loss_concentration", 0.0) or 0.0), 1.0), 0.0),
+        "exit_reason_counts": {
+            str(key).strip().upper(): int(value)
+            for key, value in dict(payload.get("exit_reason_counts", {})).items()
+            if str(key).strip()
+        },
+    }
+
+
+def _build_execution_structure_penalty(metrics: dict[str, Any]) -> dict[str, float]:
+    closed_trade_count = max(int(metrics.get("closed_trade_count", 0) or 0), 0)
+    payoff_ratio = max(float(metrics.get("payoff_ratio", 0.0) or 0.0), 0.0)
+    tp_exit_share = max(float(metrics.get("tp_exit_share", 0.0) or 0.0), 0.0)
+    sl_exit_share = max(float(metrics.get("sl_exit_share", 0.0) or 0.0), 0.0)
+    timeout_exit_share = max(float(metrics.get("timeout_exit_share", 0.0) or 0.0), 0.0)
+    market_loss_concentration = max(float(metrics.get("market_loss_concentration", 0.0) or 0.0), 0.0)
+
+    payoff_ratio_penalty = 0.0
+    if closed_trade_count >= 2:
+        payoff_ratio_penalty = max(1.0 - min(float(payoff_ratio), 1.0), 0.0) * 0.30
+
+    sl_share_penalty = 0.0
+    if closed_trade_count >= 3:
+        sl_share_penalty = max(float(sl_exit_share) - 0.40, 0.0) * 0.20
+
+    timeout_share_penalty = 0.0
+    if closed_trade_count >= 3:
+        timeout_share_penalty = max(float(timeout_exit_share) - 0.60, 0.0) * 0.10
+
+    tp_absence_penalty = 0.0
+    if closed_trade_count >= 3 and tp_exit_share <= 0.0 and (sl_exit_share + timeout_exit_share) >= 0.99:
+        tp_absence_penalty = 0.10
+
+    loss_concentration_penalty = 0.0
+    if closed_trade_count >= 3:
+        loss_concentration_penalty = max(float(market_loss_concentration) - 0.75, 0.0) * 0.10
+
+    total = (
+        float(payoff_ratio_penalty)
+        + float(sl_share_penalty)
+        + float(timeout_share_penalty)
+        + float(tp_absence_penalty)
+        + float(loss_concentration_penalty)
+    )
+    return {
+        "payoff_ratio_penalty": float(payoff_ratio_penalty),
+        "sl_share_penalty": float(sl_share_penalty),
+        "timeout_share_penalty": float(timeout_share_penalty),
+        "tp_absence_penalty": float(tp_absence_penalty),
+        "loss_concentration_penalty": float(loss_concentration_penalty),
+        "total": float(total),
+    }
 
 
 def _build_exit_rule_id(*, kind: str, grid_point: dict[str, Any]) -> str:

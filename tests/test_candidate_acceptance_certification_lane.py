@@ -479,9 +479,11 @@ def _make_fake_python_exe(
                 model_ref = arg_value("--model-ref")
                 start_value = arg_value("--start")
                 end_value = arg_value("--end")
+                preset = arg_value("--preset")
                 append_log(
                     {{
                         "command": "backtest alpha",
+                        "preset": preset,
                         "model_ref": model_ref,
                         "start": start_value,
                         "end": end_value,
@@ -1578,6 +1580,43 @@ def test_candidate_acceptance_uses_profile_governed_backtest_thresholds(
     assert report["gates"]["backtest"]["candidate_min_orders_pass"] is False
     assert report["gates"]["backtest"]["pass"] is False
     assert report["reasons"][0] == "BACKTEST_ACCEPTANCE_FAILED"
+
+
+def test_candidate_acceptance_runs_runtime_parity_backtests_and_reports_gate(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    backtests = [item for item in invocations if item["command"] == "backtest alpha"]
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert len(backtests) == 4
+    assert [item["preset"] for item in backtests].count("acceptance") == 2
+    assert [item["preset"] for item in backtests].count("runtime_parity") == 2
+    assert report["gates"]["runtime_parity"]["evaluated"] is True
+    assert report["gates"]["runtime_parity"]["pass"] is True
+    assert report["steps"]["backtest_runtime_parity_candidate"]["preset"] == "runtime_parity"
+    assert report["steps"]["backtest_runtime_parity_champion"]["preset"] == "runtime_parity"
 
 
 def test_candidate_acceptance_reports_rank_shadow_lane_governance(

@@ -41,6 +41,7 @@ param(
     [double]$BacktestMinProb = 0.0,
     [int]$BacktestMinCandidatesPerTs = 1,
     [int]$HoldBars = 6,
+    [bool]$BacktestRuntimeParityEnabled = $true,
     [int]$PaperSoakDurationSec = 10800,
     [string]$PaperMicroProvider = "live_ws",
     [string]$PaperFeatureProvider = "live_v4",
@@ -2476,12 +2477,14 @@ function Invoke-BacktestAndLoadSummary {
         [string]$Root,
         [string]$ModelRef,
         [string]$StartDate,
-        [string]$EndDate
+        [string]$EndDate,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset = "acceptance"
     )
     $args = @(
         "-m", "autobot.cli",
         "backtest", "alpha",
-        "--preset", "acceptance",
+        "--preset", $Preset,
         "--model-ref", $ModelRef,
         "--model-family", $ModelFamily,
         "--feature-set", $FeatureSet,
@@ -2489,13 +2492,17 @@ function Invoke-BacktestAndLoadSummary {
         "--quote", $Quote,
         "--top-n", $BacktestTopN,
         "--start", $StartDate,
-        "--end", $EndDate,
-        "--top-pct", $BacktestTopPct,
-        "--min-prob", $BacktestMinProb,
-        "--min-cands-per-ts", $BacktestMinCandidatesPerTs,
-        "--exit-mode", "hold",
-        "--hold-bars", $HoldBars
+        "--end", $EndDate
     )
+    if ($Preset -eq "acceptance") {
+        $args += @(
+            "--top-pct", $BacktestTopPct,
+            "--min-prob", $BacktestMinProb,
+            "--min-cands-per-ts", $BacktestMinCandidatesPerTs,
+            "--exit-mode", "hold",
+            "--hold-bars", $HoldBars
+        )
+    }
     $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
     $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$exec.Output) }
     if ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($runDir)) {
@@ -2646,7 +2653,7 @@ function Build-ReportMarkdown {
     $lines.Add("") | Out-Null
 
     $lines.Add("## Gates") | Out-Null
-    foreach ($gateName in @("backtest", "paper")) {
+    foreach ($gateName in @("backtest", "runtime_parity", "paper")) {
         $gateValue = Get-PropValue -ObjectValue $gates -Name $gateName -DefaultValue @{}
         $lines.Add("- $gateName.pass: $([string](Get-PropValue -ObjectValue $gateValue -Name 'pass' -DefaultValue ''))") | Out-Null
     }
@@ -2846,6 +2853,7 @@ $report = [ordered]@{
         backtest_min_prob = [double]$BacktestMinProb
         backtest_min_candidates_per_ts = [int]$BacktestMinCandidatesPerTs
         hold_bars = [int]$HoldBars
+        backtest_runtime_parity_enabled = [bool]$BacktestRuntimeParityEnabled
         paper_soak_duration_sec = [int]$PaperSoakDurationSec
         paper_micro_provider = $PaperMicroProvider
         paper_feature_provider = $PaperFeatureProvider
@@ -2997,6 +3005,7 @@ function Sync-ReportTopLevelSummary {
     $candidate = Get-PropValue -ObjectValue $report -Name "candidate" -DefaultValue @{}
     $gates = Get-PropValue -ObjectValue $report -Name "gates" -DefaultValue @{}
     $backtestGate = Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{}
+    $runtimeParityGate = Get-PropValue -ObjectValue $gates -Name "runtime_parity" -DefaultValue @{}
     $paperGate = Get-PropValue -ObjectValue $gates -Name "paper" -DefaultValue @{}
     $splitPolicy = Get-PropValue -ObjectValue $report -Name "split_policy" -DefaultValue @{}
     $report.candidate_run_id = [string](Get-PropValue -ObjectValue $candidate -Name "run_id" -DefaultValue "")
@@ -3007,6 +3016,7 @@ function Sync-ReportTopLevelSummary {
     $report.promotion_eligible = [bool](Get-PropValue -ObjectValue $splitPolicy -Name "promotion_eligible" -DefaultValue $false)
     $report.overall_pass = Get-PropValue -ObjectValue $gates -Name "overall_pass" -DefaultValue $null
     $report.backtest_pass = Get-PropValue -ObjectValue $backtestGate -Name "pass" -DefaultValue $null
+    $report.runtime_parity_pass = Get-PropValue -ObjectValue $runtimeParityGate -Name "pass" -DefaultValue $null
     $report.paper_pass = Get-PropValue -ObjectValue $paperGate -Name "pass" -DefaultValue $null
     $report.completed_at = (Get-Date).ToString("o")
 }
@@ -4382,6 +4392,220 @@ try {
         Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
     }
 
+    $runtimeParityPass = $true
+    if (-not $BacktestRuntimeParityEnabled) {
+        $report.steps.backtest_runtime_parity_candidate = [ordered]@{
+            attempted = $false
+            reason = "SKIPPED_BY_FLAG"
+        }
+        $report.steps.backtest_runtime_parity_champion = [ordered]@{
+            attempted = $false
+            reason = "SKIPPED_BY_FLAG"
+        }
+        $report.gates.runtime_parity = [ordered]@{
+            evaluated = $false
+            skipped = $true
+            required = $false
+            pass = $null
+        }
+    } else {
+        $runtimeParityCandidateBacktest = Invoke-BacktestAndLoadSummary `
+            -PythonPath $resolvedPythonExe `
+            -Root $resolvedProjectRoot `
+            -ModelRef $candidateBacktestModelRef `
+            -StartDate $certificationStartDate `
+            -EndDate $effectiveBatchDate `
+            -Preset "runtime_parity"
+        $runtimeParityCandidateSummary = $runtimeParityCandidateBacktest.Summary
+        $runtimeParityCandidateOrdersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "orders_filled" -DefaultValue 0) 0)
+        $runtimeParityCandidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
+        $runtimeParityCandidateFillRate = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
+        $runtimeParityCandidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
+        $runtimeParityCandidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
+        $runtimeParityCandidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $runtimeParityCandidateRealizedPnl -MaxDrawdownPct $runtimeParityCandidateMaxDrawdownPct
+        $runtimeParityCandidateStatValidation = Invoke-BacktestStatValidation `
+            -PythonPath $resolvedPythonExe `
+            -Root $resolvedProjectRoot `
+            -RunDir $runtimeParityCandidateBacktest.RunDir `
+            -TrialCount $BoosterSweepTrials `
+            -ModelRunDir $candidateRunDir
+        $runtimeParityCandidateDeflatedSharpeRatio = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0) 0.0
+        $runtimeParityCandidateProbabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
+        $runtimeParityCandidateStatComparable = To-Bool (Get-PropValue -ObjectValue $runtimeParityCandidateStatValidation -Name "comparable" -DefaultValue $false) $false
+        $report.steps.backtest_runtime_parity_candidate = [ordered]@{
+            exit_code = [int]$runtimeParityCandidateBacktest.Exec.ExitCode
+            command = $runtimeParityCandidateBacktest.Exec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$runtimeParityCandidateBacktest.Exec.Output))
+            start = $certificationStartDate
+            end = $effectiveBatchDate
+            model_ref_requested = $CandidateModelRef
+            model_ref_used = $candidateBacktestModelRef
+            run_dir = $runtimeParityCandidateBacktest.RunDir
+            summary_path = $runtimeParityCandidateBacktest.SummaryPath
+            preset = "runtime_parity"
+            orders_filled = [int64]$runtimeParityCandidateOrdersFilled
+            realized_pnl_quote = [double]$runtimeParityCandidateRealizedPnl
+            fill_rate = [double]$runtimeParityCandidateFillRate
+            max_drawdown_pct = [double]$runtimeParityCandidateMaxDrawdownPct
+            slippage_bps_mean = $runtimeParityCandidateSlippageBpsMean
+            calmar_like_score = $runtimeParityCandidateCalmarLikeScore
+            deflated_sharpe_ratio_est = [double]$runtimeParityCandidateDeflatedSharpeRatio
+            probabilistic_sharpe_ratio = [double]$runtimeParityCandidateProbabilisticSharpeRatio
+            stat_validation = $runtimeParityCandidateStatValidation
+        }
+
+        $runtimeParityChampionCompareEvaluated = $false
+        $runtimeParityChampionRealizedPnl = 0.0
+        $runtimeParityChampionFillRate = -1.0
+        $runtimeParityChampionMaxDrawdownPct = -1.0
+        $runtimeParityChampionSlippageBpsMean = $null
+        $runtimeParityChampionCalmarLikeScore = $null
+        $runtimeParityChampionDeflatedSharpeRatio = $null
+        $runtimeParityChampionProbabilisticSharpeRatio = $null
+        $runtimeParityChampionStatValidation = @{}
+        if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
+            $runtimeParityChampionBacktest = Invoke-BacktestAndLoadSummary `
+                -PythonPath $resolvedPythonExe `
+                -Root $resolvedProjectRoot `
+                -ModelRef $championBacktestModelRef `
+                -StartDate $certificationStartDate `
+                -EndDate $effectiveBatchDate `
+                -Preset "runtime_parity"
+            $runtimeParityChampionSummary = $runtimeParityChampionBacktest.Summary
+            $runtimeParityChampionRealizedPnl = To-Double (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
+            $runtimeParityChampionFillRate = To-Double (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
+            $runtimeParityChampionMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
+            $runtimeParityChampionSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "slippage_bps_mean" -DefaultValue $null)
+            $runtimeParityChampionCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $runtimeParityChampionRealizedPnl -MaxDrawdownPct $runtimeParityChampionMaxDrawdownPct
+            $runtimeParityChampionStatValidation = Invoke-BacktestStatValidation `
+                -PythonPath $resolvedPythonExe `
+                -Root $resolvedProjectRoot `
+                -RunDir $runtimeParityChampionBacktest.RunDir `
+                -TrialCount $BoosterSweepTrials `
+                -ModelRunDir $championModelRunDir
+            $runtimeParityChampionDeflatedSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityChampionStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue $null)
+            $runtimeParityChampionProbabilisticSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityChampionStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue $null)
+            $runtimeParityChampionCompareEvaluated = $true
+            $report.steps.backtest_runtime_parity_champion = [ordered]@{
+                exit_code = [int]$runtimeParityChampionBacktest.Exec.ExitCode
+                command = $runtimeParityChampionBacktest.Exec.Command
+                output_preview = (Get-OutputPreview -Text ([string]$runtimeParityChampionBacktest.Exec.Output))
+                start = $certificationStartDate
+                end = $effectiveBatchDate
+                model_ref_requested = $ChampionModelRef
+                model_ref_used = $championBacktestModelRef
+                run_dir = $runtimeParityChampionBacktest.RunDir
+                summary_path = $runtimeParityChampionBacktest.SummaryPath
+                preset = "runtime_parity"
+                realized_pnl_quote = [double]$runtimeParityChampionRealizedPnl
+                fill_rate = [double]$runtimeParityChampionFillRate
+                max_drawdown_pct = [double]$runtimeParityChampionMaxDrawdownPct
+                slippage_bps_mean = $runtimeParityChampionSlippageBpsMean
+                calmar_like_score = $runtimeParityChampionCalmarLikeScore
+                deflated_sharpe_ratio_est = $runtimeParityChampionDeflatedSharpeRatio
+                probabilistic_sharpe_ratio = $runtimeParityChampionProbabilisticSharpeRatio
+                stat_validation = $runtimeParityChampionStatValidation
+            }
+        } else {
+            $report.steps.backtest_runtime_parity_champion = [ordered]@{ attempted = $false; reason = "NO_EXISTING_CHAMPION" }
+        }
+
+        $runtimeParityCandidateDeflatedSharpePass = (-not $runtimeParityCandidateStatComparable) -or ($runtimeParityCandidateDeflatedSharpeRatio -ge [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio)
+        $runtimeParityCandidatePass = ($runtimeParityCandidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) -and ($runtimeParityCandidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) -and $runtimeParityCandidateDeflatedSharpePass
+        $runtimeParityDecisionBasis = if ($runtimeParityChampionCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
+        $runtimeParityStrictPnlPass = $true
+        $runtimeParityDrawdownImprovementPct = $null
+        $runtimeParityDrawdownImprovementPass = $true
+        $runtimeParityFillRateDegradation = $null
+        $runtimeParityFillRateGuardPass = $true
+        $runtimeParitySlippageDeteriorationBps = $null
+        $runtimeParitySlippageGuardPass = $true
+        $runtimeParityUtilityCandidateScore = $runtimeParityCandidateCalmarLikeScore
+        $runtimeParityUtilityChampionScore = $runtimeParityChampionCalmarLikeScore
+        $runtimeParityUtilityDeltaPct = $null
+        $runtimeParityUtilityTieBreakPass = $false
+        $runtimeParityComparePass = $true
+        $runtimeParityPnlDeltaQuote = $runtimeParityCandidateRealizedPnl - $runtimeParityChampionRealizedPnl
+        if ($runtimeParityChampionCompareEvaluated) {
+            $runtimeParityStrictPnlPass = $runtimeParityPnlDeltaQuote -ge [double]$promotionPolicyConfig.backtest_min_pnl_delta_vs_champion
+            if (($runtimeParityCandidateMaxDrawdownPct -ge 0.0) -and ($runtimeParityChampionMaxDrawdownPct -ge 0.0)) {
+                if ($runtimeParityChampionMaxDrawdownPct -gt 0.0) {
+                    $runtimeParityDrawdownImprovementPct = ($runtimeParityChampionMaxDrawdownPct - $runtimeParityCandidateMaxDrawdownPct) / $runtimeParityChampionMaxDrawdownPct
+                    $runtimeParityDrawdownImprovementPass = $runtimeParityDrawdownImprovementPct -ge [double]$promotionPolicyConfig.backtest_champion_min_drawdown_improvement_pct
+                } else {
+                    $runtimeParityDrawdownImprovementPct = 0.0
+                    $runtimeParityDrawdownImprovementPass = $runtimeParityCandidateMaxDrawdownPct -le $runtimeParityChampionMaxDrawdownPct
+                }
+            } else {
+                $runtimeParityDrawdownImprovementPass = $false
+            }
+            if (($runtimeParityCandidateFillRate -ge 0.0) -and ($runtimeParityChampionFillRate -ge 0.0)) {
+                $runtimeParityFillRateDegradation = $runtimeParityChampionFillRate - $runtimeParityCandidateFillRate
+                $runtimeParityFillRateGuardPass = $runtimeParityFillRateDegradation -le [double]$promotionPolicyConfig.backtest_champion_max_fill_rate_degradation
+            }
+            if (($null -ne $runtimeParityCandidateSlippageBpsMean) -and ($null -ne $runtimeParityChampionSlippageBpsMean)) {
+                $runtimeParitySlippageDeteriorationBps = $runtimeParityCandidateSlippageBpsMean - $runtimeParityChampionSlippageBpsMean
+                $runtimeParitySlippageGuardPass = $runtimeParitySlippageDeteriorationBps -le [double]$promotionPolicyConfig.backtest_champion_max_slippage_deterioration_bps
+            }
+            if (($null -ne $runtimeParityUtilityCandidateScore) -and ($null -ne $runtimeParityUtilityChampionScore)) {
+                if ((-not [double]::IsInfinity($runtimeParityUtilityChampionScore)) -and ($runtimeParityUtilityChampionScore -ne 0.0)) {
+                    $runtimeParityUtilityDeltaPct = ($runtimeParityUtilityCandidateScore - $runtimeParityUtilityChampionScore) / [Math]::Abs($runtimeParityUtilityChampionScore)
+                    $runtimeParityUtilityTieBreakPass = $runtimeParityUtilityDeltaPct -ge [double]$promotionPolicyConfig.backtest_champion_min_utility_edge_pct
+                } else {
+                    $runtimeParityUtilityTieBreakPass = $runtimeParityUtilityCandidateScore -ge $runtimeParityUtilityChampionScore
+                }
+            }
+            if ($runtimeParityStrictPnlPass) {
+                $runtimeParityComparePass = $true
+                $runtimeParityDecisionBasis = "STRICT_PNL_PASS"
+            } else {
+                $runtimeParityComparePass = $runtimeParityDrawdownImprovementPass -and $runtimeParityFillRateGuardPass -and $runtimeParitySlippageGuardPass -and $runtimeParityUtilityTieBreakPass
+                $runtimeParityDecisionBasis = if ($runtimeParityComparePass) { "UTILITY_AND_EXECUTION_GUARDS_PASS" } else { "UTILITY_AND_EXECUTION_GUARDS_FAIL" }
+            }
+        }
+        $runtimeParityPass = $runtimeParityCandidatePass -and $runtimeParityComparePass
+        $report.gates.runtime_parity = [ordered]@{
+            evaluated = $true
+            skipped = $false
+            required = $true
+            preset = "runtime_parity"
+            candidate_min_orders_pass = ($runtimeParityCandidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled)
+            candidate_min_orders_threshold = [int]$promotionPolicyConfig.backtest_min_orders_filled
+            candidate_min_realized_pnl_pass = ($runtimeParityCandidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote)
+            candidate_min_realized_pnl_threshold = [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote
+            candidate_dsr_evaluated = $runtimeParityCandidateStatComparable
+            candidate_min_deflated_sharpe_ratio = [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio
+            candidate_deflated_sharpe_ratio_est = [double]$runtimeParityCandidateDeflatedSharpeRatio
+            candidate_deflated_sharpe_pass = $runtimeParityCandidateDeflatedSharpePass
+            compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
+            vs_champion_evaluated = $runtimeParityChampionCompareEvaluated
+            vs_champion_pnl_delta_quote = [double]$runtimeParityPnlDeltaQuote
+            vs_champion_strict_pnl_pass = $runtimeParityStrictPnlPass
+            vs_champion_drawdown_improvement_pct = $runtimeParityDrawdownImprovementPct
+            vs_champion_drawdown_improvement_pass = $runtimeParityDrawdownImprovementPass
+            vs_champion_fill_rate_degradation = $runtimeParityFillRateDegradation
+            vs_champion_fill_rate_guard_pass = $runtimeParityFillRateGuardPass
+            vs_champion_slippage_deterioration_bps = $runtimeParitySlippageDeteriorationBps
+            vs_champion_slippage_guard_pass = $runtimeParitySlippageGuardPass
+            utility_metric = "calmar_like"
+            vs_champion_utility_candidate_score = $runtimeParityUtilityCandidateScore
+            vs_champion_utility_champion_score = $runtimeParityUtilityChampionScore
+            vs_champion_utility_delta_pct = $runtimeParityUtilityDeltaPct
+            vs_champion_utility_tie_break_pass = $runtimeParityUtilityTieBreakPass
+            decision_basis = $runtimeParityDecisionBasis
+            pass = $runtimeParityPass
+        }
+        if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+            $certificationArtifact.runtime_parity = [ordered]@{
+                evaluated = $true
+                candidate_backtest = $report.steps.backtest_runtime_parity_candidate
+                champion_backtest = $report.steps.backtest_runtime_parity_champion
+                gate = $report.gates.runtime_parity
+            }
+            Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+        }
+    }
+
     $paperPass = $null
     $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"
     $paperSmokeRunPath = ""
@@ -4603,11 +4827,14 @@ try {
         }
     }
 
-    $overallPass = if ($SkipPaperSoak) { $backtestPass } else { $backtestPass -and $paperPass }
+    $overallPass = if ($SkipPaperSoak) { $backtestPass -and $runtimeParityPass } else { $backtestPass -and $runtimeParityPass -and $paperPass }
     $reasons = @()
     $notes = @()
     if (-not $backtestPass) {
         $reasons += "BACKTEST_ACCEPTANCE_FAILED"
+    }
+    if ($BacktestRuntimeParityEnabled -and (-not $runtimeParityPass)) {
+        $reasons += "RUNTIME_PARITY_BACKTEST_FAILED"
     }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $reasons += "TRAINER_EVIDENCE_REQUIRED_FAILED"

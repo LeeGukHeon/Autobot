@@ -224,7 +224,23 @@ def backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
             {
                 "micro_order_policy": "off",
                 "use_learned_selection_recommendations": False,
+                "use_learned_exit_mode": False,
+                "use_learned_hold_bars": False,
+                "use_learned_risk_recommendations": False,
                 "use_trade_level_action_policy": False,
+                "use_learned_execution_recommendations": False,
+            }
+        )
+        return overrides
+    if name == "runtime_parity":
+        overrides.update(
+            {
+                "use_learned_selection_recommendations": True,
+                "use_learned_exit_mode": True,
+                "use_learned_hold_bars": True,
+                "use_learned_risk_recommendations": True,
+                "use_trade_level_action_policy": True,
+                "use_learned_execution_recommendations": True,
             }
         )
         return overrides
@@ -255,8 +271,36 @@ def normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespac
         "top_pct": getattr(args, "top_pct", None),
         "min_prob": getattr(args, "min_prob", None),
         "min_cands_per_ts": getattr(args, "min_cands_per_ts", None),
-        "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
-        "use_trade_level_action_policy": overrides.get("use_trade_level_action_policy"),
+        "use_learned_selection_recommendations": (
+            getattr(args, "use_learned_selection_recommendations", None)
+            if getattr(args, "use_learned_selection_recommendations", None) is not None
+            else overrides.get("use_learned_selection_recommendations")
+        ),
+        "use_learned_exit_mode": (
+            getattr(args, "use_learned_exit_mode", None)
+            if getattr(args, "use_learned_exit_mode", None) is not None
+            else overrides.get("use_learned_exit_mode")
+        ),
+        "use_learned_hold_bars": (
+            getattr(args, "use_learned_hold_bars", None)
+            if getattr(args, "use_learned_hold_bars", None) is not None
+            else overrides.get("use_learned_hold_bars")
+        ),
+        "use_learned_risk_recommendations": (
+            getattr(args, "use_learned_risk_recommendations", None)
+            if getattr(args, "use_learned_risk_recommendations", None) is not None
+            else overrides.get("use_learned_risk_recommendations")
+        ),
+        "use_trade_level_action_policy": (
+            getattr(args, "use_trade_level_action_policy", None)
+            if getattr(args, "use_trade_level_action_policy", None) is not None
+            else overrides.get("use_trade_level_action_policy")
+        ),
+        "use_learned_execution_recommendations": (
+            getattr(args, "use_learned_execution_recommendations", None)
+            if getattr(args, "use_learned_execution_recommendations", None) is not None
+            else overrides.get("use_learned_execution_recommendations")
+        ),
         "exit_mode": getattr(args, "exit_mode", None),
         "hold_bars": getattr(args, "hold_bars", None),
         "tp_pct": getattr(args, "tp_pct", None),
