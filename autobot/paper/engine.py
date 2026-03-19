@@ -1555,7 +1555,7 @@ class PaperRunEngine:
                 ts_ms=ts_ms,
                 payload=live_feature_provider.status(now_ts_ms=ts_ms, requested_ts_ms=ts_ms),
             )
-        open_markets = {market for market in markets if exchange.has_position(market)}
+        open_markets = exchange.open_position_markets()
         result = strategy.on_ts(
             ts_ms=ts_ms,
             active_markets=markets,

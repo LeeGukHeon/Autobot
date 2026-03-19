@@ -156,6 +156,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
     ) -> StrategyStepResult:
         ts_value = int(ts_ms)
         active_set = {str(item).strip().upper() for item in active_markets if str(item).strip()}
+        tracked_open_markets = {str(item).strip().upper() for item in open_markets if str(item).strip()}
+        tracked_open_markets.update(str(market).strip().upper() for market in self._positions.keys() if str(market).strip())
         min_prob_used, min_prob_source = _resolve_selection_min_prob(
             predictor=self._predictor,
             settings=self._settings.selection,
@@ -200,7 +202,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         dropped_top_pct_rows = 0
         blocked_min_candidates_ts = 0
 
-        for market in sorted(open_markets):
+        for market in sorted(tracked_open_markets):
             if market not in self._positions:
                 continue
             row = frame_by_market.get(market)
@@ -369,7 +371,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         selected_rows = int(selected.height)
         dropped_top_pct_rows = max(eligible_rows - selected_rows, 0)
 
-        active_positions = len(open_markets)
+        active_positions = len(tracked_open_markets)
         max_positions = max(int(operational_max_positions), 1)
         can_open = max(max_positions - active_positions, 0)
         if can_open <= 0:
@@ -381,7 +383,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             if not market:
                 _inc_reason(skipped_reasons, "EMPTY_MARKET")
                 continue
-            if market in open_markets:
+            if market in tracked_open_markets:
                 _inc_reason(skipped_reasons, "ALREADY_OPEN")
                 continue
             cooldown_until = int(self._cooldown_until_ts_ms.get(market, 0))

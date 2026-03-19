@@ -1238,7 +1238,7 @@ class BacktestRunEngine:
         strategy: ModelAlphaStrategyV1,
     ) -> None:
         markets = universe.markets()
-        open_markets = {market for market in markets if exchange.has_position(market)}
+        open_markets = exchange.open_position_markets()
         result = strategy.on_ts(
             ts_ms=ts_ms,
             active_markets=markets,

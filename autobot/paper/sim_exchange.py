@@ -145,6 +145,13 @@ class PaperSimExchange:
         position = self._positions.get(market.strip().upper())
         return bool(position and position.base_amount > EPSILON)
 
+    def open_position_markets(self) -> set[str]:
+        return {
+            str(market).strip().upper()
+            for market, position in self._positions.items()
+            if position.base_amount > EPSILON
+        }
+
     def has_open_order(self, market: str, side: str | None = None) -> bool:
         market_value = market.strip().upper()
         side_value = side.strip().lower() if side else None

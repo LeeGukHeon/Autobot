@@ -746,6 +746,110 @@ def test_model_alpha_risk_control_blocks_entry_before_intent_creation() -> None:
     assert result.skipped_reasons["RISK_CONTROL_BELOW_THRESHOLD"] == 1
 
 
+def test_model_alpha_exit_timeout_still_fires_for_position_outside_active_universe() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [3.0],
+            "close": [100.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+        ),
+    )
+
+    first = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+    bid_intent = next(intent for intent in first.intents if intent.side == "bid")
+
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            meta=dict(bid_intent.meta or {}),
+        )
+    )
+    second = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=[],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_HOLD_TIMEOUT" for intent in second.intents)
+
+
+def test_model_alpha_counts_tracked_positions_outside_active_universe_for_position_limit() -> None:
+    frame_entry = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [3.0],
+            "close": [100.0],
+        }
+    )
+    frame_next = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-ETH"],
+            "f1": [3.0],
+            "close": [200.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame_entry), (301_000, frame_next)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(max_positions_total=1, cooldown_bars=0),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=6),
+        ),
+    )
+
+    first = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+    bid_intent = next(intent for intent in first.intents if intent.side == "bid")
+
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            meta=dict(bid_intent.meta or {}),
+        )
+    )
+    second = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-ETH"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0},
+        open_markets=set(),
+    )
+
+    assert not any(intent.side == "bid" and intent.market == "KRW-ETH" for intent in second.intents)
+    assert second.skipped_reasons["MAX_POSITIONS_TOTAL"] == 1
+
+
 def test_model_alpha_risk_control_size_ladder_clamps_multiplier_in_shared_strategy() -> None:
     frame = pl.DataFrame(
         {
