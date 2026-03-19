@@ -371,6 +371,7 @@ def resolve_runtime_model_alpha_settings(
             state["risk_control_contract_issues"] = contract_issues
         state["risk_control"] = {
             "status": str(risk_control_doc.get("status", "")).strip(),
+            "operating_mode": str(risk_control_doc.get("operating_mode", "")).strip(),
             "decision_metric_name": str(risk_control_doc.get("decision_metric_name", "")).strip(),
             "selected_threshold": _safe_optional_float(risk_control_doc.get("selected_threshold")),
             "selected_coverage": _safe_optional_int(risk_control_doc.get("selected_coverage")),
@@ -381,6 +382,7 @@ def resolve_runtime_model_alpha_settings(
                 risk_control_doc.get("selected_severe_loss_rate_ucb")
             ),
             "live_gate_enabled": bool(live_gate.get("enabled", False)),
+            "live_gate_mode": str(live_gate.get("mode", "")).strip(),
             "live_gate_metric_name": str(live_gate.get("metric_name", "")).strip(),
             "live_gate_skip_reason_code": str(live_gate.get("skip_reason_code", "")).strip(),
             "subgroup_feature_name": str(((risk_control_doc.get("subgroup_family") or {}).get("feature_name")) or "").strip(),

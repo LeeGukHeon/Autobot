@@ -14,6 +14,8 @@ from .trade_action_policy import (
 
 EXECUTION_RISK_CONTROL_VERSION = 1
 EXECUTION_RISK_CONTROL_POLICY_ID = "execution_risk_control_hoeffding_v1"
+EXECUTION_RISK_CONTROL_MODE_LEGACY = "legacy_pretrade_gate_v1"
+EXECUTION_RISK_CONTROL_MODE_SAFETY_ONLY = "safety_executor_only_v1"
 DEFAULT_DECISION_METRIC = "edge_to_es_ratio"
 DEFAULT_NONPOSITIVE_ALPHA = 0.45
 DEFAULT_SEVERE_LOSS_ALPHA = 0.20
@@ -26,6 +28,7 @@ DEFAULT_SIZE_LADDER_STEPS = 5
 DEFAULT_SKIP_REASON_CODE = "RISK_CONTROL_BELOW_THRESHOLD"
 DEFAULT_EDGE_SKIP_REASON_CODE = "RISK_CONTROL_EDGE_NONPOSITIVE"
 DEFAULT_SIZE_SKIP_REASON_CODE = "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER"
+DEFAULT_STATIC_GATE_DISABLED_REASON_CODE = "RISK_CONTROL_STATIC_GATE_DISABLED_BY_DESIGN"
 DEFAULT_WEIGHTING_HALF_LIFE_WINDOWS = 2.0
 DEFAULT_WEIGHTING_COVARIATE_BANDWIDTH = 1.0
 DEFAULT_WEIGHTING_DENSITY_RATIO_CLIP_MIN = 0.25
@@ -322,6 +325,7 @@ def build_execution_risk_control_from_oos_rows(
     return {
         "version": EXECUTION_RISK_CONTROL_VERSION,
         "policy": EXECUTION_RISK_CONTROL_POLICY_ID,
+        "operating_mode": EXECUTION_RISK_CONTROL_MODE_SAFETY_ONLY,
         "status": "ready",
         "source": "walk_forward_oos_trade_replay",
         "decision_metric_name": str(decision_metric_name).strip() or DEFAULT_DECISION_METRIC,
@@ -373,7 +377,9 @@ def build_execution_risk_control_from_oos_rows(
         "feasible_threshold_count": int(len(feasible_rows)),
         "threshold_results": threshold_rows[:20],
         "live_gate": {
-            "enabled": True,
+            "enabled": False,
+            "mode": EXECUTION_RISK_CONTROL_MODE_SAFETY_ONLY,
+            "disabled_reason_code": DEFAULT_STATIC_GATE_DISABLED_REASON_CODE,
             "metric_name": str(decision_metric_name).strip() or DEFAULT_DECISION_METRIC,
             "threshold": float(selected_row["threshold"]),
             "skip_reason_code": DEFAULT_SKIP_REASON_CODE,
@@ -426,11 +432,20 @@ def normalize_execution_risk_control_payload(payload: dict[str, Any] | None) -> 
         issues.append("EXECUTION_RISK_CONTROL_POLICY_UNSUPPORTED")
     status = str(normalized.get("status", "")).strip().lower()
     normalized["status"] = status or "skipped"
+    normalized["operating_mode"] = str(
+        normalized.get("operating_mode", EXECUTION_RISK_CONTROL_MODE_LEGACY)
+    ).strip() or EXECUTION_RISK_CONTROL_MODE_LEGACY
     live_gate = normalized.get("live_gate")
     if isinstance(live_gate, dict):
         if _safe_optional_float(live_gate.get("threshold")) is not None:
             live_gate["threshold"] = float(live_gate["threshold"])
         live_gate["enabled"] = bool(live_gate.get("enabled", False))
+        live_gate["mode"] = str(
+            live_gate.get("mode", normalized.get("operating_mode", EXECUTION_RISK_CONTROL_MODE_LEGACY))
+        ).strip() or EXECUTION_RISK_CONTROL_MODE_LEGACY
+        live_gate["disabled_reason_code"] = str(
+            live_gate.get("disabled_reason_code", DEFAULT_STATIC_GATE_DISABLED_REASON_CODE)
+        ).strip() or DEFAULT_STATIC_GATE_DISABLED_REASON_CODE
         live_gate["metric_name"] = str(
             live_gate.get("metric_name", normalized.get("decision_metric_name", DEFAULT_DECISION_METRIC))
         ).strip() or DEFAULT_DECISION_METRIC

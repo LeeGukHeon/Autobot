@@ -388,6 +388,7 @@ def build_decision_surface_v4(
                 ((runtime_trade_action.get("conditional_action_model") or {}).get("model")) or ""
             ).strip(),
             "risk_control_status": str(runtime_risk_control.get("status", "")).strip() or "missing",
+            "risk_control_operating_mode": str(runtime_risk_control.get("operating_mode", "")).strip(),
             "risk_control_contract_status": str(runtime_risk_control.get("contract_status", "")).strip(),
             "risk_control_decision_metric_name": str(runtime_risk_control.get("decision_metric_name", "")).strip(),
             "risk_control_selected_threshold": (
@@ -411,6 +412,9 @@ def build_decision_surface_v4(
                 else None
             ),
             "risk_control_live_gate_enabled": bool(((runtime_risk_control.get("live_gate") or {}).get("enabled", False))),
+            "risk_control_live_gate_mode": str(
+                ((runtime_risk_control.get("live_gate") or {}).get("mode")) or ""
+            ).strip(),
             "risk_control_live_gate_metric_name": str(
                 ((runtime_risk_control.get("live_gate") or {}).get("metric_name")) or ""
             ).strip(),

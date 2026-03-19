@@ -229,12 +229,14 @@ def test_build_execution_risk_control_selects_feasible_action_value_threshold() 
     )
 
     assert payload["status"] == "ready"
+    assert payload["operating_mode"] == "safety_executor_only_v1"
     assert payload["decision_metric_name"] == "edge_to_es_ratio"
     assert float(payload["selected_threshold"]) > 0.0
     assert int(payload["selected_coverage"]) >= 10
     assert float(payload["selected_nonpositive_rate_ucb"]) <= 0.30
     assert float(payload["selected_severe_loss_rate_ucb"]) <= 0.20
-    assert payload["live_gate"]["enabled"] is True
+    assert payload["live_gate"]["enabled"] is False
+    assert payload["live_gate"]["mode"] == "safety_executor_only_v1"
     assert payload["live_gate"]["metric_name"] == "edge_to_es_ratio"
     assert payload["live_gate"]["positive_edge_required"] is True
     assert payload["size_ladder"]["status"] == "ready"
@@ -409,20 +411,7 @@ def test_build_execution_risk_control_uses_subgroup_constraints_to_raise_thresho
     assert len(subgroup_results) == 1
     assert subgroup_results[0]["status"] == "ok"
 
-    blocked = resolve_execution_risk_control_decision(
-        risk_control_payload=payload,
-        selection_score=0.85,
-        trade_action={
-            "recommended_action": "risk",
-            "expected_action_value": 2.0,
-            "expected_edge": 0.005,
-            "expected_es": 0.02,
-            "risk_feature_value": 0.60,
-        },
-    )
-    assert blocked["allowed"] is False
-    assert blocked["subgroup_bucket"] == 1
-    assert blocked["subgroup_feature_name"] == "rv_12"
+    assert payload["live_gate"]["enabled"] is False
 
 
 def test_resolve_execution_risk_control_decision_blocks_when_expected_edge_is_nonpositive() -> None:

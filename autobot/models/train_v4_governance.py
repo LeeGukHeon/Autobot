@@ -344,6 +344,7 @@ def build_trainer_research_evidence_from_promotion_v4(
             "policy": str(risk_control_doc.get("policy", "")).strip(),
             "status": str(risk_control_doc.get("status", "")).strip(),
             "contract_status": str(risk_control_doc.get("contract_status", "")).strip(),
+            "operating_mode": str(risk_control_doc.get("operating_mode", "")).strip(),
             "required": risk_control_required,
             "present": risk_control_present,
             "pass": risk_control_pass,
@@ -457,6 +458,7 @@ def manual_promotion_decision_v4(
             "risk_control_required": bool(risk_control_acceptance.get("required", False)),
             "risk_control_present": bool(risk_control_acceptance.get("present", False)),
             "risk_control_ready": bool(risk_control_acceptance.get("ready", False)),
+            "risk_control_operating_mode": str(risk_control_acceptance.get("operating_mode", "")).strip(),
             "risk_control_live_gate_enabled": bool(risk_control_acceptance.get("live_gate_enabled", False)),
             "risk_control_size_ladder_ready": bool(risk_control_acceptance.get("size_ladder_ready", False)),
             "risk_control_online_adaptation_enabled": bool(risk_control_acceptance.get("online_adaptation_enabled", False)),
@@ -529,6 +531,7 @@ def build_duplicate_candidate_promotion_decision_v4(
             "risk_control_required": False,
             "risk_control_present": bool(risk_control_acceptance.get("present", False)),
             "risk_control_ready": bool(risk_control_acceptance.get("ready", False)),
+            "risk_control_operating_mode": str(risk_control_acceptance.get("operating_mode", "")).strip(),
             "risk_control_live_gate_enabled": bool(risk_control_acceptance.get("live_gate_enabled", False)),
             "risk_control_size_ladder_ready": bool(risk_control_acceptance.get("size_ladder_ready", False)),
             "risk_control_online_adaptation_enabled": bool(risk_control_acceptance.get("online_adaptation_enabled", False)),
@@ -565,6 +568,9 @@ def _resolve_risk_control_acceptance(
     size_ladder = dict(risk_control.get("size_ladder") or {})
     online_adaptation = dict(risk_control.get("online_adaptation") or {})
     density_ratio = dict((((risk_control.get("weighting") or {}).get("density_ratio")) or {}))
+    operating_mode = str(
+        risk_control.get("operating_mode", live_gate.get("mode", ""))
+    ).strip()
     present = bool(risk_control)
     status = str(risk_control.get("status", "")).strip().lower()
     contract_status = str(risk_control.get("contract_status", "")).strip().lower()
@@ -578,7 +584,6 @@ def _resolve_risk_control_acceptance(
         (not required)
         or (
             ready
-            and live_gate_enabled
             and size_ladder_ready
             and online_adaptation_enabled
             and martingale_enabled
@@ -595,7 +600,12 @@ def _resolve_risk_control_acceptance(
             else:
                 reasons.append("RISK_CONTROL_NOT_READY")
         else:
-            reasons.append("RISK_CONTROL_LIVE_GATE_PASS" if live_gate_enabled else "RISK_CONTROL_LIVE_GATE_DISABLED")
+            if live_gate_enabled:
+                reasons.append("RISK_CONTROL_LIVE_GATE_PASS")
+            elif operating_mode == "safety_executor_only_v1":
+                reasons.append("RISK_CONTROL_LIVE_GATE_DISABLED_BY_DESIGN")
+            else:
+                reasons.append("RISK_CONTROL_LIVE_GATE_DISABLED")
             reasons.append("RISK_CONTROL_SIZE_LADDER_PASS" if size_ladder_ready else "RISK_CONTROL_SIZE_LADDER_NOT_READY")
             reasons.append(
                 "RISK_CONTROL_ONLINE_ADAPTATION_PASS"
@@ -613,6 +623,7 @@ def _resolve_risk_control_acceptance(
         "present": bool(present),
         "status": str(risk_control.get("status", "")).strip(),
         "contract_status": str(risk_control.get("contract_status", "")).strip(),
+        "operating_mode": operating_mode,
         "ready": bool(ready),
         "pass": bool(governance_pass),
         "selected_threshold": risk_control.get("selected_threshold"),
