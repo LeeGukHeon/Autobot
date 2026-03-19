@@ -9,7 +9,7 @@ import polars as pl
 from autobot.backtest.engine import BacktestRunEngine, BacktestRunSettings
 from autobot.models.predictor import ModelPredictor
 from autobot.models.registry import RegistrySavePayload, save_run
-from autobot.models.trade_action_policy import TRADE_ACTION_POLICY_ID
+from autobot.models.trade_action_policy import TRADE_ACTION_POLICY_ID, build_trade_action_policy_from_oos_rows
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
@@ -538,7 +538,9 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
             "market": ["KRW-BTC"],
             "f1": [4.0],
             "close": [100.0],
+            "rv_12": [0.1],
             "rv_36": [0.1],
+            "atr_pct_14": [0.01],
         }
     )
     frame1 = pl.DataFrame(
@@ -547,7 +549,9 @@ def test_model_alpha_trade_action_policy_applies_trade_level_risk_plan_and_sizin
             "market": ["KRW-BTC"],
             "f1": [4.0],
             "close": [101.5],
+            "rv_12": [0.1],
             "rv_36": [0.1],
+            "atr_pct_14": [0.01],
         }
     )
     runtime_recommendations = {
@@ -673,7 +677,9 @@ def test_model_alpha_risk_control_blocks_entry_before_intent_creation() -> None:
             "market": ["KRW-BTC"],
             "f1": [4.0],
             "close": [100.0],
+            "rv_12": [0.1],
             "rv_36": [0.1],
+            "atr_pct_14": [0.01],
         }
     )
     runtime_recommendations = {
@@ -938,6 +944,98 @@ def test_model_alpha_risk_control_size_ladder_clamps_multiplier_in_shared_strate
     assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "risk_control_size_ladder"
     assert dict((bid_intent.meta or {}).get("risk_control_static") or {})["allowed"] is True
     assert float(dict((bid_intent.meta or {}).get("size_ladder_static") or {})["resolved_multiplier"]) == 0.75
+
+
+def test_model_alpha_trade_action_fallback_bin_applies_size_haircut() -> None:
+    policy = build_trade_action_policy_from_oos_rows(
+        oos_rows=[
+            {
+                "window_index": 0,
+                "raw_scores": [0.95, 0.95, 0.95, 0.95, 0.95, 0.20, 0.20, 0.20, 0.20, 0.20],
+                "markets": [
+                    "KRW-BTC",
+                    "KRW-BTC",
+                    "KRW-BTC",
+                    "KRW-BTC",
+                    "KRW-BTC",
+                    "KRW-ETH",
+                    "KRW-ETH",
+                    "KRW-ETH",
+                    "KRW-ETH",
+                    "KRW-ETH",
+                ],
+                "ts_ms": [1, 2, 3, 4, 5, 1, 2, 3, 4, 5],
+                "close": [100.0, 103.0, 95.0, 100.0, 103.0, 100.0, 101.0, 103.0, 106.0, 109.0],
+                "rv_12": [0.10, 0.10, 0.10, 0.10, 0.10, 0.50, 0.50, 0.50, 0.50, 0.50],
+                "rv_36": [0.10, 0.10, 0.10, 0.10, 0.10, 0.50, 0.50, 0.50, 0.50, 0.50],
+                "atr_14": [1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+                "atr_pct_14": [0.01, 0.01, 0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.05, 0.05],
+            },
+            {
+                "window_index": 1,
+                "raw_scores": [0.92, 0.92, 0.92, 0.18, 0.18, 0.18],
+                "markets": ["KRW-XRP", "KRW-XRP", "KRW-XRP", "KRW-DOGE", "KRW-DOGE", "KRW-DOGE"],
+                "ts_ms": [1, 2, 3, 1, 2, 3],
+                "close": [100.0, 103.0, 95.0, 100.0, 101.0, 104.0],
+                "rv_12": [0.10, 0.10, 0.10, 0.50, 0.50, 0.50],
+                "rv_36": [0.10, 0.10, 0.10, 0.50, 0.50, 0.50],
+                "atr_14": [1.0, 1.0, 1.0, 5.0, 5.0, 5.0],
+                "atr_pct_14": [0.01, 0.01, 0.01, 0.05, 0.05, 0.05],
+            }
+        ],
+        selection_calibration={"mode": "identity_v1"},
+        hold_policy_template={
+            "mode": "hold",
+            "hold_bars": 2,
+            "risk_scaling_mode": "fixed",
+            "risk_vol_feature": "rv_36",
+            "sl_pct": 0.02,
+            "expected_exit_fee_rate": 0.0,
+            "expected_exit_slippage_bps": 0.0,
+        },
+        risk_policy_template={
+            "mode": "risk",
+            "hold_bars": 2,
+            "risk_scaling_mode": "fixed",
+            "risk_vol_feature": "rv_36",
+            "tp_pct": 0.01,
+            "sl_pct": 0.02,
+            "expected_exit_fee_rate": 0.0,
+            "expected_exit_slippage_bps": 0.0,
+        },
+        size_multiplier_min=0.5,
+        size_multiplier_max=1.5,
+        min_bin_samples=1,
+    )
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [4.0],
+            "close": [100.0],
+            "rv_36": [0.50],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+        ),
+        runtime_recommendations={"trade_action": policy},
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    meta = dict(bid_intent.meta or {})
+    assert meta["support_level"] == "fallback_bin"
+    assert float(meta["support_size_multiplier"]) == 0.5
+    assert bool(meta["support_size_haircut_applied"]) is True
 
 
 def test_model_alpha_trade_action_policy_uses_volatility_alias_columns() -> None:

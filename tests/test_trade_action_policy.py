@@ -175,3 +175,78 @@ def test_resolve_trade_action_does_not_mean_impute_missing_runtime_state_for_lat
     assert isinstance(decision, dict)
     assert decision["status"] == "insufficient_evidence"
     assert decision["reason_code"] == "TRADE_ACTION_INSUFFICIENT_STATE_SUPPORT"
+
+
+def test_resolve_trade_action_falls_back_to_bin_policy_when_conditional_state_is_partial() -> None:
+    oos_rows = [
+        {
+            "window_index": 0,
+            "raw_scores": [0.95, 0.95, 0.95, 0.95, 0.95, 0.20, 0.20, 0.20, 0.20, 0.20],
+            "markets": [
+                "KRW-BTC",
+                "KRW-BTC",
+                "KRW-BTC",
+                "KRW-BTC",
+                "KRW-BTC",
+                "KRW-ETH",
+                "KRW-ETH",
+                "KRW-ETH",
+                "KRW-ETH",
+                "KRW-ETH",
+            ],
+            "ts_ms": [1, 2, 3, 4, 5, 1, 2, 3, 4, 5],
+            "close": [100.0, 103.0, 95.0, 100.0, 103.0, 100.0, 101.0, 103.0, 106.0, 109.0],
+            "rv_12": [0.10, 0.10, 0.10, 0.10, 0.10, 0.50, 0.50, 0.50, 0.50, 0.50],
+            "rv_36": [0.10, 0.10, 0.10, 0.10, 0.10, 0.50, 0.50, 0.50, 0.50, 0.50],
+            "atr_14": [1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+            "atr_pct_14": [0.01, 0.01, 0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.05, 0.05],
+        },
+        {
+            "window_index": 1,
+            "raw_scores": [0.92, 0.92, 0.92, 0.18, 0.18, 0.18],
+            "markets": ["KRW-XRP", "KRW-XRP", "KRW-XRP", "KRW-DOGE", "KRW-DOGE", "KRW-DOGE"],
+            "ts_ms": [1, 2, 3, 1, 2, 3],
+            "close": [100.0, 103.0, 95.0, 100.0, 101.0, 104.0],
+            "rv_12": [0.10, 0.10, 0.10, 0.50, 0.50, 0.50],
+            "rv_36": [0.10, 0.10, 0.10, 0.50, 0.50, 0.50],
+            "atr_14": [1.0, 1.0, 1.0, 5.0, 5.0, 5.0],
+            "atr_pct_14": [0.01, 0.01, 0.01, 0.05, 0.05, 0.05],
+        }
+    ]
+    policy = build_trade_action_policy_from_oos_rows(
+        oos_rows=oos_rows,
+        selection_calibration={"mode": "identity_v1"},
+        hold_policy_template={
+            "mode": "hold",
+            "hold_bars": 2,
+            "risk_scaling_mode": "fixed",
+            "risk_vol_feature": "rv_36",
+            "sl_pct": 0.02,
+            "expected_exit_fee_rate": 0.0,
+            "expected_exit_slippage_bps": 0.0,
+        },
+        risk_policy_template={
+            "mode": "risk",
+            "hold_bars": 2,
+            "risk_scaling_mode": "fixed",
+            "risk_vol_feature": "rv_36",
+            "tp_pct": 0.01,
+            "sl_pct": 0.02,
+            "expected_exit_fee_rate": 0.0,
+            "expected_exit_slippage_bps": 0.0,
+        },
+        size_multiplier_min=0.5,
+        size_multiplier_max=1.5,
+        min_bin_samples=1,
+    )
+
+    decision = resolve_trade_action(
+        policy,
+        selection_score=0.95,
+        row={"rv_36": 0.50},
+    )
+
+    assert isinstance(decision, dict)
+    assert decision["decision_source"] == "bin_audit_fallback"
+    assert decision["support_level"] == "fallback_bin"
+    assert decision.get("support_reason_code", "") in {"", "TRADE_ACTION_INSUFFICIENT_STATE_SUPPORT"}

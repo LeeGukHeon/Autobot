@@ -41,6 +41,8 @@ def _make_fake_python_exe(
     feature_rows_by_window: dict[str, int] | None = None,
     feature_min_rows_for_train: int = 4000,
     history_anchor_backtest_by_window: dict[str, dict[str, float | int]] | None = None,
+    candidate_execution_structure: dict[str, object] | None = None,
+    champion_execution_structure: dict[str, object] | None = None,
 ) -> Path:
     driver_path = tmp_path / "fake_python_driver.py"
     driver_path.write_text(
@@ -65,6 +67,8 @@ def _make_fake_python_exe(
             FEATURE_ROWS_BY_WINDOW = {json.dumps(feature_rows_by_window or {})}
             FEATURE_MIN_ROWS_FOR_TRAIN = {int(feature_min_rows_for_train)}
             HISTORY_ANCHOR_BACKTEST_BY_WINDOW = {json.dumps(history_anchor_backtest_by_window or {})}
+            CANDIDATE_EXECUTION_STRUCTURE = {json.dumps(candidate_execution_structure or {})}
+            CHAMPION_EXECUTION_STRUCTURE = {json.dumps(champion_execution_structure or {})}
 
 
             def arg_value(name: str, default: str = "") -> str:
@@ -499,6 +503,7 @@ def _make_fake_python_exe(
                         "fill_rate": 0.82,
                         "max_drawdown_pct": 0.05,
                         "slippage_bps_mean": 1.0,
+                        "execution_structure": CANDIDATE_EXECUTION_STRUCTURE,
                     }}
                 else:
                     payload = HISTORY_ANCHOR_BACKTEST_BY_WINDOW.get(f"{{start_value}}|{{end_value}}")
@@ -509,6 +514,7 @@ def _make_fake_python_exe(
                             "fill_rate": 0.80,
                             "max_drawdown_pct": 0.08,
                             "slippage_bps_mean": 1.4,
+                            "execution_structure": CHAMPION_EXECUTION_STRUCTURE,
                         }}
                 write_json(run_dir / "summary.json", payload)
                 print(json.dumps({{"run_dir": str(run_dir), "model_ref": model_ref}}))
@@ -1617,6 +1623,37 @@ def test_candidate_acceptance_runs_runtime_parity_backtests_and_reports_gate(tmp
     assert report["gates"]["runtime_parity"]["pass"] is True
     assert report["steps"]["backtest_runtime_parity_candidate"]["preset"] == "runtime_parity"
     assert report["steps"]["backtest_runtime_parity_champion"]["preset"] == "runtime_parity"
+
+
+def test_candidate_acceptance_rejects_bad_backtest_execution_structure(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        candidate_execution_structure={
+            "closed_trade_count": 5,
+            "payoff_ratio": 0.4,
+            "market_loss_concentration": 0.95,
+        },
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert report["gates"]["backtest"]["candidate_execution_structure_evaluated"] is True
+    assert report["gates"]["backtest"]["candidate_payoff_ratio_pass"] is False
+    assert report["gates"]["backtest"]["candidate_market_loss_concentration_pass"] is False
+    assert "PAYOFF_RATIO_TOO_LOW" in report["reasons"]
+    assert "LOSS_CONCENTRATION_TOO_HIGH" in report["reasons"]
 
 
 def test_candidate_acceptance_reports_rank_shadow_lane_governance(

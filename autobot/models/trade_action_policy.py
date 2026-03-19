@@ -772,6 +772,7 @@ def resolve_trade_action(
     if normalized.get("status") != "ready":
         return None
     conditional_action_model = dict(normalized.get("conditional_action_model") or {})
+    fallback_reason_code = ""
     if conditional_action_model.get("status") == "ready":
         predicted = _predict_contextual_action_metrics(
             model_payload=conditional_action_model,
@@ -838,6 +839,7 @@ def resolve_trade_action(
                     if raw_risk_feature_value is not None and math.isfinite(float(raw_risk_feature_value))
                     else float(predicted["risk_state_value"])
                 ),
+                "support_level": "full",
                 "risk_state_source": CONDITIONAL_ACTION_MODEL_ID,
                 "decision_source": "continuous_conditional_action_value",
                 "chosen_action_source": "continuous_conditional_action_value",
@@ -861,24 +863,28 @@ def resolve_trade_action(
                     "risk_expected_ctm2": float(predicted["risk_expected_ctm2"]),
                 },
             }
-        return _insufficient_trade_action_decision(
-            normalized,
-            reason_code="TRADE_ACTION_INSUFFICIENT_STATE_SUPPORT",
-        )
+        fallback_reason_code = "TRADE_ACTION_INSUFFICIENT_STATE_SUPPORT"
     if str(normalized.get("runtime_decision_source", "")).strip().lower() == "continuous_conditional_action_value":
-        return _insufficient_trade_action_decision(
-            normalized,
-            reason_code="TRADE_ACTION_CONDITIONAL_MODEL_MISSING",
-        )
+        if conditional_action_model.get("status") != "ready":
+            return _insufficient_trade_action_decision(
+                normalized,
+                reason_code="TRADE_ACTION_CONDITIONAL_MODEL_MISSING",
+            )
     risk_feature_name = str(normalized.get("risk_feature_name", "")).strip()
     if not risk_feature_name:
+        if fallback_reason_code:
+            return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
         return None
     risk_value = _resolve_row_risk_feature_value(row=row, feature_name=risk_feature_name)
     if risk_value is None or not math.isfinite(float(risk_value)):
+        if fallback_reason_code:
+            return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
         return None
     edge_bounds = [float(value) for value in (normalized.get("edge_bounds") or [])]
     risk_bounds = [float(value) for value in (normalized.get("risk_bounds") or [])]
     if len(edge_bounds) < 2 or len(risk_bounds) < 2:
+        if fallback_reason_code:
+            return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
         return None
     edge_bin = _resolve_bin_index(float(selection_score), edge_bounds)
     risk_bin = _resolve_bin_index(float(risk_value), risk_bounds)
@@ -887,11 +893,17 @@ def resolve_trade_action(
         if int(item.get("edge_bin", -1)) != edge_bin or int(item.get("risk_bin", -1)) != risk_bin:
             continue
         if not bool(item.get("comparable", False)):
+            if fallback_reason_code:
+                return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
             return None
         if int(item.get("sample_count", 0) or 0) < min_bin_samples:
+            if fallback_reason_code:
+                return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
             return None
         action = str(item.get("recommended_action", "")).strip().lower()
         if action not in {"hold", "risk"}:
+            if fallback_reason_code:
+                return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
             return None
         template = (
             dict(normalized.get("risk_policy_template") or {})
@@ -918,11 +930,15 @@ def resolve_trade_action(
             "risk_bin": int(risk_bin),
             "risk_feature_name": risk_feature_name,
             "risk_feature_value": float(risk_value),
-            "status": "legacy_fallback",
+            "support_level": "fallback_bin" if fallback_reason_code else "full",
+            "status": "fallback_support" if fallback_reason_code else "legacy_fallback",
+            "support_reason_code": fallback_reason_code,
             "decision_source": "bin_audit_fallback",
             "chosen_action_source": "bin_audit_fallback",
             "exit_policy_template": template,
         }
+    if fallback_reason_code:
+        return _insufficient_trade_action_decision(normalized, reason_code=fallback_reason_code)
     return None
 
 

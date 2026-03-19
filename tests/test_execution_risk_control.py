@@ -229,12 +229,14 @@ def test_build_execution_risk_control_selects_feasible_action_value_threshold() 
     )
 
     assert payload["status"] == "ready"
-    assert payload["decision_metric_name"] == "expected_action_value"
-    assert float(payload["selected_threshold"]) >= 2.0
+    assert payload["decision_metric_name"] == "edge_to_es_ratio"
+    assert float(payload["selected_threshold"]) > 0.0
     assert int(payload["selected_coverage"]) >= 10
     assert float(payload["selected_nonpositive_rate_ucb"]) <= 0.30
     assert float(payload["selected_severe_loss_rate_ucb"]) <= 0.20
     assert payload["live_gate"]["enabled"] is True
+    assert payload["live_gate"]["metric_name"] == "edge_to_es_ratio"
+    assert payload["live_gate"]["positive_edge_required"] is True
     assert payload["size_ladder"]["status"] == "ready"
     assert float(payload["size_ladder"]["global_max_multiplier"]) > 0.0
 
@@ -247,16 +249,18 @@ def test_runtime_recommendations_normalize_keeps_valid_risk_control_contract() -
                 "version": 1,
                 "policy": "execution_risk_control_hoeffding_v1",
                 "status": "ready",
-                "decision_metric_name": "expected_action_value",
+                "decision_metric_name": "edge_to_es_ratio",
                 "selected_threshold": 2.0,
                 "selected_coverage": 31,
                 "selected_nonpositive_rate_ucb": 0.18,
                 "selected_severe_loss_rate_ucb": 0.11,
                 "live_gate": {
                     "enabled": True,
-                    "metric_name": "expected_action_value",
+                    "metric_name": "edge_to_es_ratio",
                     "threshold": 2.0,
                     "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                    "edge_skip_reason_code": "RISK_CONTROL_EDGE_NONPOSITIVE",
+                    "positive_edge_required": True,
                 },
                 "subgroup_family": {
                     "enabled": True,
@@ -289,22 +293,24 @@ def test_runtime_recommendations_normalize_keeps_valid_risk_control_contract() -
     assert normalized["risk_control"]["contract_issues"] == []
 
 
-def test_resolve_execution_risk_control_decision_blocks_when_action_value_is_below_threshold() -> None:
+def test_resolve_execution_risk_control_decision_blocks_when_edge_to_es_ratio_is_below_threshold() -> None:
     decision = resolve_execution_risk_control_decision(
         risk_control_payload={
             "version": 1,
             "policy": "execution_risk_control_hoeffding_v1",
             "status": "ready",
-            "decision_metric_name": "expected_action_value",
+            "decision_metric_name": "edge_to_es_ratio",
             "selected_threshold": 2.0,
             "selected_coverage": 31,
             "selected_nonpositive_rate_ucb": 0.18,
             "selected_severe_loss_rate_ucb": 0.11,
             "live_gate": {
                 "enabled": True,
-                "metric_name": "expected_action_value",
+                "metric_name": "edge_to_es_ratio",
                 "threshold": 2.0,
                 "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                "edge_skip_reason_code": "RISK_CONTROL_EDGE_NONPOSITIVE",
+                "positive_edge_required": True,
             },
             "subgroup_family": {
                 "enabled": True,
@@ -316,7 +322,12 @@ def test_resolve_execution_risk_control_decision_blocks_when_action_value_is_bel
             },
         },
         selection_score=0.9,
-        trade_action={"recommended_action": "risk", "expected_action_value": 0.4},
+        trade_action={
+            "recommended_action": "risk",
+            "expected_action_value": 0.4,
+            "expected_edge": 0.004,
+            "expected_es": 0.01,
+        },
     )
 
     assert decision["enabled"] is True
@@ -331,16 +342,18 @@ def test_resolve_execution_risk_control_size_decision_clamps_requested_multiplie
             "version": 1,
             "policy": "execution_risk_control_hoeffding_v1",
             "status": "ready",
-            "decision_metric_name": "expected_action_value",
+            "decision_metric_name": "edge_to_es_ratio",
             "selected_threshold": 2.0,
             "selected_coverage": 31,
             "selected_nonpositive_rate_ucb": 0.18,
             "selected_severe_loss_rate_ucb": 0.11,
             "live_gate": {
                 "enabled": True,
-                "metric_name": "expected_action_value",
+                "metric_name": "edge_to_es_ratio",
                 "threshold": 2.0,
                 "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                "edge_skip_reason_code": "RISK_CONTROL_EDGE_NONPOSITIVE",
+                "positive_edge_required": True,
             },
             "subgroup_family": {
                 "enabled": True,
@@ -389,7 +402,7 @@ def test_build_execution_risk_control_uses_subgroup_constraints_to_raise_thresho
     )
 
     assert payload["status"] == "ready"
-    assert float(payload["selected_threshold"]) >= 4.0
+    assert float(payload["selected_threshold"]) > 0.0
     assert payload["subgroup_family"]["feature_name"] == "rv_12"
     assert int(payload["subgroup_family"]["bucket_count_effective"]) == 2
     subgroup_results = payload["selected_subgroup_results"]
@@ -402,12 +415,55 @@ def test_build_execution_risk_control_uses_subgroup_constraints_to_raise_thresho
         trade_action={
             "recommended_action": "risk",
             "expected_action_value": 2.0,
+            "expected_edge": 0.005,
+            "expected_es": 0.02,
             "risk_feature_value": 0.60,
         },
     )
     assert blocked["allowed"] is False
     assert blocked["subgroup_bucket"] == 1
     assert blocked["subgroup_feature_name"] == "rv_12"
+
+
+def test_resolve_execution_risk_control_decision_blocks_when_expected_edge_is_nonpositive() -> None:
+    decision = resolve_execution_risk_control_decision(
+        risk_control_payload={
+            "version": 1,
+            "policy": "execution_risk_control_hoeffding_v1",
+            "status": "ready",
+            "decision_metric_name": "edge_to_es_ratio",
+            "selected_threshold": 0.5,
+            "selected_coverage": 31,
+            "selected_nonpositive_rate_ucb": 0.18,
+            "selected_severe_loss_rate_ucb": 0.11,
+                "live_gate": {
+                    "enabled": True,
+                    "metric_name": "edge_to_es_ratio",
+                    "threshold": 0.5,
+                    "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                    "edge_skip_reason_code": "RISK_CONTROL_EDGE_NONPOSITIVE",
+                    "positive_edge_required": True,
+                },
+                "subgroup_family": {
+                    "enabled": False,
+                    "feature_name": "",
+                    "bucket_count_requested": 0,
+                    "bucket_count_effective": 0,
+                    "bounds": [],
+                    "min_coverage": 0,
+                },
+            },
+            selection_score=0.9,
+            trade_action={
+                "recommended_action": "risk",
+                "expected_edge": 0.0,
+            "expected_es": 0.01,
+        },
+    )
+
+    assert decision["enabled"] is True
+    assert decision["allowed"] is False
+    assert decision["reason_code"] == "RISK_CONTROL_EDGE_NONPOSITIVE"
 
 
 def test_build_execution_risk_control_applies_recency_weighting() -> None:

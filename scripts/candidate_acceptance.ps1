@@ -42,6 +42,9 @@ param(
     [int]$BacktestMinCandidatesPerTs = 1,
     [int]$HoldBars = 6,
     [bool]$BacktestRuntimeParityEnabled = $true,
+    [double]$BacktestMinPayoffRatio = 0.75,
+    [double]$BacktestMaxLossConcentration = 0.85,
+    [int]$ExecutionStructureMinClosedTrades = 3,
     [int]$PaperSoakDurationSec = 10800,
     [string]$PaperMicroProvider = "live_ws",
     [string]$PaperFeatureProvider = "live_v4",
@@ -56,6 +59,8 @@ param(
     [int]$PaperMinActiveWindows = 1,
     [double]$PaperMinNonnegativeWindowRatio = 0.34,
     [double]$PaperMaxFillConcentrationRatio = 0.85,
+    [double]$PaperMinPayoffRatio = 0.75,
+    [double]$PaperMaxLossConcentration = 0.85,
     [double]$PaperEvidenceEdgeScore = 0.65,
     [double]$PaperEvidenceHoldScore = 0.50,
     [int]$PaperHistoryWindowRuns = 5,
@@ -556,6 +561,57 @@ function Get-CalmarLikeScore {
         return [double]::PositiveInfinity
     }
     return 0.0
+}
+
+function Get-ExecutionStructureMetrics {
+    param([object]$Summary)
+    $payload = Get-PropValue -ObjectValue $Summary -Name "execution_structure" -DefaultValue @{}
+    return [ordered]@{
+        closed_trade_count = [int](To-Int64 (Get-PropValue -ObjectValue $payload -Name "closed_trade_count" -DefaultValue 0) 0)
+        payoff_ratio = [double](To-Double (Get-PropValue -ObjectValue $payload -Name "payoff_ratio" -DefaultValue 0.0) 0.0)
+        market_loss_concentration = [double](To-Double (Get-PropValue -ObjectValue $payload -Name "market_loss_concentration" -DefaultValue 0.0) 0.0)
+        tp_exit_share = [double](To-Double (Get-PropValue -ObjectValue $payload -Name "tp_exit_share" -DefaultValue 0.0) 0.0)
+        sl_exit_share = [double](To-Double (Get-PropValue -ObjectValue $payload -Name "sl_exit_share" -DefaultValue 0.0) 0.0)
+        timeout_exit_share = [double](To-Double (Get-PropValue -ObjectValue $payload -Name "timeout_exit_share" -DefaultValue 0.0) 0.0)
+        wins = [int](To-Int64 (Get-PropValue -ObjectValue $payload -Name "wins" -DefaultValue 0) 0)
+        losses = [int](To-Int64 (Get-PropValue -ObjectValue $payload -Name "losses" -DefaultValue 0) 0)
+        payload = $payload
+    }
+}
+
+function Test-ExecutionStructureGate {
+    param(
+        [object]$Metrics,
+        [double]$MinPayoffRatio,
+        [double]$MaxLossConcentration,
+        [int]$MinClosedTrades
+    )
+    $closedTradeCount = [int](To-Int64 (Get-PropValue -ObjectValue $Metrics -Name "closed_trade_count" -DefaultValue 0) 0)
+    $evaluated = $closedTradeCount -ge [Math]::Max([int]$MinClosedTrades, 1)
+    $payoffRatio = [double](To-Double (Get-PropValue -ObjectValue $Metrics -Name "payoff_ratio" -DefaultValue 0.0) 0.0)
+    $lossConcentration = [double](To-Double (Get-PropValue -ObjectValue $Metrics -Name "market_loss_concentration" -DefaultValue 0.0) 0.0)
+    $payoffPass = (-not $evaluated) -or ($payoffRatio -ge [double]$MinPayoffRatio)
+    $lossConcentrationPass = (-not $evaluated) -or ($lossConcentration -le [double]$MaxLossConcentration)
+    $reasons = @()
+    if ($evaluated -and (-not $payoffPass)) {
+        $reasons += "PAYOFF_RATIO_TOO_LOW"
+    }
+    if ($evaluated -and (-not $lossConcentrationPass)) {
+        $reasons += "LOSS_CONCENTRATION_TOO_HIGH"
+    }
+    return [ordered]@{
+        evaluated = $evaluated
+        pass = ($payoffPass -and $lossConcentrationPass)
+        min_closed_trades = [int][Math]::Max([int]$MinClosedTrades, 1)
+        closed_trade_count = $closedTradeCount
+        payoff_ratio = $payoffRatio
+        payoff_ratio_pass = $payoffPass
+        payoff_ratio_threshold = [double]$MinPayoffRatio
+        market_loss_concentration = $lossConcentration
+        market_loss_concentration_pass = $lossConcentrationPass
+        market_loss_concentration_threshold = [double]$MaxLossConcentration
+        reasons = @($reasons)
+    }
 }
 
 function Resolve-PromotionPolicyConfig {
@@ -2861,10 +2917,15 @@ $report = [ordered]@{
         paper_min_active_windows = [int]$PaperMinActiveWindows
         paper_min_nonnegative_window_ratio = [double]$PaperMinNonnegativeWindowRatio
         paper_max_fill_concentration_ratio = [double]$PaperMaxFillConcentrationRatio
+        paper_min_payoff_ratio = [double]$PaperMinPayoffRatio
+        paper_max_loss_concentration = [double]$PaperMaxLossConcentration
+        execution_structure_min_closed_trades = [int]$ExecutionStructureMinClosedTrades
         backtest_min_orders_filled = [int]$promotionPolicyConfig.backtest_min_orders_filled
         backtest_min_realized_pnl_quote = [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote
         backtest_min_deflated_sharpe_ratio = [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio
         backtest_min_pnl_delta_vs_champion = [double]$promotionPolicyConfig.backtest_min_pnl_delta_vs_champion
+        backtest_min_payoff_ratio = [double]$BacktestMinPayoffRatio
+        backtest_max_loss_concentration = [double]$BacktestMaxLossConcentration
         promotion_policy = $promotionPolicyConfig.name
         backtest_allow_stability_override = [bool]$promotionPolicyConfig.backtest_allow_stability_override
         backtest_champion_pnl_tolerance_pct = [double]$promotionPolicyConfig.backtest_champion_pnl_tolerance_pct
@@ -3965,6 +4026,12 @@ try {
     $candidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
     $candidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $candidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
     $candidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $candidateRealizedPnl -MaxDrawdownPct $candidateMaxDrawdownPct
+    $candidateExecutionStructure = Get-ExecutionStructureMetrics -Summary $candidateSummary
+    $candidateExecutionStructureGate = Test-ExecutionStructureGate `
+        -Metrics $candidateExecutionStructure `
+        -MinPayoffRatio $BacktestMinPayoffRatio `
+        -MaxLossConcentration $BacktestMaxLossConcentration `
+        -MinClosedTrades $ExecutionStructureMinClosedTrades
     $candidateStatValidation = Invoke-BacktestStatValidation `
         -PythonPath $resolvedPythonExe `
         -Root $resolvedProjectRoot `
@@ -3994,6 +4061,7 @@ try {
         $championMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $championSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
         $championSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $championSummary -Name "slippage_bps_mean" -DefaultValue $null)
         $championCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $championRealizedPnl -MaxDrawdownPct $championMaxDrawdownPct
+        $championExecutionStructure = Get-ExecutionStructureMetrics -Summary $championSummary
         $championStatValidation = Invoke-BacktestStatValidation `
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
@@ -4006,7 +4074,7 @@ try {
     }
 
     $candidateDeflatedSharpePass = (-not $candidateStatComparable) -or ($candidateDeflatedSharpeRatio -ge [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio)
-    $candidateBacktestPass = ($candidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) -and ($candidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) -and $candidateDeflatedSharpePass
+    $candidateBacktestPass = ($candidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) -and ($candidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) -and $candidateDeflatedSharpePass -and (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "pass" -DefaultValue $true) $true)
     $championDeltaPass = $true
     $strictChampionDeltaPass = $true
     $championDeltaQuote = $candidateRealizedPnl - $championRealizedPnl
@@ -4268,6 +4336,8 @@ try {
     }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $decisionBasis = "TRAINER_EVIDENCE_REQUIRED_FAIL"
+    } elseif (-not (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "pass" -DefaultValue $true) $true)) {
+        $decisionBasis = "EXECUTION_STRUCTURE_FAIL"
     } elseif (-not $budgetContractGatePass) {
         $decisionBasis = "SCOUT_ONLY_BUDGET_EVIDENCE"
     }
@@ -4290,6 +4360,7 @@ try {
         deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
         probabilistic_sharpe_ratio = [double]$candidateProbabilisticSharpeRatio
         stat_validation = $candidateStatValidation
+        execution_structure = (Get-PropValue -ObjectValue $candidateExecutionStructure -Name "payload" -DefaultValue @{})
     }
     $report.steps.backtest_champion = if ($championCompareEvaluated) {
         [ordered]@{
@@ -4310,6 +4381,7 @@ try {
             deflated_sharpe_ratio_est = $championDeflatedSharpeRatio
             probabilistic_sharpe_ratio = $championProbabilisticSharpeRatio
             stat_validation = $championStatValidation
+            execution_structure = (Get-PropValue -ObjectValue $championExecutionStructure -Name "payload" -DefaultValue @{})
         }
     } else {
         [ordered]@{ attempted = $false; reason = "NO_EXISTING_CHAMPION" }
@@ -4326,6 +4398,14 @@ try {
         candidate_min_deflated_sharpe_ratio = [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio
         candidate_deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
         candidate_deflated_sharpe_pass = $candidateDeflatedSharpePass
+        candidate_execution_structure_evaluated = (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "evaluated" -DefaultValue $false) $false)
+        candidate_payoff_ratio = [double](Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "payoff_ratio" -DefaultValue 0.0)
+        candidate_payoff_ratio_pass = (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "payoff_ratio_pass" -DefaultValue $true) $true)
+        candidate_payoff_ratio_threshold = [double](Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "payoff_ratio_threshold" -DefaultValue 0.0)
+        candidate_market_loss_concentration = [double](Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "market_loss_concentration" -DefaultValue 0.0)
+        candidate_market_loss_concentration_pass = (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "market_loss_concentration_pass" -DefaultValue $true) $true)
+        candidate_market_loss_concentration_threshold = [double](Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "market_loss_concentration_threshold" -DefaultValue 0.0)
+        candidate_execution_structure_reasons = @((Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "reasons" -DefaultValue @()))
         compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
         vs_champion_evaluated = $championCompareEvaluated
         vs_champion_pass = $championDeltaPass
@@ -4670,6 +4750,12 @@ try {
         $paperActiveWindows = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_active_windows" -DefaultValue 0) 0)
         $paperNonnegativeWindowRatio = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_nonnegative_active_window_ratio" -DefaultValue 0.0) 0.0)
         $paperFillConcentrationRatio = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "rolling_max_fill_concentration_ratio" -DefaultValue 0.0) 0.0)
+        $paperExecutionStructure = Get-ExecutionStructureMetrics -Summary $paperSmoke
+        $paperExecutionStructureGate = Test-ExecutionStructureGate `
+            -Metrics $paperExecutionStructure `
+            -MinPayoffRatio $PaperMinPayoffRatio `
+            -MaxLossConcentration $PaperMaxLossConcentration `
+            -MinClosedTrades $ExecutionStructureMinClosedTrades
         $paperOrdersFilledPass = $paperOrdersFilled -ge $PaperMinOrdersFilled
         $paperRealizedPnlPass = $paperRealizedPnl -ge $PaperMinRealizedPnlQuote
         $paperMicroQualityPass = $paperMicroQualityScoreMean -ge $PaperMinMicroQualityScoreMean
@@ -4714,9 +4800,9 @@ try {
             -EvidenceEdgeScore $PaperEvidenceEdgeScore `
             -EvidenceHoldScore $PaperEvidenceHoldScore
         $paperPass = if ($promotionPolicyConfig.paper_final_gate) {
-            To-Bool (Get-PropValue -ObjectValue $paperEvidenceDecision -Name "pass" -DefaultValue $false) $false
+            (To-Bool (Get-PropValue -ObjectValue $paperEvidenceDecision -Name "pass" -DefaultValue $false) $false) -and (To-Bool (Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "pass" -DefaultValue $true) $true)
         } else {
-            $paperT15GatePass
+            $paperT15GatePass -and (To-Bool (Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "pass" -DefaultValue $true) $true)
         }
         $report.steps.paper_candidate = [ordered]@{
             exit_code = [int]$paperExec.ExitCode
@@ -4748,6 +4834,7 @@ try {
             history_median_fallback_ratio = $paperHistoryMedianFallbackRatio
             history_reports = @((Get-PropValue -ObjectValue $paperHistoryEvidence -Name "reports" -DefaultValue @()))
             replace_cancel_timeout_total = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "replace_cancel_timeout_total" -DefaultValue 0) 0)
+            execution_structure = (Get-PropValue -ObjectValue $paperExecutionStructure -Name "payload" -DefaultValue @{})
             t15_gate_pass = $paperT15GatePass
             evidence_score = [double](To-Double (Get-PropValue -ObjectValue $paperEvidenceDecision -Name "evidence_score" -DefaultValue 0.0) 0.0)
             final_decision_basis = [string](Get-PropValue -ObjectValue $paperEvidenceDecision -Name "final_decision_basis" -DefaultValue "")
@@ -4770,6 +4857,14 @@ try {
             min_active_windows_pass = $paperActiveWindowsPass
             min_nonnegative_window_ratio_pass = $paperNonnegativeWindowPass
             max_fill_concentration_pass = $paperFillConcentrationPass
+            execution_structure_evaluated = (To-Bool (Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "evaluated" -DefaultValue $false) $false)
+            payoff_ratio = [double](Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "payoff_ratio" -DefaultValue 0.0)
+            payoff_ratio_pass = (To-Bool (Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "payoff_ratio_pass" -DefaultValue $true) $true)
+            payoff_ratio_threshold = [double](Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "payoff_ratio_threshold" -DefaultValue 0.0)
+            market_loss_concentration = [double](Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "market_loss_concentration" -DefaultValue 0.0)
+            market_loss_concentration_pass = (To-Bool (Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "market_loss_concentration_pass" -DefaultValue $true) $true)
+            market_loss_concentration_threshold = [double](Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "market_loss_concentration_threshold" -DefaultValue 0.0)
+            execution_structure_reasons = @((Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "reasons" -DefaultValue @()))
             history_completed_runs = $paperHistoryCompletedRuns
             history_sufficient = $paperHistorySufficient
             history_min_completed_runs = [int]$PaperHistoryMinCompletedRuns
@@ -4833,6 +4928,9 @@ try {
     if (-not $backtestPass) {
         $reasons += "BACKTEST_ACCEPTANCE_FAILED"
     }
+    if (-not (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "pass" -DefaultValue $true) $true)) {
+        $reasons += @((Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "reasons" -DefaultValue @()))
+    }
     if ($BacktestRuntimeParityEnabled -and (-not $runtimeParityPass)) {
         $reasons += "RUNTIME_PARITY_BACKTEST_FAILED"
     }
@@ -4848,6 +4946,9 @@ try {
     if ($SkipPaperSoak) {
         $notes += "PAPER_SOAK_SKIPPED"
     } elseif (-not $paperPass) {
+        if (-not (To-Bool (Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "pass" -DefaultValue $true) $true)) {
+            $reasons += @((Get-PropValue -ObjectValue $paperExecutionStructureGate -Name "reasons" -DefaultValue @()))
+        }
         if ($promotionPolicyConfig.paper_final_gate) {
             $paperGate = Get-PropValue -ObjectValue $report.gates.paper -Name "final_decision_basis" -DefaultValue ""
             if (-not [string]::IsNullOrWhiteSpace([string]$paperGate)) {

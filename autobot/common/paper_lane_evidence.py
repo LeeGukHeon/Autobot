@@ -108,6 +108,12 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "operational_regime_score_mean": 0.0,
             "operational_breadth_ratio_mean": 0.0,
             "operational_max_positions_mean": 0.0,
+            "execution_structure_closed_trade_count_total": 0,
+            "execution_structure_payoff_ratio": 0.0,
+            "execution_structure_market_loss_concentration_mean": 0.0,
+            "execution_structure_tp_exit_share": 0.0,
+            "execution_structure_sl_exit_share": 0.0,
+            "execution_structure_timeout_exit_share": 0.0,
             "duration_sec_total": 0.0,
             "run_started_ts_ms_min": 0,
             "run_completed_ts_ms_max": 0,
@@ -134,6 +140,32 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for item in runs
     ]
     order_weight_pairs = [(item, max(_safe_int(item.get("orders_filled")), 1)) for item in runs]
+    execution_structures = [
+        dict(item.get("execution_structure") or {})
+        for item in runs
+        if isinstance(item.get("execution_structure"), dict)
+    ]
+    closed_trade_count_total = sum(_safe_int(item.get("closed_trade_count")) for item in execution_structures)
+    win_pnl_quote_total = sum(_safe_float(item.get("win_pnl_quote_total")) for item in execution_structures)
+    loss_pnl_quote_total_abs = sum(_safe_float(item.get("loss_pnl_quote_total_abs")) for item in execution_structures)
+    execution_payoff_ratio = (
+        win_pnl_quote_total / loss_pnl_quote_total_abs
+        if loss_pnl_quote_total_abs > 0.0
+        else (9999.0 if win_pnl_quote_total > 0.0 else 0.0)
+    )
+    tp_exit_count_total = sum(_safe_int(item.get("tp_exit_count")) for item in execution_structures)
+    sl_exit_count_total = sum(_safe_int(item.get("sl_exit_count")) for item in execution_structures)
+    timeout_exit_count_total = sum(_safe_int(item.get("timeout_exit_count")) for item in execution_structures)
+    market_loss_concentration_mean = _weighted_mean(
+        [
+            (
+                _safe_float(item.get("market_loss_concentration")),
+                max(_safe_float(item.get("loss_pnl_quote_total_abs")), 0.0),
+            )
+            for item in execution_structures
+        ],
+        default=0.0,
+    )
     aggregate = {
         "runs_completed": len(runs),
         "run_ids": [str(item.get("run_id", "")) for item in runs],
@@ -167,6 +199,14 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "operational_max_positions_mean": _weighted_mean(
             [(_safe_float(item.get("operational_max_positions_mean")), weight) for item, weight in order_weight_pairs]
         ),
+        "execution_structure_closed_trade_count_total": int(closed_trade_count_total),
+        "execution_structure_payoff_ratio": float(max(execution_payoff_ratio, 0.0)),
+        "execution_structure_market_loss_concentration_mean": float(
+            max(min(market_loss_concentration_mean, 1.0), 0.0)
+        ),
+        "execution_structure_tp_exit_share": (tp_exit_count_total / closed_trade_count_total) if closed_trade_count_total > 0 else 0.0,
+        "execution_structure_sl_exit_share": (sl_exit_count_total / closed_trade_count_total) if closed_trade_count_total > 0 else 0.0,
+        "execution_structure_timeout_exit_share": (timeout_exit_count_total / closed_trade_count_total) if closed_trade_count_total > 0 else 0.0,
         "duration_sec_total": duration_sec_total,
         "run_started_ts_ms_min": min((_safe_int(item.get("run_started_ts_ms")) for item in runs), default=0),
         "run_completed_ts_ms_max": max((_safe_int(item.get("run_completed_ts_ms")) for item in runs), default=0),
@@ -199,6 +239,13 @@ def compare_champion_challenger(
         hard_failures.append("MICRO_QUALITY_TOO_LOW")
     if _safe_float(challenger.get("rolling_nonnegative_active_window_ratio")) < float(min_nonnegative_ratio):
         hard_failures.append("NONNEGATIVE_WINDOW_RATIO_TOO_LOW")
+    challenger_closed_trades = _safe_int(challenger.get("execution_structure_closed_trade_count_total"))
+    challenger_payoff_ratio = _safe_float(challenger.get("execution_structure_payoff_ratio"))
+    challenger_loss_concentration = _safe_float(challenger.get("execution_structure_market_loss_concentration_mean"))
+    if challenger_closed_trades >= 3 and challenger_payoff_ratio < 0.75:
+        hard_failures.append("PAYOFF_RATIO_TOO_LOW")
+    if challenger_closed_trades >= 3 and challenger_loss_concentration > 0.85:
+        hard_failures.append("LOSS_CONCENTRATION_TOO_HIGH")
 
     champion_pnl = _safe_float(champion.get("realized_pnl_quote_total"))
     challenger_pnl = _safe_float(challenger.get("realized_pnl_quote_total"))
@@ -228,6 +275,8 @@ def compare_champion_challenger(
         "pairwise_checks": pairwise_checks,
         "evidence_score": evidence_score,
         "challenger_hours": challenger_hours,
+        "challenger_payoff_ratio": challenger_payoff_ratio,
+        "challenger_market_loss_concentration": challenger_loss_concentration,
     }
 
 

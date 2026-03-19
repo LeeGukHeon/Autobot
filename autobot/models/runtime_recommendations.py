@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from collections import deque
 from pathlib import Path
 from typing import Any
 
+from autobot.common.execution_structure import summarize_trades_csv
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
@@ -588,7 +587,7 @@ def _resolve_execution_structure_metrics(summary: dict[str, Any]) -> dict[str, A
     trades_path = Path(run_dir_raw) / "trades.csv"
     if not trades_path.exists():
         return _normalize_execution_structure_metrics({})
-    metrics = _build_execution_structure_metrics_from_trades(trades_path)
+    metrics = summarize_trades_csv(trades_path)
     summary["execution_structure"] = metrics
     return metrics
 

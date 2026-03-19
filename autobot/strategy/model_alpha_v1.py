@@ -424,6 +424,15 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
                 else float(base_notional_multiplier)
             )
+            trade_action_support_level = (
+                str(trade_action_decision.get("support_level", "")).strip().lower()
+                if isinstance(trade_action_decision, dict)
+                else ""
+            )
+            trade_action_support_multiplier = _resolve_trade_action_support_multiplier(
+                support_level=trade_action_support_level,
+            )
+            requested_notional_multiplier = float(requested_notional_multiplier) * float(trade_action_support_multiplier)
             risk_control_decision = _resolve_runtime_risk_control_decision(
                 payload=self._risk_control_policy,
                 selection_score=float(row.get("model_prob", 0.0)),
@@ -484,6 +493,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "selection_min_candidates_source": str(min_candidates_source),
                         "selection_policy_mode": str(selection_mode),
                         "selection_policy_source": str(selection_policy_source),
+                        "support_level": trade_action_support_level or "full",
+                        "support_size_multiplier": float(trade_action_support_multiplier),
+                        "support_size_haircut_applied": bool(float(trade_action_support_multiplier) < 1.0),
                         "sizing_mode": (
                             "risk_control_size_ladder"
                             if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
@@ -926,6 +938,13 @@ def _resolve_entry_notional_multiplier(
 
 def _clamp_prob(value: float) -> float:
     return max(min(float(value), 1.0), 0.0)
+
+
+def _resolve_trade_action_support_multiplier(*, support_level: str) -> float:
+    normalized = str(support_level).strip().lower()
+    if normalized == "fallback_bin":
+        return 0.5
+    return 1.0
 
 
 def _safe_optional_float(value: Any) -> float | None:

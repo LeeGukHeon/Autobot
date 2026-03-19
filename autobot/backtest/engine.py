@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Sequence
 
 from autobot.common.event_store import JsonlEventStore
+from autobot.common.execution_structure import summarize_fill_records
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
     PRICE_MODE_CROSS_1T,
@@ -1064,7 +1065,9 @@ class BacktestRunEngine:
             exposure_avg_open_positions=mean(open_positions_curve),
             exposure_max_open_positions=int(max(open_positions_curve) if open_positions_curve else 0),
         )
-        write_summary_json(run_root, asdict(summary))
+        summary_payload = asdict(summary)
+        summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))
+        write_summary_json(run_root, summary_payload)
         _write_json(
             path=run_root / "micro_gate_blocked.json",
             payload={

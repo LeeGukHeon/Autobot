@@ -71,3 +71,4 @@ def test_backtest_run_generates_artifacts(tmp_path: Path) -> None:
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary_json["run_id"] == summary.run_id
     assert summary_json["bars_processed"] >= 1
+    assert "execution_structure" in summary_json

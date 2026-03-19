@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable, Sequence
 
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent
+from autobot.common.execution_structure import summarize_fill_records
 from autobot.common.event_store import JsonlEventStore
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
@@ -1479,6 +1480,7 @@ class PaperRunEngine:
         summary_payload["warmup_satisfied"] = bool(warmup_satisfied)
         summary_payload["warmup_trade_events_total"] = int(warmup_trade_events_total)
         summary_payload["micro_cache_markets_with_samples"] = int(warmup_markets_with_samples)
+        summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))
         _write_json(path=run_root / "summary.json", payload=summary_payload)
         _write_json(
             path=run_root / "micro_gate_blocked.json",

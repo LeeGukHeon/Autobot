@@ -14,7 +14,7 @@ from .trade_action_policy import (
 
 EXECUTION_RISK_CONTROL_VERSION = 1
 EXECUTION_RISK_CONTROL_POLICY_ID = "execution_risk_control_hoeffding_v1"
-DEFAULT_DECISION_METRIC = "expected_action_value"
+DEFAULT_DECISION_METRIC = "edge_to_es_ratio"
 DEFAULT_NONPOSITIVE_ALPHA = 0.45
 DEFAULT_SEVERE_LOSS_ALPHA = 0.20
 DEFAULT_SEVERE_LOSS_RETURN_THRESHOLD = 0.01
@@ -24,6 +24,7 @@ DEFAULT_SUBGROUP_BUCKET_COUNT = 3
 DEFAULT_SUBGROUP_MIN_COVERAGE = 8
 DEFAULT_SIZE_LADDER_STEPS = 5
 DEFAULT_SKIP_REASON_CODE = "RISK_CONTROL_BELOW_THRESHOLD"
+DEFAULT_EDGE_SKIP_REASON_CODE = "RISK_CONTROL_EDGE_NONPOSITIVE"
 DEFAULT_SIZE_SKIP_REASON_CODE = "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER"
 DEFAULT_WEIGHTING_HALF_LIFE_WINDOWS = 2.0
 DEFAULT_WEIGHTING_COVARIATE_BANDWIDTH = 1.0
@@ -142,7 +143,9 @@ def build_execution_risk_control_from_oos_rows(
                     decision.get("expected_action_value", decision.get("expected_objective_score"))
                 ),
                 "expected_edge": _safe_optional_float(decision.get("expected_edge")),
-                "expected_es": _safe_optional_float(decision.get("expected_es")),
+                "expected_es": _safe_optional_float(
+                    decision.get("expected_es", decision.get("expected_downside_deviation"))
+                ),
                 "expected_tail_probability": _safe_optional_float(decision.get("expected_tail_probability")),
             }
         )
@@ -374,6 +377,8 @@ def build_execution_risk_control_from_oos_rows(
             "metric_name": str(decision_metric_name).strip() or DEFAULT_DECISION_METRIC,
             "threshold": float(selected_row["threshold"]),
             "skip_reason_code": DEFAULT_SKIP_REASON_CODE,
+            "edge_skip_reason_code": DEFAULT_EDGE_SKIP_REASON_CODE,
+            "positive_edge_required": True,
             "action_source_field": "trade_action.recommended_action",
             "selection_score_field": "model_prob",
             "subgroup_feature_name": str(subgroup_feature_name),
@@ -432,6 +437,10 @@ def normalize_execution_risk_control_payload(payload: dict[str, Any] | None) -> 
         live_gate["skip_reason_code"] = str(
             live_gate.get("skip_reason_code", DEFAULT_SKIP_REASON_CODE)
         ).strip() or DEFAULT_SKIP_REASON_CODE
+        live_gate["edge_skip_reason_code"] = str(
+            live_gate.get("edge_skip_reason_code", DEFAULT_EDGE_SKIP_REASON_CODE)
+        ).strip() or DEFAULT_EDGE_SKIP_REASON_CODE
+        live_gate["positive_edge_required"] = bool(live_gate.get("positive_edge_required", False))
         live_gate["subgroup_feature_name"] = str(
             live_gate.get("subgroup_feature_name", normalized.get("subgroup_family", {}).get("feature_name", ""))
         ).strip()
@@ -587,6 +596,30 @@ def resolve_execution_risk_control_decision(
     if threshold is None:
         threshold = _safe_optional_float(live_gate.get("threshold"))
     metric_name = str(live_gate.get("metric_name", DEFAULT_DECISION_METRIC)).strip() or DEFAULT_DECISION_METRIC
+    trade_action_payload = dict(trade_action or {})
+    expected_edge = _safe_optional_float(trade_action_payload.get("expected_edge"))
+    if bool(live_gate.get("positive_edge_required", False)) and (expected_edge is None or float(expected_edge) <= 0.0):
+        subgroup_info = _resolve_live_subgroup_info(
+            subgroup_family=normalized.get("subgroup_family") if isinstance(normalized.get("subgroup_family"), dict) else {},
+            trade_action=trade_action,
+        )
+        return {
+            "enabled": True,
+            "allowed": False,
+            "reason_code": str(live_gate.get("edge_skip_reason_code", DEFAULT_EDGE_SKIP_REASON_CODE)).strip()
+            or DEFAULT_EDGE_SKIP_REASON_CODE,
+            "metric_name": metric_name,
+            "metric_value": _resolve_runtime_metric_value(
+                metric_name=metric_name,
+                selection_score=selection_score,
+                trade_action=trade_action,
+            ),
+            "threshold": threshold,
+            "expected_edge": expected_edge,
+            "contract_status": str(normalized.get("contract_status", "")).strip(),
+            "reason": "EXPECTED_EDGE_NONPOSITIVE",
+            **subgroup_info,
+        }
     metric_value = _resolve_runtime_metric_value(
         metric_name=metric_name,
         selection_score=selection_score,
@@ -927,6 +960,18 @@ def _resolve_decision_metric_value(
     normalized_metric = str(metric_name).strip().lower() or DEFAULT_DECISION_METRIC
     if normalized_metric == "selection_score":
         return float(selection_score)
+    if normalized_metric == "expected_edge":
+        return _safe_optional_float(decision.get("expected_edge"))
+    if normalized_metric == "edge_to_es_ratio":
+        edge = _safe_optional_float(decision.get("expected_edge"))
+        downside = _safe_optional_float(
+            decision.get("expected_es", decision.get("expected_downside_deviation"))
+        )
+        if edge is None:
+            return None
+        if edge <= 0.0:
+            return 0.0
+        return float(edge) / max(float(downside or 0.0), 1e-6)
     return _safe_optional_float(
         decision.get("expected_action_value", decision.get("expected_objective_score"))
     )
@@ -942,6 +987,18 @@ def _resolve_runtime_metric_value(
     if normalized_metric == "selection_score":
         return _safe_optional_float(selection_score)
     trade_action_payload = dict(trade_action or {})
+    if normalized_metric == "expected_edge":
+        return _safe_optional_float(trade_action_payload.get("expected_edge"))
+    if normalized_metric == "edge_to_es_ratio":
+        edge = _safe_optional_float(trade_action_payload.get("expected_edge"))
+        downside = _safe_optional_float(
+            trade_action_payload.get("expected_es", trade_action_payload.get("expected_downside_deviation"))
+        )
+        if edge is None:
+            return None
+        if edge <= 0.0:
+            return 0.0
+        return float(edge) / max(float(downside or 0.0), 1e-6)
     return _safe_optional_float(
         trade_action_payload.get(
             "expected_action_value",
