@@ -1427,26 +1427,44 @@ def _match_model_managed_position_close(
     if latest_done_ask_order is None:
         pass
     else:
-        if int(latest_done_ask_order.get("updated_ts") or 0) >= int(local_position.get("updated_ts") or 0):
-            selected_plan_id = None
-            if active_live_plans:
-                selected_plan_id = str(
-                    max(
-                        active_live_plans,
-                        key=lambda item: (
-                            int(item.get("updated_ts") or 0),
-                            int(item.get("created_ts") or 0),
-                            str(item.get("plan_id") or ""),
-                        ),
-                    ).get("plan_id")
-                    or ""
-                ).strip() or None
+        selected_plan_id = None
+        if active_live_plans:
+            selected_plan_id = str(
+                max(
+                    active_live_plans,
+                    key=lambda item: (
+                        int(item.get("updated_ts") or 0),
+                        int(item.get("created_ts") or 0),
+                        str(item.get("plan_id") or ""),
+                    ),
+                ).get("plan_id")
+                or ""
+            ).strip() or None
+        done_order_uuid = _as_optional_str(latest_done_ask_order.get("uuid"))
+        done_order_identifier = _as_optional_str(latest_done_ask_order.get("identifier"))
+        done_order_plan_id = _as_optional_str(latest_done_ask_order.get("tp_sl_link"))
+        matched_active_plan = next(
+            (
+                item
+                for item in active_live_plans or []
+                if (
+                    (done_order_uuid and done_order_uuid == _as_optional_str(item.get("current_exit_order_uuid")))
+                    or (
+                        done_order_identifier
+                        and done_order_identifier == _as_optional_str(item.get("current_exit_order_identifier"))
+                    )
+                    or (done_order_plan_id and done_order_plan_id == _as_optional_str(item.get("plan_id")))
+                )
+            ),
+            None,
+        )
+        if matched_active_plan is not None or int(latest_done_ask_order.get("updated_ts") or 0) >= int(local_position.get("updated_ts") or 0):
             return {
                 "market": market,
-                "order_uuid": _as_optional_str(latest_done_ask_order.get("uuid")),
-                "order_identifier": _as_optional_str(latest_done_ask_order.get("identifier")),
+                "order_uuid": done_order_uuid,
+                "order_identifier": done_order_identifier,
                 "close_mode": "done_ask_order",
-                "plan_id": selected_plan_id,
+                "plan_id": _as_optional_str((matched_active_plan or {}).get("plan_id")) or selected_plan_id,
             }
 
     if exchange_bot_open_orders:

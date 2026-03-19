@@ -1723,6 +1723,100 @@ def test_reconcile_closes_local_position_when_bot_exit_is_done_and_exchange_posi
     assert plans[0]["source_intent_id"] == "intent-entry-1"
 
 
+def test_reconcile_closes_linked_done_exit_even_when_position_updated_after_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ANKR",
+                base_currency="ANKR",
+                base_amount=783.42864884,
+                avg_entry_price=7.71,
+                updated_ts=3_000,
+                tp_json=json.dumps({"enabled": True, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": True, "source": "model_alpha_v1"}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-ankr-1",
+                market="KRW-ANKR",
+                side="long",
+                entry_price_str="7.71",
+                qty_str="783.42864884",
+                tp_enabled=True,
+                tp_price_str=None,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_price_str=None,
+                sl_pct=3.0,
+                trailing_enabled=False,
+                trail_pct=None,
+                high_watermark_price_str=None,
+                armed_ts_ms=None,
+                timeout_ts_ms=2_500,
+                state="EXITING",
+                last_eval_ts_ms=3_000,
+                last_action_ts_ms=2_900,
+                current_exit_order_uuid="exit-order-ankr-1",
+                current_exit_order_identifier="AUTOBOT-autobot-001-RISKREP-ankr-1",
+                replace_attempt=1,
+                created_ts=1_000,
+                updated_ts=3_000,
+                plan_source="model_alpha_v1_micro_overlay",
+                source_intent_id="intent-ankr-1",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-ankr-1",
+                identifier="AUTOBOT-autobot-001-RISKREP-ankr-1",
+                market="KRW-ANKR",
+                side="ask",
+                ord_type="limit",
+                price=7.69,
+                volume_req=783.42864884,
+                volume_filled=783.42864884,
+                state="done",
+                created_ts=2_000,
+                updated_ts=2_000,
+                intent_id="intent-exit-ankr-1",
+                tp_sl_link="model-risk-ankr-1",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="CLOSED_ORDERS_BACKFILL",
+                event_source="closed_orders_backfill",
+                replace_seq=1,
+                root_order_uuid="root-order-ankr-1",
+                prev_order_uuid="root-order-ankr-1",
+                prev_order_identifier="AUTOBOT-autobot-001-RISK-ankr-1",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5_000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans()
+
+    assert report["halted"] is False
+    assert report["counts"]["local_positions_missing_on_exchange"] == 0
+    assert any(item["type"] == "close_managed_position_from_bot_exit" for item in report["actions"])
+    assert positions == []
+    assert plans[0]["state"] == "CLOSED"
+    assert plans[0]["current_exit_order_uuid"] == "exit-order-ankr-1"
+
+
 def test_reconcile_closes_exiting_position_when_exchange_position_is_missing_and_no_open_orders(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
