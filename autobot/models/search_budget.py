@@ -243,10 +243,6 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
-def _normalize_run_scope(value: str | None) -> str:
-    return str(value or "").strip().lower() or "scheduled_daily"
-
-
 def _baseline_runtime_profile_for_run_scope(run_scope: str) -> str:
     return "compact"
 
