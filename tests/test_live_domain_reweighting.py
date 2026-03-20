@@ -70,7 +70,43 @@ def test_live_candidate_domain_reweighting_prefers_target_like_micro_states(tmp_
     assert diagnostics["final_weight_summary"]["max"] >= diagnostics["final_weight_summary"]["mean"]
 
 
-def _write_candidate_intents_db(path: Path) -> None:
+def test_live_candidate_domain_reweighting_filters_target_rows_with_missing_features(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    _write_candidate_intents_db(db_path, missing_feature_every=5)
+
+    source_matrix = np.repeat(
+        np.array([[60_000.0, 58_000.0, 2.0, 5_000_000.0]], dtype=np.float64),
+        12,
+        axis=0,
+    )
+
+    weight, diagnostics = build_live_candidate_domain_reweighting(
+        enabled=True,
+        project_root=tmp_path,
+        candidate_db_path=db_path,
+        source_matrix=source_matrix,
+        source_feature_names=(
+            "m_trade_coverage_ms",
+            "m_book_coverage_ms",
+            "m_spread_proxy",
+            "m_depth_top5_notional_krw",
+        ),
+        source_aux_features={},
+        base_sample_weight=np.ones(source_matrix.shape[0], dtype=np.float64),
+        seed=11,
+        min_target_rows=8,
+        max_target_rows=64,
+        max_source_fit_rows=32,
+    )
+
+    assert diagnostics["status"] == "ready"
+    assert diagnostics["target_rows_total"] == 48
+    assert diagnostics["target_rows_complete_case"] < diagnostics["target_rows_total"]
+    assert diagnostics["target_rows_complete_case"] >= 8
+    assert weight.shape == (12,)
+
+
+def _write_candidate_intents_db(path: Path, *, missing_feature_every: int = 0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     try:
@@ -111,6 +147,10 @@ def _write_candidate_intents_db(path: Path) -> None:
             },
         }
         for idx in range(48):
+            current_payload = json.loads(json.dumps(payload))
+            if missing_feature_every > 0 and idx % missing_feature_every == 0:
+                del current_payload["strategy"]["meta"]["state_features"]["m_book_coverage_ms"]
+                del current_payload["micro_state"]["book_coverage_ms"]
             conn.execute(
                 "INSERT INTO intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -121,7 +161,7 @@ def _write_candidate_intents_db(path: Path) -> None:
                     None,
                     None,
                     "MODEL_ALPHA_ENTRY_V1",
-                    json.dumps(payload, sort_keys=True),
+                    json.dumps(current_payload, sort_keys=True),
                     "SUBMITTED",
                 ),
             )
