@@ -44,7 +44,7 @@ function Invoke-BacktestAndLoadSummary {
         [string]$StartDate,
         [string]$EndDate,
         [ValidateSet("acceptance", "runtime_parity")]
-        [string]$Preset = "acceptance"
+        [string]$Preset = "runtime_parity"
     )
     $args = @(
         "-m", "autobot.cli",
@@ -86,6 +86,7 @@ function Invoke-BacktestAndLoadSummary {
         RunDir = $runDir
         SummaryPath = $summaryPath
         Summary = $summary
+        Preset = $Preset
     }
 }
 
