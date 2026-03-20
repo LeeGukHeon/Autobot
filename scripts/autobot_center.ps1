@@ -485,33 +485,6 @@ function Invoke-Preflight {
     return $true
 }
 
-function Set-FeaturesV3OneMSynthWeightPower {
-    param([double]$Power = 2.0)
-
-    $configPath = Resolve-PathFromRoot -PathValue "config/features_v3.yaml"
-    if (-not (Test-Path $configPath)) {
-        Write-Host "[warn] features_v3 config not found: $configPath" -ForegroundColor Yellow
-        return $false
-    }
-
-    $raw = Get-Content -Path $configPath -Raw -Encoding UTF8
-    $formattedPower = ("{0:0.0}" -f $Power)
-    $pattern = "(?m)^(\s*one_m_synth_weight_power:\s*)([0-9]+(?:\.[0-9]+)?)\s*$"
-    if (-not [regex]::IsMatch($raw, $pattern)) {
-        Write-Host "[warn] one_m_synth_weight_power key not found in $configPath" -ForegroundColor Yellow
-        return $false
-    }
-
-    $updated = [regex]::Replace($raw, $pattern, ("`$1{0}" -f $formattedPower), 1)
-    if ($updated -ne $raw) {
-        Set-Content -Path $configPath -Value $updated -Encoding UTF8
-        Write-Host "[config] features_v3.one_m_synth_weight_power -> $formattedPower"
-    } else {
-        Write-Host "[config] features_v3.one_m_synth_weight_power already $formattedPower"
-    }
-    return $true
-}
-
 function Read-DefaultValue {
     param(
         [string]$Prompt,
@@ -837,7 +810,7 @@ function Invoke-ModelTrainWizard {
         [int]$LookbackDaysOverride = 0
     )
 
-    $trainer = "v3_mtf_micro"
+    $trainer = "v4_crypto_cs"
     $lookbackDays = 30
     $tf = "5m"
     $quote = "KRW"
@@ -846,7 +819,7 @@ function Invoke-ModelTrainWizard {
     $task = "cls"
 
     if (-not $UseDefaultsMode) {
-        $trainer = (Read-DefaultValue -Prompt "Trainer (v1, v2_micro, v3_mtf_micro, v4_crypto_cs)" -DefaultValue $trainer).ToLowerInvariant()
+        $trainer = (Read-DefaultValue -Prompt "Trainer (v1, v2_micro, v4_crypto_cs)" -DefaultValue $trainer).ToLowerInvariant()
         $lookbackDays = Read-DefaultInt -Prompt "Train window lookback days" -DefaultValue $lookbackDays
         $tf = Read-DefaultValue -Prompt "Timeframe" -DefaultValue $tf
         $quote = Read-DefaultValue -Prompt "Quote" -DefaultValue $quote
@@ -861,12 +834,11 @@ function Invoke-ModelTrainWizard {
     }
 
     if ($trainer -eq "v2") { $trainer = "v2_micro" }
-    if ($trainer -eq "v3") { $trainer = "v3_mtf_micro" }
     if ($trainer -eq "v4") { $trainer = "v4_crypto_cs" }
 
-    if (@("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs") -notcontains $trainer) {
-        Write-Host "[warn] invalid trainer. fallback to v3_mtf_micro." -ForegroundColor Yellow
-        $trainer = "v3_mtf_micro"
+    if (@("v1", "v2_micro", "v4_crypto_cs") -notcontains $trainer) {
+        Write-Host "[warn] invalid trainer. fallback to v4_crypto_cs." -ForegroundColor Yellow
+        $trainer = "v4_crypto_cs"
     }
 
     if ($lookbackDays -lt 8) {
@@ -882,10 +854,6 @@ function Invoke-ModelTrainWizard {
             $featureSet = "v2"
             $family = "train_v2_micro"
         }
-        "v3_mtf_micro" {
-            $featureSet = "v3"
-            $family = "train_v3_mtf_micro"
-        }
         "v4_crypto_cs" {
             $featureSet = "v4"
             $family = "train_v4_crypto_cs"
@@ -895,35 +863,6 @@ function Invoke-ModelTrainWizard {
         default {
             $featureSet = "v1"
             $family = "train_v1"
-        }
-    }
-
-    if ($trainer -eq "v3_mtf_micro") {
-        $enforced = Set-FeaturesV3OneMSynthWeightPower -Power 2.0
-        if (-not $enforced) {
-            Write-Host "[model] cannot enforce features_v3.one_m_synth_weight_power=2.0. aborting train wizard." -ForegroundColor Yellow
-            return
-        }
-
-        $buildArgs = @(
-            "-m", "autobot.cli",
-            "features", "build",
-            "--feature-set", "v3",
-            "--tf", $tf,
-            "--quote", $quote,
-            "--top-n", "$topN",
-            "--start", $startDate,
-            "--end", $endDate
-        )
-        $buildResult = Run-Command `
-            -Description "Features Build Wizard (v3, one_m_synth_weight_power=2.0)" `
-            -Exe $script:PythonExe `
-            -Arguments $buildArgs `
-            -Tag "menu6_features_build_v3"
-
-        if ($buildResult.ExitCode -ne 0) {
-            Write-Host "[model] features build failed. log: $($buildResult.LogFile)" -ForegroundColor Yellow
-            return
         }
     }
 
@@ -1112,8 +1051,8 @@ function Invoke-ModelBtWizard {
         [int]$LookbackDaysOverride = 0
     )
 
-    $modelRef = "champion_v3"
-    $modelFamily = "train_v3_mtf_micro"
+    $modelRef = "champion_v4"
+    $modelFamily = "train_v4_crypto_cs"
     $tf = "5m"
     $quote = "KRW"
     $topN = 50
@@ -1123,7 +1062,7 @@ function Invoke-ModelBtWizard {
     $feeBps = 5.0
 
     if (-not $UseDefaultsMode) {
-        $modelRef = Read-DefaultValue -Prompt "Model ref (champion_v3/champion_v4/latest_candidate_v3/latest_candidate_v4/latest/run_id)" -DefaultValue $modelRef
+        $modelRef = Read-DefaultValue -Prompt "Model ref (champion_v4/latest_candidate_v4/latest/run_id)" -DefaultValue $modelRef
         $modelFamily = Read-DefaultValue -Prompt "Model family" -DefaultValue $modelFamily
         $lookbackDays = Read-DefaultInt -Prompt "ModelBT lookback days" -DefaultValue $lookbackDays
         $tf = Read-DefaultValue -Prompt "Timeframe" -DefaultValue $tf
