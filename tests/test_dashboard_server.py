@@ -331,6 +331,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     assert snapshot["training"]["acceptance"]["candidate_run_id"] == "run-abc"
     assert snapshot["training"]["rank_shadow"]["status"] == "shadow_pass"
     assert snapshot["training"]["rank_shadow"]["governance_action"]["selected_lane_id"] == "rank_governed_primary"
+    assert snapshot["operations"]["enabled"] is False
+    assert snapshot["operations"]["token_required"] is True
     assert snapshot["challenger"]["reason"] == "TRAINER_EVIDENCE_REQUIRED_FAILED"
     assert snapshot["paper"]["recent_runs"][0]["run_id"] == "paper-20260310-001000"
     assert snapshot["paper"]["recent_runs"][0]["paper_runtime_role"] == "champion"
@@ -905,3 +907,68 @@ def test_build_dashboard_snapshot_backfills_legacy_runtime_exit_compare(tmp_path
     assert runtime_recommendations["contract_status"] == "backfilled"
     assert runtime_recommendations["contract_issues"] == []
     assert runtime_recommendations["exit_mode_compare"]["decision"] == "champion_edge"
+
+
+def test_build_dashboard_snapshot_includes_pointer_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_root = tmp_path
+    run_dir = project_root / "models" / "registry" / "train_v4_crypto_cs" / "run-001"
+    _write_json(
+        run_dir / "train_config.yaml",
+        {
+            "created_at_utc": "2026-03-20T00:00:00Z",
+            "run_scope": "scheduled_daily",
+            "task": "cls",
+            "trainer": "v4_crypto_cs",
+            "start": "2026-03-04",
+            "end": "2026-03-18",
+        },
+    )
+    _write_json(
+        run_dir / "search_budget_decision.json",
+        {
+            "status": "default",
+            "lane_class_effective": "promotion_eligible",
+            "applied": {
+                "booster_sweep_trials": 10,
+                "runtime_recommendation_profile": "compact",
+            },
+        },
+    )
+    _write_json(
+        run_dir / "runtime_recommendations.json",
+        {
+            "trade_action": {"status": "ready"},
+            "exit": {"recommended_exit_mode": "hold"},
+            "risk_control": {
+                "status": "ready",
+                "operating_mode": "safety_executor_only_v1",
+                "live_gate": {"enabled": False},
+            },
+        },
+    )
+    _write_json(run_dir / "promotion_decision.json", {"status": "candidate"})
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json",
+        {"run_id": "run-001", "updated_at_utc": "2026-03-20T01:00:00Z"},
+    )
+
+    monkeypatch.delenv("AUTOBOT_DASHBOARD_OPS_ENABLED", raising=False)
+    monkeypatch.delenv("AUTOBOT_DASHBOARD_OPS_TOKEN", raising=False)
+    snapshot = build_dashboard_snapshot(project_root)
+
+    pointer = snapshot["training"]["pointers"]["latest_candidate"]
+    provenance = pointer["provenance"]
+    assert pointer["run_id"] == "run-001"
+    assert provenance["run_scope"] == "scheduled_daily"
+    assert provenance["task"] == "cls"
+    assert provenance["budget_lane_class_effective"] == "promotion_eligible"
+    assert provenance["risk_control_operating_mode"] == "safety_executor_only_v1"
+
+
+def test_build_dashboard_snapshot_enables_ops_when_token_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_ENABLED", "true")
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_TOKEN", "secret-token")
+    snapshot = build_dashboard_snapshot(tmp_path)
+    assert snapshot["operations"]["enabled"] is True
+    assert snapshot["operations"]["token_required"] is True
+    assert snapshot["operations"]["actions"]

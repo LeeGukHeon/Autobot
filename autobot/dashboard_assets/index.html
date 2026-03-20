@@ -70,6 +70,13 @@
             <small>수집 상태와 신선도</small>
           </span>
         </button>
+        <button class="tab-button" data-tab="ops" type="button">
+          <span class="tab-index">06</span>
+          <span class="tab-copy">
+            <strong>Operations</strong>
+            <small>service control and run actions</small>
+          </span>
+        </button>
       </nav>
     </aside>
 
@@ -106,6 +113,7 @@
         <button class="quick-tab-button" data-tab="paper" type="button">페이퍼</button>
         <button class="quick-tab-button" data-tab="live" type="button">라이브</button>
         <button class="quick-tab-button" data-tab="ws" type="button">WS</button>
+        <button class="quick-tab-button" data-tab="ops" type="button">Ops</button>
       </nav>
 
       <div class="pane-wrap">
@@ -185,6 +193,16 @@
             </div>
             <div id="artifact-grid" class="card-grid"></div>
           </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Model Provenance</h3>
+                <p>run id만이 아니라 어떤 기간, task, budget, safety mode에서 나온 런인지 보여줍니다.</p>
+              </div>
+            </div>
+            <div id="provenance-grid" class="card-grid"></div>
+          </section>
         </section>
 
         <section class="pane" data-pane="paper" hidden>
@@ -234,6 +252,54 @@
               </div>
             </div>
             <div id="ws-details" class="detail-stack"></div>
+          </section>
+        </section>
+
+        <section class="pane" data-pane="ops" hidden>
+          <div class="summary-grid">
+            <article class="summary-card accent">
+              <p class="summary-label">Operations Control</p>
+              <h2 id="ops-headline">-</h2>
+              <p id="ops-subhead" class="summary-text">-</p>
+            </article>
+            <article class="summary-card">
+              <p class="summary-label">Ops Access</p>
+              <div id="ops-kpis" class="mini-grid"></div>
+            </article>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Operator Token</h3>
+                <p>ops token이 설정된 경우에만 write action이 실행됩니다.</p>
+              </div>
+            </div>
+            <div class="ops-toolbar">
+              <input id="ops-token-input" class="ops-token-input" type="password" placeholder="dashboard ops token" autocomplete="off" />
+              <button id="ops-token-save" class="ops-button secondary" type="button">Save Token</button>
+              <button id="ops-token-clear" class="ops-button secondary" type="button">Clear Token</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Actions</h3>
+                <p>restart, spawn, promote, latest candidate adoption 같은 운영 액션입니다.</p>
+              </div>
+            </div>
+            <div id="ops-actions" class="card-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Recent Ops History</h3>
+                <p>최근 운영 액션 실행 결과를 남깁니다.</p>
+              </div>
+            </div>
+            <div id="ops-history" class="detail-stack"></div>
           </section>
         </section>
       </div>

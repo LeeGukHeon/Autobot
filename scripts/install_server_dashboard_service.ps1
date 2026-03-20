@@ -5,6 +5,8 @@ param(
     [string]$UnitName = "autobot-dashboard.service",
     [string]$BindHost = "0.0.0.0",
     [int]$Port = 8088,
+    [switch]$OpsEnabled,
+    [string]$OpsToken = "",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
@@ -37,6 +39,8 @@ Type=simple
 User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
+Environment=AUTOBOT_DASHBOARD_OPS_ENABLED=$([bool]$OpsEnabled)
+Environment=AUTOBOT_DASHBOARD_OPS_TOKEN=$OpsToken
 ExecStart=$execStart
 Restart=always
 RestartSec=5
@@ -52,6 +56,7 @@ if ($DryRun) {
     Write-Host ("[dashboard-install][dry-run] unit={0}" -f $UnitName)
     Write-Host ("[dashboard-install][dry-run] host={0}" -f $BindHost)
     Write-Host ("[dashboard-install][dry-run] port={0}" -f $Port)
+    Write-Host ("[dashboard-install][dry-run] ops_enabled={0}" -f ([bool]$OpsEnabled))
     Write-Host $unitContent
     exit 0
 }

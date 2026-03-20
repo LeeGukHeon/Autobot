@@ -102,7 +102,7 @@
     rank_shadow_timer: "랭크 그림자 타이머"
   };
 
-  const TABS = new Set(["overview", "training", "paper", "live", "ws"]);
+  const TABS = new Set(["overview", "training", "paper", "live", "ws", "ops"]);
   const INITIAL_SNAPSHOT = JSON.parse(document.getElementById("initial-snapshot").textContent || "{}");
   const state = {
     activeTab: TABS.has(location.hash.replace("#", "")) ? location.hash.replace("#", "") : "overview",
@@ -136,6 +136,11 @@
       eyebrow: "Data Plane",
       title: "WS Public Plane",
       text: "수집 연결과 적재 신선도를 읽는 데이터 플레인 화면입니다."
+    },
+    ops: {
+      eyebrow: "Operations",
+      title: "Operations Console",
+      text: "서비스 재시작, 수동 파이프라인 실행, 최신 candidate 강제 반영을 위한 운영 화면입니다."
     }
   };
 
@@ -573,6 +578,39 @@
     node.innerHTML = `<strong>실시간 연결 이슈</strong><span>${esc(detail)}</span>`;
   }
 
+  function getOpsToken() {
+    return String(window.localStorage.getItem("autobot.dashboard.ops.token") || "");
+  }
+
+  function setOpsToken(value) {
+    window.localStorage.setItem("autobot.dashboard.ops.token", String(value || ""));
+  }
+
+  function clearOpsToken() {
+    window.localStorage.removeItem("autobot.dashboard.ops.token");
+  }
+
+  async function runOpsAction(actionId) {
+    const token = getOpsToken();
+    const response = await fetch("/api/ops", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Autobot-Ops-Token": token,
+      },
+      body: JSON.stringify({ action_id: actionId }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      const detail = normalizeDisplayValue(
+        (payload.result || {}).stderr_preview || payload.error || response.statusText,
+        220,
+      );
+      throw new Error(detail || `ops action failed (${response.status})`);
+    }
+    return payload.result || {};
+  }
+
   function renderHero() {
     const copy = TAB_HERO[state.activeTab] || TAB_HERO.overview;
     const eyebrow = document.getElementById("hero-eyebrow");
@@ -661,6 +699,48 @@
     }
     window.addEventListener("resize", () => {
       if (window.innerWidth > 920) setDrawerOpen(false);
+    });
+  }
+
+  function bindOperations() {
+    const saveButton = document.getElementById("ops-token-save");
+    const clearButton = document.getElementById("ops-token-clear");
+    const tokenInput = document.getElementById("ops-token-input");
+    if (saveButton && tokenInput) {
+      saveButton.addEventListener("click", () => {
+        setOpsToken(tokenInput.value || "");
+        setError("ops token을 저장했습니다.");
+        setTimeout(() => setError(""), 1800);
+      });
+    }
+    if (clearButton && tokenInput) {
+      clearButton.addEventListener("click", () => {
+        clearOpsToken();
+        tokenInput.value = "";
+        setError("ops token을 지웠습니다.");
+        setTimeout(() => setError(""), 1800);
+      });
+    }
+    document.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-ops-action]");
+      if (!button || button.disabled) return;
+      const actionId = button.dataset.opsAction;
+      const confirmText = button.dataset.opsConfirm || "이 액션을 실행할까요?";
+      if (!window.confirm(confirmText)) return;
+      const original = button.innerHTML;
+      button.disabled = true;
+      button.innerHTML = "<strong>Running…</strong><span>request submitted</span>";
+      try {
+        const result = await runOpsAction(actionId);
+        setError(`ops action 완료: ${result.label || actionId}`);
+        await refresh();
+        setTimeout(() => setError(""), 2200);
+      } catch (err) {
+        setError(`ops action 실패: ${err && err.message ? err.message : err}`);
+      } finally {
+        button.disabled = false;
+        button.innerHTML = original;
+      }
     });
   }
 
@@ -908,6 +988,66 @@
         }),
       ].join("")
     }</div>`;
+
+    const liveStates = (snapshot.live || {}).states || [];
+    const candidateLive = liveStates.find((item) => String(item.label || "").includes("후보")) || {};
+    const paperRuns = (snapshot.paper || {}).recent_runs || [];
+    const challengerPaper = paperRuns.find((item) => String(item.paper_runtime_role || "") === "challenger") || {};
+    const provenanceItems = [
+      {
+        title: "Champion Pointer",
+        source: pointers.champion || {},
+        provenance: (pointers.champion || {}).provenance || {},
+      },
+      {
+        title: "Latest Candidate Pointer",
+        source: pointers.latest_candidate || {},
+        provenance: (pointers.latest_candidate || {}).provenance || {},
+      },
+      {
+        title: "Latest Training Run",
+        source: pointers.latest || {},
+        provenance: (pointers.latest || {}).provenance || {},
+      },
+      {
+        title: "Challenger Paper Binding",
+        source: { run_id: challengerPaper.paper_runtime_model_run_id, updated_at_utc: challengerPaper.updated_at },
+        provenance: challengerPaper.model_provenance || {},
+      },
+      {
+        title: "Canary Live Binding",
+        source: {
+          run_id: ((candidateLive.runtime_health || {}).live_runtime_model_run_id),
+          updated_at_utc: candidateLive.updated_at,
+        },
+        provenance: candidateLive.runtime_model_provenance || {},
+      },
+    ].filter((item) => item.source && item.source.run_id);
+    document.getElementById("provenance-grid").innerHTML = provenanceItems.length
+      ? provenanceItems.map((item) => compactRow({
+        title: item.title,
+        summary: [
+          shortRun(item.source.run_id),
+          maybe(item.provenance.run_scope),
+          maybe(item.provenance.task),
+          item.provenance.start && item.provenance.end ? `${item.provenance.start} → ${item.provenance.end}` : "",
+        ].filter(Boolean).join(" · "),
+        items: [
+          compactStat("run", shortRun(item.source.run_id)),
+          compactStat("scope", maybe(item.provenance.run_scope)),
+          compactStat("task", maybe(item.provenance.task)),
+          compactStat("trainer", maybe(item.provenance.trainer)),
+          compactStat("window", item.provenance.start && item.provenance.end ? `${item.provenance.start} → ${item.provenance.end}` : "-"),
+          compactStat("budget", maybe(item.provenance.budget_lane_class_effective)),
+          compactStat("runtime profile", maybe(item.provenance.runtime_profile)),
+          compactStat("trials", maybe(item.provenance.booster_sweep_trials)),
+          compactStat("risk mode", maybe(item.provenance.risk_control_operating_mode)),
+          compactStat("gate", boolLabel(item.provenance.risk_control_live_gate_enabled)),
+          compactStat("exit", maybe(item.provenance.recommended_exit_mode)),
+          compactStat("promotion", maybe(item.provenance.promotion_status)),
+        ],
+      }, "provenance-card")).join("")
+      : empty("표시할 provenance 정보가 없습니다.");
   }
 
   function renderPaper(snapshot) {
@@ -1502,6 +1642,63 @@
     }</div>`;
   }
 
+  function renderOperations(snapshot) {
+    const ops = snapshot.operations || {};
+    const actions = Array.isArray(ops.actions) ? ops.actions : [];
+    const history = Array.isArray(ops.history) ? ops.history : [];
+    document.getElementById("ops-headline").textContent = ops.enabled
+      ? "운영 액션이 활성화돼 있습니다."
+      : "운영 액션은 현재 비활성 상태입니다.";
+    document.getElementById("ops-subhead").textContent = ops.enabled
+      ? "토큰을 가진 운영자만 restart / spawn / promote / candidate adoption을 실행할 수 있습니다."
+      : translate(ops.reason) === "-" ? "dashboard ops token과 enable 설정이 있어야 write action이 열립니다." : translate(ops.reason);
+    document.getElementById("ops-kpis").innerHTML = [
+      metric("ops enabled", boolLabel(Boolean(ops.enabled))),
+      metric("token required", boolLabel(Boolean(ops.token_required))),
+      metric("latest candidate", shortRun(ops.latest_candidate_run_id)),
+      metric("actions", maybe(actions.length, "0")),
+    ].join("");
+
+    const tokenInput = document.getElementById("ops-token-input");
+    if (tokenInput && tokenInput !== document.activeElement) {
+      tokenInput.value = getOpsToken();
+    }
+
+    const grouped = actions.reduce((acc, item) => {
+      const key = String(item.category || "other");
+      acc[key] = acc[key] || [];
+      acc[key].push(item);
+      return acc;
+    }, {});
+    const categoryOrder = ["services", "pipeline", "binding", "other"];
+    document.getElementById("ops-actions").innerHTML = actions.length
+      ? categoryOrder
+        .filter((key) => Array.isArray(grouped[key]) && grouped[key].length)
+        .map((key) => compactRow({
+          title: key === "services" ? "Service Control" : key === "pipeline" ? "Pipeline Runs" : key === "binding" ? "Run Binding" : key,
+          summary: grouped[key].map((item) => item.label).join(" / "),
+          items: grouped[key].map((item) => (
+            `<button class="ops-button ${ops.enabled ? "" : "disabled"}" type="button" data-ops-action="${esc(item.id)}" data-ops-confirm="${esc(item.confirm || "")}" ${ops.enabled ? "" : "disabled"}>
+              <strong>${esc(item.label)}</strong>
+              <span>${esc(item.description || "")}</span>
+            </button>`
+          )),
+        }, "ops-card")).join("")
+      : empty("사용 가능한 액션이 없습니다.");
+
+    document.getElementById("ops-history").innerHTML = history.length
+      ? `<div class="dense-list">${history.map((item) => compactRow({
+        title: `${item.label || item.action_id} · ${item.success ? "success" : "failed"}`,
+        summary: [fmtDateTime(item.completed_at || item.started_at), maybe(item.category), maybe(item.run_id)].filter(Boolean).join(" · "),
+        items: [
+          compactStat("exit", maybe(item.exit_code)),
+          compactStat("stdout", maybe(item.stdout_preview)),
+          compactStat("stderr", maybe(item.stderr_preview)),
+        ],
+      }, item.success ? "ops-history-good" : "ops-history-bad")).join("")}</div>`
+      : empty("아직 실행된 운영 액션이 없습니다.");
+  }
+
   function renderAll(snapshot) {
     renderMeta(snapshot);
     renderOverview(snapshot);
@@ -1509,6 +1706,7 @@
     renderPaper(snapshot);
     renderLive(snapshot);
     renderWs(snapshot);
+    renderOperations(snapshot);
     setTab(state.activeTab, false, { scroll: false });
   }
 
@@ -1582,6 +1780,7 @@
 
   bindLayout();
   bindTabs();
+  bindOperations();
   renderAll(INITIAL_SNAPSHOT);
   setTab(state.activeTab, false, { scroll: false });
   refresh();

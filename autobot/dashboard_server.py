@@ -8,11 +8,13 @@ from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -30,6 +32,11 @@ DEFAULT_DASHBOARD_HOST = "0.0.0.0"
 DEFAULT_DASHBOARD_PORT = 8088
 _DASHBOARD_ASSETS_DIR = Path(__file__).with_name("dashboard_assets")
 _KST = timezone(timedelta(hours=9), name="KST")
+_DASHBOARD_OPS_ENABLED_ENV = "AUTOBOT_DASHBOARD_OPS_ENABLED"
+_DASHBOARD_OPS_TOKEN_ENV = "AUTOBOT_DASHBOARD_OPS_TOKEN"
+_DASHBOARD_OPS_HISTORY_DIRNAME = "dashboard_ops"
+_DASHBOARD_OPS_HISTORY_FILENAME = "ops_history.jsonl"
+_DASHBOARD_OPS_LOCK = threading.Lock()
 
 
 def _utc_now_iso() -> str:
@@ -104,6 +111,11 @@ def _load_ws_public_status(*, meta_dir: Path, raw_root: Path) -> dict[str, Any]:
         "validate_report": validate_report,
         "runs_summary_latest": latest_run,
     }
+
+
+def _env_flag(name: str) -> bool:
+    value = str(os.getenv(name, "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _truncate(value: str | None, limit: int = 120) -> str | None:
@@ -423,7 +435,15 @@ def _latest_paper_summaries(project_root: Path, limit: int = 4) -> list[dict[str
         summary_path = run_dir / "summary.json"
         if summary_path.exists():
             payload = _load_json(summary_path)
-            items.append(_paper_run_payload_to_summary(payload=payload, updated_at=_path_mtime_iso(summary_path), summary_path=str(summary_path), fallback_run_id=run_dir.name))
+            items.append(
+                _paper_run_payload_to_summary(
+                    project_root=project_root,
+                    payload=payload,
+                    updated_at=_path_mtime_iso(summary_path),
+                    summary_path=str(summary_path),
+                    fallback_run_id=run_dir.name,
+                )
+            )
             continue
         items.append(_partial_paper_summary(run_dir))
     return items
@@ -466,6 +486,7 @@ def _partial_paper_summary(run_dir: Path) -> dict[str, Any]:
         }
     )
     return _paper_run_payload_to_summary(
+        project_root=run_dir.parents[3] if len(run_dir.parents) >= 4 else Path.cwd(),
         payload=payload,
         updated_at=_path_mtime_iso(run_dir),
         summary_path=str(run_dir),
@@ -475,6 +496,7 @@ def _partial_paper_summary(run_dir: Path) -> dict[str, Any]:
 
 def _paper_run_payload_to_summary(
     *,
+    project_root: Path,
     payload: dict[str, Any],
     updated_at: str | None,
     summary_path: str,
@@ -502,6 +524,7 @@ def _paper_run_payload_to_summary(
         "paper_runtime_model_ref": payload.get("paper_runtime_model_ref"),
         "paper_runtime_model_ref_pinned": payload.get("paper_runtime_model_ref_pinned"),
         "paper_runtime_model_run_id": payload.get("paper_runtime_model_run_id"),
+        "model_provenance": _load_model_provenance(project_root, payload.get("paper_runtime_model_run_id")),
         "updated_at": updated_at,
         "summary_path": summary_path,
     }
@@ -1312,6 +1335,10 @@ def _load_live_db_summary(
             ],
             "runtime_health": runtime_health,
             "runtime_artifacts": runtime_artifacts,
+            "runtime_model_provenance": _load_model_provenance(
+                project_root,
+                runtime_health.get("live_runtime_model_run_id"),
+            ),
             "daemon_last_run": daemon_last_run,
             "last_ws_event": last_ws_event,
             "trade_analysis": trade_analysis,
@@ -1589,6 +1616,44 @@ def _collect_recent_model_artifacts(project_root: Path, candidate_run_dir: str |
     return payload
 
 
+def _load_model_provenance(project_root: Path, run_id: str | None) -> dict[str, Any]:
+    run_dir = _resolve_model_run_dir(project_root, run_id)
+    run_id_value = str(run_id or "").strip()
+    if run_dir is None or not run_dir.exists():
+        return {
+            "run_id": run_id_value or None,
+            "exists": False,
+        }
+    train_config = _load_json(run_dir / "train_config.yaml")
+    search_budget = _load_json(run_dir / "search_budget_decision.json")
+    runtime_recommendations = _load_json(run_dir / "runtime_recommendations.json")
+    promotion = _load_json(run_dir / "promotion_decision.json")
+    return {
+        "run_id": run_id_value or run_dir.name,
+        "exists": True,
+        "run_dir": str(run_dir),
+        "model_family": run_dir.parent.name,
+        "created_at_utc": train_config.get("created_at_utc"),
+        "run_scope": train_config.get("run_scope"),
+        "task": train_config.get("task"),
+        "trainer": train_config.get("trainer"),
+        "start": train_config.get("start"),
+        "end": train_config.get("end"),
+        "budget_lane_class_effective": search_budget.get("lane_class_effective"),
+        "budget_status": search_budget.get("status"),
+        "budget_reasons": list(search_budget.get("reasons") or []),
+        "booster_sweep_trials": _dig(search_budget, "applied", "booster_sweep_trials"),
+        "runtime_profile": _dig(search_budget, "applied", "runtime_recommendation_profile"),
+        "risk_control_operating_mode": _dig(runtime_recommendations, "risk_control", "operating_mode"),
+        "risk_control_live_gate_enabled": bool(_dig(runtime_recommendations, "risk_control", "live_gate", "enabled")),
+        "trade_action_status": _dig(runtime_recommendations, "trade_action", "status"),
+        "recommended_exit_mode": _dig(runtime_recommendations, "exit", "recommended_exit_mode")
+        or _dig(runtime_recommendations, "exit", "mode"),
+        "promotion_status": promotion.get("status"),
+        "promotion_reasons": list(promotion.get("reasons") or []),
+    }
+
+
 def _load_training_pointer_summary(project_root: Path, model_family: str = "train_v4_crypto_cs") -> dict[str, Any]:
     family_root = project_root / "models" / "registry" / model_family
     if not family_root.exists():
@@ -1609,6 +1674,7 @@ def _load_training_pointer_summary(project_root: Path, model_family: str = "trai
             "task": train_config.get("task"),
             "start": train_config.get("start"),
             "end": train_config.get("end"),
+            "provenance": _load_model_provenance(project_root, run_id),
         }
 
     champion = _load_pointer("champion")
@@ -1621,6 +1687,345 @@ def _load_training_pointer_summary(project_root: Path, model_family: str = "trai
         "latest_candidate": latest_candidate,
         "latest": latest,
         "latest_matches_candidate": latest.get("run_id") == latest_candidate.get("run_id"),
+    }
+
+
+def _dashboard_ops_config() -> dict[str, Any]:
+    requested = _env_flag(_DASHBOARD_OPS_ENABLED_ENV)
+    token = str(os.getenv(_DASHBOARD_OPS_TOKEN_ENV, "")).strip()
+    enabled = bool(requested and token)
+    reason = ""
+    if requested and not token:
+        reason = "OPS_ENABLED_BUT_TOKEN_MISSING"
+    if not requested:
+        reason = "OPS_DISABLED_BY_CONFIG"
+    return {
+        "requested": requested,
+        "enabled": enabled,
+        "token_required": True,
+        "reason": reason,
+        "token": token,
+    }
+
+
+def _dashboard_ops_history_path(project_root: Path) -> Path:
+    return project_root / "logs" / _DASHBOARD_OPS_HISTORY_DIRNAME / _DASHBOARD_OPS_HISTORY_FILENAME
+
+
+def _append_dashboard_ops_history(project_root: Path, payload: dict[str, Any]) -> None:
+    path = _dashboard_ops_history_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _load_dashboard_ops_history(project_root: Path, limit: int = 12) -> list[dict[str, Any]]:
+    path = _dashboard_ops_history_path(project_root)
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = str(line).strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+    except OSError:
+        return []
+    return list(reversed(rows[-max(int(limit), 1) :]))
+
+
+def _preview_text(value: str | None, limit: int = 320) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace("\r", " ").replace("\n", " | ").strip()
+    return normalized[: limit - 1] + "…" if len(normalized) > limit else normalized
+
+
+def _resolve_pwsh_exe() -> str:
+    resolved = shutil.which("pwsh")
+    if resolved:
+        return resolved
+    for candidate in (
+        "/usr/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "/opt/microsoft/powershell/7/pwsh",
+        "/snap/powershell/current/opt/powershell/pwsh",
+        "/snap/powershell/332/opt/powershell/pwsh",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return "pwsh"
+
+
+def _project_python_exe(project_root: Path) -> str:
+    candidate = project_root / ".venv" / "bin" / "python"
+    return str(candidate) if candidate.exists() else "python3"
+
+
+def _latest_candidate_run_id(project_root: Path) -> str:
+    payload = _load_json(project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json")
+    return str(payload.get("run_id") or "").strip()
+
+
+def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
+    latest_candidate_run_id = _latest_candidate_run_id(project_root)
+    return {
+        "restart_paper_champion": {
+            "id": "restart_paper_champion",
+            "label": "Paper Champion Restart",
+            "description": "autobot-paper-v4.service 재시작",
+            "category": "services",
+            "confirm": "챔피언 paper 서비스를 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4.service"],
+        },
+        "restart_paper_challenger": {
+            "id": "restart_paper_challenger",
+            "label": "Paper Challenger Restart",
+            "description": "autobot-paper-v4-challenger.service 재시작",
+            "category": "services",
+            "confirm": "챌린저 paper 서비스를 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4-challenger.service"],
+        },
+        "restart_canary": {
+            "id": "restart_canary",
+            "label": "Canary Restart",
+            "description": "autobot-live-alpha-candidate.service 재시작",
+            "category": "services",
+            "confirm": "카나리아 live 서비스를 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
+        },
+        "try_restart_live_main": {
+            "id": "try_restart_live_main",
+            "label": "Main Live Try-Restart",
+            "description": "autobot-live-alpha.service try-restart",
+            "category": "services",
+            "confirm": "메인 live 서비스를 try-restart 할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "try-restart", "autobot-live-alpha.service"],
+        },
+        "restart_ws_public": {
+            "id": "restart_ws_public",
+            "label": "WS Public Restart",
+            "description": "autobot-ws-public.service 재시작",
+            "category": "services",
+            "confirm": "WS public 수집기를 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-ws-public.service"],
+        },
+        "start_spawn_only": {
+            "id": "start_spawn_only",
+            "label": "Spawn Only",
+            "description": "00:10 challenger spawn 수동 실행",
+            "category": "pipeline",
+            "confirm": "spawn_only를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-spawn.service"],
+        },
+        "start_promote_only": {
+            "id": "start_promote_only",
+            "label": "Promote Only",
+            "description": "23:50 challenger promote 수동 실행",
+            "category": "pipeline",
+            "confirm": "promote_only를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-promote.service"],
+        },
+        "start_rank_shadow": {
+            "id": "start_rank_shadow",
+            "label": "Rank Shadow",
+            "description": "rank shadow 사이클 수동 실행",
+            "category": "pipeline",
+            "confirm": "rank-shadow를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-rank-shadow.service"],
+        },
+        "adopt_latest_candidate": {
+            "id": "adopt_latest_candidate",
+            "label": "Adopt Latest Candidate",
+            "description": (
+                f"latest_candidate {latest_candidate_run_id}를 challenger paper와 canary에 반영"
+                if latest_candidate_run_id
+                else "latest_candidate를 challenger paper와 canary에 반영"
+            ),
+            "category": "binding",
+            "confirm": "현재 latest_candidate를 challenger paper와 canary에 바로 반영할까요?",
+            "kind": "adopt_latest_candidate",
+            "run_id": latest_candidate_run_id,
+        },
+    }
+
+
+def _run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, Any]:
+    started_at = _utc_now_iso()
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(int(timeout_sec), 1),
+        )
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": int(completed.returncode),
+            "stdout_preview": _preview_text(completed.stdout),
+            "stderr_preview": _preview_text(completed.stderr),
+            "success": completed.returncode == 0,
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": -1,
+            "stdout_preview": "",
+            "stderr_preview": _preview_text(str(exc)),
+            "success": False,
+        }
+
+
+def _run_adopt_latest_candidate(project_root: Path, run_id: str) -> dict[str, Any]:
+    run_id_value = str(run_id or "").strip()
+    if not run_id_value:
+        return {
+            "started_at": _utc_now_iso(),
+            "completed_at": _utc_now_iso(),
+            "exit_code": -1,
+            "stdout_preview": "",
+            "stderr_preview": "latest_candidate run_id is missing",
+            "success": False,
+        }
+    pwsh_exe = _resolve_pwsh_exe()
+    python_exe = _project_python_exe(project_root)
+    install_script = project_root / "scripts" / "install_server_runtime_services.ps1"
+    install_result = _run_dashboard_command(
+        [
+            pwsh_exe,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(install_script),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            python_exe,
+            "-PaperUnitName",
+            "autobot-paper-v4-challenger.service",
+            "-PaperPreset",
+            "live_v4",
+            "-PaperRuntimeRole",
+            "challenger",
+            "-PaperLaneName",
+            "v4",
+            "-PaperModelRefPinned",
+            run_id_value,
+            "-NoBootstrapChampion",
+            "-NoEnable",
+            "-PaperCliArgs",
+            f"--model-ref,{run_id_value}",
+        ],
+        timeout_sec=120,
+    )
+    restart_result = _run_dashboard_command(
+        ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
+        timeout_sec=20,
+    )
+    return {
+        "started_at": install_result.get("started_at"),
+        "completed_at": restart_result.get("completed_at"),
+        "exit_code": 0 if install_result.get("success") and restart_result.get("success") else 1,
+        "stdout_preview": _preview_text(
+            " | ".join(
+                part
+                for part in [
+                    str(install_result.get("stdout_preview") or "").strip(),
+                    str(restart_result.get("stdout_preview") or "").strip(),
+                ]
+                if part
+            )
+        ),
+        "stderr_preview": _preview_text(
+            " | ".join(
+                part
+                for part in [
+                    str(install_result.get("stderr_preview") or "").strip(),
+                    str(restart_result.get("stderr_preview") or "").strip(),
+                ]
+                if part
+            )
+        ),
+        "success": bool(install_result.get("success")) and bool(restart_result.get("success")),
+        "run_id": run_id_value,
+    }
+
+
+def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str, Any]:
+    catalog = _dashboard_ops_catalog(project_root)
+    action = catalog.get(str(action_id).strip())
+    if not action:
+        return {
+            "action_id": str(action_id).strip(),
+            "success": False,
+            "error": "unknown_action",
+        }
+    if not _DASHBOARD_OPS_LOCK.acquire(blocking=False):
+        return {
+            "action_id": action["id"],
+            "success": False,
+            "error": "ops_busy",
+        }
+    try:
+        if action.get("kind") == "adopt_latest_candidate":
+            result = _run_adopt_latest_candidate(project_root, str(action.get("run_id") or ""))
+        else:
+            result = _run_dashboard_command(list(action.get("command") or []), timeout_sec=20)
+        record = {
+            "action_id": action["id"],
+            "label": action["label"],
+            "description": action["description"],
+            "category": action["category"],
+            **result,
+        }
+        _append_dashboard_ops_history(project_root, record)
+        return record
+    finally:
+        _DASHBOARD_OPS_LOCK.release()
+
+
+def _build_dashboard_ops_snapshot(project_root: Path) -> dict[str, Any]:
+    config = _dashboard_ops_config()
+    catalog = _dashboard_ops_catalog(project_root)
+    actions = [
+        {
+            "id": item["id"],
+            "label": item["label"],
+            "description": item["description"],
+            "category": item["category"],
+            "confirm": item["confirm"],
+            "run_id": item.get("run_id"),
+        }
+        for item in catalog.values()
+    ]
+    return {
+        "enabled": bool(config["enabled"]),
+        "requested": bool(config["requested"]),
+        "token_required": bool(config["token_required"]),
+        "reason": str(config["reason"] or ""),
+        "latest_candidate_run_id": _latest_candidate_run_id(project_root) or None,
+        "actions": actions,
+        "history": _load_dashboard_ops_history(project_root),
     }
 
 
@@ -1680,6 +2085,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             ],
         },
         "ws_public": ws_status,
+        "operations": _build_dashboard_ops_snapshot(project_root),
     }
 
 
@@ -1699,7 +2105,7 @@ def _send_bytes_response(
     status: int,
     content_type: str,
     body: bytes,
-) -> None:
+    ) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))
@@ -1709,6 +2115,24 @@ def _send_bytes_response(
         handler.wfile.write(body)
     except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):  # pragma: no cover - client closed early
         return
+
+
+def _read_json_request(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    try:
+        length = int(handler.headers.get("Content-Length", "0") or 0)
+    except ValueError:
+        length = 0
+    if length <= 0:
+        return {}
+    try:
+        raw = handler.rfile.read(min(length, 64 * 1024))
+    except OSError:
+        return {}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _sse_response(handler: BaseHTTPRequestHandler, project_root: Path, *, interval_sec: float = 2.0) -> None:
@@ -1809,6 +2233,32 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return
             return
         _json_response(self, {"ok": False, "error": "not_found"}, status=404)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/ops":
+            _json_response(self, {"ok": False, "error": "not_found"}, status=404)
+            return
+        config = _dashboard_ops_config()
+        if not bool(config.get("enabled")):
+            _json_response(
+                self,
+                {"ok": False, "error": "ops_disabled", "reason": str(config.get("reason") or "")},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+        payload = _read_json_request(self)
+        token = str(self.headers.get("X-Autobot-Ops-Token") or payload.get("token") or "").strip()
+        if token != str(config.get("token") or "").strip():
+            _json_response(self, {"ok": False, "error": "unauthorized"}, status=HTTPStatus.FORBIDDEN)
+            return
+        action_id = str(payload.get("action_id") or payload.get("action") or "").strip()
+        if not action_id:
+            _json_response(self, {"ok": False, "error": "missing_action"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        result = _execute_dashboard_operation(self.project_root, action_id)
+        status = HTTPStatus.OK if bool(result.get("success")) else HTTPStatus.BAD_REQUEST
+        _json_response(self, {"ok": bool(result.get("success")), "result": result}, status=status)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
