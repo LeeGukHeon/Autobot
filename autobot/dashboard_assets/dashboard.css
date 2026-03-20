@@ -682,6 +682,36 @@ body {
 .list-meta-item.good strong { color: var(--good); }
 .list-meta-item.bad strong { color: var(--bad); }
 
+.training-progress-row {
+  border-color: rgba(100, 216, 255, 0.18);
+  background:
+    linear-gradient(135deg, rgba(100, 216, 255, 0.08), rgba(158, 123, 255, 0.06));
+}
+
+.training-progress-track {
+  margin-top: 12px;
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.training-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent) 0%, #79f0bf 100%);
+  box-shadow: 0 0 24px rgba(100, 216, 255, 0.24);
+}
+
+.training-progress-copy {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 0.88rem;
+  line-height: 1.65;
+}
+
 .row {
   display: flex;
   align-items: flex-start;

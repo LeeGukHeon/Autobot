@@ -363,6 +363,288 @@ def _unit_snapshot(unit_name: str, *, timer: bool = False) -> dict[str, Any]:
     }
 
 
+def _list_process_rows() -> list[dict[str, Any]]:
+    if not shutil.which("ps"):
+        return []
+    try:
+        completed = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,args="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in str(completed.stdout).splitlines():
+        raw = str(line).strip()
+        if not raw:
+            continue
+        parts = raw.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid = _coerce_int(parts[0])
+        ppid = _coerce_int(parts[1])
+        args = str(parts[2]).strip()
+        if pid is None or ppid is None or not args:
+            continue
+        rows.append(
+            {
+                "pid": int(pid),
+                "ppid": int(ppid),
+                "args": args,
+            }
+        )
+    return rows
+
+
+def _descendant_process_rows(root_pid: int | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pid_value = int(root_pid or 0)
+    if pid_value <= 0:
+        return []
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_parent.setdefault(int(row.get("ppid") or 0), []).append(row)
+    out: list[dict[str, Any]] = []
+    stack = [pid_value]
+    seen: set[int] = set()
+    while stack:
+        parent = stack.pop()
+        for child in by_parent.get(parent, []):
+            child_pid = int(child.get("pid") or 0)
+            if child_pid <= 0 or child_pid in seen:
+                continue
+            seen.add(child_pid)
+            out.append(child)
+            stack.append(child_pid)
+    return out
+
+
+def _command_flag_value(command: str, flag: str) -> str | None:
+    text = str(command or "").strip()
+    if not text:
+        return None
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    for idx, token in enumerate(tokens):
+        if token == flag and idx + 1 < len(tokens):
+            value = str(tokens[idx + 1]).strip()
+            return value or None
+    return None
+
+
+def _summarize_training_activity(
+    project_root: Path,
+    *,
+    services: dict[str, dict[str, Any]],
+    acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    spawn_service = dict(services.get("spawn_service") or {})
+    active_state = str(spawn_service.get("active_state") or "").strip().lower()
+    if active_state not in {"active", "activating"}:
+        return {
+            "active": False,
+            "progress_pct": None,
+            "stage_key": "idle",
+            "stage_label_ko": "대기",
+            "headline_ko": "현재 진행 중인 학습 작업이 없습니다.",
+            "detail_ko": "다음 수동 실행이나 타이머 배치를 기다리는 상태입니다.",
+            "started_at": None,
+            "process_pid": None,
+            "process_command": None,
+        }
+
+    processes = _descendant_process_rows(spawn_service.get("main_pid"), _list_process_rows())
+    stage_specs = [
+        {
+            "match": ("autobot.cli", "model", "promote"),
+            "stage_key": "promote",
+            "stage_label_ko": "승급 반영",
+            "progress_pct": 97,
+            "headline_ko": "챔피언 승급과 서비스 반영을 마무리하고 있습니다.",
+            "detail_builder": lambda command: "검증을 통과한 후보를 챔피언 포인터와 런타임 서비스에 연결하는 마지막 단계입니다.",
+        },
+        {
+            "match": ("paper_micro_smoke.ps1",),
+            "stage_key": "paper_soak",
+            "stage_label_ko": "페이퍼 소크",
+            "progress_pct": 92,
+            "headline_ko": "페이퍼 챌린저 소크를 준비하거나 진행하고 있습니다.",
+            "detail_builder": lambda command: "후보 모델을 페이퍼 런타임에 올려 실제 체결 흐름을 짧게 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "backtest", "alpha", "runtime_parity"),
+            "stage_key": "runtime_parity_backtest",
+            "stage_label_ko": "실운영 유사 백테스트",
+            "progress_pct": 84,
+            "headline_ko": "실운영 유사 백테스트로 후보와 챔피언을 비교하고 있습니다.",
+            "detail_builder": lambda command: "학습된 집행 추천과 현재 런타임 계약까지 반영해 certification 구간을 재생하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "backtest", "alpha"),
+            "stage_key": "certification_backtest",
+            "stage_label_ko": "인증 백테스트",
+            "progress_pct": 78,
+            "headline_ko": "certification window 백테스트를 실행 중입니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "후보와 챔피언을 재생해 체결 수와 손익 기준을 확인하는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "train", "scheduled_daily"),
+            "stage_key": "scheduled_daily_train",
+            "stage_label_ko": "본 학습",
+            "progress_pct": 68,
+            "headline_ko": "오늘 배치의 본 학습을 진행 중입니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                f"구간으로 {(_command_flag_value(command, '--run-scope') or 'scheduled_daily')} 학습을 수행하고 있습니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "train", "scheduled_split_policy_history"),
+            "stage_key": "split_policy_history",
+            "stage_label_ko": "분할 정책 검증",
+            "progress_pct": 42,
+            "headline_ko": "분할 정책 검증용 히스토리 학습을 진행 중입니다.",
+            "detail_builder": lambda command: "여러 holdout 후보를 짧게 학습해 오늘 배치에 가장 맞는 certification 창을 고르는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "features", "build"),
+            "stage_key": "features_build",
+            "stage_label_ko": "피처 빌드",
+            "progress_pct": 26,
+            "headline_ko": "학습용 피처를 다시 계산하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "micro 포함 피처를 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "micro", "stats"),
+            "stage_key": "micro_stats",
+            "stage_label_ko": "마이크로 통계",
+            "progress_pct": 22,
+            "headline_ko": "마이크로 집계 결과를 검증하고 있습니다.",
+            "detail_builder": lambda command: "집계된 micro parquet의 품질과 사용 가능 비율을 계산하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "micro", "validate"),
+            "stage_key": "micro_validate",
+            "stage_label_ko": "마이크로 검증",
+            "progress_pct": 20,
+            "headline_ko": "마이크로 parquet를 검증 중입니다.",
+            "detail_builder": lambda command: "집계 결과가 손상 없이 이어졌는지 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "micro", "aggregate"),
+            "stage_key": "micro_aggregate",
+            "stage_label_ko": "마이크로 집계",
+            "progress_pct": 16,
+            "headline_ko": "틱과 WS 데이터를 마이크로 parquet로 묶고 있습니다.",
+            "detail_builder": lambda command: "raw tick / public WS 데이터를 학습용 micro dataset으로 집계하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "collect", "ws-public", "stats"),
+            "stage_key": "ws_stats",
+            "stage_label_ko": "WS 상태 점검",
+            "progress_pct": 14,
+            "headline_ko": "공용 WS 적재 상태를 점검하고 있습니다.",
+            "detail_builder": lambda command: "주문 전후에 필요한 마이크로 원천 데이터의 적재 상태를 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "collect", "ws-public", "validate"),
+            "stage_key": "ws_validate",
+            "stage_label_ko": "WS 검증",
+            "progress_pct": 13,
+            "headline_ko": "공용 WS raw 데이터 무결성을 확인하고 있습니다.",
+            "detail_builder": lambda command: "orderbook / trade 파티션이 깨지지 않았는지 먼저 살피는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "collect", "ticks"),
+            "stage_key": "ticks_collect",
+            "stage_label_ko": "틱 수집",
+            "progress_pct": 11,
+            "headline_ko": "최근 틱 데이터를 수집 중입니다.",
+            "detail_builder": lambda command: "학습 입력에 필요한 최근 체결 데이터를 다시 모으는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "collect", "candles"),
+            "stage_key": "candles_collect",
+            "stage_label_ko": "캔들 보강",
+            "progress_pct": 8,
+            "headline_ko": "캔들 데이터를 보강하고 있습니다.",
+            "detail_builder": lambda command: "부족한 분봉 구간을 채워 학습용 가격 데이터 기반을 맞추는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "collect", "plan-candles"),
+            "stage_key": "candles_plan",
+            "stage_label_ko": "캔들 계획",
+            "progress_pct": 6,
+            "headline_ko": "캔들 보강 계획을 계산하고 있습니다.",
+            "detail_builder": lambda command: "어떤 시장과 구간을 다시 모을지 먼저 계획하는 단계입니다.",
+        },
+        {
+            "match": ("daily_micro_pipeline_for_server.ps1",),
+            "stage_key": "daily_pipeline",
+            "stage_label_ko": "데일리 파이프라인",
+            "progress_pct": 4,
+            "headline_ko": "데일리 데이터 파이프라인을 시작했습니다.",
+            "detail_builder": lambda command: "캔들, 틱, micro 데이터를 순서대로 준비하며 학습 입력을 만드는 초기 단계입니다.",
+        },
+        {
+            "match": ("v4_governed_candidate_acceptance.ps1",),
+            "stage_key": "acceptance_wrapper",
+            "stage_label_ko": "수락 루프 시작",
+            "progress_pct": 2,
+            "headline_ko": "후보 검증 루프를 시작했습니다.",
+            "detail_builder": lambda command: "오늘 배치에 맞는 학습, backtest, 페이퍼 검증 단계를 순서대로 준비하는 중입니다.",
+        },
+    ]
+
+    best_match: dict[str, Any] | None = None
+    for proc in processes:
+        command = str(proc.get("args") or "")
+        command_lower = command.lower()
+        for spec in stage_specs:
+            if all(token.lower() in command_lower for token in spec["match"]):
+                progress = int(spec["progress_pct"])
+                if best_match is None or progress > int(best_match.get("progress_pct") or 0):
+                    best_match = {
+                        "active": True,
+                        "progress_pct": progress,
+                        "stage_key": spec["stage_key"],
+                        "stage_label_ko": spec["stage_label_ko"],
+                        "headline_ko": spec["headline_ko"],
+                        "detail_ko": str(spec["detail_builder"](command)),
+                        "started_at": spawn_service.get("started_at"),
+                        "process_pid": int(proc.get("pid") or 0),
+                        "process_command": command,
+                    }
+                break
+
+    if best_match is not None:
+        return best_match
+
+    return {
+        "active": True,
+        "progress_pct": 5,
+        "stage_key": "service_active",
+        "stage_label_ko": "진행 중",
+        "headline_ko": "학습 또는 검증 작업이 진행 중입니다.",
+        "detail_ko": "현재 서비스는 살아 있으나, 세부 단계를 해석할 수 있는 자식 프로세스 정보가 부족합니다.",
+        "started_at": spawn_service.get("started_at"),
+        "process_pid": None,
+        "process_command": None,
+    }
+
+
 def _parse_systemd_environment(raw_value: str | None) -> dict[str, str]:
     text = str(raw_value or "").strip()
     if not text:
@@ -2057,32 +2339,39 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         raw_root=project_root / "data" / "raw_ws" / "upbit" / "public",
     )
     acceptance = _summarize_acceptance(acceptance_latest)
+    services = {
+        "paper_champion": _unit_snapshot("autobot-paper-v4.service"),
+        "paper_challenger": _unit_snapshot("autobot-paper-v4-challenger.service"),
+        "ws_public": _unit_snapshot("autobot-ws-public.service"),
+        "live_main": _unit_snapshot("autobot-live-alpha.service"),
+        "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
+        "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
+        "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
+        "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
+        "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
+        "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
+        "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
+    }
+    challenger = _summarize_challenger(challenger_latest, challenger_state)
     live_db_candidates = [item for item in _resolve_live_db_candidates(project_root) if item.get("service_key")]
     live_account_summary = _load_live_account_summary(project_root)
     return {
         "generated_at": _utc_now_iso(),
         "project_root": str(project_root),
         "system": _filesystem_usage(project_root),
-        "services": {
-            "paper_champion": _unit_snapshot("autobot-paper-v4.service"),
-            "paper_challenger": _unit_snapshot("autobot-paper-v4-challenger.service"),
-            "ws_public": _unit_snapshot("autobot-ws-public.service"),
-            "live_main": _unit_snapshot("autobot-live-alpha.service"),
-            "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
-            "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
-            "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
-            "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
-            "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
-            "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
-            "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
-        },
+        "services": services,
         "training": {
             "acceptance": acceptance,
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
             "pointers": _load_training_pointer_summary(project_root),
             "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
+            "current_activity": _summarize_training_activity(
+                project_root,
+                services=services,
+                acceptance=acceptance,
+            ),
         },
-        "challenger": _summarize_challenger(challenger_latest, challenger_state),
+        "challenger": challenger,
         "paper": {
             "recent_runs": _latest_paper_summaries(project_root),
         },

@@ -468,6 +468,12 @@
     return unique(values).map(translate).join(" / ") || "-";
   }
 
+  function clampProgress(value) {
+    const num = toNumber(value);
+    if (num == null) return null;
+    return Math.max(0, Math.min(100, Math.round(num)));
+  }
+
   function yesNoSentence(value, yesText, noText, unknownText = "-") {
     if (value === true) return yesText;
     if (value === false) return noText;
@@ -840,20 +846,27 @@
   function renderTraining(snapshot) {
     const acceptance = (snapshot.training || {}).acceptance || {};
     const training = snapshot.training || {};
+    const activity = training.current_activity || {};
     const pointers = training.pointers || {};
     const challenger = snapshot.challenger || {};
     const rankShadow = training.rank_shadow || {};
     const summary = joinTranslated([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]);
+    const progressPct = clampProgress(activity.progress_pct);
 
     document.getElementById("training-headline").textContent =
+      activity.active ? (activity.headline_ko || "현재 학습 또는 검증 작업이 진행 중입니다.") :
       acceptance.overall_pass === true ? "최신 후보가 검증을 통과했습니다." :
       acceptance.overall_pass === false ? "최신 후보가 검증을 통과하지 못했습니다." :
       "아직 최근 검증 결과가 없습니다.";
-    document.getElementById("training-subhead").textContent = summary;
+    document.getElementById("training-subhead").textContent = activity.active
+      ? (activity.detail_ko || summary)
+      : summary;
     document.getElementById("training-kpis").innerHTML = [
       metric("운영 후보", shortRun(((pointers.latest_candidate || {}).run_id) || acceptance.candidate_run_id)),
       metric("최근 학습", shortRun((pointers.latest || {}).run_id)),
       metric("배치 날짜", maybe(acceptance.batch_date)),
+      metric("현재 단계", maybe(activity.stage_label_ko)),
+      metric("진행도", progressPct == null ? "-" : `${progressPct}%`),
       metric("판정 기준", translate(acceptance.decision_basis)),
       metric("갱신 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
@@ -876,8 +889,27 @@
     const rankNarrative = rankShadow.status
       ? `랭크 그림자 레인은 현재 ${maybe(rankShadow.status)} 상태이며 다음 액션은 ${maybe(rankShadow.next_action)}입니다.`
       : "랭크 그림자 레인 최신 판단이 아직 없습니다.";
+    const activityCard = activity.active ? `
+      <article class="list-row training-progress-row">
+        <div class="list-row-head">
+          <div>
+            <h4>${esc(activity.stage_label_ko || "진행 중 작업")}</h4>
+            <p class="list-row-summary">${esc(activity.headline_ko || "현재 배치 작업을 진행 중입니다.")}</p>
+          </div>
+          ${pill("진행", progressPct == null ? "계산 중" : `${progressPct}%`, progressPct != null && progressPct >= 80 ? "good" : progressPct != null && progressPct >= 40 ? "warn" : "neutral")}
+        </div>
+        <div class="training-progress-track"><span class="training-progress-fill" style="width:${progressPct == null ? 0 : progressPct}%"></span></div>
+        <p class="training-progress-copy">${esc(activity.detail_ko || "")}</p>
+        <div class="list-meta">
+          ${compactStat("서비스 시작", fmtDateTime(activity.started_at))}
+          ${compactStat("프로세스 PID", maybe(activity.process_pid))}
+          ${compactStat("실행 명령", truncateText(activity.process_command || "-", 64))}
+        </div>
+      </article>
+    ` : "";
     document.getElementById("training-details").innerHTML = `<div class="dense-list">${
       [
+        activityCard,
         compactRow({
           title: "포인터 상태",
           summary: pointerSummary,
@@ -924,7 +956,7 @@
             compactStat("사이클 보고서", shortPath(rankShadow.artifact_path)),
           ],
         }),
-      ].join("")
+      ].filter(Boolean).join("")
     }</div>`;
 
     const artifacts = training.candidate_artifacts || {};
