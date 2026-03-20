@@ -3,41 +3,47 @@ from __future__ import annotations
 from typing import Any
 
 ACTION_CONFIGS: dict[str, dict[str, Any]] = {
+    "LIMIT_GTC_PASSIVE_MAKER": {
+        "ord_type": "limit",
+        "time_in_force": "gtc",
+        "price_mode": "PASSIVE_MAKER",
+        "aggressiveness_rank": 0,
+    },
     "LIMIT_POST_ONLY": {
         "ord_type": "limit",
         "time_in_force": "post_only",
         "price_mode": "PASSIVE_MAKER",
-        "aggressiveness_rank": 0,
+        "aggressiveness_rank": 1,
     },
     "LIMIT_GTC_JOIN": {
         "ord_type": "limit",
         "time_in_force": "gtc",
         "price_mode": "JOIN",
-        "aggressiveness_rank": 1,
+        "aggressiveness_rank": 2,
     },
     "LIMIT_IOC_JOIN": {
         "ord_type": "limit",
         "time_in_force": "ioc",
         "price_mode": "JOIN",
-        "aggressiveness_rank": 2,
+        "aggressiveness_rank": 3,
     },
     "LIMIT_FOK_JOIN": {
         "ord_type": "limit",
         "time_in_force": "fok",
         "price_mode": "JOIN",
-        "aggressiveness_rank": 3,
+        "aggressiveness_rank": 4,
     },
     "BEST_IOC": {
         "ord_type": "best",
         "time_in_force": "ioc",
         "price_mode": "CROSS_1T",
-        "aggressiveness_rank": 4,
+        "aggressiveness_rank": 5,
     },
     "BEST_FOK": {
         "ord_type": "best",
         "time_in_force": "fok",
         "price_mode": "CROSS_1T",
-        "aggressiveness_rank": 5,
+        "aggressiveness_rank": 6,
     },
 }
 DEFAULT_ACTION_CODE = "LIMIT_GTC_JOIN"
@@ -184,7 +190,7 @@ def select_live_execution_action(
 def candidate_action_codes_for_price_mode(*, price_mode: str) -> list[str]:
     mode = str(price_mode or "").strip().upper()
     if mode == "PASSIVE_MAKER":
-        return ["LIMIT_POST_ONLY", "LIMIT_GTC_JOIN", "LIMIT_IOC_JOIN", "BEST_IOC"]
+        return ["LIMIT_POST_ONLY", "LIMIT_GTC_PASSIVE_MAKER", "LIMIT_GTC_JOIN", "LIMIT_IOC_JOIN", "BEST_IOC"]
     if mode == "CROSS_1T":
         return ["BEST_IOC", "BEST_FOK", "LIMIT_IOC_JOIN", "LIMIT_FOK_JOIN"]
     return ["LIMIT_GTC_JOIN", "LIMIT_IOC_JOIN", "LIMIT_FOK_JOIN", "BEST_IOC"]

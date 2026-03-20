@@ -513,10 +513,11 @@ live execution policy는 매일 자동 갱신 가능해야 한다.
 운영 루프:
 
 1. runtime이 `execution_attempts`를 계속 축적
-2. daily refresh job이 최근 N일 attempt를 읽음
-3. `live_fill_hazard_survival_v1` artifact를 다시 계산
-4. artifact를 state DB checkpoint와 `logs/live_execution_policy/*.json`에 저장
-5. live runtime은 최신 checkpoint가 있으면 그걸 우선 사용
+2. daily refresh job이 먼저 `trade_journal/orders`를 기준으로 missing attempt를 backfill
+3. 최근 N일 pooled attempt를 읽음
+4. `live_fill_hazard_survival_v1` artifact를 다시 계산
+5. artifact를 state DB checkpoint와 `logs/live_execution_policy/*.json`에 저장
+6. live runtime은 최신 checkpoint가 있으면 그걸 우선 사용
 
 관련 파일:
 
