@@ -306,6 +306,21 @@ def _build_live_micro_state(*, snapshot_for_policy: Any, now_ts_ms: int) -> dict
     }
 
 
+def _resolve_live_execution_model_payload(*, store: Any) -> dict[str, Any]:
+    if hasattr(store, "get_checkpoint"):
+        checkpoint = store.get_checkpoint(name="live_execution_policy_model")
+        if isinstance(checkpoint, dict):
+            payload = dict(checkpoint.get("payload") or {})
+            model_payload = dict(payload.get("model") or {})
+            if int(model_payload.get("rows_total", 0) or 0) > 0:
+                return model_payload
+    if hasattr(store, "list_execution_attempts"):
+        return build_live_execution_survival_model(
+            attempts=store.list_execution_attempts(final_only=True, limit=500),
+        )
+    return {}
+
+
 def resolve_execution_risk_control_online_threshold(
     *,
     store: Any,
@@ -863,9 +878,7 @@ def resolve_live_strategy_execution(
         strategy_meta=strategy_meta,
         safe_optional_float_fn=safe_optional_float_fn,
     )
-    live_execution_model = build_live_execution_survival_model(
-        attempts=store.list_execution_attempts(final_only=True, limit=500) if hasattr(store, "list_execution_attempts") else [],
-    )
+    live_execution_model = _resolve_live_execution_model_payload(store=store)
     execution_policy = select_live_execution_action(
         model_payload=live_execution_model,
         current_state={**micro_state, "expected_edge_bps": expected_edge_bps},

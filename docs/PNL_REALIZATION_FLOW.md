@@ -506,6 +506,28 @@ backtest summary만으로는 닫히지 않는다.
 "최근 실제 체결결과가 가장 좋았던 action family"를 고른다.
 
 
+### 7.5 Daily auto-improvement loop
+
+live execution policy는 매일 자동 갱신 가능해야 한다.
+
+운영 루프:
+
+1. runtime이 `execution_attempts`를 계속 축적
+2. daily refresh job이 최근 N일 attempt를 읽음
+3. `live_fill_hazard_survival_v1` artifact를 다시 계산
+4. artifact를 state DB checkpoint와 `logs/live_execution_policy/*.json`에 저장
+5. live runtime은 최신 checkpoint가 있으면 그걸 우선 사용
+
+관련 파일:
+
+- `autobot/live/execution_policy_refresh.py`
+- `scripts/refresh_live_execution_policy.ps1`
+- `scripts/install_server_live_execution_policy_service.ps1`
+
+즉 execution policy는 "학습 후 고정"이 아니라
+"매일 실제 체결결과를 먹고 조금씩 나아지는 adaptive layer"다.
+
+
 ## 8. OCI Ops Snapshot (2026-03-20 KST)
 
 로컬 접속 정보:

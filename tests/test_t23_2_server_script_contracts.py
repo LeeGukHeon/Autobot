@@ -79,6 +79,15 @@ def test_t23_2_rank_shadow_installer_dry_run_keeps_protected_units() -> None:
     assert "-SkipPaperSoak" in stdout
 
 
+def test_t23_2_live_execution_policy_installer_dry_run_keeps_timer_contract() -> None:
+    stdout = _run_script_dry_run("install_server_live_execution_policy_service.ps1")
+
+    assert "[live-exec-install][dry-run] service=autobot-live-execution-policy.service" in stdout
+    assert "[live-exec-install][dry-run] timer=autobot-live-execution-policy.timer" in stdout
+    assert "refresh_live_execution_policy.ps1" in stdout
+    assert "data/state/live_state.db,data/state/live_candidate/live_state.db" in stdout
+
+
 def test_t23_2_daily_acceptance_installer_serializes_nested_array_args_safely() -> None:
     completed = subprocess.run(
         [
