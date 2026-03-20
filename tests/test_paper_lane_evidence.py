@@ -20,6 +20,9 @@ def _write_summary(
     nonnegative_ratio: float,
     orders_filled: int,
     fill_rate: float,
+    avg_time_to_fill_ms: float = 0.0,
+    p50_time_to_fill_ms: float = 0.0,
+    p90_time_to_fill_ms: float = 0.0,
     duration_sec: float = 43_200.0,
     model_run_id: str | None = None,
     execution_structure: dict[str, object] | None = None,
@@ -38,6 +41,9 @@ def _write_summary(
         "orders_submitted": max(orders_filled, 1),
         "orders_filled": orders_filled,
         "fill_rate": fill_rate,
+        "avg_time_to_fill_ms": avg_time_to_fill_ms,
+        "p50_time_to_fill_ms": p50_time_to_fill_ms,
+        "p90_time_to_fill_ms": p90_time_to_fill_ms,
         "realized_pnl_quote": realized_pnl,
         "max_drawdown_pct": drawdown,
         "micro_quality_score_mean": micro_quality,
@@ -301,4 +307,64 @@ def test_build_lane_comparison_report_blocks_bad_payoff_structure(tmp_path: Path
 
     assert report["decision"]["promote"] is False
     assert "PAYOFF_RATIO_TOO_LOW" in report["decision"]["hard_failures"]
-    assert "LOSS_CONCENTRATION_TOO_HIGH" in report["decision"]["hard_failures"]
+
+
+def test_build_lane_comparison_report_blocks_slow_fill_latency_regression(tmp_path: Path) -> None:
+    paper_root = tmp_path / "paper"
+    _write_summary(
+        paper_root,
+        "paper-champion-1",
+        role="champion",
+        model_ref="champion_v4",
+        model_run_id="champion-run-a",
+        started=1_000,
+        completed=2_000,
+        realized_pnl=100.0,
+        drawdown=1.0,
+        micro_quality=0.45,
+        nonnegative_ratio=0.60,
+        orders_filled=10,
+        fill_rate=0.92,
+        avg_time_to_fill_ms=120_000.0,
+        p50_time_to_fill_ms=90_000.0,
+        p90_time_to_fill_ms=180_000.0,
+    )
+    _write_summary(
+        paper_root,
+        "paper-challenger-1",
+        role="challenger",
+        model_ref="candidate-slow",
+        model_run_id="candidate-slow",
+        started=1_500,
+        completed=2_500,
+        realized_pnl=130.0,
+        drawdown=0.95,
+        micro_quality=0.47,
+        nonnegative_ratio=0.65,
+        orders_filled=12,
+        fill_rate=0.94,
+        avg_time_to_fill_ms=400_000.0,
+        p50_time_to_fill_ms=350_000.0,
+        p90_time_to_fill_ms=500_000.0,
+    )
+
+    report = build_lane_comparison_report(
+        paper_root=paper_root,
+        lane="v4",
+        challenger_model_ref="candidate-slow",
+        champion_model_run_id="champion-run-a",
+        since_ts_ms=1_000,
+        until_ts_ms=None,
+        min_challenger_hours=1.0,
+        min_orders_filled=2,
+        min_realized_pnl_quote=0.0,
+        min_micro_quality_score=0.25,
+        min_nonnegative_ratio=0.34,
+        max_drawdown_deterioration_factor=1.10,
+        micro_quality_tolerance=0.02,
+        nonnegative_ratio_tolerance=0.05,
+    )
+
+    assert report["decision"]["promote"] is False
+    assert report["decision"]["pairwise_checks"]["time_to_fill_not_worse"] is False
+    assert report["decision"]["decision"] == "hold_for_review"

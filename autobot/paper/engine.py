@@ -1918,6 +1918,10 @@ class PaperRunEngine:
                 else None
             ),
         )
+        if strategy_mode == "model_alpha_v1" and isinstance(candidate.meta, dict):
+            strategy_exec_profile = candidate.meta.get("exec_profile")
+            if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
+                exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
         operational_decision = None
         if strategy_mode == "model_alpha_v1" and bool(self._run_settings.model_alpha.operational.enabled):
             operational_decision = resolve_operational_execution_overlay(

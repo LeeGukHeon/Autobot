@@ -1115,6 +1115,91 @@ def test_live_model_alpha_runtime_caps_main_live_bid_timeout_to_three_minutes(tm
     assert int(exec_profile["replace_interval_ms"]) == 180000
 
 
+def test_live_model_alpha_runtime_uses_strategy_exec_profile_override(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    override_profile = order_exec_profile_to_dict(
+        make_legacy_exec_profile(
+            timeout_ms=60_000,
+            replace_interval_ms=60_000,
+            max_replaces=0,
+            price_mode="CROSS_1T",
+            max_chase_bps=10_000,
+            min_replace_interval_ms_global=1_500,
+        )
+    )
+
+    class _StrategyWithExecProfile:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices, open_markets
+            return StrategyStepResult(
+                intents=(
+                    StrategyOrderIntent(
+                        market="KRW-BTC",
+                        side="bid",
+                        ref_price=50_000_000.0,
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        meta={"exec_profile": override_profile},
+                    ),
+                ),
+                scored_rows=1,
+                eligible_rows=1,
+                selected_rows=1,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _StrategyWithExecProfile())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    exec_profile = ((meta_payload.get("execution") or {}).get("exec_profile")) or {}
+    assert exec_profile["price_mode"] == "CROSS_1T"
+    assert int(exec_profile["timeout_ms"]) == 60_000
+    assert int(exec_profile["replace_interval_ms"]) == 60_000
+    assert int(exec_profile["max_replaces"]) == 0
+
+
 def test_live_model_alpha_runtime_clamps_bid_notional_with_size_ladder(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 

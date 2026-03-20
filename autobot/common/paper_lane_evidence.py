@@ -104,6 +104,9 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "micro_quality_score_mean": 0.0,
             "rolling_nonnegative_active_window_ratio": 0.0,
             "rolling_positive_active_window_ratio": 0.0,
+            "avg_time_to_fill_ms_mean": 0.0,
+            "p50_time_to_fill_ms_mean": 0.0,
+            "p90_time_to_fill_ms_mean": 0.0,
             "runtime_risk_multiplier_mean": 1.0,
             "operational_regime_score_mean": 0.0,
             "operational_breadth_ratio_mean": 0.0,
@@ -186,6 +189,18 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             positive_window_pairs,
             default=fmean([_safe_float(item.get("rolling_positive_active_window_ratio")) for item in runs]),
         ),
+        "avg_time_to_fill_ms_mean": _weighted_mean(
+            [(_safe_float(item.get("avg_time_to_fill_ms")), weight) for item, weight in order_weight_pairs],
+            default=fmean([_safe_float(item.get("avg_time_to_fill_ms")) for item in runs]),
+        ),
+        "p50_time_to_fill_ms_mean": _weighted_mean(
+            [(_safe_float(item.get("p50_time_to_fill_ms")), weight) for item, weight in order_weight_pairs],
+            default=fmean([_safe_float(item.get("p50_time_to_fill_ms")) for item in runs]),
+        ),
+        "p90_time_to_fill_ms_mean": _weighted_mean(
+            [(_safe_float(item.get("p90_time_to_fill_ms")), weight) for item, weight in order_weight_pairs],
+            default=fmean([_safe_float(item.get("p90_time_to_fill_ms")) for item in runs]),
+        ),
         "runtime_risk_multiplier_mean": _weighted_mean(
             [(_safe_float(item.get("runtime_risk_multiplier_mean"), 1.0), weight) for item, weight in order_weight_pairs],
             default=1.0,
@@ -226,6 +241,7 @@ def compare_champion_challenger(
     max_drawdown_deterioration_factor: float,
     micro_quality_tolerance: float,
     nonnegative_ratio_tolerance: float,
+    max_time_to_fill_deterioration_factor: float = 1.25,
 ) -> dict[str, Any]:
     hard_failures: list[str] = []
     challenger_hours = max(_safe_float(challenger.get("duration_sec_total")) / 3600.0, 0.0)
@@ -257,6 +273,13 @@ def compare_champion_challenger(
     challenger_nonnegative = _safe_float(challenger.get("rolling_nonnegative_active_window_ratio"))
     champion_fill_rate = _safe_float(champion.get("fill_rate"))
     challenger_fill_rate = _safe_float(challenger.get("fill_rate"))
+    champion_p90_time_to_fill_ms = _safe_float(champion.get("p90_time_to_fill_ms_mean"))
+    challenger_p90_time_to_fill_ms = _safe_float(challenger.get("p90_time_to_fill_ms_mean"))
+    time_to_fill_not_worse = True
+    if champion_p90_time_to_fill_ms > 0.0 and challenger_p90_time_to_fill_ms > 0.0:
+        time_to_fill_not_worse = challenger_p90_time_to_fill_ms <= (
+            champion_p90_time_to_fill_ms * float(max_time_to_fill_deterioration_factor)
+        )
 
     pairwise_checks = {
         "pnl_not_worse": challenger_pnl >= champion_pnl,
@@ -264,6 +287,7 @@ def compare_champion_challenger(
         "micro_quality_not_worse": challenger_micro >= (champion_micro - float(micro_quality_tolerance)),
         "nonnegative_ratio_not_worse": challenger_nonnegative >= (champion_nonnegative - float(nonnegative_ratio_tolerance)),
         "fill_rate_not_worse": challenger_fill_rate >= (champion_fill_rate - 0.02),
+        "time_to_fill_not_worse": time_to_fill_not_worse,
     }
     evidence_score = sum(1.0 for passed in pairwise_checks.values() if passed) / max(len(pairwise_checks), 1)
     promote = (len(hard_failures) == 0) and all(pairwise_checks.values())
@@ -277,6 +301,8 @@ def compare_champion_challenger(
         "challenger_hours": challenger_hours,
         "challenger_payoff_ratio": challenger_payoff_ratio,
         "challenger_market_loss_concentration": challenger_loss_concentration,
+        "challenger_p90_time_to_fill_ms": challenger_p90_time_to_fill_ms,
+        "champion_p90_time_to_fill_ms": champion_p90_time_to_fill_ms,
     }
 
 
@@ -296,6 +322,7 @@ def build_lane_comparison_report(
     max_drawdown_deterioration_factor: float,
     micro_quality_tolerance: float,
     nonnegative_ratio_tolerance: float,
+    max_time_to_fill_deterioration_factor: float = 1.25,
 ) -> dict[str, Any]:
     champion_runs = load_paper_lane_runs(
         paper_root=paper_root,
@@ -326,6 +353,7 @@ def build_lane_comparison_report(
         max_drawdown_deterioration_factor=max_drawdown_deterioration_factor,
         micro_quality_tolerance=micro_quality_tolerance,
         nonnegative_ratio_tolerance=nonnegative_ratio_tolerance,
+        max_time_to_fill_deterioration_factor=max_time_to_fill_deterioration_factor,
     )
     return {
         "lane": lane,

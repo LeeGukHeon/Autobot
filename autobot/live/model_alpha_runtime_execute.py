@@ -7,7 +7,11 @@ import json
 import math
 from typing import Any, Callable
 
-from autobot.execution.order_supervisor import OrderExecProfile, normalize_order_exec_profile
+from autobot.execution.order_supervisor import (
+    OrderExecProfile,
+    normalize_order_exec_profile,
+    order_exec_profile_from_dict,
+)
 from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_decision,
     resolve_execution_risk_control_martingale_state,
@@ -508,6 +512,10 @@ def resolve_live_strategy_execution(
         settings=settings,
         model_alpha_settings=model_alpha_settings,
     )
+    if side == "bid":
+        strategy_exec_profile = strategy_meta.get("exec_profile")
+        if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
+            exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
     operational_payload: dict[str, Any] = {}
     trade_gate_payload: dict[str, Any] = {"enabled": True}
     forced_volume = safe_optional_float_fn(strategy_meta.get("force_volume"))

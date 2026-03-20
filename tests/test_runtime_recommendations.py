@@ -5,7 +5,7 @@ from pathlib import Path
 
 from autobot.models.predictor import ModelPredictor
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
-from autobot.models.runtime_recommendations import _build_exit_doc, _rank_execution_rows
+from autobot.models.runtime_recommendations import _build_execution_doc, _build_exit_doc, _rank_execution_rows
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
@@ -559,6 +559,86 @@ def test_rank_execution_rows_penalizes_bad_payoff_and_exit_skew() -> None:
     assert ranked[0]["utility_total"] > ranked[1]["utility_total"]
 
 
+def test_rank_execution_rows_prefers_faster_fill_time_when_other_metrics_tie() -> None:
+    rows = [
+        {
+            "grid_point": {"price_mode": "JOIN", "timeout_bars": 2, "replace_max": 1},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 95.0,
+                "fill_rate": 0.91,
+                "avg_time_to_fill_ms": 600_000.0,
+                "p50_time_to_fill_ms": 600_000.0,
+                "p90_time_to_fill_ms": 900_000.0,
+                "max_drawdown_pct": 1.1,
+                "slippage_bps_mean": 3.2,
+                "execution_validation": {
+                    "comparable": True,
+                    "comparable_fold_count": 6,
+                    "objective_score": 0.95,
+                    "objective_std": 0.05,
+                    "nonnegative_ratio_mean": 0.69,
+                    "max_window_drawdown_pct": 1.1,
+                    "worst_window_return": -0.01,
+                },
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "wins": 2,
+                    "losses": 2,
+                    "avg_win_quote": 90.0,
+                    "avg_loss_quote": 50.0,
+                    "payoff_ratio": 1.8,
+                    "tp_exit_count": 2,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 1,
+                    "trailing_exit_count": 0,
+                    "market_loss_concentration": 0.45,
+                },
+            },
+        },
+        {
+            "grid_point": {"price_mode": "JOIN", "timeout_bars": 2, "replace_max": 2},
+            "summary": {
+                "orders_filled": 12,
+                "realized_pnl_quote": 95.0,
+                "fill_rate": 0.91,
+                "avg_time_to_fill_ms": 300_000.0,
+                "p50_time_to_fill_ms": 300_000.0,
+                "p90_time_to_fill_ms": 450_000.0,
+                "max_drawdown_pct": 1.1,
+                "slippage_bps_mean": 3.2,
+                "execution_validation": {
+                    "comparable": True,
+                    "comparable_fold_count": 6,
+                    "objective_score": 0.95,
+                    "objective_std": 0.05,
+                    "nonnegative_ratio_mean": 0.69,
+                    "max_window_drawdown_pct": 1.1,
+                    "worst_window_return": -0.01,
+                },
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "wins": 2,
+                    "losses": 2,
+                    "avg_win_quote": 90.0,
+                    "avg_loss_quote": 50.0,
+                    "payoff_ratio": 1.8,
+                    "tp_exit_count": 2,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 1,
+                    "trailing_exit_count": 0,
+                    "market_loss_concentration": 0.45,
+                },
+            },
+        },
+    ]
+
+    ranked = _rank_execution_rows(rows)
+
+    assert ranked[0]["grid_point"]["replace_max"] == 2
+    assert ranked[0]["summary"]["p90_time_to_fill_ms"] == 450_000.0
+
+
 def test_rank_execution_rows_loads_execution_structure_from_trades_csv(tmp_path: Path) -> None:
     run_dir = tmp_path / "backtest-run"
     run_dir.mkdir(parents=True)
@@ -664,6 +744,116 @@ def test_rank_execution_rows_loads_execution_structure_from_trades_csv(tmp_path:
     assert ranked[0]["execution_structure"]["timeout_exit_count"] == 1
     assert ranked[0]["execution_structure"]["payoff_ratio"] < 1.0
     assert ranked[0]["execution_structure_penalty_total"] > 0.0
+
+
+def test_build_execution_doc_includes_stage_frontier_and_no_trade_region() -> None:
+    ranked_rows = _rank_execution_rows(
+        [
+            {
+                "rule_id": "execution_passive_maker_t4_r1",
+                "grid_point": {"price_mode": "PASSIVE_MAKER", "timeout_bars": 4, "replace_max": 1},
+                "summary": {
+                    "orders_filled": 10,
+                    "realized_pnl_quote": 90.0,
+                    "fill_rate": 0.45,
+                    "avg_time_to_fill_ms": 700_000.0,
+                    "p50_time_to_fill_ms": 600_000.0,
+                    "p90_time_to_fill_ms": 900_000.0,
+                    "max_drawdown_pct": 1.2,
+                    "slippage_bps_mean": 1.1,
+                    "execution_validation": {
+                        "comparable": True,
+                        "comparable_fold_count": 6,
+                        "objective_score": 0.80,
+                        "objective_std": 0.05,
+                        "nonnegative_ratio_mean": 0.60,
+                        "max_window_drawdown_pct": 1.2,
+                        "worst_window_return": -0.01,
+                    },
+                    "execution_structure": {
+                        "closed_trade_count": 4,
+                        "payoff_ratio": 1.5,
+                        "market_loss_concentration": 0.40,
+                    },
+                },
+            },
+            {
+                "rule_id": "execution_join_t2_r1",
+                "grid_point": {"price_mode": "JOIN", "timeout_bars": 2, "replace_max": 1},
+                "summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 100.0,
+                    "fill_rate": 0.90,
+                    "avg_time_to_fill_ms": 300_000.0,
+                    "p50_time_to_fill_ms": 250_000.0,
+                    "p90_time_to_fill_ms": 450_000.0,
+                    "max_drawdown_pct": 1.0,
+                    "slippage_bps_mean": 2.4,
+                    "execution_validation": {
+                        "comparable": True,
+                        "comparable_fold_count": 6,
+                        "objective_score": 0.95,
+                        "objective_std": 0.05,
+                        "nonnegative_ratio_mean": 0.68,
+                        "max_window_drawdown_pct": 1.0,
+                        "worst_window_return": -0.01,
+                    },
+                    "execution_structure": {
+                        "closed_trade_count": 4,
+                        "payoff_ratio": 1.8,
+                        "market_loss_concentration": 0.35,
+                    },
+                },
+            },
+            {
+                "rule_id": "execution_cross_1t_t1_r0",
+                "grid_point": {"price_mode": "CROSS_1T", "timeout_bars": 1, "replace_max": 0},
+                "summary": {
+                    "orders_filled": 12,
+                    "realized_pnl_quote": 96.0,
+                    "fill_rate": 0.99,
+                    "avg_time_to_fill_ms": 20_000.0,
+                    "p50_time_to_fill_ms": 10_000.0,
+                    "p90_time_to_fill_ms": 35_000.0,
+                    "max_drawdown_pct": 1.1,
+                    "slippage_bps_mean": 6.5,
+                    "execution_validation": {
+                        "comparable": True,
+                        "comparable_fold_count": 6,
+                        "objective_score": 0.90,
+                        "objective_std": 0.05,
+                        "nonnegative_ratio_mean": 0.65,
+                        "max_window_drawdown_pct": 1.1,
+                        "worst_window_return": -0.01,
+                    },
+                    "execution_structure": {
+                        "closed_trade_count": 4,
+                        "payoff_ratio": 1.7,
+                        "market_loss_concentration": 0.40,
+                    },
+                },
+            },
+        ]
+    )
+
+    execution_doc = _build_execution_doc(
+        ranked_rows[0],
+        ranked_rows=ranked_rows,
+        fallback_settings=ModelAlphaExecutionSettings(),
+    )
+
+    assert execution_doc["recommended_price_mode"] == "JOIN"
+    assert execution_doc["policy"] == "empirical_fill_frontier_v1"
+    assert execution_doc["dynamic_stage_selection_enabled"] is True
+    assert execution_doc["stage_order"] == ["PASSIVE_MAKER", "JOIN", "CROSS_1T"]
+    assert execution_doc["no_trade_region"]["positive_net_edge_required"] is True
+    stage_map = {item["stage"]: item for item in execution_doc["stages"]}
+    assert stage_map["PASSIVE_MAKER"]["expected_fill_probability"] == 0.45
+    assert stage_map["JOIN"]["expected_time_to_fill_ms"] == 300_000.0
+    assert stage_map["CROSS_1T"]["expected_slippage_bps"] == 6.5
+    assert execution_doc["frontier_summary"]["best_stage_by_objective"] == "JOIN"
+    assert execution_doc["frontier_summary"]["best_stage_by_fill_probability"] == "CROSS_1T"
+    assert execution_doc["frontier_summary"]["best_stage_by_time_to_fill"] == "CROSS_1T"
 
 
 def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:

@@ -386,6 +386,135 @@ paper run이 종료될 때:
    - `autobot.common.paper_lane_evidence`
 
 
+## 7. Execution Research Contract (Stage 1 -> 2 -> 3)
+
+이 문서 기준으로 execution 개선은 아래 3단계를 같은 계약으로 연결한다.
+
+### 7.1 Stage 1: Fill probability / time-to-fill frontier
+
+목표:
+
+- "신호가 좋다"와 "실제로 그 가격에 먹힌다"를 분리한다.
+- execution grid search 결과에서 price mode별 체결확률과 체결시간 frontier를 만든다.
+
+핵심 지표:
+
+- `fill_rate`
+- `avg_time_to_fill_ms`
+- `p50_time_to_fill_ms`
+- `p90_time_to_fill_ms`
+- `slippage_bps_mean`
+
+artifact 기준:
+
+- `runtime_recommendations.json.execution`
+- price mode별 `PASSIVE_MAKER / JOIN / CROSS_1T` frontier
+
+해석:
+
+- `fill_rate`는 passive 체결 가능성의 empirical proxy다.
+- `avg/p50/p90_time_to_fill_ms`는 passive 대기의 execution risk proxy다.
+- `slippage_bps_mean`은 aggressive join/cross 비용 proxy다.
+
+
+### 7.2 Stage 2: Staged execution / no-trade region
+
+목표:
+
+- "좋은 신호면 무조건 엔트리"를 없애고,
+- `expected edge after execution friction`가 양수인 stage만 허용한다.
+
+런타임 결정 구조:
+
+1. `trade_action.expected_edge`를 bps로 해석
+2. execution frontier의 각 stage에 대해
+   - `expected_net_edge_bps = expected_edge_bps * fill_probability - expected_slippage_bps`
+3. `PASSIVE_MAKER -> JOIN -> CROSS_1T` 순서로
+   - 양수 stage가 처음 나오는 지점에서 실행
+4. 끝까지 양수 stage가 없으면
+   - `no-trade region`
+   - 엔트리 skip
+
+즉 이 단계의 핵심은 "더 공격적으로 쫓아갈지"가 아니라
+"체결확률을 감안해도 아직 edge가 남는지"다.
+
+
+### 7.3 Stage 3: Execution-aware acceptance / paper evidence
+
+목표:
+
+- candidate 승급 판단에 execution quality를 직접 반영한다.
+- 단순 realized PnL 외에 fill-time 품질도 같이 본다.
+
+확인 축:
+
+- trainer execution compare
+- runtime recommendation execution frontier
+- paper lane aggregate evidence
+
+핵심 질문:
+
+- 후보가 더 많이 벌었더라도 체결이 지나치게 느려졌는가
+- paper lane에서 fill/time 품질이 champion 대비 구조적으로 악화됐는가
+- signal edge가 execution friction을 감안해도 여전히 재현되는가
+
+
+## 8. OCI Ops Snapshot (2026-03-20 KST)
+
+로컬 접속 정보:
+
+- `C:\Users\Administrator\Desktop\connect_oci.bat`
+- key: `C:\Users\Administrator\Desktop\OCI_SSH_KEY\ssh-key-2026-03-05.key`
+- host: `ubuntu@168.107.44.206`
+
+서버 repo:
+
+- `/home/ubuntu/MyApps/Autobot`
+- branch: `main`
+
+확인된 systemd 유닛:
+
+- `autobot-live-alpha-candidate.service`
+- `autobot-live-alpha.service`
+- `autobot-paper-v4.service`
+- `autobot-paper-v4-challenger.service`
+- `autobot-v4-challenger-spawn.service`
+- `autobot-v4-challenger-promote.service`
+- `autobot-v4-rank-shadow.service`
+
+확인된 timer:
+
+- `autobot-v4-challenger-promote.timer`: 매일 `23:50:00` KST
+- `autobot-v4-challenger-spawn.timer`: 매일 `00:10:00` KST
+- `autobot-v4-rank-shadow.timer`: 매일 `04:40:00` KST
+- `autobot-storage-retention.timer`: 매일 `06:30:00` KST
+
+운영 메모:
+
+- candidate live 유닛은 현재 `AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS=2`
+- main live 유닛은 현재 inactive 상태
+- 서버 worktree에는 untracked 파일이 있으므로 deploy 시 기존 서버 로컬 파일을 함부로 지우지 않는다.
+
+
+## 9. Deploy Flow
+
+운영 반영 기본 흐름:
+
+1. 로컬에서 코드 수정
+2. 로컬 테스트
+3. `git commit`
+4. `git push origin main`
+5. 서버에서 `/home/ubuntu/MyApps/Autobot` 기준 `git pull`
+6. 필요한 유닛만 `systemctl restart`
+7. journal / report / state 확인
+
+이번 execution 계열 변경은 아래 런타임과 직접 연결된다.
+
+- `autobot-live-alpha-candidate.service`
+- `autobot-paper-v4.service`
+- `autobot-paper-v4-challenger.service`
+
+
 ## Practical Takeaway
 
 현재 구조에서 "손익"은 하나가 아니다.

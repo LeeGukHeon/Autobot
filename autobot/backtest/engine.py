@@ -1501,6 +1501,10 @@ class BacktestRunEngine:
                 else None
             ),
         )
+        if strategy_mode == "model_alpha_v1" and isinstance(candidate.meta, dict):
+            strategy_exec_profile = candidate.meta.get("exec_profile")
+            if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
+                exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
         policy_diagnostics: dict[str, Any] = {}
         if micro_order_policy is not None:
             snapshot = (

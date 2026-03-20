@@ -12,6 +12,7 @@ import polars as pl
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
 from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
+from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.execution_risk_control import (
     normalize_execution_risk_control_payload,
@@ -31,6 +32,8 @@ from autobot.strategy.operational_overlay_v1 import (
 from autobot.strategy.micro_snapshot import MicroSnapshot
 
 from . import model_alpha_runtime_contract as _runtime_contract
+
+_EXECUTION_STAGE_ORDER: tuple[str, ...] = ("PASSIVE_MAKER", "JOIN", "CROSS_1T")
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         )
         self._trade_action_policy = normalize_trade_action_policy(
             (getattr(predictor, "runtime_recommendations", {}) or {}).get("trade_action")
+        )
+        self._execution_recommendation = dict(
+            (getattr(predictor, "runtime_recommendations", {}) or {}).get("execution") or {}
         )
         self._risk_control_policy = normalize_execution_risk_control_payload(
             (getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control")
@@ -473,6 +479,19 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             if float(notional_multiplier) <= 0.0:
                 _inc_reason(skipped_reasons, "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE")
                 continue
+            dynamic_exec_profile, execution_decision = _resolve_runtime_execution_profile(
+                execution_doc=self._execution_recommendation,
+                trade_action=trade_action_decision,
+                interval_ms=self._interval_ms,
+                fallback_settings=self._settings.execution,
+            )
+            if isinstance(execution_decision, dict) and str(execution_decision.get("status", "")).strip().lower() == "blocked":
+                _inc_reason(
+                    skipped_reasons,
+                    str(execution_decision.get("reason_code", "EXECUTION_NO_TRADE_REGION")).strip()
+                    or "EXECUTION_NO_TRADE_REGION",
+                )
+                continue
             intents.append(
                 StrategyOrderIntent(
                     market=market,
@@ -528,6 +547,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "trade_action": dict(trade_action_decision or {}),
                         "risk_control_static": dict(risk_control_decision or {}),
                         "size_ladder_static": dict(size_ladder_decision or {}),
+                        "execution_decision": dict(execution_decision or {}),
+                        "exec_profile": dict(dynamic_exec_profile or {}),
                         "operational_overlay": dict(operational_state),
                     },
                 )
@@ -945,6 +966,127 @@ def _resolve_trade_action_support_multiplier(*, support_level: str) -> float:
     if normalized == "fallback_bin":
         return 0.5
     return 1.0
+
+
+def _resolve_runtime_execution_profile(
+    *,
+    execution_doc: dict[str, Any] | None,
+    trade_action: dict[str, Any] | None,
+    interval_ms: int,
+    fallback_settings: ModelAlphaExecutionSettings,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    execution_payload = dict(execution_doc or {})
+    stage_order = [
+        str(value).strip().upper()
+        for value in (execution_payload.get("stage_order") or _EXECUTION_STAGE_ORDER)
+        if str(value).strip()
+    ]
+    if not stage_order:
+        stage_order = list(_EXECUTION_STAGE_ORDER)
+    stage_docs = [
+        dict(item)
+        for item in (execution_payload.get("stages") or [])
+        if isinstance(item, dict) and str(item.get("stage", "")).strip()
+    ]
+    stage_by_name = {
+        str(item.get("stage", "")).strip().upper(): item
+        for item in stage_docs
+        if str(item.get("stage", "")).strip()
+    }
+    expected_edge_bps = _resolve_trade_action_expected_edge_bps(trade_action=trade_action)
+    decision: dict[str, Any] = {
+        "policy": str(execution_payload.get("policy", "")).strip(),
+        "stage_decision_mode": str(execution_payload.get("stage_decision_mode", "")).strip(),
+        "stage_order": list(stage_order),
+        "expected_edge_bps": expected_edge_bps,
+        "evaluated_stages": [],
+        "status": "fallback",
+        "reason_code": "EXECUTION_DYNAMIC_FRONTIER_UNAVAILABLE",
+    }
+    if not stage_docs:
+        decision["status"] = "frontier_missing"
+        decision["reason_code"] = "EXECUTION_STAGE_FRONTIER_MISSING"
+        return {}, decision
+    if expected_edge_bps is None:
+        decision["status"] = "edge_missing"
+        decision["reason_code"] = "EXECUTION_EDGE_MISSING"
+        return {}, decision
+    positive_edge_required = bool(
+        ((execution_payload.get("no_trade_region") or {}).get("positive_net_edge_required", True))
+    )
+    selected_stage: dict[str, Any] | None = None
+    for stage_name in stage_order:
+        stage = stage_by_name.get(stage_name)
+        if not isinstance(stage, dict) or not bool(stage.get("supported", False)):
+            continue
+        fill_probability = _clamp01(_safe_optional_float(stage.get("expected_fill_probability")) or 0.0)
+        slippage_bps = max(_safe_optional_float(stage.get("expected_slippage_bps")) or 0.0, 0.0)
+        net_edge_bps = (float(expected_edge_bps) * float(fill_probability)) - float(slippage_bps)
+        evaluation = {
+            "stage": stage_name,
+            "fill_probability": float(fill_probability),
+            "expected_slippage_bps": float(slippage_bps),
+            "expected_time_to_fill_ms": _safe_optional_float(stage.get("expected_time_to_fill_ms")),
+            "net_edge_bps": float(net_edge_bps),
+            "validation_comparable": bool(stage.get("validation_comparable", False)),
+        }
+        decision["evaluated_stages"].append(evaluation)
+        if float(net_edge_bps) > 0.0:
+            selected_stage = stage
+            decision["selected_stage"] = stage_name
+            decision["selected_net_edge_bps"] = float(net_edge_bps)
+            decision["status"] = "selected"
+            decision["reason_code"] = f"EXECUTION_STAGE_{stage_name}"
+            break
+    if selected_stage is None:
+        if positive_edge_required:
+            decision["status"] = "blocked"
+            decision["reason_code"] = "EXECUTION_NO_TRADE_REGION"
+            return {}, decision
+        selected_stage = next(
+            (
+                stage_by_name.get(stage_name)
+                for stage_name in stage_order
+                if isinstance(stage_by_name.get(stage_name), dict)
+                and bool((stage_by_name.get(stage_name) or {}).get("supported", False))
+            ),
+            None,
+        )
+    if not isinstance(selected_stage, dict):
+        return {}, decision
+    timeout_bars = max(
+        _safe_optional_int(selected_stage.get("recommended_timeout_bars")) or int(fallback_settings.timeout_bars),
+        1,
+    )
+    replace_max = max(
+        _safe_optional_int(selected_stage.get("recommended_replace_max")) or int(fallback_settings.replace_max),
+        0,
+    )
+    price_mode = (
+        str(selected_stage.get("recommended_price_mode", fallback_settings.price_mode)).strip().upper()
+        or str(fallback_settings.price_mode).strip().upper()
+    )
+    profile = make_legacy_exec_profile(
+        timeout_ms=max(int(interval_ms), 1) * int(timeout_bars),
+        replace_interval_ms=max(int(interval_ms), 1) * int(timeout_bars),
+        max_replaces=int(replace_max),
+        price_mode=price_mode,
+        max_chase_bps=10_000,
+        min_replace_interval_ms_global=1_500,
+    )
+    return order_exec_profile_to_dict(profile), decision
+
+
+def _resolve_trade_action_expected_edge_bps(*, trade_action: dict[str, Any] | None) -> float | None:
+    payload = dict(trade_action or {})
+    expected_edge = _safe_optional_float(payload.get("expected_edge"))
+    if expected_edge is None:
+        return None
+    return float(expected_edge) * 10_000.0
+
+
+def _clamp01(value: float) -> float:
+    return max(min(float(value), 1.0), 0.0)
 
 
 def _safe_optional_float(value: Any) -> float | None:

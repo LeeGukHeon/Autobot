@@ -106,6 +106,8 @@ def compare_execution_balanced_pareto(
         "champion": champion_validation,
         "compare": validation_compare,
     }
+    fill_latency_compare = _compare_fill_latency(candidate_payload, champion_payload)
+    result["execution_fill_latency"] = fill_latency_compare
     result["utility_score"] = float(validation_compare.get("mean_diff", result.get("utility_score", 0.0)) or 0.0)
 
     if not bool(summary_compare.get("comparable")):
@@ -153,6 +155,14 @@ def compare_execution_balanced_pareto(
         result["reasons"] = [
             str(item).strip() for item in (validation_compare.get("reasons") or []) if str(item).strip()
         ] or ["DOWNSIDE_VALIDATED_CV_HOLD"]
+    if result["decision"] == "candidate_edge" and bool(fill_latency_compare.get("evaluated")) and not bool(
+        fill_latency_compare.get("pass", True)
+    ):
+        result["decision"] = "indeterminate"
+        result["reasons"] = [
+            "TIME_TO_FILL_AUDIT_FAIL",
+            *[str(item).strip() for item in (result.get("reasons") or []) if str(item).strip()],
+        ]
     result["comparable"] = True
     return result
 
@@ -275,6 +285,45 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except Exception:
         return 0.0
+
+
+def _compare_fill_latency(
+    candidate_payload: dict[str, Any],
+    champion_payload: dict[str, Any],
+    *,
+    max_deterioration_factor: float = 1.25,
+) -> dict[str, Any]:
+    candidate_p90 = _summary_metric(candidate_payload, "p90_time_to_fill_ms", None)
+    champion_p90 = _summary_metric(champion_payload, "p90_time_to_fill_ms", None)
+    candidate_avg = _summary_metric(candidate_payload, "avg_time_to_fill_ms", None)
+    champion_avg = _summary_metric(champion_payload, "avg_time_to_fill_ms", None)
+    reference_metric = "p90_time_to_fill_ms" if candidate_p90 > 0.0 and champion_p90 > 0.0 else ""
+    candidate_value = candidate_p90
+    champion_value = champion_p90
+    if not reference_metric:
+        if candidate_avg > 0.0 and champion_avg > 0.0:
+            reference_metric = "avg_time_to_fill_ms"
+            candidate_value = candidate_avg
+            champion_value = champion_avg
+        else:
+            return {
+                "evaluated": False,
+                "pass": True,
+                "metric_name": "",
+                "candidate_value": 0.0,
+                "champion_value": 0.0,
+                "max_deterioration_factor": float(max_deterioration_factor),
+            }
+    threshold = float(champion_value) * float(max_deterioration_factor)
+    return {
+        "evaluated": True,
+        "pass": float(candidate_value) <= float(threshold),
+        "metric_name": reference_metric,
+        "candidate_value": float(candidate_value),
+        "champion_value": float(champion_value),
+        "threshold_value": float(threshold),
+        "max_deterioration_factor": float(max_deterioration_factor),
+    }
 
 
 def _studentized_mean(values: list[float]) -> float:

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
+from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.micro_order_policy import (
@@ -322,6 +323,92 @@ def test_paper_engine_model_alpha_micro_policy_guards_strategy_exec_profile(tmp_
     assert int(exec_profile.get("timeout_ms", 0)) == 1_125_000
     assert int(exec_profile.get("replace_interval_ms", 0)) == 1_350_000
     assert int(exec_profile.get("max_replaces", -1)) == 1
+
+
+def test_paper_engine_model_alpha_uses_strategy_exec_profile_override(tmp_path: Path) -> None:
+    events = [
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=100.0,
+            acc_trade_price_24h=1_000_000_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=301_000,
+            trade_price=101.0,
+            acc_trade_price_24h=1_000_500_000_000.0,
+        ),
+    ]
+
+    settings = UpbitSettings(
+        base_url="https://api.upbit.com",
+        timeout=UpbitTimeoutSettings(),
+        auth=UpbitAuthSettings(),
+        ratelimit=UpbitRateLimitSettings(),
+        retry=UpbitRetrySettings(),
+        websocket=UpbitWebSocketSettings(),
+    )
+    override_profile = order_exec_profile_to_dict(
+        make_legacy_exec_profile(
+            timeout_ms=120_000,
+            replace_interval_ms=120_000,
+            max_replaces=0,
+            price_mode="CROSS_1T",
+            max_chase_bps=10_000,
+            min_replace_interval_ms_global=1_500,
+        )
+    )
+    run_settings = PaperRunSettings(
+        duration_sec=2,
+        quote="KRW",
+        top_n=1,
+        tf="5m",
+        strategy="model_alpha_v1",
+        model_ref="latest_v3",
+        feature_set="v3",
+        model_alpha=ModelAlphaSettings(
+            model_ref="latest_v3",
+            execution=ModelAlphaExecutionSettings(price_mode="JOIN", timeout_bars=3, replace_max=4),
+        ),
+        print_every_sec=60,
+        decision_interval_sec=0.1,
+        universe_refresh_sec=1,
+        universe_hold_sec=0,
+        momentum_window_sec=60,
+        min_momentum_pct=0.2,
+        starting_krw=50_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=2,
+        out_root_dir=str(tmp_path),
+    )
+    dummy_strategy = _DummyModelStrategy(intent_meta={"exec_profile": override_profile})
+    engine = _PaperEngineWithDummyModel(
+        upbit_settings=settings,
+        run_settings=run_settings,
+        ws_client=_FakeWsClient(events),
+        market_loader=lambda quote: ["KRW-BTC"] if quote == "KRW" else [],
+        rules_provider=_StaticRulesProvider(),
+        micro_snapshot_provider=_StableMicroProvider(),  # type: ignore[arg-type]
+        dummy_strategy=dummy_strategy,
+    )
+
+    summary = asyncio.run(engine.run())
+
+    run_dir = Path(summary.run_dir)
+    events_payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert intent_events
+    intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})
+    exec_profile = intent_meta.get("exec_profile") or {}
+    assert exec_profile.get("price_mode") == "CROSS_1T"
+    assert int(exec_profile.get("timeout_ms", 0)) == 120_000
+    assert int(exec_profile.get("replace_interval_ms", 0)) == 120_000
+    assert int(exec_profile.get("max_replaces", -1)) == 0
 
 
 def test_paper_engine_model_alpha_entry_sizing_respects_min_total_buffer(tmp_path: Path) -> None:

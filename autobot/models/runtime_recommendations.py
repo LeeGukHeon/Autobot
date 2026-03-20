@@ -24,6 +24,8 @@ from .runtime_recommendation_contract import (
     resolve_exit_mode_recommendation,
 )
 
+_EXECUTION_STAGE_ORDER: tuple[str, ...] = ("PASSIVE_MAKER", "JOIN", "CROSS_1T")
+
 
 @dataclass(frozen=True)
 class RuntimeRecommendationGrid:
@@ -219,6 +221,10 @@ def optimize_runtime_recommendations(
                 execution_rows.append(
                     {
                         "kind": "execution",
+                        "rule_id": (
+                            f"execution_{str(price_mode).strip().upper().lower()}"
+                            f"_t{int(timeout_bars)}_r{int(replace_max)}"
+                        ),
                         "grid_point": {
                             "price_mode": str(price_mode),
                             "timeout_bars": int(timeout_bars),
@@ -256,7 +262,11 @@ def optimize_runtime_recommendations(
             fallback_exit=base_settings.exit,
             resolved_exit_recommendation=exit_recommendation,
         ),
-        "execution": _build_execution_doc(best_execution, fallback_settings=base_settings.execution),
+        "execution": _build_execution_doc(
+            best_execution,
+            ranked_rows=ranked_execution,
+            fallback_settings=base_settings.execution,
+        ),
         "hold_grid_results": ranked_holds,
         "risk_exit_grid_results": ranked_risk_exit,
         "execution_grid_results": ranked_execution,
@@ -362,28 +372,34 @@ def _build_exit_doc(
 def _build_execution_doc(
     best_row: dict[str, Any] | None,
     *,
+    ranked_rows: list[dict[str, Any]] | None = None,
     fallback_settings: ModelAlphaExecutionSettings,
 ) -> dict[str, Any]:
+    execution_frontier = _build_execution_stage_frontier(rows=ranked_rows or [], fallback_settings=fallback_settings)
+    payload: dict[str, Any]
     if not isinstance(best_row, dict):
-        return {
+        payload = {
             "recommended_price_mode": str(fallback_settings.price_mode),
             "recommended_timeout_bars": int(fallback_settings.timeout_bars),
             "recommended_replace_max": int(fallback_settings.replace_max),
             "recommendation_source": "manual_fallback",
         }
-    grid_point = dict(best_row.get("grid_point", {}))
-    return {
-        "recommended_price_mode": str(grid_point.get("price_mode", fallback_settings.price_mode)),
-        "recommended_timeout_bars": int(grid_point.get("timeout_bars", fallback_settings.timeout_bars)),
-        "recommended_replace_max": int(grid_point.get("replace_max", fallback_settings.replace_max)),
-        "recommendation_source": "execution_backtest_grid_search",
-        "objective_score": float(best_row.get("utility_total", 0.0)),
-        "wins": int(best_row.get("wins", 0)),
-        "losses": int(best_row.get("losses", 0)),
-        "comparable_pairs": int(best_row.get("comparable_pairs", 0)),
-        "summary": dict(best_row.get("summary", {})),
-        "grid_point": grid_point,
-    }
+    else:
+        grid_point = dict(best_row.get("grid_point", {}))
+        payload = {
+            "recommended_price_mode": str(grid_point.get("price_mode", fallback_settings.price_mode)),
+            "recommended_timeout_bars": int(grid_point.get("timeout_bars", fallback_settings.timeout_bars)),
+            "recommended_replace_max": int(grid_point.get("replace_max", fallback_settings.replace_max)),
+            "recommendation_source": "execution_backtest_grid_search",
+            "objective_score": float(best_row.get("utility_total", 0.0)),
+            "wins": int(best_row.get("wins", 0)),
+            "losses": int(best_row.get("losses", 0)),
+            "comparable_pairs": int(best_row.get("comparable_pairs", 0)),
+            "summary": dict(best_row.get("summary", {})),
+            "grid_point": grid_point,
+        }
+    payload.update(execution_frontier)
+    return payload
 
 
 def _build_exit_family_doc(*, family: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -504,6 +520,9 @@ def _compact_exit_rule_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "validation_comparable": bool(row.get("validation_comparable", False)),
         "realized_pnl_quote": float(summary.get("realized_pnl_quote", 0.0) or 0.0),
         "fill_rate": float(summary.get("fill_rate", 0.0) or 0.0),
+        "avg_time_to_fill_ms": float(summary.get("avg_time_to_fill_ms", 0.0) or 0.0),
+        "p50_time_to_fill_ms": float(summary.get("p50_time_to_fill_ms", 0.0) or 0.0),
+        "p90_time_to_fill_ms": float(summary.get("p90_time_to_fill_ms", 0.0) or 0.0),
         "max_drawdown_pct": float(summary.get("max_drawdown_pct", 0.0) or 0.0),
         "slippage_bps_mean": float(summary.get("slippage_bps_mean", 0.0) or 0.0),
         "orders_filled": int(summary.get("orders_filled", 0) or 0),
@@ -565,16 +584,121 @@ def _rank_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             float(item.get("utility_total", 0.0)),
             float(item.get("implementation_utility_total", 0.0)),
             float(item.get("validation_nonnegative_ratio_mean", 0.0)),
-            -float(item.get("validation_max_window_drawdown_pct", 0.0)),
-            float(item.get("validation_worst_window_return", 0.0)),
             float((item.get("summary") or {}).get("realized_pnl_quote", 0.0)),
             float((item.get("summary") or {}).get("fill_rate", 0.0)),
+            -float((item.get("summary") or {}).get("avg_time_to_fill_ms", 0.0)),
+            -float((item.get("summary") or {}).get("p90_time_to_fill_ms", 0.0)),
+            -float(item.get("validation_max_window_drawdown_pct", 0.0)),
+            float(item.get("validation_worst_window_return", 0.0)),
             -float((item.get("summary") or {}).get("max_drawdown_pct", 0.0)),
             -float((item.get("summary") or {}).get("slippage_bps_mean", 0.0)),
         ),
         reverse=True,
     )
     return normalized
+
+
+def _build_execution_stage_frontier(
+    *,
+    rows: list[dict[str, Any]],
+    fallback_settings: ModelAlphaExecutionSettings,
+) -> dict[str, Any]:
+    mode_rows: dict[str, list[dict[str, Any]]] = {mode: [] for mode in _EXECUTION_STAGE_ORDER}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        grid_point = dict(row.get("grid_point", {}))
+        mode = str(grid_point.get("price_mode", "")).strip().upper()
+        if mode in mode_rows:
+            mode_rows[mode].append(dict(row))
+    stage_docs = [
+        _build_execution_stage_doc(
+            mode=mode,
+            rows=mode_rows.get(mode, []),
+            fallback_settings=fallback_settings,
+        )
+        for mode in _EXECUTION_STAGE_ORDER
+    ]
+    supported_stages = [item for item in stage_docs if bool(item.get("supported"))]
+    best_by_objective = max(
+        supported_stages,
+        key=lambda item: float(item.get("objective_score", 0.0) or 0.0),
+        default=None,
+    )
+    best_by_fill_probability = max(
+        supported_stages,
+        key=lambda item: float(item.get("expected_fill_probability", 0.0) or 0.0),
+        default=None,
+    )
+    best_by_time_to_fill = min(
+        (
+            item
+            for item in supported_stages
+            if float(item.get("expected_time_to_fill_ms", 0.0) or 0.0) > 0.0
+        ),
+        key=lambda item: float(item.get("expected_time_to_fill_ms", 0.0) or 0.0),
+        default=None,
+    )
+    return {
+        "policy": "empirical_fill_frontier_v1",
+        "dynamic_stage_selection_enabled": bool(supported_stages),
+        "stage_decision_mode": "sequential_positive_net_edge_v1",
+        "stage_order": list(_EXECUTION_STAGE_ORDER),
+        "stages": stage_docs,
+        "frontier_summary": {
+            "supported_stage_count": int(len(supported_stages)),
+            "best_stage_by_objective": str((best_by_objective or {}).get("stage", "")).strip(),
+            "best_stage_by_fill_probability": str((best_by_fill_probability or {}).get("stage", "")).strip(),
+            "best_stage_by_time_to_fill": str((best_by_time_to_fill or {}).get("stage", "")).strip(),
+        },
+        "no_trade_region": {
+            "policy": "implementation_shortfall_proxy_v1",
+            "decision_metric": "expected_edge_bps * expected_fill_probability - expected_slippage_bps",
+            "positive_net_edge_required": True,
+            "fallback_action": "use_recommended_execution_profile_when_edge_missing",
+        },
+    }
+
+
+def _build_execution_stage_doc(
+    *,
+    mode: str,
+    rows: list[dict[str, Any]],
+    fallback_settings: ModelAlphaExecutionSettings,
+) -> dict[str, Any]:
+    comparable_row = next((dict(row) for row in rows if bool(row.get("validation_comparable", False))), None)
+    selected = comparable_row or (dict(rows[0]) if rows else None)
+    if not isinstance(selected, dict):
+        return {
+            "stage": str(mode).strip().upper(),
+            "supported": False,
+            "validation_comparable": False,
+            "recommended_price_mode": str(mode).strip().upper(),
+            "recommended_timeout_bars": int(fallback_settings.timeout_bars),
+            "recommended_replace_max": int(fallback_settings.replace_max),
+            "reason_code": "NO_EXECUTION_STAGE_EVIDENCE",
+        }
+    summary = dict(selected.get("summary", {}))
+    grid_point = dict(selected.get("grid_point", {}))
+    return {
+        "stage": str(mode).strip().upper(),
+        "supported": True,
+        "validation_comparable": bool(selected.get("validation_comparable", False)),
+        "rule_id": str(selected.get("rule_id", "")).strip(),
+        "recommended_price_mode": str(grid_point.get("price_mode", mode)).strip().upper() or str(mode).strip().upper(),
+        "recommended_timeout_bars": int(grid_point.get("timeout_bars", fallback_settings.timeout_bars)),
+        "recommended_replace_max": int(grid_point.get("replace_max", fallback_settings.replace_max)),
+        "objective_score": float(selected.get("utility_total", 0.0) or 0.0),
+        "expected_fill_probability": float(summary.get("fill_rate", 0.0) or 0.0),
+        "expected_time_to_fill_ms": float(summary.get("avg_time_to_fill_ms", 0.0) or 0.0),
+        "p50_time_to_fill_ms": float(summary.get("p50_time_to_fill_ms", 0.0) or 0.0),
+        "p90_time_to_fill_ms": float(summary.get("p90_time_to_fill_ms", 0.0) or 0.0),
+        "expected_slippage_bps": float(summary.get("slippage_bps_mean", 0.0) or 0.0),
+        "orders_filled": int(summary.get("orders_filled", 0) or 0),
+        "realized_pnl_quote": float(summary.get("realized_pnl_quote", 0.0) or 0.0),
+        "max_drawdown_pct": float(summary.get("max_drawdown_pct", 0.0) or 0.0),
+        "summary": summary,
+    }
 
 
 def _resolve_execution_structure_metrics(summary: dict[str, Any]) -> dict[str, Any]:

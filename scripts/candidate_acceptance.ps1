@@ -4354,6 +4354,9 @@ try {
         orders_filled = [int64]$candidateOrdersFilled
         realized_pnl_quote = [double]$candidateRealizedPnl
         fill_rate = [double]$candidateFillRate
+        avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+        p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+        p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
         max_drawdown_pct = [double]$candidateMaxDrawdownPct
         slippage_bps_mean = $candidateSlippageBpsMean
         calmar_like_score = $candidateCalmarLikeScore
@@ -4375,6 +4378,9 @@ try {
             summary_path = $championBacktest.SummaryPath
             realized_pnl_quote = [double]$championRealizedPnl
             fill_rate = [double]$championFillRate
+            avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
             max_drawdown_pct = [double]$championMaxDrawdownPct
             slippage_bps_mean = $championSlippageBpsMean
             calmar_like_score = $championCalmarLikeScore
@@ -4818,6 +4824,9 @@ try {
             orders_submitted = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_submitted" -DefaultValue 0) 0)
             orders_filled = $paperOrdersFilled
             fill_rate = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "fill_rate" -DefaultValue 0.0) 0.0)
+            avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
             realized_pnl_quote = $paperRealizedPnl
             max_drawdown_pct = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "max_drawdown_pct" -DefaultValue 0.0) 0.0)
             slippage_bps_mean = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "slippage_bps_mean" -DefaultValue 0.0) 0.0)

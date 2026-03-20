@@ -1093,6 +1093,195 @@ def test_model_alpha_trade_action_policy_uses_volatility_alias_columns() -> None
     assert str((bid_intent.meta or {}).get("notional_multiplier_source", "")) == "trade_action_policy"
 
 
+def test_model_alpha_execution_frontier_selects_join_stage_when_passive_net_edge_is_negative() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [5.0],
+            "close": [100.0],
+            "rv_12": [0.10],
+            "rv_36": [0.12],
+            "atr_pct_14": [0.01],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            execution=ModelAlphaExecutionSettings(price_mode="JOIN", timeout_bars=3, replace_max=2),
+        ),
+        runtime_recommendations={
+            "trade_action": {
+                "version": 1,
+                "policy": TRADE_ACTION_POLICY_ID,
+                "status": "ready",
+                "risk_feature_name": "rv_12",
+                "edge_bounds": [0.0, 1.0],
+                "risk_bounds": [0.0, 1.0],
+                "min_bin_samples": 1,
+                "runtime_decision_source": "bin_audit_fallback",
+                "hold_policy_template": {"mode": "hold", "hold_bars": 6},
+                "risk_policy_template": {"mode": "risk", "hold_bars": 6, "risk_vol_feature": "rv_12"},
+                "by_bin": [
+                    {
+                        "edge_bin": 0,
+                        "risk_bin": 0,
+                        "comparable": True,
+                        "sample_count": 10,
+                        "recommended_action": "risk",
+                        "recommended_notional_multiplier": 1.0,
+                        "expected_edge": 0.0003,
+                        "expected_downside_deviation": 0.0001,
+                        "expected_action_value": 1.0,
+                        "expected_objective_score": 1.0,
+                        "expected_es": 0.0001,
+                        "expected_ctm": 0.0,
+                        "expected_tail_probability": 0.05,
+                    }
+                ],
+            },
+            "execution": {
+                "policy": "empirical_fill_frontier_v1",
+                "stage_decision_mode": "sequential_positive_net_edge_v1",
+                "stage_order": ["PASSIVE_MAKER", "JOIN", "CROSS_1T"],
+                "no_trade_region": {"positive_net_edge_required": True},
+                "stages": [
+                    {
+                        "stage": "PASSIVE_MAKER",
+                        "supported": True,
+                        "recommended_price_mode": "PASSIVE_MAKER",
+                        "recommended_timeout_bars": 4,
+                        "recommended_replace_max": 1,
+                        "expected_fill_probability": 0.20,
+                        "expected_slippage_bps": 1.0,
+                    },
+                    {
+                        "stage": "JOIN",
+                        "supported": True,
+                        "recommended_price_mode": "JOIN",
+                        "recommended_timeout_bars": 2,
+                        "recommended_replace_max": 1,
+                        "expected_fill_probability": 0.95,
+                        "expected_slippage_bps": 2.0,
+                    },
+                    {
+                        "stage": "CROSS_1T",
+                        "supported": True,
+                        "recommended_price_mode": "CROSS_1T",
+                        "recommended_timeout_bars": 1,
+                        "recommended_replace_max": 0,
+                        "expected_fill_probability": 0.99,
+                        "expected_slippage_bps": 5.0,
+                    },
+                ],
+            },
+        },
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    exec_profile = dict((bid_intent.meta or {}).get("exec_profile") or {})
+    execution_decision = dict((bid_intent.meta or {}).get("execution_decision") or {})
+    assert exec_profile["price_mode"] == "JOIN"
+    assert int(exec_profile["timeout_ms"]) == 600_000
+    assert execution_decision["selected_stage"] == "JOIN"
+    assert execution_decision["reason_code"] == "EXECUTION_STAGE_JOIN"
+
+
+def test_model_alpha_execution_frontier_blocks_no_trade_region_when_all_stages_are_negative() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [5.0],
+            "close": [100.0],
+            "rv_12": [0.10],
+            "rv_36": [0.12],
+            "atr_pct_14": [0.01],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+        ),
+        runtime_recommendations={
+            "trade_action": {
+                "version": 1,
+                "policy": TRADE_ACTION_POLICY_ID,
+                "status": "ready",
+                "risk_feature_name": "rv_12",
+                "edge_bounds": [0.0, 1.0],
+                "risk_bounds": [0.0, 1.0],
+                "min_bin_samples": 1,
+                "runtime_decision_source": "bin_audit_fallback",
+                "hold_policy_template": {"mode": "hold", "hold_bars": 6},
+                "risk_policy_template": {"mode": "risk", "hold_bars": 6, "risk_vol_feature": "rv_12"},
+                "by_bin": [
+                    {
+                        "edge_bin": 0,
+                        "risk_bin": 0,
+                        "comparable": True,
+                        "sample_count": 10,
+                        "recommended_action": "risk",
+                        "recommended_notional_multiplier": 1.0,
+                        "expected_edge": 0.00005,
+                        "expected_downside_deviation": 0.0001,
+                        "expected_action_value": 1.0,
+                        "expected_objective_score": 1.0,
+                        "expected_es": 0.0001,
+                        "expected_ctm": 0.0,
+                        "expected_tail_probability": 0.05,
+                    }
+                ],
+            },
+            "execution": {
+                "policy": "empirical_fill_frontier_v1",
+                "stage_decision_mode": "sequential_positive_net_edge_v1",
+                "stage_order": ["PASSIVE_MAKER", "JOIN", "CROSS_1T"],
+                "no_trade_region": {"positive_net_edge_required": True},
+                "stages": [
+                    {
+                        "stage": "PASSIVE_MAKER",
+                        "supported": True,
+                        "recommended_price_mode": "PASSIVE_MAKER",
+                        "recommended_timeout_bars": 4,
+                        "recommended_replace_max": 1,
+                        "expected_fill_probability": 0.20,
+                        "expected_slippage_bps": 1.0,
+                    },
+                    {
+                        "stage": "JOIN",
+                        "supported": True,
+                        "recommended_price_mode": "JOIN",
+                        "recommended_timeout_bars": 2,
+                        "recommended_replace_max": 1,
+                        "expected_fill_probability": 0.95,
+                        "expected_slippage_bps": 2.0,
+                    },
+                ],
+            },
+        },
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    assert not any(intent.side == "bid" for intent in result.intents)
+    assert result.skipped_reasons["EXECUTION_NO_TRADE_REGION"] == 1
+
+
 def test_model_alpha_cooldown_and_hold_exit() -> None:
     frame0 = pl.DataFrame({"ts_ms": [1_000], "market": ["KRW-BTC"], "f1": [5.0], "close": [100.0]})
     frame1 = pl.DataFrame({"ts_ms": [301_000], "market": ["KRW-BTC"], "f1": [5.0], "close": [102.0]})
