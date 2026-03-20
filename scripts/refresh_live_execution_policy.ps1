@@ -32,7 +32,7 @@ if ($DryRun) {
 }
 
 New-Item -ItemType Directory -Force -Path $resolvedOutputDir | Out-Null
-$refreshed = @()
+$resolvedExistingDbPaths = @()
 foreach ($relativeDbPath in @($resolvedStateDbPaths)) {
     if ([string]::IsNullOrWhiteSpace($relativeDbPath)) {
         continue
@@ -42,39 +42,29 @@ foreach ($relativeDbPath in @($resolvedStateDbPaths)) {
     } else {
         Join-Path $resolvedProjectRoot $relativeDbPath
     }
-    if (-not (Test-Path $resolvedDbPath)) {
-        continue
+    if (Test-Path $resolvedDbPath) {
+        $resolvedExistingDbPaths += $resolvedDbPath
     }
-    $relativeName = [string]$relativeDbPath
-    if ([System.IO.Path]::IsPathRooted($relativeName)) {
-        $relativeName = [System.IO.Path]::GetFileNameWithoutExtension($relativeName)
-    } else {
-        $relativeName = [System.IO.Path]::GetFileNameWithoutExtension($relativeName)
-        $relativeDir = Split-Path -Path $relativeDbPath -Parent
-        if (-not [string]::IsNullOrWhiteSpace($relativeDir)) {
-            $dirToken = ([string]$relativeDir).Trim() -replace "[/\\]+", "_"
-            $relativeName = ($dirToken + "_" + $relativeName).Trim("_")
-        }
-    }
-    $dbName = $relativeName
-    $outputPath = Join-Path $resolvedOutputDir ($dbName + ".json")
-    & $resolvedPythonExe -m autobot.live.execution_policy_refresh `
-        --db-path $resolvedDbPath `
-        --output-path $outputPath `
-        --lookback-days $LookbackDays `
-        --limit $Limit
-    if ($LASTEXITCODE -ne 0) {
-        throw "execution policy refresh failed: $resolvedDbPath"
-    }
-    $refreshed += [ordered]@{
-        db_path = $resolvedDbPath
-        output_path = $outputPath
-    }
+}
+
+if (@($resolvedExistingDbPaths).Count -eq 0) {
+    throw "no execution state db paths found"
+}
+
+$combinedOutputPath = Join-Path $resolvedOutputDir "combined_live_execution_policy.json"
+& $resolvedPythonExe -m autobot.live.execution_policy_refresh `
+    --db-paths ([string]::Join(",", @($resolvedExistingDbPaths))) `
+    --output-path $combinedOutputPath `
+    --lookback-days $LookbackDays `
+    --limit $Limit
+if ($LASTEXITCODE -ne 0) {
+    throw "combined execution policy refresh failed"
 }
 
 $summaryPath = Join-Path $resolvedOutputDir "latest_refresh.json"
 $summary = [ordered]@{
-    refreshed = @($refreshed)
+    db_paths = @($resolvedExistingDbPaths)
+    output_path = $combinedOutputPath
     lookback_days = [int]$LookbackDays
     limit = [int]$Limit
     refreshed_at = (Get-Date).ToUniversalTime().ToString("o")
