@@ -1911,7 +1911,7 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert int(exec_profile.get("max_replaces", -1)) == 4
 
 
-def test_backtest_model_alpha_uses_execution_contract_without_micro_policy(tmp_path: Path) -> None:
+def test_backtest_model_alpha_skips_execution_contract_when_learned_execution_is_disabled(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     dataset_root = tmp_path / "features_v3"
     registry_root = tmp_path / "registry"
@@ -1986,7 +1986,12 @@ def test_backtest_model_alpha_uses_execution_contract_without_micro_policy(tmp_p
             selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
             position=ModelAlphaPositionSettings(max_positions_total=1, cooldown_bars=0),
             exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
-            execution=ModelAlphaExecutionSettings(price_mode="PASSIVE_MAKER", timeout_bars=3, replace_max=4),
+            execution=ModelAlphaExecutionSettings(
+                price_mode="PASSIVE_MAKER",
+                timeout_bars=3,
+                replace_max=4,
+                use_learned_recommendations=False,
+            ),
         ),
     )
 
@@ -2003,10 +2008,13 @@ def test_backtest_model_alpha_uses_execution_contract_without_micro_policy(tmp_p
         if line.strip()
     ]
     abort_events = [item for item in payloads if item.get("event_type") == "EXECUTION_POLICY_ABORT"]
-    assert abort_events
-    execution_policy = ((abort_events[0].get("payload") or {}).get("execution_policy") or {})
-    assert execution_policy.get("status") == "skip"
-    assert execution_policy.get("state_key") == "spread_unknown|depth_unknown|age_unknown|edge_unknown"
+    intent_events = [item for item in payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert not abort_events
+    assert intent_events
+    intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})
+    assert not intent_meta.get("execution_policy")
+    exec_profile = intent_meta.get("exec_profile") or {}
+    assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
 
 
 def test_backtest_model_alpha_v4_run_uses_v4_feature_dataset(tmp_path: Path) -> None:
