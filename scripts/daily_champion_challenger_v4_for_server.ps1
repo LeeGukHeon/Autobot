@@ -3,6 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$AcceptanceScript = "",
     [string]$RuntimeInstallScript = "",
+    [string]$ExecutionPolicyRefreshScript = "",
     [string]$BatchDate = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -18,6 +19,7 @@ param(
     [double]$ChallengerMaxDrawdownDeteriorationFactor = 1.10,
     [double]$ChallengerMicroQualityTolerance = 0.02,
     [double]$ChallengerNonnegativeRatioTolerance = 0.05,
+    [int]$ExecutionContractMinRows = 20,
     [ValidateSet("combined", "promote_only", "spawn_only")]
     [string]$Mode = "combined",
     [switch]$SkipDailyPipeline,
@@ -38,6 +40,11 @@ function Resolve-DefaultAcceptanceScript {
 function Resolve-DefaultRuntimeInstallScript {
     param([string]$Root)
     return (Join-Path $Root "scripts/install_server_runtime_services.ps1")
+}
+
+function Resolve-DefaultExecutionPolicyRefreshScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/refresh_live_execution_policy.ps1")
 }
 
 function Resolve-ChampionRunId {
@@ -252,6 +259,61 @@ function Test-ObjectHasValues {
 function Get-StringArray {
     param([Parameter(Mandatory = $false)]$Value)
     return @(Expand-DelimitedStringArray -Value $Value)
+}
+
+function Resolve-ExecutionContractRowsTotal {
+    param([Parameter(Mandatory = $false)]$Payload)
+    $executionContract = Get-PropValue -ObjectValue $Payload -Name "execution_contract" -DefaultValue @{}
+    $rows = [int](Get-PropValue -ObjectValue $executionContract -Name "rows_total" -DefaultValue 0)
+    if ($rows -gt 0) {
+        return $rows
+    }
+    return [int](Get-PropValue -ObjectValue $Payload -Name "rows_total" -DefaultValue 0)
+}
+
+function Invoke-ExecutionContractRefresh {
+    param(
+        [string]$PwshExe,
+        [string]$RefreshScriptPath,
+        [string]$Root,
+        [string]$PyExe,
+        [switch]$IsDryRun
+    )
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $RefreshScriptPath,
+        "-ProjectRoot", $Root,
+        "-PythonExe", $PyExe
+    )
+    if ($IsDryRun) {
+        $args += "-DryRun"
+    }
+    $exec = Invoke-CommandCapture -Exe $PwshExe -ArgList $args -AllowFailure
+    $outputPath = ""
+    if (-not [string]::IsNullOrWhiteSpace([string]$exec.Output)) {
+        $lines = @([string]$exec.Output -split "\r?\n")
+        for ($index = $lines.Count - 1; $index -ge 0; $index--) {
+            $candidate = [string]$lines[$index]
+            if ([string]::IsNullOrWhiteSpace($candidate)) {
+                continue
+            }
+            $trimmed = $candidate.Trim()
+            if ([string]::Equals([System.IO.Path]::GetExtension($trimmed), ".json", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $outputPath = $trimmed
+                break
+            }
+        }
+    }
+    $artifact = Load-JsonOrEmpty -PathValue $outputPath
+    return [PSCustomObject]@{
+        ExitCode = [int]$exec.ExitCode
+        Command = [string]$exec.Command
+        Output = [string]$exec.Output
+        OutputPath = [string]$outputPath
+        Artifact = $artifact
+        RowsTotal = [int](Resolve-ExecutionContractRowsTotal -Payload $artifact)
+    }
 }
 
 function Test-AcceptanceFatalFailure {
@@ -502,6 +564,7 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { Resolve-DefaultAcceptanceScript -Root $resolvedProjectRoot } else { $AcceptanceScript }
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
+$resolvedExecutionPolicyRefreshScript = if ([string]::IsNullOrWhiteSpace($ExecutionPolicyRefreshScript)) { Resolve-DefaultExecutionPolicyRefreshScript -Root $resolvedProjectRoot } else { $ExecutionPolicyRefreshScript }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
 $resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
@@ -795,6 +858,41 @@ $report.steps.champion_runtime = [ordered]@{
 }
 
 if ($runSpawnPhase) {
+    $executionContractRefreshAvailable = Test-Path $resolvedExecutionPolicyRefreshScript
+    $executionContractGateEnforced = (-not $DryRun) -and $executionContractRefreshAvailable
+    $executionContractRefresh = $null
+    if ($executionContractRefreshAvailable) {
+        $executionContractRefresh = Invoke-ExecutionContractRefresh `
+            -PwshExe $psExe `
+            -RefreshScriptPath $resolvedExecutionPolicyRefreshScript `
+            -Root $resolvedProjectRoot `
+            -PyExe $resolvedPythonExe `
+            -IsDryRun:$DryRun
+        $report.steps.refresh_execution_contract = [ordered]@{
+            exit_code = [int]$executionContractRefresh.ExitCode
+            command = [string]$executionContractRefresh.Command
+            output_preview = [string]$executionContractRefresh.Output
+            output_path = [string]$executionContractRefresh.OutputPath
+            rows_total = [int]$executionContractRefresh.RowsTotal
+            enforced = [bool]$executionContractGateEnforced
+        }
+        if ($executionContractGateEnforced -and (([int]$executionContractRefresh.ExitCode -ne 0) -or ([int]$executionContractRefresh.RowsTotal -lt [int]$ExecutionContractMinRows))) {
+            throw (
+                "execution contract gate failed (exit_code={0}, rows_total={1}, min_rows={2})" -f
+                [int]$executionContractRefresh.ExitCode,
+                [int]$executionContractRefresh.RowsTotal,
+                [int]$ExecutionContractMinRows
+            )
+        }
+    } else {
+        $report.steps.refresh_execution_contract = [ordered]@{
+            attempted = $false
+            enforced = $false
+            reason = "SCRIPT_MISSING_SKIP_NONFATAL"
+            script_path = $resolvedExecutionPolicyRefreshScript
+            rows_total = 0
+        }
+    }
     $acceptArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -840,11 +938,19 @@ if ($runSpawnPhase) {
     }
     $acceptPromotionEligible = [bool](Get-PropValue -ObjectValue $acceptCandidate -Name "promotion_eligible" -DefaultValue $true)
     $bootstrapOnly = Test-BootstrapOnlyAcceptanceReport -AcceptanceReport $acceptReport
+    $executionContractOutputPath = ""
+    $executionContractRowsTotal = 0
+    if ($null -ne $executionContractRefresh) {
+        $executionContractOutputPath = [string]$executionContractRefresh.OutputPath
+        $executionContractRowsTotal = [int]$executionContractRefresh.RowsTotal
+    }
     $report.steps.train_candidate = [ordered]@{
         exit_code = [int]$acceptExec.ExitCode
         command = $acceptExec.Command
         output_preview = $acceptExec.Output
         report_path = $acceptReportPath
+        execution_contract_output_path = $executionContractOutputPath
+        execution_contract_rows_total = $executionContractRowsTotal
         candidate_run_id = $candidateRunId
         backtest_pass = $backtestPass
         overall_pass = $overallPass
