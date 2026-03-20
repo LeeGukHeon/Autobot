@@ -3674,6 +3674,8 @@ try {
         "--booster-sweep-trials", $BoosterSweepTrials,
         "--seed", $Seed,
         "--nthread", $NThread,
+        "--live-domain-reweighting",
+        "--live-domain-reweighting-db-path", (Join-Path $resolvedProjectRoot "data/state/live_candidate/live_state.db"),
         "--execution-acceptance-top-n", $BacktestTopN,
         "--execution-acceptance-top-pct", $BacktestTopPct,
         "--execution-acceptance-min-prob", $BacktestMinProb,

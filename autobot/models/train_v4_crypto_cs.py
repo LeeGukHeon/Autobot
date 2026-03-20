@@ -180,6 +180,12 @@ class TrainV4CryptoCsOptions:
         exit=ModelAlphaExitSettings(use_learned_exit_mode=False, use_learned_hold_bars=False),
         execution=ModelAlphaExecutionSettings(use_learned_recommendations=False),
     )
+    live_domain_reweighting_enabled: bool = False
+    live_domain_reweighting_db_path: Path | None = None
+    live_domain_reweighting_min_target_rows: int = 32
+    live_domain_reweighting_max_target_rows: int = 1_024
+    live_domain_reweighting_clip_min: float = 0.5
+    live_domain_reweighting_clip_max: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,7 @@ class TrainV4CryptoCsResult:
     decision_surface_path: Path | None = None
     experiment_ledger_path: Path | None = None
     experiment_ledger_summary_path: Path | None = None
+    live_domain_reweighting_path: Path | None = None
 
 
 def _resolve_cpcv_lite_runtime_config(
@@ -285,6 +292,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     ranker_budget_profile = prepared["ranker_budget_profile"]
     factor_block_registry = prepared["factor_block_registry"]
     cpcv_lite_runtime = prepared["cpcv_lite_runtime"]
+    live_domain_reweighting = dict(prepared.get("live_domain_reweighting") or {})
 
     fitted = _train_v4_core.fit_v4_primary_model_bundle(
         options=options,
@@ -356,6 +364,8 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         "max": float(np.nanmax(dataset.sample_weight)) if dataset.sample_weight.size > 0 else 0.0,
         "mean": float(np.nanmean(dataset.sample_weight)) if dataset.sample_weight.size > 0 else 0.0,
     }
+    if live_domain_reweighting:
+        data_fingerprint["live_domain_reweighting"] = live_domain_reweighting
 
     model_card = render_model_card(
         run_id=run_id,
@@ -405,6 +415,12 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     search_budget_decision_path = support_artifacts["search_budget_decision_path"]
     factor_block_selection = support_artifacts["factor_block_selection"]
     factor_block_policy = support_artifacts["factor_block_policy"]
+    live_domain_reweighting_path: Path | None = None
+    if live_domain_reweighting:
+        live_domain_reweighting_path = _train_v4_persistence._write_json(
+            run_dir / "live_domain_reweighting.json",
+            live_domain_reweighting,
+        )
     duplicate_artifacts = _detect_duplicate_candidate_artifacts(
         options=options,
         run_id=run_id,
@@ -589,6 +605,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             "ranker_budget_profile": ranker_budget_profile,
             "sweep_trials": booster.get("trials", []),
             "candidate": leaderboard_row,
+            "live_domain_reweighting": live_domain_reweighting,
             "walk_forward": walk_forward,
             "cpcv_lite": cpcv_lite,
             "factor_block_selection": factor_block_selection,
@@ -626,6 +643,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         decision_surface_path=decision_surface_path,
         experiment_ledger_path=experiment_ledger_path,
         experiment_ledger_summary_path=experiment_ledger_summary_path,
+        live_domain_reweighting_path=live_domain_reweighting_path,
     )
 
 
@@ -1407,6 +1425,7 @@ def _fit_booster_sweep_classifier_v4(
     seed: int,
     nthread: int,
     trials: int,
+    eval_sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     return _train_v4_models.fit_booster_sweep_classifier_v4(
         x_train=x_train,
@@ -1421,6 +1440,7 @@ def _fit_booster_sweep_classifier_v4(
         seed=seed,
         nthread=nthread,
         trials=trials,
+        eval_sample_weight=eval_sample_weight,
         try_import_xgboost_fn=_try_import_xgboost,
         sample_xgb_params_fn=_sample_xgb_params,
         evaluate_split_fn=_evaluate_split,
@@ -1446,6 +1466,7 @@ def _fit_booster_sweep_regression(
     seed: int,
     nthread: int,
     trials: int,
+    eval_sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     return _train_v4_models.fit_booster_sweep_regression(
         x_train=x_train,
@@ -1460,6 +1481,7 @@ def _fit_booster_sweep_regression(
         seed=seed,
         nthread=nthread,
         trials=trials,
+        eval_sample_weight=eval_sample_weight,
         try_import_xgboost_fn=_try_import_xgboost,
         sample_xgb_params_fn=_sample_xgb_params,
         evaluate_split_fn=_evaluate_split,
@@ -1485,6 +1507,7 @@ def _fit_booster_sweep_ranker(
     seed: int,
     nthread: int,
     trials: int,
+    eval_sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     return _train_v4_models.fit_booster_sweep_ranker(
         x_train=x_train,
@@ -1502,6 +1525,7 @@ def _fit_booster_sweep_ranker(
         seed=seed,
         nthread=nthread,
         trials=trials,
+        eval_sample_weight=eval_sample_weight,
         try_import_xgboost_fn=_try_import_xgboost,
         sample_xgb_params_fn=_sample_xgb_params,
         evaluate_split_fn=_evaluate_split,

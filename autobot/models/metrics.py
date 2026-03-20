@@ -8,33 +8,45 @@ import numpy as np
 from sklearn.metrics import average_precision_score, brier_score_loss, log_loss, roc_auc_score
 
 
-def classification_metrics(y_true: np.ndarray, scores: np.ndarray) -> dict[str, float | None]:
+def classification_metrics(
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    *,
+    sample_weight: np.ndarray | None = None,
+) -> dict[str, float | None]:
     y = np.asarray(y_true, dtype=np.int8)
     proba = np.asarray(scores, dtype=np.float64)
     clipped = np.clip(proba, 1e-7, 1.0 - 1e-7)
+    weight = _resolve_sample_weight(sample_weight=sample_weight, size=y.size)
 
     roc_auc: float | None
     pr_auc: float | None
     try:
-        roc_auc = float(roc_auc_score(y, clipped))
+        roc_auc = float(roc_auc_score(y, clipped, sample_weight=weight))
     except ValueError:
         roc_auc = None
     try:
-        pr_auc = float(average_precision_score(y, clipped))
+        pr_auc = float(average_precision_score(y, clipped, sample_weight=weight))
     except ValueError:
         pr_auc = None
 
     result: dict[str, float | None] = {
         "roc_auc": roc_auc,
         "pr_auc": pr_auc,
-        "log_loss": float(log_loss(y, clipped, labels=[0, 1])),
-        "brier_score": float(brier_score_loss(y, clipped)),
-        "positive_rate": float(np.mean(y == 1)) if y.size > 0 else 0.0,
+        "log_loss": float(log_loss(y, clipped, labels=[0, 1], sample_weight=weight)),
+        "brier_score": float(brier_score_loss(y, clipped, sample_weight=weight)),
+        "positive_rate": _weighted_boolean_mean(y == 1, weight),
     }
     return result
 
 
-def precision_at_top_p(y_true: np.ndarray, scores: np.ndarray, top_p: float) -> float:
+def precision_at_top_p(
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    top_p: float,
+    *,
+    sample_weight: np.ndarray | None = None,
+) -> float:
     y = np.asarray(y_true, dtype=np.int8)
     proba = np.asarray(scores, dtype=np.float64)
     if y.size == 0:
@@ -42,18 +54,26 @@ def precision_at_top_p(y_true: np.ndarray, scores: np.ndarray, top_p: float) -> 
     idx = top_k_indices(proba, top_p=top_p)
     if idx.size == 0:
         return 0.0
-    return float(np.mean(y[idx] == 1))
+    weight = _resolve_sample_weight(sample_weight=sample_weight, size=y.size)
+    return _weighted_boolean_mean(y[idx] == 1, weight[idx])
 
 
-def recall_at_top_p(y_true: np.ndarray, scores: np.ndarray, top_p: float) -> float:
+def recall_at_top_p(
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    top_p: float,
+    *,
+    sample_weight: np.ndarray | None = None,
+) -> float:
     y = np.asarray(y_true, dtype=np.int8)
-    positives = int(np.sum(y == 1))
-    if positives <= 0:
+    weight = _resolve_sample_weight(sample_weight=sample_weight, size=y.size)
+    positives = float(np.sum(weight[y == 1]))
+    if positives <= 0.0:
         return 0.0
     idx = top_k_indices(np.asarray(scores, dtype=np.float64), top_p=top_p)
     if idx.size == 0:
         return 0.0
-    selected_positives = int(np.sum(y[idx] == 1))
+    selected_positives = float(np.sum(weight[idx][y[idx] == 1]))
     return float(selected_positives) / float(positives)
 
 
@@ -75,10 +95,12 @@ def trading_metrics(
     top_ps: tuple[float, ...] = (0.01, 0.05, 0.10),
     fee_bps_est: float = 10.0,
     safety_bps: float = 5.0,
+    sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     y = np.asarray(y_true, dtype=np.int8)
     reg = np.asarray(y_reg, dtype=np.float64)
     proba = np.asarray(scores, dtype=np.float64)
+    weight = _resolve_sample_weight(sample_weight=sample_weight, size=y.size)
     fee_frac = float(fee_bps_est + safety_bps) / 10_000.0
 
     payload: dict[str, Any] = {}
@@ -97,13 +119,13 @@ def trading_metrics(
             }
             continue
 
-        mean_y_reg = float(np.nanmean(reg[idx])) if reg.size > 0 else 0.0
+        mean_y_reg = _weighted_nanmean(reg[idx], weight[idx]) if reg.size > 0 else 0.0
         payload[label] = {
             "top_p": float(top_p),
             "threshold": float(np.min(proba[idx])),
             "selected_rows": int(idx.size),
-            "precision": float(np.mean(y[idx] == 1)),
-            "recall": recall_at_top_p(y, proba, float(top_p)),
+            "precision": _weighted_boolean_mean(y[idx] == 1, weight[idx]),
+            "recall": recall_at_top_p(y, proba, float(top_p), sample_weight=weight),
             "mean_y_reg": mean_y_reg,
             "ev_net": mean_y_reg - fee_frac,
         }
@@ -118,12 +140,14 @@ def ev_optimal_threshold(
     safety_bps: float = 5.0,
     scan_steps: int = 200,
     min_selected: int = 100,
+    sample_weight: np.ndarray | None = None,
 ) -> dict[str, float | int]:
     reg = np.asarray(y_reg, dtype=np.float64)
     proba = np.asarray(scores, dtype=np.float64)
     if reg.size <= 0 or proba.size <= 0 or reg.size != proba.size:
         return {"threshold": 1.0, "selected_rows": 0, "mean_y_reg": 0.0, "ev_net": 0.0}
 
+    weight = _resolve_sample_weight(sample_weight=sample_weight, size=reg.size)
     fee_frac = float(fee_bps_est + safety_bps) / 10_000.0
     quantiles = np.linspace(0.50, 0.999, max(int(scan_steps), 10))
 
@@ -137,7 +161,7 @@ def ev_optimal_threshold(
         count = int(np.sum(selected))
         if count < max(int(min_selected), 1):
             continue
-        mean_y_reg = float(np.nanmean(reg[selected]))
+        mean_y_reg = _weighted_nanmean(reg[selected], weight[selected])
         ev = mean_y_reg - fee_frac
         if ev > best_ev:
             best_ev = ev
@@ -165,15 +189,17 @@ def grouped_trading_metrics(
     top_ps: tuple[float, ...] = (0.01, 0.05, 0.10),
     fee_bps_est: float = 10.0,
     safety_bps: float = 5.0,
+    sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     market_values = np.asarray(markets, dtype=object)
+    weight = _resolve_sample_weight(sample_weight=sample_weight, size=market_values.size)
     unique_markets = sorted({str(value) for value in market_values.tolist() if str(value)})
     per_market: dict[str, Any] = {}
     for market in unique_markets:
         mask = market_values == market
         if not np.any(mask):
             continue
-        cls = classification_metrics(y_true[mask], scores[mask])
+        cls = classification_metrics(y_true[mask], scores[mask], sample_weight=weight[mask])
         trade = trading_metrics(
             y_true[mask],
             y_reg[mask],
@@ -181,6 +207,7 @@ def grouped_trading_metrics(
             top_ps=top_ps,
             fee_bps_est=fee_bps_est,
             safety_bps=safety_bps,
+            sample_weight=weight[mask],
         )
         per_market[market] = {
             "rows": int(np.sum(mask)),
@@ -248,3 +275,38 @@ def top_k_indices(scores: np.ndarray, *, top_p: float) -> np.ndarray:
 def _top_p_label(value: float) -> str:
     pct = int(round(float(value) * 100))
     return f"top_{pct}pct"
+
+
+def _resolve_sample_weight(*, sample_weight: np.ndarray | None, size: int) -> np.ndarray:
+    if sample_weight is None:
+        return np.ones(int(size), dtype=np.float64)
+    weight = np.asarray(sample_weight, dtype=np.float64)
+    if weight.size != int(size):
+        return np.ones(int(size), dtype=np.float64)
+    weight = np.where(np.isfinite(weight), weight, 0.0)
+    weight = np.clip(weight, 0.0, None)
+    if np.sum(weight) <= 0.0:
+        return np.ones(int(size), dtype=np.float64)
+    return weight
+
+
+def _weighted_boolean_mean(mask: np.ndarray, weight: np.ndarray) -> float:
+    mask_value = np.asarray(mask, dtype=np.float64)
+    weight_value = np.asarray(weight, dtype=np.float64)
+    total_weight = float(np.sum(weight_value))
+    if total_weight <= 0.0:
+        return 0.0
+    return float(np.sum(mask_value * weight_value) / total_weight)
+
+
+def _weighted_nanmean(values: np.ndarray, weight: np.ndarray) -> float:
+    value_arr = np.asarray(values, dtype=np.float64)
+    weight_arr = np.asarray(weight, dtype=np.float64)
+    finite_mask = np.isfinite(value_arr) & np.isfinite(weight_arr) & (weight_arr > 0.0)
+    if not np.any(finite_mask):
+        return 0.0
+    clipped_weight = np.clip(weight_arr[finite_mask], 0.0, None)
+    total_weight = float(np.sum(clipped_weight))
+    if total_weight <= 0.0:
+        return 0.0
+    return float(np.sum(value_arr[finite_mask] * clipped_weight) / total_weight)

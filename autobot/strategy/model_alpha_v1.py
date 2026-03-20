@@ -535,6 +535,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                                 else str(self._settings.position.sizing_mode)
                             )
                         ),
+                        "state_features": _build_live_state_feature_snapshot(row=row),
                         "model_exit_plan": build_model_alpha_exit_plan_payload(
                             settings=effective_exit_settings,
                             row=row,
@@ -1322,6 +1323,35 @@ def _micro_snapshot_from_row(*, row: dict[str, Any] | None, ts_ms: int) -> Micro
         book_coverage_ms=int(book_coverage_ms),
         book_available=bool(book_available),
     )
+
+
+def _build_live_state_feature_snapshot(*, row: dict[str, Any] | None) -> dict[str, float]:
+    if not isinstance(row, dict):
+        return {}
+    snapshot: dict[str, float] = {}
+    for feature_name in ("rv_12", "rv_36", "atr_pct_14"):
+        resolved = _resolve_row_risk_volatility(row=row, feature_name=feature_name)
+        if resolved is not None:
+            snapshot[feature_name] = float(resolved)
+    trade_coverage_ms = _safe_optional_float(row.get("m_trade_coverage_ms"))
+    if trade_coverage_ms is not None:
+        snapshot["m_trade_coverage_ms"] = float(trade_coverage_ms)
+    book_coverage_ms = _safe_optional_float(row.get("m_book_coverage_ms"))
+    if book_coverage_ms is not None:
+        snapshot["m_book_coverage_ms"] = float(book_coverage_ms)
+    spread_bps = _safe_optional_float(row.get("m_spread_proxy"))
+    if spread_bps is not None:
+        snapshot["m_spread_proxy"] = float(spread_bps)
+    depth_top5_notional_krw = _safe_optional_float(row.get("m_depth_top5_notional_krw"))
+    if depth_top5_notional_krw is None:
+        bid_depth = _safe_optional_float(row.get("m_depth_bid_top5_mean")) or 0.0
+        ask_depth = _safe_optional_float(row.get("m_depth_ask_top5_mean")) or 0.0
+        combined_depth = max(float(bid_depth) + float(ask_depth), 0.0)
+        if combined_depth > 0.0:
+            depth_top5_notional_krw = combined_depth
+    if depth_top5_notional_krw is not None:
+        snapshot["m_depth_top5_notional_krw"] = float(depth_top5_notional_krw)
+    return snapshot
 
 
 def _resolve_runtime_risk_exit_thresholds(

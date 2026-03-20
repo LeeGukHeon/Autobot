@@ -685,6 +685,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("off", "report_only", "use_latest", "guarded_auto"),
         help="v4 factor block selector mode: off|report_only|use_latest|guarded_auto.",
     )
+    model_train_parser.add_argument(
+        "--live-domain-reweighting",
+        action="store_true",
+        help="Enable candidate live intent covariate reweighting for trainer=v4_crypto_cs.",
+    )
+    model_train_parser.add_argument(
+        "--live-domain-reweighting-db-path",
+        help="Override candidate live_state.db path for trainer=v4_crypto_cs live-domain reweighting.",
+    )
     model_train_parser.add_argument("--run-scope", help=argparse.SUPPRESS)
 
     model_daily_v4_parser = model_subparsers.add_parser(
@@ -2351,6 +2360,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     print(f"[model][train][v4_crypto_cs] factor_block_policy={summary_v4.factor_block_policy_path}")
                 if summary_v4.search_budget_decision_path is not None:
                     print(f"[model][train][v4_crypto_cs] search_budget={summary_v4.search_budget_decision_path}")
+                if summary_v4.live_domain_reweighting_path is not None:
+                    print(f"[model][train][v4_crypto_cs] live_domain_reweighting={summary_v4.live_domain_reweighting_path}")
                 if summary_v4.execution_acceptance_report_path is not None:
                     print(
                         f"[model][train][v4_crypto_cs] execution_acceptance={summary_v4.execution_acceptance_report_path}"

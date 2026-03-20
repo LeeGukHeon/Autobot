@@ -132,6 +132,11 @@ def train_config_snapshot_v4(
     payload["logs_root"] = str(options.logs_root)
     payload["execution_acceptance_parquet_root"] = str(options.execution_acceptance_parquet_root)
     payload["execution_acceptance_output_root"] = str(options.execution_acceptance_output_root)
+    payload["live_domain_reweighting_db_path"] = (
+        str(options.live_domain_reweighting_db_path)
+        if getattr(options, "live_domain_reweighting_db_path", None) is not None
+        else None
+    )
     payload["execution_acceptance_top_n"] = max(
         int(options.execution_acceptance_top_n) if int(options.execution_acceptance_top_n) > 0 else int(options.top_n),
         1,

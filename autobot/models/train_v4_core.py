@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import is_dataclass, replace
 from typing import Any, Callable
 
 import numpy as np
+
+from . import live_domain_reweighting as _live_domain_reweighting
 
 
 def prepare_v4_training_inputs(
@@ -110,6 +113,54 @@ def prepare_v4_training_inputs(
         raise ValueError(
             f"NEED_MORE_MICRO_DAYS_OR_LOOSEN_UNIVERSE: rows={dataset.rows} < min_rows_for_train={int(options.min_rows_for_train)}"
         )
+    live_domain_reweighting_enabled = bool(getattr(options, "live_domain_reweighting_enabled", False))
+    live_domain_reweighting_path = getattr(options, "live_domain_reweighting_db_path", None)
+    adjusted_weight, live_domain_reweighting = _live_domain_reweighting.build_live_candidate_domain_reweighting(
+        enabled=live_domain_reweighting_enabled,
+        project_root=project_root,
+        candidate_db_path=live_domain_reweighting_path,
+        source_matrix=dataset.X,
+        source_feature_names=dataset.feature_names,
+        source_aux_features=action_aux_arrays,
+        base_sample_weight=dataset.sample_weight,
+        seed=int(getattr(options, "seed", 42)),
+        clip_min=float(
+            getattr(
+                options,
+                "live_domain_reweighting_clip_min",
+                _live_domain_reweighting.DEFAULT_LIVE_DOMAIN_REWEIGHTING_CLIP_MIN,
+            )
+        ),
+        clip_max=float(
+            getattr(
+                options,
+                "live_domain_reweighting_clip_max",
+                _live_domain_reweighting.DEFAULT_LIVE_DOMAIN_REWEIGHTING_CLIP_MAX,
+            )
+        ),
+        min_target_rows=int(
+            getattr(
+                options,
+                "live_domain_reweighting_min_target_rows",
+                _live_domain_reweighting.DEFAULT_LIVE_DOMAIN_REWEIGHTING_MIN_TARGET_ROWS,
+            )
+        ),
+        max_target_rows=int(
+            getattr(
+                options,
+                "live_domain_reweighting_max_target_rows",
+                _live_domain_reweighting.DEFAULT_LIVE_DOMAIN_REWEIGHTING_MAX_TARGET_ROWS,
+            )
+        ),
+    )
+    adjusted_weight_array = np.asarray(adjusted_weight, dtype=np.float32)
+    if is_dataclass(dataset):
+        dataset = replace(
+            dataset,
+            sample_weight=adjusted_weight_array,
+        )
+    else:
+        dataset.sample_weight = adjusted_weight_array
 
     interval_ms = expected_interval_ms_fn(options.tf)
     labels, split_info = compute_time_splits_fn(
@@ -168,6 +219,7 @@ def prepare_v4_training_inputs(
         "factor_block_registry": factor_block_registry,
         "cpcv_lite_runtime": cpcv_lite_runtime,
         "high_tfs": high_tfs,
+        "live_domain_reweighting": live_domain_reweighting,
     }
 
 
@@ -208,6 +260,7 @@ def fit_v4_primary_model_bundle(
     y_test = dataset.y_cls[test_mask]
     y_reg_test = dataset.y_reg[test_mask]
     y_rank_test = y_rank_all[test_mask]
+    w_test = dataset.sample_weight[test_mask]
     market_valid = dataset.markets[valid_mask]
     market_test = dataset.markets[test_mask]
 
@@ -225,6 +278,7 @@ def fit_v4_primary_model_bundle(
             seed=options.seed,
             nthread=options.nthread,
             trials=effective_booster_sweep_trials,
+            eval_sample_weight=w_valid,
         )
     elif task == "reg":
         booster = fit_regression_fn(
@@ -240,6 +294,7 @@ def fit_v4_primary_model_bundle(
             seed=options.seed,
             nthread=options.nthread,
             trials=effective_booster_sweep_trials,
+            eval_sample_weight=w_valid,
         )
     else:
         booster = fit_ranker_fn(
@@ -258,6 +313,7 @@ def fit_v4_primary_model_bundle(
             seed=options.seed,
             nthread=options.nthread,
             trials=int(ranker_budget_profile["main_trials"]),
+            eval_sample_weight=w_valid,
         )
 
     valid_scores = predict_scores_fn(booster["bundle"], x_valid)
@@ -268,6 +324,7 @@ def fit_v4_primary_model_bundle(
         markets=market_valid,
         fee_bps_est=options.fee_bps_est,
         safety_bps=options.safety_bps,
+        sample_weight=w_valid,
     )
     valid_metrics = attach_ranking_metrics_fn(
         metrics=valid_metrics,
@@ -283,6 +340,7 @@ def fit_v4_primary_model_bundle(
         markets=market_test,
         fee_bps_est=options.fee_bps_est,
         safety_bps=options.safety_bps,
+        sample_weight=w_test,
     )
     test_metrics = attach_ranking_metrics_fn(
         metrics=test_metrics,
@@ -297,6 +355,7 @@ def fit_v4_primary_model_bundle(
         safety_bps=options.safety_bps,
         ev_scan_steps=options.ev_scan_steps,
         ev_min_selected=options.ev_min_selected,
+        sample_weight=w_valid,
     )
     return {
         "booster": booster,

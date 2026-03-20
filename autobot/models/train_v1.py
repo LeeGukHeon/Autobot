@@ -734,14 +734,16 @@ def _evaluate_split(
     markets: np.ndarray,
     fee_bps_est: float,
     safety_bps: float,
+    sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    cls = classification_metrics(y_cls, scores)
+    cls = classification_metrics(y_cls, scores, sample_weight=sample_weight)
     trading = trading_metrics(
         y_cls,
         y_reg,
         scores,
         fee_bps_est=fee_bps_est,
         safety_bps=safety_bps,
+        sample_weight=sample_weight,
     )
     per_market = grouped_trading_metrics(
         markets=markets,
@@ -750,6 +752,7 @@ def _evaluate_split(
         scores=scores,
         fee_bps_est=fee_bps_est,
         safety_bps=safety_bps,
+        sample_weight=sample_weight,
     )
     return {
         "rows": int(y_cls.size),
@@ -768,6 +771,7 @@ def _build_thresholds(
     safety_bps: float,
     ev_scan_steps: int,
     ev_min_selected: int,
+    sample_weight: np.ndarray | None = None,
 ) -> dict[str, float | int]:
     ev = ev_optimal_threshold(
         y_reg_valid,
@@ -776,6 +780,7 @@ def _build_thresholds(
         safety_bps=safety_bps,
         scan_steps=ev_scan_steps,
         min_selected=ev_min_selected,
+        sample_weight=sample_weight,
     )
     return {
         "top_1pct": float(top_p_threshold(valid_scores, 0.01)),

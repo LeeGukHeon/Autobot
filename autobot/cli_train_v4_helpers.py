@@ -134,6 +134,12 @@ def build_v4_train_options(
         factor_block_selection_mode=str(
             getattr(args, "factor_block_selection_mode", None) or "guarded_auto"
         ).strip().lower(),
+        live_domain_reweighting_enabled=bool(getattr(args, "live_domain_reweighting", False)),
+        live_domain_reweighting_db_path=(
+            Path(str(getattr(args, "live_domain_reweighting_db_path")).strip())
+            if getattr(args, "live_domain_reweighting_db_path", None)
+            else None
+        ),
         run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip().lower(),
         execution_acceptance_enabled=True,
         execution_acceptance_dataset_name=backtest_dataset_name_v4,

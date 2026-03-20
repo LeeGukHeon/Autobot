@@ -235,6 +235,7 @@ def fit_booster_sweep_classifier_v4(
     evaluate_split_fn: Callable[..., dict[str, Any]],
     build_v4_trainer_sweep_sort_key_fn: Callable[..., tuple[float, ...]],
     build_v4_shared_economic_objective_profile_fn: Callable[[], dict[str, Any]],
+    eval_sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     xgb = try_import_xgboost_fn()
     if xgb is None:
@@ -249,12 +250,16 @@ def fit_booster_sweep_classifier_v4(
 
     w_train_safe = np.asarray(w_train, dtype=np.float64)
     w_valid_safe = np.asarray(w_valid, dtype=np.float64)
+    eval_weight = np.asarray(eval_sample_weight, dtype=np.float64) if eval_sample_weight is not None else w_valid_safe
     if w_train_safe.size != y_train.size:
         w_train_safe = np.ones(y_train.size, dtype=np.float64)
     if w_valid_safe.size != y_valid.size:
         w_valid_safe = np.ones(y_valid.size, dtype=np.float64)
+    if eval_weight.size != y_valid.size:
+        eval_weight = w_valid_safe
     w_train_safe = np.clip(w_train_safe, 1e-6, None)
     w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
+    eval_weight = np.clip(eval_weight, 1e-6, None)
 
     for trial in range(max(int(trials), 1)):
         params = sample_xgb_params_fn(rng)
@@ -293,6 +298,7 @@ def fit_booster_sweep_classifier_v4(
             markets=np.array(["_ALL_"] * int(y_valid.size), dtype=object),
             fee_bps_est=fee_bps_est,
             safety_bps=safety_bps,
+            sample_weight=eval_weight,
         )
         key = build_v4_trainer_sweep_sort_key_fn(valid_metrics, task="cls")
         trial_rows.append(
@@ -343,6 +349,7 @@ def fit_booster_sweep_regression(
     evaluate_split_fn: Callable[..., dict[str, Any]],
     build_v4_trainer_sweep_sort_key_fn: Callable[..., tuple[float, ...]],
     build_v4_shared_economic_objective_profile_fn: Callable[[], dict[str, Any]],
+    eval_sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     xgb = try_import_xgboost_fn()
     if xgb is None:
@@ -357,12 +364,16 @@ def fit_booster_sweep_regression(
 
     w_train_safe = np.asarray(w_train, dtype=np.float64)
     w_valid_safe = np.asarray(w_valid, dtype=np.float64)
+    eval_weight = np.asarray(eval_sample_weight, dtype=np.float64) if eval_sample_weight is not None else w_valid_safe
     if w_train_safe.size != y_train.size:
         w_train_safe = np.ones(y_train.size, dtype=np.float64)
     if w_valid_safe.size != y_valid_reg.size:
         w_valid_safe = np.ones(y_valid_reg.size, dtype=np.float64)
+    if eval_weight.size != y_valid_reg.size:
+        eval_weight = w_valid_safe
     w_train_safe = np.clip(w_train_safe, 1e-6, None)
     w_valid_safe = np.clip(w_valid_safe, 1e-6, None)
+    eval_weight = np.clip(eval_weight, 1e-6, None)
 
     for trial in range(max(int(trials), 1)):
         params = sample_xgb_params_fn(rng)
@@ -401,6 +412,7 @@ def fit_booster_sweep_regression(
             markets=np.array(["_ALL_"] * int(y_valid_cls.size), dtype=object),
             fee_bps_est=fee_bps_est,
             safety_bps=safety_bps,
+            sample_weight=eval_weight,
         )
         key = build_v4_trainer_sweep_sort_key_fn(valid_metrics, task="reg")
         trial_rows.append(
@@ -456,6 +468,7 @@ def fit_booster_sweep_ranker(
     build_v4_trainer_sweep_sort_key_fn: Callable[..., tuple[float, ...]],
     build_v4_shared_economic_objective_profile_fn: Callable[[], dict[str, Any]],
     group_counts_by_ts_fn: Callable[[np.ndarray], np.ndarray],
+    eval_sample_weight: np.ndarray | None = None,
 ) -> dict[str, Any]:
     xgb = try_import_xgboost_fn()
     if xgb is None:
@@ -476,9 +489,15 @@ def fit_booster_sweep_ranker(
     y_train = build_rank_relevance_labels(y_train_rank)
     y_valid = build_rank_relevance_labels(y_valid_rank)
     row_train_w = np.asarray(w_train, dtype=np.float64)
+    eval_weight = np.asarray(eval_sample_weight, dtype=np.float64) if eval_sample_weight is not None else w_valid
     if row_train_w.size != y_train.size:
         row_train_w = np.ones(y_train.size, dtype=np.float64)
+    if eval_weight.size != y_valid_cls.size:
+        eval_weight = np.asarray(w_valid, dtype=np.float64)
+    if eval_weight.size != y_valid_cls.size:
+        eval_weight = np.ones(y_valid_cls.size, dtype=np.float64)
     w_train_safe = build_group_level_sample_weight(row_train_w, train_group)
+    eval_weight = np.clip(np.asarray(eval_weight, dtype=np.float64), 1e-6, None)
 
     for trial in range(max(int(trials), 1)):
         params = sample_xgb_params_fn(rng)
@@ -519,6 +538,7 @@ def fit_booster_sweep_ranker(
                 markets=np.array(["_ALL_"] * int(y_valid_cls.size), dtype=object),
                 fee_bps_est=fee_bps_est,
                 safety_bps=safety_bps,
+                sample_weight=eval_weight,
             ),
             y_rank=y_valid_rank,
             ts_ms=ts_valid_ms,

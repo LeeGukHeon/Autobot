@@ -24,6 +24,10 @@ def test_run_scope_default_is_scheduled_daily() -> None:
     assert TrainV4CryptoCsOptions.__dataclass_fields__["run_scope"].default == "scheduled_daily"
 
 
+def test_live_domain_reweighting_default_is_disabled() -> None:
+    assert TrainV4CryptoCsOptions.__dataclass_fields__["live_domain_reweighting_enabled"].default is False
+
+
 def test_detect_duplicate_candidate_artifacts_matches_model_and_threshold_hashes(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     family = "train_v4_crypto_cs"
