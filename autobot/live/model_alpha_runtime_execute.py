@@ -12,11 +12,17 @@ from autobot.execution.order_supervisor import (
     normalize_order_exec_profile,
     order_exec_profile_from_dict,
 )
+from autobot.live.execution_attempts import record_execution_attempt_submission
 from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_decision,
     resolve_execution_risk_control_martingale_state,
     resolve_execution_risk_control_online_state,
     resolve_execution_risk_control_size_decision,
+)
+from autobot.models.live_execution_policy import (
+    build_live_execution_survival_model,
+    candidate_action_codes_for_price_mode,
+    select_live_execution_action,
 )
 
 CANARY_ENTRY_TIMEOUT_CAP_MS = 180_000
@@ -267,6 +273,37 @@ def resolve_live_trade_action(
         return {}
     trade_action = strategy_meta.get("trade_action")
     return dict(trade_action) if isinstance(trade_action, dict) else {}
+
+
+def _resolve_strategy_expected_edge_bps(
+    *,
+    strategy_meta: dict[str, Any],
+    safe_optional_float_fn: Callable[[object], float | None],
+) -> float | None:
+    trade_action = strategy_meta.get("trade_action")
+    if not isinstance(trade_action, dict):
+        return None
+    raw_edge = safe_optional_float_fn(trade_action.get("expected_edge"))
+    if raw_edge is None:
+        return None
+    return float(raw_edge) * 10_000.0
+
+
+def _build_live_micro_state(*, snapshot_for_policy: Any, now_ts_ms: int) -> dict[str, Any]:
+    if snapshot_for_policy is None:
+        return {}
+    last_event_ts_ms = getattr(snapshot_for_policy, "last_event_ts_ms", None)
+    snapshot_age_ms = None
+    if last_event_ts_ms is not None:
+        snapshot_age_ms = max(int(now_ts_ms) - int(last_event_ts_ms), 0)
+    return {
+        "spread_bps": _safe_optional_float(getattr(snapshot_for_policy, "spread_bps_mean", None)),
+        "depth_top5_notional_krw": _safe_optional_float(getattr(snapshot_for_policy, "depth_top5_notional_krw", None)),
+        "trade_coverage_ms": _safe_optional_int(getattr(snapshot_for_policy, "trade_coverage_ms", None)),
+        "book_coverage_ms": _safe_optional_int(getattr(snapshot_for_policy, "book_coverage_ms", None)),
+        "snapshot_age_ms": snapshot_age_ms,
+        "micro_quality_score": None,
+    }
 
 
 def resolve_execution_risk_control_online_threshold(
@@ -821,6 +858,90 @@ def resolve_live_strategy_execution(
                 },
             )
 
+    micro_state = _build_live_micro_state(snapshot_for_policy=snapshot_for_policy, now_ts_ms=ts_ms)
+    expected_edge_bps = _resolve_strategy_expected_edge_bps(
+        strategy_meta=strategy_meta,
+        safe_optional_float_fn=safe_optional_float_fn,
+    )
+    live_execution_model = build_live_execution_survival_model(
+        attempts=store.list_execution_attempts(final_only=True, limit=500) if hasattr(store, "list_execution_attempts") else [],
+    )
+    execution_policy = select_live_execution_action(
+        model_payload=live_execution_model,
+        current_state={**micro_state, "expected_edge_bps": expected_edge_bps},
+        expected_edge_bps=expected_edge_bps,
+        candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
+    )
+    if str(execution_policy.get("status", "")).strip().lower() == "skip":
+        return resolution_cls(
+            allowed=False,
+            skip_reason=str(execution_policy.get("skip_reason_code", "LIVE_EXECUTION_NO_POSITIVE_UTILITY")),
+            requested_price=requested_price,
+            requested_volume=requested_volume,
+            sizing_payload=sizing_payload,
+            meta_payload={
+                "strategy": {
+                    "market": market,
+                    "side": side,
+                    "reason_code": str(strategy_intent.reason_code),
+                    "score": strategy_intent.score,
+                    "prob": strategy_intent.prob,
+                    "meta": strategy_meta,
+                },
+                "size_ladder": size_ladder_decision,
+                "execution": {
+                    "initial_ref_price": float(initial_ref_price),
+                    "latest_trade_price": float(latest_trade_price),
+                    "effective_ref_price": float(effective_ref_price),
+                    "requested_price": float(requested_price),
+                    "requested_volume": float(requested_volume) if requested_volume is not None else None,
+                    "exec_profile": order_exec_profile_to_dict_fn(exec_profile),
+                },
+                "micro_state": micro_state,
+                "execution_policy": execution_policy,
+                "micro_order_policy": policy_payload,
+                "micro_diagnostics": policy_diagnostics,
+                "trade_gate": trade_gate_payload,
+                "operational_overlay": operational_payload,
+            },
+        )
+
+    selected_ord_type = str(execution_policy.get("selected_ord_type", "limit")).strip().lower() or "limit"
+    selected_time_in_force = str(execution_policy.get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
+    selected_price_mode = str(execution_policy.get("selected_price_mode", exec_profile.price_mode)).strip().upper() or str(exec_profile.price_mode)
+    if selected_price_mode != str(exec_profile.price_mode).strip().upper():
+        exec_profile = normalize_order_exec_profile(
+            OrderExecProfile(
+                timeout_ms=int(exec_profile.timeout_ms),
+                replace_interval_ms=int(exec_profile.replace_interval_ms),
+                max_replaces=int(exec_profile.max_replaces),
+                price_mode=selected_price_mode,
+                max_chase_bps=int(exec_profile.max_chase_bps),
+                min_replace_interval_ms_global=int(exec_profile.min_replace_interval_ms_global),
+                post_only=bool(exec_profile.post_only),
+            )
+        )
+        requested_price = build_limit_price_from_mode_fn(
+            side=side,
+            ref_price=effective_ref_price,
+            tick_size=float(snapshot.tick_size),
+            price_mode=exec_profile.price_mode,
+        )
+    submit_price = requested_price
+    submit_volume = requested_volume
+    if selected_ord_type == "best":
+        if side == "bid":
+            submit_price = max(
+                safe_optional_float_fn((sizing_payload or {}).get("admissible_notional_quote"))
+                or safe_optional_float_fn((sizing_payload or {}).get("target_notional_quote"))
+                or float(entry_notional_quote or 0.0),
+                1.0,
+            )
+            submit_volume = None
+        else:
+            submit_price = None
+            submit_volume = requested_volume
+
     return resolution_cls(
         allowed=True,
         skip_reason=None,
@@ -842,8 +963,13 @@ def resolve_live_strategy_execution(
                 "latest_trade_price": float(latest_trade_price),
                 "effective_ref_price": float(effective_ref_price),
                 "requested_price": float(requested_price),
+                "requested_volume": float(requested_volume) if requested_volume is not None else None,
+                "submit_price": float(submit_price) if submit_price is not None else None,
+                "submit_volume": float(submit_volume) if submit_volume is not None else None,
                 "exec_profile": order_exec_profile_to_dict_fn(exec_profile),
             },
+            "micro_state": micro_state,
+            "execution_policy": execution_policy,
             "micro_order_policy": policy_payload,
             "micro_diagnostics": policy_diagnostics,
             "trade_gate": trade_gate_payload,
@@ -1155,14 +1281,16 @@ def handle_strategy_intent(
         "model_family": settings.daemon.runtime_model_family,
     }
     meta_payload["admissibility"] = admissibility_report
+    execution_payload = dict(meta_payload.get("execution") or {})
+    execution_policy_payload = dict(meta_payload.get("execution_policy") or {})
     intent = new_order_intent_fn(
         market=market,
         side=side,
-        price=float(decision.adjusted_price),
-        volume=float(decision.adjusted_volume),
+        price=safe_optional_float_fn(execution_payload.get("submit_price", decision.adjusted_price)),
+        volume=safe_optional_float_fn(execution_payload.get("submit_volume", decision.adjusted_volume)),
         reason_code=str(strategy_intent.reason_code),
-        ord_type="limit",
-        time_in_force="gtc",
+        ord_type=str(execution_policy_payload.get("selected_ord_type") or "limit"),
+        time_in_force=str(execution_policy_payload.get("selected_time_in_force") or "gtc"),
         meta=meta_payload,
         ts_ms=ts_ms,
     )
@@ -1262,9 +1390,14 @@ def handle_strategy_intent(
                 identifier=as_optional_str_fn(getattr(result, "identifier", None)) or identifier,
                 market=market,
                 side=side,
-                ord_type="limit",
-                price=float(decision.adjusted_price),
-                volume_req=float(decision.adjusted_volume),
+                ord_type=str(intent.ord_type),
+                time_in_force=str(intent.time_in_force),
+                price=(float(intent.price) if intent.price is not None else None),
+                volume_req=(
+                    float(decision.adjusted_volume)
+                    if side == "bid"
+                    else (float(intent.volume) if intent.volume is not None else None)
+                ),
                 volume_filled=0.0,
                 state="wait",
                 created_ts=ts_ms,
@@ -1295,7 +1428,7 @@ def handle_strategy_intent(
             intent_id=intent.intent_id,
         )
         if side == "bid":
-            record_entry_submission_fn(
+            journal_id = record_entry_submission_fn(
                 store=store,
                 market=market,
                 intent_id=str(intent.intent_id),
@@ -1306,6 +1439,19 @@ def handle_strategy_intent(
                 ts_ms=ts_ms,
                 order_uuid=order_uuid,
                 plan_id=linked_plan_id,
+            )
+            record_execution_attempt_submission(
+                store=store,
+                journal_id=journal_id,
+                intent_id=str(intent.intent_id),
+                order_uuid=order_uuid,
+                order_identifier=as_optional_str_fn(getattr(result, "identifier", None)) or identifier,
+                market=market,
+                side=side,
+                ord_type=str(intent.ord_type),
+                time_in_force=str(intent.time_in_force),
+                meta_payload=accepted_meta,
+                ts_ms=ts_ms,
             )
         return "submitted"
 

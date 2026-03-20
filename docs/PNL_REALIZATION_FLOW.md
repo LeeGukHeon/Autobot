@@ -416,6 +416,11 @@ artifact 기준:
 - `avg/p50/p90_time_to_fill_ms`는 passive 대기의 execution risk proxy다.
 - `slippage_bps_mean`은 aggressive join/cross 비용 proxy다.
 
+주의:
+
+- 이 1차 artifact는 trainer/backtest 기반 empirical frontier다.
+- live 체결 지연 문제의 최종 해법은 아래 7.4의 `live execution attempts -> survival / fill model` 단계다.
+
 
 ### 7.2 Stage 2: Staged execution / no-trade region
 
@@ -457,6 +462,48 @@ artifact 기준:
 - 후보가 더 많이 벌었더라도 체결이 지나치게 느려졌는가
 - paper lane에서 fill/time 품질이 champion 대비 구조적으로 악화됐는가
 - signal edge가 execution friction을 감안해도 여전히 재현되는가
+
+
+### 7.4 Live execution methodology (actual fills, not backtest proxy)
+
+라이브에서 "그때 원할 때 체결이 안 되는" 문제는
+backtest summary만으로는 닫히지 않는다.
+
+이 단계의 SSOT는 실제 live child-order outcome이다.
+
+새 라이브 계약:
+
+- 저장 위치:
+  - live state DB `execution_attempts`
+- 입력:
+  - 주문 시점 micro state
+  - `ord_type`
+  - `time_in_force`
+  - `price_mode`
+  - reference price
+  - expected edge
+- 출력:
+  - `P(fill within 1s/3s/10s | state, action)`
+  - `time_to_first_fill`
+  - `shortfall_bps`
+  - `miss / partial / full`
+
+현재 구현 방향:
+
+1. live submit 시 `execution_attempts` row 생성
+2. private WS / reconcile / journal activation으로 attempt outcome 업데이트
+3. 최근 실제 attempt들로 `live_fill_hazard_survival_v1` 요약 생성
+4. runtime entry는
+   - `post_only`
+   - `limit gtc`
+   - `limit ioc`
+   - `limit fok`
+   - `best ioc`
+   - `best fok`
+   중에서 live utility가 가장 높은 action을 선택
+
+즉 live execution은 더 이상 "항상 limit gtc"가 아니라
+"최근 실제 체결결과가 가장 좋았던 action family"를 고른다.
 
 
 ## 8. OCI Ops Snapshot (2026-03-20 KST)

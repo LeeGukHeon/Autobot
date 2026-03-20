@@ -69,6 +69,7 @@ class OrderRecord:
     reserved_fee: float | None = None
     remaining_fee: float | None = None
     exchange_payload_json: str = "{}"
+    time_in_force: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,51 @@ class TradeJournalRecord:
     notional_multiplier: float | None = None
     entry_meta_json: str = "{}"
     exit_meta_json: str = "{}"
+    updated_ts: int = 0
+
+
+@dataclass(frozen=True)
+class ExecutionAttemptRecord:
+    attempt_id: str
+    journal_id: str | None
+    intent_id: str | None
+    order_uuid: str | None
+    order_identifier: str | None
+    market: str
+    side: str
+    ord_type: str
+    time_in_force: str | None
+    action_code: str | None = None
+    price_mode: str | None = None
+    requested_price: float | None = None
+    requested_volume: float | None = None
+    requested_notional_quote: float | None = None
+    reference_price: float | None = None
+    tick_size: float | None = None
+    spread_bps: float | None = None
+    depth_top5_notional_krw: float | None = None
+    trade_coverage_ms: int | None = None
+    book_coverage_ms: int | None = None
+    snapshot_age_ms: int | None = None
+    micro_quality_score: float | None = None
+    model_prob: float | None = None
+    expected_edge_bps: float | None = None
+    expected_net_edge_bps: float | None = None
+    expected_es_bps: float | None = None
+    submitted_ts_ms: int = 0
+    acknowledged_ts_ms: int | None = None
+    first_fill_ts_ms: int | None = None
+    full_fill_ts_ms: int | None = None
+    cancelled_ts_ms: int | None = None
+    final_ts_ms: int | None = None
+    final_state: str | None = None
+    filled_price: float | None = None
+    shortfall_bps: float | None = None
+    filled_volume: float | None = None
+    fill_fraction: float | None = None
+    partial_fill: bool = False
+    full_fill: bool = False
+    outcome_json: str = "{}"
     updated_ts: int = 0
 
 
@@ -385,18 +431,19 @@ class LiveStateStore:
             self._conn.execute(
                 """
                 INSERT INTO orders (
-                    uuid, identifier, market, side, ord_type, price,
+                    uuid, identifier, market, side, ord_type, time_in_force, price,
                     volume_req, volume_filled, state, created_ts, updated_ts, intent_id, tp_sl_link,
                     local_state, raw_exchange_state, last_event_name, event_source,
                     replace_seq, root_order_uuid, prev_order_uuid, prev_order_identifier,
                     executed_funds, paid_fee, reserved_fee, remaining_fee, exchange_payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET
                     identifier=excluded.identifier,
                     market=excluded.market,
                     side=excluded.side,
                     ord_type=excluded.ord_type,
+                    time_in_force=COALESCE(excluded.time_in_force, orders.time_in_force),
                     price=excluded.price,
                     volume_req=excluded.volume_req,
                     volume_filled=excluded.volume_filled,
@@ -428,6 +475,7 @@ class LiveStateStore:
                     record.market,
                     record.side,
                     record.ord_type,
+                    record.time_in_force,
                     record.price,
                     record.volume_req,
                     float(record.volume_filled),
@@ -747,6 +795,154 @@ class LiveStateStore:
                     int(record.updated_ts),
                 ),
             )
+
+    def upsert_execution_attempt(self, record: ExecutionAttemptRecord) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO execution_attempts (
+                    attempt_id, journal_id, intent_id, order_uuid, order_identifier,
+                    market, side, ord_type, time_in_force, action_code, price_mode,
+                    requested_price, requested_volume, requested_notional_quote, reference_price,
+                    tick_size, spread_bps, depth_top5_notional_krw, trade_coverage_ms, book_coverage_ms,
+                    snapshot_age_ms, micro_quality_score, model_prob, expected_edge_bps, expected_net_edge_bps, expected_es_bps,
+                    submitted_ts_ms, acknowledged_ts_ms, first_fill_ts_ms, full_fill_ts_ms, cancelled_ts_ms,
+                    final_ts_ms, final_state, filled_price, shortfall_bps, filled_volume, fill_fraction,
+                    partial_fill, full_fill, outcome_json, updated_ts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(attempt_id) DO UPDATE SET
+                    journal_id=COALESCE(excluded.journal_id, execution_attempts.journal_id),
+                    intent_id=COALESCE(excluded.intent_id, execution_attempts.intent_id),
+                    order_uuid=COALESCE(excluded.order_uuid, execution_attempts.order_uuid),
+                    order_identifier=COALESCE(excluded.order_identifier, execution_attempts.order_identifier),
+                    market=excluded.market,
+                    side=excluded.side,
+                    ord_type=excluded.ord_type,
+                    time_in_force=COALESCE(excluded.time_in_force, execution_attempts.time_in_force),
+                    action_code=COALESCE(excluded.action_code, execution_attempts.action_code),
+                    price_mode=COALESCE(excluded.price_mode, execution_attempts.price_mode),
+                    requested_price=COALESCE(excluded.requested_price, execution_attempts.requested_price),
+                    requested_volume=COALESCE(excluded.requested_volume, execution_attempts.requested_volume),
+                    requested_notional_quote=COALESCE(excluded.requested_notional_quote, execution_attempts.requested_notional_quote),
+                    reference_price=COALESCE(excluded.reference_price, execution_attempts.reference_price),
+                    tick_size=COALESCE(excluded.tick_size, execution_attempts.tick_size),
+                    spread_bps=COALESCE(excluded.spread_bps, execution_attempts.spread_bps),
+                    depth_top5_notional_krw=COALESCE(excluded.depth_top5_notional_krw, execution_attempts.depth_top5_notional_krw),
+                    trade_coverage_ms=COALESCE(excluded.trade_coverage_ms, execution_attempts.trade_coverage_ms),
+                    book_coverage_ms=COALESCE(excluded.book_coverage_ms, execution_attempts.book_coverage_ms),
+                    snapshot_age_ms=COALESCE(excluded.snapshot_age_ms, execution_attempts.snapshot_age_ms),
+                    micro_quality_score=COALESCE(excluded.micro_quality_score, execution_attempts.micro_quality_score),
+                    model_prob=COALESCE(excluded.model_prob, execution_attempts.model_prob),
+                    expected_edge_bps=COALESCE(excluded.expected_edge_bps, execution_attempts.expected_edge_bps),
+                    expected_net_edge_bps=COALESCE(excluded.expected_net_edge_bps, execution_attempts.expected_net_edge_bps),
+                    expected_es_bps=COALESCE(excluded.expected_es_bps, execution_attempts.expected_es_bps),
+                    submitted_ts_ms=COALESCE(excluded.submitted_ts_ms, execution_attempts.submitted_ts_ms),
+                    acknowledged_ts_ms=COALESCE(excluded.acknowledged_ts_ms, execution_attempts.acknowledged_ts_ms),
+                    first_fill_ts_ms=COALESCE(excluded.first_fill_ts_ms, execution_attempts.first_fill_ts_ms),
+                    full_fill_ts_ms=COALESCE(excluded.full_fill_ts_ms, execution_attempts.full_fill_ts_ms),
+                    cancelled_ts_ms=COALESCE(excluded.cancelled_ts_ms, execution_attempts.cancelled_ts_ms),
+                    final_ts_ms=COALESCE(excluded.final_ts_ms, execution_attempts.final_ts_ms),
+                    final_state=COALESCE(excluded.final_state, execution_attempts.final_state),
+                    filled_price=COALESCE(excluded.filled_price, execution_attempts.filled_price),
+                    shortfall_bps=COALESCE(excluded.shortfall_bps, execution_attempts.shortfall_bps),
+                    filled_volume=COALESCE(excluded.filled_volume, execution_attempts.filled_volume),
+                    fill_fraction=COALESCE(excluded.fill_fraction, execution_attempts.fill_fraction),
+                    partial_fill=excluded.partial_fill,
+                    full_fill=excluded.full_fill,
+                    outcome_json=excluded.outcome_json,
+                    updated_ts=excluded.updated_ts
+                """,
+                (
+                    record.attempt_id,
+                    record.journal_id,
+                    record.intent_id,
+                    record.order_uuid,
+                    record.order_identifier,
+                    record.market,
+                    record.side,
+                    record.ord_type,
+                    record.time_in_force,
+                    record.action_code,
+                    record.price_mode,
+                    record.requested_price,
+                    record.requested_volume,
+                    record.requested_notional_quote,
+                    record.reference_price,
+                    record.tick_size,
+                    record.spread_bps,
+                    record.depth_top5_notional_krw,
+                    record.trade_coverage_ms,
+                    record.book_coverage_ms,
+                    record.snapshot_age_ms,
+                    record.micro_quality_score,
+                    record.model_prob,
+                    record.expected_edge_bps,
+                    record.expected_net_edge_bps,
+                    record.expected_es_bps,
+                    int(record.submitted_ts_ms),
+                    record.acknowledged_ts_ms,
+                    record.first_fill_ts_ms,
+                    record.full_fill_ts_ms,
+                    record.cancelled_ts_ms,
+                    record.final_ts_ms,
+                    record.final_state,
+                    record.filled_price,
+                    record.shortfall_bps,
+                    record.filled_volume,
+                    record.fill_fraction,
+                    1 if record.partial_fill else 0,
+                    1 if record.full_fill else 0,
+                    record.outcome_json,
+                    int(record.updated_ts),
+                ),
+            )
+
+    def execution_attempt_by_id(self, *, attempt_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+        return _row_to_execution_attempt(row) if row is not None else None
+
+    def latest_execution_attempt_by_intent(self, *, intent_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM execution_attempts WHERE intent_id = ? ORDER BY submitted_ts_ms DESC, updated_ts DESC LIMIT 1",
+            (intent_id,),
+        ).fetchone()
+        return _row_to_execution_attempt(row) if row is not None else None
+
+    def execution_attempt_by_order_uuid(self, *, order_uuid: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM execution_attempts WHERE order_uuid = ? ORDER BY submitted_ts_ms DESC, updated_ts DESC LIMIT 1",
+            (order_uuid,),
+        ).fetchone()
+        return _row_to_execution_attempt(row) if row is not None else None
+
+    def list_execution_attempts(
+        self,
+        *,
+        market: str | None = None,
+        final_only: bool = False,
+        since_ts_ms: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if market:
+            clauses.append("market = ?")
+            params.append(str(market).strip().upper())
+        if final_only:
+            clauses.append("final_ts_ms IS NOT NULL")
+        if since_ts_ms is not None:
+            clauses.append("submitted_ts_ms >= ?")
+            params.append(int(since_ts_ms))
+        query = "SELECT * FROM execution_attempts"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY submitted_ts_ms DESC, updated_ts DESC"
+        if limit is not None and int(limit) > 0:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_row_to_execution_attempt(row) for row in rows]
 
     def trade_journal_by_id(self, *, journal_id: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM trade_journal WHERE journal_id = ?", (journal_id,)).fetchone()
@@ -1108,6 +1304,7 @@ class LiveStateStore:
                     market TEXT NOT NULL,
                     side TEXT,
                     ord_type TEXT,
+                    time_in_force TEXT,
                     price REAL,
                     volume_req REAL,
                     volume_filled REAL NOT NULL DEFAULT 0,
@@ -1207,6 +1404,50 @@ class LiveStateStore:
                     updated_ts INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS execution_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    journal_id TEXT,
+                    intent_id TEXT,
+                    order_uuid TEXT,
+                    order_identifier TEXT,
+                    market TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    ord_type TEXT NOT NULL,
+                    time_in_force TEXT,
+                    action_code TEXT,
+                    price_mode TEXT,
+                    requested_price REAL,
+                    requested_volume REAL,
+                    requested_notional_quote REAL,
+                    reference_price REAL,
+                    tick_size REAL,
+                    spread_bps REAL,
+                    depth_top5_notional_krw REAL,
+                    trade_coverage_ms INTEGER,
+                    book_coverage_ms INTEGER,
+                    snapshot_age_ms INTEGER,
+                    micro_quality_score REAL,
+                    model_prob REAL,
+                    expected_edge_bps REAL,
+                    expected_net_edge_bps REAL,
+                    expected_es_bps REAL,
+                    submitted_ts_ms INTEGER NOT NULL,
+                    acknowledged_ts_ms INTEGER,
+                    first_fill_ts_ms INTEGER,
+                    full_fill_ts_ms INTEGER,
+                    cancelled_ts_ms INTEGER,
+                    final_ts_ms INTEGER,
+                    final_state TEXT,
+                    filled_price REAL,
+                    shortfall_bps REAL,
+                    filled_volume REAL,
+                    fill_fraction REAL,
+                    partial_fill INTEGER NOT NULL DEFAULT 0,
+                    full_fill INTEGER NOT NULL DEFAULT 0,
+                    outcome_json TEXT NOT NULL DEFAULT '{}',
+                    updated_ts INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     name TEXT PRIMARY KEY,
                     ts_ms INTEGER NOT NULL,
@@ -1254,6 +1495,7 @@ class LiveStateStore:
                 );
                 """
             )
+        self._ensure_column("orders", "time_in_force", "TEXT")
         self._ensure_column("orders", "local_state", "TEXT")
         self._ensure_column("orders", "raw_exchange_state", "TEXT")
         self._ensure_column("orders", "last_event_name", "TEXT")
@@ -1279,6 +1521,15 @@ class LiveStateStore:
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trade_journal_exit_order_uuid ON trade_journal (exit_order_uuid)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_execution_attempts_market_ts ON execution_attempts (market, submitted_ts_ms)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_execution_attempts_intent_id ON execution_attempts (intent_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_execution_attempts_order_uuid ON execution_attempts (order_uuid)"
             )
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_root_order_uuid ON orders (root_order_uuid)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_local_state ON orders (local_state)")
@@ -1333,6 +1584,7 @@ def _row_to_order(row: sqlite3.Row) -> dict[str, Any]:
         "market": row["market"],
         "side": row["side"],
         "ord_type": row["ord_type"],
+        "time_in_force": row["time_in_force"],
         "price": float(row["price"]) if row["price"] is not None else None,
         "volume_req": float(row["volume_req"]) if row["volume_req"] is not None else None,
         "volume_filled": float(row["volume_filled"]),
@@ -1439,6 +1691,56 @@ def _row_to_trade_journal(row: sqlite3.Row) -> dict[str, Any]:
         "notional_multiplier": float(row["notional_multiplier"]) if row["notional_multiplier"] is not None else None,
         "entry_meta": _parse_json(row["entry_meta_json"]),
         "exit_meta": _parse_json(row["exit_meta_json"]),
+        "updated_ts": int(row["updated_ts"]),
+    }
+
+
+def _row_to_execution_attempt(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "attempt_id": row["attempt_id"],
+        "journal_id": row["journal_id"],
+        "intent_id": row["intent_id"],
+        "order_uuid": row["order_uuid"],
+        "order_identifier": row["order_identifier"],
+        "market": row["market"],
+        "side": row["side"],
+        "ord_type": row["ord_type"],
+        "time_in_force": row["time_in_force"],
+        "action_code": row["action_code"],
+        "price_mode": row["price_mode"],
+        "requested_price": float(row["requested_price"]) if row["requested_price"] is not None else None,
+        "requested_volume": float(row["requested_volume"]) if row["requested_volume"] is not None else None,
+        "requested_notional_quote": (
+            float(row["requested_notional_quote"]) if row["requested_notional_quote"] is not None else None
+        ),
+        "reference_price": float(row["reference_price"]) if row["reference_price"] is not None else None,
+        "tick_size": float(row["tick_size"]) if row["tick_size"] is not None else None,
+        "spread_bps": float(row["spread_bps"]) if row["spread_bps"] is not None else None,
+        "depth_top5_notional_krw": (
+            float(row["depth_top5_notional_krw"]) if row["depth_top5_notional_krw"] is not None else None
+        ),
+        "trade_coverage_ms": int(row["trade_coverage_ms"]) if row["trade_coverage_ms"] is not None else None,
+        "book_coverage_ms": int(row["book_coverage_ms"]) if row["book_coverage_ms"] is not None else None,
+        "snapshot_age_ms": int(row["snapshot_age_ms"]) if row["snapshot_age_ms"] is not None else None,
+        "micro_quality_score": float(row["micro_quality_score"]) if row["micro_quality_score"] is not None else None,
+        "model_prob": float(row["model_prob"]) if row["model_prob"] is not None else None,
+        "expected_edge_bps": float(row["expected_edge_bps"]) if row["expected_edge_bps"] is not None else None,
+        "expected_net_edge_bps": float(row["expected_net_edge_bps"]) if row["expected_net_edge_bps"] is not None else None,
+        "expected_es_bps": float(row["expected_es_bps"]) if row["expected_es_bps"] is not None else None,
+        "submitted_ts_ms": int(row["submitted_ts_ms"]),
+        "acknowledged_ts_ms": int(row["acknowledged_ts_ms"]) if row["acknowledged_ts_ms"] is not None else None,
+        "first_fill_ts_ms": int(row["first_fill_ts_ms"]) if row["first_fill_ts_ms"] is not None else None,
+        "full_fill_ts_ms": int(row["full_fill_ts_ms"]) if row["full_fill_ts_ms"] is not None else None,
+        "cancelled_ts_ms": int(row["cancelled_ts_ms"]) if row["cancelled_ts_ms"] is not None else None,
+        "final_ts_ms": int(row["final_ts_ms"]) if row["final_ts_ms"] is not None else None,
+        "final_state": row["final_state"],
+        "filled_price": float(row["filled_price"]) if row["filled_price"] is not None else None,
+        "shortfall_bps": float(row["shortfall_bps"]) if row["shortfall_bps"] is not None else None,
+        "filled_volume": float(row["filled_volume"]) if row["filled_volume"] is not None else None,
+        "fill_fraction": float(row["fill_fraction"]) if row["fill_fraction"] is not None else None,
+        "partial_fill": bool(row["partial_fill"]),
+        "full_fill": bool(row["full_fill"]),
+        "outcome": _parse_json(row["outcome_json"]),
         "updated_ts": int(row["updated_ts"]),
     }
 

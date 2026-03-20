@@ -15,6 +15,7 @@ from autobot.execution.order_supervisor import (
 )
 from autobot.live.identifier import new_protective_order_identifier
 from autobot.live.order_state import normalize_order_state
+from autobot.live.execution_attempts import mark_execution_attempt_cancelled, rebind_execution_attempt_order
 
 from .admissibility import extract_min_total
 from .breakers import arm_breaker
@@ -375,6 +376,17 @@ def _abort_open_order(
         str(order.get("side") or "").strip().lower() == "bid"
         and _safe_float(order.get("volume_filled"), default=0.0) <= 0.0
     ):
+        mark_execution_attempt_cancelled(
+            store=store,
+            intent_id=_as_optional_str(intent.get("intent_id")),
+            order_uuid=_as_optional_str(order.get("uuid")),
+            ts_ms=int(ts_ms),
+            final_state="MISSED",
+            outcome_payload={
+                "source": "live_order_supervisor",
+                "reason_code": reason_code,
+            },
+        )
         cancel_pending_entry_journal(
             store=store,
             market=str(order.get("market") or ""),
@@ -479,6 +491,7 @@ def _replace_open_order(
             market=str(order.get("market") or ""),
             side=_as_optional_str(order.get("side")),
             ord_type=_as_optional_str(order.get("ord_type")) or "limit",
+            time_in_force=_as_optional_str(order.get("time_in_force")) or "gtc",
             price=float(action.target_price or order.get("price") or 0.0),
             volume_req=max(float(remaining_volume), 0.0),
             volume_filled=0.0,
@@ -551,6 +564,14 @@ def _replace_open_order(
         },
     )
     if str(order.get("side") or "").strip().lower() == "bid":
+        rebind_execution_attempt_order(
+            store=store,
+            intent_id=_as_optional_str(intent.get("intent_id")),
+            previous_order_uuid=_as_optional_str(order.get("uuid")),
+            new_order_uuid=new_uuid,
+            new_order_identifier=new_identifier_value,
+            ts_ms=int(ts_ms),
+        )
         rebind_pending_entry_journal_order(
             store=store,
             entry_intent_id=_as_optional_str(intent.get("intent_id")),

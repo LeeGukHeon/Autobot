@@ -92,6 +92,12 @@ class GrpcExecutionGateway:
         identifier_value = str(identifier).strip()
         if not identifier_value:
             raise ValueError("identifier is required")
+        if str(intent.ord_type).strip().lower() != "limit":
+            raise ValueError("gRPC executor currently supports limit intents only")
+        if str(intent.time_in_force).strip().lower() == "post_only":
+            raise ValueError("gRPC executor currently does not support post_only")
+        if intent.price is None or intent.volume is None:
+            raise ValueError("gRPC executor requires both price and volume")
 
         meta_value = meta_json if meta_json is not None else _build_meta_json(intent)
         request = self._pb2.OrderIntent(

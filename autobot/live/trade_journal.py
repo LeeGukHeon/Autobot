@@ -6,6 +6,7 @@ from typing import Any
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.execution.order_supervisor import slippage_bps
 
+from .execution_attempts import update_execution_attempt_fill_from_position
 from .state_store import LiveStateStore, OrderRecord, TradeJournalRecord
 
 TRADE_JOURNAL_STATUS_PENDING = "PENDING_ENTRY"
@@ -207,6 +208,14 @@ def activate_trade_journal_for_position(
             exit_meta_json=_json_dumps((existing or {}).get("exit_meta")),
             updated_ts=int(ts_ms),
         )
+    )
+    update_execution_attempt_fill_from_position(
+        store=store,
+        intent_id=entry_intent_id,
+        journal_id=journal_id,
+        fill_price=position_entry_price,
+        filled_volume=position_qty,
+        ts_ms=filled_ts,
     )
     return journal_id
 
@@ -1202,6 +1211,10 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
     snapshot = dict(admissibility.get("snapshot") or {}) if isinstance(admissibility.get("snapshot"), dict) else {}
     sizing = dict(admissibility.get("sizing") or {}) if isinstance(admissibility.get("sizing"), dict) else {}
     execution = dict(payload.get("execution") or {}) if isinstance(payload.get("execution"), dict) else {}
+    execution_policy = (
+        dict(payload.get("execution_policy") or {}) if isinstance(payload.get("execution_policy"), dict) else {}
+    )
+    micro_state = dict(payload.get("micro_state") or {}) if isinstance(payload.get("micro_state"), dict) else {}
     runtime = dict(payload.get("runtime") or {}) if isinstance(payload.get("runtime"), dict) else {}
     return {
         "strategy": {
@@ -1299,8 +1312,31 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
             "initial_ref_price": execution.get("initial_ref_price"),
             "effective_ref_price": execution.get("effective_ref_price"),
             "requested_price": execution.get("requested_price"),
+            "requested_volume": execution.get("requested_volume"),
+            "submit_price": execution.get("submit_price"),
+            "submit_volume": execution.get("submit_volume"),
             "latest_trade_price": execution.get("latest_trade_price"),
             "exec_profile": dict(execution.get("exec_profile") or {}) if isinstance(execution.get("exec_profile"), dict) else {},
+        },
+        "execution_policy": {
+            "selected_action_code": execution_policy.get("selected_action_code"),
+            "selected_ord_type": execution_policy.get("selected_ord_type"),
+            "selected_time_in_force": execution_policy.get("selected_time_in_force"),
+            "selected_price_mode": execution_policy.get("selected_price_mode"),
+            "selected_p_fill_deadline": execution_policy.get("selected_p_fill_deadline"),
+            "selected_expected_shortfall_bps": execution_policy.get("selected_expected_shortfall_bps"),
+            "selected_expected_time_to_first_fill_ms": execution_policy.get("selected_expected_time_to_first_fill_ms"),
+            "selected_utility_bps": execution_policy.get("selected_utility_bps"),
+            "status": execution_policy.get("status"),
+            "deadline_ms": execution_policy.get("deadline_ms"),
+        },
+        "micro_state": {
+            "spread_bps": micro_state.get("spread_bps"),
+            "depth_top5_notional_krw": micro_state.get("depth_top5_notional_krw"),
+            "trade_coverage_ms": micro_state.get("trade_coverage_ms"),
+            "book_coverage_ms": micro_state.get("book_coverage_ms"),
+            "snapshot_age_ms": micro_state.get("snapshot_age_ms"),
+            "micro_quality_score": micro_state.get("micro_quality_score"),
         },
         "runtime": {
             "live_runtime_model_run_id": runtime.get("live_runtime_model_run_id"),

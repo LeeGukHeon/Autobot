@@ -11,6 +11,7 @@ from .identifier import extract_intent_id_from_identifier, extract_run_token_fro
 from .model_alpha_projection import close_market_risk_plans, find_latest_model_entry_intent
 from .model_risk_plan import build_model_derived_risk_records
 from .order_state import normalize_order_state
+from .execution_attempts import update_execution_attempt_from_order
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from .trade_journal import (
     activate_trade_journal_for_position,
@@ -89,6 +90,7 @@ def _apply_my_order_event(
         market=event.market,
         side=event.side,
         ord_type=event.ord_type,
+        time_in_force=_as_optional_str(raw.get("time_in_force") or raw.get("tif")),
         price=event.price,
         volume_req=event.volume,
         volume_filled=float(event.executed_volume or 0.0),
@@ -138,6 +140,22 @@ def _apply_my_order_event(
         exchange_payload_json=json.dumps(raw, ensure_ascii=False, sort_keys=True) if raw else "{}",
     )
     store.upsert_order(order_record)
+    update_execution_attempt_from_order(
+        store=store,
+        order=store.order_by_uuid(uuid=event.uuid) or {
+            "uuid": event.uuid,
+            "market": event.market,
+            "side": event.side,
+            "ord_type": event.ord_type,
+            "time_in_force": _as_optional_str(raw.get("time_in_force") or raw.get("tif")),
+            "volume_req": event.volume,
+            "volume_filled": float(event.executed_volume or 0.0),
+            "state": str(event.state or "").strip().lower(),
+            "local_state": normalized.local_state,
+        },
+        intent_id=intent_id,
+        ts_ms=int(event.ts_ms),
+    )
     if (
         previous_order is not None
         and str(event.side or "").strip().lower() == "bid"
