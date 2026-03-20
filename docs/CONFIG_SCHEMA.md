@@ -585,7 +585,13 @@
     - `paper_min_orders_filled=2`
     - `paper_min_realized_pnl_quote=0.0`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
-- `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
+- `v4` acceptance wrapper family now routes through:
+  - `scripts/v4_promotable_candidate_acceptance.ps1`
+  - `scripts/v4_scout_candidate_acceptance.ps1`
+  - `scripts/v4_rank_shadow_candidate_acceptance.ps1`
+  - `scripts/v4_rank_governed_candidate_acceptance.ps1`
+  - `scripts/v4_governed_candidate_acceptance.ps1`
+  - the old compatibility alias `scripts/v4_candidate_acceptance.ps1` was removed
   - v3/v4 acceptance now shares one fixed compare profile for backtest/paper soak:
     - `top_pct=0.50`
     - `min_prob=0.00`
