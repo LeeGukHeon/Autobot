@@ -125,7 +125,7 @@ Installer/source files:
 ### 3.4 Training/orchestration findings
 
 - `candidate_acceptance.ps1` remains the monolithic acceptance/orchestration core. The v3/v4 wrapper family mostly rewrites arguments.
-- `daily_parallel_acceptance_for_server.ps1` and `daily_candidate_acceptance_for_server.ps1` still exist but are no longer the primary production path. They are secondary/manual paths and therefore drift risks.
+- `daily_candidate_acceptance_for_server.ps1` still exists as a secondary/manual path and therefore remains a drift risk.
 - The new shared execution contract now enters:
   - 23:40 refresh
   - live runtime checkpoint load
@@ -294,15 +294,12 @@ These are not the primary OCI production path anymore, but they are still presen
 
 - daily acceptance wrappers:
   - `scripts/daily_candidate_acceptance_for_server.ps1`
-  - `scripts/daily_parallel_acceptance_for_server.ps1`
 - legacy/manual installers:
   - `scripts/install_server_daily_acceptance_service.ps1`
-  - `scripts/install_server_daily_parallel_acceptance_service.ps1`
 - v3-visible runtime and acceptance surfaces:
   - CLI `--trainer` still exposes `v2_micro` / `v3_mtf_micro`
   - `paper alpha --preset` still exposes `live_v3`
   - `scripts/install_server_runtime_services.ps1` still accepts `live_v3`
-  - `scripts/v3_candidate_acceptance.ps1` still targets `autobot-paper-alpha.service`
 - local Windows scheduling helpers:
   - `scripts/register_scheduled_tasks.ps1`
   - `scripts/unregister_scheduled_tasks.ps1`

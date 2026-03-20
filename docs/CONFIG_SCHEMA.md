@@ -584,7 +584,12 @@
     - `paper_max_fallback_ratio=0.20`
     - `paper_min_orders_filled=2`
     - `paper_min_realized_pnl_quote=0.0`
-- `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
+- `v3` acceptance automation path was removed from the current repo surface
+  - removed scripts:
+    - `scripts/v3_candidate_acceptance.ps1`
+    - `scripts/daily_parallel_acceptance_for_server.ps1`
+    - `scripts/install_server_daily_parallel_acceptance_service.ps1`
+  - current production/ops surface keeps only the `v4` challenger flow and its governed wrappers
 - `v4` acceptance wrapper family now routes through:
   - `scripts/v4_promotable_candidate_acceptance.ps1`
   - `scripts/v4_scout_candidate_acceptance.ps1`
@@ -646,22 +651,9 @@
 - `scripts/oci_paper_run_and_pull.cmd`
   - ad-hoc OCI paper runs now defer to `paper alpha --preset` defaults instead of hardcoding `min_prob/top_pct/min_candidates`
   - default ad-hoc preset is now `live_v4`
-- `scripts/daily_parallel_acceptance_for_server.ps1`: shared same-time orchestrator for `v3` and `v4`
-  - runs shared daily collection once, then rebuilds both feature datasets, then launches `v3` and `v4` acceptance in parallel
-  - current defaults:
-    - `TrainTopN=50`
-    - `Tf=5m`
-    - `V3TrainLookbackDays=30`
-    - `V4TrainLookbackDays=30`
-  - intended runtime pairing:
-    - `v3` lane -> `autobot-paper-alpha.service`
-    - `v4` lane -> `autobot-paper-v4.service`
-  - each lane reuses the same batch date and only restarts its own runtime unit on promote
-- `scripts/install_server_daily_parallel_acceptance_service.ps1`: rewires `autobot-daily-micro.service` to the shared orchestrator
-  - current single-lane rollout rewires `autobot-daily-micro.service` to `daily_champion_challenger_v4_for_server.ps1`
+- current single-lane rollout rewires `autobot-daily-micro.service` to `daily_champion_challenger_v4_for_server.ps1`
   - `autobot-daily-micro.timer` stays at `00:10`
   - the separate delayed `autobot-daily-v4-accept.timer` is disabled
-  - `v3` stays available only as manual benchmark / fallback tooling
   - optional `PromotionTargetUnits` can be passed so future live runtimes restart from the same `champion_v4` promote event
 
 ## CLI: Live State
