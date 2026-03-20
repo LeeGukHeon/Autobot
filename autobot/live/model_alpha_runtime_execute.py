@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import math
 from typing import Any, Callable
 
+from autobot.execution.order_supervisor import OrderExecProfile, normalize_order_exec_profile
 from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_decision,
     resolve_execution_risk_control_martingale_state,
     resolve_execution_risk_control_online_state,
     resolve_execution_risk_control_size_decision,
 )
+
+CANARY_ENTRY_TIMEOUT_CAP_MS = 180_000
 
 
 def record_strategy_intent(
@@ -131,6 +135,16 @@ def apply_canary_notional_cap(
     safe_optional_float_fn: Callable[[object], float | None],
 ) -> float:
     resolved_target = max(float(target_notional_quote), 0.0)
+    if not _is_canary_rollout(store=store, settings=settings):
+        return resolved_target
+    rollout_contract = store.live_rollout_contract() or {}
+    cap_value = safe_optional_float_fn(rollout_contract.get("canary_max_notional_quote"))
+    if cap_value is None or cap_value <= 0.0:
+        return resolved_target
+    return min(resolved_target, float(cap_value))
+
+
+def _is_canary_rollout(*, store: Any, settings: Any) -> bool:
     rollout_contract = store.live_rollout_contract() or {}
     rollout_status = store.live_rollout_status() or {}
     rollout_mode = (
@@ -139,14 +153,38 @@ def apply_canary_notional_cap(
         .lower()
     )
     if rollout_mode != "canary":
-        return resolved_target
+        return False
     contract_target_unit = str(rollout_contract.get("target_unit") or "").strip()
     if contract_target_unit and contract_target_unit != str(settings.daemon.rollout_target_unit).strip():
-        return resolved_target
-    cap_value = safe_optional_float_fn(rollout_contract.get("canary_max_notional_quote"))
-    if cap_value is None or cap_value <= 0.0:
-        return resolved_target
-    return min(resolved_target, float(cap_value))
+        return False
+    return True
+
+
+def apply_canary_entry_timeout_cap(
+    *,
+    store: Any,
+    settings: Any,
+    side: str,
+    exec_profile: OrderExecProfile,
+) -> OrderExecProfile:
+    if str(side).strip().lower() != "bid":
+        return exec_profile
+    if not _is_canary_rollout(store=store, settings=settings):
+        return exec_profile
+    timeout_cap_ms = max(int(CANARY_ENTRY_TIMEOUT_CAP_MS), 1)
+    normalized = normalize_order_exec_profile(exec_profile)
+    if int(normalized.timeout_ms) <= timeout_cap_ms and int(normalized.replace_interval_ms) <= timeout_cap_ms:
+        return normalized
+    return normalize_order_exec_profile(
+        replace(
+            normalized,
+            timeout_ms=min(int(normalized.timeout_ms), timeout_cap_ms),
+            replace_interval_ms=max(
+                min(int(normalized.replace_interval_ms), timeout_cap_ms),
+                int(normalized.min_replace_interval_ms_global),
+            ),
+        )
+    )
 
 
 def strategy_live_exec_profile(
@@ -534,6 +572,12 @@ def resolve_live_strategy_execution(
         exec_profile = operational_decision.exec_profile
         if entry_notional_quote is not None:
             entry_notional_quote *= max(float(operational_decision.risk_multiplier), 0.0)
+    exec_profile = apply_canary_entry_timeout_cap(
+        store=store,
+        settings=settings,
+        side=side,
+        exec_profile=exec_profile,
+    )
 
     if side == "ask":
         if local_position is None:
