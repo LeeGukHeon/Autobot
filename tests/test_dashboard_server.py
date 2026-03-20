@@ -150,7 +150,9 @@ def _init_live_db(path: Path) -> None:
     conn.close()
 
 
-def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None:
+def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTOBOT_DASHBOARD_OPS_ENABLED", raising=False)
+    monkeypatch.delenv("AUTOBOT_DASHBOARD_OPS_TOKEN", raising=False)
     project_root = tmp_path
     _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-10T00:10:00Z", "candidate_run_id": "run-abc", "overall_pass": False, "backtest_pass": False, "reasons": ["TRAINER_EVIDENCE_REQUIRED_FAILED"], "notes": ["PAPER_SOAK_SKIPPED"], "gates": {"backtest": {"decision_basis": "TRAINER_EVIDENCE_REQUIRED_FAIL"}}})
     _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"steps": {"start_challenger": {"candidate_run_id": "run-abc", "started": False, "reason": "TRAINER_EVIDENCE_REQUIRED_FAILED", "acceptance_notes": ["PAPER_SOAK_SKIPPED"]}}})
@@ -315,13 +317,16 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path) -> None
     import autobot.dashboard_server as dashboard_server_module
 
     original_ticker_loader = dashboard_server_module._load_live_market_tickers
+    original_account_loader = dashboard_server_module._load_live_account_summary
     dashboard_server_module._load_live_market_tickers = lambda project_root, markets: {  # type: ignore[assignment]
         "KRW-BTC": {"trade_price": 104.0, "trade_timestamp": int(time.time() * 1000)}
     }
+    dashboard_server_module._load_live_account_summary = lambda project_root: {}  # type: ignore[assignment]
     try:
         snapshot = build_dashboard_snapshot(project_root)
     finally:
         dashboard_server_module._load_live_market_tickers = original_ticker_loader  # type: ignore[assignment]
+        dashboard_server_module._load_live_account_summary = original_account_loader  # type: ignore[assignment]
     runtime_artifacts = snapshot["live"]["states"][0]["runtime_artifacts"]
     runtime_recommendations = runtime_artifacts["runtime_recommendations"]
     exit_compare = runtime_recommendations["exit_mode_compare"]

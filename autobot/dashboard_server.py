@@ -19,6 +19,8 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
+
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 from autobot.live.candidate_canary_report import build_candidate_canary_report
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
@@ -116,6 +118,19 @@ def _load_ws_public_status(*, meta_dir: Path, raw_root: Path) -> dict[str, Any]:
 def _env_flag(name: str) -> bool:
     value = str(os.getenv(name, "")).strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _autoload_dashboard_dotenv(project_root: Path) -> None:
+    for candidate in (
+        project_root / ".env",
+        project_root / "config" / ".env",
+    ):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved.exists():
+            load_dotenv(dotenv_path=resolved, override=False)
 
 
 def _truncate(value: str | None, limit: int = 120) -> str | None:
@@ -2273,7 +2288,9 @@ def _build_handler(project_root: Path) -> type[DashboardRequestHandler]:
 
 
 def serve_dashboard(*, project_root: Path, host: str, port: int) -> None:
-    server = ThreadingHTTPServer((host, port), _build_handler(project_root.resolve()))
+    resolved_root = project_root.resolve()
+    _autoload_dashboard_dotenv(resolved_root)
+    server = ThreadingHTTPServer((host, port), _build_handler(resolved_root))
     try:
         server.serve_forever()
     except KeyboardInterrupt:  # pragma: no cover
