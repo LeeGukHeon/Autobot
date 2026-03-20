@@ -90,8 +90,6 @@ def resolve_v4_search_budget(
         markers.append("HARD_WALL_TIME_PRESSURE")
         reasons.append("PREVIOUS_TRAIN_DURATION_AT_OR_ABOVE_HARD_THRESHOLD")
     elif previous_duration_sec >= float(active_policy.soft_wall_time_sec):
-        applied_trials = min(applied_trials, max(int(active_policy.soft_booster_trial_cap), 1))
-        runtime_profile = _max_runtime_profile(runtime_profile, str(active_policy.soft_runtime_profile))
         markers.append("SOFT_WALL_TIME_PRESSURE")
         reasons.append("PREVIOUS_TRAIN_DURATION_AT_OR_ABOVE_SOFT_THRESHOLD")
 
@@ -102,8 +100,6 @@ def resolve_v4_search_budget(
             markers.append("LEDGER_HARD_WALL_TIME_PRESSURE")
             reasons.append("RECENT_MEAN_DURATION_AT_OR_ABOVE_HARD_THRESHOLD")
         elif experiment_mean_duration_sec >= float(active_policy.soft_wall_time_sec):
-            applied_trials = min(applied_trials, max(int(active_policy.soft_booster_trial_cap), 1))
-            runtime_profile = _max_runtime_profile(runtime_profile, str(active_policy.soft_runtime_profile))
             markers.append("LEDGER_SOFT_WALL_TIME_PRESSURE")
             reasons.append("RECENT_MEAN_DURATION_AT_OR_ABOVE_SOFT_THRESHOLD")
 

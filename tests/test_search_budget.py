@@ -221,6 +221,43 @@ def test_resolve_v4_search_budget_uses_recent_experiment_ledger_summary(tmp_path
     assert decision["experiment_ledger_context"]["available"] is True
 
 
+def test_resolve_v4_search_budget_treats_soft_wall_time_as_warning_only(tmp_path: Path) -> None:
+    logs_root = tmp_path / "logs"
+    logs_root.mkdir(parents=True, exist_ok=True)
+    (logs_root / "train_v4_report.json").write_text(
+        json.dumps({"duration_sec": 8_000}),
+        encoding="utf-8",
+    )
+
+    decision = resolve_v4_search_budget(
+        project_root=tmp_path,
+        logs_root=logs_root,
+        registry_root=tmp_path / "registry",
+        model_family="train_v4_crypto_cs",
+        run_scope="scheduled_daily",
+        requested_booster_sweep_trials=10,
+        factor_block_selection_context={},
+        cpcv_requested=False,
+        policy=V4SearchBudgetPolicy(
+            soft_disk_used_gb=10_000.0,
+            hard_disk_used_gb=20_000.0,
+            soft_wall_time_sec=7_200,
+            hard_wall_time_sec=10_800,
+            soft_booster_trial_cap=8,
+            hard_booster_trial_cap=5,
+        ),
+    )
+
+    assert decision["status"] == "default"
+    assert decision["lane_class_requested"] == "promotion_eligible"
+    assert decision["lane_class_effective"] == "promotion_eligible"
+    assert decision["promotion_eligible_contract"]["satisfied"] is True
+    assert decision["applied"]["booster_sweep_trials"] == 10
+    assert decision["applied"]["runtime_recommendation_profile"] == "compact"
+    assert "SOFT_WALL_TIME_PRESSURE" in decision["markers"]
+    assert "PREVIOUS_TRAIN_DURATION_AT_OR_ABOVE_SOFT_THRESHOLD" in decision["reasons"]
+
+
 def test_resolve_v4_search_budget_uses_scope_specific_train_report(tmp_path: Path) -> None:
     logs_root = tmp_path / "logs"
     logs_root.mkdir(parents=True, exist_ok=True)
