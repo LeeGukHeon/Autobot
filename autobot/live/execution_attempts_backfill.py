@@ -8,8 +8,10 @@ from typing import Any
 
 from autobot.execution.order_supervisor import slippage_bps
 from autobot.models.live_execution_policy import ACTION_CONFIGS
+from autobot.strategy.micro_snapshot import MicroSnapshot, OfflineMicroSnapshotProvider
+from autobot.strategy.operational_overlay_v1 import ModelAlphaOperationalSettings, compute_micro_quality_composite
 
-from .state_store import ExecutionAttemptRecord, LiveStateStore
+from .state_store import ExecutionAttemptRecord, LiveStateStore, TradeJournalRecord
 
 
 def backfill_execution_attempts(
@@ -17,6 +19,8 @@ def backfill_execution_attempts(
     store: LiveStateStore,
     lookback_days: int = 14,
     limit: int = 5000,
+    micro_root: Path | None = None,
+    micro_tf: str = "5m",
 ) -> dict[str, Any]:
     now_ts_ms = int(time.time() * 1000)
     since_ts_ms = now_ts_ms - (max(int(lookback_days), 1) * 86_400_000)
@@ -49,14 +53,42 @@ def backfill_execution_attempts(
         "partial_cancelled": 0,
         "skipped": 0,
         "skipped_reasons": {},
+        "micro_replay_enabled": False,
+        "micro_root": None,
+        "micro_tf": str(micro_tf).strip().lower() or "5m",
+        "micro_journals_updated": 0,
+        "micro_attempts_enriched": 0,
+        "micro_missing_snapshot": 0,
+        "micro_missing_timestamp": 0,
     }
+    micro_provider = _resolve_micro_snapshot_provider(
+        db_path=store.db_path,
+        micro_root=micro_root,
+        micro_tf=micro_tf,
+    )
+    if micro_provider is not None:
+        report["micro_replay_enabled"] = True
+        report["micro_root"] = str(_resolve_micro_root(db_path=store.db_path, micro_root=micro_root))
     for journal in recent_journals:
+        journal, journal_micro_updated, journal_micro_reason = _backfill_journal_micro_state(
+            journal=journal,
+            store=store,
+            micro_provider=micro_provider,
+        )
+        if journal_micro_updated:
+            report["micro_journals_updated"] += 1
+        elif journal_micro_reason == "MISSING_TIMESTAMP":
+            report["micro_missing_timestamp"] += 1
+        elif journal_micro_reason == "SNAPSHOT_UNAVAILABLE":
+            report["micro_missing_snapshot"] += 1
         order = _resolve_entry_order(journal=journal, orders_by_uuid=orders_by_uuid, orders_by_intent=orders_by_intent)
         record, skip_reason = _build_attempt_record(journal=journal, order=order)
         if record is None:
             report["skipped"] += 1
             _inc_reason(report["skipped_reasons"], skip_reason or "UNSUPPORTED_JOURNAL")
             continue
+        if _execution_attempt_has_micro_state(record):
+            report["micro_attempts_enriched"] += 1
         store.upsert_execution_attempt(record)
         report["attempts_upserted"] += 1
         if str(record.final_state or "") == "FILLED":
@@ -73,13 +105,174 @@ def backfill_execution_attempts_for_db(
     db_path: Path,
     lookback_days: int = 14,
     limit: int = 5000,
+    micro_root: Path | None = None,
+    micro_tf: str = "5m",
 ) -> dict[str, Any]:
     with LiveStateStore(db_path) as store:
         return backfill_execution_attempts(
             store=store,
             lookback_days=lookback_days,
             limit=limit,
+            micro_root=micro_root,
+            micro_tf=micro_tf,
         )
+
+
+def _resolve_micro_root(*, db_path: Path, micro_root: Path | None) -> Path | None:
+    if micro_root is not None:
+        candidate = Path(micro_root)
+        return candidate if candidate.exists() else None
+    resolved = Path(db_path).resolve()
+    for parent in [resolved.parent, *resolved.parents]:
+        candidate = parent / "data" / "parquet" / "micro_v1"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_micro_snapshot_provider(
+    *,
+    db_path: Path,
+    micro_root: Path | None,
+    micro_tf: str,
+) -> OfflineMicroSnapshotProvider | None:
+    resolved_root = _resolve_micro_root(db_path=db_path, micro_root=micro_root)
+    if resolved_root is None:
+        return None
+    return OfflineMicroSnapshotProvider(
+        micro_root=resolved_root,
+        tf=str(micro_tf).strip().lower() or "5m",
+    )
+
+
+def _backfill_journal_micro_state(
+    *,
+    journal: dict[str, Any],
+    store: LiveStateStore,
+    micro_provider: OfflineMicroSnapshotProvider | None,
+) -> tuple[dict[str, Any], bool, str | None]:
+    journal_doc = dict(journal)
+    if micro_provider is None:
+        return journal_doc, False, None
+    target_ts_ms = _safe_optional_int(journal_doc.get("entry_submitted_ts_ms"))
+    if target_ts_ms is None or target_ts_ms <= 0:
+        return journal_doc, False, "MISSING_TIMESTAMP"
+    market = _as_optional_str(journal_doc.get("market"))
+    if market is None:
+        return journal_doc, False, "MISSING_MARKET"
+    entry_meta = dict(journal_doc.get("entry_meta") or {}) if isinstance(journal_doc.get("entry_meta"), dict) else {}
+    existing_micro_state = dict(entry_meta.get("micro_state") or {}) if isinstance(entry_meta.get("micro_state"), dict) else {}
+    if not _micro_state_needs_backfill(existing_micro_state):
+        return journal_doc, False, None
+    snapshot = micro_provider.get(market, int(target_ts_ms))
+    if snapshot is None:
+        return journal_doc, False, "SNAPSHOT_UNAVAILABLE"
+    merged_micro_state = _merge_micro_state(
+        existing=existing_micro_state,
+        snapshot=snapshot,
+        now_ts_ms=int(target_ts_ms),
+    )
+    entry_meta["micro_state"] = merged_micro_state
+    journal_doc["entry_meta"] = entry_meta
+    _upsert_trade_journal_entry_meta(store=store, journal=journal_doc)
+    return journal_doc, True, None
+
+
+def _merge_micro_state(
+    *,
+    existing: dict[str, Any],
+    snapshot: MicroSnapshot,
+    now_ts_ms: int,
+) -> dict[str, Any]:
+    merged = dict(existing or {})
+    last_event_ts_ms = _safe_optional_int(getattr(snapshot, "last_event_ts_ms", None))
+    snapshot_age_ms = None
+    if last_event_ts_ms is not None:
+        snapshot_age_ms = max(int(now_ts_ms) - int(last_event_ts_ms), 0)
+    quality = compute_micro_quality_composite(
+        micro_snapshot=snapshot,
+        now_ts_ms=int(now_ts_ms),
+        settings=ModelAlphaOperationalSettings(),
+    )
+    patch = {
+        "spread_bps": _safe_optional_float(getattr(snapshot, "spread_bps_mean", None)),
+        "depth_top5_notional_krw": _safe_optional_float(getattr(snapshot, "depth_top5_notional_krw", None)),
+        "trade_coverage_ms": _safe_optional_int(getattr(snapshot, "trade_coverage_ms", None)),
+        "book_coverage_ms": _safe_optional_int(getattr(snapshot, "book_coverage_ms", None)),
+        "snapshot_age_ms": _safe_optional_int(snapshot_age_ms),
+        "micro_quality_score": _safe_optional_float(getattr(quality, "score", None)),
+    }
+    for key, value in patch.items():
+        if merged.get(key) is None and value is not None:
+            merged[key] = value
+    return merged
+
+
+def _micro_state_needs_backfill(micro_state: dict[str, Any]) -> bool:
+    if not isinstance(micro_state, dict):
+        return True
+    for key in (
+        "spread_bps",
+        "depth_top5_notional_krw",
+        "trade_coverage_ms",
+        "book_coverage_ms",
+        "snapshot_age_ms",
+        "micro_quality_score",
+    ):
+        if micro_state.get(key) is None:
+            return True
+    return False
+
+
+def _upsert_trade_journal_entry_meta(*, store: LiveStateStore, journal: dict[str, Any]) -> None:
+    store.upsert_trade_journal(
+        TradeJournalRecord(
+            journal_id=str(journal.get("journal_id") or ""),
+            market=str(journal.get("market") or ""),
+            status=str(journal.get("status") or ""),
+            entry_intent_id=_as_optional_str(journal.get("entry_intent_id")),
+            entry_order_uuid=_as_optional_str(journal.get("entry_order_uuid")),
+            exit_order_uuid=_as_optional_str(journal.get("exit_order_uuid")),
+            plan_id=_as_optional_str(journal.get("plan_id")),
+            entry_submitted_ts_ms=_safe_optional_int(journal.get("entry_submitted_ts_ms")),
+            entry_filled_ts_ms=_safe_optional_int(journal.get("entry_filled_ts_ms")),
+            exit_ts_ms=_safe_optional_int(journal.get("exit_ts_ms")),
+            entry_price=_safe_optional_float(journal.get("entry_price")),
+            exit_price=_safe_optional_float(journal.get("exit_price")),
+            qty=_safe_optional_float(journal.get("qty")),
+            entry_notional_quote=_safe_optional_float(journal.get("entry_notional_quote")),
+            exit_notional_quote=_safe_optional_float(journal.get("exit_notional_quote")),
+            realized_pnl_quote=_safe_optional_float(journal.get("realized_pnl_quote")),
+            realized_pnl_pct=_safe_optional_float(journal.get("realized_pnl_pct")),
+            entry_reason_code=_as_optional_str(journal.get("entry_reason_code")),
+            close_reason_code=_as_optional_str(journal.get("close_reason_code")),
+            close_mode=_as_optional_str(journal.get("close_mode")),
+            model_prob=_safe_optional_float(journal.get("model_prob")),
+            selection_policy_mode=_as_optional_str(journal.get("selection_policy_mode")),
+            trade_action=_as_optional_str(journal.get("trade_action")),
+            expected_edge_bps=_safe_optional_float(journal.get("expected_edge_bps")),
+            expected_downside_bps=_safe_optional_float(journal.get("expected_downside_bps")),
+            expected_net_edge_bps=_safe_optional_float(journal.get("expected_net_edge_bps")),
+            notional_multiplier=_safe_optional_float(journal.get("notional_multiplier")),
+            entry_meta_json=json.dumps(dict(journal.get("entry_meta") or {}), ensure_ascii=False, sort_keys=True),
+            exit_meta_json=json.dumps(dict(journal.get("exit_meta") or {}), ensure_ascii=False, sort_keys=True),
+            updated_ts=_safe_optional_int(journal.get("updated_ts")) or int(time.time() * 1000),
+        )
+    )
+
+
+def _execution_attempt_has_micro_state(record: ExecutionAttemptRecord) -> bool:
+    return any(
+        value is not None
+        for value in (
+            record.spread_bps,
+            record.depth_top5_notional_krw,
+            record.trade_coverage_ms,
+            record.book_coverage_ms,
+            record.snapshot_age_ms,
+            record.micro_quality_score,
+        )
+    )
 
 
 def _build_attempt_record(
@@ -342,6 +535,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-path", required=True)
     parser.add_argument("--lookback-days", type=int, default=14)
     parser.add_argument("--limit", type=int, default=5000)
+    parser.add_argument("--micro-root")
+    parser.add_argument("--micro-tf", default="5m")
     return parser
 
 
@@ -352,6 +547,8 @@ def main() -> int:
         db_path=Path(str(args.db_path)),
         lookback_days=max(int(args.lookback_days), 1),
         limit=max(int(args.limit), 1),
+        micro_root=(Path(str(args.micro_root)) if args.micro_root else None),
+        micro_tf=str(args.micro_tf or "5m"),
     )
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0
