@@ -20,7 +20,8 @@ from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_size_decision,
 )
 from autobot.models.live_execution_policy import (
-    build_live_execution_survival_model,
+    build_execution_policy_state,
+    build_live_execution_contract,
     candidate_action_codes_for_price_mode,
     select_live_execution_action,
 )
@@ -311,11 +312,14 @@ def _resolve_live_execution_model_payload(*, store: Any) -> dict[str, Any]:
         checkpoint = store.get_checkpoint(name="live_execution_policy_model")
         if isinstance(checkpoint, dict):
             payload = dict(checkpoint.get("payload") or {})
+            execution_contract = dict(payload.get("execution_contract") or {})
+            if int(execution_contract.get("rows_total", 0) or 0) > 0:
+                return execution_contract
             model_payload = dict(payload.get("model") or {})
             if int(model_payload.get("rows_total", 0) or 0) > 0:
                 return model_payload
     if hasattr(store, "list_execution_attempts"):
-        return build_live_execution_survival_model(
+        return build_live_execution_contract(
             attempts=store.list_execution_attempts(final_only=True, limit=500),
         )
     return {}
@@ -881,7 +885,10 @@ def resolve_live_strategy_execution(
     live_execution_model = _resolve_live_execution_model_payload(store=store)
     execution_policy = select_live_execution_action(
         model_payload=live_execution_model,
-        current_state={**micro_state, "expected_edge_bps": expected_edge_bps},
+        current_state=build_execution_policy_state(
+            micro_state=micro_state,
+            expected_edge_bps=expected_edge_bps,
+        ),
         expected_edge_bps=expected_edge_bps,
         candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
     )

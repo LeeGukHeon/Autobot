@@ -10,6 +10,7 @@ from autobot.live.execution_attempts import (
 )
 from autobot.live.state_store import LiveStateStore, OrderRecord
 from autobot.models.live_execution_policy import (
+    build_live_execution_contract,
     build_live_execution_survival_model,
     candidate_action_codes_for_price_mode,
     select_live_execution_action,
@@ -191,3 +192,24 @@ def test_live_execution_attempts_mark_cancelled(tmp_path: Path) -> None:
 
 def test_candidate_action_codes_for_price_mode_cross_prefers_best() -> None:
     assert candidate_action_codes_for_price_mode(price_mode="CROSS_1T")[0] == "BEST_IOC"
+
+
+def test_live_execution_contract_contains_fill_and_miss_models() -> None:
+    attempts = [
+        {
+            "action_code": "LIMIT_GTC_PASSIVE_MAKER",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+            "expected_net_edge_bps": 18.0,
+            "submitted_ts_ms": 0,
+            "final_state": "MISSED",
+        }
+    ] * 5
+
+    payload = build_live_execution_contract(attempts=attempts)
+
+    assert payload["policy"] == "live_execution_contract_v1"
+    assert payload["fill_model"]["policy"] == "live_fill_hazard_survival_v1"
+    assert payload["miss_cost_model"]["policy"] == "execution_miss_cost_summary_v1"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 ACTION_CONFIGS: dict[str, dict[str, Any]] = {
@@ -47,6 +49,7 @@ ACTION_CONFIGS: dict[str, dict[str, Any]] = {
     },
 }
 DEFAULT_ACTION_CODE = "LIMIT_GTC_JOIN"
+DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH = "logs/live_execution_policy/combined_live_execution_policy.json"
 
 
 def build_live_execution_survival_model(
@@ -78,6 +81,95 @@ def build_live_execution_survival_model(
     }
 
 
+def build_live_execution_contract(
+    *,
+    attempts: list[dict[str, Any]] | None,
+    horizons_ms: tuple[int, ...] = (1_000, 3_000, 10_000),
+) -> dict[str, Any]:
+    normalized_attempts = [dict(item) for item in (attempts or []) if isinstance(item, dict)]
+    fill_model = build_live_execution_survival_model(
+        attempts=normalized_attempts,
+        horizons_ms=horizons_ms,
+    )
+    miss_cost_model = _build_miss_cost_model(attempts=normalized_attempts)
+    return {
+        "policy": "live_execution_contract_v1",
+        "status": str(fill_model.get("status", "insufficient_history")).strip() or "insufficient_history",
+        "rows_total": int(len(normalized_attempts)),
+        "horizons_ms": [int(value) for value in horizons_ms],
+        "fill_model": fill_model,
+        "miss_cost_model": miss_cost_model,
+    }
+
+
+def normalize_live_execution_contract(payload: dict[str, Any] | None) -> dict[str, Any]:
+    doc = dict(payload or {})
+    if str(doc.get("policy", "")).strip() == "live_execution_contract_v1":
+        fill_model = dict(doc.get("fill_model") or {})
+        miss_cost_model = dict(doc.get("miss_cost_model") or {})
+        return {
+            "policy": "live_execution_contract_v1",
+            "status": str(doc.get("status", fill_model.get("status", "insufficient_history"))).strip()
+            or "insufficient_history",
+            "rows_total": int(doc.get("rows_total", fill_model.get("rows_total", 0)) or 0),
+            "horizons_ms": [int(value) for value in (doc.get("horizons_ms") or fill_model.get("horizons_ms") or [])],
+            "fill_model": fill_model,
+            "miss_cost_model": miss_cost_model,
+        }
+    if doc:
+        fill_model = dict(doc)
+        return {
+            "policy": "live_execution_contract_v1",
+            "status": str(fill_model.get("status", "insufficient_history")).strip() or "insufficient_history",
+            "rows_total": int(fill_model.get("rows_total", 0) or 0),
+            "horizons_ms": [int(value) for value in (fill_model.get("horizons_ms") or [])],
+            "fill_model": fill_model,
+            "miss_cost_model": _build_miss_cost_model(attempts=[]),
+        }
+    return {
+        "policy": "live_execution_contract_v1",
+        "status": "insufficient_history",
+        "rows_total": 0,
+        "horizons_ms": [],
+        "fill_model": {},
+        "miss_cost_model": _build_miss_cost_model(attempts=[]),
+    }
+
+
+def load_live_execution_contract_artifact(
+    *,
+    project_root: str | Path,
+    artifact_path: str | Path = DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH,
+) -> dict[str, Any]:
+    root = Path(project_root)
+    candidate = Path(artifact_path)
+    resolved = candidate if candidate.is_absolute() else (root / candidate)
+    if not resolved.exists():
+        return normalize_live_execution_contract({})
+    try:
+        parsed = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return normalize_live_execution_contract({})
+    if not isinstance(parsed, dict):
+        return normalize_live_execution_contract({})
+    if isinstance(parsed.get("execution_contract"), dict):
+        return normalize_live_execution_contract(parsed.get("execution_contract"))
+    if isinstance(parsed.get("model"), dict):
+        return normalize_live_execution_contract(parsed.get("model"))
+    return normalize_live_execution_contract(parsed)
+
+
+def build_execution_policy_state(
+    *,
+    micro_state: dict[str, Any] | None,
+    expected_edge_bps: float | None,
+) -> dict[str, Any]:
+    payload = dict(micro_state or {})
+    if expected_edge_bps is not None:
+        payload["expected_edge_bps"] = float(expected_edge_bps)
+    return payload
+
+
 def select_live_execution_action(
     *,
     model_payload: dict[str, Any] | None,
@@ -86,13 +178,15 @@ def select_live_execution_action(
     candidate_actions: list[str] | None = None,
     deadline_ms: int = 3_000,
 ) -> dict[str, Any]:
-    model = dict(model_payload or {})
+    contract = normalize_live_execution_contract(model_payload if isinstance(model_payload, dict) else {})
+    model = dict(contract.get("fill_model") or {})
+    miss_cost_model = dict(contract.get("miss_cost_model") or {})
     fallback_candidates = [_normalize_action_code(item) for item in (candidate_actions or [DEFAULT_ACTION_CODE])]
     fallback_action_code = fallback_candidates[0] if fallback_candidates else DEFAULT_ACTION_CODE
-    if int(model.get("rows_total", 0) or 0) < 20:
+    if int(contract.get("rows_total", 0) or 0) < 20:
         config = dict(ACTION_CONFIGS.get(fallback_action_code) or ACTION_CONFIGS[DEFAULT_ACTION_CODE])
         return {
-            "policy": "live_fill_hazard_survival_v1",
+            "policy": str(contract.get("policy", "live_execution_contract_v1")).strip() or "live_execution_contract_v1",
             "status": "fallback",
             "deadline_ms": int(deadline_ms),
             "state_key": state_bucket_key(current_state or {}),
@@ -104,6 +198,7 @@ def select_live_execution_action(
             "selected_expected_shortfall_bps": 0.0,
             "selected_expected_time_to_first_fill_ms": None,
             "selected_utility_bps": float(expected_edge_bps or 0.0),
+            "selected_expected_miss_cost_bps": float(expected_edge_bps or 0.0),
             "evaluated_actions": [],
             "skip_reason_code": "",
         }
@@ -124,10 +219,17 @@ def select_live_execution_action(
             p_fill = _safe_optional_float(stats.get("p_fill_within_default"))
         if p_fill is None:
             p_fill = 0.0
+        sample_count = int(stats.get("sample_count", 0) or 0)
+        p_fill_lcb = _posterior_fill_lcb(p_fill=float(p_fill), sample_count=sample_count)
         shortfall_bps = max(_safe_optional_float(stats.get("mean_shortfall_bps")) or 0.0, 0.0)
-        miss_cost_bps = expected_edge_value
-        utility_bps = (float(p_fill) * max(expected_edge_value - shortfall_bps, -expected_edge_value)) - (
-            (1.0 - float(p_fill)) * miss_cost_bps
+        miss_cost_bps = _resolve_miss_cost_bps(
+            miss_cost_model=miss_cost_model,
+            state_key=state_key,
+            action_code=action_code,
+            fallback_expected_edge_bps=expected_edge_value,
+        )
+        utility_bps = (float(p_fill_lcb) * max(expected_edge_value - shortfall_bps, -expected_edge_value)) - (
+            (1.0 - float(p_fill_lcb)) * miss_cost_bps
         )
         evaluation = {
             "action_code": action_code,
@@ -136,8 +238,9 @@ def select_live_execution_action(
             "price_mode": str(config.get("price_mode")),
             "state_key": state_key,
             "stats_source": "state_action" if stats is state_stats and state_stats else ("action" if global_stats else "fallback"),
-            "sample_count": int(stats.get("sample_count", 0) or 0),
+            "sample_count": int(sample_count),
             "p_fill_deadline": float(p_fill),
+            "p_fill_deadline_lcb": float(p_fill_lcb),
             "expected_time_to_first_fill_ms": _safe_optional_float(stats.get("mean_time_to_first_fill_ms")),
             "expected_shortfall_bps": float(shortfall_bps),
             "expected_edge_bps": float(expected_edge_value),
@@ -182,6 +285,7 @@ def select_live_execution_action(
         "selected_expected_shortfall_bps": float(selected.get("expected_shortfall_bps", 0.0) or 0.0),
         "selected_expected_time_to_first_fill_ms": _safe_optional_float(selected.get("expected_time_to_first_fill_ms")),
         "selected_utility_bps": float(selected.get("utility_bps", 0.0) or 0.0),
+        "selected_expected_miss_cost_bps": float(selected.get("miss_cost_bps", expected_edge_value) or expected_edge_value),
         "evaluated_actions": evaluated_actions,
         "skip_reason_code": "LIVE_EXECUTION_NO_POSITIVE_UTILITY" if status == "skip" else "",
     }
@@ -251,6 +355,79 @@ def _summarize_attempt_rows(*, rows: list[dict[str, Any]], horizons_ms: tuple[in
         if int(horizon_ms) == 3_000:
             summary["p_fill_within_default"] = float(posterior_mean)
     return summary
+
+
+def _build_miss_cost_model(*, attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    by_action: dict[str, list[float]] = {}
+    by_state_action: dict[tuple[str, str], list[float]] = {}
+    for item in attempts:
+        final_state = str(item.get("final_state") or "").strip().upper()
+        if final_state not in {"MISSED", "PARTIAL_CANCELLED"}:
+            continue
+        action_code = _normalize_action_code(item.get("action_code"))
+        state_key = state_bucket_key(item)
+        miss_cost_bps = _safe_optional_float(item.get("expected_net_edge_bps"))
+        if miss_cost_bps is None:
+            miss_cost_bps = _safe_optional_float(item.get("expected_edge_bps"))
+        if miss_cost_bps is None:
+            continue
+        by_action.setdefault(action_code, []).append(float(max(miss_cost_bps, 0.0)))
+        by_state_action.setdefault((state_key, action_code), []).append(float(max(miss_cost_bps, 0.0)))
+    return {
+        "policy": "execution_miss_cost_summary_v1",
+        "status": "ready" if by_action else "insufficient_history",
+        "action_stats": {
+            action_code: _summarize_cost_rows(costs)
+            for action_code, costs in sorted(by_action.items())
+        },
+        "state_action_stats": {
+            f"{state_key}|{action_code}": _summarize_cost_rows(costs)
+            for (state_key, action_code), costs in sorted(by_state_action.items())
+        },
+    }
+
+
+def _summarize_cost_rows(costs: list[float]) -> dict[str, Any]:
+    values = [float(max(value, 0.0)) for value in costs]
+    sample_count = len(values)
+    if sample_count <= 0:
+        return {"sample_count": 0, "mean_miss_cost_bps": None}
+    return {
+        "sample_count": int(sample_count),
+        "mean_miss_cost_bps": float(sum(values) / float(sample_count)),
+    }
+
+
+def _resolve_miss_cost_bps(
+    *,
+    miss_cost_model: dict[str, Any],
+    state_key: str,
+    action_code: str,
+    fallback_expected_edge_bps: float,
+) -> float:
+    state_action_stats = dict(miss_cost_model.get("state_action_stats") or {})
+    action_stats = dict(miss_cost_model.get("action_stats") or {})
+    state_key_value = f"{state_key}|{action_code}"
+    state_stats = dict(state_action_stats.get(state_key_value) or {})
+    action_stats_row = dict(action_stats.get(action_code) or {})
+    if int(state_stats.get("sample_count", 0) or 0) >= 3:
+        value = _safe_optional_float(state_stats.get("mean_miss_cost_bps"))
+        if value is not None:
+            return float(max(value, 0.0))
+    value = _safe_optional_float(action_stats_row.get("mean_miss_cost_bps"))
+    if value is not None:
+        return float(max(value, 0.0))
+    return float(max(fallback_expected_edge_bps, 0.0))
+
+
+def _posterior_fill_lcb(*, p_fill: float, sample_count: int, z_score: float = 1.28) -> float:
+    count = max(int(sample_count), 0)
+    if count <= 0:
+        return 0.0
+    mean = min(max(float(p_fill), 0.0), 1.0)
+    variance = max(mean * (1.0 - mean), 0.0)
+    stderr = (variance / float(max(count, 1))) ** 0.5
+    return max(min(mean - (float(z_score) * stderr), 1.0), 0.0)
 
 
 def _normalize_action_code(value: Any) -> str:

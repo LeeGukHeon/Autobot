@@ -36,3 +36,28 @@ def test_sim_exchange_rejects_order_below_min_total() -> None:
     assert fill is None
     assert order.state == "FAILED"
     assert order.failure_reason == "BELOW_MIN_TOTAL"
+
+
+def test_sim_exchange_passive_maker_does_not_immediately_fill() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_000.0,
+        volume=5.0,
+        reason_code="TEST",
+        time_in_force="gtc",
+        meta={"exec_profile": {"price_mode": "PASSIVE_MAKER"}},
+    )
+
+    order, fill = exchange.submit_limit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=999.0,
+        ts_ms=1,
+    )
+
+    assert fill is None
+    assert order.state == "OPEN"

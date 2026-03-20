@@ -31,12 +31,20 @@ from autobot.execution.order_supervisor import (
     evaluate_supervisor_action,
     make_legacy_exec_profile,
     mean,
+    normalize_order_exec_profile,
     order_exec_profile_from_dict,
     order_exec_profile_to_dict,
     percentile,
     slippage_bps,
 )
 from autobot.models.dataset_loader import DatasetRequest, iter_feature_rows_grouped_by_ts
+from autobot.models.live_execution_policy import (
+    DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH,
+    build_execution_policy_state,
+    candidate_action_codes_for_price_mode,
+    load_live_execution_contract_artifact,
+    select_live_execution_action,
+)
 from autobot.models.predictor import load_predictor_from_registry
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
@@ -130,6 +138,7 @@ class PaperRunSettings:
     paper_live_candles_dataset: str = "candles_api_v1"
     paper_live_bootstrap_1m_bars: int = 2000
     paper_live_micro_max_age_ms: int = 300_000
+    execution_contract_artifact_path: str = DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH
 
 
 @dataclass(frozen=True)
@@ -877,6 +886,10 @@ class PaperRunEngine:
             "live_ws_last_event_ts_ms_by_market": {},
             "live_ws_warmup": {},
             "live_feature_provider": None,
+            "execution_contract": load_live_execution_contract_artifact(
+                project_root=Path.cwd(),
+                artifact_path=self._run_settings.execution_contract_artifact_path,
+            ),
         }
 
         markets = self._market_loader(quote)
@@ -1052,6 +1065,10 @@ class PaperRunEngine:
                     "micro_provider": str(micro_provider_info.get("provider") or "NONE"),
                     "micro_provider_info": dict(micro_provider_info),
                     "feature_provider": _normalize_paper_feature_provider(self._run_settings.paper_feature_provider),
+                    "execution_contract_artifact_path": str(self._run_settings.execution_contract_artifact_path),
+                    "execution_contract_rows_total": int(
+                        ((self._runtime_state.get("execution_contract") or {}).get("rows_total", 0) or 0)
+                    ),
                     "warmup_sec": int(warmup_sec),
                     "warmup_min_trade_events_per_market": int(warmup_min_trade_events),
                     **runtime_metadata,
@@ -2112,6 +2129,50 @@ class PaperRunEngine:
                     reason_code=REASON_MICRO_MISSING_FALLBACK,
                     reason_counts=self._runtime_counters.setdefault("micro_policy_fallback_counts", {}),
                 )
+        execution_policy: dict[str, Any] | None = None
+        if strategy_mode == "model_alpha_v1" and side_value == "bid":
+            execution_contract = dict(self._runtime_state.get("execution_contract") or {})
+            if int(execution_contract.get("rows_total", 0) or 0) > 0:
+                expected_edge_bps = _candidate_expected_edge_bps(candidate.meta if isinstance(candidate.meta, dict) else None)
+                execution_policy = select_live_execution_action(
+                    model_payload=execution_contract,
+                    current_state=build_execution_policy_state(
+                        micro_state=_execution_contract_micro_state(snapshot=snapshot, now_ts_ms=ts_ms),
+                        expected_edge_bps=expected_edge_bps,
+                    ),
+                    expected_edge_bps=expected_edge_bps,
+                    candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
+                    deadline_ms=max(int(exec_profile.timeout_ms), 1),
+                )
+                if str(execution_policy.get("status", "")).strip().lower() == "skip":
+                    append_event(
+                        "EXECUTION_POLICY_ABORT",
+                        ts_ms=ts_ms,
+                        payload={
+                            "market": candidate.market,
+                            "side": side_value,
+                            "reason_code": str(
+                                execution_policy.get("skip_reason_code", "LIVE_EXECUTION_NO_POSITIVE_UTILITY")
+                            ),
+                            "execution_policy": execution_policy,
+                        },
+                    )
+                    return False
+                selected_price_mode = str(
+                    execution_policy.get("selected_price_mode", exec_profile.price_mode)
+                ).strip().upper() or str(exec_profile.price_mode).strip().upper()
+                if selected_price_mode != str(exec_profile.price_mode).strip().upper():
+                    exec_profile = normalize_order_exec_profile(
+                        OrderExecProfile(
+                            timeout_ms=int(exec_profile.timeout_ms),
+                            replace_interval_ms=int(exec_profile.replace_interval_ms),
+                            max_replaces=int(exec_profile.max_replaces),
+                            price_mode=selected_price_mode,
+                            max_chase_bps=int(exec_profile.max_chase_bps),
+                            min_replace_interval_ms_global=int(exec_profile.min_replace_interval_ms_global),
+                            post_only=bool(exec_profile.post_only),
+                        )
+                    )
 
         limit_price = build_limit_price_from_mode(
             side=side_value,
@@ -2128,6 +2189,13 @@ class PaperRunEngine:
             )
         )
         profile_payload = order_exec_profile_to_dict(exec_profile)
+        selected_ord_type = (
+            str((execution_policy or {}).get("selected_ord_type", "limit")).strip().lower() or "limit"
+        )
+        selected_time_in_force = (
+            str((execution_policy or {}).get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
+        )
+        simulated_ord_type = "limit" if selected_ord_type == "best" else selected_ord_type
         policy_payload = {
             "enabled": bool(micro_order_policy is not None),
             "tier": str(policy_decision.tier) if policy_decision is not None and policy_decision.tier is not None else None,
@@ -2164,8 +2232,8 @@ class PaperRunEngine:
         intent = new_order_intent(
             market=candidate.market,
             side=side_value,
-            ord_type="limit",
-            time_in_force="gtc",
+            ord_type=simulated_ord_type,
+            time_in_force=selected_time_in_force,
             price=limit_price,
             volume=volume,
             reason_code=reason_code_value,
@@ -2179,6 +2247,15 @@ class PaperRunEngine:
                 "gate_reasons": list(decision.gate_reasons),
                 "exec_profile": profile_payload,
                 "initial_ref_price": ref_price,
+                "execution_policy": (
+                    {
+                        **execution_policy,
+                        "selected_ord_type_runtime": selected_ord_type,
+                        "selected_ord_type_simulated": simulated_ord_type,
+                    }
+                    if isinstance(execution_policy, dict)
+                    else {}
+                ),
                 "micro_order_policy": policy_payload,
                 "micro_diagnostics": policy_diagnostics,
                 "operational_overlay": operational_payload,
@@ -3225,6 +3302,34 @@ def _safe_optional_float(value: Any) -> float | None:
     if number < 0:
         return None
     return number
+
+
+def _candidate_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:
+    if not isinstance(meta_payload, dict):
+        return None
+    trade_action = meta_payload.get("trade_action")
+    if isinstance(trade_action, dict):
+        edge = _safe_optional_float(trade_action.get("expected_edge"))
+        if edge is not None:
+            return float(edge) * 10_000.0
+    return _safe_optional_float(meta_payload.get("expected_edge_bps"))
+
+
+def _execution_contract_micro_state(*, snapshot: MicroSnapshot | None, now_ts_ms: int) -> dict[str, Any]:
+    if snapshot is None:
+        return {}
+    last_event_ts_ms = getattr(snapshot, "last_event_ts_ms", None)
+    snapshot_age_ms = None
+    if last_event_ts_ms is not None:
+        snapshot_age_ms = max(int(now_ts_ms) - int(last_event_ts_ms), 0)
+    return {
+        "spread_bps": _safe_optional_float(getattr(snapshot, "spread_bps_mean", None)),
+        "depth_top5_notional_krw": _safe_optional_float(getattr(snapshot, "depth_top5_notional_krw", None)),
+        "trade_coverage_ms": getattr(snapshot, "trade_coverage_ms", None),
+        "book_coverage_ms": getattr(snapshot, "book_coverage_ms", None),
+        "snapshot_age_ms": snapshot_age_ms,
+        "micro_quality_score": None,
+    }
 
 
 def _safe_int(value: Any) -> int | None:

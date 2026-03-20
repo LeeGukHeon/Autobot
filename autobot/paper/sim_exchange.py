@@ -233,22 +233,23 @@ class PaperSimExchange:
 
         self._orders[order.order_id] = order
 
-        immediate_decision = self._fill_model.decide(
-            side=order.side,
-            limit_price=order.price,
-            trade_price=latest_trade_price,
-            immediate=True,
-        )
-        if immediate_decision.should_fill:
-            fill_event = self._fill_order(
-                order=order,
-                fill_price=order.price,
-                fill_volume=order.volume_req,
-                maker_or_taker=immediate_decision.maker_or_taker,
-                ts_ms=now_ts_ms,
-                rules=rules,
+        if _allow_immediate_fill(intent=intent):
+            immediate_decision = self._fill_model.decide(
+                side=order.side,
+                limit_price=order.price,
+                trade_price=latest_trade_price,
+                immediate=True,
             )
-            return (self._clone_order(order), fill_event)
+            if immediate_decision.should_fill:
+                fill_event = self._fill_order(
+                    order=order,
+                    fill_price=order.price,
+                    fill_volume=order.volume_req,
+                    maker_or_taker=immediate_decision.maker_or_taker,
+                    ts_ms=now_ts_ms,
+                    rules=rules,
+                )
+                return (self._clone_order(order), fill_event)
 
         if order.time_in_force in {"ioc", "fok"}:
             canceled = self.cancel_order(order.order_id, ts_ms=now_ts_ms, reason="IOC_FOK_NO_TOUCH")
@@ -534,6 +535,19 @@ def parse_market(market: str) -> tuple[str, str]:
 
 def _base_currency(market: str) -> str:
     return parse_market(market)[1]
+
+
+def _allow_immediate_fill(*, intent: OrderIntent) -> bool:
+    meta = dict(intent.meta or {})
+    execution_policy = dict(meta.get("execution_policy") or {}) if isinstance(meta.get("execution_policy"), dict) else {}
+    exec_profile = dict(meta.get("exec_profile") or {}) if isinstance(meta.get("exec_profile"), dict) else {}
+    price_mode = str(execution_policy.get("selected_price_mode", exec_profile.get("price_mode", ""))).strip().upper()
+    time_in_force = str(getattr(intent, "time_in_force", "") or "").strip().lower()
+    if price_mode == "PASSIVE_MAKER":
+        return False
+    if time_in_force == "post_only":
+        return False
+    return True
 
 
 def order_volume_from_notional(*, notional_quote: float, price: float) -> float:

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from autobot.models.live_execution_policy import DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH
 from autobot.models.registry import load_json
 from autobot.strategy.micro_gate_v1 import MicroGateSettings
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
@@ -45,6 +46,7 @@ class ExecutionAcceptanceOptions:
     model_alpha_settings: ModelAlphaSettings = ModelAlphaSettings()
     micro_gate: MicroGateSettings = MicroGateSettings()
     micro_order_policy: MicroOrderPolicySettings = MicroOrderPolicySettings()
+    execution_contract_artifact_path: str = DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH
 
 
 def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, Any]:
@@ -141,6 +143,7 @@ def run_model_execution_backtest(
             output_root_dir=str(options.output_root_dir),
             micro_gate=options.micro_gate,
             micro_order_policy=options.micro_order_policy,
+            execution_contract_artifact_path=str(options.execution_contract_artifact_path),
         ),
         upbit_settings=None,
     )
@@ -188,4 +191,5 @@ def _snapshot_run_settings(options: ExecutionAcceptanceOptions) -> dict[str, Any
         "rules_ttl_sec": max(int(options.rules_ttl_sec), 1),
         "micro_gate_enabled": bool(options.micro_gate.enabled),
         "micro_order_policy_enabled": bool(options.micro_order_policy.enabled),
+        "execution_contract_artifact_path": str(options.execution_contract_artifact_path),
     }

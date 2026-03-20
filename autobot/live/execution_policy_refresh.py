@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from autobot.models.live_execution_policy import build_live_execution_survival_model
+from autobot.models.live_execution_policy import build_live_execution_contract
 
 from .state_store import LiveStateStore
 
@@ -45,14 +45,15 @@ def build_execution_policy_refresh_payload(
     now_ts_ms = int(time.time() * 1000)
     since_ts_ms = now_ts_ms - (max(int(lookback_days), 1) * 86_400_000)
     attempts = store.list_execution_attempts(final_only=True, since_ts_ms=since_ts_ms, limit=max(int(limit), 1))
-    model = build_live_execution_survival_model(attempts=attempts)
+    execution_contract = build_live_execution_contract(attempts=attempts)
     return {
         "policy": "live_execution_policy_refresh_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "db_path": str(store.db_path),
         "lookback_days": max(int(lookback_days), 1),
         "rows_total": int(len(attempts)),
-        "model": model,
+        "model": dict(execution_contract.get("fill_model") or {}),
+        "execution_contract": execution_contract,
     }
 
 
@@ -87,7 +88,7 @@ def build_combined_execution_policy_refresh_payload(
     )
     if combined_limit is not None and int(combined_limit) > 0:
         attempts = attempts[: int(combined_limit)]
-    model = build_live_execution_survival_model(attempts=attempts)
+    execution_contract = build_live_execution_contract(attempts=attempts)
     return {
         "policy": "live_execution_policy_refresh_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -95,7 +96,8 @@ def build_combined_execution_policy_refresh_payload(
         "lookback_days": max(int(lookback_days), 1),
         "rows_total": int(len(attempts)),
         "db_row_counts": db_row_counts,
-        "model": model,
+        "model": dict(execution_contract.get("fill_model") or {}),
+        "execution_contract": execution_contract,
     }
 
 
