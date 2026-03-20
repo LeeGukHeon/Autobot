@@ -296,10 +296,9 @@ These are not the primary OCI production path anymore, but they are still presen
   - `scripts/daily_candidate_acceptance_for_server.ps1`
 - legacy/manual installers:
   - `scripts/install_server_daily_acceptance_service.ps1`
-- v3-visible runtime and acceptance surfaces:
-  - CLI `--trainer` still exposes `v2_micro` / `v3_mtf_micro`
-  - `paper alpha --preset` still exposes `live_v3`
-  - `scripts/install_server_runtime_services.ps1` still accepts `live_v3`
+ - v3-visible runtime surfaces:
+   - CLI `--trainer` still exposes `v2_micro` / `v3_mtf_micro`
+   - runtime feature/provider internals for `v3` still exist behind code/test surfaces, even though the public `live_v3` paper preset surface has been removed
 - local Windows scheduling helpers:
   - `scripts/register_scheduled_tasks.ps1`
   - `scripts/unregister_scheduled_tasks.ps1`

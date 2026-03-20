@@ -566,15 +566,14 @@
 - `python -m autobot.cli modelbt run --model-ref latest_v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --select top_pct --top-pct 0.05 --hold-bars 6 --fee-bps 5`
 
 ## Runtime Presets And Acceptance Scripts
-- `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+- `paper alpha --preset`: `live_v4 | candidate_v4 | offline_v4`
 - current primary default rollout is `live_v4`
 - runtime presets keep `min_prob` unset so runtime uses the learned registry threshold, and their lane-specific breadth knobs are fallback values only:
-  - `live_v3/offline_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`, `min_prob=null -> registry threshold`
-  - `live_v4/candidate_v4/offline_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
+  - `live_v4/candidate_v4/offline/offline_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
   - when the loaded model run contains `selection_recommendations.json`, runtime uses the learned recommendation entry for the active `registry_threshold_key` instead of these fallback breadth values
-- `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
+- `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v4 | candidate_v4 | offline_v4`
   - current default install target is `autobot-paper-v4.service` + `live_v4`
-  - `live_v3/live_v4/offline_v4` preset installs no longer auto-bootstrap the corresponding `champion` pointer
+  - `live_v4/offline_v4` preset installs no longer auto-bootstrap the corresponding `champion` pointer
   - if the family has no `champion` pointer, promote explicitly first or rerun the installer with `-BootstrapChampion`
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
   - direct invocation defaults now match the shared fixed compare profile:

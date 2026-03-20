@@ -21,24 +21,6 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     }
     if name in {"default", "config"}:
         return overrides
-    if name in {"live_v3", "live"}:
-        overrides.update(
-            {
-                "feature_set": "v3",
-                "model_ref": "champion_v3",
-                "model_family": "train_v3_mtf_micro",
-                "top_pct": 0.10,
-                "min_cands_per_ts": 3,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "live_v3",
-                "paper_micro_provider": "live_ws",
-                "micro_gate": "off",
-                "micro_order_policy": "on",
-                "micro_order_policy_mode": "trade_only",
-                "micro_order_policy_on_missing": "static_fallback",
-            }
-        )
-        return overrides
     if name in {"live_v4", "v4"}:
         overrides.update(
             {
@@ -75,21 +57,7 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
             }
         )
         return overrides
-    if name in {"offline", "offline_v3"}:
-        overrides.update(
-            {
-                "feature_set": "v3",
-                "model_ref": "champion_v3",
-                "model_family": "train_v3_mtf_micro",
-                "top_pct": 0.10,
-                "min_cands_per_ts": 3,
-                "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "offline_parquet",
-                "paper_micro_provider": "offline_parquet",
-            }
-        )
-        return overrides
-    if name in {"offline_v4"}:
+    if name in {"offline", "offline_v4"}:
         overrides.update(
             {
                 "feature_set": "v4",

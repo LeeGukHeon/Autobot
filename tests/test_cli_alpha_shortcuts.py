@@ -68,56 +68,6 @@ def test_normalize_paper_alpha_args_defaults_to_live_v4() -> None:
     assert normalized.feature_set == "v4"
 
 
-def test_normalize_paper_alpha_args_uses_live_v3_preset_defaults() -> None:
-    args = argparse.Namespace(
-        paper_command="alpha",
-        preset="live_v3",
-        duration_sec=600,
-        quote=None,
-        top_n=None,
-        tf=None,
-        model_ref=None,
-        model_family=None,
-        feature_set=None,
-        top_pct=None,
-        min_prob=None,
-        min_cands_per_ts=None,
-        max_positions_total=None,
-        cooldown_bars=None,
-        exit_mode=None,
-        hold_bars=None,
-        tp_pct=None,
-        sl_pct=None,
-        trailing_pct=None,
-        execution_price_mode=None,
-        execution_timeout_bars=None,
-        execution_replace_max=None,
-        print_every_sec=None,
-        starting_krw=None,
-        per_trade_krw=None,
-        max_positions=None,
-        paper_micro_provider=None,
-        paper_micro_warmup_sec=None,
-        paper_micro_warmup_min_trade_events_per_market=None,
-        paper_feature_provider=None,
-    )
-    normalized = _normalize_paper_alpha_args(args)
-    assert normalized.paper_command == "run"
-    assert normalized.strategy == "model_alpha_v1"
-    assert normalized.feature_set == "v3"
-    assert normalized.model_ref == "champion_v3"
-    assert normalized.model_family == "train_v3_mtf_micro"
-    assert normalized.top_pct == 0.10
-    assert normalized.min_prob is None
-    assert normalized.min_cands_per_ts == 3
-    assert normalized.use_learned_selection_recommendations is True
-    assert normalized.paper_feature_provider == "live_v3"
-    assert normalized.paper_micro_provider == "live_ws"
-    assert normalized.micro_order_policy == "on"
-    assert normalized.micro_order_policy_mode == "trade_only"
-    assert normalized.micro_order_policy_on_missing == "static_fallback"
-
-
 def test_normalize_paper_alpha_args_uses_live_v4_preset_defaults() -> None:
     args = argparse.Namespace(
         paper_command="alpha",
@@ -430,6 +380,7 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
             factor_block_selection_path=None,
             factor_block_policy_path=None,
             search_budget_decision_path=None,
+            live_domain_reweighting_path=None,
             execution_acceptance_report_path=tmp_path / "logs" / "execution_acceptance.json",
             promotion_path=tmp_path / "logs" / "promotion.json",
         )

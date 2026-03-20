@@ -183,11 +183,10 @@ The list below is ranked by cleanup usefulness and safety.
 - Suggested migration:
   - keep until every external tool path has been checked
 
-6. v3 runtime / preset / trainer surfaces
+6. v3 runtime / trainer surfaces
 
 - Evidence:
   - CLI still exposes `v3_mtf_micro`
-  - `live_v3` preset still exists
   - tests and docs still rely on v3 as fallback/baseline
 - Why not delete now:
   - still used as benchmark and fallback

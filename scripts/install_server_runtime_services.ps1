@@ -3,7 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$PaperUnitName = "autobot-paper-v4.service",
     [int]$PaperDurationSec = 0,
-    [ValidateSet("live_v3", "live_v4", "candidate_v4", "offline_v4")]
+    [ValidateSet("live_v4", "candidate_v4", "offline_v4")]
     [string]$PaperPreset = "live_v4",
     [string[]]$PaperCliArgs = @(),
     [string]$PaperRuntimeRole = "",
@@ -25,16 +25,6 @@ function Get-PaperRuntimeSpec {
     param([string]$Preset, [string]$UnitName)
     $name = ([string]$Preset).Trim().ToLower()
     switch ($name) {
-        "live_v3" {
-            return [PSCustomObject]@{
-                Description = "Autobot Paper Runtime (v3 live)"
-                SyslogIdentifier = "autobot-paper-v3"
-                RuntimeModelRef = "champion_v3"
-                BootstrapRefs = @("latest_candidate_v3", "latest_v3")
-                ModelFamily = "train_v3_mtf_micro"
-                RuntimeRole = "champion"
-            }
-        }
         "live_v4" {
             return [PSCustomObject]@{
                 Description = "Autobot Paper Runtime (v4 live)"
