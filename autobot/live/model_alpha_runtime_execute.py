@@ -145,6 +145,14 @@ def apply_canary_notional_cap(
 
 
 def _is_canary_rollout(*, store: Any, settings: Any) -> bool:
+    return _matches_rollout_mode(store=store, settings=settings, allowed_modes={"canary"})
+
+
+def _is_active_live_rollout(*, store: Any, settings: Any) -> bool:
+    return _matches_rollout_mode(store=store, settings=settings, allowed_modes={"canary", "live"})
+
+
+def _matches_rollout_mode(*, store: Any, settings: Any, allowed_modes: set[str]) -> bool:
     rollout_contract = store.live_rollout_contract() or {}
     rollout_status = store.live_rollout_status() or {}
     rollout_mode = (
@@ -152,7 +160,7 @@ def _is_canary_rollout(*, store: Any, settings: Any) -> bool:
         .strip()
         .lower()
     )
-    if rollout_mode != "canary":
+    if rollout_mode not in {str(item).strip().lower() for item in allowed_modes}:
         return False
     contract_target_unit = str(rollout_contract.get("target_unit") or "").strip()
     if contract_target_unit and contract_target_unit != str(settings.daemon.rollout_target_unit).strip():
@@ -169,7 +177,7 @@ def apply_canary_entry_timeout_cap(
 ) -> OrderExecProfile:
     if str(side).strip().lower() != "bid":
         return exec_profile
-    if not _is_canary_rollout(store=store, settings=settings):
+    if not _is_active_live_rollout(store=store, settings=settings):
         return exec_profile
     timeout_cap_ms = max(int(CANARY_ENTRY_TIMEOUT_CAP_MS), 1)
     normalized = normalize_order_exec_profile(exec_profile)

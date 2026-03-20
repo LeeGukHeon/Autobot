@@ -343,8 +343,8 @@ def _allow_pointer_divergence_for_settings(
 def _small_account_single_slot_ready(settings: LiveDaemonSettings) -> bool:
     return (
         bool(settings.small_account_canary_enabled)
-        and int(settings.small_account_max_positions) == 1
-        and int(settings.small_account_max_open_orders_per_market) == 1
+        and int(settings.small_account_max_positions) >= 1
+        and int(settings.small_account_max_open_orders_per_market) >= 1
     )
 
 

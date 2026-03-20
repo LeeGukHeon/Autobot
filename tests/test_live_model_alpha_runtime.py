@@ -1064,6 +1064,57 @@ def test_live_model_alpha_runtime_caps_canary_bid_timeout_to_three_minutes(tmp_p
     assert int(exec_profile["replace_interval_ms"]) == 180000
 
 
+def test_live_model_alpha_runtime_caps_main_live_bid_timeout_to_three_minutes(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="live", canary=False)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="live",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    exec_profile = ((meta_payload.get("execution") or {}).get("exec_profile")) or {}
+    assert int(exec_profile["timeout_ms"]) == 180000
+    assert int(exec_profile["replace_interval_ms"]) == 180000
+
+
 def test_live_model_alpha_runtime_clamps_bid_notional_with_size_ladder(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 

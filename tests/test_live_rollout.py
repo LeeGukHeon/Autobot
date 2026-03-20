@@ -555,6 +555,7 @@ def test_live_installer_dry_run_supports_candidate_specific_overrides() -> None:
     assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=20260310T011523Z-s42-fc53106c" in stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
     assert "Environment=AUTOBOT_LIVE_TARGET_UNIT=autobot-live-alpha-candidate.service" in stdout
+    assert "Environment=AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS=" in stdout
 
 
 def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_source_blank() -> None:
@@ -591,6 +592,42 @@ def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_sou
     assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate_v4" in stdout
     assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_candidate/live_state.db" in stdout
     assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+
+
+def test_live_installer_candidate_accepts_small_account_position_override() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-UnitName",
+            "autobot-live-alpha-candidate.service",
+            "-RolloutMode",
+            "canary",
+            "-RolloutTargetUnit",
+            "autobot-live-alpha-candidate.service",
+            "-SmallAccountMaxPositions",
+            "2",
+            "-SyncMode",
+            "poll",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "Environment=AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS=2" in stdout
 
 
 def test_live_installer_main_defaults_to_server_live_state_path_when_blank() -> None:

@@ -3781,8 +3781,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         require_test_order=bool(defaults["rollout_require_test_order"]),
                         test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
                         small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
-                        and int(defaults["small_account_max_positions"]) == 1
-                        and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                        and int(defaults["small_account_max_positions"]) >= 1
+                        and int(defaults["small_account_max_open_orders_per_market"]) >= 1,
                         ts_ms=now_ts,
                     )
                     payload = {
@@ -3820,8 +3820,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                         require_test_order=bool(defaults["rollout_require_test_order"]),
                         test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
                         small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
-                        and int(defaults["small_account_max_positions"]) == 1
-                        and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                        and int(defaults["small_account_max_positions"]) >= 1
+                        and int(defaults["small_account_max_open_orders_per_market"]) >= 1,
                         ts_ms=now_ts,
                     )
                     status_payload = rollout_gate_to_payload(gate)
@@ -4059,8 +4059,8 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                                 require_test_order=bool(defaults["rollout_require_test_order"]),
                                 test_order_max_age_sec=int(defaults["rollout_test_order_max_age_sec"]),
                                 small_account_single_slot_ready=bool(defaults["small_account_canary_enabled"])
-                                and int(defaults["small_account_max_positions"]) == 1
-                                and int(defaults["small_account_max_open_orders_per_market"]) == 1,
+                                and int(defaults["small_account_max_positions"]) >= 1
+                                and int(defaults["small_account_max_open_orders_per_market"]) >= 1,
                                 ts_ms=int(time.time() * 1000),
                             )
                         )
@@ -5240,6 +5240,10 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     env_rollout_mode = str(os.getenv("AUTOBOT_LIVE_ROLLOUT_MODE", "")).strip().lower()
     env_rollout_target_unit = str(os.getenv("AUTOBOT_LIVE_TARGET_UNIT", "")).strip()
     env_sync_mode = str(os.getenv("AUTOBOT_LIVE_SYNC_MODE", "")).strip().lower()
+    env_small_account_max_positions = str(os.getenv("AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS", "")).strip()
+    env_small_account_max_open_orders = str(
+        os.getenv("AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_OPEN_ORDERS_PER_MARKET", "")
+    ).strip()
     sync_use_private_ws = bool(sync_cfg.get("use_private_ws", False))
     sync_use_executor_ws = bool(sync_cfg.get("use_executor_ws", False))
     if env_sync_mode == "poll":
@@ -5270,9 +5274,12 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         "breaker_auth_error_limit": max(int(breaker_cfg.get("auth_error_limit", 2)), 1),
         "breaker_nonce_error_limit": max(int(breaker_cfg.get("nonce_error_limit", 2)), 1),
         "small_account_canary_enabled": bool(small_account_cfg.get("single_slot_canary", False)),
-        "small_account_max_positions": max(int(small_account_cfg.get("max_positions", 1)), 1),
+        "small_account_max_positions": max(
+            int(env_small_account_max_positions or small_account_cfg.get("max_positions", 1)),
+            1,
+        ),
         "small_account_max_open_orders_per_market": max(
-            int(small_account_cfg.get("max_open_orders_per_market", 1)),
+            int(env_small_account_max_open_orders or small_account_cfg.get("max_open_orders_per_market", 1)),
             1,
         ),
         "model_ref_source": env_model_ref_source or str(model_cfg.get("ref", "champion_v4")).strip() or "champion_v4",
