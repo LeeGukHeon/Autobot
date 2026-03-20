@@ -54,32 +54,6 @@ function Resolve-ChampionRunId {
     return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
 }
 
-function Resolve-BatchDateValue {
-    param([string]$DateText)
-    if (-not [string]::IsNullOrWhiteSpace($DateText)) {
-        return [DateTime]::ParseExact(
-            $DateText,
-            "yyyy-MM-dd",
-            [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::None
-        ).ToString("yyyy-MM-dd")
-    }
-    return (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
-}
-
-function Test-SystemdUnitActive {
-    param([string]$UnitName)
-    if ($DryRun) {
-        return $false
-    }
-    $systemctl = Get-Command systemctl -ErrorAction SilentlyContinue
-    if ($null -eq $systemctl) {
-        return $false
-    }
-    & $systemctl.Source is-active --quiet $UnitName
-    return ($LASTEXITCODE -eq 0)
-}
-
 function Invoke-CommandCapture {
     param(
         [string]$Exe,
@@ -96,40 +70,6 @@ function Invoke-CommandCapture {
         Output = [string]($output -join [Environment]::NewLine)
         Command = ($Exe + " " + (($ArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "))
     }
-}
-
-function Resolve-ReportedJsonPath {
-    param([string]$OutputText)
-    if ([string]::IsNullOrWhiteSpace($OutputText)) {
-        return ""
-    }
-    $regex = [System.Text.RegularExpressions.Regex]::new("(?m)^\[[^\]]+\]\s+report=(.+)$")
-    $matches = $regex.Matches([string]$OutputText)
-    if ($null -eq $matches -or $matches.Count -eq 0) {
-        return ""
-    }
-    for ($index = $matches.Count - 1; $index -ge 0; $index--) {
-        $candidatePath = [string]$matches[$index].Groups[1].Value.Trim()
-        if ([string]::IsNullOrWhiteSpace($candidatePath)) {
-            continue
-        }
-        if ([string]::Equals([System.IO.Path]::GetExtension($candidatePath), ".json", [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $candidatePath
-        }
-    }
-    return [string]$matches[$matches.Count - 1].Groups[1].Value.Trim()
-}
-
-function Load-JsonOrEmpty {
-    param([string]$PathValue)
-    if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
-        return @{}
-    }
-    $raw = Get-Content -Path $PathValue -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        return @{}
-    }
-    return $raw | ConvertFrom-Json
 }
 
 function Resolve-LiveRolloutLatestPath {
@@ -149,27 +89,6 @@ function Resolve-LiveRolloutLatestPath {
         }
     }
     return (Join-Path $baseDir "latest.json")
-}
-
-function Get-PropValue {
-    param(
-        [Parameter(Mandatory = $false)]$ObjectValue,
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $false)]$DefaultValue = $null
-    )
-    if ($null -eq $ObjectValue) {
-        return $DefaultValue
-    }
-    if ($ObjectValue -is [System.Collections.IDictionary]) {
-        if ($ObjectValue.Contains($Name)) {
-            return $ObjectValue[$Name]
-        }
-        return $DefaultValue
-    }
-    if ($ObjectValue.PSObject -and $ObjectValue.PSObject.Properties.Name -contains $Name) {
-        return $ObjectValue.$Name
-    }
-    return $DefaultValue
 }
 
 function Resolve-PromotionTargetPolicy {
@@ -256,11 +175,6 @@ function Test-ObjectHasValues {
     return $true
 }
 
-function Get-StringArray {
-    param([Parameter(Mandatory = $false)]$Value)
-    return @(Expand-DelimitedStringArray -Value $Value)
-}
-
 function Resolve-ExecutionContractRowsTotal {
     param([Parameter(Mandatory = $false)]$Payload)
     $executionContract = Get-PropValue -ObjectValue $Payload -Name "execution_contract" -DefaultValue @{}
@@ -316,76 +230,12 @@ function Invoke-ExecutionContractRefresh {
     }
 }
 
-function Test-AcceptanceFatalFailure {
-    param(
-        [int]$ExitCode,
-        [Parameter(Mandatory = $false)]$AcceptanceReport
-    )
-    if ($ExitCode -eq 0) {
-        return $false
-    }
-    if (($ExitCode -ne 2) -or (-not (Test-ObjectHasValues -ObjectValue $AcceptanceReport))) {
-        return $true
-    }
-    $steps = Get-PropValue -ObjectValue $AcceptanceReport -Name "steps" -DefaultValue @{}
-    $exceptionStep = Get-PropValue -ObjectValue $steps -Name "exception" -DefaultValue @{}
-    if (Test-ObjectHasValues -ObjectValue $exceptionStep) {
-        return $true
-    }
-    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
-    foreach ($reason in $reasons) {
-        if (@(
-            "UNHANDLED_EXCEPTION",
-            "DAILY_PIPELINE_FAILED",
-            "TRAIN_OR_CANDIDATE_POINTER_FAILED"
-        ) -contains [string]$reason) {
-            return $true
-        }
-    }
-    return $false
-}
-
-function Test-BootstrapOnlyAcceptanceReport {
-    param([Parameter(Mandatory = $false)]$AcceptanceReport)
-    if (-not (Test-ObjectHasValues -ObjectValue $AcceptanceReport)) {
-        return $false
-    }
-    $reasons = Get-StringArray -Value (Get-PropValue -ObjectValue $AcceptanceReport -Name "reasons" -DefaultValue @())
-    if ($reasons -contains "BOOTSTRAP_ONLY_POLICY") {
-        return $true
-    }
-    $candidate = Get-PropValue -ObjectValue $AcceptanceReport -Name "candidate" -DefaultValue @{}
-    $splitPolicy = Get-PropValue -ObjectValue $AcceptanceReport -Name "split_policy" -DefaultValue @{}
-    $laneMode = [string](Get-PropValue -ObjectValue $candidate -Name "lane_mode" -DefaultValue "")
-    if ([string]::IsNullOrWhiteSpace($laneMode)) {
-        $laneMode = [string](Get-PropValue -ObjectValue $splitPolicy -Name "lane_mode" -DefaultValue "")
-    }
-    $promotionEligible = [bool](Get-PropValue -ObjectValue $candidate -Name "promotion_eligible" -DefaultValue $true)
-    if (($laneMode -eq "bootstrap_latest_inclusive") -and (-not $promotionEligible)) {
-        return $true
-    }
-    return $false
-}
-
-function Write-JsonFile {
-    param(
-        [string]$PathValue,
-        $Payload
-    )
-    $parent = Split-Path -Path $PathValue -Parent
-    if (-not [string]::IsNullOrWhiteSpace($parent)) {
-        New-Item -ItemType Directory -Force -Path $parent | Out-Null
-    }
-    $json = $Payload | ConvertTo-Json -Depth 20
-    Set-Content -Path $PathValue -Value $json -Encoding UTF8
-}
-
 function Stop-UnitIfActive {
     param([string]$UnitName)
     if ([string]::IsNullOrWhiteSpace($UnitName)) {
         return $false
     }
-    $wasActive = Test-SystemdUnitActive -UnitName $UnitName
+    $wasActive = Test-SystemdUnitActive -UnitName $UnitName -IsDryRun:$DryRun
     if ($wasActive -and (-not $DryRun)) {
         & sudo systemctl stop $UnitName
         if ($LASTEXITCODE -ne 0) {
@@ -624,8 +474,8 @@ trap {
 
 $previousState = Load-JsonOrEmpty -PathValue $statePath
 $hasPreviousState = Test-ObjectHasValues -ObjectValue $previousState
-$challengerWasActive = Test-SystemdUnitActive -UnitName $ChallengerUnitName
-$championWasActive = Test-SystemdUnitActive -UnitName $ChampionUnitName
+$challengerWasActive = Test-SystemdUnitActive -UnitName $ChallengerUnitName -IsDryRun:$DryRun
+$championWasActive = Test-SystemdUnitActive -UnitName $ChampionUnitName -IsDryRun:$DryRun
 $script:rollbackChallengerWasActive = $challengerWasActive
 $script:rollbackChampionWasActive = $championWasActive
 $report.steps.unit_snapshot = [ordered]@{
@@ -753,7 +603,7 @@ if ($runPromotionPhase) {
                         }) | Out-Null
                         continue
                     }
-                    $targetWasActive = Test-SystemdUnitActive -UnitName $trimmedUnit
+                    $targetWasActive = Test-SystemdUnitActive -UnitName $trimmedUnit -IsDryRun:$DryRun
                     Restart-Unit -UnitName $trimmedUnit
                     $restartedUnits.Add($trimmedUnit) | Out-Null
                     if ($targetWasActive) {
@@ -938,6 +788,7 @@ if ($runSpawnPhase) {
     }
     $acceptPromotionEligible = [bool](Get-PropValue -ObjectValue $acceptCandidate -Name "promotion_eligible" -DefaultValue $true)
     $bootstrapOnly = Test-BootstrapOnlyAcceptanceReport -AcceptanceReport $acceptReport
+    $scoutOnlyBudgetEvidence = Test-ScoutOnlyBudgetEvidence -AcceptanceReport $acceptReport
     $executionContractOutputPath = ""
     $executionContractRowsTotal = 0
     if ($null -ne $executionContractRefresh) {
@@ -1006,7 +857,7 @@ if ($runSpawnPhase) {
                     continue
                 }
                 $trimmedUnit = $trimmedUnit.Trim()
-                if (Test-SystemdUnitActive -UnitName $trimmedUnit) {
+                if (Test-SystemdUnitActive -UnitName $trimmedUnit -IsDryRun:$DryRun) {
                     Restart-Unit -UnitName $trimmedUnit
                     $restartedCandidateUnits += $trimmedUnit
                 } else {
@@ -1042,7 +893,7 @@ if ($runSpawnPhase) {
                 "DUPLICATE_CANDIDATE"
             } elseif ($acceptReasons -contains "TRAINER_EVIDENCE_REQUIRED_FAILED") {
                 "TRAINER_EVIDENCE_REQUIRED_FAILED"
-            } elseif ($acceptReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE") {
+            } elseif ($scoutOnlyBudgetEvidence) {
                 "SCOUT_ONLY_BUDGET_EVIDENCE"
             } elseif ($bootstrapOnly) {
                 "BOOTSTRAP_ONLY_POLICY"

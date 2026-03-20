@@ -9,7 +9,7 @@ from pathlib import Path
 import queue
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent, parse_private_event
 from autobot.upbit.exceptions import UpbitError
@@ -521,18 +521,14 @@ def _apply_rollout_status_to_summary(summary: dict[str, Any], rollout_status: di
     summary["rollout_reason_codes"] = list(payload.get("reason_codes", []))
 
 
-def run_live_sync_daemon(
+def _build_live_daemon_summary(
     *,
     store: LiveStateStore,
-    client: Any,
-    settings: LiveDaemonSettings,
+    extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    started_ts_ms = int(time.time() * 1000)
-    started_monotonic = time.monotonic()
-    cycles = 0
     summary: dict[str, Any] = {
-        "started_ts_ms": started_ts_ms,
-        "ended_ts_ms": started_ts_ms,
+        "started_ts_ms": int(time.time() * 1000),
+        "ended_ts_ms": int(time.time() * 1000),
         "cycles": 0,
         "halted": False,
         "halted_reasons": [],
@@ -556,21 +552,68 @@ def run_live_sync_daemon(
         "rollout_order_emission_allowed": False,
         "rollout_reason_codes": [],
     }
+    if isinstance(extra_fields, dict):
+        summary.update(extra_fields)
+    return summary
 
+
+def _apply_cycle_result_to_summary(
+    summary: dict[str, Any],
+    cycle_result: dict[str, Any],
+    *,
+    include_runtime_rollout: bool,
+) -> None:
+    summary["last_report"] = cycle_result["report"]
+    summary["last_cancel_summary"] = cycle_result["cancel_summary"]
+    summary["breaker_report"] = cycle_result.get("breaker_report")
+    summary["last_sync_error"] = cycle_result.get("sync_error")
+    summary["small_account_report"] = cycle_result.get("small_account_report")
+    if include_runtime_rollout:
+        _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
+        _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
+
+
+def _default_startup_halt_after_cycle(store: LiveStateStore, cycle_result: dict[str, Any]) -> list[str] | None:
+    if bool(cycle_result["report"].get("halted")) or bool(active_breaker_decision(store).active):
+        return list(active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", []))
+    return None
+
+
+def _default_startup_halt_after_rollout(store: LiveStateStore) -> list[str] | None:
+    if bool(active_breaker_decision(store).active):
+        return list(active_breaker_decision(store).reason_codes)
+    return None
+
+
+def _run_startup_lifecycle(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    settings: LiveDaemonSettings,
+    summary: dict[str, Any],
+    before_reconcile_fn: Callable[[], None] | None = None,
+    halt_after_cycle_fn: Callable[[LiveStateStore, dict[str, Any]], list[str] | None] | None = None,
+    halt_after_rollout_fn: Callable[[LiveStateStore], list[str] | None] | None = None,
+    run_sync_cycle_with_breakers_fn: Callable[..., dict[str, Any]] | None = None,
+    maybe_enforce_breaker_fn: Callable[..., dict[str, Any] | None] | None = None,
+) -> tuple[int, bool]:
+    cycles = 0
+    resolved_halt_after_cycle_fn = halt_after_cycle_fn or _default_startup_halt_after_cycle
+    resolved_halt_after_rollout_fn = halt_after_rollout_fn or _default_startup_halt_after_rollout
+    resolved_run_sync_cycle_with_breakers_fn = run_sync_cycle_with_breakers_fn or _run_sync_cycle_with_breakers
+    resolved_maybe_enforce_breaker_fn = maybe_enforce_breaker_fn or _maybe_enforce_breaker
     if settings.startup_reconcile:
-        cycle_result = _run_sync_cycle_with_breakers(
+        if before_reconcile_fn is not None:
+            before_reconcile_fn()
+        cycle_result = resolved_run_sync_cycle_with_breakers_fn(
             store=store,
             client=client,
             settings=settings,
             ts_ms=int(time.time() * 1000),
         )
         cycles += 1
-        summary["last_report"] = cycle_result["report"]
-        summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-        summary["breaker_report"] = cycle_result.get("breaker_report")
-        summary["last_sync_error"] = cycle_result.get("sync_error")
-        summary["small_account_report"] = cycle_result.get("small_account_report")
-        breaker_cancel_summary = _maybe_enforce_breaker(
+        _apply_cycle_result_to_summary(summary, cycle_result, include_runtime_rollout=False)
+        summary["last_breaker_cancel_summary"] = resolved_maybe_enforce_breaker_fn(
             store=store,
             client=client,
             settings=settings,
@@ -578,61 +621,62 @@ def run_live_sync_daemon(
             prior_cancel_summary=cycle_result["cancel_summary"],
             ts_ms=int(time.time() * 1000),
         )
-        summary["last_breaker_cancel_summary"] = breaker_cancel_summary
-        if bool(cycle_result["report"].get("halted")) or bool(active_breaker_decision(store).active):
+        halt_reasons = resolved_halt_after_cycle_fn(store, cycle_result)
+        if halt_reasons:
             summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", []))
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
+            summary["halted_reasons"] = list(halt_reasons)
+            return cycles, False
+
         resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
         summary["resume_report"] = resume_report
         if bool(resume_report.get("halted")):
             summary["halted"] = True
             summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
-    else:
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
+            return cycles, False
+
+    runtime_status = _runtime_model_binding_after_resume(
+        store=store,
+        settings=settings,
+        ts_ms=int(time.time() * 1000),
+    )
+    _apply_runtime_status_to_summary(summary, runtime_status)
+    rollout_status = _evaluate_rollout_gate(
+        store=store,
+        client=client,
+        settings=settings,
+        ts_ms=int(time.time() * 1000),
+    )
+    _apply_rollout_status_to_summary(summary, rollout_status)
+    summary["breaker_report"] = breaker_status(store)
+    halt_reasons = resolved_halt_after_rollout_fn(store)
+    if halt_reasons:
+        summary["halted"] = True
+        summary["halted_reasons"] = list(halt_reasons)
+        return cycles, False
+    return cycles, True
+
+
+def run_live_sync_daemon(
+    *,
+    store: LiveStateStore,
+    client: Any,
+    settings: LiveDaemonSettings,
+) -> dict[str, Any]:
+    started_monotonic = time.monotonic()
+    cycles = 0
+    summary = _build_live_daemon_summary(store=store)
+
+    startup_cycles, startup_ok = _run_startup_lifecycle(
+        store=store,
+        client=client,
+        settings=settings,
+        summary=summary,
+    )
+    cycles += startup_cycles
+    if not startup_ok:
+        summary["cycles"] = cycles
+        summary["ended_ts_ms"] = int(time.time() * 1000)
+        return summary
 
     while True:
         if settings.max_cycles is not None and cycles >= settings.max_cycles:
@@ -650,13 +694,7 @@ def run_live_sync_daemon(
             ts_ms=int(time.time() * 1000),
         )
         cycles += 1
-        summary["last_report"] = cycle_result["report"]
-        summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-        summary["breaker_report"] = cycle_result.get("breaker_report")
-        summary["last_sync_error"] = cycle_result.get("sync_error")
-        summary["small_account_report"] = cycle_result.get("small_account_report")
-        _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
-        _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
+        _apply_cycle_result_to_summary(summary, cycle_result, include_runtime_rollout=True)
         summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
             store=store,
             client=client,
@@ -682,7 +720,6 @@ def run_live_sync_daemon_with_executor_events(
     executor_gateway: Any,
     settings: LiveDaemonSettings,
 ) -> dict[str, Any]:
-    started_ts_ms = int(time.time() * 1000)
     started_monotonic = time.monotonic()
     cycles = 0
     executor_events = 0
@@ -691,114 +728,29 @@ def run_live_sync_daemon_with_executor_events(
     next_poll_monotonic = time.monotonic()
     poll_interval_sec = max(int(settings.poll_interval_sec), 60)
     stream_errors: list[str] = []
+    summary = _build_live_daemon_summary(
+        store=store,
+        extra_fields={
+            "executor_events": 0,
+            "executor_last_event_ts_ms": None,
+            "executor_last_event_latency_ms": None,
+            "stream_errors": [],
+        },
+    )
 
-    summary: dict[str, Any] = {
-        "started_ts_ms": started_ts_ms,
-        "ended_ts_ms": started_ts_ms,
-        "cycles": 0,
-        "executor_events": 0,
-        "executor_last_event_ts_ms": None,
-        "executor_last_event_latency_ms": None,
-        "halted": False,
-        "halted_reasons": [],
-        "last_report": None,
-        "last_cancel_summary": None,
-        "last_breaker_cancel_summary": None,
-        "resume_report": None,
-        "stream_errors": [],
-        "small_account_report": None,
-        "breaker_report": breaker_status(store),
-        "last_sync_error": None,
-        "runtime_handoff": None,
-        "live_runtime_model_run_id": None,
-        "champion_pointer_run_id": None,
-        "ws_public_last_checkpoint_ts_ms": None,
-        "ws_public_staleness_sec": None,
-        "model_pointer_divergence": False,
-        "rollout": None,
-        "rollout_mode": None,
-        "rollout_target_unit": None,
-        "rollout_start_allowed": False,
-        "rollout_order_emission_allowed": False,
-        "rollout_reason_codes": [],
-    }
-
-    if settings.startup_reconcile:
-        cycle_result = _run_sync_cycle_with_breakers(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        cycles += 1
-        summary["last_report"] = cycle_result["report"]
-        summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-        summary["breaker_report"] = cycle_result.get("breaker_report")
-        summary["last_sync_error"] = cycle_result.get("sync_error")
-        summary["small_account_report"] = cycle_result.get("small_account_report")
-        summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
-            store=store,
-            client=client,
-            settings=settings,
-            report=cycle_result["report"],
-            prior_cancel_summary=cycle_result["cancel_summary"],
-            ts_ms=int(time.time() * 1000),
-        )
-        if bool(cycle_result["report"].get("halted")) or bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", []))
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
-        resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
-        summary["resume_report"] = resume_report
-        if bool(resume_report.get("halted")):
-            summary["halted"] = True
-            summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
+    startup_cycles, startup_ok = _run_startup_lifecycle(
+        store=store,
+        client=client,
+        settings=settings,
+        summary=summary,
+    )
+    cycles += startup_cycles
+    if not startup_ok:
+        summary["cycles"] = cycles
+        summary["ended_ts_ms"] = int(time.time() * 1000)
+        return summary
+    if settings.startup_reconcile and startup_cycles > 0:
         next_poll_monotonic = time.monotonic() + poll_interval_sec
-    else:
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            return summary
 
     event_queue: queue.Queue[Any] = queue.Queue()
     stop_event = threading.Event()
@@ -895,13 +847,7 @@ def run_live_sync_daemon_with_executor_events(
                     ts_ms=int(time.time() * 1000),
                 )
                 cycles += 1
-                summary["last_report"] = cycle_result["report"]
-                summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-                summary["breaker_report"] = cycle_result.get("breaker_report")
-                summary["last_sync_error"] = cycle_result.get("sync_error")
-                summary["small_account_report"] = cycle_result.get("small_account_report")
-                _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
-                _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
+                _apply_cycle_result_to_summary(summary, cycle_result, include_runtime_rollout=True)
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,
@@ -935,7 +881,6 @@ async def run_live_sync_daemon_with_private_ws(
     ws_client: Any,
     settings: LiveDaemonSettings,
 ) -> dict[str, Any]:
-    started_ts_ms = int(time.time() * 1000)
     started_monotonic = time.monotonic()
     cycles = 0
     ws_events = 0
@@ -943,118 +888,30 @@ async def run_live_sync_daemon_with_private_ws(
     ws_last_event_latency_ms: int | None = None
     next_poll_monotonic = time.monotonic()
     poll_interval_sec = max(int(settings.poll_interval_sec), 60)
+    summary = _build_live_daemon_summary(
+        store=store,
+        extra_fields={
+            "ws_events": 0,
+            "ws_last_event_ts_ms": None,
+            "ws_last_event_latency_ms": None,
+            "ws_stats": {},
+        },
+    )
 
-    summary: dict[str, Any] = {
-        "started_ts_ms": started_ts_ms,
-        "ended_ts_ms": started_ts_ms,
-        "cycles": 0,
-        "ws_events": 0,
-        "ws_last_event_ts_ms": None,
-        "ws_last_event_latency_ms": None,
-        "halted": False,
-        "halted_reasons": [],
-        "last_report": None,
-        "last_cancel_summary": None,
-        "last_breaker_cancel_summary": None,
-        "resume_report": None,
-        "ws_stats": {},
-        "small_account_report": None,
-        "breaker_report": breaker_status(store),
-        "last_sync_error": None,
-        "runtime_handoff": None,
-        "live_runtime_model_run_id": None,
-        "champion_pointer_run_id": None,
-        "ws_public_last_checkpoint_ts_ms": None,
-        "ws_public_staleness_sec": None,
-        "model_pointer_divergence": False,
-        "rollout": None,
-        "rollout_mode": None,
-        "rollout_target_unit": None,
-        "rollout_start_allowed": False,
-        "rollout_order_emission_allowed": False,
-        "rollout_reason_codes": [],
-    }
-
-    if settings.startup_reconcile:
-        cycle_result = _run_sync_cycle_with_breakers(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        cycles += 1
-        summary["last_report"] = cycle_result["report"]
-        summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-        summary["breaker_report"] = cycle_result.get("breaker_report")
-        summary["last_sync_error"] = cycle_result.get("sync_error")
-        summary["small_account_report"] = cycle_result.get("small_account_report")
-        summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
-            store=store,
-            client=client,
-            settings=settings,
-            report=cycle_result["report"],
-            prior_cancel_summary=cycle_result["cancel_summary"],
-            ts_ms=int(time.time() * 1000),
-        )
-        if bool(cycle_result["report"].get("halted")) or bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", []))
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
-            return summary
-        resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
-        summary["resume_report"] = resume_report
-        if bool(resume_report.get("halted")):
-            summary["halted"] = True
-            summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
-            return summary
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-            summary["cycles"] = cycles
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
-            return summary
+    startup_cycles, startup_ok = _run_startup_lifecycle(
+        store=store,
+        client=client,
+        settings=settings,
+        summary=summary,
+    )
+    cycles += startup_cycles
+    if not startup_ok:
+        summary["cycles"] = cycles
+        summary["ended_ts_ms"] = int(time.time() * 1000)
+        summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
+        return summary
+    if settings.startup_reconcile and startup_cycles > 0:
         next_poll_monotonic = time.monotonic() + poll_interval_sec
-    else:
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
-            store=store,
-            client=client,
-            settings=settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if bool(active_breaker_decision(store).active):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-            summary["ended_ts_ms"] = int(time.time() * 1000)
-            summary["ws_stats"] = ws_client.stats if hasattr(ws_client, "stats") else {}
-            return summary
 
     event_queue: asyncio.Queue[MyOrderEvent | MyAssetEvent] = asyncio.Queue()
     stop_event = asyncio.Event()
@@ -1145,13 +1002,7 @@ async def run_live_sync_daemon_with_private_ws(
                     ts_ms=int(time.time() * 1000),
                 )
                 cycles += 1
-                summary["last_report"] = cycle_result["report"]
-                summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-                summary["breaker_report"] = cycle_result.get("breaker_report")
-                summary["last_sync_error"] = cycle_result.get("sync_error")
-                summary["small_account_report"] = cycle_result.get("small_account_report")
-                _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
-                _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
+                _apply_cycle_result_to_summary(summary, cycle_result, include_runtime_rollout=True)
                 summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
                     store=store,
                     client=client,

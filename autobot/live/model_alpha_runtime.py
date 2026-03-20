@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import time
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import json
 from pathlib import Path
+import time
 from typing import Any, Sequence
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent
@@ -67,13 +67,11 @@ from .breakers import (
 )
 from .daemon import (
     LiveDaemonSettings,
+    _apply_cycle_result_to_summary,
     _apply_private_ws_event_with_breakers,
-    _apply_rollout_status_to_summary,
-    _apply_runtime_status_to_summary,
-    _evaluate_rollout_gate,
     _maybe_enforce_breaker,
+    _run_startup_lifecycle,
     _run_sync_cycle_with_breakers,
-    _runtime_model_binding_after_resume,
 )
 from .identifier import new_order_identifier
 from . import model_alpha_runtime_bootstrap as _runtime_bootstrap
@@ -185,6 +183,7 @@ async def run_live_model_alpha_runtime(
         "private_ws_last_event_ts_ms": None,
         "private_ws_last_event_latency_ms": None,
         "private_ws_stats": {},
+        "closed_orders_backfill": None,
     }
 
     if daemon_settings.startup_reconcile:
@@ -192,23 +191,18 @@ async def run_live_model_alpha_runtime(
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
     else:
-        runtime_status = _runtime_model_binding_after_resume(
-            store=store,
-            settings=daemon_settings,
-            ts_ms=int(time.time() * 1000),
-        )
-        _apply_runtime_status_to_summary(summary, runtime_status)
-        rollout_status = _evaluate_rollout_gate(
+        startup_cycles, startup_ok = _run_startup_lifecycle(
             store=store,
             client=client,
             settings=daemon_settings,
-            ts_ms=int(time.time() * 1000),
+            summary=summary,
+            halt_after_cycle_fn=_runtime_startup_halt_after_cycle,
+            halt_after_rollout_fn=_runtime_startup_halt_after_rollout,
+            run_sync_cycle_with_breakers_fn=_run_sync_cycle_with_breakers,
+            maybe_enforce_breaker_fn=_maybe_enforce_breaker,
         )
-        _apply_rollout_status_to_summary(summary, rollout_status)
-        summary["breaker_report"] = breaker_status(store)
-        if not _runtime_loop_allowed(store):
-            summary["halted"] = True
-            summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+        summary["cycles"] = startup_cycles
+        if not startup_ok:
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
 
@@ -462,12 +456,7 @@ async def run_live_model_alpha_runtime(
                     ts_ms=int(time.time() * 1000),
                 )
                 summary["cycles"] = int(summary["cycles"]) + 1
-                summary["last_report"] = cycle_result["report"]
-                summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-                summary["breaker_report"] = cycle_result.get("breaker_report")
-                summary["small_account_report"] = cycle_result.get("small_account_report")
-                _apply_runtime_status_to_summary(summary, cycle_result.get("runtime_handoff"))
-                _apply_rollout_status_to_summary(summary, cycle_result.get("rollout"))
+                _apply_cycle_result_to_summary(summary, cycle_result, include_runtime_rollout=True)
                 order_supervision = _supervise_open_strategy_orders(
                     store=store,
                     client=client,
@@ -596,63 +585,30 @@ def _startup_sync(
     settings: LiveDaemonSettings,
     summary: dict[str, Any],
 ) -> bool:
-    summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
-        store=store,
-        client=client,
-        bot_id=settings.bot_id,
-        identifier_prefix=settings.identifier_prefix,
-        now_ts_ms=int(time.time() * 1000),
-    )
-    cycle_result = _run_sync_cycle_with_breakers(
-        store=store,
-        client=client,
-        settings=settings,
-        ts_ms=int(time.time() * 1000),
-    )
-    summary["cycles"] = 1
-    summary["last_report"] = cycle_result["report"]
-    summary["last_cancel_summary"] = cycle_result["cancel_summary"]
-    summary["breaker_report"] = cycle_result.get("breaker_report")
-    summary["small_account_report"] = cycle_result.get("small_account_report")
-    summary["last_breaker_cancel_summary"] = _maybe_enforce_breaker(
-        store=store,
-        client=client,
-        settings=settings,
-        report=cycle_result["report"],
-        prior_cancel_summary=cycle_result["cancel_summary"],
-        ts_ms=int(time.time() * 1000),
-    )
-    if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
-        summary["halted"] = True
-        summary["halted_reasons"] = list(
-            active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", [])
+    def _before_reconcile() -> None:
+        summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
+            store=store,
+            client=client,
+            bot_id=settings.bot_id,
+            identifier_prefix=settings.identifier_prefix,
+            now_ts_ms=int(time.time() * 1000),
         )
-        return False
-    resume_report = resume_risk_plans_after_reconcile(store=store, ts_ms=int(time.time() * 1000))
-    summary["resume_report"] = resume_report
-    if bool(resume_report.get("halted")):
-        summary["halted"] = True
-        summary["halted_reasons"] = ["RESUME_REVIEW_REQUIRED"]
-        return False
-    runtime_status = _runtime_model_binding_after_resume(
-        store=store,
-        settings=settings,
-        ts_ms=int(time.time() * 1000),
-    )
-    _apply_runtime_status_to_summary(summary, runtime_status)
-    rollout_status = _evaluate_rollout_gate(
+
+    reconcile_settings = settings if settings.startup_reconcile else replace(settings, startup_reconcile=True)
+
+    startup_cycles, startup_ok = _run_startup_lifecycle(
         store=store,
         client=client,
-        settings=settings,
-        ts_ms=int(time.time() * 1000),
+        settings=reconcile_settings,
+        summary=summary,
+        before_reconcile_fn=_before_reconcile,
+        halt_after_cycle_fn=_runtime_startup_halt_after_cycle,
+        halt_after_rollout_fn=_runtime_startup_halt_after_rollout,
+        run_sync_cycle_with_breakers_fn=_run_sync_cycle_with_breakers,
+        maybe_enforce_breaker_fn=_maybe_enforce_breaker,
     )
-    _apply_rollout_status_to_summary(summary, rollout_status)
-    summary["breaker_report"] = breaker_status(store)
-    if not _runtime_loop_allowed(store):
-        summary["halted"] = True
-        summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-        return False
-    return True
+    summary["cycles"] = startup_cycles
+    return startup_ok
 
 
 def _load_predictor_for_runtime(*, store: LiveStateStore, settings: LiveModelAlphaRuntimeSettings) -> ModelPredictor:
@@ -1347,6 +1303,18 @@ def _protective_order_emission_allowed(store: LiveStateStore) -> bool:
 
 def _runtime_loop_allowed(store: LiveStateStore) -> bool:
     return protective_orders_allowed(store)
+
+
+def _runtime_startup_halt_after_cycle(store: LiveStateStore, cycle_result: dict[str, Any]) -> list[str] | None:
+    if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
+        return list(active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", []))
+    return None
+
+
+def _runtime_startup_halt_after_rollout(store: LiveStateStore) -> list[str] | None:
+    if not _runtime_loop_allowed(store):
+        return list(active_breaker_decision(store).reason_codes)
+    return None
 
 
 def _drain_private_ws_events(

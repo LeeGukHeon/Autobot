@@ -286,7 +286,52 @@ These look legacy-like but should not be removed yet:
 - candidate/main live installer split
 - historical metadata compatibility handling in `intents` / `execution_attempts`
 
-## 9. Test Gaps
+## 9. Repo-Wide Drift Surfaces
+
+### 9.1 Secondary/manual paths that still exist
+
+These are not the primary OCI production path anymore, but they are still present and therefore should be treated as compatibility/manual surfaces, not assumed-dead code:
+
+- daily acceptance wrappers:
+  - `scripts/daily_candidate_acceptance_for_server.ps1`
+  - `scripts/daily_parallel_acceptance_for_server.ps1`
+- legacy/manual installers:
+  - `scripts/install_server_daily_acceptance_service.ps1`
+  - `scripts/install_server_daily_parallel_acceptance_service.ps1`
+- v3-visible runtime and acceptance surfaces:
+  - CLI `--trainer` still exposes `v2_micro` / `v3_mtf_micro`
+  - `paper alpha --preset` still exposes `live_v3`
+  - `scripts/install_server_runtime_services.ps1` still accepts `live_v3`
+  - `scripts/v3_candidate_acceptance.ps1` still targets `autobot-paper-alpha.service`
+- local Windows scheduling helpers:
+  - `scripts/register_scheduled_tasks.ps1`
+  - `scripts/unregister_scheduled_tasks.ps1`
+  - `scripts/autobot_center.ps1` still has `schtasks` fallback logic
+- package compatibility mirror:
+  - `python/autobot/` remains intentionally minimized, but ADR/runbook still keep it as a compatibility surface
+
+### 9.2 Naming drift that blocks blind cleanup
+
+- The actual payload is now `execution_contract`, but important storage names still use `execution_policy` terminology:
+  - checkpoint name: `live_execution_policy_model`
+  - artifact path: `logs/live_execution_policy/combined_live_execution_policy.json`
+  - refresh payload policy string: `live_execution_policy_refresh_v1`
+  - runtime/order metadata field name: `execution_policy`
+- Main live DB path is still dual-surfaced:
+  - config/CLI/live installer default to `data/state/live_state.db`
+  - dashboard also supports `data/state/live/live_state.db`
+
+### 9.3 Deploy/ops cleanup preconditions
+
+- `install_server_daily_split_challenger_services.ps1` explicitly disables:
+  - `autobot-daily-micro.timer`
+  - `autobot-daily-v4-accept.timer`
+  so deleting the old units/scripts before operators stop relying on them removes fallback/rollback paths.
+- Unit content changes are installer-driven on OCI. A `git pull` alone is not sufficient when a systemd unit contract changes.
+- Service names are embedded across scripts, tests, dashboard logic, and docs. Renaming or deleting units requires a coordinated migration, not a repo-only cleanup.
+- DB path cleanup requires coordinated changes across config defaults, live installers, dashboard DB discovery, and tests.
+
+## 10. Test Gaps
 
 Missing or weakly-covered integration areas:
 
@@ -300,7 +345,16 @@ Missing or weakly-covered integration areas:
 - 23:50 promote using contract freshness/provenance
 - rank-shadow interaction with the new execution contract
 
-## 10. Recommended Cleanup Order
+Additional coverage note:
+
+- coverage is strong for script contracts and component-level runtime behavior:
+  - `tests/test_t23_2_server_script_contracts.py`
+  - `tests/test_daily_champion_challenger_spawn_handling.py`
+  - `tests/test_live_model_alpha_runtime.py`
+  - `tests/test_t23_2_continuity_pack.py`
+- however, those checks are still split by layer; there is not yet one production-style test that proves the full timer -> refresh -> spawn/promote -> reconcile/resume -> submit/fill/close chain under breaker and rollout state together
+
+## 11. Recommended Cleanup Order
 
 ### Phase A - Audit / provenance hardening
 
@@ -329,7 +383,7 @@ Missing or weakly-covered integration areas:
 
 - migrate `execution_policy` names to `execution_contract` names once consumers are updated
 
-## 11. Bottom Line
+## 12. Bottom Line
 
 The system is already coherent enough to operate, but it is not yet clean.
 
