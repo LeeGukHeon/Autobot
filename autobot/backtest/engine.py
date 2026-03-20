@@ -1519,12 +1519,12 @@ class BacktestRunEngine:
             if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
                 exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
         policy_diagnostics: dict[str, Any] = {}
+        snapshot = (
+            micro_snapshot_provider.get(candidate.market, int(ts_ms))
+            if micro_snapshot_provider is not None
+            else None
+        )
         if micro_order_policy is not None:
-            snapshot = (
-                micro_snapshot_provider.get(candidate.market, int(ts_ms))
-                if micro_snapshot_provider is not None
-                else None
-            )
             policy_decision = micro_order_policy.evaluate(
                 micro_snapshot=snapshot,
                 base_profile=(exec_profile if strategy_mode == "model_alpha_v1" else None),
