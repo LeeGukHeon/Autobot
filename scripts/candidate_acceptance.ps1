@@ -91,6 +91,7 @@ param(
     [string[]]$KnownRuntimeUnits = @("autobot-paper-v4.service", "autobot-live-alpha.service"),
     [bool]$AutoRestartKnownUnits = $true,
     [switch]$SkipDailyPipeline,
+    [switch]$SkipTrain,
     [switch]$SkipPaperSoak,
     [switch]$SkipReportRefresh,
     [switch]$SkipPromote,
@@ -2181,6 +2182,7 @@ $report = [ordered]@{
         promotion_policy_contract_source = [string]$promotionPolicyConfig.threshold_source
         promotion_policy_contract_profile_id = [string]$promotionPolicyConfig.profile_id
         promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
+        skip_train = [bool]$SkipTrain
         skip_paper_soak = [bool]$SkipPaperSoak
         restart_units = @($RestartUnits)
         known_runtime_units = @($KnownRuntimeUnits)
@@ -2697,13 +2699,38 @@ try {
         "--execution-acceptance-min-cands-per-ts", $BacktestMinCandidatesPerTs,
         "--execution-acceptance-hold-bars", $HoldBars
     )
-    $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
-    $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
-    $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
-    if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
-        $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
-        $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
+    if ($SkipTrain) {
+        $trainExec = [PSCustomObject]@{
+            ExitCode = 0
+            Output = ""
+            Command = ("[skip-train] reuse existing candidate " + [string]$CandidateModelRef).Trim()
+            DryRun = [bool]$DryRun
+        }
+        $candidateRunId = [string]$CandidateModelRef
+        if (
+            [string]::IsNullOrWhiteSpace($candidateRunId) -or
+            ($candidateRunId -eq "latest_candidate_v4") -or
+            ($candidateRunId -eq "latest_candidate")
+        ) {
+            $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
+            $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
+        }
         $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
+        if ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($candidateRunId)) {
+            throw "skip-train requested but candidate run id could not be resolved"
+        }
+        if ((-not $DryRun) -and (-not (Test-Path $candidateRunDir))) {
+            throw ("skip-train requested but candidate run_dir does not exist: " + $candidateRunDir)
+        }
+    } else {
+        $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
+        $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
+        $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
+        if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
+            $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
+            $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
+            $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
+        }
     }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
@@ -2803,6 +2830,9 @@ try {
         certification_window_reasons = @((Get-PropValue -ObjectValue $certificationArtifact -Name "reasons" -DefaultValue @()))
     }
     $report.steps.train = [ordered]@{
+        attempted = (-not $SkipTrain)
+        reused_existing_candidate = [bool]$SkipTrain
+        reason = if ($SkipTrain) { "REUSED_EXISTING_CANDIDATE" } else { "" }
         exit_code = [int]$trainExec.ExitCode
         command = $trainExec.Command
         output_preview = (Get-OutputPreview -Text ([string]$trainExec.Output))

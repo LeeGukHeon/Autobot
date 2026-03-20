@@ -18,7 +18,7 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _make_fake_python_exe(tmp_path: Path) -> Path:
+def _make_fake_python_exe(tmp_path: Path, *, allow_train: bool = True) -> Path:
     driver_path = tmp_path / "fake_python_driver.py"
     driver_path.write_text(
         textwrap.dedent(
@@ -30,6 +30,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             ROOT = Path.cwd()
             CANDIDATE_RUN_ID = "candidate-run-001"
             CHAMPION_RUN_ID = "champion-run-000"
+            ALLOW_TRAIN = __ALLOW_TRAIN__
 
 
             def arg_value(name: str, default: str = "") -> str:
@@ -50,6 +51,9 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             command_key = tuple(args[:4])
 
             if command_key == ("-m", "autobot.cli", "model", "train"):
+                if not ALLOW_TRAIN:
+                    print("unexpected train invocation", file=sys.stderr)
+                    sys.exit(1)
                 family = arg_value("--model-family", "train_v4_crypto_cs")
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
@@ -134,7 +138,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             print("unexpected fake python invocation: " + " ".join(args), file=sys.stderr)
             sys.exit(1)
             """
-        ).strip()
+        ).replace("__ALLOW_TRAIN__", "True" if allow_train else "False").strip()
         + "\n",
         encoding="utf-8",
     )
@@ -154,6 +158,50 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
         )
         wrapper_path.chmod(0o755)
     return wrapper_path
+
+
+def _write_existing_candidate_run(project_root: Path) -> None:
+    run_dir = project_root / "models" / "registry" / "train_v4_crypto_cs" / "candidate-run-001"
+    _write_json(project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json", {"run_id": "candidate-run-001"})
+    _write_json(run_dir / "promotion_decision.json", {"status": "candidate", "promote": False, "reasons": []})
+    _write_json(
+        run_dir / "trainer_research_evidence.json",
+        {
+            "available": True,
+            "pass": True,
+            "offline_pass": True,
+            "execution_pass": True,
+            "reasons": [],
+            "checks": {},
+            "offline": {},
+            "execution": {},
+        },
+    )
+    _write_json(
+        run_dir / "search_budget_decision.json",
+        {
+            "status": "default",
+            "lane_class_requested": "promotion_eligible",
+            "lane_class_effective": "promotion_eligible",
+            "budget_contract_id": "v4_promotion_eligible_budget_v1",
+            "promotion_eligible_contract": {"satisfied": True},
+        },
+    )
+    _write_json(run_dir / "economic_objective_profile.json", {"profile_id": "test_profile"})
+    _write_json(
+        run_dir / "lane_governance.json",
+        {
+            "policy": "v4_lane_governance_v1",
+            "lane_id": "cls_primary",
+            "task": "cls",
+            "run_scope": "scheduled_daily",
+            "lane_role": "primary",
+            "shadow_only": False,
+            "promotion_allowed": True,
+            "governance_reasons": ["PRIMARY_LANE_ELIGIBLE"],
+        },
+    )
+    _write_json(run_dir / "decision_surface.json", {"policy": {}})
 
 
 def _make_fake_paper_smoke_script(tmp_path: Path) -> Path:
@@ -309,6 +357,70 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
     assert "-ModelRef candidate-run-001" in paper_candidate["command"]
     assert paper_candidate["smoke_report_source"] == "run_report"
 
+    assert report["gates"]["backtest"]["pass"] is True
+    assert report["gates"]["paper"]["pass"] is True
+    assert report["gates"]["overall_pass"] is True
+
+
+def test_candidate_acceptance_can_reuse_existing_candidate_without_retraining(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_existing_candidate_run(project_root)
+
+    python_exe = _make_fake_python_exe(tmp_path, allow_train=False)
+    paper_smoke_script = _make_fake_paper_smoke_script(tmp_path)
+    powershell_exe = _powershell_exe()
+
+    command = [
+        powershell_exe,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ACCEPTANCE_SCRIPT),
+        "-ProjectRoot",
+        str(project_root),
+        "-PythonExe",
+        str(python_exe),
+        "-PaperSmokeScript",
+        str(paper_smoke_script),
+        "-OutDir",
+        "logs/test_acceptance",
+        "-BatchDate",
+        "2026-03-07",
+        "-TrainLookbackDays",
+        "2",
+        "-BacktestLookbackDays",
+        "2",
+        "-CandidateModelRef",
+        "candidate-run-001",
+        "-SkipTrain",
+        "-SkipDailyPipeline",
+        "-SkipReportRefresh",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report_path = project_root / "logs" / "test_acceptance" / "latest.json"
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+
+    train_step = report["steps"]["train"]
+    candidate = report["candidate"]
+
+    assert train_step["attempted"] is False
+    assert train_step["reused_existing_candidate"] is True
+    assert train_step["reason"] == "REUSED_EXISTING_CANDIDATE"
+    assert train_step["candidate_run_id"] == "candidate-run-001"
+    assert candidate["run_id"] == "candidate-run-001"
+    assert candidate["candidate_model_ref_requested"] == "candidate-run-001"
+    assert candidate["candidate_run_id_used_for_backtest"] == "candidate-run-001"
+    assert candidate["candidate_run_id_used_for_paper"] == "candidate-run-001"
     assert report["gates"]["backtest"]["pass"] is True
     assert report["gates"]["paper"]["pass"] is True
     assert report["gates"]["overall_pass"] is True
