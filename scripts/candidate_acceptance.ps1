@@ -4347,6 +4347,7 @@ try {
         exit_code = [int]$candidateBacktest.Exec.ExitCode
         command = $candidateBacktest.Exec.Command
         output_preview = (Get-OutputPreview -Text ([string]$candidateBacktest.Exec.Output))
+        preset = [string](Get-PropValue -ObjectValue $candidateBacktest -Name "Preset" -DefaultValue "runtime_parity")
         start = $certificationStartDate
         end = $effectiveBatchDate
         model_ref_requested = $CandidateModelRef
@@ -4372,6 +4373,7 @@ try {
             exit_code = [int]$championBacktest.Exec.ExitCode
             command = $championBacktest.Exec.Command
             output_preview = (Get-OutputPreview -Text ([string]$championBacktest.Exec.Output))
+            preset = [string](Get-PropValue -ObjectValue $championBacktest -Name "Preset" -DefaultValue "runtime_parity")
             start = $certificationStartDate
             end = $effectiveBatchDate
             model_ref_requested = $ChampionModelRef

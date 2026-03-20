@@ -1617,8 +1617,8 @@ def test_candidate_acceptance_runs_runtime_parity_backtests_and_reports_gate(tmp
     report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
 
     assert len(backtests) == 4
-    assert [item["preset"] for item in backtests].count("acceptance") == 2
-    assert [item["preset"] for item in backtests].count("runtime_parity") == 2
+    assert [item["preset"] for item in backtests].count("runtime_parity") == 4
+    assert report["steps"]["backtest_candidate"]["preset"] == "runtime_parity"
     assert report["gates"]["runtime_parity"]["evaluated"] is True
     assert report["gates"]["runtime_parity"]["pass"] is True
     assert report["steps"]["backtest_runtime_parity_candidate"]["preset"] == "runtime_parity"
