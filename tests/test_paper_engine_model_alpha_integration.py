@@ -528,6 +528,128 @@ def test_paper_engine_model_alpha_uses_execution_contract_to_pick_join(tmp_path:
     assert execution_policy.get("selected_action_code") == "LIMIT_GTC_JOIN"
 
 
+def test_paper_engine_model_alpha_skips_execution_contract_when_learned_execution_is_disabled(tmp_path: Path) -> None:
+    events = [
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=100.0,
+            acc_trade_price_24h=1_000_000_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=301_000,
+            trade_price=101.0,
+            acc_trade_price_24h=1_000_500_000_000.0,
+        ),
+    ]
+    contract_path = tmp_path / "live_execution_contract.json"
+    attempts = [
+        {
+            "action_code": "LIMIT_GTC_JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+            "submitted_ts_ms": 0,
+            "first_fill_ts_ms": 2_500,
+            "shortfall_bps": 1.5,
+        },
+        {
+            "action_code": "LIMIT_GTC_JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+            "submitted_ts_ms": 0,
+            "first_fill_ts_ms": 2_800,
+            "shortfall_bps": 1.0,
+        },
+        {
+            "action_code": "LIMIT_GTC_PASSIVE_MAKER",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+            "submitted_ts_ms": 0,
+            "final_state": "MISSED",
+            "expected_net_edge_bps": 20.0,
+            "shortfall_bps": 0.0,
+        },
+    ] * 10
+    contract_path.write_text(
+        json.dumps({"execution_contract": build_live_execution_contract(attempts=attempts)}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    settings = UpbitSettings(
+        base_url="https://api.upbit.com",
+        timeout=UpbitTimeoutSettings(),
+        auth=UpbitAuthSettings(),
+        ratelimit=UpbitRateLimitSettings(),
+        retry=UpbitRetrySettings(),
+        websocket=UpbitWebSocketSettings(),
+    )
+    run_settings = PaperRunSettings(
+        duration_sec=2,
+        quote="KRW",
+        top_n=1,
+        tf="5m",
+        strategy="model_alpha_v1",
+        model_ref="latest_v3",
+        feature_set="v3",
+        execution_contract_artifact_path=str(contract_path),
+        model_alpha=ModelAlphaSettings(
+            model_ref="latest_v3",
+            execution=ModelAlphaExecutionSettings(
+                price_mode="PASSIVE_MAKER",
+                timeout_bars=3,
+                replace_max=4,
+                use_learned_recommendations=False,
+            ),
+        ),
+        print_every_sec=60,
+        decision_interval_sec=0.1,
+        universe_refresh_sec=1,
+        universe_hold_sec=0,
+        momentum_window_sec=60,
+        min_momentum_pct=0.2,
+        starting_krw=50_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=2,
+        out_root_dir=str(tmp_path),
+    )
+    dummy_strategy = _DummyModelStrategy(
+        intent_meta={"trade_action": {"expected_edge": 0.0020}},
+    )
+    engine = _PaperEngineWithDummyModel(
+        upbit_settings=settings,
+        run_settings=run_settings,
+        ws_client=_FakeWsClient(events),
+        market_loader=lambda quote: ["KRW-BTC"] if quote == "KRW" else [],
+        rules_provider=_StaticRulesProvider(),
+        micro_snapshot_provider=_StableMicroProvider(),  # type: ignore[arg-type]
+        dummy_strategy=dummy_strategy,
+    )
+
+    summary = asyncio.run(engine.run())
+
+    run_dir = Path(summary.run_dir)
+    events_payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    abort_events = [item for item in events_payloads if item.get("event_type") == "EXECUTION_POLICY_ABORT"]
+    intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert not abort_events
+    assert intent_events
+    intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})
+    assert not intent_meta.get("execution_policy")
+    exec_profile = intent_meta.get("exec_profile") or {}
+    assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
+
+
 def test_paper_engine_model_alpha_entry_sizing_respects_min_total_buffer(tmp_path: Path) -> None:
     events = [
         TickerEvent(

@@ -1518,6 +1518,10 @@ class BacktestRunEngine:
             strategy_exec_profile = candidate.meta.get("exec_profile")
             if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
                 exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
+        execution_recommendations_enabled = bool(
+            strategy_mode == "model_alpha_v1"
+            and bool(self._run_settings.model_alpha.execution.use_learned_recommendations)
+        )
         policy_diagnostics: dict[str, Any] = {}
         snapshot = (
             micro_snapshot_provider.get(candidate.market, int(ts_ms))
@@ -1575,7 +1579,7 @@ class BacktestRunEngine:
                     reason_counts=self._runtime_counters.setdefault("micro_policy_fallback_counts", {}),
                 )
         execution_policy: dict[str, Any] | None = None
-        if strategy_mode == "model_alpha_v1" and side_value == "bid":
+        if strategy_mode == "model_alpha_v1" and side_value == "bid" and execution_recommendations_enabled:
             execution_contract = dict(self._runtime_state.get("execution_contract") or {})
             if int(execution_contract.get("rows_total", 0) or 0) > 0:
                 expected_edge_bps = _candidate_expected_edge_bps(candidate.meta if isinstance(candidate.meta, dict) else None)
