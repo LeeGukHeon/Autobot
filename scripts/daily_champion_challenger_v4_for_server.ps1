@@ -205,6 +205,7 @@ function Invoke-ExecutionContractRefresh {
     }
     $exec = Invoke-CommandCapture -Exe $PwshExe -ArgList $args -AllowFailure
     $outputPath = ""
+    $artifact = @{}
     if (-not [string]::IsNullOrWhiteSpace([string]$exec.Output)) {
         $lines = @([string]$exec.Output -split "\r?\n")
         for ($index = $lines.Count - 1; $index -ge 0; $index--) {
@@ -214,12 +215,30 @@ function Invoke-ExecutionContractRefresh {
             }
             $trimmed = $candidate.Trim()
             if ([string]::Equals([System.IO.Path]::GetExtension($trimmed), ".json", [System.StringComparison]::OrdinalIgnoreCase)) {
-                $outputPath = $trimmed
-                break
+                $candidateArtifact = Load-JsonOrEmpty -PathValue $trimmed
+                $candidateRows = [int](Resolve-ExecutionContractRowsTotal -Payload $candidateArtifact)
+                if ($candidateRows -gt 0) {
+                    $outputPath = $trimmed
+                    $artifact = $candidateArtifact
+                    break
+                }
+                $nestedOutputPath = [string](Get-PropValue -ObjectValue $candidateArtifact -Name "output_path" -DefaultValue "")
+                if (-not [string]::IsNullOrWhiteSpace($nestedOutputPath)) {
+                    $nestedArtifact = Load-JsonOrEmpty -PathValue $nestedOutputPath
+                    $nestedRows = [int](Resolve-ExecutionContractRowsTotal -Payload $nestedArtifact)
+                    if ($nestedRows -gt 0) {
+                        $outputPath = $nestedOutputPath
+                        $artifact = $nestedArtifact
+                        break
+                    }
+                }
+                if ([string]::IsNullOrWhiteSpace($outputPath)) {
+                    $outputPath = $trimmed
+                    $artifact = $candidateArtifact
+                }
             }
         }
     }
-    $artifact = Load-JsonOrEmpty -PathValue $outputPath
     return [PSCustomObject]@{
         ExitCode = [int]$exec.ExitCode
         Command = [string]$exec.Command
