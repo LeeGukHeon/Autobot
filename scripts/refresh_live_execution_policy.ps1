@@ -45,7 +45,18 @@ foreach ($relativeDbPath in @($resolvedStateDbPaths)) {
     if (-not (Test-Path $resolvedDbPath)) {
         continue
     }
-    $dbName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedDbPath)
+    $relativeName = [string]$relativeDbPath
+    if ([System.IO.Path]::IsPathRooted($relativeName)) {
+        $relativeName = [System.IO.Path]::GetFileNameWithoutExtension($relativeName)
+    } else {
+        $relativeName = [System.IO.Path]::GetFileNameWithoutExtension($relativeName)
+        $relativeDir = Split-Path -Path $relativeDbPath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($relativeDir)) {
+            $dirToken = ([string]$relativeDir).Trim() -replace "[/\\]+", "_"
+            $relativeName = ($dirToken + "_" + $relativeName).Trim("_")
+        }
+    }
+    $dbName = $relativeName
     $outputPath = Join-Path $resolvedOutputDir ($dbName + ".json")
     & $resolvedPythonExe -m autobot.live.execution_policy_refresh `
         --db-path $resolvedDbPath `
