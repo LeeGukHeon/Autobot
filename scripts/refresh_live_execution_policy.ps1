@@ -51,37 +51,42 @@ if (@($resolvedExistingDbPaths).Count -eq 0) {
     throw "no execution state db paths found"
 }
 
-$backfillReports = @()
-foreach ($resolvedDbPath in @($resolvedExistingDbPaths)) {
-    $backfillJson = & $resolvedPythonExe -m autobot.live.execution_attempts_backfill `
-        --db-path $resolvedDbPath `
+Push-Location $resolvedProjectRoot
+try {
+    $backfillReports = @()
+    foreach ($resolvedDbPath in @($resolvedExistingDbPaths)) {
+        $backfillJson = & $resolvedPythonExe -m autobot.live.execution_attempts_backfill `
+            --db-path $resolvedDbPath `
+            --lookback-days $LookbackDays `
+            --limit $Limit
+        if ($LASTEXITCODE -ne 0) {
+            throw "execution attempts backfill failed: $resolvedDbPath"
+        }
+        $backfillDoc = $backfillJson | ConvertFrom-Json
+        $backfillReports += $backfillDoc
+    }
+
+    $combinedOutputPath = Join-Path $resolvedOutputDir "combined_live_execution_policy.json"
+    & $resolvedPythonExe -m autobot.live.execution_policy_refresh `
+        --db-paths ([string]::Join(",", @($resolvedExistingDbPaths))) `
+        --output-path $combinedOutputPath `
         --lookback-days $LookbackDays `
         --limit $Limit
     if ($LASTEXITCODE -ne 0) {
-        throw "execution attempts backfill failed: $resolvedDbPath"
+        throw "combined execution policy refresh failed"
     }
-    $backfillDoc = $backfillJson | ConvertFrom-Json
-    $backfillReports += $backfillDoc
-}
 
-$combinedOutputPath = Join-Path $resolvedOutputDir "combined_live_execution_policy.json"
-& $resolvedPythonExe -m autobot.live.execution_policy_refresh `
-    --db-paths ([string]::Join(",", @($resolvedExistingDbPaths))) `
-    --output-path $combinedOutputPath `
-    --lookback-days $LookbackDays `
-    --limit $Limit
-if ($LASTEXITCODE -ne 0) {
-    throw "combined execution policy refresh failed"
+    $summaryPath = Join-Path $resolvedOutputDir "latest_refresh.json"
+    $summary = [ordered]@{
+        db_paths = @($resolvedExistingDbPaths)
+        output_path = $combinedOutputPath
+        backfill_reports = @($backfillReports)
+        lookback_days = [int]$LookbackDays
+        limit = [int]$Limit
+        refreshed_at = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $summary | ConvertTo-Json -Depth 6 | Set-Content -Path $summaryPath -Encoding UTF8
+    Write-Host $summaryPath
+} finally {
+    Pop-Location
 }
-
-$summaryPath = Join-Path $resolvedOutputDir "latest_refresh.json"
-$summary = [ordered]@{
-    db_paths = @($resolvedExistingDbPaths)
-    output_path = $combinedOutputPath
-    backfill_reports = @($backfillReports)
-    lookback_days = [int]$LookbackDays
-    limit = [int]$Limit
-    refreshed_at = (Get-Date).ToUniversalTime().ToString("o")
-}
-$summary | ConvertTo-Json -Depth 6 | Set-Content -Path $summaryPath -Encoding UTF8
-Write-Host $summaryPath
