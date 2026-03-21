@@ -1528,9 +1528,13 @@
         title: `${intent.market || "-"} · ${translate(intent.side)} · ${translate(intent.status)}`,
         summary: compactIntentSummary(intent),
         items: [
-          compactStat("진입 근거", tradeActionSummary(intent)),
-          compactStat("주문 방식", executionStyleSummary(intent)),
-          compactStat("사유", translate(intent.reason_code)),
+          compactStat("주문 방식", executionStyleLabel(intent)),
+          compactStat("순엣지", fmtBps(intent.expected_net_edge_bps)),
+          compactStat("예상체결", (() => {
+            const pFill = toNumber(intent.execution_selected_p_fill_deadline);
+            return pFill == null ? "-" : `${fmtNumber(pFill * 100, 1)}%`;
+          })()),
+          compactStat("액션", translate(intent.trade_action_recommended_action || intent.reason_code)),
         ],
       })).join("")}</div>`
       : empty("최근 진입 의도가 없습니다.");
