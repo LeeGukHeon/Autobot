@@ -2,76 +2,75 @@
 
 ## Current state
 
-The active `v4` contract no longer includes `ctrend_v1`.
+The active `v4` contract is now:
+
+- free of `ctrend_v1`
+- free of pre-`2026-03-04` hard history blockers
+- free of direct `v3` code-contract dependency in the active `v4` path
 
 Verified by contract inventory:
 
 - total active features: `112`
 - features that truly require pre-`2026-03-04` history: `0`
 - features buildable from `2026-03-04` onward with bounded in-window warmup only: `112`
-- features still tied to legacy `v3` code paths/contracts: `82`
+- features still tied to legacy `v3` code paths/contracts: `0`
 
 Reference artifacts:
 
 - [V4_FEATURE_DEPENDENCY_INVENTORY_2026-03-22.json](/d:/MyApps/Autobot/docs/V4_FEATURE_DEPENDENCY_INVENTORY_2026-03-22.json)
 - [V4_FEATURE_DEPENDENCY_INVENTORY_2026-03-22.md](/d:/MyApps/Autobot/docs/V4_FEATURE_DEPENDENCY_INVENTORY_2026-03-22.md)
 
-## What changed
+## What was removed
 
-The old active contract contained `140` features, including `28` `ctrend_v1` fields that forced a pre-`2026-03-04` history dependency.
+The old active contract contained:
 
-That blocker is now removed from the active contract.
+- `140` features
+- including `28` `ctrend_v1` fields
 
-So if the question is:
+Those `ctrend_v1` fields were the only true pre-`2026-03-04` history blocker.
 
-`can the active v4 feature contract now be served from the post-2026-03-04 data regime only?`
+They are now out of the active contract.
 
-the answer is:
+## What was migrated
 
-`yes, but with bounded in-window warmup for rolling and high-tf terms`
+The remaining live-base path is now served by native `v4` modules instead of directly depending on:
+
+- `feature_blocks_v3`
+- `feature_set_v3`
+- `LiveFeatureProviderV3`
+
+The active `v4` path now uses:
+
+- `feature_blocks_v4_live_base`
+- `feature_set_v4_live_base`
+- `LiveFeatureProviderV4Native`
+- `LiveFeatureProviderV4` as the default runtime wrapper on top of the native implementation
 
 ## What still remains
 
-Even after removing the old-history blocker, the active contract is still not fully `legacy-free` in code terms.
+There is still bounded warmup inside the post-`2026-03-04` window.
 
-The remaining `82` legacy-tied features are in these blocks:
+Examples:
 
-- `v3_base_core`
-- `v3_one_m_core`
-- `v3_high_tf_core`
-- `v3_micro_core`
-- `v4_trend_volume`
-- `v4_interactions`
+- `240m` high-tf trend/regime terms can need roughly `36h`
+- `logret_36` / `vol_36` need about `37` base `5m` bars
+- order-flow persistence terms need up to `12` bars
 
-This means:
-
-- the runtime no longer needs old pre-3/4 history
-- but the implementation still depends on `v3` feature code/contracts for a large part of the base row
+That is expected warmup, not legacy dependence.
 
 ## Practical meaning
 
-There are now two separate migration goals:
+For the original goal:
 
-1. `old-history-free runtime`
-2. `v3-code-free runtime`
+`use only the properly collected post-2026-03-04 WS + micro + current candles regime`
 
-Goal 1 is now achieved at the active contract level.
+the active `v4` contract now matches that intent.
 
-Goal 2 is **not** achieved yet.
+## Next work
 
-## Next clean step
+The next meaningful task is no longer dependency removal.
 
-The next migration target should be:
+It is:
 
-- replace `compute_base_features_v3`
-- replace `feature_columns_v3_contract`
-- define a native `v4` live-base contract for:
-  - base candle transforms
-  - 1m aggregate transforms
-  - high-tf transforms
-  - micro core projection
-
-Only after that will the active runtime be both:
-
-- free of pre-`2026-03-04` data dependence
-- free of `v3` code-contract dependence
+1. retrain on the new `112`-feature active contract
+2. compare selection / fallback / canary behavior against the older `140`-feature runs

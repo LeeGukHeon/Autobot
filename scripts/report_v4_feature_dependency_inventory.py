@@ -29,27 +29,27 @@ class BlockPolicy:
 
 BLOCK_POLICIES: dict[str, BlockPolicy] = {
     "v3_base_core": BlockPolicy(
-        producer="compute_base_features_v3",
+        producer="compute_base_features_v4_live_base",
         live_inputs=("candles_api_v1 1m bootstrap", "live/public ticker -> 1m rollup"),
         warmup_requirement="Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
         needs_pre_3_4_history=False,
-        legacy_code_dependency=True,
-        notes="Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up.",
+        legacy_code_dependency=False,
+        notes="Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up.",
     ),
     "v3_one_m_core": BlockPolicy(
-        producer="aggregate_1m_for_base + join_1m_aggregate",
+        producer="aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
         live_inputs=("candles_api_v1 1m bootstrap", "live/public ticker -> 1m rollup"),
         warmup_requirement="Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
         needs_pre_3_4_history=False,
-        legacy_code_dependency=True,
+        legacy_code_dependency=False,
         notes="No old history requirement; depends on 1m continuity and synth-minute handling.",
     ),
     "v3_high_tf_core": BlockPolicy(
-        producer="compute_high_tf_features + join_high_tf_asof",
+        producer="compute_high_tf_features + join_high_tf_asof (v4 live base path)",
         live_inputs=("base 5m candles from 1m rollup",),
         warmup_requirement="Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
         needs_pre_3_4_history=False,
-        legacy_code_dependency=True,
+        legacy_code_dependency=False,
         notes="No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature.",
     ),
     "v3_micro_core": BlockPolicy(
@@ -57,7 +57,7 @@ BLOCK_POLICIES: dict[str, BlockPolicy] = {
         live_inputs=("micro_v1 / live WS trade", "live WS orderbook", "current ref price"),
         warmup_requirement="Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
         needs_pre_3_4_history=False,
-        legacy_code_dependency=True,
+        legacy_code_dependency=False,
         notes="No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream.",
     ),
     "v4_spillover_breadth": BlockPolicy(
@@ -78,11 +78,11 @@ BLOCK_POLICIES: dict[str, BlockPolicy] = {
     ),
     "v4_trend_volume": BlockPolicy(
         producer="attach_trend_volume_features_v4",
-        live_inputs=("v3 base/high-tf features", "current and rolling volume stats", "leader basket features"),
+        live_inputs=("v4 live-base/high-tf features", "current and rolling volume stats", "leader basket features"),
         warmup_requirement="Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
         needs_pre_3_4_history=False,
-        legacy_code_dependency=True,
-        notes="Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract.",
+        legacy_code_dependency=False,
+        notes="Not old-data dependent and now fed by the native v4 live-base contract.",
     ),
     "v4_order_flow_panel_v1": BlockPolicy(
         producer="attach_order_flow_panel_v1",
@@ -102,11 +102,11 @@ BLOCK_POLICIES: dict[str, BlockPolicy] = {
     ),
     "v4_interactions": BlockPolicy(
         producer="attach_interaction_features_v4",
-        live_inputs=("current-row base/micro/spillover/trend features",),
+        live_inputs=("current-row v4 live-base/micro/spillover/trend features",),
         warmup_requirement="No extra warmup beyond upstream inputs.",
         needs_pre_3_4_history=False,
-        legacy_code_dependency=True,
-        notes="No independent old-history requirement, but transitively depends on upstream v3-base-derived features.",
+        legacy_code_dependency=False,
+        notes="No independent old-history requirement; now fed by native v4 live-base upstream features.",
     ),
 }
 
@@ -193,10 +193,10 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], summary: dict[str, A
     lines.append("## Interpretation")
     lines.append("")
     lines.append("- The true pre-3/4 history blocker is `v4_ctrend_v1`.")
-    lines.append("- The rest mostly require only bounded in-window warmup after 2026-03-04, but many still depend on legacy `v3` code contracts.")
+    lines.append("- The rest require only bounded in-window warmup after 2026-03-04.")
     lines.append("- So the clean migration path is:")
     lines.append("  1. remove/replace `ctrend_v1` if you want a strict 3/4-forward-only runtime contract")
-    lines.append("  2. replace `compute_base_features_v3` / `feature_columns_v3_contract` with a native v4 live-base contract")
+    lines.append("  2. keep auditing bounded warmup behavior, especially 240m high-tf coverage and one_m continuity")
     lines.append("")
     lines.append("## Feature Table")
     lines.append("")

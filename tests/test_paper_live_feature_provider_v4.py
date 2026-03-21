@@ -62,7 +62,7 @@ class _StaticRulesProvider:
         )
 
 
-def test_live_feature_provider_v4_builds_v4_columns_from_live_v3_base(tmp_path: Path) -> None:
+def test_live_feature_provider_v4_builds_v4_columns_from_native_base(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
 
@@ -109,7 +109,7 @@ def test_live_feature_provider_v4_builds_v4_columns_from_live_v3_base(tmp_path: 
     assert status["provider"] == "LIVE_V4"
     stats = provider.last_build_stats()
     assert stats["provider"] == "LIVE_V4"
-    assert stats["base_provider"] == "LIVE_V3"
+    assert stats["base_provider"] == "LIVE_V4_BASE"
 
 
 def test_live_feature_provider_v4_native_matches_live_v4_output(tmp_path: Path) -> None:
@@ -360,7 +360,7 @@ def test_paper_engine_model_alpha_live_v4_scores_without_no_feature_rows(tmp_pat
     assert built_events
     built_payload = built_events[-1].get("payload") or {}
     assert str(built_payload.get("provider")) == "LIVE_V4"
-    assert str((built_payload.get("base_provider_stats") or {}).get("provider")) == "LIVE_V3"
+    assert str((built_payload.get("base_provider_stats") or {}).get("provider")) == "LIVE_V4_BASE"
 
 
 def test_paper_engine_model_alpha_live_v4_native_scores_without_no_feature_rows(tmp_path: Path) -> None:

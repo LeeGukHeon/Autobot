@@ -8,7 +8,7 @@ from typing import Any, Sequence
 import polars as pl
 
 from autobot.data import expected_interval_ms
-from autobot.features.feature_blocks_v3 import compute_base_features_v3
+from autobot.features.feature_blocks_v4_live_base import compute_base_features_v4_live_base
 from autobot.features.multitf_join_v1 import (
     aggregate_1m_for_base,
     compute_high_tf_features,
@@ -87,7 +87,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         if base.height <= 0:
             return None, "NO_BASE_CANDLE", 0, ()
 
-        base_featured = compute_base_features_v3(base, tf=self._tf, float_dtype="float32").sort("ts_ms")
+        base_featured = compute_base_features_v4_live_base(base, tf=self._tf, float_dtype="float32").sort("ts_ms")
         if base_featured.height <= 0:
             return None, "NO_BASE_FEATURES", 0, ()
 

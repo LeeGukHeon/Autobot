@@ -13,7 +13,7 @@ from autobot.features.ctrend_v1 import (
     ctrend_v1_feature_columns,
     ctrend_v1_history_lookback_days,
 )
-from autobot.features.feature_blocks_v3 import feature_columns_v3_contract
+from autobot.features.feature_blocks_v4_live_base import feature_columns_v4_live_base_contract
 from autobot.features.feature_set_v4 import (
     attach_interaction_features_v4,
     attach_order_flow_panel_v1,
@@ -69,7 +69,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
         )
         self._ctrend_history_lookback_days = ctrend_v1_history_lookback_days()
         self._ctrend_daily_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
-        self._base_feature_columns = feature_columns_v3_contract(high_tfs=high_tfs)
+        self._base_feature_columns = feature_columns_v4_live_base_contract(high_tfs=high_tfs)
         super().__init__(
             tf=tf,
             high_tfs=high_tfs,

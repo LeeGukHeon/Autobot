@@ -11,11 +11,11 @@ from typing import Any, Sequence
 import numpy as np
 
 from autobot.features.ctrend_v1 import ctrend_v1_feature_columns
-from autobot.features.feature_blocks_v3 import (
-    base_feature_columns_v3,
-    high_tf_feature_columns_v3,
-    micro_feature_columns_v3,
-    one_m_feature_columns_v3,
+from autobot.features.feature_blocks_v4_live_base import (
+    base_feature_columns_v4_live_base,
+    high_tf_feature_columns_v4_live_base,
+    micro_feature_columns_v4_live_base,
+    one_m_feature_columns_v4_live_base,
 )
 from autobot.features.feature_set_v4 import (
     interaction_feature_columns_v4,
@@ -92,31 +92,31 @@ def v4_factor_block_registry(
     raw_blocks = (
         FactorBlockDefinition(
             block_id="v3_base_core",
-            label="v3 base core",
-            feature_columns=tuple(col for col in base_feature_columns_v3() if col in selected),
+            label="v4 live base core",
+            feature_columns=tuple(col for col in base_feature_columns_v4_live_base() if col in selected),
             protected=True,
-            source_contracts=("feature_blocks_v3.base",),
+            source_contracts=("feature_blocks_v4_live_base.base",),
         ),
         FactorBlockDefinition(
             block_id="v3_one_m_core",
-            label="v3 one-minute core",
-            feature_columns=tuple(col for col in one_m_feature_columns_v3() if col in selected),
+            label="v4 live one-minute core",
+            feature_columns=tuple(col for col in one_m_feature_columns_v4_live_base() if col in selected),
             protected=True,
-            source_contracts=("feature_blocks_v3.one_m",),
+            source_contracts=("feature_blocks_v4_live_base.one_m",),
         ),
         FactorBlockDefinition(
             block_id="v3_high_tf_core",
-            label="v3 multi-timeframe core",
-            feature_columns=tuple(col for col in high_tf_feature_columns_v3(high_tfs=high_tfs) if col in selected),
+            label="v4 live multi-timeframe core",
+            feature_columns=tuple(col for col in high_tf_feature_columns_v4_live_base(high_tfs=high_tfs) if col in selected),
             protected=True,
-            source_contracts=("feature_blocks_v3.high_tf",),
+            source_contracts=("feature_blocks_v4_live_base.high_tf",),
         ),
         FactorBlockDefinition(
             block_id="v3_micro_core",
-            label="v3 micro core",
-            feature_columns=tuple(col for col in micro_feature_columns_v3() if col in selected),
+            label="v4 live micro core",
+            feature_columns=tuple(col for col in micro_feature_columns_v4_live_base() if col in selected),
             protected=True,
-            source_contracts=("feature_blocks_v3.micro",),
+            source_contracts=("feature_blocks_v4_live_base.micro",),
         ),
         FactorBlockDefinition(
             block_id="v4_spillover_breadth",

@@ -4,8 +4,8 @@
     "feature_count_total": 112,
     "needs_pre_3_4_history_count": 0,
     "post_3_4_only_or_in_window_warmup_count": 112,
-    "legacy_code_dependency_count": 82,
-    "non_legacy_code_dependency_count": 30,
+    "legacy_code_dependency_count": 0,
+    "non_legacy_code_dependency_count": 112,
     "block_counts": {
       "v3_base_core": 10,
       "v3_high_tf_core": 15,
@@ -23,607 +23,607 @@
     {
       "feature_name": "logret_1",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "logret_3",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "logret_12",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "logret_36",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "vol_12",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "vol_36",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "range_pct",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "body_pct",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "volume_log",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "volume_z",
       "block_id": "v3_base_core",
-      "block_label": "v3 base core",
+      "block_label": "v4 live base core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.base"
+        "feature_blocks_v4_live_base.base"
       ],
-      "producer": "compute_base_features_v3",
+      "producer": "compute_base_features_v4_live_base",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+      "legacy_code_dependency": false,
+      "notes": "Native v4 live-base contract. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
     },
     {
       "feature_name": "one_m_count",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_ret_mean",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_ret_std",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_volume_sum",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_range_mean",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_missing_ratio",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_synth_ratio",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_real_count",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "one_m_real_volume_sum",
       "block_id": "v3_one_m_core",
-      "block_label": "v3 one-minute core",
+      "block_label": "v4 live one-minute core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.one_m"
+        "feature_blocks_v4_live_base.one_m"
       ],
-      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "producer": "aggregate_1m_for_base + join_1m_aggregate (v4 live base path)",
       "live_inputs": [
         "candles_api_v1 1m bootstrap",
         "live/public ticker -> 1m rollup"
       ],
       "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
     },
     {
       "feature_name": "tf15m_ret_1",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf15m_ret_3",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf15m_vol_3",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf15m_trend_slope",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf15m_regime_flag",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf60m_ret_1",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf60m_ret_3",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf60m_vol_3",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf60m_trend_slope",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf60m_regime_flag",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf240m_ret_1",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf240m_ret_3",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf240m_vol_3",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf240m_trend_slope",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "tf240m_regime_flag",
       "block_id": "v3_high_tf_core",
-      "block_label": "v3 multi-timeframe core",
+      "block_label": "v4 live multi-timeframe core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.high_tf"
+        "feature_blocks_v4_live_base.high_tf"
       ],
-      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "producer": "compute_high_tf_features + join_high_tf_asof (v4 live base path)",
       "live_inputs": [
         "base 5m candles from 1m rollup"
       ],
       "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
     },
     {
       "feature_name": "m_trade_source",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -633,16 +633,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_events",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -652,16 +652,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_book_events",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -671,16 +671,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_min_ts_ms",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -690,16 +690,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_max_ts_ms",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -709,16 +709,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_book_min_ts_ms",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -728,16 +728,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_book_max_ts_ms",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -747,16 +747,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_coverage_ms",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -766,16 +766,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_book_coverage_ms",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -785,16 +785,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_micro_trade_available",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -804,16 +804,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_micro_book_available",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -823,16 +823,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_micro_available",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -842,16 +842,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_count",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -861,16 +861,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_buy_count",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -880,16 +880,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_sell_count",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -899,16 +899,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_volume_total",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -918,16 +918,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_buy_volume",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -937,16 +937,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_sell_volume",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -956,16 +956,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_imbalance",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -975,16 +975,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_vwap",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -994,16 +994,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_avg_trade_size",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1013,16 +1013,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_max_trade_size",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1032,16 +1032,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_last_trade_price",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1051,16 +1051,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_mid_mean",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1070,16 +1070,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_spread_bps_mean",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1089,16 +1089,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_depth_bid_top5_mean",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1108,16 +1108,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_depth_ask_top5_mean",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1127,16 +1127,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_imbalance_top5_mean",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1146,16 +1146,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_microprice_bias_bps_mean",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1165,16 +1165,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_book_update_count",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1184,16 +1184,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_spread_proxy",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1203,16 +1203,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_volume_base",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1222,16 +1222,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_trade_buy_ratio",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1241,16 +1241,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_signed_volume",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1260,16 +1260,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_source_ws",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1279,16 +1279,16 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
       "feature_name": "m_source_rest",
       "block_id": "v3_micro_core",
-      "block_label": "v3 micro core",
+      "block_label": "v4 live micro core",
       "protected_block": true,
       "source_contracts": [
-        "feature_blocks_v3.micro"
+        "feature_blocks_v4_live_base.micro"
       ],
       "producer": "MicroSnapshotProvider -> prefixed micro columns",
       "live_inputs": [
@@ -1298,7 +1298,7 @@
       ],
       "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
+      "legacy_code_dependency": false,
       "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
     },
     {
@@ -1696,14 +1696,14 @@
       ],
       "producer": "attach_trend_volume_features_v4",
       "live_inputs": [
-        "v3 base/high-tf features",
+        "v4 live-base/high-tf features",
         "current and rolling volume stats",
         "leader basket features"
       ],
       "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+      "legacy_code_dependency": false,
+      "notes": "Not old-data dependent and now fed by the native v4 live-base contract."
     },
     {
       "feature_name": "price_trend_med",
@@ -1715,14 +1715,14 @@
       ],
       "producer": "attach_trend_volume_features_v4",
       "live_inputs": [
-        "v3 base/high-tf features",
+        "v4 live-base/high-tf features",
         "current and rolling volume stats",
         "leader basket features"
       ],
       "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+      "legacy_code_dependency": false,
+      "notes": "Not old-data dependent and now fed by the native v4 live-base contract."
     },
     {
       "feature_name": "price_trend_long",
@@ -1734,14 +1734,14 @@
       ],
       "producer": "attach_trend_volume_features_v4",
       "live_inputs": [
-        "v3 base/high-tf features",
+        "v4 live-base/high-tf features",
         "current and rolling volume stats",
         "leader basket features"
       ],
       "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+      "legacy_code_dependency": false,
+      "notes": "Not old-data dependent and now fed by the native v4 live-base contract."
     },
     {
       "feature_name": "volume_trend_long",
@@ -1753,14 +1753,14 @@
       ],
       "producer": "attach_trend_volume_features_v4",
       "live_inputs": [
-        "v3 base/high-tf features",
+        "v4 live-base/high-tf features",
         "current and rolling volume stats",
         "leader basket features"
       ],
       "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+      "legacy_code_dependency": false,
+      "notes": "Not old-data dependent and now fed by the native v4 live-base contract."
     },
     {
       "feature_name": "trend_consensus",
@@ -1772,14 +1772,14 @@
       ],
       "producer": "attach_trend_volume_features_v4",
       "live_inputs": [
-        "v3 base/high-tf features",
+        "v4 live-base/high-tf features",
         "current and rolling volume stats",
         "leader basket features"
       ],
       "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+      "legacy_code_dependency": false,
+      "notes": "Not old-data dependent and now fed by the native v4 live-base contract."
     },
     {
       "feature_name": "trend_vs_market",
@@ -1791,14 +1791,14 @@
       ],
       "producer": "attach_trend_volume_features_v4",
       "live_inputs": [
-        "v3 base/high-tf features",
+        "v4 live-base/high-tf features",
         "current and rolling volume stats",
         "leader basket features"
       ],
       "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+      "legacy_code_dependency": false,
+      "notes": "Not old-data dependent and now fed by the native v4 live-base contract."
     },
     {
       "feature_name": "oflow_v1_signed_volume_imbalance_1",
@@ -1963,12 +1963,12 @@
       ],
       "producer": "attach_interaction_features_v4",
       "live_inputs": [
-        "current-row base/micro/spillover/trend features"
+        "current-row v4 live-base/micro/spillover/trend features"
       ],
       "warmup_requirement": "No extra warmup beyond upstream inputs.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+      "legacy_code_dependency": false,
+      "notes": "No independent old-history requirement; now fed by native v4 live-base upstream features."
     },
     {
       "feature_name": "mom_x_spread",
@@ -1980,12 +1980,12 @@
       ],
       "producer": "attach_interaction_features_v4",
       "live_inputs": [
-        "current-row base/micro/spillover/trend features"
+        "current-row v4 live-base/micro/spillover/trend features"
       ],
       "warmup_requirement": "No extra warmup beyond upstream inputs.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+      "legacy_code_dependency": false,
+      "notes": "No independent old-history requirement; now fed by native v4 live-base upstream features."
     },
     {
       "feature_name": "spread_x_vol",
@@ -1997,12 +1997,12 @@
       ],
       "producer": "attach_interaction_features_v4",
       "live_inputs": [
-        "current-row base/micro/spillover/trend features"
+        "current-row v4 live-base/micro/spillover/trend features"
       ],
       "warmup_requirement": "No extra warmup beyond upstream inputs.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+      "legacy_code_dependency": false,
+      "notes": "No independent old-history requirement; now fed by native v4 live-base upstream features."
     },
     {
       "feature_name": "rel_strength_x_btc_regime",
@@ -2014,12 +2014,12 @@
       ],
       "producer": "attach_interaction_features_v4",
       "live_inputs": [
-        "current-row base/micro/spillover/trend features"
+        "current-row v4 live-base/micro/spillover/trend features"
       ],
       "warmup_requirement": "No extra warmup beyond upstream inputs.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+      "legacy_code_dependency": false,
+      "notes": "No independent old-history requirement; now fed by native v4 live-base upstream features."
     },
     {
       "feature_name": "one_m_pressure_x_spread",
@@ -2031,12 +2031,12 @@
       ],
       "producer": "attach_interaction_features_v4",
       "live_inputs": [
-        "current-row base/micro/spillover/trend features"
+        "current-row v4 live-base/micro/spillover/trend features"
       ],
       "warmup_requirement": "No extra warmup beyond upstream inputs.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+      "legacy_code_dependency": false,
+      "notes": "No independent old-history requirement; now fed by native v4 live-base upstream features."
     },
     {
       "feature_name": "volume_z_x_trend",
@@ -2048,12 +2048,12 @@
       ],
       "producer": "attach_interaction_features_v4",
       "live_inputs": [
-        "current-row base/micro/spillover/trend features"
+        "current-row v4 live-base/micro/spillover/trend features"
       ],
       "warmup_requirement": "No extra warmup beyond upstream inputs.",
       "needs_pre_3_4_history": false,
-      "legacy_code_dependency": true,
-      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+      "legacy_code_dependency": false,
+      "notes": "No independent old-history requirement; now fed by native v4 live-base upstream features."
     }
   ]
 }

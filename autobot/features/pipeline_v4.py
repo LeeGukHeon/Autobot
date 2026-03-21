@@ -12,7 +12,7 @@ import polars as pl
 
 from autobot.data import expected_interval_ms
 
-from .feature_set_v3 import build_feature_set_v3_from_candles
+from .feature_set_v4_live_base import build_feature_set_v4_live_base_from_candles
 from .feature_set_v4 import (
     attach_interaction_features_v4,
     attach_periodicity_features_v4,
@@ -458,7 +458,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
                 from_ts_ms=start_ts_ms,
                 to_ts_ms=end_ts_ms,
             )
-            result = build_feature_set_v3_from_candles(
+            result = build_feature_set_v4_live_base_from_candles(
                 base_candles_frame=base,
                 one_m_candles_frame=one_m,
                 high_tf_candles=high_frames,
@@ -1032,7 +1032,7 @@ def _build_feature_spec_payload_v4(
         "quote": quote,
         "feature_set_version": "v4",
         "feature_columns": feature_cols,
-        "base_feature_contract_version": "v3",
+        "base_feature_contract_version": "v4_live_base",
         "high_tfs": list(config.build.high_tfs),
         "sample_weight": {
             "column": "sample_weight",

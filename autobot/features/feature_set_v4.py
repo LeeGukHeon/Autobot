@@ -1,4 +1,4 @@
-"""FeatureSet v4: v3 core + spillover/breadth + periodicity + interaction packs."""
+"""FeatureSet v4: native live-base + spillover/breadth + periodicity + interaction packs."""
 
 from __future__ import annotations
 
@@ -6,7 +6,10 @@ import math
 
 import polars as pl
 
-from .feature_blocks_v3 import feature_columns_v3_contract, required_feature_columns_v3
+from .feature_blocks_v4_live_base import (
+    feature_columns_v4_live_base_contract,
+    required_feature_columns_v4_live_base,
+)
 from .order_flow_panel_v1 import attach_order_flow_panel_v1, order_flow_panel_v1_feature_columns
 
 
@@ -75,7 +78,7 @@ def ctrend_feature_columns_v4() -> tuple[str, ...]:
 
 def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
     return tuple(
-        list(feature_columns_v3_contract(high_tfs=high_tfs))
+        list(feature_columns_v4_live_base_contract(high_tfs=high_tfs))
         + list(spillover_breadth_feature_columns_v4())
         + list(periodicity_feature_columns_v4())
         + list(trend_volume_feature_columns_v4())
@@ -87,7 +90,7 @@ def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) ->
 
 def required_feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:
     return tuple(
-        list(required_feature_columns_v3(high_tfs=high_tfs))
+        list(required_feature_columns_v4_live_base(high_tfs=high_tfs))
         + list(spillover_breadth_feature_columns_v4())
         + list(periodicity_feature_columns_v4())
         + list(trend_volume_feature_columns_v4())
