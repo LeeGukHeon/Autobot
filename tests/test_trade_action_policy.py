@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from autobot.models.trade_action_policy import build_trade_action_policy_from_oos_rows, resolve_trade_action
+from autobot.models.trade_action_policy import (
+    _resolve_notional_multiplier_from_model,
+    build_trade_action_policy_from_oos_rows,
+    resolve_trade_action,
+)
 
 
 def test_build_trade_action_policy_learns_bin_level_hold_vs_risk_preference() -> None:
@@ -250,3 +254,15 @@ def test_resolve_trade_action_falls_back_to_bin_policy_when_conditional_state_is
     assert decision["decision_source"] == "bin_audit_fallback"
     assert decision["support_level"] == "fallback_bin"
     assert decision.get("support_reason_code", "") in {"", "TRADE_ACTION_INSUFFICIENT_STATE_SUPPORT"}
+
+
+def test_resolve_notional_multiplier_from_model_clips_to_configured_bounds() -> None:
+    model = {
+        "score_anchor": 0.1711642478891979,
+        "deprecated_requested_size_multiplier_min": 0.5,
+        "deprecated_requested_size_multiplier_max": 1.5,
+    }
+
+    assert _resolve_notional_multiplier_from_model(model=model, score=0.0) == 0.0
+    assert _resolve_notional_multiplier_from_model(model=model, score=0.01) == 0.5
+    assert _resolve_notional_multiplier_from_model(model=model, score=1.0) == 1.5

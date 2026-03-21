@@ -1240,7 +1240,15 @@ def _resolve_continuous_notional_multiplier(
 def _resolve_notional_multiplier_from_model(*, model: dict[str, Any], score: float) -> float:
     anchor = max(float(model.get("score_anchor", 1.0) or 1.0), 1e-6)
     raw_multiplier = max(float(score), 0.0) / anchor
-    return float(max(raw_multiplier, 0.0))
+    if raw_multiplier <= 0.0:
+        return 0.0
+    minimum = max(float(model.get("deprecated_requested_size_multiplier_min", 0.0) or 0.0), 0.0)
+    maximum = max(
+        float(model.get("deprecated_requested_size_multiplier_max", minimum) or minimum),
+        minimum,
+    )
+    clipped = min(max(raw_multiplier, minimum), maximum)
+    return float(max(clipped, 0.0))
 
 
 def _quantile_bounds(values: np.ndarray, *, bin_count: int) -> list[float]:
