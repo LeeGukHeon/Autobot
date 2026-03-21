@@ -297,6 +297,7 @@ function Start-OrUpdate-ChallengerUnit {
         "-PaperModelRefPinned", $CandidateRunId,
         "-NoBootstrapChampion",
         "-NoEnable",
+        "-NoStart",
         "-PaperCliArgs",
         (Join-DelimitedStringArray -Values @("--model-ref", $CandidateRunId))
     )
@@ -837,6 +838,18 @@ if ($runSpawnPhase) {
             -PyExe $resolvedPythonExe `
             -UnitName $ChallengerUnitName `
             -CandidateRunId $candidateRunId
+        $comparisonEpochStartedTsMs = [int64](Get-Date -UFormat %s) * 1000
+        $comparisonEpochStartedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        $comparisonEpochRestartedUnits = @($ChampionUnitName, $ChallengerUnitName)
+        $comparisonEpochStartedFromInactiveUnits = @()
+        if (-not $championWasActive) {
+            $comparisonEpochStartedFromInactiveUnits += $ChampionUnitName
+        }
+        if (-not $challengerWasActive) {
+            $comparisonEpochStartedFromInactiveUnits += $ChallengerUnitName
+        }
+        Restart-Unit -UnitName $ChampionUnitName
+        Restart-Unit -UnitName $ChallengerUnitName
         $report.steps.start_challenger = [ordered]@{
             command = $challengerInstallExec.Command
             output_preview = $challengerInstallExec.Output
@@ -844,6 +857,10 @@ if ($runSpawnPhase) {
             lane_mode = $acceptLaneMode
             promotion_eligible = $acceptPromotionEligible
             bootstrap_only = $bootstrapOnly
+            comparison_epoch_started_ts_ms = $comparisonEpochStartedTsMs
+            comparison_epoch_started_at_utc = $comparisonEpochStartedAtUtc
+            restarted_units = @($comparisonEpochRestartedUnits)
+            started_from_inactive_units = @($comparisonEpochStartedFromInactiveUnits)
         }
         $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
         $nextState = [ordered]@{
@@ -851,8 +868,8 @@ if ($runSpawnPhase) {
             candidate_run_id = $candidateRunId
             champion_ref_at_start = "champion_v4"
             champion_run_id_at_start = $championRunIdAtStart
-            started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
-            started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            started_ts_ms = $comparisonEpochStartedTsMs
+            started_at_utc = $comparisonEpochStartedAtUtc
             champion_unit = $ChampionUnitName
             challenger_unit = $ChallengerUnitName
             promotion_target_units = @($resolvedPromotionTargetUnits)

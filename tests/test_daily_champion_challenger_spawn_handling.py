@@ -170,7 +170,9 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
                 [string]$PythonExe = "",
                 [string]$PaperUnitName = "",
                 [string]$PaperModelRefPinned = "",
-                [string]$PaperCliArgs = ""
+                [string]$PaperCliArgs = "",
+                [switch]$NoStart,
+                [switch]$NoEnable
             )
 
             $logPath = Join-Path $ProjectRoot "logs/fake_runtime_install/report.json"
@@ -179,6 +181,8 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
                 paper_unit_name = $PaperUnitName
                 paper_model_ref_pinned = $PaperModelRefPinned
                 paper_cli_args = $PaperCliArgs
+                no_start = [bool]$NoStart
+                no_enable = [bool]$NoEnable
             } | ConvertTo-Json -Depth 4 | Set-Content -Path $logPath -Encoding UTF8
             Write-Host "[fake-runtime-install] ok"
             """
@@ -199,7 +203,9 @@ def _make_failing_runtime_install_script(tmp_path: Path) -> Path:
                 [string]$PythonExe = "",
                 [string]$PaperUnitName = "",
                 [string]$PaperModelRefPinned = "",
-                [string]$PaperCliArgs = ""
+                [string]$PaperCliArgs = "",
+                [switch]$NoStart,
+                [switch]$NoEnable
             )
 
             Write-Error "runtime install failed"
@@ -219,6 +225,7 @@ def _run_spawn_only(
     dry_run: bool = True,
     extra_args: list[str] | None = None,
     active_units: list[str] | None = None,
+    systemctl_log: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     sudo_dir = acceptance_script.parent
     _make_fake_sudo(sudo_dir)
@@ -252,6 +259,7 @@ def _run_spawn_only(
             **os.environ,
             "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
             "FAKE_ACTIVE_UNITS": ",".join(active_units or []),
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log) if systemctl_log else "",
         },
     )
 
@@ -601,6 +609,81 @@ def test_spawn_only_restarts_configured_candidate_targets_when_active(tmp_path: 
     assert restart_step["candidate_run_id"] == "candidate-run-live-canary"
     assert restart_step["restarted_units"] == ["autobot-live-alpha-candidate.service"]
     assert restart_step["skipped_units"] == []
+
+
+def test_spawn_only_restarts_champion_and_challenger_to_open_comparison_epoch(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+    systemctl_log = tmp_path / "systemctl.log"
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+                "split_policy_artifact_path": str(
+                    project_root
+                    / "models"
+                    / "registry"
+                    / "train_v4_crypto_cs"
+                    / "candidate-run-epoch"
+                    / "split_policy_decision.json"
+                ),
+            },
+            "split_policy": {
+                "policy_id": "v4_split_policy_forward_validation_lcb_v1",
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-epoch"},
+            },
+            "gates": {
+                "backtest": {"pass": True},
+                "overall_pass": True,
+            },
+            "reasons": [],
+        },
+        exit_code=0,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+        ],
+        active_units=["autobot-paper-v4.service"],
+        systemctl_log=systemctl_log,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    state = json.loads((project_root / "logs" / "model_v4_challenger" / "current_state.json").read_text(encoding="utf-8-sig"))
+    runtime_install_report = json.loads(
+        (project_root / "logs" / "fake_runtime_install" / "report.json").read_text(encoding="utf-8-sig")
+    )
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8")
+
+    start_step = latest["steps"]["start_challenger"]
+    assert runtime_install_report["paper_model_ref_pinned"] == "candidate-run-epoch"
+    assert runtime_install_report["no_start"] is True
+    assert runtime_install_report["no_enable"] is True
+    assert start_step["candidate_run_id"] == "candidate-run-epoch"
+    assert start_step["restarted_units"] == [
+        "autobot-paper-v4.service",
+        "autobot-paper-v4-challenger.service",
+    ]
+    assert start_step["started_from_inactive_units"] == ["autobot-paper-v4-challenger.service"]
+    assert state["candidate_run_id"] == "candidate-run-epoch"
+    assert state["started_ts_ms"] == start_step["comparison_epoch_started_ts_ms"]
+    assert state["started_at_utc"] == start_step["comparison_epoch_started_at_utc"]
+    assert "restart autobot-paper-v4.service" in systemctl_calls
+    assert "restart autobot-paper-v4-challenger.service" in systemctl_calls
 
 
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:
