@@ -1,0 +1,2594 @@
+{
+  "source": "feature_columns_v4_contract",
+  "summary": {
+    "feature_count_total": 140,
+    "needs_pre_3_4_history_count": 28,
+    "post_3_4_only_or_in_window_warmup_count": 112,
+    "legacy_code_dependency_count": 82,
+    "non_legacy_code_dependency_count": 58,
+    "block_counts": {
+      "v3_base_core": 10,
+      "v3_high_tf_core": 15,
+      "v3_micro_core": 36,
+      "v3_one_m_core": 9,
+      "v4_ctrend_v1": 28,
+      "v4_interactions": 6,
+      "v4_order_flow_panel_v1": 9,
+      "v4_periodicity": 7,
+      "v4_spillover_breadth": 14,
+      "v4_trend_volume": 6
+    },
+    "pre_3_4_history_blocks": [
+      "v4_ctrend_v1"
+    ]
+  },
+  "rows": [
+    {
+      "feature_name": "logret_1",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "logret_3",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "logret_12",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "logret_36",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "vol_12",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "vol_36",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "range_pct",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "body_pct",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "volume_log",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "volume_z",
+      "block_id": "v3_base_core",
+      "block_label": "v3 base core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.base"
+      ],
+      "producer": "compute_base_features_v3",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; up to 37 base 5m bars for logret_36/vol_36, 36 bars for volume_z.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Legacy code dependency only. Data can come entirely from 3/4 onward if early-edge rows are allowed to warm up."
+    },
+    {
+      "feature_name": "one_m_count",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_ret_mean",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_ret_std",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_volume_sum",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_range_mean",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_missing_ratio",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_synth_ratio",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_real_count",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "one_m_real_volume_sum",
+      "block_id": "v3_one_m_core",
+      "block_label": "v3 one-minute core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.one_m"
+      ],
+      "producer": "aggregate_1m_for_base + join_1m_aggregate",
+      "live_inputs": [
+        "candles_api_v1 1m bootstrap",
+        "live/public ticker -> 1m rollup"
+      ],
+      "warmup_requirement": "Current base bucket plus dense 1m composition; required_bars=5 and effective 1m return moments need immediate prior 1m context.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No old history requirement; depends on 1m continuity and synth-minute handling."
+    },
+    {
+      "feature_name": "tf15m_ret_1",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf15m_ret_3",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf15m_vol_3",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf15m_trend_slope",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf15m_regime_flag",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf60m_ret_1",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf60m_ret_3",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf60m_vol_3",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf60m_trend_slope",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf60m_regime_flag",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf240m_ret_1",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf240m_ret_3",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf240m_vol_3",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf240m_trend_slope",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "tf240m_regime_flag",
+      "block_id": "v3_high_tf_core",
+      "block_label": "v3 multi-timeframe core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.high_tf"
+      ],
+      "producer": "compute_high_tf_features + join_high_tf_asof",
+      "live_inputs": [
+        "base 5m candles from 1m rollup"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; worst case is tf240m_trend_slope/regime needing 9 x 240m bars (~36h).",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history required, but first ~36h of the window cannot fully populate every 240m feature."
+    },
+    {
+      "feature_name": "m_trade_source",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_events",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_book_events",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_min_ts_ms",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_max_ts_ms",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_book_min_ts_ms",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_book_max_ts_ms",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_coverage_ms",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_book_coverage_ms",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_micro_trade_available",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_micro_book_available",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_micro_available",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_count",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_buy_count",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_sell_count",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_volume_total",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_buy_volume",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_sell_volume",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_imbalance",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_vwap",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_avg_trade_size",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_max_trade_size",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_last_trade_price",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_mid_mean",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_spread_bps_mean",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_depth_bid_top5_mean",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_depth_ask_top5_mean",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_imbalance_top5_mean",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_microprice_bias_bps_mean",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_book_update_count",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_spread_proxy",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_volume_base",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_trade_buy_ratio",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_signed_volume",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_source_ws",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "m_source_rest",
+      "block_id": "v3_micro_core",
+      "block_label": "v3 micro core",
+      "protected_block": true,
+      "source_contracts": [
+        "feature_blocks_v3.micro"
+      ],
+      "producer": "MicroSnapshotProvider -> prefixed micro columns",
+      "live_inputs": [
+        "micro_v1 / live WS trade",
+        "live WS orderbook",
+        "current ref price"
+      ],
+      "warmup_requirement": "Current snapshot only; effective quality depends on micro coverage accumulation within the live snapshot window.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No pre-3/4 history requirement. Missing live micro is currently zero-filled upstream."
+    },
+    {
+      "feature_name": "btc_ret_1",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "btc_ret_3",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "btc_ret_12",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "eth_ret_1",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "eth_ret_3",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "eth_ret_12",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "leader_basket_ret_1",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "leader_basket_ret_3",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "leader_basket_ret_12",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "market_breadth_pos_1",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "market_breadth_pos_12",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "market_dispersion_12",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "turnover_concentration_hhi",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "rel_strength_vs_btc_12",
+      "block_id": "v4_spillover_breadth",
+      "block_label": "v4 spillover breadth",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.spillover_breadth"
+      ],
+      "producer": "attach_spillover_breadth_features_v4",
+      "live_inputs": [
+        "same-ts cross-sectional rows",
+        "leader BTC/ETH rows",
+        "base returns/turnover"
+      ],
+      "warmup_requirement": "Same-timestamp only once base rows exist.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No old-history pressure; depends on universe breadth and leader availability at the same timestamp."
+    },
+    {
+      "feature_name": "hour_sin",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "hour_cos",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "dow_sin",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "dow_cos",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "weekend_flag",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "asia_us_overlap_flag",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "utc_session_bucket",
+      "block_id": "v4_periodicity",
+      "block_label": "v4 periodicity",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.periodicity"
+      ],
+      "producer": "attach_periodicity_features_v4",
+      "live_inputs": [
+        "ts_ms only"
+      ],
+      "warmup_requirement": "None.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "Pure timestamp-derived features."
+    },
+    {
+      "feature_name": "price_trend_short",
+      "block_id": "v4_trend_volume",
+      "block_label": "v4 trend volume",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.trend_volume"
+      ],
+      "producer": "attach_trend_volume_features_v4",
+      "live_inputs": [
+        "v3 base/high-tf features",
+        "current and rolling volume stats",
+        "leader basket features"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+    },
+    {
+      "feature_name": "price_trend_med",
+      "block_id": "v4_trend_volume",
+      "block_label": "v4 trend volume",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.trend_volume"
+      ],
+      "producer": "attach_trend_volume_features_v4",
+      "live_inputs": [
+        "v3 base/high-tf features",
+        "current and rolling volume stats",
+        "leader basket features"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+    },
+    {
+      "feature_name": "price_trend_long",
+      "block_id": "v4_trend_volume",
+      "block_label": "v4 trend volume",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.trend_volume"
+      ],
+      "producer": "attach_trend_volume_features_v4",
+      "live_inputs": [
+        "v3 base/high-tf features",
+        "current and rolling volume stats",
+        "leader basket features"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+    },
+    {
+      "feature_name": "volume_trend_long",
+      "block_id": "v4_trend_volume",
+      "block_label": "v4 trend volume",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.trend_volume"
+      ],
+      "producer": "attach_trend_volume_features_v4",
+      "live_inputs": [
+        "v3 base/high-tf features",
+        "current and rolling volume stats",
+        "leader basket features"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+    },
+    {
+      "feature_name": "trend_consensus",
+      "block_id": "v4_trend_volume",
+      "block_label": "v4 trend volume",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.trend_volume"
+      ],
+      "producer": "attach_trend_volume_features_v4",
+      "live_inputs": [
+        "v3 base/high-tf features",
+        "current and rolling volume stats",
+        "leader basket features"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+    },
+    {
+      "feature_name": "trend_vs_market",
+      "block_id": "v4_trend_volume",
+      "block_label": "v4 trend volume",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.trend_volume"
+      ],
+      "producer": "attach_trend_volume_features_v4",
+      "live_inputs": [
+        "v3 base/high-tf features",
+        "current and rolling volume stats",
+        "leader basket features"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; dominated by upstream 240m features (~36h) plus 12-bar rolling volume_z smoothing.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "Not old-data dependent, but still transitively dependent on the v3 base/high-tf contract."
+    },
+    {
+      "feature_name": "oflow_v1_signed_volume_imbalance_1",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_signed_count_imbalance_1",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_signed_volume_imbalance_3",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_signed_volume_imbalance_12",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_flow_sign_persistence_12",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_depth_conditioned_flow_1",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_trade_book_imbalance_gap_1",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_spread_conditioned_flow_1",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "oflow_v1_microprice_conditioned_flow_1",
+      "block_id": "v4_order_flow_panel_v1",
+      "block_label": "v4 order flow panel",
+      "protected_block": false,
+      "source_contracts": [
+        "order_flow_panel_v1"
+      ],
+      "producer": "attach_order_flow_panel_v1",
+      "live_inputs": [
+        "micro trade/book snapshot columns"
+      ],
+      "warmup_requirement": "Post-3/4 in-window only; 12 bars max for rolling persistence terms.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": false,
+      "notes": "No pre-3/4 history requirement. Warmup comes from accumulating enough recent micro snapshots."
+    },
+    {
+      "feature_name": "ctrend_v1_rsi_14",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_stochrsi_14",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_stoch_k_14_3",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_stoch_d_14_3_3",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_cci_20",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_3",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_5",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_10",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_20",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_50",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_100",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_ma_gap_200",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_macd_line_12_26",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_macd_hist_12_26_9",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_3",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_5",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_10",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_20",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_50",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_100",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_ma_gap_200",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_macd_line_12_26",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_vol_macd_hist_12_26_9",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_chaikin_mf_20",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_boll_low_gap_20_2",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_boll_mid_gap_20",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_boll_high_gap_20_2",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "ctrend_v1_boll_width_20_2",
+      "block_id": "v4_ctrend_v1",
+      "block_label": "v4 ctrend",
+      "protected_block": false,
+      "source_contracts": [
+        "ctrend_v1"
+      ],
+      "producer": "build_ctrend_v1_daily_feature_frame",
+      "live_inputs": [
+        "daily 5m candle history",
+        "candles_api_v1 recent rows",
+        "candles_v1 fallback warmup"
+      ],
+      "warmup_requirement": "Requires long daily history; ctrend contract asks for 240-day lookback and includes 200-day MA/volume MA features.",
+      "needs_pre_3_4_history": true,
+      "legacy_code_dependency": false,
+      "notes": "This is the only block that hard-requires substantial pre-3/4 market history if you want features available near the start of the 3/4 window."
+    },
+    {
+      "feature_name": "mom_x_illiq",
+      "block_id": "v4_interactions",
+      "block_label": "v4 interactions",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.interactions"
+      ],
+      "producer": "attach_interaction_features_v4",
+      "live_inputs": [
+        "current-row base/micro/spillover/trend features"
+      ],
+      "warmup_requirement": "No extra warmup beyond upstream inputs.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+    },
+    {
+      "feature_name": "mom_x_spread",
+      "block_id": "v4_interactions",
+      "block_label": "v4 interactions",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.interactions"
+      ],
+      "producer": "attach_interaction_features_v4",
+      "live_inputs": [
+        "current-row base/micro/spillover/trend features"
+      ],
+      "warmup_requirement": "No extra warmup beyond upstream inputs.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+    },
+    {
+      "feature_name": "spread_x_vol",
+      "block_id": "v4_interactions",
+      "block_label": "v4 interactions",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.interactions"
+      ],
+      "producer": "attach_interaction_features_v4",
+      "live_inputs": [
+        "current-row base/micro/spillover/trend features"
+      ],
+      "warmup_requirement": "No extra warmup beyond upstream inputs.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+    },
+    {
+      "feature_name": "rel_strength_x_btc_regime",
+      "block_id": "v4_interactions",
+      "block_label": "v4 interactions",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.interactions"
+      ],
+      "producer": "attach_interaction_features_v4",
+      "live_inputs": [
+        "current-row base/micro/spillover/trend features"
+      ],
+      "warmup_requirement": "No extra warmup beyond upstream inputs.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+    },
+    {
+      "feature_name": "one_m_pressure_x_spread",
+      "block_id": "v4_interactions",
+      "block_label": "v4 interactions",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.interactions"
+      ],
+      "producer": "attach_interaction_features_v4",
+      "live_inputs": [
+        "current-row base/micro/spillover/trend features"
+      ],
+      "warmup_requirement": "No extra warmup beyond upstream inputs.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+    },
+    {
+      "feature_name": "volume_z_x_trend",
+      "block_id": "v4_interactions",
+      "block_label": "v4 interactions",
+      "protected_block": false,
+      "source_contracts": [
+        "feature_set_v4.interactions"
+      ],
+      "producer": "attach_interaction_features_v4",
+      "live_inputs": [
+        "current-row base/micro/spillover/trend features"
+      ],
+      "warmup_requirement": "No extra warmup beyond upstream inputs.",
+      "needs_pre_3_4_history": false,
+      "legacy_code_dependency": true,
+      "notes": "No independent old-history requirement, but transitively depends on upstream v3-base-derived features."
+    }
+  ]
+}
