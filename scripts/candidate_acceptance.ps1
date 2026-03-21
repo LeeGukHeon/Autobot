@@ -590,6 +590,59 @@ function Write-SplitPolicyDecisionArtifact {
     return $artifactPath
 }
 
+function Resolve-ReusedSplitPolicyDecisionState {
+    param([string]$CandidateRunDir)
+    if ([string]::IsNullOrWhiteSpace($CandidateRunDir) -or (-not (Test-Path $CandidateRunDir))) {
+        return @{}
+    }
+    $artifactPath = Join-Path $CandidateRunDir "split_policy_decision.json"
+    $artifact = Load-JsonOrEmpty -PathValue $artifactPath
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $artifact) {
+        return @{}
+    }
+    $currentBatchWindows = Get-PropValue -ObjectValue $artifact -Name "current_batch_windows" -DefaultValue @{}
+    $trainWindow = Get-PropValue -ObjectValue $currentBatchWindows -Name "train" -DefaultValue @{}
+    $certificationWindow = Get-PropValue -ObjectValue $currentBatchWindows -Name "certification" -DefaultValue @{}
+    $bootstrapWindow = Get-PropValue -ObjectValue $currentBatchWindows -Name "bootstrap" -DefaultValue @{}
+    $trainStart = [string](Get-PropValue -ObjectValue $trainWindow -Name "start" -DefaultValue "")
+    $trainEnd = [string](Get-PropValue -ObjectValue $trainWindow -Name "end" -DefaultValue "")
+    $certificationStart = [string](Get-PropValue -ObjectValue $certificationWindow -Name "start" -DefaultValue "")
+    $certificationEnd = [string](Get-PropValue -ObjectValue $certificationWindow -Name "end" -DefaultValue "")
+    $bootstrapStart = [string](Get-PropValue -ObjectValue $bootstrapWindow -Name "start" -DefaultValue "")
+    $bootstrapEnd = [string](Get-PropValue -ObjectValue $bootstrapWindow -Name "end" -DefaultValue "")
+    if (
+        [string]::IsNullOrWhiteSpace($trainStart) -or
+        [string]::IsNullOrWhiteSpace($trainEnd) -or
+        [string]::IsNullOrWhiteSpace($certificationStart) -or
+        [string]::IsNullOrWhiteSpace($certificationEnd)
+    ) {
+        return @{}
+    }
+    return [ordered]@{
+        artifact_path = $artifactPath
+        artifact = $artifact
+        train_start = $trainStart
+        train_end = $trainEnd
+        certification_start = $certificationStart
+        certification_end = $certificationEnd
+        bootstrap_start = $bootstrapStart
+        bootstrap_end = $bootstrapEnd
+        policy_id = [string](Get-PropValue -ObjectValue $artifact -Name "policy_id" -DefaultValue $script:splitPolicyId)
+        lane_mode = [string](Get-PropValue -ObjectValue $artifact -Name "lane_mode" -DefaultValue $script:splitPolicyLaneMode)
+        promotion_eligible = To-Bool (Get-PropValue -ObjectValue $artifact -Name "promotion_eligible" -DefaultValue $script:splitPolicyPromotionEligible) $script:splitPolicyPromotionEligible
+        selected_by = [string](Get-PropValue -ObjectValue $artifact -Name "selected_by" -DefaultValue $script:splitPolicySelectedBy)
+        selected_holdout_days = [int](To-Int64 (Get-PropValue -ObjectValue $artifact -Name "selected_holdout_days" -DefaultValue $script:splitPolicySelectedHoldoutDays) $script:splitPolicySelectedHoldoutDays)
+        reason_codes = @(Get-PropValue -ObjectValue $artifact -Name "reason_codes" -DefaultValue @())
+        strict_trainability = Get-PropValue -ObjectValue $artifact -Name "strict_trainability" -DefaultValue @{}
+        bootstrap_trainability = Get-PropValue -ObjectValue $artifact -Name "bootstrap_trainability" -DefaultValue @{}
+        candidate_holdout_days = @(Get-PropValue -ObjectValue $artifact -Name "candidate_holdout_days" -DefaultValue @())
+        historical_anchor_count = [int](To-Int64 (Get-PropValue -ObjectValue $artifact -Name "historical_anchor_count" -DefaultValue 0) 0)
+        selection_summary = @(Get-PropValue -ObjectValue $artifact -Name "selection_summary" -DefaultValue @())
+        history_path = [string](Get-PropValue -ObjectValue $artifact -Name "history_path" -DefaultValue "")
+        new_evaluations = @(Get-PropValue -ObjectValue $artifact -Name "new_evaluations" -DefaultValue @())
+    }
+}
+
 function Resolve-SplitPolicySelectorHistoryPath {
     param(
         [string]$RegistryRoot,
@@ -2730,6 +2783,56 @@ try {
             $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
             $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
             $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
+        }
+    }
+    if ($SkipTrain) {
+        $reusedSplitPolicyState = Resolve-ReusedSplitPolicyDecisionState -CandidateRunDir $candidateRunDir
+        if (-not (Test-IsEffectivelyEmptyObject -ObjectValue $reusedSplitPolicyState)) {
+            $script:splitPolicyId = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "policy_id" -DefaultValue $script:splitPolicyId)
+            $script:splitPolicyLaneMode = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "lane_mode" -DefaultValue $script:splitPolicyLaneMode)
+            $script:splitPolicyPromotionEligible = To-Bool (Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "promotion_eligible" -DefaultValue $script:splitPolicyPromotionEligible) $script:splitPolicyPromotionEligible
+            $script:splitPolicySelectedBy = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "selected_by" -DefaultValue $script:splitPolicySelectedBy)
+            $script:splitPolicySelectedHoldoutDays = [int](To-Int64 (Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "selected_holdout_days" -DefaultValue $script:splitPolicySelectedHoldoutDays) $script:splitPolicySelectedHoldoutDays)
+            $script:splitPolicyReasonCodes = @(Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "reason_codes" -DefaultValue @())
+            $script:splitPolicyStrictTrainability = Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "strict_trainability" -DefaultValue @{}
+            $script:splitPolicyBootstrapTrainability = Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "bootstrap_trainability" -DefaultValue @{}
+            $script:splitPolicyCandidateHoldoutDays = @(Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "candidate_holdout_days" -DefaultValue @())
+            $script:splitPolicyHistoricalAnchorCount = [int](To-Int64 (Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "historical_anchor_count" -DefaultValue 0) 0)
+            $script:splitPolicySelectionSummary = @(Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "selection_summary" -DefaultValue @())
+            $script:splitPolicyHistoryPath = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "history_path" -DefaultValue "")
+            $script:splitPolicyNewEvaluations = @(Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "new_evaluations" -DefaultValue @())
+            $script:splitPolicyArtifactPath = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "artifact_path" -DefaultValue "")
+            $trainStartDate = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "train_start" -DefaultValue $trainStartDate)
+            $trainEndDate = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "train_end" -DefaultValue $trainEndDate)
+            $certificationStartDate = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "certification_start" -DefaultValue $certificationStartDate)
+            $effectiveBatchDate = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "certification_end" -DefaultValue $effectiveBatchDate)
+            $script:bootstrapWindowStart = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "bootstrap_start" -DefaultValue $script:bootstrapWindowStart)
+            $script:bootstrapWindowEnd = [string](Get-PropValue -ObjectValue $reusedSplitPolicyState -Name "bootstrap_end" -DefaultValue $script:bootstrapWindowEnd)
+            $report.windows_by_step.train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
+            $report.windows_by_step.certification = [ordered]@{
+                start = $certificationStartDate
+                end = $effectiveBatchDate
+            }
+            $report.windows_by_step.backtest = [ordered]@{
+                start = $certificationStartDate
+                end = $effectiveBatchDate
+                alias_of = "certification"
+            }
+            $report.windows_by_step.bootstrap = [ordered]@{
+                start = $script:bootstrapWindowStart
+                end = $script:bootstrapWindowEnd
+                source = "bootstrap_latest_inclusive_candidate"
+            }
+            $report.steps.features_build = [ordered]@{
+                attempted = $false
+                reason = "REUSED_EXISTING_SPLIT_POLICY"
+                artifact_path = $script:splitPolicyArtifactPath
+                selected_by = $script:splitPolicySelectedBy
+                selected_holdout_days = $script:splitPolicySelectedHoldoutDays
+                start = $trainStartDate
+                end = $trainEndDate
+            }
+            Sync-SplitPolicyState
         }
     }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }

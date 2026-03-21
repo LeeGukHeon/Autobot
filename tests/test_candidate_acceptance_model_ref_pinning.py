@@ -202,6 +202,66 @@ def _write_existing_candidate_run(project_root: Path) -> None:
         },
     )
     _write_json(run_dir / "decision_surface.json", {"policy": {}})
+    _write_json(
+        run_dir / "split_policy_decision.json",
+        {
+            "version": 1,
+            "policy_id": "v4_split_policy_forward_validation_lcb_v1",
+            "lane_mode": "promotion_strict",
+            "promotion_eligible": True,
+            "selected_by": "forward_validation_lcb",
+            "requested_holdout_days": 2,
+            "selected_holdout_days": 1,
+            "train_data_quality_floor_date": "2026-03-04",
+            "historical_anchor_count": 4,
+            "reason_codes": ["FORWARD_VALIDATION_LCB"],
+            "current_batch_windows": {
+                "train": {
+                    "name": "train",
+                    "start": "2026-03-04",
+                    "end": "2026-03-06",
+                    "source": "split_policy.current_train",
+                    "valid": True,
+                    "day_count": 3,
+                    "reasons": [],
+                },
+                "certification": {
+                    "name": "certification",
+                    "start": "2026-03-07",
+                    "end": "2026-03-07",
+                    "source": "split_policy.current_certification",
+                    "valid": True,
+                    "day_count": 1,
+                    "reasons": [],
+                },
+                "backtest": {
+                    "name": "backtest",
+                    "start": "2026-03-07",
+                    "end": "2026-03-07",
+                    "source": "split_policy.current_backtest",
+                    "valid": True,
+                    "day_count": 1,
+                    "reasons": [],
+                },
+                "bootstrap": {
+                    "name": "bootstrap",
+                    "start": "2026-03-04",
+                    "end": "2026-03-07",
+                    "source": "split_policy.bootstrap_window",
+                    "valid": True,
+                    "day_count": 4,
+                    "reasons": [],
+                },
+            },
+            "strict_trainability": {},
+            "bootstrap_trainability": {},
+            "candidate_holdout_days": [1, 2],
+            "historical_anchor_min_required": 2,
+            "selection_summary": [],
+            "history_path": "",
+            "new_evaluations": [],
+        },
+    )
 
 
 def _make_fake_paper_smoke_script(tmp_path: Path) -> Path:
@@ -421,6 +481,12 @@ def test_candidate_acceptance_can_reuse_existing_candidate_without_retraining(tm
     assert candidate["candidate_model_ref_requested"] == "candidate-run-001"
     assert candidate["candidate_run_id_used_for_backtest"] == "candidate-run-001"
     assert candidate["candidate_run_id_used_for_paper"] == "candidate-run-001"
+    assert report["split_policy"]["selected_by"] == "forward_validation_lcb"
+    assert report["split_policy"]["selected_holdout_days"] == 1
+    assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
+    assert report["windows_by_step"]["train"]["end"] == "2026-03-06"
+    assert report["steps"]["backtest_candidate"]["start"] == "2026-03-07"
+    assert report["steps"]["backtest_candidate"]["end"] == "2026-03-07"
     assert report["gates"]["backtest"]["pass"] is True
     assert report["gates"]["paper"]["pass"] is True
     assert report["gates"]["overall_pass"] is True
