@@ -1,8 +1,8 @@
 # V4 Feature Dependency Inventory
 
 - Source: `feature_columns_v4_contract`
-- Total features: `140`
-- Features that truly need pre-3/4 history: `28`
+- Total features: `112`
+- Features that truly need pre-3/4 history: `0`
 - Features that can be built from 3/4 onward with only in-window warmup: `112`
 - Features still tied to legacy v3 code paths/contracts: `82`
 
@@ -12,7 +12,6 @@
 - `v3_high_tf_core`: `15`
 - `v3_micro_core`: `36`
 - `v3_one_m_core`: `9`
-- `v4_ctrend_v1`: `28`
 - `v4_interactions`: `6`
 - `v4_order_flow_panel_v1`: `9`
 - `v4_periodicity`: `7`
@@ -137,34 +136,6 @@
 | `oflow_v1_trade_book_imbalance_gap_1` | `v4_order_flow_panel_v1` | `false` | `false` | `attach_order_flow_panel_v1` |
 | `oflow_v1_spread_conditioned_flow_1` | `v4_order_flow_panel_v1` | `false` | `false` | `attach_order_flow_panel_v1` |
 | `oflow_v1_microprice_conditioned_flow_1` | `v4_order_flow_panel_v1` | `false` | `false` | `attach_order_flow_panel_v1` |
-| `ctrend_v1_rsi_14` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_stochrsi_14` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_stoch_k_14_3` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_stoch_d_14_3_3` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_cci_20` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_3` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_5` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_10` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_20` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_50` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_100` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_ma_gap_200` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_macd_line_12_26` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_macd_hist_12_26_9` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_3` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_5` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_10` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_20` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_50` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_100` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_ma_gap_200` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_macd_line_12_26` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_vol_macd_hist_12_26_9` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_chaikin_mf_20` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_boll_low_gap_20_2` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_boll_mid_gap_20` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_boll_high_gap_20_2` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
-| `ctrend_v1_boll_width_20_2` | `v4_ctrend_v1` | `true` | `false` | `build_ctrend_v1_daily_feature_frame` |
 | `mom_x_illiq` | `v4_interactions` | `false` | `true` | `attach_interaction_features_v4` |
 | `mom_x_spread` | `v4_interactions` | `false` | `true` | `attach_interaction_features_v4` |
 | `spread_x_vol` | `v4_interactions` | `false` | `true` | `attach_interaction_features_v4` |

@@ -122,19 +122,18 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert "oflow_v1_signed_volume_imbalance_1" in feature_spec["feature_columns"]
     assert "oflow_v1_depth_conditioned_flow_1" in feature_spec["feature_columns"]
     assert "oflow_v1_microprice_conditioned_flow_1" in feature_spec["feature_columns"]
-    assert "ctrend_v1_rsi_14" in feature_spec["feature_columns"]
-    assert "ctrend_v1_cci_20" in feature_spec["feature_columns"]
-    assert "ctrend_v1_ma_gap_200" in feature_spec["feature_columns"]
-    assert "ctrend_v1_vol_ma_gap_200" in feature_spec["feature_columns"]
-    assert "ctrend_v1_macd_hist_12_26_9" in feature_spec["feature_columns"]
-    assert "ctrend_v1_vol_macd_hist_12_26_9" in feature_spec["feature_columns"]
-    assert "ctrend_v1_boll_width_20_2" in feature_spec["feature_columns"]
+    assert "ctrend_v1_rsi_14" not in feature_spec["feature_columns"]
+    assert "ctrend_v1_cci_20" not in feature_spec["feature_columns"]
+    assert "ctrend_v1_ma_gap_200" not in feature_spec["feature_columns"]
+    assert "ctrend_v1_vol_ma_gap_200" not in feature_spec["feature_columns"]
+    assert "ctrend_v1_macd_hist_12_26_9" not in feature_spec["feature_columns"]
+    assert "ctrend_v1_vol_macd_hist_12_26_9" not in feature_spec["feature_columns"]
+    assert "ctrend_v1_boll_width_20_2" not in feature_spec["feature_columns"]
     assert "mom_x_illiq" in feature_spec["feature_columns"]
     assert "one_m_pressure_x_spread" in feature_spec["feature_columns"]
     assert "volume_z_x_trend" in feature_spec["feature_columns"]
-    assert feature_spec["active_factor_contracts"] == ["ctrend_v1"]
-    assert feature_spec["factor_contracts"]["ctrend_v1"]["version"] == "ctrend_v1"
-    assert feature_spec["factor_contracts"]["ctrend_v1"]["deployment_adaptation"]["hardcoded_factor_weights"] is False
+    assert feature_spec["active_factor_contracts"] == []
+    assert feature_spec["factor_contracts"] == {}
     assert feature_spec["active_micro_panel_contracts"] == ["order_flow_panel_v1"]
     assert feature_spec["micro_panel_contracts"]["order_flow_panel_v1"]["version"] == "order_flow_panel_v1"
     assert feature_spec["order_flow_diagnostics"]["rows"] > 0
@@ -174,18 +173,6 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
             "oflow_v1_trade_book_imbalance_gap_1",
             "oflow_v1_spread_conditioned_flow_1",
             "oflow_v1_microprice_conditioned_flow_1",
-            "ctrend_v1_rsi_14",
-            "ctrend_v1_stochrsi_14",
-            "ctrend_v1_stoch_k_14_3",
-            "ctrend_v1_stoch_d_14_3_3",
-            "ctrend_v1_cci_20",
-            "ctrend_v1_macd_line_12_26",
-            "ctrend_v1_macd_hist_12_26_9",
-            "ctrend_v1_ma_gap_200",
-            "ctrend_v1_vol_ma_gap_200",
-            "ctrend_v1_vol_macd_hist_12_26_9",
-            "ctrend_v1_chaikin_mf_20",
-            "ctrend_v1_boll_width_20_2",
             "mom_x_illiq",
             "mom_x_spread",
             "spread_x_vol",
@@ -210,12 +197,12 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert frame.get_column("oflow_v1_signed_volume_imbalance_1").null_count() == 0
     assert frame.get_column("oflow_v1_depth_conditioned_flow_1").null_count() == 0
     assert frame.get_column("oflow_v1_microprice_conditioned_flow_1").null_count() == 0
-    assert frame.get_column("ctrend_v1_rsi_14").null_count() == 0
-    assert frame.get_column("ctrend_v1_cci_20").null_count() == 0
-    assert frame.get_column("ctrend_v1_macd_hist_12_26_9").null_count() == 0
-    assert frame.get_column("ctrend_v1_ma_gap_200").null_count() == 0
-    assert frame.get_column("ctrend_v1_vol_ma_gap_200").null_count() == 0
-    assert frame.get_column("ctrend_v1_boll_width_20_2").null_count() == 0
+    assert "ctrend_v1_rsi_14" not in frame.columns
+    assert "ctrend_v1_cci_20" not in frame.columns
+    assert "ctrend_v1_macd_hist_12_26_9" not in frame.columns
+    assert "ctrend_v1_ma_gap_200" not in frame.columns
+    assert "ctrend_v1_vol_ma_gap_200" not in frame.columns
+    assert "ctrend_v1_boll_width_20_2" not in frame.columns
     assert frame.get_column("mom_x_illiq").null_count() == 0
     assert frame.get_column("one_m_pressure_x_spread").null_count() == 0
     assert frame.get_column("volume_z_x_trend").null_count() == 0

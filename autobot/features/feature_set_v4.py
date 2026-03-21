@@ -6,7 +6,6 @@ import math
 
 import polars as pl
 
-from .ctrend_v1 import ctrend_v1_feature_columns
 from .feature_blocks_v3 import feature_columns_v3_contract, required_feature_columns_v3
 from .order_flow_panel_v1 import attach_order_flow_panel_v1, order_flow_panel_v1_feature_columns
 
@@ -69,7 +68,9 @@ def order_flow_feature_columns_v4() -> tuple[str, ...]:
 
 
 def ctrend_feature_columns_v4() -> tuple[str, ...]:
-    return ctrend_v1_feature_columns()
+    # CTRend is intentionally disabled in the active v4 contract because it
+    # requires substantial pre-2026-03-04 history and candles_v1 fallback warmup.
+    return ()
 
 
 def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) -> tuple[str, ...]:

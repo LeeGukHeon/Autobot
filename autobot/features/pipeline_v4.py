@@ -18,6 +18,7 @@ from .feature_set_v4 import (
     attach_periodicity_features_v4,
     attach_spillover_breadth_features_v4,
     attach_trend_volume_features_v4,
+    ctrend_feature_columns_v4,
     feature_columns_v4,
     required_feature_columns_v4,
 )
@@ -411,8 +412,18 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
     warn_markets = 0
     fail_markets = 0
     one_m_synth_ratio_values: list[float] = []
-    ctrend_history_roots = _resolve_ctrend_history_roots(parquet_root=config.parquet_root, primary_root=base_root)
-    ctrend_history_from_ts_ms = start_ts_ms - int(ctrend_v1_history_lookback_days()) * 86_400_000
+    active_ctrend_columns = ctrend_feature_columns_v4()
+    ctrend_enabled = bool(active_ctrend_columns)
+    ctrend_history_roots = (
+        _resolve_ctrend_history_roots(parquet_root=config.parquet_root, primary_root=base_root)
+        if ctrend_enabled
+        else tuple()
+    )
+    ctrend_history_from_ts_ms = (
+        start_ts_ms - int(ctrend_v1_history_lookback_days()) * 86_400_000
+        if ctrend_enabled
+        else start_ts_ms
+    )
 
     for market in selected_markets:
         try:
@@ -472,20 +483,21 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
                 frame = frame.drop([name for name in ("y_reg", "y_cls") if name in frame.columns]).with_columns(
                     pl.lit(market, dtype=pl.Utf8).alias("market")
                 )
-                ctrend_history = _load_market_candles_merged(
-                    dataset_roots=ctrend_history_roots,
-                    tf=tf,
-                    market=market,
-                    from_ts_ms=ctrend_history_from_ts_ms,
-                    to_ts_ms=extended_end_ts_ms,
-                )
-                if ctrend_history.height > 0:
-                    ctrend_history = ctrend_history.with_columns(pl.lit(market, dtype=pl.Utf8).alias("market"))
-                    frame = attach_ctrend_v1_features(
-                        frame,
-                        history_frame=ctrend_history,
-                        float_dtype=config.float_dtype,
+                if ctrend_enabled:
+                    ctrend_history = _load_market_candles_merged(
+                        dataset_roots=ctrend_history_roots,
+                        tf=tf,
+                        market=market,
+                        from_ts_ms=ctrend_history_from_ts_ms,
+                        to_ts_ms=extended_end_ts_ms,
                     )
+                    if ctrend_history.height > 0:
+                        ctrend_history = ctrend_history.with_columns(pl.lit(market, dtype=pl.Utf8).alias("market"))
+                        frame = attach_ctrend_v1_features(
+                            frame,
+                            history_frame=ctrend_history,
+                            float_dtype=config.float_dtype,
+                        )
                 market_frames.append(frame)
                 if "one_m_synth_ratio" in frame.columns:
                     one_m_synth_ratio_values.extend(
@@ -544,10 +556,11 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             enriched,
             float_dtype=config.float_dtype,
         )
-        enriched = attach_ctrend_v1_features(
-            enriched,
-            float_dtype=config.float_dtype,
-        )
+        if ctrend_enabled:
+            enriched = attach_ctrend_v1_features(
+                enriched,
+                float_dtype=config.float_dtype,
+            )
         enriched = attach_interaction_features_v4(
             enriched,
             float_dtype=config.float_dtype,
@@ -1032,8 +1045,8 @@ def _build_feature_spec_payload_v4(
             },
         },
         "micro_mandatory": True,
-        "active_factor_contracts": ["ctrend_v1"],
-        "factor_contracts": {"ctrend_v1": ctrend_v1_factor_contract()},
+        "active_factor_contracts": ["ctrend_v1"] if ctrend_feature_columns_v4() else [],
+        "factor_contracts": {"ctrend_v1": ctrend_v1_factor_contract()} if ctrend_feature_columns_v4() else {},
         "active_micro_panel_contracts": ["order_flow_panel_v1"],
         "micro_panel_contracts": {"order_flow_panel_v1": order_flow_panel_v1_contract()},
         "one_m_densify": {

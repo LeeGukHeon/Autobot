@@ -60,10 +60,10 @@ def test_feature_columns_v4_extends_v3_contract() -> None:
     assert "trend_consensus" in columns
     assert "oflow_v1_signed_volume_imbalance_1" in columns
     assert "oflow_v1_depth_conditioned_flow_1" in columns
-    assert "ctrend_v1_boll_mid_gap_20" in columns
-    assert "ctrend_v1_macd_hist_12_26_9" in columns
     assert "mom_x_illiq" in columns
     assert "volume_z_x_trend" in columns
+    assert "ctrend_v1_boll_mid_gap_20" not in columns
+    assert "ctrend_v1_macd_hist_12_26_9" not in columns
 
 
 def test_attach_periodicity_features_v4_adds_utc_time_columns() -> None:
