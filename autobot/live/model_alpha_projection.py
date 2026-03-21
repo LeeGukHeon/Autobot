@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .breakers import clear_recovered_risk_exit_stuck_breaker
 from autobot.backtest.strategy_adapter import StrategyFillEvent
 from autobot.risk.live_risk_manager import LiveRiskManager
 
@@ -288,6 +289,12 @@ def close_market_risk_plans(*, store: LiveStateStore, market: str, ts_ms: int) -
                 source_intent_id=_as_optional_str(plan.get("source_intent_id")),
             )
         )
+    clear_recovered_risk_exit_stuck_breaker(
+        store,
+        source="close_market_risk_plans_recovery",
+        ts_ms=ts_ms,
+        details={"market": str(market).strip().upper()},
+    )
 
 
 def find_latest_model_entry_intent(

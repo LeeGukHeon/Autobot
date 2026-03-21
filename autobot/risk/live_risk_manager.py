@@ -12,6 +12,7 @@ from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
     arm_breaker,
     classify_executor_reject_reason,
+    clear_recovered_risk_exit_stuck_breaker,
     protective_orders_allowed,
     record_counter_failure,
     reset_counter,
@@ -263,6 +264,12 @@ class LiveRiskManager:
                     updated_ts=ts_ms,
                 )
                 self._upsert_plan(updated)
+                clear_recovered_risk_exit_stuck_breaker(
+                    self._store,
+                    source="risk_event_done_recovery",
+                    ts_ms=ts_ms,
+                    details={"plan_id": updated.plan_id, "market": updated.market},
+                )
                 return {"type": "risk_closed", "plan_id": plan.plan_id}
             if state == "cancel_reject":
                 breaker_report = record_counter_failure(
