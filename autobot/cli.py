@@ -206,6 +206,21 @@ def _resolve_v4_runtime_model_ref_fallback(
     return _cli_model_helpers.resolve_v4_runtime_model_ref_fallback(model_ref, model_family, registry_root)
 
 
+def _resolve_paper_runtime_env_model_overrides(
+    model_ref: str | None,
+    model_family: str | None,
+) -> tuple[str, str | None]:
+    resolved_model_ref = str(model_ref).strip() if model_ref else ""
+    resolved_model_family = str(model_family).strip() if model_family else None
+    env_pinned_model_ref = str(os.getenv("AUTOBOT_PAPER_MODEL_REF_PINNED", "")).strip()
+    env_runtime_model_family = str(os.getenv("AUTOBOT_RUNTIME_MODEL_FAMILY", "")).strip()
+    if not resolved_model_ref and env_pinned_model_ref:
+        resolved_model_ref = env_pinned_model_ref
+    if (resolved_model_family is None or resolved_model_family == "") and env_runtime_model_family:
+        resolved_model_family = env_runtime_model_family
+    return resolved_model_ref, resolved_model_family
+
+
 def _backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     return _cli_model_helpers.backtest_alpha_preset_overrides(preset)
 
@@ -2782,6 +2797,10 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         if model_family_raw in {None, ""}:
             model_family_raw = model_alpha_defaults.get("model_family")
         model_family_value = str(model_family_raw).strip() if model_family_raw else None
+        model_ref_value, model_family_value = _resolve_paper_runtime_env_model_overrides(
+            model_ref_value,
+            model_family_value,
+        )
         model_ref_value, model_family_value = _resolve_model_ref_alias(model_ref_value, model_family_value)
         registry_root_value = Path(str(defaults.get("model_registry_root", "models/registry")).strip() or "models/registry")
         if not registry_root_value.is_absolute():

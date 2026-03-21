@@ -13,6 +13,7 @@ from autobot.cli import (
     _normalize_backtest_alpha_args,
     _handle_model_command,
     _normalize_paper_alpha_args,
+    _resolve_paper_runtime_env_model_overrides,
     _resolve_model_ref_alias,
     _resolve_v4_runtime_model_ref_fallback,
     build_parser,
@@ -113,6 +114,16 @@ def test_normalize_paper_alpha_args_uses_live_v4_preset_defaults() -> None:
     assert normalized.use_learned_selection_recommendations is True
     assert normalized.paper_feature_provider == "live_v4"
     assert normalized.paper_micro_provider == "live_ws"
+
+
+def test_resolve_paper_runtime_env_model_overrides_uses_pinned_ref_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOBOT_PAPER_MODEL_REF_PINNED", "20260320T180256Z-s42-8b956b2f")
+    monkeypatch.setenv("AUTOBOT_RUNTIME_MODEL_FAMILY", "train_v4_crypto_cs")
+
+    model_ref, model_family = _resolve_paper_runtime_env_model_overrides("", None)
+
+    assert model_ref == "20260320T180256Z-s42-8b956b2f"
+    assert model_family == "train_v4_crypto_cs"
 
 
 def test_resolve_v4_runtime_model_ref_fallback_uses_latest_candidate_when_champion_missing(tmp_path: Path) -> None:
