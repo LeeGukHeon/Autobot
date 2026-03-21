@@ -943,6 +943,58 @@ def test_risk_manager_exit_stuck_after_replace_budget_exhausted_arms_breaker(tmp
     assert "RISK_EXIT_STUCK_MAX_REPLACES" in status["reason_codes"]
 
 
+def test_risk_manager_done_event_clears_stuck_exit_breaker(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="stuck-exit-clear-1",
+                market="KRW-XRP",
+                side="long",
+                entry_price_str="500",
+                qty_str="100",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                current_exit_order_uuid="exit-prev-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-old",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(order_timeout_sec=1, replace_max=0, exit_aggress_bps=10.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
+        )
+        manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
+        closed = manager.handle_executor_event(
+            {
+                "event_type": "ORDER_UPDATE",
+                "ts_ms": 5000,
+                "payload": {
+                    "event_name": "ORDER_STATE",
+                    "identifier": "AUTOBOT-RISK-old",
+                    "state": "done",
+                },
+            }
+        )
+        status = breaker_status(store)
+
+    assert closed is not None
+    assert closed["type"] == "risk_closed"
+    assert status["active"] is False
+    assert "RISK_EXIT_STUCK_MAX_REPLACES" not in status["reason_codes"]
+
+
 def test_risk_manager_replace_lineage_failure_arms_breaker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "live_state.db"
     gateway = _FakeExecutorGateway()

@@ -348,6 +348,71 @@ def clear_breaker_reasons(
     return breaker_status(store)
 
 
+def clear_recovered_risk_exit_stuck_breaker(
+    store: LiveStateStore,
+    *,
+    source: str,
+    ts_ms: int,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    current = store.breaker_state(breaker_key=BREAKER_KEY_LIVE)
+    if current is None:
+        return breaker_status(store)
+    existing_reasons = [str(item).strip().upper() for item in current.get("reason_codes", []) if str(item).strip()]
+    if "RISK_EXIT_STUCK_MAX_REPLACES" not in existing_reasons:
+        return breaker_status(store)
+
+    current_details = dict(current.get("details", {}))
+    recovery_details = dict(details or {})
+    plan_id = _as_optional_upper(current_details.get("plan_id"))
+    market = _as_optional_upper(current_details.get("market"))
+    order_uuid = _as_optional_upper(current_details.get("current_exit_order_uuid"))
+    order_identifier = _as_optional_upper(current_details.get("current_exit_order_identifier"))
+
+    recovered = False
+    recovery_reason: str | None = None
+    if plan_id:
+        plan = store.risk_plan_by_id(plan_id=plan_id)
+        recovery_details["plan_id"] = plan_id
+        recovery_details["plan_state"] = str((plan or {}).get("state") or "").strip().upper() or None
+        if plan is not None and str(plan.get("state") or "").strip().upper() == "CLOSED":
+            recovered = True
+            recovery_reason = "plan_closed"
+    if not recovered and order_uuid:
+        order = store.order_by_uuid(uuid=order_uuid)
+        if order is None and order_identifier:
+            order = store.order_by_identifier(identifier=order_identifier)
+        recovery_details["order_uuid"] = order_uuid
+        recovery_details["order_identifier"] = order_identifier
+        recovery_details["order_state"] = str((order or {}).get("state") or "").strip().lower() or None
+        recovery_details["order_local_state"] = str((order or {}).get("local_state") or "").strip().upper() or None
+        if order is not None and (
+            str(order.get("state") or "").strip().lower() == "done"
+            or str(order.get("local_state") or "").strip().upper() == "DONE"
+        ):
+            recovered = True
+            recovery_reason = "exit_order_done"
+    if not recovered and market:
+        open_plans = store.list_risk_plans(market=market, states=("ACTIVE", "TRIGGERED", "EXITING"))
+        recovery_details["market"] = market
+        recovery_details["open_plan_count"] = len(open_plans)
+        if not open_plans:
+            recovered = True
+            recovery_reason = "market_has_no_open_risk_plans"
+
+    if not recovered:
+        return breaker_status(store)
+
+    recovery_details["recovered_reason"] = recovery_reason
+    return clear_breaker_reasons(
+        store,
+        reason_codes=["RISK_EXIT_STUCK_MAX_REPLACES"],
+        source=source,
+        ts_ms=ts_ms,
+        details=recovery_details,
+    )
+
+
 def record_counter_failure(
     store: LiveStateStore,
     *,

@@ -7,6 +7,7 @@ from autobot.live.breakers import (
     ACTION_HALT_NEW_INTENTS,
     arm_breaker,
     breaker_status,
+    clear_recovered_risk_exit_stuck_breaker,
     clear_breaker_reasons,
     clear_breaker,
     classify_upbit_exception,
@@ -14,7 +15,7 @@ from autobot.live.breakers import (
     record_counter_failure,
     reset_counter,
 )
-from autobot.live.state_store import LiveStateStore
+from autobot.live.state_store import LiveStateStore, OrderRecord, RiskPlanRecord
 from autobot.upbit.exceptions import AuthError, RateLimitError
 
 
@@ -194,3 +195,127 @@ def test_arm_breaker_keeps_new_arm_event_when_source_changes(tmp_path: Path) -> 
     assert len(status["recent_events"]) == 2
     assert status["recent_events"][0]["source"] == "sync_cycle"
     assert status["recent_events"][1]["source"] == "live_model_handoff"
+
+
+def test_clear_recovered_risk_exit_stuck_breaker_when_plan_closed(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="risk-closed-1",
+                market="KRW-AKT",
+                side="long",
+                entry_price_str="800",
+                qty_str="7.5",
+                tp_enabled=True,
+                tp_pct=2.0,
+                sl_enabled=True,
+                sl_pct=1.5,
+                trailing_enabled=False,
+                state="CLOSED",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=3000,
+                current_exit_order_uuid="exit-done-1",
+                current_exit_order_identifier="AUTOBOT-RISKREP-1",
+                replace_attempt=1,
+                created_ts=1000,
+                updated_ts=3000,
+            )
+        )
+        arm_breaker(
+            store,
+            reason_codes=["RISK_EXIT_STUCK_MAX_REPLACES"],
+            source="risk_manager",
+            ts_ms=2000,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={
+                "plan_id": "risk-closed-1",
+                "market": "KRW-AKT",
+                "current_exit_order_uuid": "exit-done-1",
+                "current_exit_order_identifier": "AUTOBOT-RISKREP-1",
+            },
+        )
+        cleared = clear_recovered_risk_exit_stuck_breaker(
+            store,
+            source="test_recovery",
+            ts_ms=4000,
+            details={"note": "plan closed"},
+        )
+
+    assert cleared["active"] is False
+    assert "RISK_EXIT_STUCK_MAX_REPLACES" not in cleared["reason_codes"]
+
+
+def test_clear_recovered_risk_exit_stuck_breaker_keeps_active_when_exit_still_open(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="risk-open-1",
+                market="KRW-AKT",
+                side="long",
+                entry_price_str="800",
+                qty_str="7.5",
+                tp_enabled=True,
+                tp_pct=2.0,
+                sl_enabled=True,
+                sl_pct=1.5,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=3000,
+                current_exit_order_uuid="exit-open-1",
+                current_exit_order_identifier="AUTOBOT-RISKREP-OPEN",
+                replace_attempt=1,
+                created_ts=1000,
+                updated_ts=3000,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-open-1",
+                identifier="AUTOBOT-RISKREP-OPEN",
+                market="KRW-AKT",
+                side="ask",
+                ord_type="limit",
+                price=812.0,
+                volume_req=7.5,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=3000,
+                updated_ts=3000,
+                intent_id="intent-risk-open-1",
+                tp_sl_link="risk-open-1",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=1,
+                root_order_uuid="exit-open-1",
+                prev_order_uuid=None,
+                prev_order_identifier=None,
+            )
+        )
+        armed = arm_breaker(
+            store,
+            reason_codes=["RISK_EXIT_STUCK_MAX_REPLACES"],
+            source="risk_manager",
+            ts_ms=2000,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={
+                "plan_id": "risk-open-1",
+                "market": "KRW-AKT",
+                "current_exit_order_uuid": "exit-open-1",
+                "current_exit_order_identifier": "AUTOBOT-RISKREP-OPEN",
+            },
+        )
+        status = clear_recovered_risk_exit_stuck_breaker(
+            store,
+            source="test_recovery",
+            ts_ms=4000,
+            details={"note": "still open"},
+        )
+
+    assert armed["active"] is True
+    assert status["active"] is True
+    assert "RISK_EXIT_STUCK_MAX_REPLACES" in status["reason_codes"]
