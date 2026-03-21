@@ -1426,30 +1426,32 @@ def _ingest_live_micro_from_ticker(
     ticker: TickerEvent,
 ) -> None:
     market = str(ticker.market).strip().upper()
-    if not market or float(ticker.trade_price) <= 0:
+    trade_price = _safe_optional_float(ticker.trade_price)
+    acc_trade_price_24h = _safe_optional_float(ticker.acc_trade_price_24h)
+    if not market or trade_price is None or trade_price <= 0:
         return
     acc_by_market = getattr(provider, "_autobot_acc_notional_by_market", None)
     if not isinstance(acc_by_market, dict):
         acc_by_market = {}
         setattr(provider, "_autobot_acc_notional_by_market", acc_by_market)
-    current_acc = max(float(ticker.acc_trade_price_24h), 0.0)
+    current_acc = max(float(acc_trade_price_24h or 0.0), 0.0)
     prev_acc = _safe_optional_float(acc_by_market.get(market))
     if prev_acc is None:
-        notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+        notional_delta = max(float(trade_price) * 1e-8, 1e-8)
     elif current_acc >= prev_acc:
         notional_delta = max(current_acc - prev_acc, 0.0)
         if notional_delta <= 0:
-            notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+            notional_delta = max(float(trade_price) * 1e-8, 1e-8)
     else:
-        notional_delta = max(float(ticker.trade_price) * 1e-8, 1e-8)
+        notional_delta = max(float(trade_price) * 1e-8, 1e-8)
     acc_by_market[market] = float(current_acc)
-    volume = max(notional_delta / max(float(ticker.trade_price), 1e-8), 1e-12)
+    volume = max(notional_delta / max(float(trade_price), 1e-8), 1e-12)
     provider.ingest_trade(
         {
             "market": market,
             "ts_ms": int(ticker.ts_ms),
             "trade_ts_ms": int(ticker.ts_ms),
-            "price": float(ticker.trade_price),
+            "price": float(trade_price),
             "volume": float(volume),
             "ask_bid": "BID",
         }
@@ -1462,15 +1464,17 @@ def _ingest_live_micro_trade_event(
     event: TradeEvent,
 ) -> None:
     market = str(event.market).strip().upper()
-    if not market or float(event.trade_price) <= 0 or float(event.trade_volume) <= 0:
+    trade_price = _safe_optional_float(event.trade_price)
+    trade_volume = _safe_optional_float(event.trade_volume)
+    if not market or trade_price is None or trade_price <= 0 or trade_volume is None or trade_volume <= 0:
         return
     provider.ingest_trade(
         {
             "market": market,
             "ts_ms": int(event.ts_ms),
             "trade_ts_ms": int(event.ts_ms),
-            "price": float(event.trade_price),
-            "volume": float(event.trade_volume),
+            "price": float(trade_price),
+            "volume": float(trade_volume),
             "ask_bid": str(event.ask_bid).strip().upper(),
         }
     )

@@ -162,6 +162,14 @@ class _PublicWsClientWithMicro(_PublicWsClient):
         )
 
 
+class _CapturingMicroProvider:
+    def __init__(self) -> None:
+        self.trades: list[dict[str, object]] = []
+
+    def ingest_trade(self, payload):  # noqa: ANN201
+        self.trades.append(dict(payload))
+
+
 class _FlowPublicWsClient:
     async def stream_ticker(self, markets, duration_sec=None):  # noqa: ANN201
         _ = markets, duration_sec
@@ -476,6 +484,42 @@ def test_live_model_alpha_runtime_skips_lookup_failures_without_halting(
     assert intents
     assert intents[0]["status"] == "SKIPPED"
     assert intents[0]["meta"]["skip_reason"] == expected_reason
+
+
+def test_ingest_live_micro_trade_event_ignores_none_price() -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    provider = _CapturingMicroProvider()
+    runtime_module._ingest_live_micro_trade_event(
+        provider=provider,
+        event=TradeEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=None,  # type: ignore[arg-type]
+            trade_volume=0.01,
+            ask_bid="BID",
+            sequential_id=1,
+        ),
+    )
+
+    assert provider.trades == []
+
+
+def test_ingest_live_micro_from_ticker_ignores_none_trade_price() -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    provider = _CapturingMicroProvider()
+    runtime_module._ingest_live_micro_from_ticker(
+        provider=provider,  # type: ignore[arg-type]
+        ticker=TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=None,  # type: ignore[arg-type]
+            acc_trade_price_24h=1_000_000_000.0,
+        ),
+    )
+
+    assert provider.trades == []
 
 
 def test_live_model_alpha_runtime_canary_submits_when_armed(tmp_path: Path, monkeypatch) -> None:
