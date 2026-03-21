@@ -214,9 +214,9 @@ def _resolve_paper_runtime_env_model_overrides(
     resolved_model_family = str(model_family).strip() if model_family else None
     env_pinned_model_ref = str(os.getenv("AUTOBOT_PAPER_MODEL_REF_PINNED", "")).strip()
     env_runtime_model_family = str(os.getenv("AUTOBOT_RUNTIME_MODEL_FAMILY", "")).strip()
-    if not resolved_model_ref and env_pinned_model_ref:
+    if env_pinned_model_ref:
         resolved_model_ref = env_pinned_model_ref
-    if (resolved_model_family is None or resolved_model_family == "") and env_runtime_model_family:
+    if env_runtime_model_family:
         resolved_model_family = env_runtime_model_family
     return resolved_model_ref, resolved_model_family
 

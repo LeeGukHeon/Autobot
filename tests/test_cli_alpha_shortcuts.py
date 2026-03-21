@@ -126,6 +126,16 @@ def test_resolve_paper_runtime_env_model_overrides_uses_pinned_ref_from_env(monk
     assert model_family == "train_v4_crypto_cs"
 
 
+def test_resolve_paper_runtime_env_model_overrides_overrides_preset_ref(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOBOT_PAPER_MODEL_REF_PINNED", "20260320T180256Z-s42-8b956b2f")
+    monkeypatch.setenv("AUTOBOT_RUNTIME_MODEL_FAMILY", "train_v4_crypto_cs")
+
+    model_ref, model_family = _resolve_paper_runtime_env_model_overrides("champion_v4", "train_v4_crypto_cs")
+
+    assert model_ref == "20260320T180256Z-s42-8b956b2f"
+    assert model_family == "train_v4_crypto_cs"
+
+
 def test_resolve_v4_runtime_model_ref_fallback_uses_latest_candidate_when_champion_missing(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     family_dir = registry_root / "train_v4_crypto_cs"
