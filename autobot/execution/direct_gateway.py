@@ -24,6 +24,12 @@ def _format_decimal(value: float) -> str:
     return normalized or "0"
 
 
+def _format_optional_decimal(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return _format_decimal(float(value))
+
+
 def _optional_str(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -111,8 +117,8 @@ class DirectRestExecutionGateway:
                 market=intent.market,
                 side=intent.side,
                 ord_type=intent.ord_type,
-                price=_format_decimal(intent.price),
-                volume=_format_decimal(intent.volume),
+                price=_format_optional_decimal(intent.price),
+                volume=_format_optional_decimal(intent.volume),
                 time_in_force=intent.time_in_force,
                 identifier=identifier,
             )
