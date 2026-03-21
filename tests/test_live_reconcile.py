@@ -1903,3 +1903,102 @@ def test_reconcile_closes_exiting_position_when_exchange_position_is_missing_and
     assert plans[0]["state"] == "CLOSED"
     assert plans[0]["current_exit_order_uuid"] == "exit-order-kite"
     assert plans[0]["plan_source"] == "model_alpha_v1"
+
+
+def test_reconcile_closes_managed_position_from_verified_closed_journal_without_done_ask_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-NOM",
+                base_currency="NOM",
+                base_amount=844.90460992,
+                avg_entry_price=6.91,
+                updated_ts=5_000,
+                tp_json=json.dumps({"enabled": True, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": True, "source": "model_alpha_v1"}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-nom-1",
+                market="KRW-NOM",
+                side="long",
+                entry_price_str="6.91",
+                qty_str="844.90460992",
+                tp_enabled=True,
+                tp_pct=2.0,
+                sl_enabled=True,
+                sl_pct=1.0,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=5_000,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1_000,
+                updated_ts=5_000,
+                timeout_ts_ms=2_701_000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-nom-1",
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-nom-1",
+                market="KRW-NOM",
+                status="CLOSED",
+                entry_intent_id="intent-nom-1",
+                entry_order_uuid="entry-order-nom-1",
+                exit_order_uuid="exit-order-nom-1",
+                plan_id="model-risk-nom-1",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=2_000,
+                exit_ts_ms=4_000,
+                entry_price=6.91,
+                exit_price=6.88,
+                qty=844.90460992,
+                entry_notional_quote=5_841.2,
+                exit_notional_quote=5_810.0,
+                realized_pnl_quote=-31.2,
+                realized_pnl_pct=-0.53,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="PRIVATE_WS_ORDER_EVENT",
+                close_mode="managed_exit_order",
+                model_prob=0.79,
+                selection_policy_mode="rank_effective_quantile",
+                trade_action="risk",
+                expected_edge_bps=110.0,
+                expected_downside_bps=17.0,
+                expected_net_edge_bps=91.0,
+                notional_multiplier=1.5,
+                entry_meta_json=json.dumps({"runtime": {"live_runtime_model_run_id": "run-live"}}, ensure_ascii=False, sort_keys=True),
+                exit_meta_json=json.dumps({"close_verified": True, "order_identifier": "AUTOBOT-exit-nom-1"}, ensure_ascii=False, sort_keys=True),
+                updated_ts=4_000,
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=6_000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans(market="KRW-NOM")
+
+    assert report["halted"] is False
+    assert report["counts"]["local_positions_missing_on_exchange"] == 0
+    close_actions = [item for item in report["actions"] if item["type"] == "close_managed_position_from_bot_exit"]
+    assert len(close_actions) == 1
+    assert close_actions[0]["close_mode"] == "managed_exit_order"
+    assert positions == []
+    assert len(plans) == 1
+    assert plans[0]["state"] == "CLOSED"
+    assert plans[0]["current_exit_order_uuid"] == "exit-order-nom-1"

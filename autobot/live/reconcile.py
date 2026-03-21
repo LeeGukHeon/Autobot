@@ -264,6 +264,7 @@ def reconcile_exchange_snapshot(
         bot_id=bot_id,
         identifier_prefix=identifier_prefix,
     )
+    verified_closed_trade_by_market = _latest_verified_closed_trade_journal_by_market(store=store)
     unknown_position_markets = sorted(set(exchange_positions) - set(local_positions))
     local_positions_missing_on_exchange = sorted(set(local_positions) - set(exchange_positions))
     ignored_dust_positions: list[dict[str, Any]] = []
@@ -462,6 +463,7 @@ def reconcile_exchange_snapshot(
             market=market,
             local_position=local_position,
             latest_done_ask_order=done_ask_orders_by_market.get(market),
+            latest_verified_closed_trade=verified_closed_trade_by_market.get(market),
             active_live_plans=active_live_plans,
             exchange_bot_open_orders=exchange_bot_open_orders_by_market.get(market, []),
         )
@@ -1314,6 +1316,23 @@ def _latest_bot_done_ask_orders_by_market(
     return result
 
 
+def _latest_verified_closed_trade_journal_by_market(*, store: LiveStateStore) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in store.list_trade_journal(statuses=("CLOSED",)):
+        market = str(item.get("market", "")).strip().upper()
+        if not market:
+            continue
+        exit_meta = dict(item.get("exit_meta") or {})
+        if exit_meta.get("close_verified") is not True:
+            continue
+        existing = result.get(market)
+        if existing is None or int(item.get("exit_ts_ms") or item.get("updated_ts") or 0) > int(
+            existing.get("exit_ts_ms") or existing.get("updated_ts") or 0
+        ):
+            result[market] = item
+    return result
+
+
 def _match_model_managed_position_import(
     *,
     market: str,
@@ -1421,6 +1440,7 @@ def _match_model_managed_position_close(
     market: str,
     local_position: dict[str, Any],
     latest_done_ask_order: dict[str, Any] | None,
+    latest_verified_closed_trade: dict[str, Any] | None,
     active_live_plans: list[dict[str, Any]] | None,
     exchange_bot_open_orders: list[dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
@@ -1465,6 +1485,26 @@ def _match_model_managed_position_close(
                 "order_identifier": done_order_identifier,
                 "close_mode": "done_ask_order",
                 "plan_id": _as_optional_str((matched_active_plan or {}).get("plan_id")) or selected_plan_id,
+            }
+
+    if latest_verified_closed_trade is not None:
+        closed_plan_id = _as_optional_str(latest_verified_closed_trade.get("plan_id"))
+        matched_active_plan = next(
+            (
+                item
+                for item in active_live_plans or []
+                if closed_plan_id and closed_plan_id == _as_optional_str(item.get("plan_id"))
+            ),
+            None,
+        )
+        if matched_active_plan is not None or int(latest_verified_closed_trade.get("exit_ts_ms") or 0) >= int(local_position.get("updated_ts") or 0):
+            exit_meta = dict(latest_verified_closed_trade.get("exit_meta") or {})
+            return {
+                "market": market,
+                "order_uuid": _as_optional_str(latest_verified_closed_trade.get("exit_order_uuid")),
+                "order_identifier": _as_optional_str(exit_meta.get("order_identifier")),
+                "close_mode": _as_optional_str(latest_verified_closed_trade.get("close_mode")) or "managed_exit_order",
+                "plan_id": closed_plan_id or _as_optional_str((matched_active_plan or {}).get("plan_id")),
             }
 
     if exchange_bot_open_orders:
