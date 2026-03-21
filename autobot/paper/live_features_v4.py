@@ -24,7 +24,8 @@ from autobot.features.feature_set_v4 import (
 from autobot.strategy.micro_snapshot import MicroSnapshotProvider
 from autobot.upbit.ws.models import TickerEvent
 
-from .live_features_v3 import LiveFeatureProviderV3, _market_files, _resolve_dataset_path
+from .live_features_online_core import _market_files, _resolve_dataset_path
+from .live_features_v3 import LiveFeatureProviderV3
 
 
 class LiveFeatureProviderV4:
