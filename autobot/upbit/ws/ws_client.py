@@ -6,6 +6,7 @@ import asyncio
 import json
 import random
 import time
+import traceback
 import uuid
 from typing import Any, AsyncIterator, Sequence
 
@@ -26,6 +27,24 @@ class UpbitWebSocketPublicClient:
             per_second=settings.ratelimit.message_rps,
             per_minute=settings.ratelimit.message_rpm,
         )
+        self._stats: dict[str, Any] = {
+            "reconnect_count": 0,
+            "received_events": 0,
+            "last_event_ts_ms": None,
+            "last_event_latency_ms": None,
+            "last_reconnect_ts_ms": None,
+            "last_subscription_type": None,
+            "last_parser_name": None,
+            "last_payload_preview": None,
+            "last_malformed_payload_preview": None,
+            "last_malformed_parser": None,
+            "last_malformed_ts_ms": None,
+            "last_exception_traceback": None,
+        }
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        return dict(self._stats)
 
     async def stream_ticker(
         self,
@@ -176,6 +195,7 @@ class UpbitWebSocketPublicClient:
                     max_queue=1024,
                 ) as websocket:
                     attempt = 0
+                    self._stats["last_subscription_type"] = str(subscription_type)
                     await self._send_json(websocket, payload)
                     await self._recv_public_loop(
                         websocket=websocket,
@@ -186,6 +206,9 @@ class UpbitWebSocketPublicClient:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self._stats["last_exception_traceback"] = _preview_text(traceback.format_exc(), limit=3000)
+                self._stats["reconnect_count"] = int(self._stats["reconnect_count"]) + 1
+                self._stats["last_reconnect_ts_ms"] = int(time.time() * 1000)
                 if stop_event.is_set() or not self._settings.reconnect.enabled:
                     return
                 await asyncio.sleep(self._reconnect_delay_sec(attempt))
@@ -223,10 +246,23 @@ class UpbitWebSocketPublicClient:
             except json.JSONDecodeError:
                 continue
 
+            self._stats["last_parser_name"] = getattr(parser, "__name__", parser.__class__.__name__)
+            self._stats["last_payload_preview"] = _preview_text(_dump_preview(payload), limit=1200)
+
             event = parser(payload)
             if event is None:
+                self._stats["last_malformed_payload_preview"] = _preview_text(_dump_preview(payload), limit=1200)
+                self._stats["last_malformed_parser"] = getattr(parser, "__name__", parser.__class__.__name__)
+                self._stats["last_malformed_ts_ms"] = int(time.time() * 1000)
                 continue
             last_received = time.monotonic()
+            now_ms = int(time.time() * 1000)
+            event_ts_ms = getattr(event, "ts_ms", None)
+            self._stats["received_events"] = int(self._stats["received_events"]) + 1
+            self._stats["last_event_ts_ms"] = int(event_ts_ms) if event_ts_ms is not None else None
+            self._stats["last_event_latency_ms"] = (
+                max(now_ms - int(event_ts_ms), 0) if event_ts_ms is not None else None
+            )
             await queue.put(event)
 
     async def _send_json(self, websocket: Any, payload: Any) -> None:
@@ -266,3 +302,17 @@ def _normalize_codes(markets: Sequence[str]) -> tuple[str, ...]:
 def _chunk_codes(codes: Sequence[str], *, size: int) -> list[tuple[str, ...]]:
     chunk_size = max(int(size), 1)
     return [tuple(codes[idx : idx + chunk_size]) for idx in range(0, len(codes), chunk_size)]
+
+
+def _dump_preview(payload: Any) -> str:
+    try:
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return repr(payload)
+
+
+def _preview_text(value: str, *, limit: int) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= max(int(limit), 1):
+        return text
+    return text[: max(int(limit) - 1, 1)] + "…"

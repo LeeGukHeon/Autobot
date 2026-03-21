@@ -135,6 +135,16 @@ class _PublicWsClient:
             acc_trade_price_24h=10_000_000_000.0,
         )
 
+    @property
+    def stats(self):  # noqa: ANN201
+        return {
+            "reconnect_count": 0,
+            "received_events": 1,
+            "last_event_ts_ms": 1,
+            "last_event_latency_ms": 0,
+            "last_malformed_payload_preview": None,
+        }
+
 
 class _PublicWsClientWithMicro(_PublicWsClient):
     async def stream_trade(self, markets, duration_sec=None):  # noqa: ANN201
@@ -160,6 +170,25 @@ class _PublicWsClientWithMicro(_PublicWsClient):
                 OrderbookUnit(ask_price=50_002_000.0, ask_size=1.2, bid_price=49_998_000.0, bid_size=1.3),
             ),
         )
+
+
+class _FaultyPublicWsClient(_PublicWsClient):
+    @property
+    def stats(self):  # noqa: ANN201
+        return {
+            "reconnect_count": 0,
+            "received_events": 0,
+            "last_event_ts_ms": None,
+            "last_event_latency_ms": None,
+            "last_malformed_payload_preview": '{"tp":null,"atp24h":null}',
+            "last_malformed_parser": "parse_ticker_event",
+        }
+
+    async def stream_ticker(self, markets, duration_sec=None):  # noqa: ANN201
+        _ = markets, duration_sec
+        if False:
+            yield None
+        raise TypeError("float() argument must be a string or a real number, not 'NoneType'")
 
 
 class _CapturingMicroProvider:
@@ -484,6 +513,56 @@ def test_live_model_alpha_runtime_skips_lookup_failures_without_halting(
     assert intents
     assert intents[0]["status"] == "SKIPPED"
     assert intents[0]["meta"]["skip_reason"] == expected_reason
+
+
+def test_live_model_alpha_runtime_captures_public_ws_context_on_stream_failure(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="5000",
+                volume="1",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_FaultyPublicWsClient(),
+                settings=settings,
+                executor_gateway=None,
+            )
+        )
+
+    assert summary["halted"] is True
+    assert "LIVE_PUBLIC_WS_STREAM_FAILED" in summary["halted_reasons"]
+    assert "NoneType" in str(summary["stream_stop_reason"])
+    assert summary["stream_stop_traceback"]
+    assert summary["public_ws_stats"]["last_malformed_payload_preview"] == '{"tp":null,"atp24h":null}'
 
 
 def test_ingest_live_micro_trade_event_ignores_none_price() -> None:
