@@ -301,6 +301,7 @@ def _clear_runtime_recovery_reasons(
         reasons_to_clear.append("MODEL_POINTER_DIVERGENCE")
     if not bool(runtime_status.get("ws_public_stale")):
         reasons_to_clear.append("WS_PUBLIC_STALE")
+        reasons_to_clear.append("LIVE_PUBLIC_WS_STREAM_FAILED")
     clear_breaker_reasons(
         store,
         reason_codes=reasons_to_clear,
