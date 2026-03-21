@@ -70,6 +70,17 @@ def _init_live_db(path: Path) -> None:
                                 "reject_code": "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST",
                             }
                         },
+                        "execution_policy": {
+                            "selected_action_code": "LIMIT_GTC_PASSIVE_MAKER",
+                            "selected_ord_type": "limit",
+                            "selected_time_in_force": "gtc",
+                            "selected_price_mode": "PASSIVE_MAKER",
+                            "selected_p_fill_deadline": 0.5357,
+                            "selected_expected_shortfall_bps": 0.0,
+                            "selected_expected_time_to_first_fill_ms": 24489.2,
+                            "selected_utility_bps": 45.9,
+                            "status": "selected",
+                        },
                         "trade_gate": {
                             "reason_code": "ALLOW",
                         },
@@ -137,7 +148,18 @@ def _init_live_db(path: Path) -> None:
                                     "recommended_notional_multiplier": 1.2,
                                 }
                             }
-                        }
+                        },
+                        "execution_policy": {
+                            "selected_action_code": "LIMIT_GTC_PASSIVE_MAKER",
+                            "selected_ord_type": "limit",
+                            "selected_time_in_force": "gtc",
+                            "selected_price_mode": "PASSIVE_MAKER",
+                            "selected_p_fill_deadline": 0.5357,
+                            "selected_expected_shortfall_bps": 0.0,
+                            "selected_expected_time_to_first_fill_ms": 24489.2,
+                            "selected_utility_bps": 45.9,
+                            "status": "selected",
+                        },
                     },
                     ensure_ascii=False,
                 ),
@@ -377,9 +399,16 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     assert recent_intent["trade_action_expected_edge_bps"] == 123.0
     assert recent_intent["trade_action_expected_es_bps"] == pytest.approx(61.0)
     assert recent_intent["trade_action_decision_source"] == "continuous_conditional_action_value"
+    assert recent_intent["execution_selected_action_code"] == "LIMIT_GTC_PASSIVE_MAKER"
+    assert recent_intent["execution_selected_ord_type"] == "limit"
+    assert recent_intent["execution_selected_time_in_force"] == "gtc"
+    assert recent_intent["execution_selected_price_mode"] == "PASSIVE_MAKER"
+    assert recent_intent["execution_selected_utility_bps"] == pytest.approx(45.9)
     assert recent_intent["exit_recommendation_chosen_family"] == "hold"
     assert recent_intent["exit_recommendation_chosen_rule_id"] == "hold_h6"
     assert snapshot["live"]["states"][0]["recent_trades"][0]["exit_recommendation_chosen_family"] == "hold"
+    assert snapshot["live"]["states"][0]["recent_trades"][0]["entry_execution_selected_action_code"] == "LIMIT_GTC_PASSIVE_MAKER"
+    assert snapshot["live"]["states"][0]["recent_trades"][0]["entry_execution_selected_price_mode"] == "PASSIVE_MAKER"
     assert recent_intent["expected_net_edge_bps"] == 98.7
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 

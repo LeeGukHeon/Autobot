@@ -1174,6 +1174,7 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
     sizing = _dig(meta_dict, "admissibility", "sizing", default={}) or {}
     strategy_meta = _dig(meta_dict, "strategy", "meta", default={}) or {}
     trade_action = strategy_meta.get("trade_action") if isinstance(strategy_meta.get("trade_action"), dict) else {}
+    execution_policy = meta_dict.get("execution_policy") if isinstance(meta_dict.get("execution_policy"), dict) else {}
     exit_recommendation = (
         strategy_meta.get("exit_recommendation") if isinstance(strategy_meta.get("exit_recommendation"), dict) else {}
     )
@@ -1208,6 +1209,15 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "estimated_total_cost_bps": _coerce_float(admissibility.get("estimated_total_cost_bps")),
         "expected_net_edge_bps": _coerce_float(admissibility.get("expected_net_edge_bps")),
+        "execution_selected_action_code": execution_policy.get("selected_action_code"),
+        "execution_selected_ord_type": execution_policy.get("selected_ord_type"),
+        "execution_selected_time_in_force": execution_policy.get("selected_time_in_force"),
+        "execution_selected_price_mode": execution_policy.get("selected_price_mode"),
+        "execution_selected_p_fill_deadline": _coerce_float(execution_policy.get("selected_p_fill_deadline")),
+        "execution_selected_expected_shortfall_bps": _coerce_float(execution_policy.get("selected_expected_shortfall_bps")),
+        "execution_selected_expected_time_to_first_fill_ms": _coerce_float(execution_policy.get("selected_expected_time_to_first_fill_ms")),
+        "execution_selected_utility_bps": _coerce_float(execution_policy.get("selected_utility_bps")),
+        "execution_policy_status": execution_policy.get("status"),
         "trade_action_recommended_action": trade_action.get("recommended_action"),
         "trade_action_expected_edge_bps": _ratio_to_bps(trade_action.get("expected_edge")),
         "trade_action_expected_downside_bps": _ratio_to_bps(trade_action.get("expected_downside_deviation")),
@@ -1235,6 +1245,7 @@ def _summarize_live_intent(row: dict[str, Any]) -> dict[str, Any]:
 def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
     entry_meta = _normalize_json_text(row.get("entry_meta_json")) or {}
     trade_action = _dig(entry_meta, "strategy", "meta", "trade_action", default={}) or {}
+    execution_policy = entry_meta.get("execution_policy") if isinstance(entry_meta.get("execution_policy"), dict) else {}
     exit_recommendation = _dig(entry_meta, "strategy", "meta", "exit_recommendation", default={}) or {}
     exit_meta = _normalize_json_text(row.get("exit_meta_json")) or {}
     entry_ts_ms = _coerce_int(row.get("entry_filled_ts_ms")) or _coerce_int(row.get("entry_submitted_ts_ms"))
@@ -1295,6 +1306,15 @@ def _summarize_live_trade_journal(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "trade_action_tail_probability": _coerce_float(trade_action.get("expected_tail_probability")),
         "trade_action_decision_source": trade_action.get("decision_source") or trade_action.get("chosen_action_source"),
+        "entry_execution_selected_action_code": execution_policy.get("selected_action_code"),
+        "entry_execution_selected_ord_type": execution_policy.get("selected_ord_type"),
+        "entry_execution_selected_time_in_force": execution_policy.get("selected_time_in_force"),
+        "entry_execution_selected_price_mode": execution_policy.get("selected_price_mode"),
+        "entry_execution_selected_p_fill_deadline": _coerce_float(execution_policy.get("selected_p_fill_deadline")),
+        "entry_execution_selected_expected_shortfall_bps": _coerce_float(execution_policy.get("selected_expected_shortfall_bps")),
+        "entry_execution_selected_expected_time_to_first_fill_ms": _coerce_float(execution_policy.get("selected_expected_time_to_first_fill_ms")),
+        "entry_execution_selected_utility_bps": _coerce_float(execution_policy.get("selected_utility_bps")),
+        "entry_execution_policy_status": execution_policy.get("status"),
         "exit_recommendation_mode": exit_recommendation.get("recommended_exit_mode"),
         "exit_recommendation_chosen_family": exit_recommendation.get("chosen_family"),
         "exit_recommendation_chosen_rule_id": exit_recommendation.get("chosen_rule_id"),

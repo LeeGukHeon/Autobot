@@ -67,6 +67,20 @@
     bid: "매수",
     ask: "매도",
     limit: "지정가",
+    gtc: "일반 유지",
+    ioc: "즉시체결 잔량취소",
+    fok: "전량즉시체결",
+    post_only: "메이커 전용",
+    PASSIVE_MAKER: "패시브 메이커",
+    JOIN: "호가 합류",
+    CROSS_1T: "시장가성 진입",
+    LIMIT_GTC_PASSIVE_MAKER: "패시브 메이커 지정가",
+    LIMIT_POST_ONLY: "포스트온리 지정가",
+    LIMIT_GTC_JOIN: "합류 지정가",
+    LIMIT_IOC_JOIN: "합류 IOC 지정가",
+    LIMIT_FOK_JOIN: "합류 FOK 지정가",
+    BEST_IOC: "시장가성 IOC",
+    BEST_FOK: "시장가성 FOK",
     price: "시장가(금액)",
     market: "시장가",
     MODEL_ALPHA_ENTRY_V1: "진입",
@@ -490,6 +504,32 @@
     return `${translate(action)} 전략으로 판단했고, 기대 순엣지는 ${edge}, 예상 하방은 ${downside}, 예상 ES는 ${expectedEs}, 진입 금액 배수는 ${multiple}배로 계산됐습니다.`;
   }
 
+  function executionStyleLabel(item, prefix = "execution_") {
+    const action = item?.[`${prefix}selected_action_code`];
+    const ordType = item?.[`${prefix}selected_ord_type`];
+    const tif = item?.[`${prefix}selected_time_in_force`];
+    const priceMode = item?.[`${prefix}selected_price_mode`];
+    const status = item?.[`${prefix}policy_status`];
+    if (!action && !ordType && !priceMode) return "-";
+    const bits = [];
+    if (action) bits.push(translate(action));
+    if (priceMode) bits.push(translate(priceMode));
+    if (ordType) bits.push(translate(ordType));
+    if (tif) bits.push(translate(tif));
+    if (status) bits.push(`상태 ${translate(status)}`);
+    return bits.join(" · ") || "-";
+  }
+
+  function executionStyleSummary(item, prefix = "execution_") {
+    const label = executionStyleLabel(item, prefix);
+    if (label === "-") return "주문 방식 정보가 아직 없습니다.";
+    const utility = fmtBps(item?.[`${prefix}selected_utility_bps`]);
+    const shortfall = fmtBps(item?.[`${prefix}selected_expected_shortfall_bps`]);
+    const pFill = toNumber(item?.[`${prefix}selected_p_fill_deadline`]);
+    const fillText = pFill == null ? "-" : `${fmtNumber(pFill * 100, 1)}%`;
+    return `${label} 방식으로 판단했고, 예상 체결확률은 ${fillText}, 예상 shortfall은 ${shortfall}, 실행 utility는 ${utility}로 계산됐습니다.`;
+  }
+
   function intentNarrative(intent) {
     const market = intent.market || "이 종목";
     const side = translate(intent.side);
@@ -554,6 +594,8 @@
     else bits.push(translate(intent.status));
     if (toNumber(intent.expected_net_edge_bps) != null) bits.push(`순엣지 ${fmtBps(intent.expected_net_edge_bps)}`);
     if (intent.trade_action_recommended_action) bits.push(`액션 ${translate(intent.trade_action_recommended_action)}`);
+    const executionStyle = executionStyleLabel(intent);
+    if (executionStyle !== "-") bits.push(executionStyle);
     return bits.join(" · ");
   }
 
@@ -1481,6 +1523,18 @@
       `).join("")}</div>`
       : empty("미체결 주문이 없습니다.");
 
+    const intentSection = intents.length
+      ? `<div class="dense-list">${intents.slice(0, 4).map((intent) => compactRow({
+        title: `${intent.market || "-"} · ${translate(intent.side)} · ${translate(intent.status)}`,
+        summary: compactIntentSummary(intent),
+        items: [
+          compactStat("진입 근거", tradeActionSummary(intent)),
+          compactStat("주문 방식", executionStyleSummary(intent)),
+          compactStat("사유", translate(intent.reason_code)),
+        ],
+      })).join("")}</div>`
+      : empty("최근 진입 의도가 없습니다.");
+
     const tradeSection = recentTrades.length
       ? terminalTable(
         ["거래", "종료 시각", "보유 시간", "체결 확인", "순손익", "종료 방식"],
@@ -1503,7 +1557,10 @@
           return {
             rowClass: Number(trade.realized_pnl_quote || 0) > 0 ? "positive" : Number(trade.realized_pnl_quote || 0) < 0 ? "negative" : "",
             cells: [
-              cell(`${trade.market || "-"} · ${direction}`, `${translate(trade.entry_reason_code)} → ${translate(trade.close_reason_code)}`),
+              cell(
+                `${trade.market || "-"} · ${direction}`,
+                `${translate(trade.entry_reason_code)} → ${translate(trade.close_reason_code)} · ${executionStyleLabel(trade, "entry_execution_")}`
+              ),
               cell(fmtCompactDateTime(trade.exit_ts_ms)),
               cell(durationText),
               cell(verificationText),
@@ -1614,6 +1671,11 @@
             title: "주문 큐",
             copy: openOrders.length ? "" : "",
             body: orderSection
+          })}
+          ${surfaceCard({
+            title: "최근 진입 의도",
+            copy: "매수/매도 의도와 선택된 주문 방식",
+            body: intentSection
           })}
           ${surfaceCard({
             title: "카나리아 누적 분석",
