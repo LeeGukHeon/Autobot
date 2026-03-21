@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -24,7 +24,13 @@ from autobot.features.feature_set_v4 import (
 from autobot.strategy.micro_snapshot import MicroSnapshotProvider
 from autobot.upbit.ws.models import TickerEvent
 
-from .live_features_online_core import _market_files, _resolve_dataset_path
+from .live_features_online_core import _resolve_dataset_path
+from .live_features_v4_common import (
+    load_market_candles_merged,
+    project_requested_v4_columns,
+    resolve_ctrend_history_roots,
+    utc_day_start_ts_ms,
+)
 from .live_features_v3 import LiveFeatureProviderV3
 
 
@@ -55,7 +61,7 @@ class LiveFeatureProviderV4:
             parquet_root=self._parquet_root,
             dataset_name=self._candles_dataset_name,
         )
-        self._ctrend_history_roots = _resolve_ctrend_history_roots(
+        self._ctrend_history_roots = resolve_ctrend_history_roots(
             parquet_root=self._parquet_root,
             primary_root=self._primary_candles_root,
         )
@@ -119,7 +125,7 @@ class LiveFeatureProviderV4:
         )
         if self._ctrend_feature_columns:
             enriched = self._attach_ctrend_live_features(enriched)
-        final_frame, missing_columns = _project_requested_columns(
+        final_frame, missing_columns = project_requested_v4_columns(
             frame=enriched,
             feature_columns=self._feature_columns,
             extra_columns=self._extra_columns,
@@ -188,12 +194,12 @@ class LiveFeatureProviderV4:
             return self._ctrend_daily_cache[cache_key]
         start_date = join_date - timedelta(days=max(self._ctrend_history_lookback_days, 1))
         end_date = join_date
-        history = _load_market_candles_merged(
+        history = load_market_candles_merged(
             roots=self._ctrend_history_roots,
             market=cache_key[0],
             tf="5m",
-            start_ts_ms=_utc_day_start_ts_ms(start_date),
-            end_ts_ms=_utc_day_start_ts_ms(end_date + timedelta(days=1)),
+            start_ts_ms=utc_day_start_ts_ms(start_date),
+            end_ts_ms=utc_day_start_ts_ms(end_date + timedelta(days=1)),
         )
         if history.height <= 0:
             self._ctrend_daily_cache[cache_key] = None
@@ -209,137 +215,3 @@ class LiveFeatureProviderV4:
         payload = {name: row.get(name) for name in self._ctrend_feature_columns}
         self._ctrend_daily_cache[cache_key] = payload
         return payload
-
-
-def _project_requested_columns(
-    *,
-    frame: pl.DataFrame,
-    feature_columns: Sequence[str],
-    extra_columns: Sequence[str] = (),
-) -> tuple[pl.DataFrame, tuple[str, ...]]:
-    feature_col_set = {str(col) for col in feature_columns}
-    required_order = [
-        "ts_ms",
-        "market",
-        *[str(col) for col in extra_columns if str(col) != "close" and str(col) not in feature_col_set],
-        "close",
-        *list(feature_columns),
-    ]
-    working = frame
-    missing_columns: list[str] = []
-    if "ts_ms" not in working.columns:
-        working = working.with_columns(pl.lit(0, dtype=pl.Int64).alias("ts_ms"))
-    if "market" not in working.columns:
-        working = working.with_columns(pl.lit("", dtype=pl.Utf8).alias("market"))
-    if "close" not in working.columns:
-        working = working.with_columns(pl.lit(0.0, dtype=pl.Float32).alias("close"))
-    for name in extra_columns:
-        col_name = str(name).strip()
-        if not col_name or col_name == "close":
-            continue
-        if col_name not in working.columns:
-            working = working.with_columns(pl.lit(None, dtype=pl.Float64).alias(col_name))
-    for name in feature_columns:
-        if name in working.columns:
-            continue
-        missing_columns.append(str(name))
-    if missing_columns:
-        schema: dict[str, pl.DataType] = {}
-        for name in required_order:
-            if name in working.columns:
-                schema[name] = working.schema[name]
-            elif name == "ts_ms":
-                schema[name] = pl.Int64
-            elif name == "market":
-                schema[name] = pl.Utf8
-            else:
-                schema[name] = pl.Float32
-        return pl.DataFrame(schema=schema), tuple(missing_columns)
-    return working.select(required_order), tuple()
-
-
-def _resolve_ctrend_history_roots(*, parquet_root: Path, primary_root: Path) -> tuple[Path, ...]:
-    roots: list[Path] = []
-    fallback = parquet_root / "candles_v1"
-    if fallback.exists():
-        roots.append(fallback)
-    if primary_root not in roots:
-        roots.append(primary_root)
-    return tuple(roots)
-
-
-def _load_market_candles_merged(
-    *,
-    roots: Sequence[Path],
-    market: str,
-    tf: str,
-    start_ts_ms: int,
-    end_ts_ms: int,
-) -> pl.DataFrame:
-    frames: list[pl.DataFrame] = []
-    for root in roots:
-        if not root.exists():
-            continue
-        frame = _load_market_candles_window(
-            dataset_root=root,
-            market=market,
-            tf=tf,
-            start_ts_ms=start_ts_ms,
-            end_ts_ms=end_ts_ms,
-        )
-        if frame.height > 0:
-            frames.append(frame)
-    if not frames:
-        return pl.DataFrame(
-            schema={
-                "ts_ms": pl.Int64,
-                "open": pl.Float64,
-                "high": pl.Float64,
-                "low": pl.Float64,
-                "close": pl.Float64,
-                "volume_base": pl.Float64,
-                "market": pl.Utf8,
-            }
-        )
-    merged = pl.concat(frames, how="vertical_relaxed").sort("ts_ms")
-    return merged.unique(subset=["ts_ms"], keep="last", maintain_order=True)
-
-
-def _load_market_candles_window(
-    *,
-    dataset_root: Path,
-    market: str,
-    tf: str,
-    start_ts_ms: int,
-    end_ts_ms: int,
-) -> pl.DataFrame:
-    files = _market_files(dataset_root=dataset_root, tf=tf, market=market)
-    if not files:
-        return pl.DataFrame()
-    try:
-        return (
-            pl.scan_parquet([str(path) for path in files])
-            .select(
-                [
-                    pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
-                    pl.col("open").cast(pl.Float64).alias("open"),
-                    pl.col("high").cast(pl.Float64).alias("high"),
-                    pl.col("low").cast(pl.Float64).alias("low"),
-                    pl.col("close").cast(pl.Float64).alias("close"),
-                    pl.col("volume_base").cast(pl.Float64).alias("volume_base"),
-                ]
-            )
-            .filter(
-                (pl.col("ts_ms") >= int(start_ts_ms))
-                & (pl.col("ts_ms") < int(end_ts_ms))
-            )
-            .sort("ts_ms")
-            .collect()
-            .with_columns(pl.lit(str(market).strip().upper(), dtype=pl.Utf8).alias("market"))
-        )
-    except Exception:
-        return pl.DataFrame()
-
-
-def _utc_day_start_ts_ms(day: date) -> int:
-    return int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000)

@@ -27,6 +27,7 @@ from autobot.paper.engine import (
 )
 from autobot.paper.live_features_v3 import LiveFeatureProviderV3
 from autobot.paper.live_features_v4 import LiveFeatureProviderV4
+from autobot.paper.live_features_v4_native import LiveFeatureProviderV4Native
 from autobot.risk.live_risk_manager import LiveRiskManager
 from autobot.risk.models import RiskManagerConfig
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
@@ -703,6 +704,7 @@ def _build_live_feature_provider(
         resolve_model_alpha_runtime_row_columns_fn=resolve_model_alpha_runtime_row_columns,
         live_feature_provider_v3_cls=LiveFeatureProviderV3,
         live_feature_provider_v4_cls=LiveFeatureProviderV4,
+        live_feature_provider_v4_native_cls=LiveFeatureProviderV4Native,
     )
 
 

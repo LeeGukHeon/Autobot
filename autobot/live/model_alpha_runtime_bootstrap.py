@@ -46,8 +46,10 @@ def build_live_feature_provider(
     resolve_model_alpha_runtime_row_columns_fn: Callable[..., tuple[str, ...]],
     live_feature_provider_v3_cls: type,
     live_feature_provider_v4_cls: type,
+    live_feature_provider_v4_native_cls: type | None = None,
 ) -> Any:
     feature_set = str(settings.model_alpha.feature_set).strip().lower() or "v4"
+    provider_mode = str(getattr(settings, "paper_feature_provider", "") or "").strip().upper()
     common_kwargs = {
         "feature_columns": predictor.feature_columns,
         "extra_columns": resolve_model_alpha_runtime_row_columns_fn(predictor=predictor),
@@ -59,6 +61,10 @@ def build_live_feature_provider(
         "candles_dataset_name": str(settings.paper_live_candles_dataset),
         "bootstrap_1m_bars": int(settings.paper_live_bootstrap_1m_bars),
     }
+    if feature_set == "v4" and provider_mode in {"LIVE_V4_NATIVE", "V4_NATIVE", "NATIVE_V4"}:
+        if live_feature_provider_v4_native_cls is None:
+            raise ValueError("runtime LIVE_V4_NATIVE provider requested without native provider class")
+        return live_feature_provider_v4_native_cls(**common_kwargs)
     if feature_set == "v4":
         return live_feature_provider_v4_cls(**common_kwargs)
     return live_feature_provider_v3_cls(**common_kwargs)
