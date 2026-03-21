@@ -1886,7 +1886,7 @@
       acc[key].push(item);
       return acc;
     }, {});
-    const categoryOrder = ["services", "pipeline", "binding", "other"];
+    const categoryOrder = ["services", "pipeline", "binding", "recovery", "other"];
     document.getElementById("ops-actions").innerHTML = actions.length
       ? categoryOrder
         .filter((key) => Array.isArray(grouped[key]) && grouped[key].length)
