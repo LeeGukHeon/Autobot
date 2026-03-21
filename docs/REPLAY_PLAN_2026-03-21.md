@@ -136,3 +136,82 @@ Use this branch/worktree to replay the bugfix bundle above and compare:
 - candidate runtime profitability
 
 against current `main`.
+
+## 9. Current Replay Status
+
+The replay branch has already reapplied the following commits:
+
+- `01d65cd` Fix backtest execution contract snapshot init
+- `ac596be` Skip execution contract when learned execution is off
+- `6f620d9` Use runtime parity for certification backtests
+- `3341c3b` Rebuild live micro state during execution backfill
+- `57bf5c8` Ignore malformed public ws micro events
+- `3c806e1` Guard malformed public ticker events
+- `45b9191` Capture public ws malformed payload context
+- `ed817bd` Auto-clear recovered stuck risk exit breaker
+- `7848e90` Use verified close evidence in reconcile
+- `04b9b70` Normalize live pnl pct for online risk control
+- `4ae35a3` Recover stale live public ws breaker
+- `80954f1` Handle best orders in direct gateway
+- `c2d1980` Audit live runtime state machine regressions
+
+Additional replay-only support commits:
+
+- `6932195` Add replay plan for pre-refactor branch
+- `3b672f4` Replay certification preset and trailing exit fixes
+- `78614ec` Restore data support surface for replay branch
+
+## 10. Validation Run On Replay Branch
+
+Validated successfully on `replay/pre_refactor_627dacf`:
+
+```powershell
+python -m pytest -q tests/test_backtest_model_alpha_integration.py tests/test_paper_engine_model_alpha_integration.py tests/test_candidate_acceptance_certification_lane.py tests/test_execution_attempts_backfill.py
+```
+
+- result: `66 passed`
+
+```powershell
+python -m pytest -q tests/test_live_model_alpha_runtime.py tests/test_live_public_ticker_guards.py tests/test_live_rollout.py
+```
+
+- result: `71 passed`
+
+```powershell
+python -m pytest -q tests/test_live_daemon.py tests/test_live_breakers.py tests/test_live_risk_manager.py tests/test_daily_champion_challenger_spawn_handling.py tests/test_t23_2_server_script_contracts.py tests/test_dashboard_server.py
+```
+
+- result: `90 passed`
+
+```powershell
+python -m pytest -q tests/test_live_model_alpha_runtime.py tests/test_live_rollout.py tests/test_live_reconcile.py tests/test_direct_execution_gateway.py tests/test_live_public_ticker_guards.py tests/test_backtest_model_alpha_integration.py tests/test_paper_engine_model_alpha_integration.py tests/test_candidate_acceptance_certification_lane.py tests/test_execution_attempts_backfill.py
+```
+
+- result: `175 passed`
+
+## 11. Replay Branch Caveat
+
+`627dacf` did not contain a fully tracked `autobot.data` support surface in git.
+
+To make this replay branch boot and test correctly, the following support files had to be restored into the branch:
+
+- `autobot/data/__init__.py`
+- `autobot/data/column_mapper.py`
+- `autobot/data/duckdb_utils.py`
+- `autobot/data/filename_parser.py`
+- `autobot/data/ingest_csv_to_parquet.py`
+- `autobot/data/inventory.py`
+- `autobot/data/manifest.py`
+- `autobot/data/schema_contract.py`
+
+This means the replay branch is currently a practical validation branch, not yet a historically pure reconstruction.
+
+## 12. Next Recommended Step
+
+The next useful action is not more blind cherry-picking.
+
+It is one of:
+
+1. run local live/paper smoke commands on this replay branch
+2. deploy the replay branch to an isolated server path and compare breaker frequency versus `main`
+3. replay a smaller optional group only after smoke results look better than `main`
