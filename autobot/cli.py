@@ -924,7 +924,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_run_parser.add_argument(
         "--paper-feature-provider",
-        choices=("offline_parquet", "live_v3", "live_v4"),
+        choices=("offline_parquet", "live_v3", "live_v4", "live_v4_native"),
         help="Paper feature provider selection for model_alpha_v1.",
     )
     paper_alpha_parser = paper_subparsers.add_parser(
@@ -933,9 +933,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_alpha_parser.add_argument(
         "--preset",
-        choices=("live_v3", "live_v4", "candidate_v4", "offline", "offline_v4", "default"),
+        choices=("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline", "offline_v4", "default"),
         default=DEFAULT_PAPER_ALPHA_PRESET,
-        help="Shortcut preset. default=config-driven, live_v3/live_v4 use live providers, offline variants use parquet providers. Current default rollout is live_v4.",
+        help="Shortcut preset. default=config-driven, live_v3/live_v4/live_v4_native use live providers, offline variants use parquet providers. Current default rollout is live_v4.",
     )
     paper_alpha_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
     paper_alpha_parser.add_argument("--quote", help="Quote currency, ex: KRW")
@@ -968,7 +968,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_alpha_parser.add_argument(
         "--paper-feature-provider",
-        choices=("offline_parquet", "live_v3", "live_v4"),
+        choices=("offline_parquet", "live_v3", "live_v4", "live_v4_native"),
         help="Optional provider override on top of preset.",
     )
     paper_alpha_parser.add_argument("--paper-micro-warmup-sec", type=int)

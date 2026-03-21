@@ -57,6 +57,24 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
             }
         )
         return overrides
+    if name in {"live_v4_native", "v4_native", "native_v4"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_V4_RUNTIME_REF,
+                "model_family": "train_v4_crypto_cs",
+                "top_pct": 0.50,
+                "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
+                "paper_feature_provider": "live_v4_native",
+                "paper_micro_provider": "live_ws",
+                "micro_gate": "off",
+                "micro_order_policy": "on",
+                "micro_order_policy_mode": "trade_only",
+                "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
     if name in {"candidate_v4", "live_candidate_v4"}:
         overrides.update(
             {

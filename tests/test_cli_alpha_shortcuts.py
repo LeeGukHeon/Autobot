@@ -166,6 +166,49 @@ def test_normalize_paper_alpha_args_uses_live_v4_preset_defaults() -> None:
     assert normalized.paper_micro_provider == "live_ws"
 
 
+def test_normalize_paper_alpha_args_uses_live_v4_native_preset_defaults() -> None:
+    args = argparse.Namespace(
+        paper_command="alpha",
+        preset="live_v4_native",
+        duration_sec=600,
+        quote=None,
+        top_n=None,
+        tf=None,
+        model_ref=None,
+        model_family=None,
+        feature_set=None,
+        top_pct=None,
+        min_prob=None,
+        min_cands_per_ts=None,
+        max_positions_total=None,
+        cooldown_bars=None,
+        exit_mode=None,
+        hold_bars=None,
+        tp_pct=None,
+        sl_pct=None,
+        trailing_pct=None,
+        execution_price_mode=None,
+        execution_timeout_bars=None,
+        execution_replace_max=None,
+        print_every_sec=None,
+        starting_krw=None,
+        per_trade_krw=None,
+        max_positions=None,
+        paper_micro_provider=None,
+        paper_micro_warmup_sec=None,
+        paper_micro_warmup_min_trade_events_per_market=None,
+        paper_feature_provider=None,
+    )
+    normalized = _normalize_paper_alpha_args(args)
+    assert normalized.paper_command == "run"
+    assert normalized.strategy == "model_alpha_v1"
+    assert normalized.feature_set == "v4"
+    assert normalized.model_ref == "champion_v4"
+    assert normalized.model_family == "train_v4_crypto_cs"
+    assert normalized.paper_feature_provider == "live_v4_native"
+    assert normalized.paper_micro_provider == "live_ws"
+
+
 def test_resolve_paper_runtime_env_model_overrides_uses_pinned_ref_from_env(monkeypatch) -> None:
     monkeypatch.setenv("AUTOBOT_PAPER_MODEL_REF_PINNED", "20260320T180256Z-s42-8b956b2f")
     monkeypatch.setenv("AUTOBOT_RUNTIME_MODEL_FAMILY", "train_v4_crypto_cs")
