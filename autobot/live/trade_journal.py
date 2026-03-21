@@ -1196,6 +1196,7 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
     strategy = dict(payload.get("strategy") or {}) if isinstance(payload.get("strategy"), dict) else {}
     strategy_meta = dict(strategy.get("meta") or {}) if isinstance(strategy.get("meta"), dict) else {}
     trade_action = dict(strategy_meta.get("trade_action") or {}) if isinstance(strategy_meta.get("trade_action"), dict) else {}
+    state_features = dict(strategy_meta.get("state_features") or {}) if isinstance(strategy_meta.get("state_features"), dict) else {}
     exit_recommendation = (
         dict(strategy_meta.get("exit_recommendation") or {})
         if isinstance(strategy_meta.get("exit_recommendation"), dict)
@@ -1229,6 +1230,15 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                 "selection_policy_mode": strategy_meta.get("selection_policy_mode"),
                 "notional_multiplier": strategy_meta.get("notional_multiplier"),
                 "notional_multiplier_source": strategy_meta.get("notional_multiplier_source"),
+                "state_features": {
+                    "rv_12": state_features.get("rv_12"),
+                    "rv_36": state_features.get("rv_36"),
+                    "atr_pct_14": state_features.get("atr_pct_14"),
+                    "m_trade_coverage_ms": state_features.get("m_trade_coverage_ms"),
+                    "m_book_coverage_ms": state_features.get("m_book_coverage_ms"),
+                    "m_spread_proxy": state_features.get("m_spread_proxy"),
+                    "m_depth_top5_notional_krw": state_features.get("m_depth_top5_notional_krw"),
+                },
                 "trade_action": {
                     "recommended_action": trade_action.get("recommended_action"),
                     "expected_edge": trade_action.get("expected_edge"),
@@ -1253,6 +1263,8 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                         else trade_action.get("chosen_action_source")
                     ),
                     "recommended_notional_multiplier": trade_action.get("recommended_notional_multiplier"),
+                    "support_level": trade_action.get("support_level"),
+                    "support_reason_code": trade_action.get("support_reason_code"),
                 },
                 "exit_recommendation": {
                     "recommended_exit_mode": exit_recommendation.get("recommended_exit_mode"),

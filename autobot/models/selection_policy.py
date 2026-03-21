@@ -17,13 +17,15 @@ def build_selection_policy_from_recommendations(
     *,
     selection_recommendations: dict[str, Any] | None,
     fallback_threshold_key: str = _DEFAULT_THRESHOLD_KEY,
+    forced_threshold_key: str | None = None,
 ) -> dict[str, Any]:
     recommendations = dict(selection_recommendations or {})
     by_key = recommendations.get("by_threshold_key")
     if not isinstance(by_key, dict) or not by_key:
         return _fallback_policy(threshold_key=fallback_threshold_key, source="manual_fallback")
 
-    requested_key = str(recommendations.get("recommended_threshold_key", "")).strip()
+    forced_key = str(forced_threshold_key or "").strip()
+    requested_key = forced_key or str(recommendations.get("recommended_threshold_key", "")).strip()
     threshold_key = (
         requested_key
         if requested_key and isinstance(by_key.get(requested_key), dict)
@@ -64,7 +66,8 @@ def build_selection_policy_from_recommendations(
         "eligible_ratio": float(eligible_ratio),
         "selection_fraction_source": "eligible_ratio_x_recommended_top_pct",
         "selection_recommendation_source": str(
-            entry.get("recommendation_source")
+            (f"forced_threshold_key:{threshold_key}" if forced_key and threshold_key == forced_key else "")
+            or entry.get("recommendation_source")
             or recommendations.get("recommended_threshold_key_source")
             or "manual_fallback"
         ),
@@ -75,6 +78,7 @@ def build_selection_policy_from_recommendations(
         "window_count": _coerce_int(entry.get("window_count"), default=0),
         "selected_rows_mean": _safe_optional_float(entry.get("selected_rows_mean")),
         "fallback_used": bool(entry.get("fallback_used", False)),
+        "forced_threshold_key": forced_key if forced_key and threshold_key == forced_key else "",
     }
 
 

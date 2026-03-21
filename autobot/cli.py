@@ -701,6 +701,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="v4 factor block selector mode: off|report_only|use_latest|guarded_auto.",
     )
     model_train_parser.add_argument(
+        "--selection-threshold-key-override",
+        choices=("top_1pct", "top_5pct", "top_10pct", "ev_opt"),
+        help="Force trainer=v4_crypto_cs selection policy to a specific threshold key instead of the learned recommendation.",
+    )
+    model_train_parser.add_argument(
         "--live-domain-reweighting",
         action="store_true",
         help="Enable candidate live intent covariate reweighting for trainer=v4_crypto_cs.",

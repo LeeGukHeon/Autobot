@@ -24,6 +24,15 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
                 "model_prob": 0.91,
                 "selection_policy_mode": "rank_effective_quantile",
                 "notional_multiplier": 1.2,
+                "state_features": {
+                    "rv_12": 0.12,
+                    "rv_36": 0.34,
+                    "atr_pct_14": 0.015,
+                    "m_trade_coverage_ms": 42000,
+                    "m_book_coverage_ms": 51000,
+                    "m_spread_proxy": 12.5,
+                    "m_depth_top5_notional_krw": 12345678.0,
+                },
                 "model_exit_plan": {
                     "expected_exit_fee_rate": 0.0005,
                     "expected_exit_slippage_bps": 2.5,
@@ -48,6 +57,8 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
                     "expected_action_value": 1.7,
                     "decision_source": "continuous_conditional_action_value",
                     "recommended_notional_multiplier": 1.2,
+                    "support_level": "full",
+                    "support_reason_code": None,
                 },
             }
         },
@@ -187,6 +198,10 @@ def test_trade_journal_tracks_submitted_open_and_closed_trade(tmp_path) -> None:
     assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["expected_es"] == 0.0061
     assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["expected_ctm"] == 0.000041
     assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["decision_source"] == "continuous_conditional_action_value"
+    assert row["entry_meta"]["strategy"]["meta"]["trade_action"]["support_level"] == "full"
+    assert row["entry_meta"]["strategy"]["meta"]["state_features"]["rv_12"] == 0.12
+    assert row["entry_meta"]["strategy"]["meta"]["state_features"]["rv_36"] == 0.34
+    assert row["entry_meta"]["strategy"]["meta"]["state_features"]["atr_pct_14"] == 0.015
     assert row["entry_meta"]["strategy"]["meta"]["exit_recommendation"]["chosen_family"] == "risk"
     assert row["entry_meta"]["strategy"]["meta"]["exit_recommendation"]["chosen_rule_id"] == "risk_h6_rv_36_tp2p5_sl1p5_tr0p75"
     assert row["exit_meta"]["gross_pnl_quote"] == pytest.approx(3.0)

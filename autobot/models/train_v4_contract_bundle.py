@@ -66,6 +66,7 @@ def build_v4_contract_bundle(
     selection_policy = build_selection_policy_from_recommendations(
         selection_recommendations=selection_recommendations,
         fallback_threshold_key="top_5pct",
+        forced_threshold_key=getattr(options, "selection_threshold_key_override", None),
     )
     selection_calibration = build_selection_calibration_from_oos_rows(
         oos_rows=walk_forward.pop("_selection_calibration_rows", []),

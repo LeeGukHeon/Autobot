@@ -157,6 +157,7 @@ class TrainV4CryptoCsOptions:
     cpcv_lite_min_train_rows: int = 1_000
     cpcv_lite_min_test_rows: int = 200
     factor_block_selection_mode: str = "guarded_auto"
+    selection_threshold_key_override: str | None = None
     multiple_testing_alpha: float = 0.20
     multiple_testing_bootstrap_iters: int = 500
     multiple_testing_block_length: int = 0

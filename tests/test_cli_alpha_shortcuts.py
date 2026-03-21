@@ -243,6 +243,28 @@ def test_build_parser_supports_backtest_alpha_shortcut() -> None:
     assert args.preset == "default"
 
 
+def test_build_parser_supports_v4_selection_threshold_override() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "model",
+            "train",
+            "--trainer",
+            "v4_crypto_cs",
+            "--feature-set",
+            "v4",
+            "--label-set",
+            "v2",
+            "--selection-threshold-key-override",
+            "ev_opt",
+        ]
+    )
+
+    assert args.command == "model"
+    assert args.model_command == "train"
+    assert args.selection_threshold_key_override == "ev_opt"
+
+
 def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> None:
     args = argparse.Namespace(
         backtest_command="alpha",
