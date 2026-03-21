@@ -6,7 +6,15 @@ import time
 
 import pytest
 
-from autobot.dashboard_server import _json_response, _load_dashboard_asset, _unit_snapshot, build_dashboard_snapshot
+from autobot.dashboard_server import (
+    _execute_dashboard_operation,
+    _json_response,
+    _load_dashboard_asset,
+    _unit_snapshot,
+    build_dashboard_snapshot,
+)
+from autobot.live.breakers import ACTION_HALT_NEW_INTENTS, arm_breaker
+from autobot.live.state_store import LiveStateStore
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -1069,3 +1077,35 @@ def test_build_dashboard_snapshot_enables_ops_when_token_present(tmp_path: Path,
     assert snapshot["operations"]["enabled"] is True
     assert snapshot["operations"]["token_required"] is True
     assert snapshot["operations"]["actions"]
+
+
+def test_build_dashboard_snapshot_exposes_breaker_clear_ops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_ENABLED", "true")
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_TOKEN", "secret-token")
+    snapshot = build_dashboard_snapshot(tmp_path)
+
+    action_ids = {item["id"] for item in snapshot["operations"]["actions"]}
+    assert "clear_canary_breaker" in action_ids
+    assert "clear_live_main_breaker" in action_ids
+
+
+def test_execute_dashboard_operation_clear_canary_breaker(tmp_path: Path) -> None:
+    db_path = tmp_path / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+    with LiveStateStore(db_path) as store:
+        arm_breaker(
+            store,
+            reason_codes=["MANUAL_KILL_SWITCH"],
+            source="test",
+            ts_ms=1000,
+            action=ACTION_HALT_NEW_INTENTS,
+        )
+
+    result = _execute_dashboard_operation(tmp_path, "clear_canary_breaker")
+
+    with LiveStateStore(db_path) as store:
+        status = store.breaker_state(breaker_key="live")
+
+    assert result["success"] is True
+    assert status is not None
+    assert bool(status["active"]) is False

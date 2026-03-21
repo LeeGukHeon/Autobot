@@ -21,7 +21,9 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
+from autobot.live.breakers import breaker_status, clear_breaker
 from autobot.live.order_state import is_open_local_state, normalize_order_state
+from autobot.live.state_store import LiveStateStore
 from autobot.live.candidate_canary_report import build_candidate_canary_report
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.upbit.config import load_upbit_settings, require_upbit_credentials
@@ -2122,6 +2124,17 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
         },
+        "clear_canary_breaker": {
+            "id": "clear_canary_breaker",
+            "label": "Canary Breaker Clear",
+            "description": "candidate live breaker state clear",
+            "category": "recovery",
+            "confirm": "移대굹由ъ븘(candidate) live breaker瑜?吏湲??댁젣?좉퉴??",
+            "kind": "clear_breaker",
+            "db_rel_path": "data/state/live_candidate/live_state.db",
+            "source": "dashboard_ops_clear_canary_breaker",
+            "note": "dashboard ops clear canary breaker",
+        },
         "try_restart_live_main": {
             "id": "try_restart_live_main",
             "label": "Main Live Try-Restart",
@@ -2130,6 +2143,17 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "confirm": "메인 live 서비스를 try-restart 할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "try-restart", "autobot-live-alpha.service"],
+        },
+        "clear_live_main_breaker": {
+            "id": "clear_live_main_breaker",
+            "label": "Main Live Breaker Clear",
+            "description": "main live breaker state clear",
+            "category": "recovery",
+            "confirm": "硫붿씤 live breaker瑜?吏湲??댁젣?좉퉴??",
+            "kind": "clear_breaker",
+            "db_rel_path": "data/state/live_state.db",
+            "source": "dashboard_ops_clear_live_main_breaker",
+            "note": "dashboard ops clear main live breaker",
         },
         "restart_ws_public": {
             "id": "restart_ws_public",
@@ -2288,6 +2312,61 @@ def _run_adopt_latest_candidate(project_root: Path, run_id: str) -> dict[str, An
     }
 
 
+def _run_clear_live_breaker(
+    project_root: Path,
+    *,
+    db_rel_path: str,
+    source: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    started_at = _utc_now_iso()
+    db_path = (project_root / str(db_rel_path).strip()).resolve()
+    if not db_path.exists():
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 1,
+            "stdout_preview": "",
+            "stderr_preview": f"live state db not found: {db_path}",
+            "success": False,
+        }
+    try:
+        with LiveStateStore(db_path) as store:
+            clear_breaker(
+                store,
+                source=str(source).strip() or "dashboard_ops_clear_breaker",
+                ts_ms=int(time.time() * 1000),
+                details={"note": note},
+            )
+            status_payload = breaker_status(store)
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 0,
+            "stdout_preview": _preview_text(
+                json.dumps(
+                    {
+                        "db_path": str(db_path),
+                        "breaker_active": bool(status_payload.get("active")),
+                        "reason_codes": list(status_payload.get("reason_codes") or []),
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+            "stderr_preview": "",
+            "success": True,
+        }
+    except Exception as exc:
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 1,
+            "stdout_preview": "",
+            "stderr_preview": _preview_text(str(exc)),
+            "success": False,
+        }
+
+
 def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str, Any]:
     catalog = _dashboard_ops_catalog(project_root)
     action = catalog.get(str(action_id).strip())
@@ -2306,6 +2385,13 @@ def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str
     try:
         if action.get("kind") == "adopt_latest_candidate":
             result = _run_adopt_latest_candidate(project_root, str(action.get("run_id") or ""))
+        elif action.get("kind") == "clear_breaker":
+            result = _run_clear_live_breaker(
+                project_root,
+                db_rel_path=str(action.get("db_rel_path") or ""),
+                source=str(action.get("source") or "dashboard_ops_clear_breaker"),
+                note=str(action.get("note") or "").strip() or None,
+            )
         else:
             result = _run_dashboard_command(list(action.get("command") or []), timeout_sec=20)
         record = {

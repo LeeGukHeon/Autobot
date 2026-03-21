@@ -141,12 +141,28 @@
         "candidate DB의 rollout gate와 breaker 상태를 다시 계산합니다.",
       ],
     },
+    clear_canary_breaker: {
+      label: "카나리아 브레이커 해제",
+      description: "candidate live DB의 persistent breaker 상태를 지웁니다.",
+      procedure: [
+        "data/state/live_candidate/live_state.db의 live breaker state를 clear합니다.",
+        "서비스 재시작 없이 새 진입 차단 상태만 즉시 해제합니다.",
+      ],
+    },
     try_restart_live_main: {
       label: "메인 라이브 try-restart",
       description: "메인 live가 실행 중일 때만 재시작합니다.",
       procedure: [
         "autobot-live-alpha.service가 active면 재시작합니다.",
         "비활성 상태면 아무 작업도 하지 않습니다.",
+      ],
+    },
+    clear_live_main_breaker: {
+      label: "메인 라이브 브레이커 해제",
+      description: "메인 live DB의 persistent breaker 상태를 지웁니다.",
+      procedure: [
+        "data/state/live_state.db의 live breaker state를 clear합니다.",
+        "서비스 재시작 없이 메인 live의 새 진입 차단 상태만 즉시 해제합니다.",
       ],
     },
     restart_ws_public: {
@@ -703,6 +719,7 @@
     if (key === "services") return "서비스 제어";
     if (key === "pipeline") return "파이프라인 실행";
     if (key === "binding") return "런 바인딩";
+    if (key === "recovery") return "복구 / 브레이커";
     return "기타";
   }
 
