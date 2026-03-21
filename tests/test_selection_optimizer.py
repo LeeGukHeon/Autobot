@@ -155,3 +155,66 @@ def test_build_selection_recommendations_from_walk_forward_falls_back_without_wi
     assert entry["fallback_used"] is True
     assert entry["recommendation_source"] == "fallback_heuristic"
     assert doc["recommended_threshold_key"] == "top_5pct"
+
+
+def test_build_selection_recommendations_from_walk_forward_prefers_feasible_threshold_over_higher_objective() -> None:
+    fallback = {
+        "version": 1,
+        "by_threshold_key": {
+            "top_1pct": {
+                "threshold": 0.99,
+                "recommended_top_pct": 1.0,
+                "recommended_min_candidates_per_ts": 1,
+            },
+            "ev_opt": {
+                "threshold": 0.77,
+                "recommended_top_pct": 1.0,
+                "recommended_min_candidates_per_ts": 1,
+            },
+        },
+    }
+    windows = [
+        {
+            "selection_optimization": {
+                "comparable": True,
+                "by_threshold_key": {
+                    "top_1pct": {
+                        "grid_results": [
+                            {
+                                "top_pct": 1.0,
+                                "min_candidates_per_ts": 1,
+                                "selected_rows": 2,
+                                "active_ts_ratio": 0.01,
+                                "positive_active_ts_ratio": 0.70,
+                                "ev_net": 0.020,
+                                "feasible": False,
+                                "constraint_reasons": ["LOW_ACTIVE_TS_RATIO"],
+                            }
+                        ]
+                    },
+                    "ev_opt": {
+                        "grid_results": [
+                            {
+                                "top_pct": 1.0,
+                                "min_candidates_per_ts": 1,
+                                "selected_rows": 20,
+                                "active_ts_ratio": 0.60,
+                                "positive_active_ts_ratio": 0.65,
+                                "ev_net": 0.015,
+                                "feasible": True,
+                                "constraint_reasons": [],
+                            }
+                        ]
+                    },
+                },
+            }
+        }
+    ]
+
+    doc = build_selection_recommendations_from_walk_forward(
+        windows=windows,
+        fallback_recommendations=fallback,
+    )
+
+    assert doc["recommended_threshold_key"] == "ev_opt"
+    assert doc["by_threshold_key"]["ev_opt"]["fallback_used"] is False

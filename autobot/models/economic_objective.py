@@ -260,10 +260,10 @@ def build_v4_walk_forward_grid_sort_key(row: dict[str, Any] | None) -> tuple[flo
 def build_v4_walk_forward_threshold_sort_key(row: dict[str, Any] | None) -> tuple[float, ...]:
     row = dict(row or {})
     return (
-        _safe_float(row.get("objective_score")),
         _safe_float(row.get("feasible_window_ratio")),
-        _safe_float(row.get("positive_active_ts_ratio_mean")),
         _safe_float(row.get("active_ts_ratio_mean")),
+        _safe_float(row.get("positive_active_ts_ratio_mean")),
+        _safe_float(row.get("objective_score")),
         _safe_float(row.get("selected_rows_mean")),
         0.0 if bool(row.get("fallback_used")) else 1.0,
     )
