@@ -3,6 +3,7 @@ from __future__ import annotations
 from autobot.models.trade_action_policy import (
     _resolve_notional_multiplier_from_model,
     build_trade_action_policy_from_oos_rows,
+    normalize_trade_action_policy,
     resolve_trade_action,
 )
 
@@ -266,3 +267,34 @@ def test_resolve_notional_multiplier_from_model_clips_to_configured_bounds() -> 
     assert _resolve_notional_multiplier_from_model(model=model, score=0.0) == 0.0
     assert _resolve_notional_multiplier_from_model(model=model, score=0.01) == 0.5
     assert _resolve_notional_multiplier_from_model(model=model, score=1.0) == 1.5
+
+
+def test_normalize_trade_action_policy_clips_by_bin_notional_multiplier() -> None:
+    normalized = normalize_trade_action_policy(
+        {
+            "version": 1,
+            "policy": "trade_level_hold_risk_oos_bins_v1",
+            "status": "ready",
+            "risk_feature_name": "rv_36",
+            "edge_bounds": [0.0, 1.0],
+            "risk_bounds": [0.0, 1.0],
+            "notional_model": {
+                "deprecated_requested_size_multiplier_min": 0.5,
+                "deprecated_requested_size_multiplier_max": 1.5,
+            },
+            "by_bin": [
+                {
+                    "edge_bin": 0,
+                    "risk_bin": 0,
+                    "comparable": True,
+                    "sample_count": 10,
+                    "recommended_action": "risk",
+                    "recommended_notional_multiplier": 5.4,
+                }
+            ],
+        }
+    )
+
+    by_bin = normalized["by_bin"]
+    assert len(by_bin) == 1
+    assert float(by_bin[0]["recommended_notional_multiplier"]) == 1.5

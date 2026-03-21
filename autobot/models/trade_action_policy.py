@@ -380,6 +380,13 @@ def normalize_trade_action_policy(policy: dict[str, Any] | None) -> dict[str, An
     payload["ctm_order"] = max(int(payload.get("ctm_order", DEFAULT_CTM_ORDER) or DEFAULT_CTM_ORDER), 1)
     payload["conditional_action_model"] = dict(payload.get("conditional_action_model") or {})
     payload["by_bin"] = [dict(item) for item in (payload.get("by_bin") or []) if isinstance(item, dict)]
+    model_bounds = dict(payload.get("notional_model") or {})
+    for item in payload["by_bin"]:
+        if "recommended_notional_multiplier" in item:
+            item["recommended_notional_multiplier"] = _clip_notional_multiplier_to_model_bounds(
+                model=model_bounds,
+                value=_safe_float(item.get("recommended_notional_multiplier")),
+            )
     return payload
 
 
@@ -913,7 +920,10 @@ def resolve_trade_action(
         return {
             "policy": TRADE_ACTION_POLICY_ID,
             "recommended_action": action,
-            "recommended_notional_multiplier": float(item.get("recommended_notional_multiplier", 1.0) or 1.0),
+            "recommended_notional_multiplier": _clip_notional_multiplier_to_model_bounds(
+                model=dict(normalized.get("notional_model") or {}),
+                value=_safe_float(item.get("recommended_notional_multiplier")),
+            ),
             "expected_edge": float(item.get("expected_edge", 0.0) or 0.0),
             "expected_downside_deviation": float(item.get("expected_downside_deviation", 0.0) or 0.0),
             "expected_objective_score": float(item.get("expected_objective_score", 0.0) or 0.0),
@@ -1242,12 +1252,21 @@ def _resolve_notional_multiplier_from_model(*, model: dict[str, Any], score: flo
     raw_multiplier = max(float(score), 0.0) / anchor
     if raw_multiplier <= 0.0:
         return 0.0
+    return _clip_notional_multiplier_to_model_bounds(model=model, value=raw_multiplier)
+
+
+def _clip_notional_multiplier_to_model_bounds(*, model: dict[str, Any], value: float) -> float:
+    if (
+        "deprecated_requested_size_multiplier_min" not in model
+        and "deprecated_requested_size_multiplier_max" not in model
+    ):
+        return float(max(float(value), 0.0))
     minimum = max(float(model.get("deprecated_requested_size_multiplier_min", 0.0) or 0.0), 0.0)
     maximum = max(
         float(model.get("deprecated_requested_size_multiplier_max", minimum) or minimum),
         minimum,
     )
-    clipped = min(max(raw_multiplier, minimum), maximum)
+    clipped = min(max(float(value), minimum), maximum)
     return float(max(clipped, 0.0))
 
 
