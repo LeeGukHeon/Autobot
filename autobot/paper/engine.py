@@ -203,11 +203,15 @@ class MarketDataHub:
         self._max_history_ms = max(int(history_sec), 1) * 1000
 
     def update(self, event: TickerEvent) -> None:
+        trade_price = _safe_optional_float(event.trade_price)
+        acc_trade_price_24h = _safe_optional_float(event.acc_trade_price_24h)
+        if trade_price is None or trade_price <= 0 or acc_trade_price_24h is None or acc_trade_price_24h < 0:
+            return
         snapshot = TickerSnapshot(
             market=event.market,
             ts_ms=event.ts_ms,
-            trade_price=event.trade_price,
-            acc_trade_price_24h=event.acc_trade_price_24h,
+            trade_price=float(trade_price),
+            acc_trade_price_24h=float(acc_trade_price_24h),
         )
         self._latest[event.market] = snapshot
 
