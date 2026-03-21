@@ -375,7 +375,9 @@ def resolve_execution_risk_control_online_threshold(
         exit_ts_ms = _safe_optional_int(row.get("exit_ts_ms")) or _safe_optional_int(row.get("updated_ts"))
         if pnl_pct is None or exit_ts_ms is None:
             continue
-        rows.append({"pnl_pct": float(pnl_pct), "exit_ts_ms": int(exit_ts_ms)})
+        # live trade_journal stores pnl_pct in percentage points, but the
+        # risk-control contract uses decimal returns (for example, 0.01 == 1%).
+        rows.append({"pnl_pct": float(pnl_pct) / 100.0, "exit_ts_ms": int(exit_ts_ms)})
     rows.sort(key=lambda item: int(item["exit_ts_ms"]), reverse=True)
     recent = rows[:lookback_trades]
     severe_threshold = max(float(payload.get("severe_loss_return_threshold", 0.0) or 0.0), 0.0)
