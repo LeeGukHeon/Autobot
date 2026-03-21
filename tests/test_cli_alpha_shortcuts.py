@@ -441,6 +441,7 @@ def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_pat
             factor_block_selection_path=None,
             factor_block_policy_path=None,
             search_budget_decision_path=None,
+            live_domain_reweighting_path=None,
             execution_acceptance_report_path=tmp_path / "logs" / "execution_acceptance.json",
             promotion_path=tmp_path / "logs" / "promotion.json",
         )
