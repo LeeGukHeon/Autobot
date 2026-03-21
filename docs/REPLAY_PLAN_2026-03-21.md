@@ -183,6 +183,14 @@ python -m pytest -q tests/test_live_daemon.py tests/test_live_breakers.py tests/
 
 - result: `90 passed`
 
+Server-side replay worktree validation on OCI (`/home/ubuntu/MyApps/Autobot_replay_627dacf`) using the shared main `.venv`:
+
+```bash
+/home/ubuntu/MyApps/Autobot/.venv/bin/python -m pytest -q tests/test_live_model_alpha_runtime.py tests/test_live_rollout.py tests/test_live_reconcile.py tests/test_direct_execution_gateway.py tests/test_live_public_ticker_guards.py tests/test_backtest_model_alpha_integration.py tests/test_paper_engine_model_alpha_integration.py tests/test_candidate_acceptance_certification_lane.py tests/test_execution_attempts_backfill.py tests/test_live_daemon.py tests/test_live_breakers.py tests/test_live_risk_manager.py tests/test_daily_champion_challenger_spawn_handling.py tests/test_t23_2_server_script_contracts.py tests/test_dashboard_server.py
+```
+
+- result: `265 passed`
+
 ```powershell
 python -m pytest -q tests/test_live_model_alpha_runtime.py tests/test_live_rollout.py tests/test_live_reconcile.py tests/test_direct_execution_gateway.py tests/test_live_public_ticker_guards.py tests/test_backtest_model_alpha_integration.py tests/test_paper_engine_model_alpha_integration.py tests/test_candidate_acceptance_certification_lane.py tests/test_execution_attempts_backfill.py
 ```
