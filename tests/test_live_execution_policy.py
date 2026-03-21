@@ -11,6 +11,7 @@ from autobot.live.execution_attempts import (
 from autobot.live.state_store import LiveStateStore, OrderRecord
 from autobot.models.live_execution_policy import (
     build_live_execution_contract,
+    build_execution_policy_state,
     build_live_execution_survival_model,
     candidate_action_codes_for_price_mode,
     select_live_execution_action,
@@ -213,3 +214,107 @@ def test_live_execution_contract_contains_fill_and_miss_models() -> None:
     assert payload["policy"] == "live_execution_contract_v1"
     assert payload["fill_model"]["policy"] == "live_fill_hazard_survival_v1"
     assert payload["miss_cost_model"]["policy"] == "execution_miss_cost_summary_v1"
+
+
+def test_build_execution_policy_state_preserves_market() -> None:
+    payload = build_execution_policy_state(
+        micro_state={"spread_bps": 4.0},
+        expected_edge_bps=80.0,
+        market="KRW-DOGE",
+    )
+
+    assert payload["market"] == "KRW-DOGE"
+    assert payload["expected_edge_bps"] == 80.0
+
+
+def test_live_execution_policy_uses_market_specific_recent_misses_to_penalize_passive() -> None:
+    attempts: list[dict[str, object]] = []
+    for idx in range(6):
+        attempts.append(
+            {
+                "market": "KRW-DOGE",
+                "action_code": "LIMIT_GTC_PASSIVE_MAKER",
+                "spread_bps": 8.0,
+                "depth_top5_notional_krw": 300_000.0,
+                "snapshot_age_ms": 100.0,
+                "expected_edge_bps": 110.0,
+                "expected_net_edge_bps": 35.0,
+                "submitted_ts_ms": 1_000 + idx,
+                "final_state": "MISSED",
+            }
+        )
+    for idx in range(6):
+        attempts.append(
+            {
+                "market": "KRW-WAXP",
+                "action_code": "LIMIT_GTC_PASSIVE_MAKER",
+                "spread_bps": 8.0,
+                "depth_top5_notional_krw": 300_000.0,
+                "snapshot_age_ms": 100.0,
+                "expected_edge_bps": 110.0,
+                "expected_net_edge_bps": 35.0,
+                "submitted_ts_ms": 2_000 + idx,
+                "first_fill_ts_ms": 2_200 + idx,
+                "shortfall_bps": 0.0,
+                "final_state": "FILLED",
+            }
+        )
+    model = build_live_execution_contract(attempts=attempts * 3)
+
+    decision = select_live_execution_action(
+        model_payload=model,
+        current_state=build_execution_policy_state(
+            micro_state={
+                "market": "KRW-DOGE",
+                "spread_bps": 8.0,
+                "depth_top5_notional_krw": 300_000.0,
+                "snapshot_age_ms": 100.0,
+            },
+            expected_edge_bps=110.0,
+            market="KRW-DOGE",
+        ),
+        expected_edge_bps=110.0,
+        candidate_actions=["LIMIT_GTC_PASSIVE_MAKER", "LIMIT_IOC_JOIN", "BEST_IOC"],
+    )
+
+    assert decision["status"] == "selected"
+    assert decision["selected_action_code"] in {"LIMIT_IOC_JOIN", "BEST_IOC"}
+    passive_eval = next(item for item in decision["evaluated_actions"] if item["action_code"] == "LIMIT_GTC_PASSIVE_MAKER")
+    assert passive_eval["recent_penalty"]["consecutive_misses"] >= 2
+
+
+def test_live_execution_policy_can_use_aggressive_prior_for_high_edge_when_no_best_history() -> None:
+    attempts = [
+        {
+            "market": "KRW-DOGE",
+            "action_code": "LIMIT_GTC_PASSIVE_MAKER",
+            "spread_bps": 8.0,
+            "depth_top5_notional_krw": 300_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 120.0,
+            "expected_net_edge_bps": 40.0,
+            "submitted_ts_ms": 1_000 + idx,
+            "final_state": "MISSED",
+        }
+        for idx in range(8)
+    ]
+    model = build_live_execution_contract(attempts=attempts)
+
+    decision = select_live_execution_action(
+        model_payload=model,
+        current_state=build_execution_policy_state(
+            micro_state={
+                "market": "KRW-DOGE",
+                "spread_bps": 8.0,
+                "depth_top5_notional_krw": 300_000.0,
+                "snapshot_age_ms": 100.0,
+            },
+            expected_edge_bps=120.0,
+            market="KRW-DOGE",
+        ),
+        expected_edge_bps=120.0,
+        candidate_actions=["LIMIT_GTC_PASSIVE_MAKER", "BEST_IOC"],
+    )
+
+    assert decision["status"] == "selected"
+    assert decision["selected_action_code"] == "BEST_IOC"

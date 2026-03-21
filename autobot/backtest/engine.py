@@ -1588,6 +1588,7 @@ class BacktestRunEngine:
                     current_state=build_execution_policy_state(
                         micro_state=_execution_contract_micro_state(snapshot=snapshot, now_ts_ms=ts_ms),
                         expected_edge_bps=expected_edge_bps,
+                        market=candidate.market,
                     ),
                     expected_edge_bps=expected_edge_bps,
                     candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),

@@ -888,6 +888,7 @@ def resolve_live_strategy_execution(
         current_state=build_execution_policy_state(
             micro_state=micro_state,
             expected_edge_bps=expected_edge_bps,
+            market=market,
         ),
         expected_edge_bps=expected_edge_bps,
         candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
