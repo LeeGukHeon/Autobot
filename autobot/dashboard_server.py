@@ -2339,6 +2339,10 @@ def _run_clear_live_breaker(
                 details={"note": note},
             )
             status_payload = breaker_status(store)
+        checkpoint_cleanup = _cleanup_breaker_related_checkpoints(
+            db_path,
+            prefixes=("execution_risk_control_online_buffer",),
+        )
         return {
             "started_at": started_at,
             "completed_at": _utc_now_iso(),
@@ -2349,6 +2353,8 @@ def _run_clear_live_breaker(
                         "db_path": str(db_path),
                         "breaker_active": bool(status_payload.get("active")),
                         "reason_codes": list(status_payload.get("reason_codes") or []),
+                        "deleted_checkpoints": int(checkpoint_cleanup.get("deleted", 0)),
+                        "deleted_checkpoint_names": list(checkpoint_cleanup.get("names") or []),
                     },
                     ensure_ascii=False,
                 )
@@ -2365,6 +2371,26 @@ def _run_clear_live_breaker(
             "stderr_preview": _preview_text(str(exc)),
             "success": False,
         }
+
+
+def _cleanup_breaker_related_checkpoints(
+    db_path: Path,
+    *,
+    prefixes: tuple[str, ...],
+) -> dict[str, Any]:
+    deleted_names: list[str] = []
+    normalized_prefixes = tuple(str(item).strip() for item in prefixes if str(item).strip())
+    if not normalized_prefixes:
+        return {"deleted": 0, "names": []}
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT name FROM checkpoints").fetchall()
+        candidate_names = [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
+        for name in candidate_names:
+            if any(name == prefix or name.startswith(f"{prefix}:") for prefix in normalized_prefixes):
+                conn.execute("DELETE FROM checkpoints WHERE name = ?", (name,))
+                deleted_names.append(name)
+        conn.commit()
+    return {"deleted": len(deleted_names), "names": deleted_names}
 
 
 def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str, Any]:

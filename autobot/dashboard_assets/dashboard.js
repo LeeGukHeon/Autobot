@@ -143,10 +143,11 @@
     },
     clear_canary_breaker: {
       label: "카나리아 브레이커 해제",
-      description: "candidate live DB의 persistent breaker 상태를 지웁니다.",
+      description: "candidate live breaker와 온라인 리스크 버퍼를 함께 정리합니다.",
       procedure: [
         "data/state/live_candidate/live_state.db의 live breaker state를 clear합니다.",
-        "서비스 재시작 없이 새 진입 차단 상태만 즉시 해제합니다.",
+        "execution_risk_control_online_buffer 관련 checkpoint도 함께 삭제합니다.",
+        "서비스 재시작 없이 재무장 원인까지 같이 비우는 수동 클린업입니다.",
       ],
     },
     try_restart_live_main: {
@@ -159,10 +160,11 @@
     },
     clear_live_main_breaker: {
       label: "메인 라이브 브레이커 해제",
-      description: "메인 live DB의 persistent breaker 상태를 지웁니다.",
+      description: "메인 live breaker와 온라인 리스크 버퍼를 함께 정리합니다.",
       procedure: [
         "data/state/live_state.db의 live breaker state를 clear합니다.",
-        "서비스 재시작 없이 메인 live의 새 진입 차단 상태만 즉시 해제합니다.",
+        "execution_risk_control_online_buffer 관련 checkpoint도 함께 삭제합니다.",
+        "서비스 재시작 없이 재무장 원인까지 같이 비우는 수동 클린업입니다.",
       ],
     },
     restart_ws_public: {

@@ -1100,12 +1100,19 @@ def test_execute_dashboard_operation_clear_canary_breaker(tmp_path: Path) -> Non
             ts_ms=1000,
             action=ACTION_HALT_NEW_INTENTS,
         )
+        store.set_checkpoint(
+            name="execution_risk_control_online_buffer:run-test",
+            payload={"halt_triggered": True, "breach_streak": 5},
+            ts_ms=1100,
+        )
 
     result = _execute_dashboard_operation(tmp_path, "clear_canary_breaker")
 
     with LiveStateStore(db_path) as store:
         status = store.breaker_state(breaker_key="live")
+        checkpoint = store.get_checkpoint(name="execution_risk_control_online_buffer:run-test")
 
     assert result["success"] is True
     assert status is not None
     assert bool(status["active"]) is False
+    assert checkpoint is None
