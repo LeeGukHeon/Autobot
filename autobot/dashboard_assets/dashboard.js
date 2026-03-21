@@ -509,14 +509,12 @@
     const ordType = item?.[`${prefix}selected_ord_type`];
     const tif = item?.[`${prefix}selected_time_in_force`];
     const priceMode = item?.[`${prefix}selected_price_mode`];
-    const status = item?.[`${prefix}policy_status`];
-    if (!action && !ordType && !priceMode) return "-";
+    if (action) return translate(action);
+    if (!ordType && !priceMode) return "-";
     const bits = [];
-    if (action) bits.push(translate(action));
     if (priceMode) bits.push(translate(priceMode));
     if (ordType) bits.push(translate(ordType));
     if (tif) bits.push(translate(tif));
-    if (status) bits.push(`상태 ${translate(status)}`);
     return bits.join(" · ") || "-";
   }
 
@@ -590,12 +588,8 @@
 
   function compactIntentSummary(intent) {
     const bits = [fmtCompactDateTime(intent.ts_ms)];
-    if (intent.skip_reason) bits.push(translate(intent.skip_reason));
-    else bits.push(translate(intent.status));
     if (toNumber(intent.expected_net_edge_bps) != null) bits.push(`순엣지 ${fmtBps(intent.expected_net_edge_bps)}`);
-    if (intent.trade_action_recommended_action) bits.push(`액션 ${translate(intent.trade_action_recommended_action)}`);
-    const executionStyle = executionStyleLabel(intent);
-    if (executionStyle !== "-") bits.push(executionStyle);
+    if (intent.skip_reason) bits.push(translate(intent.skip_reason));
     return bits.join(" · ");
   }
 
@@ -1525,9 +1519,10 @@
 
     const intentSection = intents.length
       ? `<div class="dense-list">${intents.slice(0, 4).map((intent) => compactRow({
-        title: `${intent.market || "-"} · ${translate(intent.side)} · ${translate(intent.status)}`,
+        title: `${intent.market || "-"} · ${translate(intent.side)}`,
         summary: compactIntentSummary(intent),
         items: [
+          compactStat("상태", translate(intent.status)),
           compactStat("주문 방식", executionStyleLabel(intent)),
           compactStat("순엣지", fmtBps(intent.expected_net_edge_bps)),
           compactStat("예상체결", (() => {
