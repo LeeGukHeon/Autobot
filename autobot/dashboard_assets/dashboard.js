@@ -116,6 +116,83 @@
     rank_shadow_timer: "랭크 그림자 타이머"
   };
 
+  const OPS_ACTION_TEXT = {
+    restart_paper_champion: {
+      label: "챔피언 페이퍼 재시작",
+      description: "현재 champion paper 런타임을 다시 시작합니다.",
+      procedure: [
+        "autobot-paper-v4.service를 재시작합니다.",
+        "현재 champion 포인터는 유지되고 paper 런타임만 새로 올라옵니다.",
+      ],
+    },
+    restart_paper_challenger: {
+      label: "챌린저 페이퍼 재시작",
+      description: "현재 challenger paper 런타임을 다시 시작합니다.",
+      procedure: [
+        "autobot-paper-v4-challenger.service를 재시작합니다.",
+        "현재 pinned challenger 모델 기준으로 paper 런타임만 다시 붙입니다.",
+      ],
+    },
+    restart_canary: {
+      label: "라이브 카나리아 재시작",
+      description: "후보 live canary 런타임을 다시 시작합니다.",
+      procedure: [
+        "autobot-live-alpha-candidate.service를 재시작합니다.",
+        "candidate DB의 rollout gate와 breaker 상태를 다시 계산합니다.",
+      ],
+    },
+    try_restart_live_main: {
+      label: "메인 라이브 try-restart",
+      description: "메인 live가 실행 중일 때만 재시작합니다.",
+      procedure: [
+        "autobot-live-alpha.service가 active면 재시작합니다.",
+        "비활성 상태면 아무 작업도 하지 않습니다.",
+      ],
+    },
+    restart_ws_public: {
+      label: "WS 수집기 재시작",
+      description: "공용 WS 수집기와 micro 적재를 다시 시작합니다.",
+      procedure: [
+        "autobot-ws-public.service를 재시작합니다.",
+        "ticker/trade/orderbook 수집과 health snapshot이 다시 붙습니다.",
+      ],
+    },
+    start_spawn_only: {
+      label: "스폰만 지금 실행",
+      description: "00:10 spawn 사이클을 즉시 수동 실행합니다.",
+      procedure: [
+        "execution contract refresh와 candidate acceptance를 실행합니다.",
+        "통과 시 champion/challenger paper를 같은 비교 epoch로 다시 시작합니다.",
+        "23:50 promote가 읽을 challenger state를 다시 기록합니다.",
+      ],
+    },
+    start_promote_only: {
+      label: "승급만 지금 실행",
+      description: "23:50 promote 비교/승급 단계를 즉시 실행합니다.",
+      procedure: [
+        "current_state의 started_ts_ms 이후 champion/challenger paper 성과만 비교합니다.",
+        "조건을 만족하면 candidate를 champion으로 promote합니다.",
+        "promote 후 champion paper와 허용된 live target을 재시작합니다.",
+      ],
+    },
+    start_rank_shadow: {
+      label: "랭크 섀도우 실행",
+      description: "rank shadow cycle을 수동 실행합니다.",
+      procedure: [
+        "rank shadow 학습/검증을 수행합니다.",
+        "governance action을 갱신해 다음 acceptance lane 선택에 반영합니다.",
+      ],
+    },
+    adopt_latest_candidate: {
+      label: "최신 후보 즉시 반영",
+      description: "latest_candidate를 challenger paper와 canary에 바로 반영합니다.",
+      procedure: [
+        "challenger paper unit을 latest_candidate run id로 다시 설치합니다.",
+        "그 뒤 canary live 서비스를 재시작해 최신 후보를 붙입니다.",
+      ],
+    },
+  };
+
   const TABS = new Set(["overview", "training", "paper", "live", "ws", "ops"]);
   const INITIAL_SNAPSHOT = JSON.parse(document.getElementById("initial-snapshot").textContent || "{}");
   const state = {
@@ -600,6 +677,33 @@
     if (text.includes("레거시")) return "레거시";
     if (text.includes("메인")) return "메인";
     return text.replace(/\s+/g, "");
+  }
+
+  function opsActionProfile(item) {
+    return OPS_ACTION_TEXT[String(item?.id || "").trim()] || {};
+  }
+
+  function opsActionLabel(item) {
+    const profile = opsActionProfile(item);
+    return profile.label || item?.label || item?.id || "-";
+  }
+
+  function opsActionDescription(item) {
+    const profile = opsActionProfile(item);
+    return profile.description || item?.description || "-";
+  }
+
+  function opsActionProcedure(item) {
+    const profile = opsActionProfile(item);
+    return Array.isArray(profile.procedure) ? profile.procedure : [];
+  }
+
+  function opsCategoryLabel(value) {
+    const key = String(value || "").trim();
+    if (key === "services") return "서비스 제어";
+    if (key === "pipeline") return "파이프라인 실행";
+    if (key === "binding") return "런 바인딩";
+    return "기타";
   }
 
   function fmtFactor(value) {
@@ -1743,13 +1847,13 @@
       ? "운영 액션이 활성화돼 있습니다."
       : "운영 액션은 현재 비활성 상태입니다.";
     document.getElementById("ops-subhead").textContent = ops.enabled
-      ? "토큰을 가진 운영자만 restart / spawn / promote / candidate adoption을 실행할 수 있습니다."
+      ? "토큰을 가진 운영자만 서비스 제어, 수동 스폰, 승급, 최신 후보 반영을 실행할 수 있습니다."
       : translate(ops.reason) === "-" ? "dashboard ops token과 enable 설정이 있어야 write action이 열립니다." : translate(ops.reason);
     document.getElementById("ops-kpis").innerHTML = [
-      metric("ops enabled", boolLabel(Boolean(ops.enabled))),
-      metric("token required", boolLabel(Boolean(ops.token_required))),
-      metric("latest candidate", shortRun(ops.latest_candidate_run_id)),
-      metric("actions", maybe(actions.length, "0")),
+      metric("ops 사용", boolLabel(Boolean(ops.enabled))),
+      metric("토큰 필요", boolLabel(Boolean(ops.token_required))),
+      metric("최신 후보", shortRun(ops.latest_candidate_run_id)),
+      metric("액션 수", maybe(actions.length, "0")),
     ].join("");
 
     const tokenInput = document.getElementById("ops-token-input");
@@ -1768,25 +1872,30 @@
       ? categoryOrder
         .filter((key) => Array.isArray(grouped[key]) && grouped[key].length)
         .map((key) => compactRow({
-          title: key === "services" ? "Service Control" : key === "pipeline" ? "Pipeline Runs" : key === "binding" ? "Run Binding" : key,
-          summary: grouped[key].map((item) => item.label).join(" / "),
+          title: opsCategoryLabel(key),
+          summary: grouped[key].map((item) => opsActionLabel(item)).join(" / "),
           items: grouped[key].map((item) => (
-            `<button class="ops-button ${ops.enabled ? "" : "disabled"}" type="button" data-ops-action="${esc(item.id)}" data-ops-confirm="${esc(item.confirm || "")}" ${ops.enabled ? "" : "disabled"}>
-              <strong>${esc(item.label)}</strong>
-              <span>${esc(item.description || "")}</span>
-            </button>`
+            `<div class="dense-list">
+              <button class="ops-button ${ops.enabled ? "" : "disabled"}" type="button" data-ops-action="${esc(item.id)}" data-ops-confirm="${esc(item.confirm || "")}" ${ops.enabled ? "" : "disabled"}>
+                <strong>${esc(opsActionLabel(item))}</strong>
+                <span>${esc(opsActionDescription(item))}</span>
+              </button>
+              ${opsActionProcedure(item).length
+                ? `<div class="compact-inline-list">${opsActionProcedure(item).map((line, idx) => `<span>${esc(`${idx + 1}. ${line}`)}</span>`).join("")}</div>`
+                : ""}`
+            + "</div>"
           )),
         }, "ops-card")).join("")
       : empty("사용 가능한 액션이 없습니다.");
 
     document.getElementById("ops-history").innerHTML = history.length
       ? `<div class="dense-list">${history.map((item) => compactRow({
-        title: `${item.label || item.action_id} · ${item.success ? "success" : "failed"}`,
-        summary: [fmtDateTime(item.completed_at || item.started_at), maybe(item.category), maybe(item.run_id)].filter(Boolean).join(" · "),
+        title: `${opsActionLabel(item)} · ${item.success ? "성공" : "실패"}`,
+        summary: [fmtDateTime(item.completed_at || item.started_at), opsCategoryLabel(item.category), maybe(item.run_id)].filter(Boolean).join(" · "),
         items: [
-          compactStat("exit", maybe(item.exit_code)),
-          compactStat("stdout", maybe(item.stdout_preview)),
-          compactStat("stderr", maybe(item.stderr_preview)),
+          compactStat("종료코드", maybe(item.exit_code)),
+          compactStat("표준출력", maybe(item.stdout_preview)),
+          compactStat("오류출력", maybe(item.stderr_preview)),
         ],
       }, item.success ? "ops-history-good" : "ops-history-bad")).join("")}</div>`
       : empty("아직 실행된 운영 액션이 없습니다.");
