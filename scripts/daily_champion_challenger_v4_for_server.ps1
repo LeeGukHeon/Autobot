@@ -268,7 +268,24 @@ function Resolve-ExecutionContractRowsTotal {
     if ($rows -gt 0) {
         return $rows
     }
-    return [int](Get-PropValue -ObjectValue $Payload -Name "rows_total" -DefaultValue 0)
+    $rows = [int](Get-PropValue -ObjectValue $Payload -Name "rows_total" -DefaultValue 0)
+    if ($rows -gt 0) {
+        return $rows
+    }
+    $outputPath = [string](Get-PropValue -ObjectValue $Payload -Name "output_path" -DefaultValue "")
+    if (-not [string]::IsNullOrWhiteSpace($outputPath) -and (Test-Path $outputPath)) {
+        $outputDoc = Load-JsonOrEmpty -PathValue $outputPath
+        $rows = [int](Get-PropValue -ObjectValue $outputDoc -Name "rows_total" -DefaultValue 0)
+        if ($rows -gt 0) {
+            return $rows
+        }
+        $nestedExecutionContract = Get-PropValue -ObjectValue $outputDoc -Name "execution_contract" -DefaultValue @{}
+        $rows = [int](Get-PropValue -ObjectValue $nestedExecutionContract -Name "rows_total" -DefaultValue 0)
+        if ($rows -gt 0) {
+            return $rows
+        }
+    }
+    return 0
 }
 
 function Invoke-ExecutionContractRefresh {
