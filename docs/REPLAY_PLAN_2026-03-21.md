@@ -223,3 +223,66 @@ It is one of:
 1. run local live/paper smoke commands on this replay branch
 2. deploy the replay branch to an isolated server path and compare breaker frequency versus `main`
 3. replay a smaller optional group only after smoke results look better than `main`
+
+## 13. Cutover Checklist
+
+If we decide the replay branch is better than `main`, the switch should be a controlled cutover, not a merge.
+
+### 13.1 Preconditions
+
+- replay branch includes latest required hotfixes
+- replay paper smoke has recent `LIVE_FEATURES_BUILT` / `MODEL_ALPHA_SELECTION` activity
+- no unresolved replay-only boot issues remain
+- current production `main` head is recorded for rollback
+
+### 13.2 Server Preparation
+
+1. record current production head in `/home/ubuntu/MyApps/Autobot`
+2. stop candidate/challenger-only units first
+3. keep champion paper/live state DB snapshots before replacing code
+4. confirm timer state before switch
+
+### 13.3 Recommended Switch Shape
+
+1. fast-forward a dedicated cutover branch from `replay/pre_refactor_627dacf`
+2. update `/home/ubuntu/MyApps/Autobot` to that cutover branch
+3. restart only:
+   - `autobot-paper-v4.service`
+   - `autobot-paper-v4-challenger.service`
+   - `autobot-live-alpha-candidate.service`
+4. verify:
+   - latest paper run writes events
+   - no immediate breaker arm
+   - no malformed submit/runtime loop crash
+5. only then resume full timer-driven cycle
+
+### 13.4 Rollback Trigger
+
+Rollback immediately if any of these happen after cutover:
+
+- `LIVE_RUNTIME_LOOP_FAILED`
+- `LIVE_PUBLIC_WS_STREAM_FAILED`
+- `LOCAL_POSITION_MISSING_ON_EXCHANGE`
+- `RISK_EXIT_STUCK_MAX_REPLACES`
+- paper/live no longer create intents under conditions where current `main` does
+
+### 13.5 Rollback Method
+
+- return `/home/ubuntu/MyApps/Autobot` to recorded production head
+- restart paper/candidate units
+- restore timer state
+- preserve replay worktree for later comparison
+
+## 14. Latest Replay Delta
+
+Latest replay-only sync after initial validation:
+
+- `f9692c7` Clip learned trade-action sizing multipliers
+
+Replay revalidation after this delta:
+
+```powershell
+python -m pytest -q tests/test_trade_action_policy.py tests/test_paper_engine_model_alpha_integration.py tests/test_backtest_model_alpha_integration.py tests/test_live_model_alpha_runtime.py
+```
+
+- result: `101 passed`
