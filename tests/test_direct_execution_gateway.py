@@ -63,6 +63,48 @@ def test_direct_gateway_submit_intent_success() -> None:
     assert client.created[0]["identifier"] == "AUTOBOT-1"
 
 
+def test_direct_gateway_submit_best_bid_omits_volume() -> None:
+    client = _DummyPrivateClient()
+    gateway = DirectRestExecutionGateway(client=client)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=5000.0,
+        volume=1.0,
+        reason_code="TEST_BEST_BID",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+
+    result = gateway.submit_intent(intent=intent, identifier="AUTOBOT-BEST-BID")
+
+    assert result.accepted is True
+    assert client.created[0]["ord_type"] == "best"
+    assert client.created[0]["price"] == "5000"
+    assert client.created[0]["volume"] is None
+
+
+def test_direct_gateway_submit_best_ask_omits_price() -> None:
+    client = _DummyPrivateClient()
+    gateway = DirectRestExecutionGateway(client=client)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="ask",
+        price=5000.0,
+        volume=0.01,
+        reason_code="TEST_BEST_ASK",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+
+    result = gateway.submit_intent(intent=intent, identifier="AUTOBOT-BEST-ASK")
+
+    assert result.accepted is True
+    assert client.created[0]["ord_type"] == "best"
+    assert client.created[0]["price"] is None
+    assert client.created[0]["volume"] == "0.01"
+
+
 def test_direct_gateway_submit_intent_reject_on_upbit_error() -> None:
     class _RejectingClient(_DummyPrivateClient):
         def create_order(self, **kwargs):
