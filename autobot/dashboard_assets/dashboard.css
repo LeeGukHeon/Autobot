@@ -485,6 +485,34 @@ body {
   line-height: 1.45;
 }
 
+.ops-action-item {
+  gap: 6px;
+}
+
+.ops-procedure {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 8px 10px;
+}
+
+.ops-procedure summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  list-style: none;
+}
+
+.ops-procedure summary::-webkit-details-marker {
+  display: none;
+}
+
+.ops-procedure[open] summary {
+  margin-bottom: 8px;
+  color: var(--ink);
+}
+
 .ops-button.disabled,
 .ops-button:disabled {
   opacity: 0.45;
@@ -1935,5 +1963,27 @@ body {
   .quick-tab-button {
     padding: 8px 11px;
     font-size: 0.78rem;
+  }
+
+  .ops-button {
+    min-height: 50px;
+    padding: 10px 12px;
+  }
+
+  .ops-button strong {
+    font-size: 0.86rem;
+  }
+
+  .ops-button span {
+    font-size: 0.74rem;
+    line-height: 1.35;
+  }
+
+  .ops-procedure {
+    padding: 7px 9px;
+  }
+
+  .ops-procedure summary {
+    font-size: 0.72rem;
   }
 }

@@ -73,8 +73,8 @@
         <button class="tab-button" data-tab="ops" type="button">
           <span class="tab-index">06</span>
           <span class="tab-copy">
-            <strong>Operations</strong>
-            <small>service control and run actions</small>
+            <strong>운영 작업</strong>
+            <small>재시작, 복구, 수동 실행</small>
           </span>
         </button>
       </nav>
@@ -113,7 +113,7 @@
         <button class="quick-tab-button" data-tab="paper" type="button">페이퍼</button>
         <button class="quick-tab-button" data-tab="live" type="button">라이브</button>
         <button class="quick-tab-button" data-tab="ws" type="button">WS</button>
-        <button class="quick-tab-button" data-tab="ops" type="button">Ops</button>
+        <button class="quick-tab-button" data-tab="ops" type="button">운영</button>
       </nav>
 
       <div class="pane-wrap">
@@ -258,12 +258,12 @@
         <section class="pane" data-pane="ops" hidden>
           <div class="summary-grid">
             <article class="summary-card accent">
-              <p class="summary-label">Operations Control</p>
+              <p class="summary-label">운영 제어</p>
               <h2 id="ops-headline">-</h2>
               <p id="ops-subhead" class="summary-text">-</p>
             </article>
             <article class="summary-card">
-              <p class="summary-label">Ops Access</p>
+              <p class="summary-label">운영 접근</p>
               <div id="ops-kpis" class="mini-grid"></div>
             </article>
           </div>
@@ -271,22 +271,22 @@
           <section class="panel">
             <div class="panel-head">
               <div>
-                <h3>Operator Token</h3>
-                <p>ops token이 설정된 경우에만 write action이 실행됩니다.</p>
+                <h3>운영 토큰</h3>
+                <p>운영 토큰이 설정된 경우에만 쓰기 액션이 실행됩니다.</p>
               </div>
             </div>
             <div class="ops-toolbar">
-              <input id="ops-token-input" class="ops-token-input" type="password" placeholder="dashboard ops token" autocomplete="off" />
-              <button id="ops-token-save" class="ops-button secondary" type="button">Save Token</button>
-              <button id="ops-token-clear" class="ops-button secondary" type="button">Clear Token</button>
+              <input id="ops-token-input" class="ops-token-input" type="password" placeholder="운영 토큰 입력" autocomplete="off" />
+              <button id="ops-token-save" class="ops-button secondary" type="button">토큰 저장</button>
+              <button id="ops-token-clear" class="ops-button secondary" type="button">토큰 지우기</button>
             </div>
           </section>
 
           <section class="panel">
             <div class="panel-head">
               <div>
-                <h3>Actions</h3>
-                <p>restart, spawn, promote, latest candidate adoption 같은 운영 액션입니다.</p>
+                <h3>운영 액션</h3>
+                <p>재시작, 복구, 수동 배치, 최신 후보 반영을 여기서 실행합니다.</p>
               </div>
             </div>
             <div id="ops-actions" class="card-grid"></div>
@@ -295,7 +295,7 @@
           <section class="panel">
             <div class="panel-head">
               <div>
-                <h3>Recent Ops History</h3>
+                <h3>최근 운영 이력</h3>
                 <p>최근 운영 액션 실행 결과를 남깁니다.</p>
               </div>
             </div>

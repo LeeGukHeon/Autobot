@@ -143,7 +143,7 @@
     },
     clear_canary_breaker: {
       label: "카나리아 브레이커 해제",
-      description: "candidate live breaker와 온라인 리스크 버퍼를 함께 정리합니다.",
+      description: "카나리아 브레이커와 리스크 버퍼를 정리합니다.",
       procedure: [
         "data/state/live_candidate/live_state.db의 live breaker state를 clear합니다.",
         "execution_risk_control_online_buffer 관련 checkpoint도 함께 삭제합니다.",
@@ -160,7 +160,7 @@
     },
     clear_live_main_breaker: {
       label: "메인 라이브 브레이커 해제",
-      description: "메인 live breaker와 온라인 리스크 버퍼를 함께 정리합니다.",
+      description: "메인 브레이커와 리스크 버퍼를 정리합니다.",
       procedure: [
         "data/state/live_state.db의 live breaker state를 clear합니다.",
         "execution_risk_control_online_buffer 관련 checkpoint도 함께 삭제합니다.",
@@ -247,9 +247,9 @@
       text: "수집 연결과 적재 신선도를 읽는 데이터 플레인 화면입니다."
     },
     ops: {
-      eyebrow: "Operations",
-      title: "Operations Console",
-      text: "서비스 재시작, 수동 파이프라인 실행, 최신 candidate 강제 반영을 위한 운영 화면입니다."
+      eyebrow: "운영 제어",
+      title: "운영 작업",
+      text: "재시작, 브레이커 정리, 수동 배치를 다루는 운영 탭입니다."
     }
   };
 
@@ -723,6 +723,15 @@
     if (key === "binding") return "런 바인딩";
     if (key === "recovery") return "복구 / 브레이커";
     return "기타";
+  }
+
+  function opsCategorySummary(key, items) {
+    const count = Array.isArray(items) ? items.length : 0;
+    if (key === "services") return `${count}개 서비스`;
+    if (key === "pipeline") return `${count}개 배치`;
+    if (key === "binding") return `${count}개 반영`;
+    if (key === "recovery") return `${count}개 복구`;
+    return `${count}개 작업`;
   }
 
   function fmtFactor(value) {
@@ -1866,10 +1875,10 @@
       ? "운영 액션이 활성화돼 있습니다."
       : "운영 액션은 현재 비활성 상태입니다.";
     document.getElementById("ops-subhead").textContent = ops.enabled
-      ? "토큰을 가진 운영자만 서비스 제어, 수동 스폰, 승급, 최신 후보 반영을 실행할 수 있습니다."
-      : translate(ops.reason) === "-" ? "dashboard ops token과 enable 설정이 있어야 write action이 열립니다." : translate(ops.reason);
+      ? "토큰을 가진 운영자만 재시작, 복구, 수동 배치를 실행할 수 있습니다."
+      : translate(ops.reason) === "-" ? "운영 토큰과 enable 설정이 있어야 쓰기 액션이 열립니다." : translate(ops.reason);
     document.getElementById("ops-kpis").innerHTML = [
-      metric("ops 사용", boolLabel(Boolean(ops.enabled))),
+      metric("운영 기능", boolLabel(Boolean(ops.enabled))),
       metric("토큰 필요", boolLabel(Boolean(ops.token_required))),
       metric("최신 후보", shortRun(ops.latest_candidate_run_id)),
       metric("액션 수", maybe(actions.length, "0")),
@@ -1892,15 +1901,15 @@
         .filter((key) => Array.isArray(grouped[key]) && grouped[key].length)
         .map((key) => compactRow({
           title: opsCategoryLabel(key),
-          summary: grouped[key].map((item) => opsActionLabel(item)).join(" / "),
+          summary: opsCategorySummary(key, grouped[key]),
           items: grouped[key].map((item) => (
-            `<div class="dense-list">
+            `<div class="dense-list ops-action-item">
               <button class="ops-button ${ops.enabled ? "" : "disabled"}" type="button" data-ops-action="${esc(item.id)}" data-ops-confirm="${esc(item.confirm || "")}" ${ops.enabled ? "" : "disabled"}>
                 <strong>${esc(opsActionLabel(item))}</strong>
                 <span>${esc(opsActionDescription(item))}</span>
               </button>
               ${opsActionProcedure(item).length
-                ? `<div class="compact-inline-list">${opsActionProcedure(item).map((line, idx) => `<span>${esc(`${idx + 1}. ${line}`)}</span>`).join("")}</div>`
+                ? `<details class="ops-procedure"><summary>절차</summary><div class="compact-inline-list">${opsActionProcedure(item).map((line, idx) => `<span>${esc(`${idx + 1}. ${line}`)}</span>`).join("")}</div></details>`
                 : ""}`
             + "</div>"
           )),
