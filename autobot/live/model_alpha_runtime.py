@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import asyncio
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -185,6 +186,9 @@ async def run_live_model_alpha_runtime(
         "private_ws_last_event_ts_ms": None,
         "private_ws_last_event_latency_ms": None,
         "private_ws_stats": {},
+        "public_ws_stats": {},
+        "stream_stop_traceback": None,
+        "closed_orders_backfill": None,
     }
 
     if daemon_settings.startup_reconcile:
@@ -526,17 +530,30 @@ async def run_live_model_alpha_runtime(
                     break
                 next_sync_monotonic = time.monotonic() + max(int(daemon_settings.poll_interval_sec), 1)
     except Exception as exc:
+        public_ws_stats = dict(public_ws_client.stats) if hasattr(public_ws_client, "stats") else {}
+        traceback_text = traceback.format_exc(limit=20)
+        reason_code = (
+            "LIVE_PUBLIC_WS_STREAM_FAILED"
+            if "/autobot/upbit/ws/" in traceback_text.replace("\\", "/")
+            else "LIVE_RUNTIME_LOOP_FAILED"
+        )
         arm_breaker(
             store,
-            reason_codes=["LIVE_PUBLIC_WS_STREAM_FAILED"],
+            reason_codes=[reason_code],
             source="live_model_alpha_runtime",
             ts_ms=int(time.time() * 1000),
             action=ACTION_HALT_NEW_INTENTS,
-            details={"error": str(exc)},
+            details={
+                "error": str(exc),
+                "public_ws_stats": public_ws_stats,
+                "traceback": traceback_text,
+            },
         )
         summary["halted"] = True
         summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         summary["stream_stop_reason"] = str(exc)
+        summary["stream_stop_traceback"] = traceback_text
+        summary["public_ws_stats"] = public_ws_stats
     else:
         if private_ws_queue is not None:
             _drain_private_ws_events(
@@ -572,6 +589,8 @@ async def run_live_model_alpha_runtime(
             await asyncio.gather(*public_micro_tasks, return_exceptions=True)
         if private_ws_client is not None and hasattr(private_ws_client, "stats"):
             summary["private_ws_stats"] = private_ws_client.stats
+        if hasattr(public_ws_client, "stats"):
+            summary["public_ws_stats"] = public_ws_client.stats
 
     summary["small_account_report"] = build_small_account_runtime_report(
         store=store,
