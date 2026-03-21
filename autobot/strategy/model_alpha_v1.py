@@ -624,6 +624,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             row=row,
             interval_ms=self._interval_ms,
         )
+        state.exit_plan = dict(plan)
         mode = str(plan.get("mode", "hold")).strip().lower() or "hold"
         hold_ms = max(int(plan.get("timeout_delta_ms", 0) or 0), 0)
         tp_pct = max(float(plan.get("tp_pct", 0.0) or 0.0), 0.0)
@@ -649,6 +650,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
 
         # risk mode
         state.peak_price = max(float(state.peak_price), float(ref_price))
+        state.exit_plan["high_watermark_price"] = float(state.peak_price)
+        state.exit_plan["high_watermark_price_str"] = str(state.peak_price)
         entry_price = max(float(state.entry_price), 1e-12)
         net_return = _net_return_after_costs(
             entry_price=entry_price,
@@ -1180,11 +1183,14 @@ def _reprice_position_exit_plan(
     base_tp_pct = _safe_optional_float(normalized.get("base_tp_pct"))
     base_sl_pct = _safe_optional_float(normalized.get("base_sl_pct"))
     base_trailing_pct = _safe_optional_float(normalized.get("base_trailing_pct"))
+    current_trailing_pct = _safe_optional_float(normalized.get("trailing_pct"))
     base_timeout_delta_ms = _safe_optional_int(normalized.get("base_timeout_delta_ms"))
     overlay_tp_basis = base_tp_pct if base_tp_pct is not None else _safe_optional_float(normalized.get("tp_pct"))
     overlay_sl_basis = base_sl_pct if base_sl_pct is not None else _safe_optional_float(normalized.get("sl_pct"))
     overlay_trailing_basis = (
-        base_trailing_pct if base_trailing_pct is not None else _safe_optional_float(normalized.get("trailing_pct"))
+        current_trailing_pct
+        if current_trailing_pct is not None and current_trailing_pct > 0.0
+        else (base_trailing_pct if base_trailing_pct is not None else current_trailing_pct)
     )
     overlay_timeout_basis = (
         base_timeout_delta_ms
