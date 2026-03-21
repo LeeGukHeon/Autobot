@@ -61,6 +61,13 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
             "  echo \"$@\" >> \"$FAKE_SYSTEMCTL_LOG\"\n"
             "fi\n"
             "if [ \"$1\" = \"is-active\" ]; then\n"
+            "  target=\"$2\"\n"
+            "  if [ \"$2\" = \"--quiet\" ]; then\n"
+            "    target=\"$3\"\n"
+            "  fi\n"
+            "  case \",${FAKE_ACTIVE_UNITS},\" in\n"
+            "    *,$target,*) exit 0 ;;\n"
+            "  esac\n"
             "  exit 1\n"
             "fi\n"
             "exit 0\n",
