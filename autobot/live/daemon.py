@@ -302,6 +302,7 @@ def _clear_runtime_recovery_reasons(
     if not bool(runtime_status.get("ws_public_stale")):
         reasons_to_clear.append("WS_PUBLIC_STALE")
         reasons_to_clear.append("LIVE_PUBLIC_WS_STREAM_FAILED")
+        reasons_to_clear.append("LIVE_RUNTIME_LOOP_FAILED")
     clear_breaker_reasons(
         store,
         reason_codes=reasons_to_clear,

@@ -559,7 +559,7 @@ def test_live_model_alpha_runtime_captures_public_ws_context_on_stream_failure(t
         )
 
     assert summary["halted"] is True
-    assert "LIVE_PUBLIC_WS_STREAM_FAILED" in summary["halted_reasons"]
+    assert "LIVE_RUNTIME_LOOP_FAILED" in summary["halted_reasons"]
     assert "NoneType" in str(summary["stream_stop_reason"])
     assert summary["stream_stop_traceback"]
     assert summary["public_ws_stats"]["last_malformed_payload_preview"] == '{"tp":null,"atp24h":null}'

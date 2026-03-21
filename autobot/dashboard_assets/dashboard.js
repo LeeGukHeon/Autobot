@@ -10,6 +10,7 @@
     EXECUTION_NOT_CANDIDATE_EDGE: "실행 기준 우위 없음",
     DUPLICATE_CANDIDATE: "기존 챔피언과 동일",
     LIVE_BREAKER_ACTIVE: "라이브 브레이커 활성",
+    LIVE_RUNTIME_LOOP_FAILED: "라이브 런타임 루프 예외",
     MODEL_POINTER_DIVERGENCE: "모델 포인터 불일치",
     WS_PUBLIC_STALE: "WS 수집 오래됨",
     UNKNOWN_POSITIONS_DETECTED: "거래소 포지션 불일치",

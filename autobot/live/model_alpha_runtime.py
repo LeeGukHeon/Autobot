@@ -519,22 +519,28 @@ async def run_live_model_alpha_runtime(
                 next_sync_monotonic = time.monotonic() + max(int(daemon_settings.poll_interval_sec), 1)
     except Exception as exc:
         public_ws_stats = dict(public_ws_client.stats) if hasattr(public_ws_client, "stats") else {}
+        traceback_text = traceback.format_exc(limit=20)
+        reason_code = (
+            "LIVE_PUBLIC_WS_STREAM_FAILED"
+            if "/autobot/upbit/ws/" in traceback_text.replace("\\", "/")
+            else "LIVE_RUNTIME_LOOP_FAILED"
+        )
         arm_breaker(
             store,
-            reason_codes=["LIVE_PUBLIC_WS_STREAM_FAILED"],
+            reason_codes=[reason_code],
             source="live_model_alpha_runtime",
             ts_ms=int(time.time() * 1000),
             action=ACTION_HALT_NEW_INTENTS,
             details={
                 "error": str(exc),
                 "public_ws_stats": public_ws_stats,
-                "traceback": traceback.format_exc(limit=20),
+                "traceback": traceback_text,
             },
         )
         summary["halted"] = True
         summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         summary["stream_stop_reason"] = str(exc)
-        summary["stream_stop_traceback"] = traceback.format_exc(limit=20)
+        summary["stream_stop_traceback"] = traceback_text
         summary["public_ws_stats"] = public_ws_stats
     else:
         if private_ws_queue is not None:

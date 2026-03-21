@@ -4,6 +4,10 @@
 - Scope: collect -> feature/label -> train -> acceptance/backtest -> paper -> live candidate/main -> risk/breaker -> recovery/continuity
 - Goal: verify that the implemented lifecycle logic is coherent end to end, identify overlapping/legacy logic, and define cleanup priorities without breaking safety-critical behavior
 
+Post-incident follow-up:
+
+- [LIVE_RUNTIME_POSTMORTEM_2026-03-21.md](d:/MyApps/Autobot/docs/LIVE_RUNTIME_POSTMORTEM_2026-03-21.md)
+
 ## 1. Top-Level Lifecycle Map
 
 Autobot currently behaves as one production-style pipeline split into these layers:

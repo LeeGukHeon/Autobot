@@ -297,7 +297,7 @@ def test_live_daemon_clears_recovered_stale_breaker_before_canary_gate(tmp_path:
         )
         arm_breaker(
             store,
-            reason_codes=["WS_PUBLIC_STALE", "LIVE_BREAKER_ACTIVE", "LIVE_PUBLIC_WS_STREAM_FAILED"],
+            reason_codes=["WS_PUBLIC_STALE", "LIVE_BREAKER_ACTIVE", "LIVE_PUBLIC_WS_STREAM_FAILED", "LIVE_RUNTIME_LOOP_FAILED"],
             source="test",
             ts_ms=now_ms - 2_000,
             action=ACTION_HALT_NEW_INTENTS,
