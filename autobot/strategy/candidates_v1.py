@@ -42,10 +42,11 @@ class CandidateGeneratorV1:
                 continue
 
             # `latest` comes from MarketDataHub ticker snapshot.
-            price = float(getattr(latest, "trade_price", 0.0))
-            acc_trade_price_24h = float(getattr(latest, "acc_trade_price_24h", 0.0))
-            if price <= 0:
+            price = _safe_optional_float(getattr(latest, "trade_price", None))
+            acc_trade_price_24h = _safe_optional_float(getattr(latest, "acc_trade_price_24h", None))
+            if price is None or price <= 0:
                 continue
+            acc_trade_price_24h = float(acc_trade_price_24h or 0.0)
 
             momentum_pct = market_data.get_momentum_pct(
                 market,
@@ -83,3 +84,12 @@ class CandidateGeneratorV1:
 
         candidates.sort(key=lambda item: item.score, reverse=True)
         return candidates
+
+
+def _safe_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

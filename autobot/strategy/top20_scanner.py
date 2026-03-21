@@ -22,11 +22,15 @@ class TopTradeValueScanner:
         self._state: dict[str, MarketTopItem] = {}
 
     def update(self, event: TickerEvent) -> None:
+        trade_price = _safe_optional_float(event.trade_price)
+        acc_trade_price_24h = _safe_optional_float(event.acc_trade_price_24h)
+        if trade_price is None or trade_price <= 0 or acc_trade_price_24h is None or acc_trade_price_24h < 0:
+            return
         self._state[event.market] = MarketTopItem(
             market=event.market,
             ts_ms=event.ts_ms,
-            trade_price=event.trade_price,
-            acc_trade_price_24h=event.acc_trade_price_24h,
+            trade_price=float(trade_price),
+            acc_trade_price_24h=float(acc_trade_price_24h),
             market_state=event.market_state,
             market_warning=event.market_warning,
         )
@@ -56,3 +60,11 @@ class TopTradeValueScanner:
     def size(self) -> int:
         return len(self._state)
 
+
+def _safe_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
