@@ -27,7 +27,6 @@ def test_v4_factor_block_registry_is_stable_for_known_columns() -> None:
             "hour_sin",
             "price_trend_short",
             "oflow_v1_signed_volume_imbalance_1",
-            "ctrend_v1_rsi_14",
             "mom_x_illiq",
         )
     )
@@ -42,7 +41,6 @@ def test_v4_factor_block_registry_is_stable_for_known_columns() -> None:
         "v4_periodicity",
         "v4_trend_volume",
         "v4_order_flow_panel_v1",
-        "v4_ctrend_v1",
         "v4_interactions",
     ]
 

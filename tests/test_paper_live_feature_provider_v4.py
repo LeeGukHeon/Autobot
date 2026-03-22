@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -203,7 +203,7 @@ def test_live_feature_provider_v4_hard_gates_missing_requested_columns(tmp_path:
     assert "missing_v4_feature_for_test" in stats["missing_feature_columns"]
 
 
-def test_live_feature_provider_v4_builds_ctrend_columns_from_current_history(tmp_path: Path) -> None:
+def test_live_feature_provider_v4_hard_gates_removed_ctrend_columns(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     request_dt = datetime(2026, 1, 2, 0, 5, tzinfo=timezone.utc)
     request_ts_ms = int(request_dt.timestamp() * 1000)
@@ -213,13 +213,6 @@ def test_live_feature_provider_v4_builds_ctrend_columns_from_current_history(tmp
         start_ts_ms=request_ts_ms - (720 * 60_000),
         count=900,
     )
-    _write_ctrend_history(
-        dataset_root=parquet_root / "candles_v1",
-        market="KRW-BTC",
-        end_date=request_dt.date() - timedelta(days=1),
-        days=280,
-    )
-
     provider = LiveFeatureProviderV4(
         feature_columns=(
             "logret_1",
@@ -227,9 +220,6 @@ def test_live_feature_provider_v4_builds_ctrend_columns_from_current_history(tmp
             "oflow_v1_signed_volume_imbalance_1",
             "ctrend_v1_rsi_14",
             "ctrend_v1_cci_20",
-            "ctrend_v1_ma_gap_200",
-            "ctrend_v1_vol_ma_gap_200",
-            "ctrend_v1_boll_width_20_2",
         ),
         tf="5m",
         quote="KRW",
@@ -247,17 +237,11 @@ def test_live_feature_provider_v4_builds_ctrend_columns_from_current_history(tmp
     )
 
     frame = provider.build_frame(ts_ms=request_ts_ms, markets=["KRW-BTC"])
-    assert frame.height == 1
-    row = frame.row(0, named=True)
-    assert row["oflow_v1_signed_volume_imbalance_1"] == 0.0
-    assert row["ctrend_v1_rsi_14"] is not None
-    assert row["ctrend_v1_cci_20"] is not None
-    assert row["ctrend_v1_ma_gap_200"] is not None
-    assert row["ctrend_v1_vol_ma_gap_200"] is not None
-    assert row["ctrend_v1_boll_width_20_2"] is not None
+    assert frame.height == 0
     stats = provider.last_build_stats()
-    assert stats["hard_gate_triggered"] is False
-    assert stats["ctrend_requested_feature_count"] == 5
+    assert stats["hard_gate_triggered"] is True
+    assert "ctrend_v1_rsi_14" in stats["missing_feature_columns"]
+    assert "ctrend_v1_cci_20" in stats["missing_feature_columns"]
 
 
 def test_paper_engine_model_alpha_live_v4_scores_without_no_feature_rows(tmp_path: Path) -> None:
@@ -462,23 +446,16 @@ def test_paper_engine_model_alpha_live_v4_native_scores_without_no_feature_rows(
     assert str((built_payload.get("base_provider_stats") or {}).get("provider")) == "LIVE_V4_NATIVE_BASE"
 
 
-def test_paper_engine_model_alpha_live_v4_scores_with_ctrend_features(tmp_path: Path) -> None:
+def test_paper_engine_model_alpha_live_v4_hard_gates_old_ctrend_models(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     registry_root = tmp_path / "registry"
     now_ms = int(time.time() * 1000)
     base_ts = (now_ms // 300_000) * 300_000
-    request_dt = datetime.fromtimestamp(base_ts / 1000.0, tz=timezone.utc)
     _write_one_m_candles(
         dataset_root=parquet_root / "candles_api_v1",
         market="KRW-BTC",
         start_ts_ms=base_ts - (1_000 * 60_000),
         count=1_200,
-    )
-    _write_ctrend_history(
-        dataset_root=parquet_root / "candles_v1",
-        market="KRW-BTC",
-        end_date=request_dt.date() - timedelta(days=1),
-        days=300,
     )
     _save_model_run(
         registry_root=registry_root,
@@ -567,14 +544,16 @@ def test_paper_engine_model_alpha_live_v4_scores_with_ctrend_features(tmp_path: 
     ]
     selections = [item for item in payloads if item.get("event_type") == "MODEL_ALPHA_SELECTION"]
     assert selections
-    assert any(int(item.get("payload", {}).get("scored_rows", 0)) > 0 for item in selections)
-    assert all("NO_FEATURE_ROWS_AT_TS" not in item.get("payload", {}).get("reasons", {}) for item in selections)
+    assert all(int(item.get("payload", {}).get("scored_rows", 0)) == 0 for item in selections)
+    assert any("NO_FEATURE_ROWS_AT_TS" in (item.get("payload", {}).get("reasons", {}) or {}) for item in selections)
     built_events = [item for item in payloads if item.get("event_type") == "LIVE_FEATURES_BUILT"]
     assert built_events
     built_payload = built_events[-1].get("payload") or {}
     assert str(built_payload.get("provider")) == "LIVE_V4"
-    assert int(built_payload.get("ctrend_requested_feature_count", 0)) == 4
-    assert list(built_payload.get("missing_feature_columns") or []) == []
+    assert built_payload.get("hard_gate_triggered") is True
+    missing_columns = list(built_payload.get("missing_feature_columns") or [])
+    assert "ctrend_v1_rsi_14" in missing_columns
+    assert "ctrend_v1_cci_20" in missing_columns
 
 
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
@@ -593,31 +572,6 @@ def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 
         }
     )
     frame.write_parquet(part_dir / "part-000.parquet")
-
-
-def _write_ctrend_history(*, dataset_root: Path, market: str, end_date: date, days: int) -> None:
-    part_dir = dataset_root / "tf=5m" / f"market={market}" / "date=history"
-    part_dir.mkdir(parents=True, exist_ok=True)
-    first_date = end_date - timedelta(days=max(int(days) - 1, 0))
-    ts_values: list[int] = []
-    close_values: list[float] = []
-    volume_values: list[float] = []
-    for index in range(int(days)):
-        current = first_date + timedelta(days=index)
-        ts_values.append(int(datetime(current.year, current.month, current.day, 0, 5, tzinfo=timezone.utc).timestamp() * 1000))
-        close_values.append(100.0 + (index * 0.4))
-        volume_values.append(1_000.0 + (index * 3.0))
-    pl.DataFrame(
-        {
-            "ts_ms": ts_values,
-            "open": [value - 0.1 for value in close_values],
-            "high": [value + 0.2 for value in close_values],
-            "low": [value - 0.2 for value in close_values],
-            "close": close_values,
-            "volume_base": volume_values,
-        }
-    ).write_parquet(part_dir / "part-000.parquet")
-
 
 def _save_model_run(*, registry_root: Path, model_family: str, run_id: str, feature_columns: list[str]) -> None:
     save_run(

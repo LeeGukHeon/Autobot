@@ -10,7 +10,6 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from autobot.features.ctrend_v1 import ctrend_v1_feature_columns
 from autobot.features.feature_blocks_v4_live_base import (
     base_feature_columns_v4_live_base,
     high_tf_feature_columns_v4_live_base,
@@ -145,13 +144,6 @@ def v4_factor_block_registry(
             feature_columns=tuple(col for col in order_flow_feature_columns_v4() if col in selected),
             protected=False,
             source_contracts=("order_flow_panel_v1",),
-        ),
-        FactorBlockDefinition(
-            block_id="v4_ctrend_v1",
-            label="v4 ctrend",
-            feature_columns=tuple(col for col in ctrend_v1_feature_columns() if col in selected),
-            protected=False,
-            source_contracts=("ctrend_v1",),
         ),
         FactorBlockDefinition(
             block_id="v4_interactions",

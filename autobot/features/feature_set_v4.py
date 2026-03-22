@@ -71,8 +71,7 @@ def order_flow_feature_columns_v4() -> tuple[str, ...]:
 
 
 def ctrend_feature_columns_v4() -> tuple[str, ...]:
-    # CTRend is intentionally disabled in the active v4 contract because it
-    # requires substantial pre-2026-03-04 history and candles_v1 fallback warmup.
+    # Compatibility shim only. The active v4 contract no longer exposes ctrend.
     return ()
 
 
@@ -83,7 +82,6 @@ def feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "240m")) ->
         + list(periodicity_feature_columns_v4())
         + list(trend_volume_feature_columns_v4())
         + list(order_flow_feature_columns_v4())
-        + list(ctrend_feature_columns_v4())
         + list(interaction_feature_columns_v4())
     )
 
@@ -95,7 +93,6 @@ def required_feature_columns_v4(*, high_tfs: tuple[str, ...] = ("15m", "60m", "2
         + list(periodicity_feature_columns_v4())
         + list(trend_volume_feature_columns_v4())
         + list(order_flow_feature_columns_v4())
-        + list(ctrend_feature_columns_v4())
         + list(interaction_feature_columns_v4())
     )
 
