@@ -70,7 +70,45 @@ def test_live_candidate_domain_reweighting_prefers_target_like_micro_states(tmp_
     assert diagnostics["final_weight_summary"]["max"] >= diagnostics["final_weight_summary"]["mean"]
 
 
-def _write_candidate_intents_db(path: Path) -> None:
+def test_live_candidate_domain_reweighting_skips_incomplete_target_rows_without_crashing(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    _write_candidate_intents_db(db_path, include_incomplete_rows=True)
+
+    stale_row = np.array([5_000.0, 4_000.0, 18.0, 120_000.0], dtype=np.float64)
+    live_like_row = np.array([60_000.0, 58_000.0, 2.0, 5_000_000.0], dtype=np.float64)
+    source_matrix = np.vstack(
+        [
+            np.repeat(stale_row[None, :], 6, axis=0),
+            np.repeat(live_like_row[None, :], 6, axis=0),
+        ]
+    )
+
+    weight, diagnostics = build_live_candidate_domain_reweighting(
+        enabled=True,
+        project_root=tmp_path,
+        candidate_db_path=db_path,
+        source_matrix=source_matrix,
+        source_feature_names=(
+            "m_trade_coverage_ms",
+            "m_book_coverage_ms",
+            "m_spread_proxy",
+            "m_depth_top5_notional_krw",
+        ),
+        source_aux_features={},
+        base_sample_weight=np.ones(source_matrix.shape[0], dtype=np.float64),
+        seed=7,
+        min_target_rows=8,
+        max_target_rows=64,
+        max_source_fit_rows=32,
+    )
+
+    assert diagnostics["status"] == "ready"
+    assert int(diagnostics["target_rows_dropped_incomplete"]) > 0
+    assert int(diagnostics["target_rows_complete"]) < int(diagnostics["target_rows_total"])
+    assert weight.shape[0] == source_matrix.shape[0]
+
+
+def _write_candidate_intents_db(path: Path, *, include_incomplete_rows: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     try:
@@ -111,6 +149,11 @@ def _write_candidate_intents_db(path: Path) -> None:
             },
         }
         for idx in range(48):
+            payload_row = dict(payload)
+            if include_incomplete_rows and idx % 7 == 0:
+                payload_row = json.loads(json.dumps(payload))
+                payload_row["strategy"]["meta"]["state_features"]["m_book_coverage_ms"] = None
+                payload_row["micro_state"]["book_coverage_ms"] = None
             conn.execute(
                 "INSERT INTO intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -121,7 +164,7 @@ def _write_candidate_intents_db(path: Path) -> None:
                     None,
                     None,
                     "MODEL_ALPHA_ENTRY_V1",
-                    json.dumps(payload, sort_keys=True),
+                    json.dumps(payload_row, sort_keys=True),
                     "SUBMITTED",
                 ),
             )

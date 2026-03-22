@@ -109,9 +109,22 @@ def build_live_candidate_domain_reweighting(
         diagnostics["final_weight_summary"] = _weight_summary(base_weight)
         return base_weight, diagnostics
 
+    complete_target_rows = [
+        row
+        for row in target_rows
+        if all(row.get(str(spec["canonical_name"])) is not None for spec in active_specs)
+    ]
+    diagnostics["target_rows_complete"] = int(len(complete_target_rows))
+    diagnostics["target_rows_dropped_incomplete"] = int(max(len(target_rows) - len(complete_target_rows), 0))
+    if len(complete_target_rows) < max(int(min_target_rows), 1):
+        diagnostics["reason"] = "INSUFFICIENT_COMPLETE_TARGET_ROWS"
+        diagnostics["base_weight_summary"] = _weight_summary(base_weight)
+        diagnostics["final_weight_summary"] = _weight_summary(base_weight)
+        return base_weight, diagnostics
+
     source_all_matrix = np.column_stack([np.asarray(spec["source_values"], dtype=np.float64) for spec in active_specs])
     target_matrix = np.asarray(
-        [[float(row[spec["canonical_name"]]) for spec in active_specs] for row in target_rows],
+        [[float(row[spec["canonical_name"]]) for spec in active_specs] for row in complete_target_rows],
         dtype=np.float64,
     )
     (
@@ -184,8 +197,8 @@ def build_live_candidate_domain_reweighting(
             "multiplier_summary": _weight_summary(normalized_multiplier),
             "base_weight_summary": _weight_summary(base_weight),
             "final_weight_summary": _weight_summary(final_weight),
-            "target_ts_ms_min": min((int(row["ts_ms"]) for row in target_rows), default=0),
-            "target_ts_ms_max": max((int(row["ts_ms"]) for row in target_rows), default=0),
+            "target_ts_ms_min": min((int(row["ts_ms"]) for row in complete_target_rows), default=0),
+            "target_ts_ms_max": max((int(row["ts_ms"]) for row in complete_target_rows), default=0),
         }
     )
     return final_weight, diagnostics
