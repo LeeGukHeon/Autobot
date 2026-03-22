@@ -20,6 +20,8 @@ Read these first when you need the current system behavior.
 
 Read these when investigating current performance or execution behavior.
 
+- `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
+  - current structural root-cause diagnosis and next-context handoff
 - `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
   - current research comparison and training/runtime diagnosis
 - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
@@ -70,9 +72,10 @@ Do not treat them as the final word over:
 
 1. `docs/PROGRAM_RUNBOOK.md`
 2. `docs/CONFIG_SCHEMA.md`
-3. `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
-4. `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
-5. only then read older root docs, ADRs, tickets, and reports as background
+3. `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
+4. `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
+5. `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
+6. only then read older root docs, ADRs, tickets, and reports as background
 
 ## Rule
 

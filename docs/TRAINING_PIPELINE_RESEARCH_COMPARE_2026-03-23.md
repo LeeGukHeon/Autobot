@@ -3,6 +3,8 @@
 - Date: 2026-03-23
 - Scope: `v4` train/selection/runtime pipeline, OCI scheduler/runtime state, recent crypto alpha/execution literature
 - Goal: explain why recent performance feels unstable by comparing the implemented system against practical research methods and current server evidence
+- Structural root-cause diagnosis:
+  - `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
 - Follow-up action plan:
   - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 

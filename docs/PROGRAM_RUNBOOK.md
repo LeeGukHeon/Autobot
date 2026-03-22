@@ -6,6 +6,7 @@
 - Docs index:
   - `docs/README.md`
 - Current analysis:
+  - `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
   - `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
   - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 
@@ -790,20 +791,21 @@ For a new maintainer, the shortest correct reading order is:
 1. `docs/README.md`
 2. this file
 3. `docs/CONFIG_SCHEMA.md`
-4. `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
-5. `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
-6. `autobot/cli.py`
-7. `autobot/models/predictor.py`
-8. `autobot/models/train_v4_crypto_cs.py`
-9. `scripts/candidate_acceptance.ps1`
-10. `scripts/daily_champion_challenger_v4_for_server.ps1`
-11. `autobot/paper/engine.py`
-12. `autobot/live/daemon.py`
-13. `autobot/live/model_alpha_runtime.py`
-14. `autobot/live/model_alpha_runtime_execute.py`
-15. `autobot/live/reconcile.py`
-16. `autobot/live/state_store.py`
-17. `autobot/dashboard_server.py`
+4. `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
+5. `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
+6. `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
+7. `autobot/cli.py`
+8. `autobot/models/predictor.py`
+9. `autobot/models/train_v4_crypto_cs.py`
+10. `scripts/candidate_acceptance.ps1`
+11. `scripts/daily_champion_challenger_v4_for_server.ps1`
+12. `autobot/paper/engine.py`
+13. `autobot/live/daemon.py`
+14. `autobot/live/model_alpha_runtime.py`
+15. `autobot/live/model_alpha_runtime_execute.py`
+16. `autobot/live/reconcile.py`
+17. `autobot/live/state_store.py`
+18. `autobot/dashboard_server.py`
 
 ## 14. Final Rule
 
