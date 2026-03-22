@@ -190,6 +190,7 @@ def _runtime_model_binding_after_resume(
         ws_public_contract=ws_public_contract,
     )
     _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
+    _clear_stale_online_run_breaker(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
     if bool(runtime_status.get("ws_public_stale")):
         arm_breaker(
             store,
@@ -262,6 +263,7 @@ def _refresh_runtime_contract_health(
         ws_public_contract=ws_public_contract,
     )
     _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
+    _clear_stale_online_run_breaker(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
     if bool(runtime_status.get("model_pointer_divergence")) and not _allow_pointer_divergence_for_settings(
         settings=settings,
         runtime_status=runtime_status,
@@ -311,6 +313,49 @@ def _clear_runtime_recovery_reasons(
         details={
             "ws_public_stale": bool(runtime_status.get("ws_public_stale")),
             "model_pointer_divergence": bool(runtime_status.get("model_pointer_divergence")),
+        },
+    )
+
+
+def _clear_stale_online_run_breaker(
+    *,
+    store: LiveStateStore,
+    runtime_status: dict[str, Any],
+    ts_ms: int,
+) -> None:
+    current_run_id = str(runtime_status.get("live_runtime_model_run_id") or "").strip()
+    if not current_run_id:
+        return
+    current = store.breaker_state(breaker_key="live")
+    if not isinstance(current, dict) or not bool(current.get("active")):
+        return
+    if str(current.get("source") or "").strip() != "execution_risk_control_online_halt":
+        return
+    details = dict(current.get("details") or {})
+    stale_checkpoint_name = str(details.get("checkpoint_name") or "").strip()
+    if not stale_checkpoint_name or stale_checkpoint_name.endswith(f":{current_run_id}"):
+        return
+    online_reason_codes = {
+        "RISK_CONTROL_ONLINE_BREACH_STREAK",
+        "RISK_CONTROL_MARTINGALE_EVIDENCE",
+        "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE",
+    }
+    stale_reason_codes = [
+        str(item).strip()
+        for item in (current.get("reason_codes") or [])
+        if str(item).strip() in online_reason_codes
+    ]
+    if not stale_reason_codes:
+        return
+    clear_breaker_reasons(
+        store,
+        reason_codes=stale_reason_codes,
+        source="live_runtime_stale_online_breaker_recovery",
+        ts_ms=ts_ms,
+        details={
+            "current_live_runtime_model_run_id": current_run_id,
+            "stale_checkpoint_name": stale_checkpoint_name,
+            "stale_reason_codes": stale_reason_codes,
         },
     )
 

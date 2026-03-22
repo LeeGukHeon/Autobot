@@ -495,6 +495,45 @@ def _merge_online_risk_states(*, base_state: dict[str, Any], martingale_state: d
     return merged
 
 
+def _resolve_stale_online_breaker_recovery(
+    *,
+    store: Any,
+    online_threshold: dict[str, Any],
+) -> dict[str, Any]:
+    if bool(online_threshold.get("halt_triggered")) or not hasattr(store, "breaker_state"):
+        return {"reason_codes": [], "checkpoint_name": ""}
+    current = store.breaker_state(breaker_key="live")
+    if not isinstance(current, dict) or not bool(current.get("active")):
+        return {"reason_codes": [], "checkpoint_name": ""}
+    if str(current.get("source") or "").strip() != "execution_risk_control_online_halt":
+        return {"reason_codes": [], "checkpoint_name": ""}
+    stale_checkpoint_name = str((dict(current.get("details") or {})).get("checkpoint_name") or "").strip()
+    resolved_checkpoint_name = str(online_threshold.get("checkpoint_name") or "").strip()
+    if not stale_checkpoint_name or not resolved_checkpoint_name or stale_checkpoint_name == resolved_checkpoint_name:
+        return {"reason_codes": [], "checkpoint_name": stale_checkpoint_name}
+    online_reason_codes: list[str] = []
+    for value in (
+        online_threshold.get("halt_reason_code"),
+        online_threshold.get("martingale_halt_reason_code"),
+        online_threshold.get("martingale_critical_reason_code"),
+        "RISK_CONTROL_ONLINE_BREACH_STREAK",
+        "RISK_CONTROL_MARTINGALE_EVIDENCE",
+        "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE",
+    ):
+        reason_code = str(value or "").strip()
+        if reason_code and reason_code not in online_reason_codes:
+            online_reason_codes.append(reason_code)
+    stale_reason_codes = [
+        str(item).strip()
+        for item in (current.get("reason_codes") or [])
+        if str(item).strip() and str(item).strip() in online_reason_codes
+    ]
+    return {
+        "reason_codes": stale_reason_codes,
+        "checkpoint_name": stale_checkpoint_name,
+    }
+
+
 def resolve_live_strategy_execution(
     *,
     market: str,
@@ -1326,20 +1365,35 @@ def handle_strategy_intent(
         )
         if resolved_checkpoint_name:
             store.set_checkpoint(name=resolved_checkpoint_name, payload=online_threshold, ts_ms=ts_ms)
-    if bool(online_threshold.get("clear_halt")):
-        clear_reason_codes = [
-            str(item).strip() for item in (online_threshold.get("clear_reason_codes") or []) if str(item).strip()
-        ]
-        if not clear_reason_codes:
-            fallback_clear_reason = str(online_threshold.get("halt_reason_code", "")).strip()
-            if fallback_clear_reason:
-                clear_reason_codes = [fallback_clear_reason]
+    stale_online_recovery = _resolve_stale_online_breaker_recovery(
+        store=store,
+        online_threshold=online_threshold,
+    )
+    clear_reason_codes = [
+        str(item).strip() for item in (online_threshold.get("clear_reason_codes") or []) if str(item).strip()
+    ]
+    for stale_reason_code in stale_online_recovery.get("reason_codes") or []:
+        if stale_reason_code not in clear_reason_codes:
+            clear_reason_codes.append(stale_reason_code)
+    if bool(online_threshold.get("clear_halt")) and not clear_reason_codes:
+        fallback_clear_reason = str(online_threshold.get("halt_reason_code", "")).strip()
+        if fallback_clear_reason:
+            clear_reason_codes = [fallback_clear_reason]
+    if clear_reason_codes:
+        clear_details = dict(online_threshold)
+        if stale_online_recovery.get("reason_codes"):
+            clear_details["stale_breaker_checkpoint_name"] = str(stale_online_recovery.get("checkpoint_name") or "")
+            clear_details["stale_breaker_reason_codes"] = list(stale_online_recovery.get("reason_codes") or [])
         clear_breaker_reasons_fn(
             store,
             reason_codes=clear_reason_codes,
-            source="execution_risk_control_online_recovery",
+            source=(
+                "execution_risk_control_online_run_change_recovery"
+                if stale_online_recovery.get("reason_codes") and not bool(online_threshold.get("clear_halt"))
+                else "execution_risk_control_online_recovery"
+            ),
             ts_ms=ts_ms,
-            details=dict(online_threshold),
+            details=clear_details,
         )
     elif bool(online_threshold.get("halt_triggered")):
         halt_action = str(online_threshold.get("halt_action", "")).strip() or action_halt_new_intents
