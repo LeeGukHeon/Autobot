@@ -50,6 +50,8 @@ ACTION_CONFIGS: dict[str, dict[str, Any]] = {
 }
 DEFAULT_ACTION_CODE = "LIMIT_GTC_JOIN"
 DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH = "logs/live_execution_policy/combined_live_execution_policy.json"
+CANARY_STRONG_EDGE_THRESHOLD_BPS = 50.0
+CANARY_STRONG_EDGE_UTILITY_MARGIN_BPS = 20.0
 
 
 def build_live_execution_survival_model(
@@ -271,6 +273,12 @@ def select_live_execution_action(
             "utility_bps": -float(expected_edge_value),
             "aggressiveness_rank": int(ACTION_CONFIGS[DEFAULT_ACTION_CODE]["aggressiveness_rank"]),
         }
+    selected, selection_reason_code, urgency_override = _maybe_apply_canary_strong_edge_stage_override(
+        current_state=current_state or {},
+        expected_edge_bps=float(expected_edge_value),
+        evaluated_actions=evaluated_actions,
+        selected=selected,
+    )
     status = "selected" if float(selected.get("utility_bps", 0.0) or 0.0) > 0.0 else "skip"
     return {
         "policy": "live_fill_hazard_survival_v1",
@@ -286,6 +294,8 @@ def select_live_execution_action(
         "selected_expected_time_to_first_fill_ms": _safe_optional_float(selected.get("expected_time_to_first_fill_ms")),
         "selected_utility_bps": float(selected.get("utility_bps", 0.0) or 0.0),
         "selected_expected_miss_cost_bps": float(selected.get("miss_cost_bps", expected_edge_value) or expected_edge_value),
+        "selection_reason_code": str(selection_reason_code).strip() or "UTILITY_MAX",
+        "urgency_override": urgency_override,
         "evaluated_actions": evaluated_actions,
         "skip_reason_code": "LIVE_EXECUTION_NO_POSITIVE_UTILITY" if status == "skip" else "",
     }
@@ -428,6 +438,71 @@ def _posterior_fill_lcb(*, p_fill: float, sample_count: int, z_score: float = 1.
     variance = max(mean * (1.0 - mean), 0.0)
     stderr = (variance / float(max(count, 1))) ** 0.5
     return max(min(mean - (float(z_score) * stderr), 1.0), 0.0)
+
+
+def _maybe_apply_canary_strong_edge_stage_override(
+    *,
+    current_state: dict[str, Any],
+    expected_edge_bps: float,
+    evaluated_actions: list[dict[str, Any]],
+    selected: dict[str, Any],
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    rollout_mode = str((current_state or {}).get("rollout_mode", "")).strip().lower()
+    selected_price_mode = str(selected.get("price_mode", "")).strip().upper()
+    if rollout_mode != "canary":
+        return selected, "UTILITY_MAX", {}
+    if float(expected_edge_bps) < float(CANARY_STRONG_EDGE_THRESHOLD_BPS):
+        return selected, "UTILITY_MAX", {}
+    if selected_price_mode != "PASSIVE_MAKER":
+        return selected, "UTILITY_MAX", {}
+
+    alternatives = [
+        dict(item)
+        for item in evaluated_actions
+        if str(item.get("price_mode", "")).strip().upper() in {"JOIN", "CROSS_1T"}
+        and float(item.get("utility_bps", 0.0) or 0.0) > 0.0
+    ]
+    if not alternatives:
+        return selected, "UTILITY_MAX", {}
+
+    best_alternative = max(
+        alternatives,
+        key=lambda item: (
+            float(item.get("utility_bps", 0.0) or 0.0),
+            -int(item.get("aggressiveness_rank", 99) or 99),
+        ),
+    )
+    utility_gap = float(selected.get("utility_bps", 0.0) or 0.0) - float(best_alternative.get("utility_bps", 0.0) or 0.0)
+    utility_margin = min(
+        max(float(expected_edge_bps) * 0.25, 10.0),
+        float(CANARY_STRONG_EDGE_UTILITY_MARGIN_BPS),
+    )
+    if utility_gap > utility_margin:
+        return selected, "UTILITY_MAX", {}
+
+    return (
+        best_alternative,
+        "CANARY_STRONG_EDGE_STAGE_ESCALATION",
+        {
+            "enabled": True,
+            "reason_code": "CANARY_STRONG_EDGE_STAGE_ESCALATION",
+            "rollout_mode": rollout_mode,
+            "expected_edge_bps": float(expected_edge_bps),
+            "strong_edge_threshold_bps": float(CANARY_STRONG_EDGE_THRESHOLD_BPS),
+            "utility_margin_bps": float(utility_margin),
+            "selected_before_override": {
+                "action_code": str(selected.get("action_code", "")),
+                "price_mode": selected_price_mode,
+                "utility_bps": float(selected.get("utility_bps", 0.0) or 0.0),
+            },
+            "selected_after_override": {
+                "action_code": str(best_alternative.get("action_code", "")),
+                "price_mode": str(best_alternative.get("price_mode", "")).strip().upper(),
+                "utility_bps": float(best_alternative.get("utility_bps", 0.0) or 0.0),
+            },
+            "utility_gap_bps": float(utility_gap),
+        },
+    )
 
 
 def _normalize_action_code(value: Any) -> str:

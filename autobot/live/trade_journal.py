@@ -1215,6 +1215,18 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
     execution_policy = (
         dict(payload.get("execution_policy") or {}) if isinstance(payload.get("execution_policy"), dict) else {}
     )
+    micro_order_policy = (
+        dict(payload.get("micro_order_policy") or {}) if isinstance(payload.get("micro_order_policy"), dict) else {}
+    )
+    micro_diagnostics = (
+        dict(payload.get("micro_diagnostics") or {}) if isinstance(payload.get("micro_diagnostics"), dict) else {}
+    )
+    operational_overlay = (
+        dict(payload.get("operational_overlay") or {}) if isinstance(payload.get("operational_overlay"), dict) else {}
+    )
+    execution_trace = (
+        dict(payload.get("execution_trace") or {}) if isinstance(payload.get("execution_trace"), dict) else {}
+    )
     micro_state = dict(payload.get("micro_state") or {}) if isinstance(payload.get("micro_state"), dict) else {}
     runtime = dict(payload.get("runtime") or {}) if isinstance(payload.get("runtime"), dict) else {}
     return {
@@ -1341,6 +1353,62 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
             "selected_utility_bps": execution_policy.get("selected_utility_bps"),
             "status": execution_policy.get("status"),
             "deadline_ms": execution_policy.get("deadline_ms"),
+        },
+        "micro_order_policy": {
+            "enabled": micro_order_policy.get("enabled"),
+            "tier": micro_order_policy.get("tier"),
+            "reason_code": micro_order_policy.get("reason_code"),
+        },
+        "micro_diagnostics": {
+            "base_profile_price_mode": micro_diagnostics.get("base_profile_price_mode"),
+            "tier_profile_price_mode": micro_diagnostics.get("tier_profile_price_mode"),
+            "selected_price_mode": micro_diagnostics.get("selected_price_mode"),
+            "cross_allowed": micro_diagnostics.get("cross_allowed"),
+            "cross_block_reason": micro_diagnostics.get("cross_block_reason"),
+            "tick_bps": micro_diagnostics.get("tick_bps"),
+            "liq_score": micro_diagnostics.get("liq_score"),
+            "profile_source": micro_diagnostics.get("profile_source"),
+        },
+        "operational_overlay": {
+            "runtime_risk_multiplier": operational_overlay.get("runtime_risk_multiplier"),
+            "exec_overlay_mode": operational_overlay.get("exec_overlay_mode"),
+            "micro_quality_score": operational_overlay.get("micro_quality_score"),
+            "diagnostics": dict(operational_overlay.get("diagnostics") or {})
+            if isinstance(operational_overlay.get("diagnostics"), dict)
+            else {},
+        },
+        "execution_trace": {
+            "run_recommended_price_mode": execution_trace.get("run_recommended_price_mode"),
+            "initial_exec_profile": dict(execution_trace.get("initial_exec_profile") or {})
+            if isinstance(execution_trace.get("initial_exec_profile"), dict)
+            else {},
+            "after_strategy_exec_profile": dict(execution_trace.get("after_strategy_exec_profile") or {})
+            if isinstance(execution_trace.get("after_strategy_exec_profile"), dict)
+            else {},
+            "operational_overlay": dict(execution_trace.get("operational_overlay") or {})
+            if isinstance(execution_trace.get("operational_overlay"), dict)
+            else {},
+            "after_operational_overlay": dict(execution_trace.get("after_operational_overlay") or {})
+            if isinstance(execution_trace.get("after_operational_overlay"), dict)
+            else {},
+            "canary_timeout_cap": dict(execution_trace.get("canary_timeout_cap") or {})
+            if isinstance(execution_trace.get("canary_timeout_cap"), dict)
+            else {},
+            "micro_order_policy": dict(execution_trace.get("micro_order_policy") or {})
+            if isinstance(execution_trace.get("micro_order_policy"), dict)
+            else {},
+            "after_micro_order_policy": dict(execution_trace.get("after_micro_order_policy") or {})
+            if isinstance(execution_trace.get("after_micro_order_policy"), dict)
+            else {},
+            "execution_policy": dict(execution_trace.get("execution_policy") or {})
+            if isinstance(execution_trace.get("execution_policy"), dict)
+            else {},
+            "after_execution_policy": dict(execution_trace.get("after_execution_policy") or {})
+            if isinstance(execution_trace.get("after_execution_policy"), dict)
+            else {},
+            "final_submit": dict(execution_trace.get("final_submit") or {})
+            if isinstance(execution_trace.get("final_submit"), dict)
+            else {},
         },
         "micro_state": {
             "spread_bps": micro_state.get("spread_bps"),

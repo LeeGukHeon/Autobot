@@ -68,6 +68,107 @@ def test_live_execution_policy_prefers_higher_fill_lower_shortfall_action() -> N
     assert decision["selected_action_code"] == "LIMIT_GTC_JOIN"
 
 
+def test_live_execution_policy_canary_strong_edge_escalates_from_passive_to_join() -> None:
+    model_payload = {
+        "policy": "live_execution_contract_v1",
+        "rows_total": 100,
+        "fill_model": {
+            "action_stats": {
+                "LIMIT_GTC_PASSIVE_MAKER": {
+                    "sample_count": 50,
+                    "p_fill_within_3000ms": 0.71,
+                    "p_fill_within_default": 0.71,
+                    "mean_shortfall_bps": 0.0,
+                    "mean_time_to_first_fill_ms": 20_000.0,
+                },
+                "LIMIT_GTC_JOIN": {
+                    "sample_count": 50,
+                    "p_fill_within_3000ms": 0.61,
+                    "p_fill_within_default": 0.61,
+                    "mean_shortfall_bps": 0.0,
+                    "mean_time_to_first_fill_ms": 5_000.0,
+                },
+            },
+            "state_action_stats": {},
+        },
+        "miss_cost_model": {
+            "action_stats": {
+                "LIMIT_GTC_PASSIVE_MAKER": {"sample_count": 50, "mean_miss_cost_bps": 80.0},
+                "LIMIT_GTC_JOIN": {"sample_count": 50, "mean_miss_cost_bps": 80.0},
+            },
+            "state_action_stats": {},
+        },
+    }
+
+    decision = select_live_execution_action(
+        model_payload=model_payload,
+        current_state={
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 80.0,
+            "rollout_mode": "canary",
+        },
+        expected_edge_bps=80.0,
+        candidate_actions=["LIMIT_GTC_PASSIVE_MAKER", "LIMIT_GTC_JOIN"],
+    )
+
+    assert decision["status"] == "selected"
+    assert decision["selected_action_code"] == "LIMIT_GTC_JOIN"
+    assert decision["selection_reason_code"] == "CANARY_STRONG_EDGE_STAGE_ESCALATION"
+    assert decision["urgency_override"]["enabled"] is True
+
+
+def test_live_execution_policy_non_canary_keeps_passive_when_utility_is_higher() -> None:
+    model_payload = {
+        "policy": "live_execution_contract_v1",
+        "rows_total": 100,
+        "fill_model": {
+            "action_stats": {
+                "LIMIT_GTC_PASSIVE_MAKER": {
+                    "sample_count": 50,
+                    "p_fill_within_3000ms": 0.71,
+                    "p_fill_within_default": 0.71,
+                    "mean_shortfall_bps": 0.0,
+                    "mean_time_to_first_fill_ms": 20_000.0,
+                },
+                "LIMIT_GTC_JOIN": {
+                    "sample_count": 50,
+                    "p_fill_within_3000ms": 0.61,
+                    "p_fill_within_default": 0.61,
+                    "mean_shortfall_bps": 0.0,
+                    "mean_time_to_first_fill_ms": 5_000.0,
+                },
+            },
+            "state_action_stats": {},
+        },
+        "miss_cost_model": {
+            "action_stats": {
+                "LIMIT_GTC_PASSIVE_MAKER": {"sample_count": 50, "mean_miss_cost_bps": 80.0},
+                "LIMIT_GTC_JOIN": {"sample_count": 50, "mean_miss_cost_bps": 80.0},
+            },
+            "state_action_stats": {},
+        },
+    }
+
+    decision = select_live_execution_action(
+        model_payload=model_payload,
+        current_state={
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 80.0,
+            "rollout_mode": "live",
+        },
+        expected_edge_bps=80.0,
+        candidate_actions=["LIMIT_GTC_PASSIVE_MAKER", "LIMIT_GTC_JOIN"],
+    )
+
+    assert decision["status"] == "selected"
+    assert decision["selected_action_code"] == "LIMIT_GTC_PASSIVE_MAKER"
+    assert decision["selection_reason_code"] == "UTILITY_MAX"
+
+
 def test_live_execution_attempts_store_submission_ws_fill_and_shortfall(tmp_path: Path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         attempt_id = record_execution_attempt_submission(

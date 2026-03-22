@@ -48,6 +48,10 @@ def record_execution_attempt_submission(
     if requested_notional_quote is None and requested_price is not None and requested_volume is not None:
         requested_notional_quote = float(requested_price) * float(requested_volume)
     snapshot_age_ms = _safe_optional_int(micro_state.get("snapshot_age_ms"))
+    submission_outcome = _build_submission_outcome(
+        payload=payload,
+        execution_policy=execution_policy,
+    )
     record = ExecutionAttemptRecord(
         attempt_id=attempt_id,
         journal_id=_as_optional_str(journal_id),
@@ -78,14 +82,7 @@ def record_execution_attempt_submission(
         expected_net_edge_bps=_safe_optional_float(decision.get("expected_net_edge_bps")),
         expected_es_bps=_es_bps_from_trade_action(trade_action),
         submitted_ts_ms=int(ts_ms),
-        outcome_json=json.dumps(
-            {
-                "status": "submitted",
-                "execution_policy": execution_policy,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
+        outcome_json=_json_dumps(submission_outcome),
         updated_ts=int(ts_ms),
     )
     store.upsert_execution_attempt(record)
@@ -175,14 +172,13 @@ def update_execution_attempt_from_order(
             fill_fraction=fill_fraction,
             partial_fill=partial_fill,
             full_fill=full_fill,
-            outcome_json=json.dumps(
-                {
+            outcome_json=_merge_outcome_json(
+                existing=attempt.get("outcome"),
+                patch={
                     "status": "ws_update",
                     "raw_state": raw_state,
                     "local_state": local_state,
                 },
-                ensure_ascii=False,
-                sort_keys=True,
             ),
             updated_ts=int(ts_ms),
         )
@@ -261,7 +257,10 @@ def update_execution_attempt_fill_from_position(
                 filled_volume=_safe_optional_float(filled_volume),
             ) not in {None, 0.0, 1.0}),
             full_fill=True,
-            outcome_json=json.dumps({"status": "position_fill"}, ensure_ascii=False, sort_keys=True),
+            outcome_json=_merge_outcome_json(
+                existing=attempt.get("outcome"),
+                patch={"status": "position_fill"},
+            ),
             updated_ts=int(ts_ms),
         )
     )
@@ -325,7 +324,10 @@ def mark_execution_attempt_cancelled(
             fill_fraction=_safe_optional_float(attempt.get("fill_fraction")),
             partial_fill=bool(attempt.get("partial_fill", False)),
             full_fill=bool(attempt.get("full_fill", False)),
-            outcome_json=json.dumps(dict(outcome_payload or {}), ensure_ascii=False, sort_keys=True),
+            outcome_json=_merge_outcome_json(
+                existing=attempt.get("outcome"),
+                patch=dict(outcome_payload or {}, status="cancelled"),
+            ),
             updated_ts=int(ts_ms),
         )
     )
@@ -389,7 +391,10 @@ def rebind_execution_attempt_order(
             fill_fraction=_safe_optional_float(attempt.get("fill_fraction")),
             partial_fill=bool(attempt.get("partial_fill", False)),
             full_fill=bool(attempt.get("full_fill", False)),
-            outcome_json=json.dumps({"status": "rebound"}, ensure_ascii=False, sort_keys=True),
+            outcome_json=_merge_outcome_json(
+                existing=attempt.get("outcome"),
+                patch={"status": "rebind"},
+            ),
             updated_ts=int(ts_ms),
         )
     )
@@ -437,6 +442,57 @@ def _resolve_fill_fraction(*, requested_volume: float | None, filled_volume: flo
     if requested_volume is None or requested_volume <= 0.0 or filled_volume is None:
         return None
     return min(max(float(filled_volume) / float(requested_volume), 0.0), 1.0)
+
+
+def _build_submission_outcome(
+    *,
+    payload: dict[str, Any],
+    execution_policy: dict[str, Any],
+) -> dict[str, Any]:
+    execution_trace = dict(payload.get("execution_trace") or {}) if isinstance(payload.get("execution_trace"), dict) else {}
+    return {
+        "status": "submitted",
+        "execution_policy": dict(execution_policy or {}),
+        "execution_trace": execution_trace,
+        "execution": dict(payload.get("execution") or {}) if isinstance(payload.get("execution"), dict) else {},
+        "micro_order_policy": (
+            dict(payload.get("micro_order_policy") or {})
+            if isinstance(payload.get("micro_order_policy"), dict)
+            else {}
+        ),
+        "micro_diagnostics": (
+            dict(payload.get("micro_diagnostics") or {})
+            if isinstance(payload.get("micro_diagnostics"), dict)
+            else {}
+        ),
+        "operational_overlay": (
+            dict(payload.get("operational_overlay") or {})
+            if isinstance(payload.get("operational_overlay"), dict)
+            else {}
+        ),
+        "trade_gate": dict(payload.get("trade_gate") or {}) if isinstance(payload.get("trade_gate"), dict) else {},
+        "size_ladder": dict(payload.get("size_ladder") or {}) if isinstance(payload.get("size_ladder"), dict) else {},
+    }
+
+
+def _merge_outcome_json(*, existing: dict[str, Any] | None, patch: dict[str, Any]) -> str:
+    merged = dict(existing or {})
+    status_history = list(merged.get("status_history") or [])
+    next_status = str(patch.get("status", "")).strip()
+    if next_status:
+        previous_status = str(merged.get("status", "")).strip()
+        if previous_status and previous_status not in status_history:
+            status_history.append(previous_status)
+        if next_status not in status_history:
+            status_history.append(next_status)
+    merged.update(dict(patch or {}))
+    if status_history:
+        merged["status_history"] = status_history
+    return _json_dumps(merged)
+
+
+def _json_dumps(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _as_optional_str(value: Any) -> str | None:

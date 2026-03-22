@@ -570,10 +570,16 @@ def resolve_live_strategy_execution(
         settings=settings,
         model_alpha_settings=model_alpha_settings,
     )
+    execution_trace: dict[str, Any] = {
+        "run_recommended_price_mode": str(model_alpha_settings.execution.price_mode).strip().upper(),
+        "initial_exec_profile": order_exec_profile_to_dict_fn(exec_profile),
+    }
     if side == "bid":
         strategy_exec_profile = strategy_meta.get("exec_profile")
         if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
+            execution_trace["strategy_intent_exec_profile"] = dict(strategy_exec_profile)
             exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
+            execution_trace["after_strategy_exec_profile"] = order_exec_profile_to_dict_fn(exec_profile)
     operational_payload: dict[str, Any] = {}
     trade_gate_payload: dict[str, Any] = {"enabled": True}
     forced_volume = safe_optional_float_fn(strategy_meta.get("force_volume"))
@@ -597,6 +603,7 @@ def resolve_live_strategy_execution(
         )
 
     if bool(model_alpha_settings.operational.enabled):
+        operational_input_profile = order_exec_profile_to_dict_fn(exec_profile)
         operational_decision = resolve_operational_execution_overlay_fn(
             base_profile=exec_profile,
             settings=model_alpha_settings.operational,
@@ -616,6 +623,17 @@ def resolve_live_strategy_execution(
                 else None
             ),
             "diagnostics": dict(operational_decision.diagnostics),
+        }
+        execution_trace["operational_overlay"] = {
+            "input_exec_profile": operational_input_profile,
+            "output_exec_profile": order_exec_profile_to_dict_fn(operational_decision.exec_profile),
+            "input_price_mode": str(operational_input_profile.get("price_mode", "")).strip().upper(),
+            "output_price_mode": str(operational_decision.exec_profile.price_mode).strip().upper(),
+            "changed_price_mode": str(operational_input_profile.get("price_mode", "")).strip().upper()
+            != str(operational_decision.exec_profile.price_mode).strip().upper(),
+            "abort_reason": str(operational_decision.abort_reason or "").strip(),
+            "mode": str(operational_decision.diagnostics.get("mode", "neutral")),
+            "risk_multiplier": float(operational_decision.risk_multiplier),
         }
         if operational_decision.abort_reason is not None:
             return resolution_cls(
@@ -640,18 +658,30 @@ def resolve_live_strategy_execution(
                         "effective_ref_price": float(effective_ref_price),
                         "exec_profile": order_exec_profile_to_dict_fn(exec_profile),
                     },
+                    "execution_trace": dict(execution_trace),
                     "operational_overlay": operational_payload,
                 },
             )
         exec_profile = operational_decision.exec_profile
+        execution_trace["after_operational_overlay"] = order_exec_profile_to_dict_fn(exec_profile)
         if entry_notional_quote is not None:
             entry_notional_quote *= max(float(operational_decision.risk_multiplier), 0.0)
+    canary_input_profile = order_exec_profile_to_dict_fn(exec_profile)
     exec_profile = apply_canary_entry_timeout_cap(
         store=store,
         settings=settings,
         side=side,
         exec_profile=exec_profile,
     )
+    execution_trace["canary_timeout_cap"] = {
+        "input_exec_profile": canary_input_profile,
+        "output_exec_profile": order_exec_profile_to_dict_fn(exec_profile),
+        "changed_timeout_ms": int(canary_input_profile.get("timeout_ms", 0) or 0) != int(exec_profile.timeout_ms),
+        "changed_replace_interval_ms": int(canary_input_profile.get("replace_interval_ms", 0) or 0)
+        != int(exec_profile.replace_interval_ms),
+        "changed_price_mode": str(canary_input_profile.get("price_mode", "")).strip().upper()
+        != str(exec_profile.price_mode).strip().upper(),
+    }
 
     if side == "ask":
         if local_position is None:
@@ -799,6 +829,7 @@ def resolve_live_strategy_execution(
         "reason_code": "POLICY_DISABLED",
     }
     if micro_order_policy is not None:
+        policy_input_profile = order_exec_profile_to_dict_fn(exec_profile)
         policy_decision = micro_order_policy.evaluate(
             micro_snapshot=snapshot_for_policy,
             base_profile=exec_profile,
@@ -814,6 +845,28 @@ def resolve_live_strategy_execution(
             "enabled": True,
             "tier": str(policy_decision.tier) if policy_decision.tier is not None else None,
             "reason_code": str(policy_decision.reason_code),
+        }
+        execution_trace["micro_order_policy"] = {
+            "input_exec_profile": policy_input_profile,
+            "output_exec_profile": (
+                order_exec_profile_to_dict_fn(policy_decision.profile)
+                if policy_decision.profile is not None
+                else {}
+            ),
+            "input_price_mode": str(policy_input_profile.get("price_mode", "")).strip().upper(),
+            "output_price_mode": (
+                str(policy_decision.profile.price_mode).strip().upper()
+                if policy_decision.profile is not None
+                else str(policy_input_profile.get("price_mode", "")).strip().upper()
+            ),
+            "changed_price_mode": (
+                policy_decision.profile is not None
+                and str(policy_input_profile.get("price_mode", "")).strip().upper()
+                != str(policy_decision.profile.price_mode).strip().upper()
+            ),
+            "tier": str(policy_decision.tier) if policy_decision.tier is not None else "",
+            "reason_code": str(policy_decision.reason_code),
+            "diagnostics": dict(policy_diagnostics),
         }
         if not policy_decision.allow:
             return resolution_cls(
@@ -838,6 +891,7 @@ def resolve_live_strategy_execution(
                         "effective_ref_price": float(effective_ref_price),
                         "exec_profile": order_exec_profile_to_dict_fn(exec_profile),
                     },
+                    "execution_trace": dict(execution_trace),
                     "micro_order_policy": policy_payload,
                     "micro_diagnostics": policy_diagnostics,
                     "operational_overlay": operational_payload,
@@ -845,6 +899,7 @@ def resolve_live_strategy_execution(
             )
         if policy_decision.profile is not None:
             exec_profile = policy_decision.profile
+            execution_trace["after_micro_order_policy"] = order_exec_profile_to_dict_fn(exec_profile)
 
     requested_price = build_limit_price_from_mode_fn(
         side=side,
@@ -888,12 +943,26 @@ def resolve_live_strategy_execution(
     execution_policy = select_live_execution_action(
         model_payload=live_execution_model,
         current_state=build_execution_policy_state(
-            micro_state=micro_state,
+            micro_state={
+                **dict(micro_state),
+                "rollout_mode": str(settings.daemon.rollout_mode).strip().lower(),
+            },
             expected_edge_bps=expected_edge_bps,
         ),
         expected_edge_bps=expected_edge_bps,
         candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
     )
+    execution_trace["execution_policy"] = {
+        "input_exec_profile": order_exec_profile_to_dict_fn(exec_profile),
+        "candidate_action_codes": candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
+        "selected_action_code": str(execution_policy.get("selected_action_code", "")).strip().upper(),
+        "selected_price_mode": str(execution_policy.get("selected_price_mode", "")).strip().upper(),
+        "selected_ord_type": str(execution_policy.get("selected_ord_type", "")).strip().lower(),
+        "selected_time_in_force": str(execution_policy.get("selected_time_in_force", "")).strip().lower(),
+        "status": str(execution_policy.get("status", "")).strip().lower(),
+        "changed_price_mode": str(execution_policy.get("selected_price_mode", "")).strip().upper()
+        != str(exec_profile.price_mode).strip().upper(),
+    }
     if str(execution_policy.get("status", "")).strip().lower() == "skip":
         return resolution_cls(
             allowed=False,
@@ -919,6 +988,7 @@ def resolve_live_strategy_execution(
                     "requested_volume": float(requested_volume) if requested_volume is not None else None,
                     "exec_profile": order_exec_profile_to_dict_fn(exec_profile),
                 },
+                "execution_trace": dict(execution_trace),
                 "micro_state": micro_state,
                 "execution_policy": execution_policy,
                 "micro_order_policy": policy_payload,
@@ -949,6 +1019,7 @@ def resolve_live_strategy_execution(
             tick_size=float(snapshot.tick_size),
             price_mode=exec_profile.price_mode,
         )
+    execution_trace["after_execution_policy"] = order_exec_profile_to_dict_fn(exec_profile)
     submit_price = requested_price
     submit_volume = requested_volume
     if selected_ord_type == "best":
@@ -989,6 +1060,16 @@ def resolve_live_strategy_execution(
                 "submit_price": float(submit_price) if submit_price is not None else None,
                 "submit_volume": float(submit_volume) if submit_volume is not None else None,
                 "exec_profile": order_exec_profile_to_dict_fn(exec_profile),
+            },
+            "execution_trace": {
+                **dict(execution_trace),
+                "final_submit": {
+                    "ord_type": str(selected_ord_type),
+                    "time_in_force": str(selected_time_in_force),
+                    "submit_price_mode": str(exec_profile.price_mode).strip().upper(),
+                    "submit_price": float(submit_price) if submit_price is not None else None,
+                    "submit_volume": float(submit_volume) if submit_volume is not None else None,
+                },
             },
             "micro_state": micro_state,
             "execution_policy": execution_policy,
