@@ -1014,7 +1014,7 @@ if ($runSpawnPhase) {
         }
         $report.challenger_next = $nextState
 
-        if ($resolvedCandidateTargetUnits.Count -gt 0) {
+        if (($resolvedCandidateTargetUnits.Count -gt 0) -and $overallPass) {
             $restartedCandidateUnits = @()
             $skippedCandidateUnits = @()
             foreach ($unit in $resolvedCandidateTargetUnits) {
@@ -1038,6 +1038,13 @@ if ($runSpawnPhase) {
                 candidate_run_id = $candidateRunId
                 restarted_units = @($restartedCandidateUnits)
                 skipped_units = @($skippedCandidateUnits)
+            }
+        } elseif ($resolvedCandidateTargetUnits.Count -gt 0) {
+            $report.steps.restart_candidate_targets = [ordered]@{
+                attempted = $false
+                candidate_run_id = $candidateRunId
+                reason = "OVERALL_PASS_REQUIRED"
+                overall_pass = $overallPass
             }
         } else {
             $report.steps.restart_candidate_targets = [ordered]@{

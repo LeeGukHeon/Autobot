@@ -2528,6 +2528,34 @@ function Resolve-RegistryPointerPath {
     return (Join-Path (Join-Path $RegistryRoot $Family) ($PointerName + ".json"))
 }
 
+function Update-LatestCandidatePointers {
+    param(
+        [string]$RegistryRoot,
+        [string]$Family,
+        [string]$RunId
+    )
+    if ([string]::IsNullOrWhiteSpace($RegistryRoot) -or [string]::IsNullOrWhiteSpace($Family) -or [string]::IsNullOrWhiteSpace($RunId)) {
+        return @{}
+    }
+    $updatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    $familyPath = Resolve-RegistryPointerPath -RegistryRoot $RegistryRoot -Family $Family -PointerName "latest_candidate"
+    $globalPath = Join-Path $RegistryRoot "latest_candidate.json"
+    Write-JsonFile -PathValue $familyPath -Payload ([ordered]@{
+        run_id = $RunId
+        updated_at_utc = $updatedAtUtc
+    })
+    Write-JsonFile -PathValue $globalPath -Payload ([ordered]@{
+        run_id = $RunId
+        model_family = $Family
+        updated_at_utc = $updatedAtUtc
+    })
+    return [ordered]@{
+        family_path = $familyPath
+        global_path = $globalPath
+        updated_at_utc = $updatedAtUtc
+    }
+}
+
 function Invoke-BacktestAndLoadSummary {
     param(
         [string]$PythonPath,
@@ -2862,6 +2890,7 @@ $trainEndDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_end
 $trainStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_start_date" -DefaultValue "")
 $promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPolicy -BoundParams $PSBoundParameters -EconomicObjectiveProfile @{}
 
+$latestPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest"
 $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest_candidate"
 $championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "champion"
 $championBefore = Load-JsonOrEmpty -PathValue $championPointerPath
@@ -3688,9 +3717,16 @@ try {
     $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
     $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
     if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
+        $latestPointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $latestPointerPath }
+        $candidateRunId = [string](Get-PropValue -ObjectValue $latestPointer -Name "run_id" -DefaultValue "")
+    }
+    if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
         $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
         $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
         $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
+    }
+    if ([string]::IsNullOrWhiteSpace($candidateRunDir) -and (-not [string]::IsNullOrWhiteSpace($candidateRunId))) {
+        $candidateRunDir = Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId
     }
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
@@ -4984,6 +5020,31 @@ try {
     $report.gates.overall_pass = $overallPass
     $report.reasons = @($reasons)
     $report.notes = @($notes)
+    $updateLatestCandidateStep = [ordered]@{ attempted = $false; updated = $false }
+    if ($overallPass -and (-not $laneShadowOnly) -and $lanePromotionAllowed -and (-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($candidateRunId))) {
+        $pointerUpdate = Update-LatestCandidatePointers -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -RunId $candidateRunId
+        $updateLatestCandidateStep = [ordered]@{
+            attempted = $true
+            updated = $true
+            candidate_run_id = $candidateRunId
+            family_path = [string](Get-PropValue -ObjectValue $pointerUpdate -Name "family_path" -DefaultValue "")
+            global_path = [string](Get-PropValue -ObjectValue $pointerUpdate -Name "global_path" -DefaultValue "")
+            updated_at_utc = [string](Get-PropValue -ObjectValue $pointerUpdate -Name "updated_at_utc" -DefaultValue "")
+        }
+    } elseif ($DryRun) {
+        $updateLatestCandidateStep.reason = "SKIPPED_BY_DRY_RUN"
+    } elseif (-not $overallPass) {
+        $updateLatestCandidateStep.reason = "OVERALL_GATE_FAILED"
+    } elseif ($laneShadowOnly -or (-not $lanePromotionAllowed)) {
+        $updateLatestCandidateStep.reason = "SHADOW_LANE_GOVERNANCE_BLOCK"
+        $updateLatestCandidateStep.lane_id = $laneId
+        $updateLatestCandidateStep.lane_role = $laneRole
+        $updateLatestCandidateStep.shadow_only = $laneShadowOnly
+        $updateLatestCandidateStep.promotion_allowed = $lanePromotionAllowed
+    } else {
+        $updateLatestCandidateStep.reason = "CANDIDATE_RUN_ID_MISSING"
+    }
+    $report.steps.update_latest_candidate = $updateLatestCandidateStep
 
     $promoteStep = [ordered]@{ attempted = $false; promoted = $false }
     if ($SkipPaperSoak) {

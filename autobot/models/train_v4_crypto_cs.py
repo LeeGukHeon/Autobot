@@ -537,13 +537,6 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             run_id,
             family=options.model_family,
         )
-        update_latest_candidate_pointer(options.registry_root, options.model_family, run_id)
-        update_latest_candidate_pointer(
-            options.registry_root,
-            "_global",
-            run_id,
-            family=options.model_family,
-        )
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
 
     finished_at = time.time()

@@ -568,23 +568,23 @@ def test_spawn_only_restarts_configured_candidate_targets_when_active(tmp_path: 
         tmp_path,
         {
             "candidate": {
-                "lane_mode": "bootstrap_latest_inclusive",
-                "promotion_eligible": False,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
             },
             "split_policy": {
-                "lane_mode": "bootstrap_latest_inclusive",
-                "promotion_eligible": False,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
             },
             "steps": {
                 "train": {"candidate_run_id": "candidate-run-live-canary"},
             },
             "gates": {
-                "backtest": {"pass": False},
-                "overall_pass": False,
+                "backtest": {"pass": True},
+                "overall_pass": True,
             },
-            "reasons": ["BOOTSTRAP_ONLY_POLICY"],
+            "reasons": [],
         },
-        exit_code=2,
+        exit_code=0,
     )
 
     completed = _run_spawn_only(
@@ -608,6 +608,56 @@ def test_spawn_only_restarts_configured_candidate_targets_when_active(tmp_path: 
     assert restart_step["candidate_run_id"] == "candidate-run-live-canary"
     assert restart_step["restarted_units"] == ["autobot-live-alpha-candidate.service"]
     assert restart_step["skipped_units"] == []
+
+
+def test_spawn_only_does_not_restart_candidate_targets_when_overall_pass_is_false(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "split_policy": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-live-canary-rejected"},
+            },
+            "gates": {
+                "backtest": {"pass": True},
+                "overall_pass": False,
+            },
+            "reasons": ["RUNTIME_PARITY_BACKTEST_FAILED"],
+        },
+        exit_code=2,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        active_units=["autobot-live-alpha-candidate.service"],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    restart_step = latest["steps"]["restart_candidate_targets"]
+    assert restart_step["attempted"] is False
+    assert restart_step["candidate_run_id"] == "candidate-run-live-canary-rejected"
+    assert restart_step["reason"] == "OVERALL_PASS_REQUIRED"
 
 
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:

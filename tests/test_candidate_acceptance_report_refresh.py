@@ -89,7 +89,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                         "end": arg_value("--end"),
                     }
                 )
-                write_json(registry_dir / "latest_candidate.json", {"run_id": CANDIDATE_RUN_ID})
+                write_json(registry_dir / "latest.json", {"run_id": CANDIDATE_RUN_ID})
                 write_json(candidate_dir / "promotion_decision.json", {"status": "PASS"})
                 print("train_ok")
                 sys.exit(0)
@@ -287,3 +287,6 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
     assert latest_report["steps"]["features_build"]["label_set"] == "v2"
     assert latest_report["reasons"] == []
     assert latest_report["notes"] == ["PAPER_SOAK_SKIPPED"]
+    assert json.loads(
+        (project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json").read_text(encoding="utf-8-sig")
+    )["run_id"] == "candidate-run-001"

@@ -53,7 +53,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 family = arg_value("--model-family", "train_v4_crypto_cs")
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
-                write_json(registry_dir / "latest_candidate.json", {"run_id": CANDIDATE_RUN_ID})
+                write_json(registry_dir / "latest.json", {"run_id": CANDIDATE_RUN_ID})
                 write_json(candidate_dir / "promotion_decision.json", {"status": "PASS"})
                 print("train_ok")
                 sys.exit(0)
@@ -312,6 +312,14 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
     assert report["gates"]["backtest"]["pass"] is True
     assert report["gates"]["paper"]["pass"] is True
     assert report["gates"]["overall_pass"] is True
+    assert json.loads(
+        (project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json").read_text(encoding="utf-8-sig")
+    )["run_id"] == "candidate-run-001"
+    global_candidate_pointer = json.loads(
+        (project_root / "models" / "registry" / "latest_candidate.json").read_text(encoding="utf-8-sig")
+    )
+    assert global_candidate_pointer["run_id"] == "candidate-run-001"
+    assert global_candidate_pointer["model_family"] == "train_v4_crypto_cs"
 
 
 def test_candidate_acceptance_can_skip_champion_compare_for_new_baseline(tmp_path: Path) -> None:

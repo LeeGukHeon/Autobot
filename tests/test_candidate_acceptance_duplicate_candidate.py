@@ -60,7 +60,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
                 candidate_dir.mkdir(parents=True, exist_ok=True)
-                write_json(registry_dir / "latest_candidate.json", {"run_id": CANDIDATE_RUN_ID})
+                write_json(registry_dir / "latest.json", {"run_id": CANDIDATE_RUN_ID})
                 write_json(candidate_dir / "promotion_decision.json", {"status": "candidate"})
                 (candidate_dir / "model.bin").write_bytes(b"same-model")
                 write_json(candidate_dir / "thresholds.json", {"top_5pct": 0.75})
@@ -99,6 +99,8 @@ def test_candidate_acceptance_short_circuits_duplicate_candidate_before_backtest
     champion_dir = registry_dir / "champion-run-000"
     champion_dir.mkdir(parents=True, exist_ok=True)
     _write_json(registry_dir / "champion.json", {"run_id": "champion-run-000"})
+    _write_json(registry_dir / "latest_candidate.json", {"run_id": "candidate-prev-000"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "candidate-prev-000", "model_family": "train_v4_crypto_cs"})
     (champion_dir / "model.bin").write_bytes(b"same-model")
     _write_json(champion_dir / "thresholds.json", {"top_5pct": 0.75})
 
@@ -142,3 +144,4 @@ def test_candidate_acceptance_short_circuits_duplicate_candidate_before_backtest
     assert report["steps"]["backtest_candidate"]["reason"] == "DUPLICATE_CANDIDATE"
     assert report["steps"]["paper_candidate"]["attempted"] is False
     assert report["steps"]["promote"]["reason"] == "DUPLICATE_CANDIDATE"
+    assert json.loads((registry_dir / "latest_candidate.json").read_text(encoding="utf-8"))["run_id"] == "candidate-prev-000"
