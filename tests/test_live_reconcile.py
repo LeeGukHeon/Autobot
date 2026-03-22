@@ -2002,3 +2002,61 @@ def test_reconcile_closes_managed_position_from_verified_closed_journal_without_
     assert len(plans) == 1
     assert plans[0]["state"] == "CLOSED"
     assert plans[0]["current_exit_order_uuid"] == "exit-order-nom-1"
+
+
+def test_reconcile_accepts_done_ask_order_with_small_timestamp_skew(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ANIME",
+                base_currency="ANIME",
+                base_amount=781.8389687,
+                avg_entry_price=7.64,
+                updated_ts=6_247,
+                tp_json=json.dumps({"enabled": True, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": True, "source": "model_alpha_v1"}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-anime-1",
+                identifier="AUTOBOT-autobot-001-risk-anime-done",
+                market="KRW-ANIME",
+                side="ask",
+                ord_type="limit",
+                price=7.63,
+                volume_req=781.8389687,
+                volume_filled=781.8389687,
+                state="done",
+                created_ts=5_800,
+                updated_ts=6_000,
+                intent_id=None,
+                tp_sl_link="plan-anime-1",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="PRIVATE_WS_ORDER_EVENT",
+                event_source="test",
+            )
+        )
+
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=True,
+            ts_ms=7_000,
+        )
+
+    assert report["halted"] is False
+    assert report["counts"]["local_positions_missing_on_exchange"] == 0
+    close_actions = [item for item in report["actions"] if item["type"] == "close_managed_position_from_bot_exit"]
+    assert len(close_actions) == 1
+    assert close_actions[0]["market"] == "KRW-ANIME"
+    assert close_actions[0]["close_mode"] == "done_ask_order"

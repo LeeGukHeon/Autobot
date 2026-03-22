@@ -25,6 +25,7 @@ from .model_handoff import resolve_live_model_ref_source
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
 UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk", "attach_strategy_risk"]
 IGNORED_DUST_POSITIONS_CHECKPOINT = "ignored_dust_positions"
+_MANAGED_POSITION_CLOSE_EVIDENCE_GRACE_MS = 5_000
 
 
 def reconcile_exchange_snapshot(
@@ -1478,7 +1479,9 @@ def _match_model_managed_position_close(
             ),
             None,
         )
-        if matched_active_plan is not None or int(latest_done_ask_order.get("updated_ts") or 0) >= int(local_position.get("updated_ts") or 0):
+        done_updated_ts = int(latest_done_ask_order.get("updated_ts") or 0)
+        local_updated_ts = int(local_position.get("updated_ts") or 0)
+        if matched_active_plan is not None or (done_updated_ts + _MANAGED_POSITION_CLOSE_EVIDENCE_GRACE_MS) >= local_updated_ts:
             return {
                 "market": market,
                 "order_uuid": done_order_uuid,
@@ -1497,7 +1500,9 @@ def _match_model_managed_position_close(
             ),
             None,
         )
-        if matched_active_plan is not None or int(latest_verified_closed_trade.get("exit_ts_ms") or 0) >= int(local_position.get("updated_ts") or 0):
+        verified_exit_ts = int(latest_verified_closed_trade.get("exit_ts_ms") or 0)
+        local_updated_ts = int(local_position.get("updated_ts") or 0)
+        if matched_active_plan is not None or (verified_exit_ts + _MANAGED_POSITION_CLOSE_EVIDENCE_GRACE_MS) >= local_updated_ts:
             exit_meta = dict(latest_verified_closed_trade.get("exit_meta") or {})
             return {
                 "market": market,
