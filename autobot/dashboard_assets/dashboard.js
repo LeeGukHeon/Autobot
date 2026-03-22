@@ -119,8 +119,8 @@
       text: "서비스, 검증, 타이머, 경고를 실시간으로 읽는 운영 화면입니다."
     },
     training: {
-      eyebrow: "Training Surface",
-      title: "Training & Acceptance",
+      eyebrow: "학습 표면",
+      title: "학습 · 검증",
       text: "후보 생성부터 검증, 챌린저 흐름까지 한 눈에 보는 탭입니다."
     },
     paper: {
@@ -139,8 +139,8 @@
       text: "수집 연결과 적재 신선도를 읽는 데이터 플레인 화면입니다."
     },
     ops: {
-      eyebrow: "Operations",
-      title: "Operations Console",
+      eyebrow: "운영 제어",
+      title: "운영 작업",
       text: "서비스 재시작, 수동 파이프라인 실행, 최신 candidate 강제 반영을 위한 운영 화면입니다."
     }
   };
@@ -451,6 +451,34 @@
     const num = toNumber(value);
     if (num == null || num === 0) return "neutral";
     return num > 0 ? "good" : "bad";
+  }
+
+  function clampProgress(value) {
+    const num = toNumber(value);
+    if (num == null) return null;
+    return Math.max(0, Math.min(100, Math.round(num)));
+  }
+
+  function opsCategoryLabel(key) {
+    if (key === "services") return "서비스 제어";
+    if (key === "pipeline") return "파이프라인 실행";
+    if (key === "binding") return "런 바인딩";
+    if (key === "recovery") return "복구 / 브레이커";
+    return "기타";
+  }
+
+  function opsCategorySummary(key, items) {
+    const count = Array.isArray(items) ? items.length : 0;
+    if (key === "services") return `${count}개 서비스`;
+    if (key === "pipeline") return `${count}개 배치`;
+    if (key === "binding") return `${count}개 반영`;
+    if (key === "recovery") return `${count}개 복구`;
+    return `${count}개 작업`;
+  }
+
+  function opsActionLabel(item) {
+    const action = OPS_ACTION_TEXT[String((item || {}).id || "").trim()];
+    return action && action.label ? action.label : (item && item.label) || "-";
   }
 
   function signalCard({ label, value, note = "", tone = "neutral" }) {
@@ -841,20 +869,27 @@
   function renderTraining(snapshot) {
     const acceptance = (snapshot.training || {}).acceptance || {};
     const training = snapshot.training || {};
+    const activity = training.current_activity || {};
     const pointers = training.pointers || {};
     const challenger = snapshot.challenger || {};
     const rankShadow = training.rank_shadow || {};
     const summary = joinTranslated([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]);
+    const progressPct = clampProgress(activity.progress_pct);
 
     document.getElementById("training-headline").textContent =
+      activity.active ? (activity.headline_ko || "현재 학습 또는 검증 작업이 진행 중입니다.") :
       acceptance.overall_pass === true ? "최신 후보가 검증을 통과했습니다." :
       acceptance.overall_pass === false ? "최신 후보가 검증을 통과하지 못했습니다." :
       "아직 최근 검증 결과가 없습니다.";
-    document.getElementById("training-subhead").textContent = summary;
+    document.getElementById("training-subhead").textContent = activity.active
+      ? (activity.detail_ko || summary)
+      : summary;
     document.getElementById("training-kpis").innerHTML = [
       metric("운영 후보", shortRun(((pointers.latest_candidate || {}).run_id) || acceptance.candidate_run_id)),
       metric("최근 학습", shortRun((pointers.latest || {}).run_id)),
       metric("배치 날짜", maybe(acceptance.batch_date)),
+      metric("현재 단계", maybe(activity.stage_label_ko)),
+      metric("진행도", progressPct == null ? "-" : `${progressPct}%`),
       metric("판정 기준", translate(acceptance.decision_basis)),
       metric("갱신 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
@@ -877,8 +912,27 @@
     const rankNarrative = rankShadow.status
       ? `랭크 그림자 레인은 현재 ${maybe(rankShadow.status)} 상태이며 다음 액션은 ${maybe(rankShadow.next_action)}입니다.`
       : "랭크 그림자 레인 최신 판단이 아직 없습니다.";
+    const activityCard = activity.active ? `
+      <article class="list-row training-progress-row">
+        <div class="list-row-head">
+          <div>
+            <h4>${esc(activity.stage_label_ko || "진행 중 작업")}</h4>
+            <p class="list-row-summary">${esc(activity.headline_ko || "현재 배치 작업을 진행 중입니다.")}</p>
+          </div>
+          ${pill("진행", progressPct == null ? "계산 중" : `${progressPct}%`, progressPct != null && progressPct >= 80 ? "good" : progressPct != null && progressPct >= 40 ? "warn" : "neutral")}
+        </div>
+        <div class="training-progress-track"><span class="training-progress-fill" style="width:${progressPct == null ? 0 : progressPct}%"></span></div>
+        <p class="training-progress-copy">${esc(activity.detail_ko || "")}</p>
+        <div class="list-meta">
+          ${compactStat("서비스 시작", fmtDateTime(activity.started_at))}
+          ${compactStat("프로세스 PID", maybe(activity.process_pid))}
+          ${compactStat("실행 명령", truncateText(activity.process_command || "-", 64))}
+        </div>
+      </article>
+    ` : "";
     document.getElementById("training-details").innerHTML = `<div class="dense-list">${
       [
+        activityCard,
         compactRow({
           title: "포인터 상태",
           summary: pointerSummary,
@@ -925,7 +979,7 @@
             compactStat("사이클 보고서", shortPath(rankShadow.artifact_path)),
           ],
         }),
-      ].join("")
+      ].filter(Boolean).join("")
     }</div>`;
 
     const artifacts = training.candidate_artifacts || {};
@@ -1651,13 +1705,13 @@
       ? "운영 액션이 활성화돼 있습니다."
       : "운영 액션은 현재 비활성 상태입니다.";
     document.getElementById("ops-subhead").textContent = ops.enabled
-      ? "토큰을 가진 운영자만 restart / spawn / promote / candidate adoption을 실행할 수 있습니다."
-      : translate(ops.reason) === "-" ? "dashboard ops token과 enable 설정이 있어야 write action이 열립니다." : translate(ops.reason);
+      ? "토큰을 가진 운영자만 재시작, 복구, 수동 배치를 실행할 수 있습니다."
+      : translate(ops.reason) === "-" ? "운영 토큰과 enable 설정이 있어야 쓰기 액션이 열립니다." : translate(ops.reason);
     document.getElementById("ops-kpis").innerHTML = [
-      metric("ops enabled", boolLabel(Boolean(ops.enabled))),
-      metric("token required", boolLabel(Boolean(ops.token_required))),
-      metric("latest candidate", shortRun(ops.latest_candidate_run_id)),
-      metric("actions", maybe(actions.length, "0")),
+      metric("운영 기능", boolLabel(Boolean(ops.enabled))),
+      metric("토큰 필요", boolLabel(Boolean(ops.token_required))),
+      metric("최신 후보", shortRun(ops.latest_candidate_run_id)),
+      metric("액션 수", maybe(actions.length, "0")),
     ].join("");
 
     const tokenInput = document.getElementById("ops-token-input");
@@ -1671,16 +1725,16 @@
       acc[key].push(item);
       return acc;
     }, {});
-    const categoryOrder = ["services", "pipeline", "binding", "other"];
+    const categoryOrder = ["services", "pipeline", "binding", "recovery", "other"];
     document.getElementById("ops-actions").innerHTML = actions.length
       ? categoryOrder
         .filter((key) => Array.isArray(grouped[key]) && grouped[key].length)
         .map((key) => compactRow({
-          title: key === "services" ? "Service Control" : key === "pipeline" ? "Pipeline Runs" : key === "binding" ? "Run Binding" : key,
-          summary: grouped[key].map((item) => item.label).join(" / "),
+          title: opsCategoryLabel(key),
+          summary: opsCategorySummary(key, grouped[key]),
           items: grouped[key].map((item) => (
             `<button class="ops-button ${ops.enabled ? "" : "disabled"}" type="button" data-ops-action="${esc(item.id)}" data-ops-confirm="${esc(item.confirm || "")}" ${ops.enabled ? "" : "disabled"}>
-              <strong>${esc(item.label)}</strong>
+              <strong>${esc(opsActionLabel(item))}</strong>
               <span>${esc(item.description || "")}</span>
             </button>`
           )),

@@ -363,6 +363,228 @@ def _unit_snapshot(unit_name: str, *, timer: bool = False) -> dict[str, Any]:
     }
 
 
+def _truncate(value: str | None, limit: int = 120) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _list_process_rows() -> list[dict[str, Any]]:
+    if not shutil.which("ps"):
+        return []
+    try:
+        completed = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,args="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in str(completed.stdout).splitlines():
+        raw = str(line).strip()
+        if not raw:
+            continue
+        parts = raw.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid = _coerce_int(parts[0])
+        ppid = _coerce_int(parts[1])
+        args = str(parts[2]).strip()
+        if pid is None or ppid is None or not args:
+            continue
+        rows.append({"pid": int(pid), "ppid": int(ppid), "args": args})
+    return rows
+
+
+def _descendant_process_rows(root_pid: int | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pid_value = int(root_pid or 0)
+    if pid_value <= 0:
+        return []
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_parent.setdefault(int(row.get("ppid") or 0), []).append(row)
+    out: list[dict[str, Any]] = []
+    stack = [pid_value]
+    seen: set[int] = set()
+    while stack:
+        parent = stack.pop()
+        for child in by_parent.get(parent, []):
+            child_pid = int(child.get("pid") or 0)
+            if child_pid <= 0 or child_pid in seen:
+                continue
+            seen.add(child_pid)
+            out.append(child)
+            stack.append(child_pid)
+    return out
+
+
+def _command_flag_value(command: str, flag: str) -> str | None:
+    text = str(command or "").strip()
+    if not text:
+        return None
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    for idx, token in enumerate(tokens):
+        if token == flag and idx + 1 < len(tokens):
+            value = str(tokens[idx + 1]).strip()
+            return value or None
+    return None
+
+
+def _summarize_training_activity(
+    project_root: Path,
+    *,
+    services: dict[str, dict[str, Any]],
+    acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    _ = project_root, acceptance
+    spawn_service = dict(services.get("spawn_service") or {})
+    active_state = str(spawn_service.get("active_state") or "").strip().lower()
+    if active_state not in {"active", "activating"}:
+        return {
+            "active": False,
+            "progress_pct": None,
+            "stage_key": "idle",
+            "stage_label_ko": "대기",
+            "headline_ko": "현재 진행 중인 학습 작업이 없습니다.",
+            "detail_ko": "다음 수동 실행이나 타이머 배치를 기다리는 상태입니다.",
+            "started_at": None,
+            "process_pid": None,
+            "process_command": None,
+        }
+
+    processes = _descendant_process_rows(spawn_service.get("main_pid"), _list_process_rows())
+    stage_specs = [
+        {
+            "match": ("autobot.cli", "model", "promote"),
+            "stage_key": "promote",
+            "stage_label_ko": "승급 반영",
+            "progress_pct": 97,
+            "headline_ko": "챔피언 승급과 서비스 반영을 마무리하고 있습니다.",
+            "detail_builder": lambda command: "검증을 통과한 후보를 챔피언 포인터와 런타임 서비스에 연결하는 마지막 단계입니다.",
+        },
+        {
+            "match": ("paper_micro_smoke.ps1",),
+            "stage_key": "paper_soak",
+            "stage_label_ko": "페이퍼 소크",
+            "progress_pct": 92,
+            "headline_ko": "페이퍼 챌린저 소크를 준비하거나 진행하고 있습니다.",
+            "detail_builder": lambda command: "후보 모델을 페이퍼 런타임에 올려 실제 체결 흐름을 짧게 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "backtest", "alpha", "runtime_parity"),
+            "stage_key": "runtime_parity_backtest",
+            "stage_label_ko": "실운영 유사 백테스트",
+            "progress_pct": 84,
+            "headline_ko": "실운영 유사 백테스트로 후보와 챔피언을 비교하고 있습니다.",
+            "detail_builder": lambda command: "학습된 집행 추천과 현재 런타임 계약까지 반영해 certification 구간을 재생하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "backtest", "alpha"),
+            "stage_key": "certification_backtest",
+            "stage_label_ko": "인증 백테스트",
+            "progress_pct": 78,
+            "headline_ko": "certification window 백테스트를 실행 중입니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "후보와 챔피언을 재생해 체결 수와 손익 기준을 확인하는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "train", "scheduled_daily"),
+            "stage_key": "scheduled_daily_train",
+            "stage_label_ko": "본 학습",
+            "progress_pct": 68,
+            "headline_ko": "오늘 배치의 본 학습을 진행 중입니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                f"구간으로 {(_command_flag_value(command, '--run-scope') or 'scheduled_daily')} 학습을 수행하고 있습니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "train", "scheduled_split_policy_history"),
+            "stage_key": "split_policy_history",
+            "stage_label_ko": "분할 정책 검증",
+            "progress_pct": 42,
+            "headline_ko": "분할 정책 검증용 히스토리 학습을 진행 중입니다.",
+            "detail_builder": lambda command: "여러 holdout 후보를 짧게 학습해 오늘 배치에 가장 맞는 certification 창을 고르는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "features", "build"),
+            "stage_key": "features_build",
+            "stage_label_ko": "피처 빌드",
+            "progress_pct": 26,
+            "headline_ko": "학습용 피처를 다시 계산하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "micro 포함 피처를 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("daily_micro_pipeline_for_server.ps1",),
+            "stage_key": "daily_pipeline",
+            "stage_label_ko": "데일리 파이프라인",
+            "progress_pct": 4,
+            "headline_ko": "데일리 데이터 파이프라인을 시작했습니다.",
+            "detail_builder": lambda command: "캔들, 틱, micro 데이터를 순서대로 준비하며 학습 입력을 만드는 초기 단계입니다.",
+        },
+        {
+            "match": ("v4_governed_candidate_acceptance.ps1",),
+            "stage_key": "acceptance_wrapper",
+            "stage_label_ko": "수락 루프 시작",
+            "progress_pct": 2,
+            "headline_ko": "후보 검증 루프를 시작했습니다.",
+            "detail_builder": lambda command: "오늘 배치에 맞는 학습, backtest, 페이퍼 검증 단계를 순서대로 준비하는 중입니다.",
+        },
+    ]
+
+    best_match: dict[str, Any] | None = None
+    for proc in processes:
+        command = str(proc.get("args") or "")
+        command_lower = command.lower()
+        for spec in stage_specs:
+            if all(token.lower() in command_lower for token in spec["match"]):
+                progress = int(spec["progress_pct"])
+                if best_match is None or progress > int(best_match.get("progress_pct") or 0):
+                    best_match = {
+                        "active": True,
+                        "progress_pct": progress,
+                        "stage_key": spec["stage_key"],
+                        "stage_label_ko": spec["stage_label_ko"],
+                        "headline_ko": spec["headline_ko"],
+                        "detail_ko": str(spec["detail_builder"](command)),
+                        "started_at": spawn_service.get("started_at"),
+                        "process_pid": int(proc.get("pid") or 0),
+                        "process_command": command,
+                    }
+                break
+
+    if best_match is not None:
+        return best_match
+
+    return {
+        "active": True,
+        "progress_pct": 5,
+        "stage_key": "service_active",
+        "stage_label_ko": "진행 중",
+        "headline_ko": "학습 또는 검증 작업이 진행 중입니다.",
+        "detail_ko": "현재 서비스는 살아 있으나, 세부 단계를 해석할 수 있는 자식 프로세스 정보가 부족합니다.",
+        "started_at": spawn_service.get("started_at"),
+        "process_pid": None,
+        "process_command": None,
+    }
+
+
 def _parse_systemd_environment(raw_value: str | None) -> dict[str, str]:
     text = str(raw_value or "").strip()
     if not text:
@@ -2044,6 +2266,303 @@ def _build_dashboard_ops_snapshot(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _summarize_acceptance(latest_path: Path) -> dict[str, Any]:
+    payload = _load_json(latest_path)
+    candidate_run_id = (
+        payload.get("candidate_run_id")
+        or _dig(payload, "steps", "train", "candidate_run_id")
+        or _dig(payload, "candidate", "run_id")
+    )
+    champion_before = payload.get("champion_before_run_id") or _dig(payload, "candidate", "champion_before_run_id")
+    overall_pass = payload.get("overall_pass")
+    if overall_pass is None:
+        overall_pass = _dig(payload, "gates", "overall_pass")
+    backtest_pass = payload.get("backtest_pass")
+    if backtest_pass is None:
+        backtest_pass = _dig(payload, "gates", "backtest", "pass")
+    paper_pass = payload.get("paper_pass")
+    if paper_pass is None:
+        paper_pass = _dig(payload, "gates", "paper", "pass")
+    trainer_reasons = (
+        _dig(payload, "gates", "backtest", "trainer_evidence_reasons", default=[])
+        or _dig(payload, "steps", "train", "trainer_evidence", "reasons", default=[])
+        or []
+    )
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+    notes = payload.get("notes") if isinstance(payload.get("notes"), list) else []
+    return {
+        "candidate_run_id": candidate_run_id,
+        "candidate_run_dir": payload.get("candidate_run_dir") or _dig(payload, "steps", "train", "candidate_run_dir"),
+        "champion_before_run_id": champion_before,
+        "champion_after_run_id": payload.get("champion_after_run_id") or _dig(payload, "candidate", "champion_after_run_id"),
+        "overall_pass": overall_pass,
+        "backtest_pass": backtest_pass,
+        "paper_pass": paper_pass,
+        "decision_basis": _dig(payload, "gates", "backtest", "decision_basis"),
+        "trainer_reasons": trainer_reasons,
+        "reasons": reasons,
+        "notes": notes,
+        "generated_at": payload.get("generated_at"),
+        "completed_at": payload.get("completed_at") or _path_mtime_iso(latest_path),
+        "batch_date": payload.get("batch_date"),
+        "model_family": payload.get("model_family"),
+        "artifact_path": str(latest_path),
+    }
+
+
+def _summarize_challenger(latest_path: Path, current_state_path: Path) -> dict[str, Any]:
+    payload = _load_json(latest_path)
+    current_state = _load_json(current_state_path)
+    start_step = _dig(payload, "steps", "start_challenger", default={}) or {}
+    return {
+        "candidate_run_id": start_step.get("candidate_run_id") or current_state.get("candidate_run_id"),
+        "started": start_step.get("started"),
+        "reason": start_step.get("reason"),
+        "acceptance_notes": start_step.get("acceptance_notes") if isinstance(start_step.get("acceptance_notes"), list) else [],
+        "challenger_unit": start_step.get("challenger_unit"),
+        "paper_model_ref": start_step.get("paper_model_ref"),
+        "paper_feature_provider": start_step.get("paper_feature_provider"),
+        "generated_at": payload.get("generated_at"),
+        "completed_at": _path_mtime_iso(latest_path),
+        "current_state": current_state,
+        "artifact_path": str(latest_path),
+    }
+
+
+def _cleanup_breaker_related_checkpoints(
+    db_path: Path,
+    *,
+    prefixes: tuple[str, ...],
+) -> dict[str, Any]:
+    deleted_names: list[str] = []
+    normalized_prefixes = tuple(str(item).strip() for item in prefixes if str(item).strip())
+    if not normalized_prefixes:
+        return {"deleted": 0, "names": []}
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT name FROM checkpoints").fetchall()
+        candidate_names = [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
+        for name in candidate_names:
+            if any(name == prefix or name.startswith(f"{prefix}:") for prefix in normalized_prefixes):
+                conn.execute("DELETE FROM checkpoints WHERE name = ?", (name,))
+                deleted_names.append(name)
+        conn.commit()
+    return {"deleted": len(deleted_names), "names": deleted_names}
+
+
+def _run_clear_live_breaker(
+    project_root: Path,
+    *,
+    db_rel_path: str,
+    source: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    started_at = _utc_now_iso()
+    db_path = (project_root / str(db_rel_path).strip()).resolve()
+    if not db_path.exists():
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 1,
+            "stdout_preview": "",
+            "stderr_preview": f"live state db not found: {db_path}",
+            "success": False,
+        }
+    try:
+        with LiveStateStore(db_path) as store:
+            clear_breaker(
+                store,
+                source=str(source).strip() or "dashboard_ops_clear_breaker",
+                ts_ms=int(time.time() * 1000),
+                details={"note": note},
+            )
+            status_payload = breaker_status(store)
+        checkpoint_cleanup = _cleanup_breaker_related_checkpoints(
+            db_path,
+            prefixes=("execution_risk_control_online_buffer",),
+        )
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 0,
+            "stdout_preview": _preview_text(
+                json.dumps(
+                    {
+                        "db_path": str(db_path),
+                        "breaker_active": bool(status_payload.get("active")),
+                        "reason_codes": list(status_payload.get("reason_codes") or []),
+                        "deleted_checkpoints": int(checkpoint_cleanup.get("deleted", 0)),
+                        "deleted_checkpoint_names": list(checkpoint_cleanup.get("names") or []),
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+            "stderr_preview": "",
+            "success": True,
+        }
+    except Exception as exc:
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 1,
+            "stdout_preview": "",
+            "stderr_preview": _preview_text(str(exc)),
+            "success": False,
+        }
+
+
+def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
+    latest_candidate_run_id = _latest_candidate_run_id(project_root)
+    return {
+        "restart_paper_champion": {
+            "id": "restart_paper_champion",
+            "label": "챔피언 페이퍼 재시작",
+            "description": "autobot-paper-v4.service 재시작",
+            "category": "services",
+            "confirm": "챔피언 페이퍼 서비스를 지금 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4.service"],
+        },
+        "restart_paper_challenger": {
+            "id": "restart_paper_challenger",
+            "label": "챌린저 페이퍼 재시작",
+            "description": "autobot-paper-v4-challenger.service 재시작",
+            "category": "services",
+            "confirm": "챌린저 페이퍼 서비스를 지금 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4-challenger.service"],
+        },
+        "restart_canary": {
+            "id": "restart_canary",
+            "label": "라이브 카나리아 재시작",
+            "description": "autobot-live-alpha-candidate.service 재시작",
+            "category": "services",
+            "confirm": "카나리아 라이브 서비스를 지금 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
+        },
+        "clear_canary_breaker": {
+            "id": "clear_canary_breaker",
+            "label": "카나리아 브레이커 해제",
+            "description": "카나리아 브레이커와 리스크 버퍼 정리",
+            "category": "recovery",
+            "confirm": "카나리아 persistent breaker와 관련 버퍼를 지금 정리할까요?",
+            "kind": "clear_breaker",
+            "db_rel_path": "data/state/live_candidate/live_state.db",
+            "source": "dashboard_ops_clear_canary_breaker",
+            "note": "dashboard ops clear canary breaker",
+        },
+        "try_restart_live_main": {
+            "id": "try_restart_live_main",
+            "label": "메인 라이브 try-restart",
+            "description": "autobot-live-alpha.service try-restart",
+            "category": "services",
+            "confirm": "메인 라이브 서비스를 지금 try-restart할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "try-restart", "autobot-live-alpha.service"],
+        },
+        "clear_live_main_breaker": {
+            "id": "clear_live_main_breaker",
+            "label": "메인 라이브 브레이커 해제",
+            "description": "메인 라이브 브레이커와 리스크 버퍼 정리",
+            "category": "recovery",
+            "confirm": "메인 라이브 persistent breaker와 관련 버퍼를 지금 정리할까요?",
+            "kind": "clear_breaker",
+            "db_rel_path": "data/state/live_state.db",
+            "source": "dashboard_ops_clear_live_main_breaker",
+            "note": "dashboard ops clear main live breaker",
+        },
+        "restart_ws_public": {
+            "id": "restart_ws_public",
+            "label": "WS 수집기 재시작",
+            "description": "autobot-ws-public.service 재시작",
+            "category": "services",
+            "confirm": "공용 WS 수집기를 지금 재시작할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-ws-public.service"],
+        },
+        "start_spawn_only": {
+            "id": "start_spawn_only",
+            "label": "스폰만 지금 실행",
+            "description": "00:10 challenger spawn 수동 실행",
+            "category": "pipeline",
+            "confirm": "spawn_only를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-spawn.service"],
+        },
+        "start_promote_only": {
+            "id": "start_promote_only",
+            "label": "승급만 지금 실행",
+            "description": "23:50 challenger promote 수동 실행",
+            "category": "pipeline",
+            "confirm": "promote_only를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-promote.service"],
+        },
+        "start_rank_shadow": {
+            "id": "start_rank_shadow",
+            "label": "랭크 섀도우 실행",
+            "description": "rank shadow 수동 실행",
+            "category": "pipeline",
+            "confirm": "rank-shadow를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-rank-shadow.service"],
+        },
+        "adopt_latest_candidate": {
+            "id": "adopt_latest_candidate",
+            "label": "최신 후보 즉시 반영",
+            "description": (
+                f"latest_candidate {latest_candidate_run_id}를 challenger paper와 canary에 반영"
+                if latest_candidate_run_id
+                else "latest_candidate를 challenger paper와 canary에 반영"
+            ),
+            "category": "binding",
+            "confirm": "현재 latest_candidate를 challenger paper와 canary에 바로 반영할까요?",
+            "kind": "adopt_latest_candidate",
+            "run_id": latest_candidate_run_id,
+        },
+    }
+
+
+def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str, Any]:
+    catalog = _dashboard_ops_catalog(project_root)
+    action = catalog.get(str(action_id).strip())
+    if not action:
+        return {
+            "action_id": str(action_id).strip(),
+            "success": False,
+            "error": "unknown_action",
+        }
+    if not _DASHBOARD_OPS_LOCK.acquire(blocking=False):
+        return {
+            "action_id": action["id"],
+            "success": False,
+            "error": "ops_busy",
+        }
+    try:
+        if action.get("kind") == "adopt_latest_candidate":
+            result = _run_adopt_latest_candidate(project_root, str(action.get("run_id") or ""))
+        elif action.get("kind") == "clear_breaker":
+            result = _run_clear_live_breaker(
+                project_root,
+                db_rel_path=str(action.get("db_rel_path") or ""),
+                source=str(action.get("source") or "dashboard_ops_clear_breaker"),
+                note=str(action.get("note") or "").strip() or None,
+            )
+        else:
+            result = _run_dashboard_command(list(action.get("command") or []), timeout_sec=20)
+        record = {
+            "action_id": action["id"],
+            "label": action["label"],
+            "description": action["description"],
+            "category": action["category"],
+            **result,
+        }
+        _append_dashboard_ops_history(project_root, record)
+        return record
+    finally:
+        _DASHBOARD_OPS_LOCK.release()
+
+
 def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     project_root = project_root.resolve()
     acceptance_latest = project_root / "logs" / "model_v4_acceptance" / "latest.json"
@@ -2081,6 +2600,13 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
             "pointers": _load_training_pointer_summary(project_root),
             "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
+            "current_activity": _summarize_training_activity(
+                project_root,
+                services={
+                    "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
+                },
+                acceptance=acceptance,
+            ),
         },
         "challenger": _summarize_challenger(challenger_latest, challenger_state),
         "paper": {

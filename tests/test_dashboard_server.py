@@ -977,3 +977,59 @@ def test_build_dashboard_snapshot_enables_ops_when_token_present(tmp_path: Path,
     assert snapshot["operations"]["enabled"] is True
     assert snapshot["operations"]["token_required"] is True
     assert snapshot["operations"]["actions"]
+
+
+def test_build_dashboard_snapshot_includes_active_training_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-21T01:00:00Z"})
+    _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"steps": {}})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {})
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {})
+
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        if unit_name == "autobot-v4-challenger-spawn.service":
+            return {
+                "ActiveState": "active",
+                "SubState": "running",
+                "UnitFileState": "enabled",
+                "MainPID": "4321",
+                "ExecMainStartTimestamp": "Sat 2026-03-21 10:00:00 UTC",
+                "ExecMainExitTimestamp": "",
+                "Description": "Spawn service",
+            }
+        return {}
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+    monkeypatch.setattr(
+        "autobot.dashboard_server._list_process_rows",
+        lambda: [
+            {
+                "pid": 4322,
+                "ppid": 4321,
+                "args": "/home/ubuntu/MyApps/Autobot/.venv/bin/python -m autobot.cli model train --trainer v4_crypto_cs --model-family train_v4_crypto_cs --feature-set v4 --label-set v2 --task cls --run-scope scheduled_daily --tf 5m --quote KRW --top-n 50 --start 2026-03-04 --end 2026-03-19",
+            }
+        ],
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    activity = snapshot["training"]["current_activity"]
+    assert activity["active"] is True
+    assert activity["stage_key"] == "scheduled_daily_train"
+    assert activity["stage_label_ko"] == "본 학습"
+    assert activity["progress_pct"] == 68
+    assert "2026-03-04" in activity["detail_ko"]
+
+
+def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_ENABLED", "true")
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_TOKEN", "secret-token")
+
+    snapshot = build_dashboard_snapshot(tmp_path)
+    actions = {item["id"]: item for item in snapshot["operations"]["actions"]}
+
+    assert "clear_canary_breaker" in actions
+    assert actions["clear_canary_breaker"]["category"] == "recovery"
+    assert "clear_live_main_breaker" in actions
+    assert actions["clear_live_main_breaker"]["category"] == "recovery"
