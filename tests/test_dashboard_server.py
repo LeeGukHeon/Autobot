@@ -6,7 +6,13 @@ import time
 
 import pytest
 
-from autobot.dashboard_server import _json_response, _load_dashboard_asset, _unit_snapshot, build_dashboard_snapshot
+from autobot.dashboard_server import (
+    _json_response,
+    _load_dashboard_asset,
+    _run_clear_live_breaker,
+    _unit_snapshot,
+    build_dashboard_snapshot,
+)
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -1033,6 +1039,66 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     assert actions["clear_canary_breaker"]["category"] == "recovery"
     assert "clear_live_main_breaker" in actions
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
+
+
+def test_run_clear_live_breaker_resolves_breaker_state_and_cleans_online_buffer(tmp_path: Path) -> None:
+    project_root = tmp_path
+    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO breaker_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "live",
+                1,
+                "HALT_NEW_INTENTS",
+                "test_source",
+                json.dumps(["RISK_CONTROL_ONLINE_BREACH_STREAK"]),
+                json.dumps({"active": True}),
+                int(time.time() * 1000),
+                int(time.time() * 1000),
+            ),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?)",
+            (
+                "execution_risk_control_online_buffer:test-run",
+                int(time.time() * 1000),
+                json.dumps({"breach_count": 3}),
+            ),
+        )
+    conn.close()
+
+    result = _run_clear_live_breaker(
+        project_root,
+        db_rel_path="data/state/live_candidate/live_state.db",
+        source="dashboard_ops_clear_canary_breaker",
+        note="unit-test",
+    )
+
+    assert result["success"] is True
+    assert result["exit_code"] == 0
+    assert "deleted_checkpoints" in result["stdout_preview"]
+
+    conn = sqlite3.connect(db_path)
+    with conn:
+        row = conn.execute(
+            "SELECT active, reason_codes_json, source FROM breaker_state WHERE breaker_key = ?",
+            ("live",),
+        ).fetchone()
+        checkpoint = conn.execute(
+            "SELECT payload_json FROM checkpoints WHERE name = ?",
+            ("execution_risk_control_online_buffer:test-run",),
+        ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert int(row[0]) == 0
+    assert json.loads(row[1]) == []
+    assert row[2] == "dashboard_ops_clear_canary_breaker"
+    assert checkpoint is None
 
 
 def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_service_is_inactive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
