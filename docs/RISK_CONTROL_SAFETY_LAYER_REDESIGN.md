@@ -1,4 +1,9 @@
-# Risk Control Safety Layer Redesign
+﻿# Risk Control Safety Layer Redesign
+
+- Status: redesign note
+- Operational authority: no
+- Current risk/runtime truth:
+  - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 
 ## Goal
 
@@ -158,3 +163,4 @@ move more safety into explicit white-box constraints:
 - regime / liquidity no-trade bands
 
 That follow-up is optional and should be treated as a phase-2 refactor.
+

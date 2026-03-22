@@ -3,6 +3,8 @@
 - Version: 2026-03-18
 - Scope: current `autobot/` codebase, server automation scripts, and observed OCI runtime state on 2026-03-18
 - Purpose: this is the single reference for architecture, lifecycle, operations, recovery, and current known sharp edges
+- Docs index:
+  - `docs/README.md`
 
 ## 1. What This Program Is
 

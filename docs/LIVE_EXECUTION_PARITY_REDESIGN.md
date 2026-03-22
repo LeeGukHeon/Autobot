@@ -1,4 +1,9 @@
-# Live Execution Parity Redesign
+﻿# Live Execution Parity Redesign
+
+- Status: redesign proposal and investigation note
+- Operational authority: no
+- Current execution truth:
+  - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 
 - Date: 2026-03-20
 - Status: Draft
@@ -445,3 +450,4 @@ It should start from:
 - shared fill / non-fill semantics
 
 Only after that should trainer weighting be treated as a secondary calibration layer.
+

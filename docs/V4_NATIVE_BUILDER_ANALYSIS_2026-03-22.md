@@ -1,4 +1,10 @@
-# V4 Native Builder Analysis 2026-03-22
+﻿# V4 Native Builder Analysis 2026-03-22
+
+- Status: implementation analysis note
+- Operational authority: no
+- Current runtime truth:
+  - `docs/PROGRAM_RUNBOOK.md`
+  - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 
 ## Goal
 
@@ -313,3 +319,4 @@ The next coding step should be:
 - move the pure online-state helpers there
 - leave `LiveFeatureProviderV3` behavior unchanged
 - add a first `LiveFeatureProviderV4Native` scaffold using the extracted core
+

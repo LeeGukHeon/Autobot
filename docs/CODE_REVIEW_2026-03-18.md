@@ -1,4 +1,9 @@
-# AUTOBOT CODE REVIEW
+﻿# AUTOBOT CODE REVIEW
+
+- Status: historical code review snapshot
+- Operational authority: no
+- Use for:
+  - past findings and background, not current runtime truth
 
 - Review date: 2026-03-18
 - Scope: full repo static review, OCI runtime inspection, targeted regression runs
@@ -83,8 +88,7 @@ Why it matters:
 
 - current implementation blocks new intent emission in shadow
 - but protective live exits can still reach the exchange
-- that breaks the common operator assumption that “shadow means no real orders”
-
+- that breaks the common operator assumption that ?쐓hadow means no real orders??
 5. Startup reconcile policy `cancel` cancels all bot-owned open orders, not only unknown ones.
 
 - `autobot/live/reconcile.py:64`
@@ -106,7 +110,7 @@ Why it matters:
 
 Why it matters:
 
-- paper/live “live_ws” micro is ticker-derived proxy data
+- paper/live ?쐋ive_ws??micro is ticker-derived proxy data
 - training `micro_v1` is merged trade + book micro
 - spread/depth / source flags / micro-quality logic can drift materially at runtime
 
@@ -285,7 +289,7 @@ Weak areas:
 Recommended next fixes, in order:
 
 1. lock down dashboard exposure or add auth immediately
-2. add a transactional “finalize run then move pointers” boundary for v4 training
+2. add a transactional ?쐄inalize run then move pointers??boundary for v4 training
 3. isolate split-policy history runs from production pointers
 4. enforce true no-order semantics for `shadow` mode
 5. fix runtime micro contract drift or explicitly downgrade runtime reliance on proxy micro
@@ -297,3 +301,4 @@ Recommended next fixes, in order:
 
 - This review was deep but still finite. The highest residual risk is at the boundary between filesystem state, registry pointers, server orchestration scripts, and live runtime gates.
 - The codebase has strong architecture and a good amount of regression coverage, but several lifecycle edges are still not transactional enough for unattended production confidence.
+

@@ -1,4 +1,9 @@
-# V4 Feature Dependency Inventory
+﻿# V4 Feature Dependency Inventory
+
+- Status: dependency inventory snapshot
+- Operational authority: no
+- Use for:
+  - feature dependency lookup, not current runtime truth
 
 - Source: `feature_columns_v4_contract`
 - Total features: `112`
@@ -142,3 +147,4 @@
 | `rel_strength_x_btc_regime` | `v4_interactions` | `false` | `false` | `attach_interaction_features_v4` |
 | `one_m_pressure_x_spread` | `v4_interactions` | `false` | `false` | `attach_interaction_features_v4` |
 | `volume_z_x_trend` | `v4_interactions` | `false` | `false` | `attach_interaction_features_v4` |
+

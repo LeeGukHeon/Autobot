@@ -1,4 +1,9 @@
-# V4 Legacy Dependency Findings 2026-03-22
+﻿# V4 Legacy Dependency Findings 2026-03-22
+
+- Status: cleanup investigation note
+- Operational authority: no
+- Use for:
+  - dependency cleanup history, not current runtime truth
 
 ## Current state
 
@@ -74,3 +79,4 @@ It is:
 
 1. retrain on the new `112`-feature active contract
 2. compare selection / fallback / canary behavior against the older `140`-feature runs
+

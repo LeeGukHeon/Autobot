@@ -1,5 +1,11 @@
 ﻿# Upbit AutoBot 프로젝트 시작 로드맵/설계서
 
+- Status: historical planning baseline
+- Operational authority: no
+- Current operational truth:
+  - `docs/PROGRAM_RUNBOOK.md`
+  - `docs/README.md`
+
 - Version: v1.0
 - Date: 2026-03-02
 - Platform: Windows
@@ -506,3 +512,4 @@ D:\MyApps\Autobot
 - 과최적화보다 현실 체결 모델 우선
 - 소액(5만원)에서 수수료/스프레드 영향 반영
 - RateLimit 위반 방지(무한 재시도 금지)
+

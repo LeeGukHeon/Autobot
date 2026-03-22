@@ -1,4 +1,10 @@
-# Codebase Lifecycle Audit 2026-03-20
+﻿# Codebase Lifecycle Audit 2026-03-20
+
+- Status: historical codebase audit
+- Operational authority: no
+- Current operational truth:
+  - `docs/PROGRAM_RUNBOOK.md`
+  - `docs/README.md`
 
 - Date: 2026-03-20
 - Scope: collection -> features -> training -> acceptance -> backtest -> paper -> candidate live -> main live -> risk -> recovery
@@ -275,3 +281,4 @@ Therefore the right cleanup policy is:
 - delete only dead duplicate internals now
 - keep compatibility surfaces until their consumers are retired
 - treat timer/service name changes as migrations, not cleanups
+

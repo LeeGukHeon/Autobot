@@ -1,4 +1,9 @@
-# Replay Plan 2026-03-21
+﻿# Replay Plan 2026-03-21
+
+- Status: historical replay/debugging plan
+- Operational authority: no
+- Use for:
+  - replay procedure background, not current runtime truth
 
 - Worktree: `d:\MyApps\Autobot_replay_627dacf`
 - Branch: `replay/pre_refactor_627dacf`
@@ -286,3 +291,4 @@ python -m pytest -q tests/test_trade_action_policy.py tests/test_paper_engine_mo
 ```
 
 - result: `101 passed`
+

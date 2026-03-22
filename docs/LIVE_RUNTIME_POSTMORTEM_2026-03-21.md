@@ -1,4 +1,10 @@
-# Live Runtime Postmortem 2026-03-21
+﻿# Live Runtime Postmortem 2026-03-21
+
+- Status: incident postmortem
+- Operational authority: no
+- Current runtime truth:
+  - `docs/PROGRAM_RUNBOOK.md`
+  - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 
 - Date: 2026-03-21
 - Scope: `live` / `paper` / `reconcile` / `risk` / `execution` incidents observed after the March 20 refactor and runtime-policy changes
@@ -24,7 +30,7 @@ In short:
 
 - this was mostly a `cross-module contract drift` problem
 - not a single isolated algorithmic failure
-- and not purely a “legacy cleanup deleted required code” problem
+- and not purely a ?쐋egacy cleanup deleted required code??problem
 
 That said, the cleanup/refactor period did make the drift easier to trigger because responsibility became more distributed.
 
@@ -185,9 +191,7 @@ The split itself is not wrong, but the contracts between them were under-specifi
 
 The missing contracts were mostly of this form:
 
-1. which artifact counts as “position closed”
-2. which artifact counts as “exit complete”
-3. which layer is responsible for clearing which breaker
+1. which artifact counts as ?쐏osition closed??2. which artifact counts as ?쐃xit complete??3. which layer is responsible for clearing which breaker
 4. which layer owns malformed-input defense
 5. which exception reason should be armed for a crash
 
@@ -267,8 +271,7 @@ Those should not share one reason code.
 
 ## 8. Bottom Line
 
-The system was not failing because “the websocket had no data.”
-
+The system was not failing because ?쐔he websocket had no data.??
 It was failing because:
 
 - malformed or partial inputs were not defended everywhere
@@ -277,3 +280,4 @@ It was failing because:
 - one runtime exception class was being mislabeled as another
 
 This was a state-machine contract problem first, and only secondarily a runtime strategy problem.
+

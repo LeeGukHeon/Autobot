@@ -1,4 +1,11 @@
-# Lifecycle Audit 2026-03-20
+﻿# Lifecycle Audit 2026-03-20
+
+- Status: historical lifecycle audit
+- Operational authority: no
+- Current operational truth:
+  - `docs/PROGRAM_RUNBOOK.md`
+  - `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
+  - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
 
 - Date: 2026-03-20
 - Scope: collect -> feature/label -> train -> acceptance/backtest -> paper -> live candidate/main -> risk/breaker -> recovery/continuity
@@ -349,3 +356,4 @@ This means the right next step is not blind deletion. It is:
 - lifecycle audit documentation
 - provenance hardening
 - then targeted consolidation, one ownership boundary at a time
+
