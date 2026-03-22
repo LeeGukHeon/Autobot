@@ -312,3 +312,55 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
     assert report["gates"]["backtest"]["pass"] is True
     assert report["gates"]["paper"]["pass"] is True
     assert report["gates"]["overall_pass"] is True
+
+
+def test_candidate_acceptance_can_skip_champion_compare_for_new_baseline(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path)
+    paper_smoke_script = _make_fake_paper_smoke_script(tmp_path)
+    powershell_exe = _powershell_exe()
+
+    command = [
+        powershell_exe,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ACCEPTANCE_SCRIPT),
+        "-ProjectRoot",
+        str(project_root),
+        "-PythonExe",
+        str(python_exe),
+        "-PaperSmokeScript",
+        str(paper_smoke_script),
+        "-OutDir",
+        "logs/test_acceptance_skip_compare",
+        "-BatchDate",
+        "2026-03-07",
+        "-TrainLookbackDays",
+        "2",
+        "-BacktestLookbackDays",
+        "2",
+        "-SkipChampionCompare",
+        "-SkipDailyPipeline",
+        "-SkipReportRefresh",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report_path = project_root / "logs" / "test_acceptance_skip_compare" / "latest.json"
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+
+    assert report["gates"]["overall_pass"] is True
+    assert report["gates"]["backtest"]["compare_required"] is False
+    assert report["gates"]["backtest"]["decision_basis"] in {"SKIPPED_CHAMPION_COMPARE", "SANITY_ONLY_BACKTEST"}
+    assert report["steps"]["backtest_champion"]["reason"] == "SKIPPED_BY_FLAG"
+    assert report["steps"]["backtest_runtime_parity_champion"]["reason"] == "SKIPPED_BY_FLAG"

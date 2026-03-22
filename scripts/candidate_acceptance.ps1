@@ -94,6 +94,7 @@ param(
     [switch]$SkipPaperSoak,
     [switch]$SkipReportRefresh,
     [switch]$SkipPromote,
+    [switch]$SkipChampionCompare,
     [switch]$DryRun
 )
 
@@ -2910,6 +2911,7 @@ $report = [ordered]@{
         backtest_min_candidates_per_ts = [int]$BacktestMinCandidatesPerTs
         hold_bars = [int]$HoldBars
         backtest_runtime_parity_enabled = [bool]$BacktestRuntimeParityEnabled
+        skip_champion_compare = [bool]$SkipChampionCompare
         paper_soak_duration_sec = [int]$PaperSoakDurationSec
         paper_micro_provider = $PaperMicroProvider
         paper_feature_provider = $PaperFeatureProvider
@@ -4055,7 +4057,8 @@ try {
     $championStatValidation = @{}
     $championDeflatedSharpeRatio = $null
     $championProbabilisticSharpeRatio = $null
-    if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
+    $compareRequired = [bool]$promotionPolicyConfig.backtest_compare_required -and (-not $SkipChampionCompare)
+    if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
         $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -StartDate $certificationStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary
         $championRealizedPnl = To-Double (Get-PropValue -ObjectValue $championSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
@@ -4156,7 +4159,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($utilityMetric)) {
         $utilityMetric = "calmar_like"
     }
-    $decisionBasis = if ($championCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
+    $decisionBasis = if ($championCompareEvaluated) { "PENDING_COMPARE" } elseif ($SkipChampionCompare) { "SKIPPED_CHAMPION_COMPARE" } else { "NO_EXISTING_CHAMPION" }
     if ($championCompareEvaluated) {
         $strictChampionDeltaPass = $championDeltaQuote -ge [double]$promotionPolicyConfig.backtest_min_pnl_delta_vs_champion
         $championWithinTolerancePass = $strictChampionDeltaPass
@@ -4311,7 +4314,7 @@ try {
         -CandidateMinDeflatedSharpeRatio ([double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio) `
         -CandidateDeflatedSharpePass $candidateDeflatedSharpePass `
         -CandidateBacktestPass $candidateBacktestPass `
-        -CompareRequired ([bool]$promotionPolicyConfig.backtest_compare_required) `
+        -CompareRequired $compareRequired `
         -ChampionPresent (-not [string]::IsNullOrWhiteSpace($championRunId)) `
         -ChampionCompareEvaluated $championCompareEvaluated `
         -ChampionComparePass $championDeltaPass `
@@ -4328,12 +4331,12 @@ try {
     $trainerEvidenceExecutionPass = To-Bool (Get-PropValue -ObjectValue $trainerEvidence -Name "execution_pass" -DefaultValue $true) $true
     $trainerEvidenceGatePass = if ($TrainerEvidenceMode -eq "required") { $trainerEvidencePass } else { $true }
     $trainerEvidenceReasons = @(Get-PropValue -ObjectValue $trainerEvidence -Name "reasons" -DefaultValue @())
-    $backtestPass = if ($promotionPolicyConfig.backtest_compare_required) {
+    $backtestPass = if ($compareRequired) {
         $candidateBacktestPass -and $championDeltaPass -and $trainerEvidenceGatePass -and $budgetContractGatePass
     } else {
         $candidateBacktestPass -and $trainerEvidenceGatePass -and $budgetContractGatePass
     }
-    if ((-not $promotionPolicyConfig.backtest_compare_required) -and $decisionBasis -eq "PENDING_COMPARE") {
+    if ((-not $compareRequired) -and $decisionBasis -eq "PENDING_COMPARE") {
         $decisionBasis = "SANITY_ONLY_BACKTEST"
     }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
@@ -4393,6 +4396,8 @@ try {
             stat_validation = $championStatValidation
             execution_structure = (Get-PropValue -ObjectValue $championExecutionStructure -Name "payload" -DefaultValue @{})
         }
+    } elseif ($SkipChampionCompare) {
+        [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     } else {
         [ordered]@{ attempted = $false; reason = "NO_EXISTING_CHAMPION" }
     }
@@ -4416,7 +4421,7 @@ try {
         candidate_market_loss_concentration_pass = (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "market_loss_concentration_pass" -DefaultValue $true) $true)
         candidate_market_loss_concentration_threshold = [double](Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "market_loss_concentration_threshold" -DefaultValue 0.0)
         candidate_execution_structure_reasons = @((Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "reasons" -DefaultValue @()))
-        compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
+        compare_required = $compareRequired
         vs_champion_evaluated = $championCompareEvaluated
         vs_champion_pass = $championDeltaPass
         vs_champion_strict_pnl_pass = $strictChampionDeltaPass
@@ -4544,6 +4549,7 @@ try {
             stat_validation = $runtimeParityCandidateStatValidation
         }
 
+        $runtimeParityCompareRequired = [bool]$promotionPolicyConfig.backtest_compare_required -and (-not $SkipChampionCompare)
         $runtimeParityChampionCompareEvaluated = $false
         $runtimeParityChampionRealizedPnl = 0.0
         $runtimeParityChampionFillRate = -1.0
@@ -4553,7 +4559,7 @@ try {
         $runtimeParityChampionDeflatedSharpeRatio = $null
         $runtimeParityChampionProbabilisticSharpeRatio = $null
         $runtimeParityChampionStatValidation = @{}
-        if (-not [string]::IsNullOrWhiteSpace($championRunId)) {
+        if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
             $runtimeParityChampionBacktest = Invoke-BacktestAndLoadSummary `
                 -PythonPath $resolvedPythonExe `
                 -Root $resolvedProjectRoot `
@@ -4596,13 +4602,15 @@ try {
                 probabilistic_sharpe_ratio = $runtimeParityChampionProbabilisticSharpeRatio
                 stat_validation = $runtimeParityChampionStatValidation
             }
+        } elseif ($SkipChampionCompare) {
+            $report.steps.backtest_runtime_parity_champion = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
         } else {
             $report.steps.backtest_runtime_parity_champion = [ordered]@{ attempted = $false; reason = "NO_EXISTING_CHAMPION" }
         }
 
         $runtimeParityCandidateDeflatedSharpePass = (-not $runtimeParityCandidateStatComparable) -or ($runtimeParityCandidateDeflatedSharpeRatio -ge [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio)
         $runtimeParityCandidatePass = ($runtimeParityCandidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) -and ($runtimeParityCandidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) -and $runtimeParityCandidateDeflatedSharpePass
-        $runtimeParityDecisionBasis = if ($runtimeParityChampionCompareEvaluated) { "PENDING_COMPARE" } else { "NO_EXISTING_CHAMPION" }
+        $runtimeParityDecisionBasis = if ($runtimeParityChampionCompareEvaluated) { "PENDING_COMPARE" } elseif ($SkipChampionCompare) { "SKIPPED_CHAMPION_COMPARE" } else { "NO_EXISTING_CHAMPION" }
         $runtimeParityStrictPnlPass = $true
         $runtimeParityDrawdownImprovementPct = $null
         $runtimeParityDrawdownImprovementPass = $true
@@ -4667,7 +4675,7 @@ try {
             candidate_min_deflated_sharpe_ratio = [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio
             candidate_deflated_sharpe_ratio_est = [double]$runtimeParityCandidateDeflatedSharpeRatio
             candidate_deflated_sharpe_pass = $runtimeParityCandidateDeflatedSharpePass
-            compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
+            compare_required = $runtimeParityCompareRequired
             vs_champion_evaluated = $runtimeParityChampionCompareEvaluated
             vs_champion_pnl_delta_quote = [double]$runtimeParityPnlDeltaQuote
             vs_champion_strict_pnl_pass = $runtimeParityStrictPnlPass
