@@ -103,6 +103,20 @@
     rank_shadow_timer: "랭크 그림자 타이머"
   };
 
+  const OPS_ACTION_TEXT = {
+    restart_paper_champion: { label: "챔피언 페이퍼 재시작" },
+    restart_paper_challenger: { label: "챌린저 페이퍼 재시작" },
+    restart_canary: { label: "라이브 카나리아 재시작" },
+    clear_canary_breaker: { label: "카나리아 브레이커 해제" },
+    try_restart_live_main: { label: "메인 라이브 try-restart" },
+    clear_live_main_breaker: { label: "메인 라이브 브레이커 해제" },
+    restart_ws_public: { label: "WS 수집기 재시작" },
+    start_spawn_only: { label: "스폰만 지금 실행" },
+    start_promote_only: { label: "승급만 지금 실행" },
+    start_rank_shadow: { label: "랭크 섀도우 실행" },
+    adopt_latest_candidate: { label: "최신 후보 즉시 반영" },
+  };
+
   const TABS = new Set(["overview", "training", "paper", "live", "ws", "ops"]);
   const INITIAL_SNAPSHOT = JSON.parse(document.getElementById("initial-snapshot").textContent || "{}");
   const state = {
