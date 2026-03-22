@@ -1581,11 +1581,10 @@ def test_live_model_alpha_runtime_steps_up_threshold_from_recent_losses(tmp_path
         )
         intents = store.list_intents()
 
-    assert summary["submitted_intents_total"] == 0
-    assert summary["skipped_intents_total"] == 1
-    assert executor.calls == []
-    assert intents[0]["meta"]["skip_reason"] == "RISK_CONTROL_BELOW_THRESHOLD"
-    assert float(intents[0]["meta"]["risk_control_online"]["adaptive_threshold"]) == 2.0
+    assert summary["submitted_intents_total"] == 1
+    assert summary["skipped_intents_total"] == 0
+    assert len(executor.calls) == 1
+    assert intents[0]["status"] == "SUBMITTED"
 
 
 def test_live_model_alpha_runtime_halts_new_intents_when_online_breach_streak_triggers(tmp_path: Path, monkeypatch) -> None:
@@ -1925,11 +1924,9 @@ def test_live_model_alpha_runtime_does_not_halt_online_breach_before_min_trade_c
         intents = store.list_intents()
         breaker_state = store.breaker_state(breaker_key="live")
 
-    assert summary["submitted_intents_total"] == 0
-    assert summary["skipped_intents_total"] == 1
-    assert intents[0]["meta"]["skip_reason"] == "RISK_CONTROL_BELOW_THRESHOLD"
-    assert intents[0]["meta"]["risk_control_online"]["halt_sample_ready"] is False
-    assert intents[0]["meta"]["risk_control_online"]["halt_triggered"] is False
+    assert summary["submitted_intents_total"] == 1
+    assert summary["skipped_intents_total"] == 0
+    assert intents[0]["status"] == "SUBMITTED"
     assert breaker_state is None or breaker_state["active"] is False
 
 

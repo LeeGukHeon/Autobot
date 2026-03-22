@@ -576,7 +576,7 @@ def test_resolve_execution_risk_control_online_state_requires_recovery_streak_to
         "online_adaptation": {
             "enabled": True,
             "mode": "recent_closed_trade_hoeffding_stepup_v1",
-            "lookback_trades": 12,
+            "lookback_trades": 2,
             "max_step_up": 2,
             "recovery_streak_required": 2,
             "min_halt_trade_count": 1,
@@ -603,6 +603,7 @@ def test_resolve_execution_risk_control_online_state_requires_recovery_streak_to
         recent_max_exit_ts_ms=2,
     )
 
+    assert first["effective_min_halt_trade_count"] == 1
     assert first["step_up"] == 2
     assert first["recovery_streak"] == 1
     assert second["step_up"] == 1
@@ -661,7 +662,7 @@ def test_resolve_execution_risk_control_online_state_clears_halt_after_recovery(
         "online_adaptation": {
             "enabled": True,
             "mode": "recent_closed_trade_hoeffding_stepup_v1",
-            "lookback_trades": 12,
+            "lookback_trades": 2,
             "max_step_up": 2,
             "recovery_streak_required": 1,
             "min_halt_trade_count": 1,
@@ -697,7 +698,7 @@ def test_resolve_execution_risk_control_online_state_triggers_halt_on_breach_str
         "online_adaptation": {
             "enabled": True,
             "mode": "recent_closed_trade_hoeffding_stepup_v1",
-            "lookback_trades": 12,
+            "lookback_trades": 2,
             "max_step_up": 2,
             "recovery_streak_required": 2,
             "min_halt_trade_count": 2,
@@ -741,7 +742,7 @@ def test_resolve_execution_risk_control_online_state_does_not_increment_streak_w
         "online_adaptation": {
             "enabled": True,
             "mode": "recent_closed_trade_hoeffding_stepup_v1",
-            "lookback_trades": 12,
+            "lookback_trades": 2,
             "max_step_up": 2,
             "recovery_streak_required": 2,
             "min_halt_trade_count": 2,
@@ -804,8 +805,47 @@ def test_resolve_execution_risk_control_online_state_requires_min_trade_count_fo
         recent_max_exit_ts_ms=1,
     )
 
-    assert state["breach_streak"] == 1
+    assert state["effective_min_halt_trade_count"] == 6
+    assert state["breach_streak"] == 0
     assert state["halt_sample_ready"] is False
+    assert state["halt_triggered"] is False
+
+
+def test_resolve_execution_risk_control_online_state_does_not_build_streak_below_effective_floor() -> None:
+    payload = {
+        "version": 1,
+        "policy": "execution_risk_control_hoeffding_v1",
+        "status": "ready",
+        "selected_threshold": 1.0,
+        "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+        "nonpositive_alpha": 0.30,
+        "severe_loss_alpha": 0.20,
+        "online_adaptation": {
+            "enabled": True,
+            "mode": "recent_closed_trade_hoeffding_stepup_v1",
+            "lookback_trades": 12,
+            "max_step_up": 2,
+            "recovery_streak_required": 2,
+            "min_halt_trade_count": 5,
+            "halt_breach_streak": 3,
+            "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            "confidence_delta": 0.20,
+            "checkpoint_name": "execution_risk_control_online_buffer",
+        },
+    }
+
+    state = resolve_execution_risk_control_online_state(
+        risk_control_payload=payload,
+        previous_state={"step_up": 2, "breach_streak": 2, "recovery_streak": 0, "halt_triggered": False},
+        recent_trade_count=5,
+        recent_nonpositive_rate_ucb=1.0,
+        recent_severe_loss_rate_ucb=1.0,
+        recent_max_exit_ts_ms=1,
+    )
+
+    assert state["effective_min_halt_trade_count"] == 6
+    assert state["step_up"] == 0
+    assert state["breach_streak"] == 0
     assert state["halt_triggered"] is False
 
 

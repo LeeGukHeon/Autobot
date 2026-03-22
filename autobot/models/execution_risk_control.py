@@ -744,6 +744,7 @@ def resolve_execution_risk_control_online_state(
 ) -> dict[str, Any]:
     normalized = normalize_execution_risk_control_payload(risk_control_payload)
     online_cfg = dict(normalized.get("online_adaptation") or {})
+    lookback_trades = max(int(online_cfg.get("lookback_trades", DEFAULT_ONLINE_LOOKBACK_TRADES) or DEFAULT_ONLINE_LOOKBACK_TRADES), 1)
     base_threshold = _safe_optional_float(normalized.get("selected_threshold"))
     threshold_values = sorted(
         {
@@ -771,9 +772,13 @@ def resolve_execution_risk_control_online_state(
     )
     max_step_up = max(int(online_cfg.get("max_step_up", 0) or 0), 0)
     recovery_streak_required = max(int(online_cfg.get("recovery_streak_required", 0) or 0), 1)
-    min_halt_trade_count = max(
+    configured_min_halt_trade_count = max(
         int(online_cfg.get("min_halt_trade_count", DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT) or DEFAULT_ONLINE_MIN_HALT_TRADE_COUNT),
         1,
+    )
+    effective_min_halt_trade_count = _effective_online_min_halt_trade_count(
+        lookback_trades=lookback_trades,
+        configured_min_halt_trade_count=configured_min_halt_trade_count,
     )
     halt_breach_streak = max(int(online_cfg.get("halt_breach_streak", 0) or 0), 1)
     previous = dict(previous_state or {})
@@ -790,7 +795,17 @@ def resolve_execution_risk_control_online_state(
         )
     )
 
-    if not has_new_evidence and previous_last_processed_exit_ts_ms is not None:
+    sample_ready_for_streak = int(recent_trade_count) >= int(effective_min_halt_trade_count)
+
+    if int(recent_trade_count) <= 0 and not has_new_evidence and bool(previous):
+        step_up = previous_step_up
+        breach_streak = previous_breach_streak
+        recovery_streak = previous_recovery_streak
+    elif not sample_ready_for_streak:
+        step_up = 0
+        breach_streak = 0
+        recovery_streak = 0
+    elif not has_new_evidence and previous_last_processed_exit_ts_ms is not None:
         step_up = previous_step_up
         breach_streak = previous_breach_streak
         recovery_streak = previous_recovery_streak
@@ -815,17 +830,25 @@ def resolve_execution_risk_control_online_state(
             break
     adaptive_index = min(base_index + int(step_up), max(len(threshold_values) - 1, 0))
     adaptive_threshold = float(threshold_values[adaptive_index])
-    halt_sample_ready = int(recent_trade_count) >= int(min_halt_trade_count)
+    halt_sample_ready = bool(sample_ready_for_streak)
     halt_triggered = bool(halt_sample_ready and breach_streak >= halt_breach_streak)
-    if not has_new_evidence and previous_last_processed_exit_ts_ms is not None:
+    if not has_new_evidence and previous_last_processed_exit_ts_ms is not None and sample_ready_for_streak:
         halt_triggered = previous_halt_triggered
+    clear_due_to_insufficient_sample = bool(
+        previous_halt_triggered
+        and int(recent_trade_count) > 0
+        and not sample_ready_for_streak
+    )
     clear_halt = (
+        clear_due_to_insufficient_sample
+        or (
         bool(previous_halt_triggered)
         and bool(halt_sample_ready)
         and (not halt_triggered)
         and int(step_up) == 0
         and breach_count == 0
         and bool(has_new_evidence)
+        )
     )
     halt_reason_code = (
         str(online_cfg.get("halt_reason_code", DEFAULT_ONLINE_HALT_REASON_CODE)).strip()
@@ -844,7 +867,8 @@ def resolve_execution_risk_control_online_state(
         "step_up": int(step_up),
         "breach_streak": int(breach_streak),
         "recovery_streak": int(recovery_streak),
-        "min_halt_trade_count": int(min_halt_trade_count),
+        "min_halt_trade_count": int(configured_min_halt_trade_count),
+        "effective_min_halt_trade_count": int(effective_min_halt_trade_count),
         "halt_sample_ready": bool(halt_sample_ready),
         "halt_triggered": bool(halt_triggered),
         "halt_reason_code": halt_reason_code,
@@ -859,6 +883,18 @@ def resolve_execution_risk_control_online_state(
             else previous_last_processed_exit_ts_ms
         ),
     }
+
+
+def _effective_online_min_halt_trade_count(
+    *,
+    lookback_trades: int,
+    configured_min_halt_trade_count: int,
+) -> int:
+    lookback_value = max(int(lookback_trades), 1)
+    configured_value = max(int(configured_min_halt_trade_count), 1)
+    # Avoid arming the online halt from extremely small, noisy samples.
+    recommended_floor = max(int(math.ceil(float(lookback_value) * 0.5)), 1)
+    return max(configured_value, recommended_floor)
 
 
 def resolve_execution_risk_control_martingale_state(
