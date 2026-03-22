@@ -2630,6 +2630,167 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _summarize_training_activity(
+    project_root: Path,
+    *,
+    services: dict[str, dict[str, Any]],
+    acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    _ = project_root, acceptance
+    spawn_service = dict(services.get("spawn_service") or {})
+    active_state = str(spawn_service.get("active_state") or "").strip().lower()
+    process_rows = _list_process_rows()
+    processes = _descendant_process_rows(spawn_service.get("main_pid"), process_rows)
+    stage_specs = [
+        {
+            "match": ("autobot.cli", "model", "promote"),
+            "stage_key": "promote",
+            "stage_label_ko": "승급 반영",
+            "progress_pct": 97,
+            "headline_ko": "챔피언 승급과 서비스 반영을 마무리하고 있습니다.",
+            "detail_builder": lambda command: "검증을 통과한 후보를 챔피언 포인터와 런타임 서비스에 연결하는 마지막 단계입니다.",
+        },
+        {
+            "match": ("paper_micro_smoke.ps1",),
+            "stage_key": "paper_soak",
+            "stage_label_ko": "페이퍼 소크",
+            "progress_pct": 92,
+            "headline_ko": "페이퍼 챌린저 소크를 준비하거나 진행하고 있습니다.",
+            "detail_builder": lambda command: "후보 모델을 페이퍼 런타임에 올려 실제 체결 흐름을 짧게 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "backtest", "alpha", "runtime_parity"),
+            "stage_key": "runtime_parity_backtest",
+            "stage_label_ko": "실운영 유사 백테스트",
+            "progress_pct": 84,
+            "headline_ko": "실운영 유사 백테스트로 후보와 챔피언을 비교하고 있습니다.",
+            "detail_builder": lambda command: "학습된 집행 추천과 현재 런타임 계약까지 반영해 certification 구간을 재생하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "backtest", "alpha"),
+            "stage_key": "certification_backtest",
+            "stage_label_ko": "인증 백테스트",
+            "progress_pct": 78,
+            "headline_ko": "certification window 백테스트를 실행 중입니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "후보와 챔피언을 재생해 체결 수와 손익 기준을 확인하는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "train", "scheduled_daily"),
+            "stage_key": "scheduled_daily_train",
+            "stage_label_ko": "본 학습",
+            "progress_pct": 68,
+            "headline_ko": "오늘 배치의 본 학습을 진행 중입니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                f"구간으로 {(_command_flag_value(command, '--run-scope') or 'scheduled_daily')} 학습을 수행하고 있습니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "train", "scheduled_split_policy_history"),
+            "stage_key": "split_policy_history",
+            "stage_label_ko": "분할 정책 검증",
+            "progress_pct": 42,
+            "headline_ko": "분할 정책 검증용 히스토리 학습을 진행 중입니다.",
+            "detail_builder": lambda command: "여러 holdout 후보를 짧게 학습해 오늘 배치에 가장 맞는 certification 창을 고르는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "features", "build"),
+            "stage_key": "features_build",
+            "stage_label_ko": "피처 빌드",
+            "progress_pct": 26,
+            "headline_ko": "학습용 피처를 다시 계산하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "micro 포함 피처를 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("daily_micro_pipeline_for_server.ps1",),
+            "stage_key": "daily_pipeline",
+            "stage_label_ko": "데일리 파이프라인",
+            "progress_pct": 4,
+            "headline_ko": "데일리 데이터 파이프라인을 시작했습니다.",
+            "detail_builder": lambda command: "캔들, 틱, micro 데이터를 순서대로 준비하며 학습 입력을 만드는 초기 단계입니다.",
+        },
+        {
+            "match": ("v4_governed_candidate_acceptance.ps1",),
+            "stage_key": "acceptance_wrapper",
+            "stage_label_ko": "수락 루프 시작",
+            "progress_pct": 2,
+            "headline_ko": "후보 검증 루프를 시작했습니다.",
+            "detail_builder": lambda command: "오늘 배치에 맞는 학습, backtest, 페이퍼 검증 단계를 순서대로 준비하는 중입니다.",
+        },
+    ]
+
+    if not processes:
+        manual_tokens = (
+            "daily_champion_challenger_v4_for_server.ps1",
+            "candidate_acceptance.ps1",
+            "v4_governed_candidate_acceptance.ps1",
+            "autobot.cli model train",
+            "autobot.cli backtest alpha",
+            "paper_micro_smoke.ps1",
+            "autobot.cli features build",
+        )
+        processes = [
+            row
+            for row in process_rows
+            if any(token.lower() in str(row.get("args") or "").lower() for token in manual_tokens)
+        ]
+
+    if active_state not in {"active", "activating"} and not processes:
+        return {
+            "active": False,
+            "progress_pct": None,
+            "stage_key": "idle",
+            "stage_label_ko": "대기",
+            "headline_ko": "현재 진행 중인 학습 작업이 없습니다.",
+            "detail_ko": "다음 수동 실행이나 타이머 배치를 기다리는 상태입니다.",
+            "started_at": None,
+            "process_pid": None,
+            "process_command": None,
+        }
+
+    best_match: dict[str, Any] | None = None
+    for proc in processes:
+        command = str(proc.get("args") or "")
+        command_lower = command.lower()
+        for spec in stage_specs:
+            if all(token.lower() in command_lower for token in spec["match"]):
+                progress = int(spec["progress_pct"])
+                if best_match is None or progress > int(best_match.get("progress_pct") or 0):
+                    best_match = {
+                        "active": True,
+                        "progress_pct": progress,
+                        "stage_key": spec["stage_key"],
+                        "stage_label_ko": spec["stage_label_ko"],
+                        "headline_ko": spec["headline_ko"],
+                        "detail_ko": str(spec["detail_builder"](command)),
+                        "started_at": spawn_service.get("started_at"),
+                        "process_pid": int(proc.get("pid") or 0),
+                        "process_command": command,
+                    }
+                break
+
+    if best_match is not None:
+        return best_match
+
+    return {
+        "active": True,
+        "progress_pct": 5,
+        "stage_key": "service_active",
+        "stage_label_ko": "진행 중",
+        "headline_ko": "학습 또는 검증 작업이 진행 중입니다.",
+        "detail_ko": "현재 서비스 또는 수동 프로세스는 살아 있으나 세부 단계를 해석할 정보가 부족합니다.",
+        "started_at": spawn_service.get("started_at"),
+        "process_pid": None,
+        "process_command": None,
+    }
+
+
 def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     _send_bytes_response(
