@@ -218,9 +218,16 @@ def _summarize_sample_group(*, hold_bars: int, samples: list[dict[str, Any]]) ->
     return {
         "hold_bars": int(hold_bars),
         "sample_count": int(len(samples)),
+        "terminal_return_mean": float(np.mean(terminal)) if terminal.size > 0 else 0.0,
+        "terminal_return_q25": _quantile(terminal, 0.25),
         "terminal_return_q50": _quantile(terminal, 0.50),
         "terminal_return_q75": _quantile(terminal, 0.75),
         "terminal_return_q90": _quantile(terminal, 0.90),
+        "terminal_nonnegative_rate": _threshold_rate(terminal, 0.0, inclusive=True),
+        "terminal_positive_rate": _threshold_rate(terminal, 0.0, inclusive=False),
+        "terminal_above_10bps_rate": _threshold_rate(terminal, 0.0010, inclusive=False),
+        "terminal_above_25bps_rate": _threshold_rate(terminal, 0.0025, inclusive=False),
+        "terminal_above_50bps_rate": _threshold_rate(terminal, 0.0050, inclusive=False),
         "mfe_q50": _quantile(mfe, 0.50),
         "mfe_q75": _quantile(mfe, 0.75),
         "mfe_q90": _quantile(mfe, 0.90),
@@ -229,6 +236,8 @@ def _summarize_sample_group(*, hold_bars: int, samples: list[dict[str, Any]]) ->
         "mae_abs_q90": _quantile(mae_abs, 0.90),
         "reachable_tp_q60": _quantile(mfe, 0.60),
         "bounded_sl_q80": _quantile(mae_abs, 0.80),
+        "drawdown_from_now_q80": _quantile(mae_abs, 0.80),
+        "drawdown_from_now_q90": _quantile(mae_abs, 0.90),
     }
 
 
@@ -236,6 +245,14 @@ def _quantile(values: np.ndarray, q: float) -> float:
     if values.size <= 0:
         return 0.0
     return float(np.quantile(values, float(q), method="linear"))
+
+
+def _threshold_rate(values: np.ndarray, threshold: float, *, inclusive: bool) -> float:
+    if values.size <= 0:
+        return 0.0
+    if inclusive:
+        return float(np.mean(values >= float(threshold)))
+    return float(np.mean(values > float(threshold)))
 
 
 def _quantile_bounds(values: np.ndarray, *, bucket_count: int) -> np.ndarray:

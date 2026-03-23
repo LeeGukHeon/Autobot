@@ -62,32 +62,85 @@ def resolve_path_risk_guidance_from_plan(
         return {"applied": False}
     reachable_tp_ratio = _as_float(selected.get("reachable_tp_q60"))
     bounded_sl_ratio = _as_float(selected.get("bounded_sl_q80"))
+    drawdown_from_now_q80 = _as_float(selected.get("drawdown_from_now_q80"))
+    drawdown_from_now_q90 = _as_float(selected.get("drawdown_from_now_q90"))
     terminal_return_q50 = _as_float(selected.get("terminal_return_q50"))
+    terminal_return_q25 = _as_float(selected.get("terminal_return_q25"))
     terminal_return_q75 = _as_float(selected.get("terminal_return_q75"))
+    terminal_return_mean = _as_float(selected.get("terminal_return_mean"))
+    terminal_positive_rate = _as_float(selected.get("terminal_positive_rate"))
+    terminal_nonnegative_rate = _as_float(selected.get("terminal_nonnegative_rate"))
+    terminal_above_10bps_rate = _as_float(selected.get("terminal_above_10bps_rate"))
+    terminal_above_25bps_rate = _as_float(selected.get("terminal_above_25bps_rate"))
+    terminal_above_50bps_rate = _as_float(selected.get("terminal_above_50bps_rate"))
     min_tp_floor_ratio = max(_as_float(payload.get("min_tp_floor_pct")) or 0.0, 0.0)
     continuation_margin_ratio = max(min_tp_floor_ratio, 0.0005)
     continuation_profit_floor_ratio = max(min_tp_floor_ratio, 0.001)
+    expected_exit_fee_rate = max(_as_float(payload.get("expected_exit_fee_rate")) or 0.0, 0.0)
+    expected_exit_slippage_bps = max(_as_float(payload.get("expected_exit_slippage_bps")) or 0.0, 0.0)
+    immediate_exit_cost_ratio = float(expected_exit_fee_rate) + (float(expected_exit_slippage_bps) / 10_000.0)
+    deferred_exit_cost_ratio = immediate_exit_cost_ratio
 
     continuation_should_exit = False
     continuation_reason_code = ""
     continuation_threshold_ratio = None
     immediate_exit_value_ratio = _as_float(current_return_ratio)
-    continuation_value_ratio = terminal_return_q50
-    continuation_advantage_ratio = (
-        (float(continuation_value_ratio) - float(immediate_exit_value_ratio))
-        if continuation_value_ratio is not None and immediate_exit_value_ratio is not None
+    alpha_decay_penalty_ratio = None
+    if immediate_exit_value_ratio is not None:
+        continuation_anchor_for_decay = (
+            terminal_return_q75
+            if terminal_return_q75 is not None
+            else (terminal_return_q50 if terminal_return_q50 is not None else terminal_return_mean)
+        )
+        if continuation_anchor_for_decay is not None:
+            alpha_decay_penalty_ratio = max(
+                float(immediate_exit_value_ratio) - float(continuation_anchor_for_decay),
+                0.0,
+            ) * min(float(remaining_bars) / float(max(hold_bars, 1)), 1.0) * 0.5
+    exit_now_value_net = (
+        (float(immediate_exit_value_ratio) - float(immediate_exit_cost_ratio))
+        if immediate_exit_value_ratio is not None
         else None
     )
+    continue_value_net = (
+        float(terminal_return_q50) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
+        if terminal_return_q50 is not None
+        else None
+    )
+    optimistic_continue_value_net = (
+        float(terminal_return_q75) - float(deferred_exit_cost_ratio)
+        if terminal_return_q75 is not None
+        else None
+    )
+    continuation_gap_ratio = (
+        float(continue_value_net) - float(exit_now_value_net)
+        if continue_value_net is not None and exit_now_value_net is not None
+        else None
+    )
+    continuation_value_ratio = terminal_return_q50
+    continuation_advantage_ratio = continuation_gap_ratio
     upside_left_ratio = (
         max(float(reachable_tp_ratio) - float(immediate_exit_value_ratio), 0.0)
         if reachable_tp_ratio is not None and immediate_exit_value_ratio is not None
         else None
     )
+    profit_preservation_rate = _resolve_profit_preservation_rate(
+        current_return_ratio=immediate_exit_value_ratio,
+        terminal_positive_rate=terminal_positive_rate,
+        terminal_nonnegative_rate=terminal_nonnegative_rate,
+        terminal_above_10bps_rate=terminal_above_10bps_rate,
+        terminal_above_25bps_rate=terminal_above_25bps_rate,
+        terminal_above_50bps_rate=terminal_above_50bps_rate,
+    )
     if immediate_exit_value_ratio is not None and float(immediate_exit_value_ratio) > 0.0:
         continuation_anchor = (
             float(terminal_return_q75)
             if terminal_return_q75 is not None
-            else (float(terminal_return_q50) if terminal_return_q50 is not None else None)
+            else (
+                float(terminal_return_q50)
+                if terminal_return_q50 is not None
+                else (float(terminal_return_mean) if terminal_return_mean is not None else None)
+            )
         )
         if continuation_anchor is not None:
             continuation_threshold_ratio = max(
@@ -95,15 +148,35 @@ def resolve_path_risk_guidance_from_plan(
                 float(continuation_profit_floor_ratio),
             )
             if (
-                continuation_advantage_ratio is not None
-                and float(continuation_advantage_ratio) <= -float(continuation_margin_ratio)
+                continuation_gap_ratio is not None
+                and float(continuation_gap_ratio) <= -float(continuation_margin_ratio)
             ):
                 continuation_should_exit = True
                 continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
-            elif upside_left_ratio is not None and float(upside_left_ratio) <= float(continuation_margin_ratio):
+            elif (
+                upside_left_ratio is not None
+                and float(upside_left_ratio) <= float(continuation_margin_ratio)
+                and optimistic_continue_value_net is not None
+                and exit_now_value_net is not None
+                and float(optimistic_continue_value_net) <= float(exit_now_value_net) + float(continuation_margin_ratio)
+            ):
                 continuation_should_exit = True
                 continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
-            elif float(immediate_exit_value_ratio) >= float(continuation_threshold_ratio):
+            elif (
+                profit_preservation_rate is not None
+                and float(profit_preservation_rate) < 0.45
+                and exit_now_value_net is not None
+                and continue_value_net is not None
+                and float(exit_now_value_net) >= float(continue_value_net)
+            ):
+                continuation_should_exit = True
+                continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
+            elif (
+                exit_now_value_net is not None
+                and float(immediate_exit_value_ratio) >= float(continuation_threshold_ratio)
+                and continue_value_net is not None
+                and float(exit_now_value_net) >= float(continue_value_net)
+            ):
                 continuation_should_exit = True
                 continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
 
@@ -115,12 +188,29 @@ def resolve_path_risk_guidance_from_plan(
         "remaining_bars": int(remaining_bars),
         "reachable_tp_ratio": reachable_tp_ratio,
         "bounded_sl_ratio": bounded_sl_ratio,
+        "drawdown_from_now_q80": drawdown_from_now_q80,
+        "drawdown_from_now_q90": drawdown_from_now_q90,
+        "terminal_return_q25": terminal_return_q25,
         "terminal_return_q50": terminal_return_q50,
         "terminal_return_q75": terminal_return_q75,
+        "terminal_return_mean": terminal_return_mean,
+        "terminal_positive_rate": terminal_positive_rate,
+        "terminal_nonnegative_rate": terminal_nonnegative_rate,
+        "terminal_above_10bps_rate": terminal_above_10bps_rate,
+        "terminal_above_25bps_rate": terminal_above_25bps_rate,
+        "terminal_above_50bps_rate": terminal_above_50bps_rate,
         "selection_score": resolved_selection_score,
         "risk_feature_value": resolved_risk_feature_value,
         "immediate_exit_value_ratio": immediate_exit_value_ratio,
+        "immediate_exit_cost_ratio": float(immediate_exit_cost_ratio),
+        "deferred_exit_cost_ratio": float(deferred_exit_cost_ratio),
         "continuation_value_ratio": continuation_value_ratio,
+        "exit_now_value_net": exit_now_value_net,
+        "continue_value_net": continue_value_net,
+        "optimistic_continue_value_net": optimistic_continue_value_net,
+        "alpha_decay_penalty_ratio": alpha_decay_penalty_ratio,
+        "profit_preservation_rate": profit_preservation_rate,
+        "continuation_gap_ratio": continuation_gap_ratio,
         "continuation_advantage_ratio": continuation_advantage_ratio,
         "upside_left_ratio": upside_left_ratio,
         "continuation_margin_ratio": float(continuation_margin_ratio),
@@ -129,6 +219,29 @@ def resolve_path_risk_guidance_from_plan(
         "continuation_should_exit": bool(continuation_should_exit),
         "continuation_reason_code": continuation_reason_code,
     }
+
+
+def _resolve_profit_preservation_rate(
+    *,
+    current_return_ratio: float | None,
+    terminal_positive_rate: float | None,
+    terminal_nonnegative_rate: float | None,
+    terminal_above_10bps_rate: float | None,
+    terminal_above_25bps_rate: float | None,
+    terminal_above_50bps_rate: float | None,
+) -> float | None:
+    if current_return_ratio is None:
+        return terminal_positive_rate
+    current_return = float(current_return_ratio)
+    if current_return >= 0.0050 and terminal_above_50bps_rate is not None:
+        return float(terminal_above_50bps_rate)
+    if current_return >= 0.0025 and terminal_above_25bps_rate is not None:
+        return float(terminal_above_25bps_rate)
+    if current_return >= 0.0010 and terminal_above_10bps_rate is not None:
+        return float(terminal_above_10bps_rate)
+    if current_return >= 0.0 and terminal_nonnegative_rate is not None:
+        return float(terminal_nonnegative_rate)
+    return terminal_positive_rate
 
 
 def _select_path_risk_summary(

@@ -38,6 +38,9 @@ def test_build_exit_path_risk_summary_emits_pathwise_quantiles() -> None:
     assert by_horizon[1]["sample_count"] == 4
     assert by_horizon[2]["sample_count"] == 2
     assert by_horizon[2]["mfe_q50"] >= by_horizon[1]["mfe_q50"]
+    assert "terminal_return_q25" in by_horizon[1]
+    assert "terminal_positive_rate" in by_horizon[1]
+    assert "drawdown_from_now_q80" in by_horizon[1]
 
 
 def test_build_exit_path_risk_summary_v4_uses_runtime_recommendation_context() -> None:
@@ -120,4 +123,64 @@ def test_resolve_path_risk_guidance_prefers_bucket_specific_summary_and_computes
     assert guidance["bounded_sl_ratio"] == 0.008
     assert guidance["continuation_value_ratio"] == 0.004
     assert guidance["immediate_exit_value_ratio"] == 0.012
+    assert guidance["exit_now_value_net"] is not None
+    assert guidance["continue_value_net"] is not None
     assert guidance["continuation_should_exit"] is True
+
+
+def test_resolve_path_risk_guidance_holds_when_continue_value_still_dominates() -> None:
+    guidance = resolve_path_risk_guidance_from_plan(
+        plan_payload={
+            "hold_bars": 6,
+            "bar_interval_ms": 300_000,
+            "expected_exit_fee_rate": 0.0005,
+            "expected_exit_slippage_bps": 2.5,
+            "entry_selection_score": 0.91,
+            "entry_risk_feature_value": 0.03,
+            "path_risk": {
+                "status": "ready",
+                "overall_by_horizon": [
+                    {
+                        "hold_bars": 3,
+                        "reachable_tp_q60": 0.025,
+                        "bounded_sl_q80": 0.010,
+                        "terminal_return_q25": 0.004,
+                        "terminal_return_q50": 0.010,
+                        "terminal_return_q75": 0.018,
+                        "terminal_return_mean": 0.011,
+                        "terminal_positive_rate": 0.70,
+                        "terminal_nonnegative_rate": 0.74,
+                        "terminal_above_10bps_rate": 0.68,
+                        "terminal_above_25bps_rate": 0.60,
+                        "terminal_above_50bps_rate": 0.52,
+                        "drawdown_from_now_q80": 0.012,
+                        "drawdown_from_now_q90": 0.018,
+                    }
+                ],
+                "recommended_summary": {
+                    "hold_bars": 3,
+                    "reachable_tp_q60": 0.025,
+                    "bounded_sl_q80": 0.010,
+                    "terminal_return_q25": 0.004,
+                    "terminal_return_q50": 0.010,
+                    "terminal_return_q75": 0.018,
+                    "terminal_return_mean": 0.011,
+                    "terminal_positive_rate": 0.70,
+                    "terminal_nonnegative_rate": 0.74,
+                    "terminal_above_10bps_rate": 0.68,
+                    "terminal_above_25bps_rate": 0.60,
+                    "terminal_above_50bps_rate": 0.52,
+                    "drawdown_from_now_q80": 0.012,
+                    "drawdown_from_now_q90": 0.018,
+                },
+            },
+        },
+        elapsed_bars=3,
+        current_return_ratio=0.006,
+    )
+
+    assert guidance["applied"] is True
+    assert guidance["continuation_should_exit"] is False
+    assert guidance["continue_value_net"] is not None
+    assert guidance["exit_now_value_net"] is not None
+    assert guidance["continue_value_net"] > guidance["exit_now_value_net"]
