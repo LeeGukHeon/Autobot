@@ -627,6 +627,67 @@ def test_reconcile_manual_sell_uses_recent_closed_order_fill_when_available(tmp_
     assert journal["realized_pnl_quote"] is not None
 
 
+def test_reconcile_manual_sell_widens_closed_order_lookup_to_position_timestamp(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+                managed=False,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-manual-sell-wide-window",
+                market="KRW-BTC",
+                status="OPEN",
+                entry_submitted_ts_ms=1000,
+                entry_filled_ts_ms=1000,
+                entry_price=100000000.0,
+                qty=0.01,
+                entry_notional_quote=1000000.0,
+                updated_ts=1000,
+            )
+        )
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            fetch_closed_orders=lambda market, start_ts_ms, end_ts_ms: [
+                {
+                    "uuid": "manual-exit-wide-window-1",
+                    "identifier": "MANUAL-SELL-WIDE-1",
+                    "market": market,
+                    "side": "ask",
+                    "ord_type": "market",
+                    "state": "done",
+                    "created_at": "1970-01-01T00:05:00Z",
+                    "done_at": "1970-01-01T00:05:00Z",
+                    "executed_volume": "0.01",
+                    "executed_funds": "1005000",
+                    "paid_fee": "502.5",
+                }
+            ],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="import_as_unmanaged",
+            dry_run=False,
+            ts_ms=2_000_000,
+        )
+        journal = store.trade_journal_by_id(journal_id="journal-manual-sell-wide-window")
+
+    assert report["halted"] is False
+    assert journal is not None
+    assert journal["exit_order_uuid"] == "manual-exit-wide-window-1"
+    assert journal["exit_meta"]["close_verification_status"] == "verified_exit_order"
+    assert journal["exit_price"] == 100500000.0
+
+
 def test_reconcile_retains_managed_missing_position_without_close_evidence(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

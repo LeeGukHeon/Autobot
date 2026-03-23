@@ -30,6 +30,7 @@ _MANAGED_POSITION_CLOSE_EVIDENCE_GRACE_MS = 5_000
 _MANAGED_POSITION_MISSING_MANUAL_CLOSE_MIN_COUNT = 2
 _MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS = 15_000
 _MANUAL_CLOSE_LOOKBACK_MS = 30 * 60 * 1000
+_MANUAL_CLOSE_MAX_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
 
 def reconcile_exchange_snapshot(
@@ -539,10 +540,14 @@ def reconcile_exchange_snapshot(
                         closed_orders_cache=recent_closed_orders_cache,
                         bot_id=bot_id,
                         identifier_prefix=identifier_prefix,
-                        since_ts_ms=max(
-                            int(managed_missing_detail.get("first_missing_ts") or now_ts)
-                            - _MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS,
-                            now_ts - _MANUAL_CLOSE_LOOKBACK_MS,
+                        since_ts_ms=_manual_close_lookup_start_ts_ms(
+                            local_position=local_position,
+                            fallback_since_ts_ms=max(
+                                int(managed_missing_detail.get("first_missing_ts") or now_ts)
+                                - _MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS,
+                                now_ts - _MANUAL_CLOSE_LOOKBACK_MS,
+                            ),
+                            ts_ms=now_ts,
                         ),
                         ts_ms=now_ts,
                     )
@@ -617,7 +622,11 @@ def reconcile_exchange_snapshot(
                 closed_orders_cache=recent_closed_orders_cache,
                 bot_id=bot_id,
                 identifier_prefix=identifier_prefix,
-                since_ts_ms=now_ts - _MANUAL_CLOSE_LOOKBACK_MS,
+                since_ts_ms=_manual_close_lookup_start_ts_ms(
+                    local_position=local_position,
+                    fallback_since_ts_ms=now_ts - _MANUAL_CLOSE_LOOKBACK_MS,
+                    ts_ms=now_ts,
+                ),
                 ts_ms=now_ts,
             )
             manual_close_order_uuid = None
@@ -1759,6 +1768,19 @@ def _build_ignored_dust_position_detail(
         "reference_notional_quote": reference_notional_quote,
         "min_total_quote": min_total_quote,
     }
+
+
+def _manual_close_lookup_start_ts_ms(
+    *,
+    local_position: dict[str, Any],
+    fallback_since_ts_ms: int,
+    ts_ms: int,
+) -> int:
+    local_updated_ts = int(local_position.get("updated_ts") or 0)
+    earliest_candidate_ts = int(fallback_since_ts_ms)
+    if local_updated_ts > 0:
+        earliest_candidate_ts = min(earliest_candidate_ts, local_updated_ts)
+    return max(int(ts_ms) - _MANUAL_CLOSE_MAX_LOOKBACK_MS, earliest_candidate_ts)
 
 
 def _match_recent_external_manual_close(
