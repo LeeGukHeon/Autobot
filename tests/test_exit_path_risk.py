@@ -43,6 +43,9 @@ def test_build_exit_path_risk_summary_emits_pathwise_quantiles() -> None:
     assert "terminal_return_q25" in by_horizon[1]
     assert "terminal_positive_rate" in by_horizon[1]
     assert "drawdown_from_now_q80" in by_horizon[1]
+    assert "profit_positive_q" in by_horizon[1]
+    assert "profit_above_floor_q" in by_horizon[1]
+    assert "continue_edge_q50" in by_horizon[1]
 
 
 def test_build_exit_path_risk_summary_v4_uses_runtime_recommendation_context() -> None:
@@ -124,10 +127,13 @@ def test_resolve_path_risk_guidance_prefers_bucket_specific_summary_and_computes
     assert guidance["reachable_tp_ratio"] == 0.015
     assert guidance["bounded_sl_ratio"] == 0.008
     assert guidance["continuation_value_ratio"] == 0.004
+    assert guidance["continue_edge_q50"] == 0.004
+    assert guidance["continue_edge_q75"] == 0.006
     assert guidance["immediate_exit_value_ratio"] == 0.012
     assert guidance["exit_now_value_net"] is not None
     assert guidance["continue_value_net"] is not None
     assert guidance["continuation_should_exit"] is True
+    assert guidance["continuation_gap"] == guidance["continuation_gap_ratio"]
 
 
 def test_resolve_path_risk_guidance_holds_when_continue_value_still_dominates() -> None:
@@ -186,6 +192,7 @@ def test_resolve_path_risk_guidance_holds_when_continue_value_still_dominates() 
     assert guidance["continue_value_net"] is not None
     assert guidance["exit_now_value_net"] is not None
     assert guidance["continue_value_net"] > guidance["exit_now_value_net"]
+    assert guidance["profit_preservation_prob"] == guidance["profit_preservation_rate"]
 
 
 def test_resolve_path_risk_guidance_uses_immediate_execution_cost_proxy() -> None:

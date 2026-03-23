@@ -68,6 +68,12 @@ def resolve_path_risk_guidance_from_plan(
     terminal_return_q25 = _as_float(selected.get("terminal_return_q25"))
     terminal_return_q75 = _as_float(selected.get("terminal_return_q75"))
     terminal_return_mean = _as_float(selected.get("terminal_return_mean"))
+    continue_edge_q50 = _as_float(selected.get("continue_edge_q50"))
+    if continue_edge_q50 is None:
+        continue_edge_q50 = terminal_return_q50
+    continue_edge_q75 = _as_float(selected.get("continue_edge_q75"))
+    if continue_edge_q75 is None:
+        continue_edge_q75 = terminal_return_q75
     mfe_q25 = _as_float(selected.get("mfe_q25"))
     mfe_q50 = _as_float(selected.get("mfe_q50"))
     mfe_q75 = _as_float(selected.get("mfe_q75"))
@@ -111,9 +117,9 @@ def resolve_path_risk_guidance_from_plan(
     alpha_decay_penalty_ratio = None
     if immediate_exit_value_ratio is not None:
         continuation_anchor_for_decay = (
-            terminal_return_q75
-            if terminal_return_q75 is not None
-            else (terminal_return_q50 if terminal_return_q50 is not None else terminal_return_mean)
+            continue_edge_q75
+            if continue_edge_q75 is not None
+            else (continue_edge_q50 if continue_edge_q50 is not None else terminal_return_mean)
         )
         if continuation_anchor_for_decay is not None:
             alpha_decay_penalty_ratio = max(
@@ -126,13 +132,13 @@ def resolve_path_risk_guidance_from_plan(
         else None
     )
     continue_value_net = (
-        float(terminal_return_q50) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
-        if terminal_return_q50 is not None
+        float(continue_edge_q50) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
+        if continue_edge_q50 is not None
         else None
     )
     optimistic_continue_value_net = (
-        float(terminal_return_q75) - float(deferred_exit_cost_ratio)
-        if terminal_return_q75 is not None
+        float(continue_edge_q75) - float(deferred_exit_cost_ratio)
+        if continue_edge_q75 is not None
         else None
     )
     continuation_gap_ratio = (
@@ -140,7 +146,8 @@ def resolve_path_risk_guidance_from_plan(
         if continue_value_net is not None and exit_now_value_net is not None
         else None
     )
-    continuation_value_ratio = terminal_return_q50
+    continuation_gap = continuation_gap_ratio
+    continuation_value_ratio = continue_edge_q50
     continuation_advantage_ratio = continuation_gap_ratio
     upside_left_ratio = (
         max(float(reachable_tp_ratio) - float(immediate_exit_value_ratio), 0.0)
@@ -166,13 +173,14 @@ def resolve_path_risk_guidance_from_plan(
         terminal_above_25bps_rate=terminal_above_25bps_rate,
         terminal_above_50bps_rate=terminal_above_50bps_rate,
     )
+    profit_preservation_prob = profit_preservation_rate
     if immediate_exit_value_ratio is not None and float(immediate_exit_value_ratio) > 0.0:
         continuation_anchor = (
-            float(terminal_return_q75)
-            if terminal_return_q75 is not None
+            float(continue_edge_q75)
+            if continue_edge_q75 is not None
             else (
-                float(terminal_return_q50)
-                if terminal_return_q50 is not None
+                float(continue_edge_q50)
+                if continue_edge_q50 is not None
                 else (float(terminal_return_mean) if terminal_return_mean is not None else None)
             )
         )
@@ -244,6 +252,8 @@ def resolve_path_risk_guidance_from_plan(
         "terminal_return_q50": terminal_return_q50,
         "terminal_return_q75": terminal_return_q75,
         "terminal_return_mean": terminal_return_mean,
+        "continue_edge_q50": continue_edge_q50,
+        "continue_edge_q75": continue_edge_q75,
         "terminal_positive_rate": terminal_positive_rate,
         "terminal_nonnegative_rate": terminal_nonnegative_rate,
         "terminal_above_10bps_rate": terminal_above_10bps_rate,
@@ -265,7 +275,9 @@ def resolve_path_risk_guidance_from_plan(
         "optimistic_continue_value_net": optimistic_continue_value_net,
         "alpha_decay_penalty_ratio": alpha_decay_penalty_ratio,
         "profit_preservation_rate": profit_preservation_rate,
+        "profit_preservation_prob": profit_preservation_prob,
         "continuation_gap_ratio": continuation_gap_ratio,
+        "continuation_gap": continuation_gap,
         "continuation_advantage_ratio": continuation_advantage_ratio,
         "upside_left_ratio": upside_left_ratio,
         "current_tp_ratio": current_tp_ratio,
