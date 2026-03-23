@@ -10,6 +10,7 @@ from typing import Any, Callable
 from autobot.features.feature_spec import parse_date_to_ts_ms
 from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaExitSettings
 
+from .exit_path_risk import build_exit_path_risk_summary
 from .execution_acceptance import ExecutionAcceptanceOptions
 from .execution_risk_control import build_execution_risk_control_from_oos_rows
 
@@ -203,6 +204,33 @@ def build_execution_risk_control_v4(
         risk_policy_template=risk_policy_template,
         weighting_covariate_similarity_enabled=True,
         weighting_density_ratio_enabled=True,
+    )
+
+
+def build_exit_path_risk_summary_v4(
+    *,
+    runtime_recommendations: dict[str, Any],
+    selection_calibration: dict[str, Any],
+    oos_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    exit_doc = dict((runtime_recommendations or {}).get("exit") or {})
+    risk_feature_name = str(exit_doc.get("recommended_risk_vol_feature", "rv_12") or "rv_12").strip() or "rv_12"
+    recommended_hold_bars = int(exit_doc.get("recommended_hold_bars", 0) or 0) or None
+    horizons = sorted(
+        {
+            max(int(item), 1)
+            for item in [1, 3, 6, 9, 12, int(exit_doc.get("recommended_hold_bars", 0) or 0)]
+            if int(item) > 0
+        }
+    )
+    return build_exit_path_risk_summary(
+        oos_rows=list(oos_rows or []),
+        selection_calibration=selection_calibration,
+        risk_feature_name=risk_feature_name,
+        horizons=tuple(horizons),
+        expected_exit_fee_rate=max(float(exit_doc.get("expected_exit_fee_rate", 0.0) or 0.0), 0.0),
+        expected_exit_slippage_bps=max(float(exit_doc.get("expected_exit_slippage_bps", 0.0) or 0.0), 0.0),
+        recommended_hold_bars=recommended_hold_bars,
     )
 
 

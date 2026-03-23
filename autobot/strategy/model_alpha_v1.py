@@ -12,6 +12,7 @@ import polars as pl
 from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
 from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
+from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.execution_risk_control import (
@@ -492,6 +493,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     or "EXECUTION_NO_TRADE_REGION",
                 )
                 continue
+            exit_recommendation_meta = _build_runtime_exit_recommendation_meta(
+                self._runtime_recommendation_state
+            )
             intents.append(
                 StrategyOrderIntent(
                     market=market,
@@ -541,10 +545,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                             row=row,
                             interval_ms=self._interval_ms,
                             observed_entry_fee_rate=0.0,
+                            exit_path_risk=dict(exit_recommendation_meta.get("path_risk") or {}),
+                            entry_selection_score=float(row.get("model_prob", 0.0)),
                         ),
-                        "exit_recommendation": _build_runtime_exit_recommendation_meta(
-                            self._runtime_recommendation_state
-                        ),
+                        "exit_recommendation": exit_recommendation_meta,
                         "trade_action": dict(trade_action_decision or {}),
                         "risk_control_static": dict(risk_control_decision or {}),
                         "size_ladder_static": dict(size_ladder_decision or {}),
@@ -660,6 +664,19 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             exit_fee_rate=exit_fee_rate,
             exit_slippage_bps=exit_slippage_bps,
         )
+        continuation_guidance = resolve_path_risk_guidance_from_plan(
+            plan_payload=plan,
+            elapsed_bars=max(
+                int((int(ts_ms) - int(state.entry_ts_ms)) // max(int(plan.get("bar_interval_ms", self._interval_ms) or self._interval_ms), 1)),
+                0,
+            ),
+            current_return_ratio=float(net_return),
+            selection_score=_safe_optional_float(row.get("model_prob")) if isinstance(row, dict) else None,
+            risk_feature_value=_resolve_row_risk_volatility(
+                row=row,
+                feature_name=str(plan.get("risk_vol_feature", "")).strip(),
+            ),
+        )
         trailing_drawdown = _net_drawdown_from_peak_after_costs(
             peak_price=max(float(state.peak_price), entry_price),
             current_price=float(ref_price),
@@ -670,6 +687,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             return "MODEL_ALPHA_EXIT_TP"
         if sl_pct > 0 and net_return <= -sl_pct:
             return "MODEL_ALPHA_EXIT_SL"
+        if bool(continuation_guidance.get("continuation_should_exit")):
+            return "MODEL_ALPHA_EXIT_CONTINUATION"
         if trailing_pct > 0 and trailing_drawdown >= trailing_pct:
             return "MODEL_ALPHA_EXIT_TRAILING"
         if hold_ms > 0 and int(ts_ms) - int(state.entry_ts_ms) >= hold_ms:
@@ -1117,6 +1136,8 @@ def build_model_alpha_exit_plan_payload(
     row: dict[str, Any] | None,
     interval_ms: int,
     observed_entry_fee_rate: float = 0.0,
+    exit_path_risk: dict[str, Any] | None = None,
+    entry_selection_score: float | None = None,
 ) -> dict[str, Any]:
     mode = str(settings.exit.mode).strip().lower() or "hold"
     hold_bars = max(int(settings.exit.hold_bars), 0)
@@ -1157,10 +1178,13 @@ def build_model_alpha_exit_plan_payload(
             "tp_vol_multiplier": _safe_optional_float(settings.exit.tp_vol_multiplier),
             "sl_vol_multiplier": _safe_optional_float(settings.exit.sl_vol_multiplier),
             "trailing_vol_multiplier": _safe_optional_float(settings.exit.trailing_vol_multiplier),
+            "entry_selection_score": _safe_optional_float(entry_selection_score),
+            "entry_risk_feature_value": _resolve_row_risk_volatility(row=row, feature_name=settings.exit.risk_vol_feature),
             "use_learned_exit_mode": bool(settings.exit.use_learned_exit_mode),
             "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
             "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
             "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
+            "path_risk": dict(exit_path_risk or {}) if isinstance(exit_path_risk, dict) else {},
         }
     )
 
@@ -1235,6 +1259,36 @@ def _reprice_position_exit_plan(
                     overlay_tp_basis = float(tp_pct)
                     overlay_sl_basis = float(sl_pct)
                     overlay_trailing_basis = float(trailing_pct)
+    plan_interval_ms = max(int(normalized.get("bar_interval_ms", interval_ms) or interval_ms), 1)
+    elapsed_bars = max(int((int(ts_ms) - int(state.entry_ts_ms)) // plan_interval_ms), 0)
+    path_risk_guidance = resolve_path_risk_guidance_from_plan(
+        plan_payload=normalized,
+        elapsed_bars=elapsed_bars,
+        selection_score=_safe_optional_float(row.get("model_prob")) if isinstance(row, dict) else None,
+        risk_feature_value=_resolve_row_risk_volatility(
+            row=row,
+            feature_name=str(normalized.get("risk_vol_feature", "")).strip(),
+        ),
+    )
+    if bool(path_risk_guidance.get("applied")):
+        guided_tp = _safe_optional_float(path_risk_guidance.get("reachable_tp_ratio"))
+        guided_sl = _safe_optional_float(path_risk_guidance.get("bounded_sl_ratio"))
+        if guided_tp is not None and guided_tp > 0.0:
+            tightened_tp = _tighten_only_exit_threshold(normalized.get("tp_pct"), guided_tp)
+            normalized["tp_ratio"] = float(tightened_tp)
+            normalized["tp_pct"] = float(tightened_tp)
+            overlay_tp_basis = float(tightened_tp)
+        if guided_sl is not None and guided_sl > 0.0:
+            tightened_sl = _tighten_only_exit_threshold(normalized.get("sl_pct"), guided_sl)
+            normalized["sl_ratio"] = float(tightened_sl)
+            normalized["sl_pct"] = float(tightened_sl)
+            overlay_sl_basis = float(tightened_sl)
+        normalized["path_risk_applied"] = True
+        normalized["path_risk_selected_hold_bars"] = _safe_optional_int(path_risk_guidance.get("selected_hold_bars"))
+        normalized["path_risk_reachable_tp"] = guided_tp
+        normalized["path_risk_bounded_sl"] = guided_sl
+        normalized["path_risk_terminal_return_q50"] = _safe_optional_float(path_risk_guidance.get("terminal_return_q50"))
+        normalized["path_risk_terminal_return_q75"] = _safe_optional_float(path_risk_guidance.get("terminal_return_q75"))
     micro_snapshot = _micro_snapshot_from_row(row=row, ts_ms=ts_ms)
     current_return_ratio = (
         (float(current_price) / max(float(state.entry_price), 1e-12)) - 1.0

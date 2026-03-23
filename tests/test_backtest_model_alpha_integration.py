@@ -1771,6 +1771,204 @@ def test_model_alpha_risk_exit_repricing_never_widens_entry_thresholds() -> None
     assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in result.intents)
 
 
+def test_model_alpha_entry_plan_includes_runtime_path_risk_metadata() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [2.0],
+            "close": [100.0],
+            "rv_12": [0.01],
+            "rv_36": [0.01],
+            "atr_pct_14": [0.01],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+            exit=ModelAlphaExitSettings(mode="risk", hold_bars=6),
+        ),
+        runtime_recommendations={
+            "exit": {
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "unit-test",
+                "recommended_exit_mode_reason_code": "UNIT_TEST",
+                "recommended_hold_bars": 6,
+                "path_risk": {
+                    "status": "ready",
+                    "recommended_hold_bars": 6,
+                    "recommended_summary": {
+                        "hold_bars": 6,
+                        "reachable_tp_q60": 0.015,
+                        "bounded_sl_q80": 0.01,
+                        "terminal_return_q50": 0.002,
+                    },
+                },
+            }
+        },
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    bid_intents = [intent for intent in result.intents if intent.side == "bid"]
+    assert len(bid_intents) == 1
+    model_exit_plan = dict((bid_intents[0].meta or {}).get("model_exit_plan") or {})
+    assert dict(model_exit_plan.get("path_risk") or {}).get("status") == "ready"
+
+
+def test_model_alpha_risk_exit_path_risk_guidance_tightens_take_profit() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [102.1],
+            "rv_12": [0.01],
+        }
+    )
+    settings = ModelAlphaSettings(
+        selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+        exit=ModelAlphaExitSettings(
+            mode="risk",
+            hold_bars=4,
+            risk_scaling_mode="fixed",
+            tp_pct=0.10,
+            sl_pct=0.05,
+            trailing_pct=0.0,
+        ),
+    )
+    strategy = _build_strategy(groups=[(301_000, frame)], settings=settings)
+    entry_plan = build_model_alpha_exit_plan_payload(
+        settings=settings,
+        row={"rv_12": 0.01, "close": 100.0},
+        interval_ms=300_000,
+        exit_path_risk={
+            "status": "ready",
+            "overall_by_horizon": [
+                {
+                    "hold_bars": 3,
+                    "reachable_tp_q60": 0.02,
+                    "bounded_sl_q80": 0.01,
+                    "terminal_return_q50": 0.001,
+                    "terminal_return_q75": 0.03,
+                },
+                {
+                    "hold_bars": 4,
+                    "reachable_tp_q60": 0.02,
+                    "bounded_sl_q80": 0.01,
+                    "terminal_return_q50": 0.001,
+                    "terminal_return_q75": 0.03,
+                },
+            ],
+            "recommended_summary": {
+                "hold_bars": 4,
+                "reachable_tp_q60": 0.02,
+                "bounded_sl_q80": 0.01,
+                "terminal_return_q50": 0.001,
+                "terminal_return_q75": 0.03,
+            },
+        },
+    )
+
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            meta={"model_exit_plan": entry_plan},
+        )
+    )
+
+    result = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 102.1},
+        open_markets={"KRW-BTC"},
+    )
+
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_TP" for intent in result.intents)
+
+
+def test_model_alpha_risk_exit_path_risk_continuation_capture_exits_before_timeout() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [0.0],
+            "close": [101.2],
+            "rv_12": [0.01],
+        }
+    )
+    settings = ModelAlphaSettings(
+        selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.0, min_candidates_per_ts=1),
+        exit=ModelAlphaExitSettings(
+            mode="risk",
+            hold_bars=4,
+            risk_scaling_mode="fixed",
+            tp_pct=0.10,
+            sl_pct=0.05,
+            trailing_pct=0.0,
+        ),
+    )
+    strategy = _build_strategy(groups=[(301_000, frame)], settings=settings)
+    entry_plan = build_model_alpha_exit_plan_payload(
+        settings=settings,
+        row={"rv_12": 0.01, "close": 100.0},
+        interval_ms=300_000,
+        exit_path_risk={
+            "status": "ready",
+            "overall_by_horizon": [
+                {
+                    "hold_bars": 3,
+                    "reachable_tp_q60": 0.02,
+                    "bounded_sl_q80": 0.01,
+                    "terminal_return_q50": 0.001,
+                    "terminal_return_q75": 0.006,
+                }
+            ],
+            "recommended_summary": {
+                "hold_bars": 3,
+                "reachable_tp_q60": 0.02,
+                "bounded_sl_q80": 0.01,
+                "terminal_return_q50": 0.001,
+                "terminal_return_q75": 0.006,
+            },
+        },
+    )
+
+    from autobot.backtest.strategy_adapter import StrategyFillEvent
+
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            meta={"model_exit_plan": entry_plan},
+        )
+    )
+
+    result = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 101.2},
+        open_markets={"KRW-BTC"},
+    )
+
+    assert any(intent.reason_code == "MODEL_ALPHA_EXIT_CONTINUATION" for intent in result.intents)
+
+
 def test_model_alpha_risk_exit_supports_atr_pct_volatility_feature() -> None:
     frame1 = pl.DataFrame(
         {

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_NEW_INTENTS, arm_breaker, record_counter_failure, breaker_status
+from autobot.live.model_risk_plan import build_model_derived_risk_records
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
 from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from autobot.risk.live_risk_manager import LiveRiskManager
@@ -843,6 +844,128 @@ def test_risk_manager_timeout_trigger_submits_exit(tmp_path: Path) -> None:
     assert persisted["state"] == "EXITING"
     assert persisted["timeout_ts_ms"] == 2000
     assert persisted["source_intent_id"] == "intent-1"
+
+
+def test_risk_manager_path_risk_guidance_tightens_tp_without_micro_overlay(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        position_record, risk_plan_record = build_model_derived_risk_records(
+            market="KRW-BTC",
+            base_currency="BTC",
+            base_amount=1.0,
+            avg_entry_price=100.0,
+            plan_payload={
+                "source": "model_alpha_v1",
+                "version": 1,
+                "mode": "risk",
+                "hold_bars": 4,
+                "interval_ms": 300_000,
+                "timeout_delta_ms": 1_200_000,
+                "tp_pct": 0.10,
+                "sl_pct": 0.05,
+                "trailing_pct": 0.0,
+                "path_risk": {
+                    "status": "ready",
+                    "overall_by_horizon": [
+                        {
+                            "hold_bars": 3,
+                            "reachable_tp_q60": 0.02,
+                            "bounded_sl_q80": 0.01,
+                            "terminal_return_q50": 0.001,
+                        },
+                        {
+                            "hold_bars": 4,
+                            "reachable_tp_q60": 0.02,
+                            "bounded_sl_q80": 0.01,
+                            "terminal_return_q50": 0.001,
+                        },
+                    ],
+                    "recommended_summary": {
+                        "hold_bars": 4,
+                        "reachable_tp_q60": 0.02,
+                        "bounded_sl_q80": 0.01,
+                        "terminal_return_q50": 0.001,
+                    },
+                },
+            },
+            created_ts=1000,
+            updated_ts=1000,
+            intent_id="intent-path-risk-1",
+        )
+        store.upsert_position(position_record)
+        store.upsert_risk_plan(risk_plan_record)
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+        )
+        actions = manager.evaluate_price(market="KRW-BTC", last_price=102.1, ts_ms=301_000)
+        persisted = store.risk_plan_by_id(plan_id=risk_plan_record.plan_id)
+
+    assert any(item["type"] == "risk_path_risk_applied" for item in actions)
+    assert any(item["type"] == "risk_exit_submitted" and item["trigger_reason"] == "TP" for item in actions)
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
+    assert persisted["tp"]["tp_pct"] == 2.0
+
+
+def test_risk_manager_path_risk_continuation_capture_submits_exit(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        position_record, risk_plan_record = build_model_derived_risk_records(
+            market="KRW-BTC",
+            base_currency="BTC",
+            base_amount=1.0,
+            avg_entry_price=100.0,
+            plan_payload={
+                "source": "model_alpha_v1",
+                "version": 1,
+                "mode": "risk",
+                "hold_bars": 4,
+                "interval_ms": 300_000,
+                "timeout_delta_ms": 1_200_000,
+                "tp_pct": 0.10,
+                "sl_pct": 0.05,
+                "trailing_pct": 0.0,
+                "path_risk": {
+                    "status": "ready",
+                    "overall_by_horizon": [
+                        {
+                            "hold_bars": 3,
+                            "reachable_tp_q60": 0.02,
+                            "bounded_sl_q80": 0.01,
+                            "terminal_return_q50": 0.001,
+                            "terminal_return_q75": 0.006,
+                        }
+                    ],
+                    "recommended_summary": {
+                        "hold_bars": 3,
+                        "reachable_tp_q60": 0.02,
+                        "bounded_sl_q80": 0.01,
+                        "terminal_return_q50": 0.001,
+                        "terminal_return_q75": 0.006,
+                    },
+                },
+            },
+            created_ts=1000,
+            updated_ts=1000,
+            intent_id="intent-path-risk-cont-1",
+        )
+        store.upsert_position(position_record)
+        store.upsert_risk_plan(risk_plan_record)
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+        )
+        actions = manager.evaluate_price(market="KRW-BTC", last_price=101.2, ts_ms=301_000)
+        persisted = store.risk_plan_by_id(plan_id=risk_plan_record.plan_id)
+
+    assert any(item["type"] == "risk_exit_submitted" and item["trigger_reason"] == "PATH_RISK_CONTINUATION" for item in actions)
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
 
 
 def test_risk_manager_done_order_replace_reject_does_not_keep_breaker_active(tmp_path: Path) -> None:

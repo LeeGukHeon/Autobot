@@ -213,6 +213,7 @@ def resolve_runtime_model_alpha_settings(
                 for item in ((exit_doc.get("family_compare") or {}).get("reason_codes") or [])
                 if str(item).strip()
             ],
+            "path_risk": dict(exit_doc.get("path_risk") or {}) if isinstance(exit_doc.get("path_risk"), dict) else {},
         }
         family_compare_status = str(exit_doc.get("family_compare_status") or "").strip()
         state["exit_family_compare_status"] = family_compare_status or "missing"
@@ -457,6 +458,7 @@ def build_runtime_exit_recommendation_meta(runtime_state: dict[str, Any] | None)
         "family_compare_reason_codes": [
             str(item).strip() for item in (payload.get("family_compare_reason_codes") or []) if str(item).strip()
         ],
+        "path_risk": dict(payload.get("path_risk") or {}) if isinstance(payload.get("path_risk"), dict) else {},
     }
 
 

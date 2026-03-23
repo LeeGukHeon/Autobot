@@ -450,6 +450,13 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             run_id=run_id,
             search_budget_decision=search_budget_decision,
         )
+        runtime_recommendations["exit_path_risk"] = _build_exit_path_risk_summary_v4(
+            runtime_recommendations=runtime_recommendations,
+            selection_calibration=selection_calibration,
+            oos_rows=trade_action_oos_rows,
+        )
+        if isinstance(runtime_recommendations.get("exit"), dict):
+            runtime_recommendations["exit"]["path_risk"] = dict(runtime_recommendations["exit_path_risk"])
         runtime_recommendations["trade_action"] = _build_trade_action_policy_v4(
             options=options,
             runtime_recommendations=runtime_recommendations,
@@ -1343,6 +1350,19 @@ def _build_trade_action_policy_v4(
         selection_calibration=selection_calibration,
         oos_rows=oos_rows,
         build_trade_action_policy_from_oos_rows_fn=build_trade_action_policy_from_oos_rows,
+    )
+
+
+def _build_exit_path_risk_summary_v4(
+    *,
+    runtime_recommendations: dict[str, Any],
+    selection_calibration: dict[str, Any],
+    oos_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    return _train_v4_execution.build_exit_path_risk_summary_v4(
+        runtime_recommendations=runtime_recommendations,
+        selection_calibration=selection_calibration,
+        oos_rows=oos_rows,
     )
 
 

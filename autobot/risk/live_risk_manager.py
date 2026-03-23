@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
+from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
 from autobot.execution.intent import new_order_intent
 from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
@@ -161,6 +162,9 @@ class LiveRiskManager:
         for plan in self._load_plans(market=market_value, states=("ACTIVE", "TRIGGERED", "EXITING")):
             updated = replace(plan, last_eval_ts_ms=now_ts, updated_ts=now_ts)
             if updated.state in {"ACTIVE", "TRIGGERED"}:
+                updated, path_risk_action = self._apply_path_risk_guidance(updated, ts_ms=now_ts)
+                if path_risk_action is not None:
+                    actions.append(path_risk_action)
                 updated, overlay_action = self._apply_micro_exit_overlay(
                     updated,
                     last_price=last_price,
@@ -766,6 +770,26 @@ class LiveRiskManager:
             sl_basis = plan.sl_pct if bool(plan.sl_enabled) else None
         if trailing_basis is None:
             trailing_basis = _as_float(plan.trail_pct) if bool(plan.trailing_enabled) else None
+        path_risk_guidance = resolve_path_risk_guidance_from_plan(
+            plan_payload=base_plan,
+            created_ts=int(plan.created_ts),
+            ts_ms=int(ts_ms),
+        )
+        if bool(path_risk_guidance.get("applied")):
+            reachable_tp_pct = (
+                float(_as_float(path_risk_guidance.get("reachable_tp_ratio")) or 0.0) * 100.0
+                if _as_float(path_risk_guidance.get("reachable_tp_ratio")) is not None
+                else None
+            )
+            bounded_sl_pct = (
+                float(_as_float(path_risk_guidance.get("bounded_sl_ratio")) or 0.0) * 100.0
+                if _as_float(path_risk_guidance.get("bounded_sl_ratio")) is not None
+                else None
+            )
+            if tp_basis is not None and reachable_tp_pct is not None and reachable_tp_pct > 0.0:
+                tp_basis = min(float(tp_basis), float(reachable_tp_pct))
+            if sl_basis is not None and bounded_sl_pct is not None and bounded_sl_pct > 0.0:
+                sl_basis = min(float(sl_basis), float(bounded_sl_pct))
         overlay = resolve_dynamic_exit_overlay(
             settings=self._micro_overlay_settings,
             micro_snapshot=micro_snapshot,
@@ -812,6 +836,67 @@ class LiveRiskManager:
             "timeout_ts_ms": _as_int(timeout_ts_ms),
         }
 
+    def _apply_path_risk_guidance(
+        self,
+        plan: RiskPlan,
+        *,
+        ts_ms: int,
+    ) -> tuple[RiskPlan, dict[str, Any] | None]:
+        plan_source = str(plan.plan_source or "").strip().lower()
+        if plan_source not in {"model_alpha_v1", MODEL_ALPHA_MICRO_OVERLAY_PLAN_SOURCE}:
+            return plan, None
+        base_plan = self._resolve_overlay_basis_plan(plan)
+        if not isinstance(base_plan, dict) or not base_plan:
+            return plan, None
+        guidance = resolve_path_risk_guidance_from_plan(
+            plan_payload=base_plan,
+            created_ts=int(plan.created_ts),
+            ts_ms=int(ts_ms),
+        )
+        if not bool(guidance.get("applied")):
+            return plan, None
+        reachable_tp = (
+            float(_as_float(guidance.get("reachable_tp_ratio")) or 0.0) * 100.0
+            if _as_float(guidance.get("reachable_tp_ratio")) is not None
+            else None
+        )
+        bounded_sl = (
+            float(_as_float(guidance.get("bounded_sl_ratio")) or 0.0) * 100.0
+            if _as_float(guidance.get("bounded_sl_ratio")) is not None
+            else None
+        )
+        next_tp = plan.tp_pct
+        next_sl = plan.sl_pct
+        changed = False
+        if reachable_tp is not None and reachable_tp > 0.0:
+            resolved_tp = _tighten_only_percent(plan.tp_pct, reachable_tp)
+            if resolved_tp != plan.tp_pct:
+                next_tp = resolved_tp
+                changed = True
+        if bounded_sl is not None and bounded_sl > 0.0:
+            resolved_sl = _tighten_only_percent(plan.sl_pct, bounded_sl)
+            if resolved_sl != plan.sl_pct:
+                next_sl = resolved_sl
+                changed = True
+        if not changed:
+            return plan, None
+        updated = replace(
+            plan,
+            tp_enabled=(next_tp or 0.0) > 0.0,
+            tp_pct=next_tp if (next_tp or 0.0) > 0.0 else None,
+            sl_enabled=(next_sl or 0.0) > 0.0,
+            sl_pct=next_sl if (next_sl or 0.0) > 0.0 else None,
+            updated_ts=ts_ms,
+        )
+        return updated, {
+            "type": "risk_path_risk_applied",
+            "plan_id": plan.plan_id,
+            "reachable_tp_pct": reachable_tp,
+            "bounded_sl_pct": bounded_sl,
+            "selected_hold_bars": _as_int(guidance.get("selected_hold_bars")),
+            "terminal_return_q50": _as_float(guidance.get("terminal_return_q50")),
+        }
+
     def _resolve_overlay_basis_plan(self, plan: RiskPlan) -> dict[str, Any]:
         source_intent_id = _as_optional_str(plan.source_intent_id)
         if source_intent_id:
@@ -828,6 +913,13 @@ class LiveRiskManager:
         return {}
 
     def _detect_trigger(self, plan: RiskPlan, *, last_price: float, ts_ms: int) -> str | None:
+        base_plan = self._resolve_overlay_basis_plan(plan)
+        continuation_guidance = resolve_path_risk_guidance_from_plan(
+            plan_payload=base_plan,
+            created_ts=int(plan.created_ts),
+            ts_ms=int(ts_ms),
+            current_return_ratio=(float(last_price) / max(float(plan.entry_price), 1e-12)) - 1.0,
+        )
         tp_price = plan.resolve_tp_price()
         if tp_price is not None and last_price >= tp_price:
             return "TP"
@@ -835,6 +927,9 @@ class LiveRiskManager:
         sl_price = plan.resolve_sl_price()
         if sl_price is not None and last_price <= sl_price:
             return "SL"
+
+        if bool(continuation_guidance.get("continuation_should_exit")):
+            return "PATH_RISK_CONTINUATION"
 
         if plan.trailing_enabled and plan.trail_pct is not None and plan.trail_pct > 0:
             watermark = plan.high_watermark_price or 0.0
@@ -1048,6 +1143,14 @@ def _as_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _tighten_only_percent(entry_value: float | None, repriced_value: float | None) -> float | None:
+    current = max(_as_float(entry_value) or 0.0, 0.0)
+    candidate = max(_as_float(repriced_value) or 0.0, 0.0)
+    if current <= 0.0 or candidate <= 0.0:
+        return entry_value
+    return float(min(current, candidate))
 
 
 def _is_done_order_replace_reject(reason: str | None) -> bool:
