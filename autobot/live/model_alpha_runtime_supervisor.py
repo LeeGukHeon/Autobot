@@ -18,7 +18,7 @@ from autobot.live.order_state import normalize_order_state
 from autobot.live.execution_attempts import mark_execution_attempt_cancelled, rebind_execution_attempt_order
 
 from .admissibility import extract_min_total
-from .breakers import arm_breaker
+from .breakers import record_warning
 from .state_store import IntentRecord, LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 from .trade_journal import cancel_pending_entry_journal, rebind_pending_entry_journal_order
 
@@ -526,7 +526,7 @@ def _replace_open_order(
         )
     except Exception as exc:
         lineage_warning = str(exc)
-        arm_breaker(
+        record_warning(
             store,
             reason_codes=["SUPERVISOR_REPLACE_PERSIST_FAILED"],
             source="live_order_supervisor",

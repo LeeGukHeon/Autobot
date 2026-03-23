@@ -189,35 +189,8 @@ class LiveRiskManager:
             elif updated.state == "EXITING":
                 timeout_ms = max(int(self._config.order_timeout_sec), 1) * 1000
                 if updated.last_action_ts_ms > 0 and now_ts - updated.last_action_ts_ms >= timeout_ms:
-                    if updated.replace_attempt < max(int(self._config.replace_max), 0):
-                        updated, action = self._replace_exit_order(updated, last_price=last_price, ts_ms=now_ts)
-                        actions.append(action)
-                    else:
-                        breaker_report = arm_breaker(
-                            self._store,
-                            reason_codes=["RISK_EXIT_STUCK_MAX_REPLACES"],
-                            source="risk_manager",
-                            ts_ms=now_ts,
-                            details={
-                                "plan_id": updated.plan_id,
-                                "market": updated.market,
-                                "replace_attempt": int(updated.replace_attempt),
-                                "replace_max": int(self._config.replace_max),
-                                "last_action_ts_ms": int(updated.last_action_ts_ms),
-                                "current_exit_order_uuid": updated.current_exit_order_uuid,
-                                "current_exit_order_identifier": updated.current_exit_order_identifier,
-                            },
-                        )
-                        updated = replace(updated, last_action_ts_ms=now_ts, updated_ts=now_ts)
-                        actions.append(
-                            {
-                                "type": "risk_exit_stuck_max_replaces",
-                                "plan_id": updated.plan_id,
-                                "replace_attempt": int(updated.replace_attempt),
-                                "replace_max": int(self._config.replace_max),
-                                "breaker_report": breaker_report,
-                            }
-                        )
+                    updated, action = self._replace_exit_order(updated, last_price=last_price, ts_ms=now_ts)
+                    actions.append(action)
 
             self._upsert_plan(updated)
         return actions
@@ -260,7 +233,13 @@ class LiveRiskManager:
             if not _plan_matches(plan, uuid=uuid, identifier=identifier):
                 continue
             if state == "done":
-                reset_counter(self._store, counter_name="cancel_reject", source="risk_event_done", ts_ms=ts_ms)
+                reset_counter(
+                    self._store,
+                    counter_name="cancel_reject",
+                    source="risk_event_done",
+                    ts_ms=ts_ms,
+                    scope_key=plan.plan_id,
+                )
                 updated = replace(
                     plan,
                     state="CLOSED",
@@ -288,6 +267,7 @@ class LiveRiskManager:
                         "identifier": identifier,
                         "state": state,
                     },
+                    scope_key=plan.plan_id,
                 )
                 updated = replace(plan, state="EXITING", last_action_ts_ms=ts_ms, updated_ts=ts_ms)
                 self._upsert_plan(updated)
@@ -298,7 +278,13 @@ class LiveRiskManager:
                     "breaker_report": breaker_report,
                 }
             if state in {"cancel", "cancelled"}:
-                reset_counter(self._store, counter_name="cancel_reject", source="risk_cancel_cleared", ts_ms=ts_ms)
+                reset_counter(
+                    self._store,
+                    counter_name="cancel_reject",
+                    source="risk_cancel_cleared",
+                    ts_ms=ts_ms,
+                    scope_key=plan.plan_id,
+                )
                 updated = replace(plan, state="EXITING", last_action_ts_ms=ts_ms, updated_ts=ts_ms)
                 self._upsert_plan(updated)
                 return {"type": "risk_exit_still_open", "plan_id": plan.plan_id, "state": state}
@@ -404,29 +390,29 @@ class LiveRiskManager:
         reject_reason = str(getattr(result, "reason", "") or "")
         classified_reject = classify_executor_reject_reason(reject_reason)
         if classified_reject == "REPEATED_RATE_LIMIT_ERRORS":
-            record_counter_failure(
-                self._store,
-                counter_name="rate_limit_error",
-                limit=3,
-                source="risk_submit",
+                record_counter_failure(
+                    self._store,
+                    counter_name="rate_limit_error",
+                    limit=3,
+                    source="risk_submit",
                 ts_ms=ts_ms,
                 details={"plan_id": plan.plan_id, "reason": reject_reason},
             )
         elif classified_reject == "REPEATED_AUTH_ERRORS":
-            record_counter_failure(
-                self._store,
-                counter_name="auth_error",
-                limit=2,
-                source="risk_submit",
+                record_counter_failure(
+                    self._store,
+                    counter_name="auth_error",
+                    limit=2,
+                    source="risk_submit",
                 ts_ms=ts_ms,
                 details={"plan_id": plan.plan_id, "reason": reject_reason},
             )
         elif classified_reject == "REPEATED_NONCE_ERRORS":
-            record_counter_failure(
-                self._store,
-                counter_name="nonce_error",
-                limit=2,
-                source="risk_submit",
+                record_counter_failure(
+                    self._store,
+                    counter_name="nonce_error",
+                    limit=2,
+                    source="risk_submit",
                 ts_ms=ts_ms,
                 details={"plan_id": plan.plan_id, "reason": reject_reason},
             )
@@ -484,7 +470,13 @@ class LiveRiskManager:
             new_time_in_force="gtc",
         )
         if bool(getattr(result, "accepted", False)):
-            reset_counter(self._store, counter_name="replace_reject", source="risk_replace_ok", ts_ms=ts_ms)
+            reset_counter(
+                self._store,
+                counter_name="replace_reject",
+                source="risk_replace_ok",
+                ts_ms=ts_ms,
+                scope_key=plan.plan_id,
+            )
             reset_counter(self._store, counter_name="rate_limit_error", source="risk_replace_ok", ts_ms=ts_ms)
             reset_counter(self._store, counter_name="auth_error", source="risk_replace_ok", ts_ms=ts_ms)
             reset_counter(self._store, counter_name="nonce_error", source="risk_replace_ok", ts_ms=ts_ms)
@@ -606,6 +598,7 @@ class LiveRiskManager:
                 counter_name="replace_reject",
                 source="risk_replace_done_order",
                 ts_ms=ts_ms,
+                scope_key=plan.plan_id,
             )
             updated = replace(
                 plan,
@@ -625,6 +618,7 @@ class LiveRiskManager:
             source="risk_replace",
             ts_ms=ts_ms,
             details={"plan_id": plan.plan_id, "reason": reject_reason},
+            scope_key=plan.plan_id,
         )
         classified_reject = classify_executor_reject_reason(reject_reason)
         if classified_reject == "REPEATED_RATE_LIMIT_ERRORS":
@@ -654,19 +648,20 @@ class LiveRiskManager:
                 ts_ms=ts_ms,
                 details={"plan_id": plan.plan_id, "reason": reject_reason},
             )
-        if replace_step >= max(int(self._config.replace_max), 0):
-            updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
-            return updated, {
-                "type": "risk_replace_max_reached",
-                "plan_id": plan.plan_id,
-                "replace_attempt": replace_step,
-            }
-
-        updated = replace(plan, updated_ts=ts_ms)
+        escalation_active = replace_step >= max(int(self._config.replace_max), 0)
+        updated = replace(
+            plan,
+            state="EXITING",
+            replace_attempt=replace_step,
+            last_action_ts_ms=ts_ms,
+            updated_ts=ts_ms,
+        )
         return updated, {
-            "type": "risk_replace_failed",
+            "type": "risk_replace_failed_continue_exit",
             "plan_id": plan.plan_id,
             "replace_attempt": replace_step,
+            "replace_max": int(self._config.replace_max),
+            "escalation_active": bool(escalation_active),
             "reason": str(getattr(result, "reason", "")),
         }
 

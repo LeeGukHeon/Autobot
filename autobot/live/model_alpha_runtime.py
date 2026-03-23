@@ -70,12 +70,15 @@ from .breakers import (
     reset_counter,
 )
 from .daemon import (
+    PRIVATE_WS_STALE_RETRY_LIMIT,
     LiveDaemonSettings,
+    _consume_stream_retry_budget,
     _apply_private_ws_event_with_breakers,
     _apply_rollout_status_to_summary,
     _apply_runtime_status_to_summary,
     _evaluate_rollout_gate,
     _maybe_enforce_breaker,
+    _reset_stream_retry_budget,
     _run_sync_cycle_with_breakers,
     _runtime_model_binding_after_resume,
 )
@@ -330,8 +333,13 @@ async def run_live_model_alpha_runtime(
                     break
                 await private_ws_queue.put(ws_event)
 
-        private_ws_task = asyncio.create_task(_private_ws_pump())
+        def _spawn_private_ws_task() -> asyncio.Task[None]:
+            return asyncio.create_task(_private_ws_pump())
+
+        private_ws_task = _spawn_private_ws_task()
         await asyncio.sleep(0)
+    else:
+        _spawn_private_ws_task = None
     if isinstance(micro_provider, LiveWsMicroSnapshotProvider):
         public_micro_stop_event = asyncio.Event()
         if hasattr(public_ws_client, "stream_trade"):
@@ -367,7 +375,7 @@ async def run_live_model_alpha_runtime(
     try:
         async for ticker in public_ws_client.stream_ticker(markets, duration_sec=daemon_settings.duration_sec):
             if private_ws_queue is not None:
-                _drain_private_ws_events(
+                private_ws_task = _drain_private_ws_events(
                     store=store,
                     private_ws_queue=private_ws_queue,
                     private_ws_task=private_ws_task,
@@ -375,6 +383,7 @@ async def run_live_model_alpha_runtime(
                     risk_manager=risk_manager,
                     daemon_settings=daemon_settings,
                     summary=summary,
+                    spawn_private_ws_task_fn=_spawn_private_ws_task,
                 )
             _drain_public_micro_events(
                 trade_queue=public_trade_queue,
@@ -510,7 +519,7 @@ async def run_live_model_alpha_runtime(
                     ts_ms=int(ticker.ts_ms),
                 )
                 if private_ws_queue is not None:
-                    _drain_private_ws_events(
+                    private_ws_task = _drain_private_ws_events(
                         store=store,
                         private_ws_queue=private_ws_queue,
                         private_ws_task=private_ws_task,
@@ -518,6 +527,7 @@ async def run_live_model_alpha_runtime(
                         risk_manager=risk_manager,
                         daemon_settings=daemon_settings,
                         summary=summary,
+                        spawn_private_ws_task_fn=_spawn_private_ws_task,
                     )
                 _drain_public_micro_events(
                     trade_queue=public_trade_queue,
@@ -559,7 +569,7 @@ async def run_live_model_alpha_runtime(
         summary["public_ws_stats"] = public_ws_stats
     else:
         if private_ws_queue is not None:
-            _drain_private_ws_events(
+            private_ws_task = _drain_private_ws_events(
                 store=store,
                 private_ws_queue=private_ws_queue,
                 private_ws_task=private_ws_task,
@@ -567,6 +577,7 @@ async def run_live_model_alpha_runtime(
                 risk_manager=risk_manager,
                 daemon_settings=daemon_settings,
                 summary=summary,
+                spawn_private_ws_task_fn=_spawn_private_ws_task,
             )
         _drain_public_micro_events(
             trade_queue=public_trade_queue,
@@ -1479,12 +1490,18 @@ def _drain_private_ws_events(
     risk_manager: LiveRiskManager | None,
     daemon_settings: LiveDaemonSettings,
     summary: dict[str, Any],
-) -> None:
+    spawn_private_ws_task_fn: Any | None = None,
+) -> asyncio.Task[None] | None:
     while True:
         try:
             ws_event = private_ws_queue.get_nowait()
         except asyncio.QueueEmpty:
             break
+        _reset_stream_retry_budget(
+            store=store,
+            stream_name="private_ws",
+            ts_ms=int(time.time() * 1000),
+        )
         action = _apply_private_ws_event_with_breakers(
             store=store,
             event=ws_event,
@@ -1522,16 +1539,27 @@ def _drain_private_ws_events(
                 exc = private_ws_task.exception()
             except Exception:
                 exc = None
-        if exc is not None:
+        can_retry, retry_payload = _consume_stream_retry_budget(
+            store=store,
+            stream_name="private_ws",
+            limit=PRIVATE_WS_STALE_RETRY_LIMIT,
+            ts_ms=int(time.time() * 1000),
+            details={"task_error": str(exc) if exc is not None else None},
+        )
+        if can_retry and callable(spawn_private_ws_task_fn):
+            private_ws_task = spawn_private_ws_task_fn()
+            summary["private_ws_restart_attempts"] = int(summary.get("private_ws_restart_attempts", 0)) + 1
+        else:
             arm_breaker(
                 store,
                 reason_codes=["STALE_PRIVATE_WS_STREAM"],
                 source="strategy_private_ws",
                 ts_ms=int(time.time() * 1000),
                 action=ACTION_HALT_NEW_INTENTS,
-                details={"task_error": str(exc)},
+                details={"task_error": str(exc) if exc is not None else None, "retry_state": retry_payload},
             )
             summary["breaker_report"] = breaker_status(store)
+    return private_ws_task
 
 
 def _resolve_live_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:

@@ -979,6 +979,7 @@ def test_risk_manager_done_order_replace_reject_does_not_keep_breaker_active(tmp
             source="test_seed",
             ts_ms=900,
             details={"attempt": 1},
+            scope_key="replace-done-order",
         )
         store.upsert_risk_plan(
             RiskPlanRecord(
@@ -1056,14 +1057,14 @@ def test_risk_manager_exit_stuck_after_replace_budget_exhausted_arms_breaker(tmp
         persisted = store.risk_plan_by_id(plan_id="stuck-exit-1")
         status = breaker_status(store)
 
-    assert any(item["type"] == "risk_exit_stuck_max_replaces" for item in actions)
-    assert gateway.replace_calls == []
+    assert any(item["type"] == "risk_exit_replaced" for item in actions)
+    assert len(gateway.replace_calls) == 1
     assert persisted is not None
     assert persisted["state"] == "EXITING"
     assert persisted["last_action_ts_ms"] == 4000
-    assert status["active"] is True
-    assert status["action"] == ACTION_HALT_NEW_INTENTS
-    assert "RISK_EXIT_STUCK_MAX_REPLACES" in status["reason_codes"]
+    assert persisted["replace_attempt"] == 1
+    assert status["active"] is False
+    assert "RISK_EXIT_STUCK_MAX_REPLACES" not in status["reason_codes"]
 
 
 def test_risk_manager_done_event_clears_stuck_exit_breaker(tmp_path: Path) -> None:
@@ -1099,13 +1100,14 @@ def test_risk_manager_done_event_clears_stuck_exit_breaker(tmp_path: Path) -> No
             tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
         )
         manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
+        updated_plan = store.risk_plan_by_id(plan_id="stuck-exit-clear-1")
         closed = manager.handle_executor_event(
             {
                 "event_type": "ORDER_UPDATE",
                 "ts_ms": 5000,
                 "payload": {
                     "event_name": "ORDER_STATE",
-                    "identifier": "AUTOBOT-RISK-old",
+                    "identifier": updated_plan["current_exit_order_identifier"],
                     "state": "done",
                 },
             }
@@ -1116,6 +1118,111 @@ def test_risk_manager_done_event_clears_stuck_exit_breaker(tmp_path: Path) -> No
     assert closed["type"] == "risk_closed"
     assert status["active"] is False
     assert "RISK_EXIT_STUCK_MAX_REPLACES" not in status["reason_codes"]
+
+
+class _RejectReplaceGateway(_FakeExecutorGateway):
+    def replace_order(
+        self,
+        *,
+        intent_id: str,
+        prev_order_uuid: str | None = None,
+        prev_order_identifier: str | None = None,
+        new_identifier: str,
+        new_price_str: str,
+        new_volume_str: str,
+        new_time_in_force: str | None = None,
+    ):  # noqa: ANN201
+        _ = intent_id, prev_order_uuid, prev_order_identifier, new_identifier, new_price_str, new_volume_str, new_time_in_force
+        self._replace_seq += 1
+        self.replace_calls.append(
+            _ReplaceCall(
+                prev_order_uuid=prev_order_uuid,
+                prev_order_identifier=prev_order_identifier,
+                new_identifier=new_identifier,
+                new_price_str=new_price_str,
+                new_volume_str=new_volume_str,
+            )
+        )
+        return SimpleNamespace(
+            accepted=False,
+            reason="temporary_replace_reject",
+            cancelled_order_uuid=None,
+            new_order_uuid=None,
+            new_identifier=new_identifier,
+        )
+
+
+def test_risk_manager_replace_reject_keeps_exiting_and_retries_later(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _RejectReplaceGateway()
+    with LiveStateStore(db_path) as store:
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-prev-uuid",
+                identifier="AUTOBOT-RISK-old",
+                market="KRW-XRP",
+                side="ask",
+                ord_type="limit",
+                price=490.0,
+                volume_req=100.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1000,
+                updated_ts=1000,
+                intent_id="intent-risk-old",
+                tp_sl_link="stuck-exit-retry",
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="SUBMIT_ACCEPTED",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="exit-prev-uuid",
+                prev_order_uuid=None,
+                prev_order_identifier=None,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="stuck-exit-retry",
+                market="KRW-XRP",
+                side="long",
+                entry_price_str="500",
+                qty_str="100",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=1000,
+                current_exit_order_uuid="exit-prev-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-old",
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(order_timeout_sec=1, replace_max=0, exit_aggress_bps=10.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-XRP" else None,
+        )
+        first_actions = manager.evaluate_price(market="KRW-XRP", last_price=480.0, ts_ms=4000)
+        mid = store.risk_plan_by_id(plan_id="stuck-exit-retry")
+        second_actions = manager.evaluate_price(market="KRW-XRP", last_price=479.0, ts_ms=6000)
+        persisted = store.risk_plan_by_id(plan_id="stuck-exit-retry")
+
+    assert any(item["type"] == "risk_replace_failed_continue_exit" for item in first_actions)
+    assert any(item["type"] == "risk_replace_failed_continue_exit" for item in second_actions)
+    assert len(gateway.replace_calls) == 2
+    assert mid is not None
+    assert mid["state"] == "EXITING"
+    assert mid["replace_attempt"] == 1
+    assert persisted is not None
+    assert persisted["state"] == "EXITING"
+    assert persisted["replace_attempt"] == 2
 
 
 def test_risk_manager_replace_lineage_failure_arms_breaker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

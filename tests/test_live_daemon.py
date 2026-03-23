@@ -906,7 +906,7 @@ def test_private_ws_terminal_event_resets_replace_reject_counter(tmp_path: Path)
                 use_private_ws=True,
             ),
         )
-        counter = store.get_checkpoint(name="breaker_counter:replace_reject")
+        counter = store.get_checkpoint(name="breaker_counter:replace_reject:KRW-BTC")
 
     assert counter is not None
     assert counter["payload"]["count"] == 0
@@ -964,7 +964,7 @@ def test_executor_terminal_event_resets_replace_reject_counter(tmp_path: Path) -
             quote_currency="KRW",
             settings=settings,
         )
-        counter = store.get_checkpoint(name="breaker_counter:replace_reject")
+        counter = store.get_checkpoint(name="breaker_counter:replace_reject:KRW-BTC")
 
     assert counter is not None
     assert counter["payload"]["count"] == 0
@@ -1048,7 +1048,7 @@ def test_live_daemon_classifies_local_position_missing_on_exchange_as_manual_sel
     assert any(item["type"] == "close_position_as_manual_sell" for item in actions)
 
 
-def test_live_daemon_halts_on_managed_position_missing_without_close_evidence(tmp_path: Path, monkeypatch) -> None:
+def test_live_daemon_softens_first_managed_position_missing_without_close_evidence(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -1079,8 +1079,8 @@ def test_live_daemon_halts_on_managed_position_missing_without_close_evidence(tm
             ),
         )
 
-    assert summary["halted"] is True
-    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" in summary["halted_reasons"]
+    assert summary["halted"] is False
+    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" not in summary["halted_reasons"]
 
 
 def test_live_daemon_single_slot_canary_halts_on_multi_slot_state(tmp_path: Path, monkeypatch) -> None:
@@ -1189,7 +1189,7 @@ def test_live_daemon_repeated_rate_limit_arms_breaker(tmp_path: Path, monkeypatc
     assert "REPEATED_RATE_LIMIT_ERRORS" in summary["halted_reasons"]
 
 
-def test_live_daemon_halts_when_private_ws_stream_ends(tmp_path: Path, monkeypatch) -> None:
+def test_live_daemon_does_not_immediately_halt_when_private_ws_stream_ends(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
 
     class _FiniteWsClient:
@@ -1224,5 +1224,5 @@ def test_live_daemon_halts_when_private_ws_stream_ends(tmp_path: Path, monkeypat
             )
         )
 
-    assert summary["halted"] is True
-    assert "STALE_PRIVATE_WS_STREAM" in summary["halted_reasons"]
+    assert summary["halted"] is False
+    assert "STALE_PRIVATE_WS_STREAM" not in summary["halted_reasons"]

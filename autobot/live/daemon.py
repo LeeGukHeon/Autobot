@@ -108,6 +108,9 @@ class LiveDaemonSettings:
 
 LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_CHECKPOINT = "live_rollout_auto_test_order_refresh"
 LIVE_ROLLOUT_AUTO_TEST_ORDER_REFRESH_MIN_INTERVAL_SEC = 300
+STREAM_RETRY_CHECKPOINT_PREFIX = "stream_retry"
+PRIVATE_WS_STALE_RETRY_LIMIT = 1
+EXECUTOR_STREAM_STALE_RETRY_LIMIT = 1
 
 
 def _resolve_runtime_model_contract_with_candidate_fallback(
@@ -501,6 +504,50 @@ def _maybe_auto_refresh_rollout_test_order(
     return attempt_payload
 
 
+def _stream_retry_checkpoint_name(stream_name: str) -> str:
+    return f"{STREAM_RETRY_CHECKPOINT_PREFIX}:{str(stream_name).strip().lower()}"
+
+
+def _consume_stream_retry_budget(
+    *,
+    store: LiveStateStore,
+    stream_name: str,
+    limit: int,
+    ts_ms: int,
+    details: dict[str, Any] | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    checkpoint_name = _stream_retry_checkpoint_name(stream_name)
+    previous = store.get_checkpoint(name=checkpoint_name)
+    payload = dict((previous or {}).get("payload") or {})
+    attempt_count = int(payload.get("attempt_count") or 0) + 1
+    next_payload = {
+        "stream_name": str(stream_name).strip().lower(),
+        "attempt_count": attempt_count,
+        "limit": max(int(limit), 0),
+        "updated_ts": int(ts_ms),
+        "details": dict(details or {}),
+    }
+    store.set_checkpoint(name=checkpoint_name, payload=next_payload, ts_ms=ts_ms)
+    return attempt_count <= max(int(limit), 0), next_payload
+
+
+def _reset_stream_retry_budget(
+    *,
+    store: LiveStateStore,
+    stream_name: str,
+    ts_ms: int,
+) -> None:
+    store.set_checkpoint(
+        name=_stream_retry_checkpoint_name(stream_name),
+        payload={
+            "stream_name": str(stream_name).strip().lower(),
+            "attempt_count": 0,
+            "updated_ts": int(ts_ms),
+        },
+        ts_ms=ts_ms,
+    )
+
+
 def _evaluate_rollout_gate(
     *,
     store: LiveStateStore,
@@ -545,16 +592,6 @@ def _evaluate_rollout_gate(
     if auto_test_order_refresh is not None:
         payload["auto_test_order_refresh"] = auto_test_order_refresh
     store.set_live_rollout_status(payload=payload, ts_ms=ts_ms)
-    rollout_reason_codes = [item for item in gate.reason_codes if item != "LIVE_BREAKER_ACTIVE"]
-    if bool(gate.mode != "shadow") and rollout_reason_codes:
-        arm_breaker(
-            store,
-            reason_codes=rollout_reason_codes,
-            source="live_rollout",
-            ts_ms=ts_ms,
-            action=ACTION_HALT_NEW_INTENTS,
-            details=payload,
-        )
     return payload
 
 
@@ -885,6 +922,11 @@ def run_live_sync_daemon_with_executor_events(
                 executor_event = None
 
             if executor_event is not None:
+                _reset_stream_retry_budget(
+                    store=store,
+                    stream_name="executor_stream",
+                    ts_ms=int(time.time() * 1000),
+                )
                 action = _apply_executor_event_with_breakers(
                     store=store,
                     event=executor_event,
@@ -923,16 +965,27 @@ def run_live_sync_daemon_with_executor_events(
                     break
 
             if not executor_thread.is_alive() and event_queue.empty() and not stop_event.is_set():
-                summary["breaker_report"] = arm_breaker(
-                    store,
-                    reason_codes=["STALE_EXECUTOR_STREAM"],
-                    source="executor_stream",
+                can_retry, retry_payload = _consume_stream_retry_budget(
+                    store=store,
+                    stream_name="executor_stream",
+                    limit=EXECUTOR_STREAM_STALE_RETRY_LIMIT,
                     ts_ms=int(time.time() * 1000),
                     details={"stream_errors": list(stream_errors)},
                 )
-                summary["halted"] = True
-                summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-                break
+                if can_retry:
+                    executor_thread = threading.Thread(target=_executor_pump, name="executor-event-pump", daemon=True)
+                    executor_thread.start()
+                else:
+                    summary["breaker_report"] = arm_breaker(
+                        store,
+                        reason_codes=["STALE_EXECUTOR_STREAM"],
+                        source="executor_stream",
+                        ts_ms=int(time.time() * 1000),
+                        details={"stream_errors": list(stream_errors), "retry_state": retry_payload},
+                    )
+                    summary["halted"] = True
+                    summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+                    break
 
             if time.monotonic() >= next_poll_monotonic:
                 cycle_result = _run_sync_cycle_with_breakers(
@@ -1130,6 +1183,11 @@ async def run_live_sync_daemon_with_private_ws(
                 ws_event = None
 
             if ws_event is not None:
+                _reset_stream_retry_budget(
+                    store=store,
+                    stream_name="private_ws",
+                    ts_ms=int(time.time() * 1000),
+                )
                 action = _apply_private_ws_event_with_breakers(
                     store=store,
                     event=ws_event,
@@ -1173,16 +1231,26 @@ async def run_live_sync_daemon_with_private_ws(
                         exc = ws_task.exception()
                     except Exception:
                         exc = None
-                summary["breaker_report"] = arm_breaker(
-                    store,
-                    reason_codes=["STALE_PRIVATE_WS_STREAM"],
-                    source="private_ws",
+                can_retry, retry_payload = _consume_stream_retry_budget(
+                    store=store,
+                    stream_name="private_ws",
+                    limit=PRIVATE_WS_STALE_RETRY_LIMIT,
                     ts_ms=int(time.time() * 1000),
                     details={"task_error": str(exc) if exc is not None else None},
                 )
-                summary["halted"] = True
-                summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
-                break
+                if can_retry:
+                    ws_task = asyncio.create_task(_ws_pump())
+                else:
+                    summary["breaker_report"] = arm_breaker(
+                        store,
+                        reason_codes=["STALE_PRIVATE_WS_STREAM"],
+                        source="private_ws",
+                        ts_ms=int(time.time() * 1000),
+                        details={"task_error": str(exc) if exc is not None else None, "retry_state": retry_payload},
+                    )
+                    summary["halted"] = True
+                    summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
+                    break
 
             if time.monotonic() >= next_poll_monotonic:
                 cycle_result = _run_sync_cycle_with_breakers(
@@ -1593,9 +1661,16 @@ def _apply_executor_event_with_breakers(
             source="executor_event",
             ts_ms=ts_ms,
             details={"event_name": event_name, "payload": payload},
+            scope_key=_as_optional_str(payload.get("market")) or _as_optional_str(payload.get("identifier")),
         )
     elif event_name == "CANCEL_RESULT" or state in {"cancel", "cancelled", "done"}:
-        reset_counter(store, counter_name="cancel_reject", source="executor_event", ts_ms=ts_ms)
+        reset_counter(
+            store,
+            counter_name="cancel_reject",
+            source="executor_event",
+            ts_ms=ts_ms,
+            scope_key=_as_optional_str(payload.get("market")) or _as_optional_str(payload.get("identifier")),
+        )
 
     if state == "replace_reject":
         record_counter_failure(
@@ -1605,9 +1680,16 @@ def _apply_executor_event_with_breakers(
             source="executor_event",
             ts_ms=ts_ms,
             details={"event_name": event_name, "payload": payload},
+            scope_key=_as_optional_str(payload.get("market")) or _as_optional_str(payload.get("identifier")),
         )
     elif event_name == "ORDER_REPLACED" or state in {"cancel", "cancelled", "done"}:
-        reset_counter(store, counter_name="replace_reject", source="executor_event", ts_ms=ts_ms)
+        reset_counter(
+            store,
+            counter_name="replace_reject",
+            source="executor_event",
+            ts_ms=ts_ms,
+            scope_key=_as_optional_str(payload.get("market")) or _as_optional_str(payload.get("identifier")),
+        )
     return action
 
 
@@ -1652,9 +1734,16 @@ def _apply_private_ws_event_with_breakers(
                 source="private_ws",
                 ts_ms=ts_ms,
                 details={"uuid": event.uuid, "identifier": event.identifier},
+                scope_key=_as_optional_str(event.market) or _as_optional_str(event.identifier),
             )
         elif state in {"cancel", "cancelled", "done"}:
-            reset_counter(store, counter_name="cancel_reject", source="private_ws", ts_ms=ts_ms)
+            reset_counter(
+                store,
+                counter_name="cancel_reject",
+                source="private_ws",
+                ts_ms=ts_ms,
+                scope_key=_as_optional_str(event.market) or _as_optional_str(event.identifier),
+            )
         if state == "replace_reject":
             record_counter_failure(
                 store,
@@ -1663,9 +1752,16 @@ def _apply_private_ws_event_with_breakers(
                 source="private_ws",
                 ts_ms=ts_ms,
                 details={"uuid": event.uuid, "identifier": event.identifier},
+                scope_key=_as_optional_str(event.market) or _as_optional_str(event.identifier),
             )
         elif state in {"cancel", "cancelled", "done"}:
-            reset_counter(store, counter_name="replace_reject", source="private_ws", ts_ms=ts_ms)
+            reset_counter(
+                store,
+                counter_name="replace_reject",
+                source="private_ws",
+                ts_ms=ts_ms,
+                scope_key=_as_optional_str(event.market) or _as_optional_str(event.identifier),
+            )
     return action
 
 

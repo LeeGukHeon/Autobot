@@ -2960,6 +2960,84 @@ def test_live_model_alpha_runtime_canary_skips_new_bid_when_other_market_order_i
     assert intents[0]["meta"].get("skip_reason") == "CANARY_SLOT_UNAVAILABLE"
 
 
+def test_live_model_alpha_runtime_blocks_new_bid_while_any_exit_is_pending(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="pending-exit-eth",
+                market="KRW-ETH",
+                side="long",
+                entry_price_str="3000000",
+                qty_str="0.002",
+                tp_enabled=True,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                state="EXITING",
+                last_eval_ts_ms=now_ms - 1000,
+                last_action_ts_ms=now_ms - 1000,
+                current_exit_order_uuid="exit-eth-uuid",
+                current_exit_order_identifier="AUTOBOT-RISK-ETH",
+                replace_attempt=1,
+                created_ts=now_ms - 5000,
+                updated_ts=now_ms - 1000,
+            )
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+                canary_max_notional_quote=6000.0,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+        intents = store.list_intents()
+
+    assert summary["submitted_intents_total"] == 0
+    assert summary["skipped_intents_total"] == 1
+    assert executor.calls == []
+    assert len(intents) == 1
+    assert intents[0]["meta"].get("skip_reason") == "EXIT_PENDING_FLATTEN_IN_PROGRESS"
+
+
 def test_live_model_alpha_runtime_persists_model_exit_plan_in_submit_meta(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
@@ -4674,3 +4752,85 @@ def test_supervise_open_strategy_orders_reports_market_rule_failure_instead_of_s
     assert report["results"][0]["reason_code"] == "MARKET_RULES_CHANCE_FAILED"
     assert gateway.replace_calls == []
     assert gateway.cancel_calls == []
+
+
+def test_supervise_open_strategy_orders_lineage_persist_failure_only_warns(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    gateway = _OrderSupervisionGateway()
+    profile = make_legacy_exec_profile(
+        timeout_ms=1_000,
+        replace_interval_ms=1_000,
+        max_replaces=2,
+        price_mode="JOIN",
+    )
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_intent(
+            IntentRecord(
+                intent_id="intent-kite-lineage-warning",
+                ts_ms=1_000,
+                market="KRW-KITE",
+                side="ask",
+                price=100.0,
+                volume=50.0,
+                reason_code="MODEL_ALPHA_EXIT_TIMEOUT",
+                meta_json=json.dumps(
+                    {
+                        "execution": {
+                            "initial_ref_price": 100.0,
+                            "effective_ref_price": 100.0,
+                            "requested_price": 100.0,
+                            "exec_profile": order_exec_profile_to_dict(profile),
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                status="SUBMITTED",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="kite-order-lineage-warning",
+                identifier="kite-order-lineage-warning",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=100.0,
+                volume_req=50.0,
+                volume_filled=0.0,
+                state="wait",
+                created_ts=1_000,
+                updated_ts=1_000,
+                intent_id="intent-kite-lineage-warning",
+                tp_sl_link=None,
+                local_state="OPEN",
+                raw_exchange_state="wait",
+                last_event_name="EXCHANGE_SNAPSHOT",
+                event_source="test",
+                replace_seq=0,
+                root_order_uuid="kite-order-lineage-warning",
+            )
+        )
+        monkeypatch.setattr(store, "append_order_lineage", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("lineage write failed")))
+
+        report = runtime_module._supervise_open_strategy_orders(
+            store=store,
+            client=_PrivateClient(),
+            public_client=_StaticPublicClient("KRW-KITE", 1.0),
+            executor_gateway=gateway,
+            latest_prices={"KRW-KITE": 105.0},
+            micro_snapshot_provider=_NullMicroProvider(),
+            micro_order_policy=None,
+            instrument_cache={},
+            ts_ms=360_000,
+        )
+        breaker = runtime_module.breaker_status(store)
+
+    assert report["replaced"] == 1
+    assert report["results"][0]["warning_reason_code"] == "SUPERVISOR_REPLACE_PERSIST_FAILED"
+    assert breaker["active"] is False
+    assert any(
+        event["event_kind"] == "WARN" and "SUPERVISOR_REPLACE_PERSIST_FAILED" in event["reason_codes"]
+        for event in breaker["recent_events"]
+    )

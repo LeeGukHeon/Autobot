@@ -422,25 +422,35 @@ def record_counter_failure(
     source: str,
     ts_ms: int,
     details: dict[str, Any] | None = None,
+    scope_key: str | None = None,
 ) -> dict[str, Any]:
     counter_cfg = COUNTER_CONFIG[counter_name]
-    payload = _counter_payload(store=store, counter_name=counter_name)
+    normalized_scope = _normalize_counter_scope(scope_key)
+    checkpoint_name = _counter_checkpoint_name(counter_name=counter_name, scope_key=normalized_scope)
+    payload = _counter_payload(store=store, counter_name=counter_name, scope_key=normalized_scope)
     next_count = int(payload.get("count", 0)) + 1
     next_payload = {
         "name": counter_name,
         "count": next_count,
+        "scope_key": normalized_scope,
+        "limit": max(int(limit), 1),
         "last_source": source,
         "last_details": dict(details or {}),
         "updated_ts": int(ts_ms),
     }
-    store.set_checkpoint(name=counter_cfg["checkpoint"], payload=next_payload, ts_ms=ts_ms)
+    store.set_checkpoint(name=checkpoint_name, payload=next_payload, ts_ms=ts_ms)
     if next_count >= max(int(limit), 1):
         return arm_breaker(
             store,
             reason_codes=[counter_cfg["reason_code"]],
             source=source,
             ts_ms=ts_ms,
-            details={"counter_name": counter_name, "counter": next_payload, **dict(details or {})},
+            details={
+                "counter_name": counter_name,
+                "counter_checkpoint_name": checkpoint_name,
+                "counter": next_payload,
+                **dict(details or {}),
+            },
         )
     return breaker_status(store)
 
@@ -451,24 +461,34 @@ def reset_counter(
     counter_name: str,
     source: str,
     ts_ms: int,
+    scope_key: str | None = None,
 ) -> dict[str, Any]:
     counter_cfg = COUNTER_CONFIG[counter_name]
+    normalized_scope = _normalize_counter_scope(scope_key)
+    checkpoint_name = _counter_checkpoint_name(counter_name=counter_name, scope_key=normalized_scope)
     store.set_checkpoint(
-        name=counter_cfg["checkpoint"],
+        name=checkpoint_name,
         payload={
             "name": counter_name,
             "count": 0,
+            "scope_key": normalized_scope,
             "last_source": source,
             "updated_ts": int(ts_ms),
         },
         ts_ms=ts_ms,
     )
+    if _counter_reason_still_active(store=store, counter_name=counter_name):
+        return breaker_status(store)
     return clear_breaker_reasons(
         store,
         reason_codes=[counter_cfg["reason_code"]],
         source=f"{source}_counter_reset",
         ts_ms=ts_ms,
-        details={"counter_name": counter_name, "counter_reset": True},
+        details={
+            "counter_name": counter_name,
+            "counter_checkpoint_name": checkpoint_name,
+            "counter_reset": True,
+        },
     )
 
 
@@ -519,6 +539,10 @@ def evaluate_cycle_contracts(
     report = report if isinstance(report, dict) else {}
     counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
     halted_reasons = {str(item).strip().upper() for item in report.get("halted_reasons", []) if str(item).strip()}
+    current = store.breaker_state(breaker_key=BREAKER_KEY_LIVE)
+    active_reason_codes = {
+        str(item).strip().upper() for item in (current.get("reason_codes", []) if isinstance(current, dict) else []) if str(item).strip()
+    }
     warnings: list[str] = []
     halts: list[str] = []
     reasons_to_clear: list[str] = []
@@ -534,7 +558,13 @@ def evaluate_cycle_contracts(
     else:
         reasons_to_clear.append("UNKNOWN_POSITIONS_DETECTED")
     if int(counts.get("local_positions_missing_on_exchange") or 0) > 0:
-        halts.append("LOCAL_POSITION_MISSING_ON_EXCHANGE")
+        if (
+            _is_first_observation_local_position_missing(report)
+            and "LOCAL_POSITION_MISSING_ON_EXCHANGE" not in active_reason_codes
+        ):
+            warnings.append("LOCAL_POSITION_MISSING_ON_EXCHANGE")
+        else:
+            halts.append("LOCAL_POSITION_MISSING_ON_EXCHANGE")
     else:
         reasons_to_clear.append("LOCAL_POSITION_MISSING_ON_EXCHANGE")
 
@@ -587,15 +617,65 @@ def active_breaker_decision(store: LiveStateStore) -> BreakerDecision:
     )
 
 
-def _counter_payload(*, store: LiveStateStore, counter_name: str) -> dict[str, Any]:
-    counter_cfg = COUNTER_CONFIG[counter_name]
-    payload = store.get_checkpoint(name=counter_cfg["checkpoint"])
-    if payload is None:
+def _counter_payload(*, store: LiveStateStore, counter_name: str, scope_key: str | None = None) -> dict[str, Any]:
+    checkpoint_name = _counter_checkpoint_name(counter_name=counter_name, scope_key=scope_key)
+    if scope_key is not None:
+        payload = store.get_checkpoint(name=checkpoint_name)
+        if payload is None:
+            return {"name": counter_name, "count": 0, "scope_key": scope_key}
+        inner = payload.get("payload") if isinstance(payload, dict) else None
+        if isinstance(inner, dict):
+            return dict(inner)
+        return {"name": counter_name, "count": 0, "scope_key": scope_key}
+
+    matched = _matching_counter_payloads(store=store, counter_name=counter_name)
+    if not matched:
         return {"name": counter_name, "count": 0}
-    inner = payload.get("payload") if isinstance(payload, dict) else None
-    if isinstance(inner, dict):
-        return dict(inner)
-    return {"name": counter_name, "count": 0}
+    max_payload = max(matched, key=lambda item: int(item.get("count", 0) or 0))
+    scopes = [str(item.get("scope_key") or "").strip() for item in matched if str(item.get("scope_key") or "").strip()]
+    return {
+        **dict(max_payload),
+        "count": max(int(item.get("count", 0) or 0) for item in matched),
+        "scope_count": len(scopes),
+        "scopes": scopes,
+    }
+
+
+def _counter_checkpoint_name(*, counter_name: str, scope_key: str | None = None) -> str:
+    base_name = str(COUNTER_CONFIG[counter_name]["checkpoint"])
+    normalized_scope = _normalize_counter_scope(scope_key)
+    if normalized_scope is None:
+        return base_name
+    return f"{base_name}:{normalized_scope}"
+
+
+def _normalize_counter_scope(value: str | None) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    sanitized = "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in text)
+    sanitized = sanitized.strip("_")
+    return sanitized or None
+
+
+def _matching_counter_payloads(*, store: LiveStateStore, counter_name: str) -> list[dict[str, Any]]:
+    base_name = str(COUNTER_CONFIG[counter_name]["checkpoint"])
+    matched: list[dict[str, Any]] = []
+    for row in store.list_checkpoints(prefix=base_name):
+        payload = dict((row or {}).get("payload") or {})
+        if not payload:
+            continue
+        matched.append(payload)
+    return matched
+
+
+def _counter_reason_still_active(*, store: LiveStateStore, counter_name: str) -> bool:
+    for payload in _matching_counter_payloads(store=store, counter_name=counter_name):
+        count_value = int(payload.get("count", 0) or 0)
+        limit_value = max(int(payload.get("limit", 1) or 1), 1)
+        if count_value >= limit_value:
+            return True
+    return False
 
 
 def _normalize_reason_codes(reason_codes: list[str] | tuple[str, ...]) -> list[str]:
@@ -623,3 +703,19 @@ def _as_optional_upper(value: object) -> str | None:
         return None
     text = str(value).strip().upper()
     return text or None
+
+
+def _is_first_observation_local_position_missing(report: dict[str, Any]) -> bool:
+    actions = report.get("actions")
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    target_count = int(counts.get("local_positions_missing_on_exchange") or 0)
+    if not isinstance(actions, list) or target_count <= 0:
+        return False
+    retained = [
+        item
+        for item in actions
+        if isinstance(item, dict) and str(item.get("type") or "").strip() == "retain_local_position_missing_on_exchange"
+    ]
+    if len(retained) != target_count:
+        return False
+    return all(int(item.get("missing_observation_count") or 0) <= 1 for item in retained)

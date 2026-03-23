@@ -722,6 +722,41 @@ def resolve_live_strategy_execution(
         != str(exec_profile.price_mode).strip().upper(),
     }
 
+    if side == "bid":
+        pending_exit_markets = sorted(
+            {
+                str(item.get("market", "")).strip().upper()
+                for item in store.list_risk_plans(states=("TRIGGERED", "EXITING"))
+                if str(item.get("market", "")).strip()
+            }
+        )
+        if pending_exit_markets:
+            return resolution_cls(
+                allowed=False,
+                skip_reason="EXIT_PENDING_FLATTEN_IN_PROGRESS",
+                requested_price=effective_ref_price,
+                requested_volume=safe_optional_float_fn(strategy_intent.volume),
+                sizing_payload=None,
+                meta_payload={
+                    "strategy": {
+                        "market": market,
+                        "side": side,
+                        "reason_code": str(strategy_intent.reason_code),
+                        "score": strategy_intent.score,
+                        "prob": strategy_intent.prob,
+                        "meta": strategy_meta,
+                    },
+                    "size_ladder": size_ladder_decision,
+                    "trade_gate": {
+                        **trade_gate_payload,
+                        "reason_code": "EXIT_PENDING_FLATTEN_IN_PROGRESS",
+                        "severity": "BLOCK",
+                        "gate_reasons": ["EXIT_PENDING_FLATTEN_IN_PROGRESS"],
+                        "diagnostics": {"pending_exit_markets": pending_exit_markets},
+                    },
+                },
+            )
+
     if side == "ask":
         if local_position is None:
             return resolution_cls(

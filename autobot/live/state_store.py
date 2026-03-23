@@ -1062,6 +1062,17 @@ class LiveStateStore:
             return None
         return _row_to_checkpoint(row)
 
+    def list_checkpoints(self, *, prefix: str | None = None) -> list[dict[str, Any]]:
+        if prefix is None or not str(prefix).strip():
+            rows = self._conn.execute("SELECT * FROM checkpoints ORDER BY name").fetchall()
+        else:
+            prefix_value = str(prefix).strip()
+            rows = self._conn.execute(
+                "SELECT * FROM checkpoints WHERE name = ? OR name LIKE ? ORDER BY name",
+                (prefix_value, prefix_value + ":%"),
+            ).fetchall()
+        return [_row_to_checkpoint(row) for row in rows]
+
     def set_runtime_contract(self, *, payload: dict[str, Any], ts_ms: int | None = None) -> None:
         self.set_checkpoint(name="live_runtime_contract", payload=payload, ts_ms=ts_ms)
 

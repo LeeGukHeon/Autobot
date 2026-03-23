@@ -234,7 +234,7 @@ def test_load_rollout_latest_prefers_scoped_target_artifact(tmp_path: Path) -> N
     assert loaded["target_unit"] == "autobot-live-alpha.service"
 
 
-def test_live_daemon_halts_when_canary_rollout_is_not_armed(tmp_path: Path, monkeypatch) -> None:
+def test_live_daemon_keeps_running_when_canary_rollout_is_not_armed(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(daemon_module.time, "sleep", lambda _: None)
     monkeypatch.setattr(daemon_module.time, "time", lambda: 10.0)
     registry_root = _seed_runtime_contract(tmp_path, champion_run_id="run-live", ws_updated_at_ms=9_900)
@@ -262,9 +262,10 @@ def test_live_daemon_halts_when_canary_rollout_is_not_armed(tmp_path: Path, monk
                 rollout_target_unit="autobot-live-alpha.service",
             ),
         )
-    assert summary["halted"] is True
-    assert "LIVE_ROLLOUT_NOT_ARMED" in summary["halted_reasons"]
+    assert summary["halted"] is False
+    assert "LIVE_ROLLOUT_NOT_ARMED" in summary["rollout_reason_codes"]
     assert summary["rollout_start_allowed"] is False
+    assert summary["rollout_order_emission_allowed"] is False
 
 
 def test_live_daemon_clears_recovered_stale_breaker_before_canary_gate(tmp_path: Path, monkeypatch) -> None:

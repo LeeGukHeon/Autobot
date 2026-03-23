@@ -91,6 +91,40 @@ def test_reset_counter_clears_counter_reason_from_active_breaker(tmp_path: Path)
     assert cleared["counters"]["replace_reject"]["count"] == 0
 
 
+def test_reset_counter_preserves_reason_when_other_scope_is_still_active(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        record_counter_failure(
+            store,
+            counter_name="replace_reject",
+            limit=1,
+            source="test",
+            ts_ms=1000,
+            details={"attempt": 1},
+            scope_key="KRW-BTC",
+        )
+        record_counter_failure(
+            store,
+            counter_name="replace_reject",
+            limit=1,
+            source="test",
+            ts_ms=1500,
+            details={"attempt": 1},
+            scope_key="KRW-ETH",
+        )
+        status = reset_counter(
+            store,
+            counter_name="replace_reject",
+            source="test",
+            ts_ms=2000,
+            scope_key="KRW-BTC",
+        )
+
+    assert status["active"] is True
+    assert "REPEATED_REPLACE_REJECTS" in status["reason_codes"]
+    assert status["counters"]["replace_reject"]["count"] == 1
+
+
 def test_clear_breaker_reasons_preserves_structural_halts(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -143,6 +177,66 @@ def test_evaluate_cycle_contracts_clears_recovered_position_mismatch_reason(tmp_
 
     assert status["active"] is False
     assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" not in status["reason_codes"]
+
+
+def test_evaluate_cycle_contracts_softens_first_observation_local_position_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        status = evaluate_cycle_contracts(
+            store,
+            report={
+                "counts": {
+                    "external_open_orders": 0,
+                    "local_positions_missing_on_exchange": 1,
+                },
+                "halted_reasons": [],
+                "actions": [
+                    {
+                        "type": "retain_local_position_missing_on_exchange",
+                        "market": "KRW-BTC",
+                        "managed": True,
+                        "missing_observation_count": 1,
+                    }
+                ],
+            },
+            source="sync_cycle",
+            ts_ms=2000,
+        )
+
+    assert status["active"] is False
+    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" not in status["reason_codes"]
+    assert any(
+        event["event_kind"] == "WARN" and "LOCAL_POSITION_MISSING_ON_EXCHANGE" in event["reason_codes"]
+        for event in status["recent_events"]
+    )
+
+
+def test_evaluate_cycle_contracts_escalates_repeated_local_position_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        status = evaluate_cycle_contracts(
+            store,
+            report={
+                "counts": {
+                    "external_open_orders": 0,
+                    "local_positions_missing_on_exchange": 1,
+                },
+                "halted_reasons": [],
+                "actions": [
+                    {
+                        "type": "retain_local_position_missing_on_exchange",
+                        "market": "KRW-BTC",
+                        "managed": True,
+                        "missing_observation_count": 2,
+                    }
+                ],
+            },
+            source="sync_cycle",
+            ts_ms=2000,
+        )
+
+    assert status["active"] is True
+    assert "LOCAL_POSITION_MISSING_ON_EXCHANGE" in status["reason_codes"]
 
 
 def test_arm_breaker_coalesces_duplicate_identical_arm_events(tmp_path: Path) -> None:
