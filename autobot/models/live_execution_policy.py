@@ -395,9 +395,9 @@ def _summarize_attempt_rows(*, rows: list[dict[str, Any]], horizons_ms: tuple[in
 
 
 def _build_miss_cost_model(*, attempts: list[dict[str, Any]]) -> dict[str, Any]:
-    by_action: dict[str, list[float]] = {}
-    by_price_mode: dict[str, list[float]] = {}
-    by_state_action: dict[tuple[str, str], list[float]] = {}
+    by_action: dict[str, list[dict[str, float]]] = {}
+    by_price_mode: dict[str, list[dict[str, float]]] = {}
+    by_state_action: dict[tuple[str, str], list[dict[str, float]]] = {}
     for item in attempts:
         final_state = str(item.get("final_state") or "").strip().upper()
         if final_state not in {"MISSED", "PARTIAL_CANCELLED"}:
@@ -405,14 +405,12 @@ def _build_miss_cost_model(*, attempts: list[dict[str, Any]]) -> dict[str, Any]:
         action_code = _normalize_action_code(item.get("action_code"))
         state_key = state_bucket_key(item)
         price_mode = _action_price_mode(action_code)
-        miss_cost_bps = _safe_optional_float(item.get("expected_net_edge_bps"))
-        if miss_cost_bps is None:
-            miss_cost_bps = _safe_optional_float(item.get("expected_edge_bps"))
-        if miss_cost_bps is None:
+        miss_cost_row = _derive_miss_cost_row(item=item, action_code=action_code)
+        if miss_cost_row is None:
             continue
-        by_action.setdefault(action_code, []).append(float(max(miss_cost_bps, 0.0)))
-        by_price_mode.setdefault(price_mode, []).append(float(max(miss_cost_bps, 0.0)))
-        by_state_action.setdefault((state_key, action_code), []).append(float(max(miss_cost_bps, 0.0)))
+        by_action.setdefault(action_code, []).append(miss_cost_row)
+        by_price_mode.setdefault(price_mode, []).append(miss_cost_row)
+        by_state_action.setdefault((state_key, action_code), []).append(miss_cost_row)
     global_costs = [value for values in by_action.values() for value in values]
     return {
         "policy": "execution_miss_cost_summary_v2",
@@ -434,14 +432,56 @@ def _build_miss_cost_model(*, attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _summarize_cost_rows(costs: list[float]) -> dict[str, Any]:
-    values = [float(max(value, 0.0)) for value in costs]
+    values = [dict(item) for item in costs if isinstance(item, dict)]
     sample_count = len(values)
     if sample_count <= 0:
-        return {"sample_count": 0, "mean_miss_cost_bps": None}
+        return {
+            "sample_count": 0,
+            "mean_miss_cost_bps": None,
+            "mean_opportunity_cost_bps": None,
+            "mean_cleanup_cost_bps": None,
+        }
     return {
         "sample_count": int(sample_count),
-        "mean_miss_cost_bps": float(sum(values) / float(sample_count)),
+        "mean_miss_cost_bps": float(sum(float(item.get("miss_cost_bps", 0.0) or 0.0) for item in values) / float(sample_count)),
+        "mean_opportunity_cost_bps": float(sum(float(item.get("opportunity_cost_bps", 0.0) or 0.0) for item in values) / float(sample_count)),
+        "mean_cleanup_cost_bps": float(sum(float(item.get("cleanup_cost_bps", 0.0) or 0.0) for item in values) / float(sample_count)),
     }
+
+
+def _derive_miss_cost_row(*, item: dict[str, Any], action_code: str) -> dict[str, float] | None:
+    expected_net_edge_bps = _safe_optional_float(item.get("expected_net_edge_bps"))
+    if expected_net_edge_bps is None:
+        expected_net_edge_bps = _safe_optional_float(item.get("expected_edge_bps"))
+    if expected_net_edge_bps is None:
+        return None
+    fill_fraction = _safe_optional_float(item.get("fill_fraction"))
+    unfilled_fraction = 1.0
+    if fill_fraction is not None:
+        unfilled_fraction = max(min(1.0 - float(fill_fraction), 1.0), 0.0)
+    opportunity_cost_bps = max(float(expected_net_edge_bps), 0.0) * float(unfilled_fraction)
+    shortfall_bps = max(_safe_optional_float(item.get("shortfall_bps")) or 0.0, 0.0) * float(unfilled_fraction)
+    cleanup_floor_bps = _cleanup_cost_floor_bps(action_code=action_code)
+    remaining_alpha_floor_bps = float(opportunity_cost_bps) * 0.25
+    cleanup_cost_bps = float(shortfall_bps) + float(cleanup_floor_bps) + float(remaining_alpha_floor_bps)
+    if opportunity_cost_bps > 0.0:
+        miss_cost_bps = min(float(cleanup_cost_bps), float(opportunity_cost_bps))
+    else:
+        miss_cost_bps = float(shortfall_bps) + float(cleanup_floor_bps)
+    return {
+        "miss_cost_bps": float(max(miss_cost_bps, 0.0)),
+        "opportunity_cost_bps": float(max(opportunity_cost_bps, 0.0)),
+        "cleanup_cost_bps": float(max(cleanup_cost_bps, 0.0)),
+    }
+
+
+def _cleanup_cost_floor_bps(*, action_code: str) -> float:
+    price_mode = _action_price_mode(action_code)
+    if price_mode == "PASSIVE_MAKER":
+        return 4.0
+    if price_mode == "JOIN":
+        return 6.0
+    return 8.0
 
 
 def _resolve_miss_cost_bps(

@@ -253,6 +253,31 @@ def test_live_execution_policy_non_canary_keeps_passive_when_utility_is_higher()
     assert decision["selection_reason_code"] == "UTILITY_MAX"
 
 
+def test_live_execution_policy_miss_cost_model_uses_cleanup_proxy_not_raw_edge_only() -> None:
+    attempts = [
+        {
+            "action_code": "LIMIT_GTC_PASSIVE_MAKER",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 80.0,
+            "expected_net_edge_bps": 80.0,
+            "submitted_ts_ms": 0,
+            "final_state": "MISSED",
+            "shortfall_bps": 0.0,
+            "fill_fraction": 0.0,
+        }
+    ] * 10
+
+    payload = build_live_execution_contract(attempts=attempts)
+    stats = payload["miss_cost_model"]["action_stats"]["LIMIT_GTC_PASSIVE_MAKER"]
+
+    assert stats["sample_count"] == 10
+    assert stats["mean_opportunity_cost_bps"] == 80.0
+    assert stats["mean_cleanup_cost_bps"] > 0.0
+    assert 0.0 < stats["mean_miss_cost_bps"] < 80.0
+
+
 def test_live_execution_attempts_store_submission_ws_fill_and_shortfall(tmp_path: Path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         attempt_id = record_execution_attempt_submission(
