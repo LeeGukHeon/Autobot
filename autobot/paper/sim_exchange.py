@@ -254,9 +254,10 @@ class PaperSimExchange:
         if order.time_in_force in {"ioc", "fok"}:
             canceled = self.cancel_order(order.order_id, ts_ms=now_ts_ms, reason="IOC_FOK_NO_TOUCH")
             if canceled is None:
-                order.state = "FAILED"
+                self._release_order_reserve(order)
+                order.state = "CANCELED"
                 order.updated_ts_ms = now_ts_ms
-                order.failure_reason = "IOC_FOK_CANCEL_FAILED"
+                order.failure_reason = "IOC_FOK_NO_TOUCH"
             return (self._clone_order(order), None)
 
         self._open_orders[order.order_id] = order
@@ -298,6 +299,15 @@ class PaperSimExchange:
         if order is None:
             return None
 
+        self._release_order_reserve(order)
+        order.state = "CANCELED"
+        order.updated_ts_ms = int(ts_ms)
+        if reason:
+            order.failure_reason = str(reason)
+        self._open_orders.pop(order_id, None)
+        return self._clone_order(order)
+
+    def _release_order_reserve(self, order: PaperOrder) -> None:
         if order.side == "bid":
             release_quote = max(order.locked_quote, 0.0)
             self._cash.locked = max(self._cash.locked - release_quote, 0.0)
@@ -310,13 +320,6 @@ class PaperSimExchange:
             balance.locked = max(balance.locked - release_base, 0.0)
             balance.free += release_base
             order.locked_base = 0.0
-
-        order.state = "CANCELED"
-        order.updated_ts_ms = int(ts_ms)
-        if reason:
-            order.failure_reason = str(reason)
-        self._open_orders.pop(order_id, None)
-        return self._clone_order(order)
 
     def portfolio_snapshot(self, *, ts_ms: int, latest_prices: dict[str, float]) -> PortfolioSnapshot:
         total_equity = self._cash.free + self._cash.locked
