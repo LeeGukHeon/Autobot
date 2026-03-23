@@ -78,7 +78,20 @@ def resolve_path_risk_guidance_from_plan(
     continuation_profit_floor_ratio = max(min_tp_floor_ratio, 0.001)
     expected_exit_fee_rate = max(_as_float(payload.get("expected_exit_fee_rate")) or 0.0, 0.0)
     expected_exit_slippage_bps = max(_as_float(payload.get("expected_exit_slippage_bps")) or 0.0, 0.0)
-    immediate_exit_cost_ratio = float(expected_exit_fee_rate) + (float(expected_exit_slippage_bps) / 10_000.0)
+    immediate_exit_fee_rate = max(_as_float(payload.get("expected_immediate_exit_fee_rate")) or expected_exit_fee_rate, 0.0)
+    immediate_exit_slippage_bps = max(
+        _as_float(payload.get("expected_immediate_exit_slippage_bps")) or expected_exit_slippage_bps,
+        0.0,
+    )
+    immediate_exit_fill_probability = _as_float(payload.get("expected_immediate_exit_fill_probability"))
+    if immediate_exit_fill_probability is None:
+        immediate_exit_fill_probability = 1.0
+    immediate_exit_fill_probability = max(min(float(immediate_exit_fill_probability), 1.0), 0.0)
+    immediate_exit_time_to_fill_ms = _as_int(payload.get("expected_immediate_exit_time_to_fill_ms"))
+    immediate_exit_price_mode = str(payload.get("expected_immediate_exit_price_mode") or "").strip().upper()
+    immediate_exit_cost_ratio = _as_float(payload.get("expected_immediate_exit_cost_ratio"))
+    if immediate_exit_cost_ratio is None:
+        immediate_exit_cost_ratio = float(immediate_exit_fee_rate) + (float(immediate_exit_slippage_bps) / 10_000.0)
     deferred_exit_cost_ratio = immediate_exit_cost_ratio
 
     continuation_should_exit = False
@@ -202,6 +215,11 @@ def resolve_path_risk_guidance_from_plan(
         "selection_score": resolved_selection_score,
         "risk_feature_value": resolved_risk_feature_value,
         "immediate_exit_value_ratio": immediate_exit_value_ratio,
+        "immediate_exit_fee_rate": float(immediate_exit_fee_rate),
+        "immediate_exit_slippage_bps": float(immediate_exit_slippage_bps),
+        "immediate_exit_fill_probability": float(immediate_exit_fill_probability),
+        "immediate_exit_time_to_fill_ms": immediate_exit_time_to_fill_ms,
+        "immediate_exit_price_mode": immediate_exit_price_mode,
         "immediate_exit_cost_ratio": float(immediate_exit_cost_ratio),
         "deferred_exit_cost_ratio": float(deferred_exit_cost_ratio),
         "continuation_value_ratio": continuation_value_ratio,

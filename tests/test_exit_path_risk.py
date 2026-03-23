@@ -184,3 +184,46 @@ def test_resolve_path_risk_guidance_holds_when_continue_value_still_dominates() 
     assert guidance["continue_value_net"] is not None
     assert guidance["exit_now_value_net"] is not None
     assert guidance["continue_value_net"] > guidance["exit_now_value_net"]
+
+
+def test_resolve_path_risk_guidance_uses_immediate_execution_cost_proxy() -> None:
+    guidance = resolve_path_risk_guidance_from_plan(
+        plan_payload={
+            "hold_bars": 6,
+            "bar_interval_ms": 300_000,
+            "expected_exit_fee_rate": 0.0005,
+            "expected_exit_slippage_bps": 2.5,
+            "expected_immediate_exit_cost_ratio": 0.0040,
+            "expected_immediate_exit_fill_probability": 0.55,
+            "expected_immediate_exit_slippage_bps": 3.0,
+            "expected_immediate_exit_price_mode": "JOIN",
+            "path_risk": {
+                "status": "ready",
+                "overall_by_horizon": [
+                    {
+                        "hold_bars": 3,
+                        "reachable_tp_q60": 0.02,
+                        "bounded_sl_q80": 0.01,
+                        "terminal_return_q25": 0.001,
+                        "terminal_return_q50": 0.003,
+                        "terminal_return_q75": 0.006,
+                        "terminal_return_mean": 0.0035,
+                        "terminal_positive_rate": 0.55,
+                        "terminal_nonnegative_rate": 0.60,
+                        "terminal_above_10bps_rate": 0.50,
+                        "terminal_above_25bps_rate": 0.40,
+                        "terminal_above_50bps_rate": 0.30,
+                        "drawdown_from_now_q80": 0.012,
+                        "drawdown_from_now_q90": 0.018,
+                    }
+                ],
+            },
+        },
+        elapsed_bars=3,
+        current_return_ratio=0.006,
+    )
+
+    assert guidance["immediate_exit_cost_ratio"] == 0.004
+    assert guidance["immediate_exit_fill_probability"] == 0.55
+    assert guidance["immediate_exit_price_mode"] == "JOIN"
+    assert guidance["exit_now_value_net"] == 0.002

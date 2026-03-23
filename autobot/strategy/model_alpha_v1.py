@@ -547,6 +547,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                             observed_entry_fee_rate=0.0,
                             exit_path_risk=dict(exit_recommendation_meta.get("path_risk") or {}),
                             entry_selection_score=float(row.get("model_prob", 0.0)),
+                            execution_decision=dict(execution_decision or {}),
                         ),
                         "exit_recommendation": exit_recommendation_meta,
                         "trade_action": dict(trade_action_decision or {}),
@@ -1058,6 +1059,10 @@ def _resolve_runtime_execution_profile(
             selected_stage = stage
             decision["selected_stage"] = stage_name
             decision["selected_net_edge_bps"] = float(net_edge_bps)
+            decision["selected_fill_probability"] = float(fill_probability)
+            decision["selected_expected_slippage_bps"] = float(slippage_bps)
+            decision["selected_expected_time_to_fill_ms"] = _safe_optional_float(stage.get("expected_time_to_fill_ms"))
+            decision["selected_price_mode"] = str(stage.get("recommended_price_mode", "")).strip().upper()
             decision["status"] = "selected"
             decision["reason_code"] = f"EXECUTION_STAGE_{stage_name}"
             break
@@ -1097,6 +1102,9 @@ def _resolve_runtime_execution_profile(
         max_chase_bps=10_000,
         min_replace_interval_ms_global=1_500,
     )
+    decision["selected_timeout_bars"] = int(timeout_bars)
+    decision["selected_replace_max"] = int(replace_max)
+    decision["selected_price_mode"] = str(price_mode).strip().upper()
     return order_exec_profile_to_dict(profile), decision
 
 
@@ -1138,6 +1146,7 @@ def build_model_alpha_exit_plan_payload(
     observed_entry_fee_rate: float = 0.0,
     exit_path_risk: dict[str, Any] | None = None,
     entry_selection_score: float | None = None,
+    execution_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode = str(settings.exit.mode).strip().lower() or "hold"
     hold_bars = max(int(settings.exit.hold_bars), 0)
@@ -1154,6 +1163,11 @@ def build_model_alpha_exit_plan_payload(
         entry_fee_rate=max(float(observed_entry_fee_rate), 0.0),
         exit_fee_rate=float(exit_fee_rate),
         exit_slippage_bps=float(exit_slippage_bps),
+    )
+    immediate_execution_costs = _resolve_immediate_exit_execution_costs(
+        execution_decision=execution_decision,
+        fallback_exit_fee_rate=float(exit_fee_rate),
+        fallback_exit_slippage_bps=float(exit_slippage_bps),
     )
     return normalize_model_exit_plan_payload(
         {
@@ -1173,6 +1187,12 @@ def build_model_alpha_exit_plan_payload(
             "min_tp_floor_pct": float(min_tp_floor_pct),
             "expected_exit_fee_rate": float(exit_fee_rate),
             "expected_exit_slippage_bps": float(exit_slippage_bps),
+            "expected_immediate_exit_fee_rate": float(immediate_execution_costs["fee_rate"]),
+            "expected_immediate_exit_slippage_bps": float(immediate_execution_costs["slippage_bps"]),
+            "expected_immediate_exit_fill_probability": float(immediate_execution_costs["fill_probability"]),
+            "expected_immediate_exit_time_to_fill_ms": immediate_execution_costs["time_to_fill_ms"],
+            "expected_immediate_exit_price_mode": str(immediate_execution_costs["price_mode"]),
+            "expected_immediate_exit_cost_ratio": float(immediate_execution_costs["cost_ratio"]),
             "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
             "risk_vol_feature": str(settings.exit.risk_vol_feature),
             "tp_vol_multiplier": _safe_optional_float(settings.exit.tp_vol_multiplier),
@@ -1494,6 +1514,34 @@ def _default_expected_exit_slippage_bps(price_mode: str) -> float:
     if mode == "CROSS_1T":
         return 6.0
     return 2.5
+
+
+def _resolve_immediate_exit_execution_costs(
+    *,
+    execution_decision: dict[str, Any] | None,
+    fallback_exit_fee_rate: float,
+    fallback_exit_slippage_bps: float,
+) -> dict[str, Any]:
+    payload = dict(execution_decision or {})
+    fill_probability = _safe_optional_float(payload.get("selected_fill_probability"))
+    if fill_probability is None:
+        fill_probability = 1.0
+    fill_probability = max(min(float(fill_probability), 1.0), 0.0)
+    slippage_bps = _safe_optional_float(payload.get("selected_expected_slippage_bps"))
+    if slippage_bps is None:
+        slippage_bps = _safe_optional_float(payload.get("expected_slippage_bps"))
+    slippage_bps = max(float(slippage_bps if slippage_bps is not None else fallback_exit_slippage_bps), 0.0)
+    fee_rate = max(float(fallback_exit_fee_rate), 0.0)
+    uncertainty_bps = (1.0 - fill_probability) * max(float(slippage_bps), 5.0)
+    cost_ratio = fee_rate + (float(slippage_bps + uncertainty_bps) / 10_000.0)
+    return {
+        "fee_rate": fee_rate,
+        "slippage_bps": float(slippage_bps),
+        "fill_probability": float(fill_probability),
+        "time_to_fill_ms": _safe_optional_int(payload.get("selected_expected_time_to_fill_ms")),
+        "price_mode": str(payload.get("selected_stage") or payload.get("selected_price_mode") or "").strip().upper() or "UNKNOWN",
+        "cost_ratio": float(cost_ratio),
+    }
 
 
 def _resolve_min_tp_floor_pct(

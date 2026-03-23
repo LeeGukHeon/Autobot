@@ -1375,6 +1375,31 @@ def test_build_model_alpha_exit_plan_payload_keeps_sl_guard_for_hold_mode() -> N
     assert payload["trailing_pct"] == 0.0
 
 
+def test_build_model_alpha_exit_plan_payload_includes_immediate_execution_cost_proxy() -> None:
+    payload = build_model_alpha_exit_plan_payload(
+        settings=ModelAlphaSettings(
+            exit=ModelAlphaExitSettings(mode="risk", hold_bars=6, tp_pct=0.02, sl_pct=0.01),
+            execution=ModelAlphaExecutionSettings(price_mode="JOIN", timeout_bars=2, replace_max=1),
+        ),
+        row={"close": 100.0, "rv_12": 0.01},
+        interval_ms=300_000,
+        observed_entry_fee_rate=0.0005,
+        execution_decision={
+            "selected_stage": "JOIN",
+            "selected_fill_probability": 0.55,
+            "selected_expected_slippage_bps": 3.0,
+            "selected_expected_time_to_fill_ms": 4500,
+            "selected_price_mode": "JOIN",
+        },
+    )
+
+    assert payload["expected_immediate_exit_fill_probability"] == 0.55
+    assert payload["expected_immediate_exit_slippage_bps"] == 3.0
+    assert payload["expected_immediate_exit_time_to_fill_ms"] == 4500
+    assert payload["expected_immediate_exit_price_mode"] == "JOIN"
+    assert payload["expected_immediate_exit_cost_ratio"] > payload["expected_exit_fee_rate"]
+
+
 def test_model_alpha_risk_exit_tp() -> None:
     strategy = _build_strategy(
         groups=[],
