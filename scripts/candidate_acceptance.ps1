@@ -3770,6 +3770,12 @@ try {
         "--execution-acceptance-min-cands-per-ts", $BacktestMinCandidatesPerTs,
         "--execution-acceptance-hold-bars", $HoldBars
     )
+    if ((-not [string]::IsNullOrWhiteSpace($certificationStartDate)) -and (-not [string]::IsNullOrWhiteSpace($effectiveBatchDate))) {
+        $trainArgs += @(
+            "--execution-eval-start", $certificationStartDate,
+            "--execution-eval-end", $effectiveBatchDate
+        )
+    }
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
     $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
     $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }

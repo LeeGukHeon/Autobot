@@ -34,6 +34,8 @@ class ExecutionAcceptanceOptions:
     start_ts_ms: int
     end_ts_ms: int
     feature_set: str
+    evaluation_window_label: str = "train_window"
+    evaluation_window_source: str = "train_command_window"
     dense_grid: bool = False
     starting_krw: float = 50_000.0
     per_trade_krw: float = 10_000.0
@@ -60,6 +62,7 @@ def run_execution_acceptance(options: ExecutionAcceptanceOptions) -> dict[str, A
         "champion_summary": {},
         "compare_to_champion": compare_execution_balanced_pareto({}, {}),
         "run_settings": _snapshot_run_settings(options),
+        "evaluation_window": _build_evaluation_window_doc(options),
     }
 
     try:
@@ -181,6 +184,8 @@ def _snapshot_run_settings(options: ExecutionAcceptanceOptions) -> dict[str, Any
         "start_ts_ms": int(options.start_ts_ms),
         "end_ts_ms": int(options.end_ts_ms),
         "feature_set": str(options.feature_set).strip().lower() or "v4",
+        "evaluation_window_label": str(options.evaluation_window_label).strip() or "train_window",
+        "evaluation_window_source": str(options.evaluation_window_source).strip() or "train_command_window",
         "dense_grid": bool(options.dense_grid),
         "starting_krw": max(float(options.starting_krw), 0.0),
         "per_trade_krw": max(float(options.per_trade_krw), 1.0),
@@ -193,4 +198,13 @@ def _snapshot_run_settings(options: ExecutionAcceptanceOptions) -> dict[str, Any
         "micro_gate_enabled": bool(options.micro_gate.enabled),
         "micro_order_policy_enabled": bool(options.micro_order_policy.enabled),
         "execution_contract_artifact_path": str(options.execution_contract_artifact_path),
+    }
+
+
+def _build_evaluation_window_doc(options: ExecutionAcceptanceOptions) -> dict[str, Any]:
+    return {
+        "start_ts_ms": int(options.start_ts_ms),
+        "end_ts_ms": int(options.end_ts_ms),
+        "label": str(options.evaluation_window_label).strip() or "train_window",
+        "source": str(options.evaluation_window_source).strip() or "train_command_window",
     }

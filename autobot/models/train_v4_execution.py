@@ -297,6 +297,7 @@ def run_execution_acceptance_v4(
             "compare_to_champion": {},
         }
     try:
+        evaluation_window = _resolve_execution_evaluation_window(options)
         selection = replace(
             options.execution_acceptance_model_alpha.selection,
             use_learned_recommendations=False,
@@ -321,9 +322,11 @@ def run_execution_acceptance_v4(
                     else int(options.top_n),
                     1,
                 ),
-                start_ts_ms=parse_date_to_ts_ms(options.start),
-                end_ts_ms=parse_date_to_ts_ms(options.end, end_of_day=True),
+                start_ts_ms=int(evaluation_window["start_ts_ms"]),
+                end_ts_ms=int(evaluation_window["end_ts_ms"]),
                 feature_set=str(options.feature_set).strip().lower() or "v4",
+                evaluation_window_label=str(evaluation_window["label"]),
+                evaluation_window_source=str(evaluation_window["source"]),
                 dense_grid=bool(options.execution_acceptance_dense_grid),
                 starting_krw=max(float(options.execution_acceptance_starting_krw), 0.0),
                 per_trade_krw=max(float(options.execution_acceptance_per_trade_krw), 1.0),
@@ -361,6 +364,7 @@ def build_runtime_recommendations_v4(
             "reason": "EXECUTION_ACCEPTANCE_DISABLED",
         }
     try:
+        evaluation_window = _resolve_execution_evaluation_window(options)
         selection = replace(
             options.execution_acceptance_model_alpha.selection,
             use_learned_recommendations=True,
@@ -396,9 +400,11 @@ def build_runtime_recommendations_v4(
                     else int(options.top_n),
                     1,
                 ),
-                start_ts_ms=parse_date_to_ts_ms(options.start),
-                end_ts_ms=parse_date_to_ts_ms(options.end, end_of_day=True),
+                start_ts_ms=int(evaluation_window["start_ts_ms"]),
+                end_ts_ms=int(evaluation_window["end_ts_ms"]),
                 feature_set=str(options.feature_set).strip().lower() or "v4",
+                evaluation_window_label=str(evaluation_window["label"]),
+                evaluation_window_source=str(evaluation_window["source"]),
                 dense_grid=bool(options.execution_acceptance_dense_grid),
                 starting_krw=max(float(options.execution_acceptance_starting_krw), 0.0),
                 per_trade_krw=max(float(options.execution_acceptance_per_trade_krw), 1.0),
@@ -421,6 +427,24 @@ def build_runtime_recommendations_v4(
             "status": "skipped",
             "reason": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _resolve_execution_evaluation_window(options: Any) -> dict[str, Any]:
+    start_text = str(getattr(options, "execution_acceptance_eval_start", "") or "").strip()
+    end_text = str(getattr(options, "execution_acceptance_eval_end", "") or "").strip()
+    label = str(getattr(options, "execution_acceptance_eval_label", "") or "").strip() or "train_window"
+    source = str(getattr(options, "execution_acceptance_eval_source", "") or "").strip() or "train_command_window"
+    if not start_text or not end_text:
+        start_text = str(getattr(options, "start", "") or "").strip()
+        end_text = str(getattr(options, "end", "") or "").strip()
+        label = "train_window"
+        source = "train_command_window"
+    return {
+        "start_ts_ms": parse_date_to_ts_ms(start_text),
+        "end_ts_ms": parse_date_to_ts_ms(end_text, end_of_day=True),
+        "label": label,
+        "source": source,
+    }
 
 
 def _resolve_trade_action_expected_exit_fee_rate(exit_settings: ModelAlphaExitSettings) -> float:

@@ -97,6 +97,17 @@ def build_v4_train_options(
         else int(model_alpha_exit_defaults.get("hold_bars", 6)),
         0,
     )
+    execution_eval_start = (
+        str(getattr(args, "execution_eval_start", None)).strip()
+        if getattr(args, "execution_eval_start", None)
+        else None
+    )
+    execution_eval_end = (
+        str(getattr(args, "execution_eval_end", None)).strip()
+        if getattr(args, "execution_eval_end", None)
+        else None
+    )
+    execution_eval_overridden = bool(execution_eval_start and execution_eval_end)
     return TrainV4CryptoCsOptions(
         dataset_root=features_v4_config.output_dataset_root,
         registry_root=registry_root,
@@ -150,6 +161,14 @@ def build_v4_train_options(
         execution_acceptance_dataset_name=backtest_dataset_name_v4,
         execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
         execution_acceptance_output_root=logs_root / "train_v4_execution_backtest",
+        execution_acceptance_eval_start=execution_eval_start,
+        execution_acceptance_eval_end=execution_eval_end,
+        execution_acceptance_eval_label=("certification" if execution_eval_overridden else "train_window"),
+        execution_acceptance_eval_source=(
+            "candidate_acceptance_certification_window"
+            if execution_eval_overridden
+            else "train_command_window"
+        ),
         execution_acceptance_top_n=exec_acceptance_top_n,
         execution_acceptance_dense_grid=bool(backtest_defaults["dense_grid"]),
         execution_acceptance_starting_krw=float(backtest_defaults["starting_krw"]),

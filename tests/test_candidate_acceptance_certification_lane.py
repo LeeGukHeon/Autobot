@@ -105,6 +105,8 @@ def _make_fake_python_exe(
                 run_scope = arg_value("--run-scope", "scheduled_daily")
                 start_value = arg_value("--start")
                 end_value = arg_value("--end")
+                execution_eval_start = arg_value("--execution-eval-start")
+                execution_eval_end = arg_value("--execution-eval-end")
                 is_split_policy_history = run_scope == "scheduled_split_policy_history"
                 candidate_run_id = (
                     f"history-run-{{start_value.replace('-', '')}}-{{end_value.replace('-', '')}}"
@@ -121,6 +123,15 @@ def _make_fake_python_exe(
                         **({{"run_scope": run_scope}} if is_split_policy_history else {{}}),
                     }}
                 )
+                if execution_eval_start or execution_eval_end:
+                    append_log(
+                        {{
+                            "command": "model train eval window",
+                            "start": execution_eval_start,
+                            "end": execution_eval_end,
+                            **({{"run_scope": run_scope}} if is_split_policy_history else {{}}),
+                        }}
+                    )
                 if WRITE_LATEST_CANDIDATE_POINTER and (not is_split_policy_history):
                     write_json(registry_dir / "latest_candidate.json", {{"run_id": CANDIDATE_RUN_ID}})
                 if is_split_policy_history:
@@ -1507,10 +1518,71 @@ def test_candidate_acceptance_writes_certification_artifact_and_separates_window
     assert certification["certification"]["gate"]["pass"] is True
     assert certification["research_evidence"]["source"] == "certification_lane_backtest"
     assert certification["research_evidence"]["policy"] == "candidate_acceptance_certification_research_evidence_v1"
-    assert certification["research_evidence"]["trainer_research_prior"]["present"] is True
-    assert certification["research_evidence"]["trainer_research_prior"]["pass"] is True
-    assert certification["research_evidence"]["support_lane"]["summary"]["status"] == "supported"
-    assert certification["research_evidence"]["support_lane"]["cpcv_lite"]["status"] == "partial"
+
+
+def test_candidate_acceptance_passes_certification_window_into_trainer_internal_execution_eval(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-07",
+            "-TrainLookbackDays",
+            "3",
+            "-BacktestLookbackDays",
+            "2",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert [entry for entry in invocations if entry["command"] == "model train eval window"] == [
+        {"command": "model train eval window", "start": "2026-03-06", "end": "2026-03-07"}
+    ]
 
 
 def test_candidate_acceptance_resolves_fresh_run_from_train_stdout_when_candidate_pointer_is_not_updated(

@@ -165,6 +165,10 @@ class TrainV4CryptoCsOptions:
     execution_acceptance_dataset_name: str = "candles_v1"
     execution_acceptance_parquet_root: Path = Path("data/parquet")
     execution_acceptance_output_root: Path = Path("data/backtest")
+    execution_acceptance_eval_start: str | None = None
+    execution_acceptance_eval_end: str | None = None
+    execution_acceptance_eval_label: str = "train_window"
+    execution_acceptance_eval_source: str = "train_command_window"
     execution_acceptance_top_n: int = 0
     execution_acceptance_dense_grid: bool = False
     execution_acceptance_starting_krw: float = 50_000.0

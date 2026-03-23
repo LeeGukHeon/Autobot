@@ -36,10 +36,53 @@ function Get-PropValue {
     return $DefaultValue
 }
 
+function Convert-ToBooleanLike {
+    param(
+        [Parameter(Mandatory = $false)]$Value,
+        [bool]$DefaultValue = $true
+    )
+    if ($null -eq $Value) {
+        return $DefaultValue
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $DefaultValue
+    }
+    switch ($text.Trim().ToLowerInvariant()) {
+        "1" { return $true }
+        "true" { return $true }
+        "yes" { return $true }
+        "on" { return $true }
+        "0" { return $false }
+        "false" { return $false }
+        "no" { return $false }
+        "off" { return $false }
+        default { return $DefaultValue }
+    }
+}
+
+function Test-RankShadowGovernanceEnabled {
+    $envOverride = $env:AUTOBOT_RANK_SHADOW_GOVERNANCE
+    if (-not [string]::IsNullOrWhiteSpace([string]$envOverride)) {
+        return (Convert-ToBooleanLike -Value $envOverride -DefaultValue $true)
+    }
+    $systemctl = Get-Command systemctl -ErrorAction SilentlyContinue
+    if ($null -eq $systemctl -or [string]::IsNullOrWhiteSpace([string]$systemctl.Source)) {
+        return $true
+    }
+    & $systemctl.Source is-enabled autobot-v4-rank-shadow.timer *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $governancePath = Join-Path $projectRoot "logs/model_v4_rank_shadow_cycle/latest_governance_action.json"
 $resolvedGovernancePath = [System.IO.Path]::GetFullPath($governancePath)
-$governance = Load-JsonOrEmpty -PathValue $resolvedGovernancePath
+$rankShadowGovernanceEnabled = Test-RankShadowGovernanceEnabled
+$governance = if ($rankShadowGovernanceEnabled) {
+    Load-JsonOrEmpty -PathValue $resolvedGovernancePath
+} else {
+    @{}
+}
 $selectedScriptName = [string](Get-PropValue -ObjectValue $governance -Name "selected_acceptance_script" -DefaultValue "")
 if ([string]::IsNullOrWhiteSpace($selectedScriptName)) {
     $selectedScriptName = "v4_promotable_candidate_acceptance.ps1"
@@ -51,6 +94,7 @@ if (-not (Test-Path $selectedScriptPath)) {
 }
 
 Write-Host ("[v4-governed] governance_path={0}" -f $resolvedGovernancePath)
+Write-Host ("[v4-governed] rank_shadow_governance_enabled={0}" -f ([string]$rankShadowGovernanceEnabled).ToLowerInvariant())
 Write-Host ("[v4-governed] selected_acceptance_script={0}" -f $selectedScriptPath)
 
 & $selectedScriptPath @args

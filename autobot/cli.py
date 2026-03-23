@@ -675,6 +675,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Override trainer-internal execution acceptance hold_bars for model_alpha_v1.",
     )
+    model_train_parser.add_argument("--execution-eval-start", help=argparse.SUPPRESS)
+    model_train_parser.add_argument("--execution-eval-end", help=argparse.SUPPRESS)
     model_train_parser.add_argument(
         "--cpcv-lite",
         action="store_true",

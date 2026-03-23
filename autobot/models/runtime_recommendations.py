@@ -247,6 +247,7 @@ def optimize_runtime_recommendations(
         "version": 1,
         "status": "ready" if best_hold is not None and best_execution is not None else "fallback",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "evaluation_window": _build_evaluation_window_doc(options),
         "recommendation_source": "execution_backtest_grid_search_v1",
         "objective": str(execution_compare_contract.get("policy", "")).strip() or "paired_sortino_lpm_execution_v1",
         "candidate_ref": candidate_id,
@@ -273,6 +274,15 @@ def optimize_runtime_recommendations(
         "execution_grid_results": ranked_execution,
         }
     )
+
+
+def _build_evaluation_window_doc(options: ExecutionAcceptanceOptions) -> dict[str, Any]:
+    return {
+        "start_ts_ms": int(options.start_ts_ms),
+        "end_ts_ms": int(options.end_ts_ms),
+        "label": str(options.evaluation_window_label).strip() or "train_window",
+        "source": str(options.evaluation_window_source).strip() or "train_command_window",
+    }
 
 
 def _build_exit_doc(
