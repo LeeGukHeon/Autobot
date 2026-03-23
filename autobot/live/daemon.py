@@ -1926,6 +1926,16 @@ def _run_sync_cycle(
         chance_cache[market_value] = payload
         return payload
 
+    def _fetch_closed_orders(market: str, start_ts_ms: int, end_ts_ms: int) -> Any:
+        return client.closed_orders(
+            market=str(market).strip().upper(),
+            states=("done",),
+            start_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(max(int(start_ts_ms), 0) / 1000.0)),
+            end_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(max(int(end_ts_ms), 0) / 1000.0)),
+            limit=50,
+            order_by="desc",
+        )
+
     report = reconcile_exchange_snapshot(
         store=store,
         bot_id=settings.bot_id,
@@ -1933,6 +1943,7 @@ def _run_sync_cycle(
         accounts_payload=accounts,
         open_orders_payload=open_orders,
         fetch_order_detail=lambda uuid, identifier: client.order(uuid=uuid, identifier=identifier),
+        fetch_closed_orders=_fetch_closed_orders if hasattr(client, "closed_orders") else None,
         fetch_market_chance=_fetch_market_chance,
         unknown_open_orders_policy=settings.unknown_open_orders_policy,  # type: ignore[arg-type]
         unknown_positions_policy=settings.unknown_positions_policy,  # type: ignore[arg-type]

@@ -4052,6 +4052,16 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             chance_cache[market_value] = payload
                             return payload
 
+                        def _fetch_closed_orders(market: str, start_ts_ms: int, end_ts_ms: int) -> Any:
+                            return client.closed_orders(
+                                market=str(market).strip().upper(),
+                                states=("done",),
+                                start_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(max(int(start_ts_ms), 0) / 1000.0)),
+                                end_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(max(int(end_ts_ms), 0) / 1000.0)),
+                                limit=50,
+                                order_by="desc",
+                            )
+
                         pinned_contract = store.runtime_contract() or {}
                         persisted_ws_public_contract = store.ws_public_contract() or {}
                         persisted_rollout_contract = store.live_rollout_contract() or {}
@@ -4105,6 +4115,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             identifier_prefix=str(defaults["identifier_prefix"]),
                             accounts_payload=accounts,
                             open_orders_payload=open_orders,
+                            fetch_closed_orders=_fetch_closed_orders if hasattr(client, "closed_orders") else None,
                             fetch_market_chance=_fetch_market_chance,
                             unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
                             unknown_positions_policy=str(defaults["unknown_positions_policy"]),
@@ -4178,6 +4189,7 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             accounts_payload=accounts,
                             open_orders_payload=open_orders,
                             fetch_order_detail=lambda uuid, identifier: client.order(uuid=uuid, identifier=identifier),
+                            fetch_closed_orders=_fetch_closed_orders if hasattr(client, "closed_orders") else None,
                             fetch_market_chance=_fetch_market_chance,
                             unknown_open_orders_policy=str(defaults["unknown_open_orders_policy"]),
                             unknown_positions_policy=str(defaults["unknown_positions_policy"]),

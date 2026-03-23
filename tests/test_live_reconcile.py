@@ -561,6 +561,72 @@ def test_reconcile_classifies_missing_position_as_manual_sell(tmp_path: Path) ->
     assert journal["exit_meta"]["close_verified"] is False
 
 
+def test_reconcile_manual_sell_uses_recent_closed_order_fill_when_available(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+                managed=False,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-manual-sell-verified",
+                market="KRW-BTC",
+                status="OPEN",
+                entry_submitted_ts_ms=1000,
+                entry_filled_ts_ms=1000,
+                entry_price=100000000.0,
+                qty=0.01,
+                entry_notional_quote=1000000.0,
+                updated_ts=1000,
+            )
+        )
+        report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            fetch_closed_orders=lambda market, start_ts_ms, end_ts_ms: [
+                {
+                    "uuid": "manual-exit-1",
+                    "identifier": "MANUAL-SELL-1",
+                    "market": market,
+                    "side": "ask",
+                    "ord_type": "market",
+                    "state": "done",
+                    "created_at": "1970-01-01T00:00:04Z",
+                    "done_at": "1970-01-01T00:00:05Z",
+                    "executed_volume": "0.01",
+                    "executed_funds": "1010000",
+                    "paid_fee": "505",
+                }
+            ],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="import_as_unmanaged",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        positions = store.list_positions()
+        journal = store.trade_journal_by_id(journal_id="journal-manual-sell-verified")
+
+    assert report["halted"] is False
+    assert positions == []
+    assert journal is not None
+    assert journal["status"] == "CLOSED"
+    assert journal["exit_order_uuid"] == "manual-exit-1"
+    assert journal["exit_meta"]["close_verification_status"] == "verified_exit_order"
+    assert journal["exit_meta"]["close_verified"] is True
+    assert journal["exit_price"] == 101000000.0
+    assert journal["realized_pnl_quote"] is not None
+
+
 def test_reconcile_retains_managed_missing_position_without_close_evidence(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -593,6 +659,119 @@ def test_reconcile_retains_managed_missing_position_without_close_evidence(tmp_p
     assert any(item["type"] == "retain_local_position_missing_on_exchange" for item in report["actions"])
     assert len(positions) == 1
     assert positions[0]["market"] == "KRW-BTC"
+
+
+def test_reconcile_auto_closes_managed_missing_position_as_manual_sell_after_consecutive_misses(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-BTC",
+                base_currency="BTC",
+                base_amount=0.01,
+                avg_entry_price=100000000.0,
+                updated_ts=1000,
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-btc-1",
+                market="KRW-BTC",
+                side="long",
+                entry_price_str="100000000",
+                qty_str="0.01",
+                tp_enabled=True,
+                tp_price_str=None,
+                tp_pct=3.0,
+                sl_enabled=True,
+                sl_price_str=None,
+                sl_pct=2.0,
+                trailing_enabled=False,
+                trail_pct=None,
+                high_watermark_price_str=None,
+                armed_ts_ms=None,
+                timeout_ts_ms=600000,
+                state="ACTIVE",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=0,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier=None,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-btc-1",
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-managed-missing-manual-sell",
+                market="KRW-BTC",
+                status="OPEN",
+                entry_intent_id="intent-btc-1",
+                plan_id="model-risk-btc-1",
+                entry_submitted_ts_ms=1000,
+                entry_filled_ts_ms=1000,
+                entry_price=100000000.0,
+                qty=0.01,
+                entry_notional_quote=1000000.0,
+                updated_ts=1000,
+            )
+        )
+        first_report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            fetch_closed_orders=lambda market, start_ts_ms, end_ts_ms: [],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=5000,
+        )
+        second_report = reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            fetch_closed_orders=lambda market, start_ts_ms, end_ts_ms: [
+                {
+                    "uuid": "manual-exit-managed-1",
+                    "identifier": "MANUAL-SELL-BTC-1",
+                    "market": market,
+                    "side": "ask",
+                    "ord_type": "market",
+                    "state": "done",
+                    "created_at": "1970-01-01T00:00:20Z",
+                    "done_at": "1970-01-01T00:00:21Z",
+                    "executed_volume": "0.01",
+                    "executed_funds": "990000",
+                    "paid_fee": "495",
+                }
+            ],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=25000,
+        )
+        positions = store.list_positions()
+        plans = store.list_risk_plans(market="KRW-BTC")
+        journal = store.trade_journal_by_id(journal_id="journal-managed-missing-manual-sell")
+
+    assert first_report["counts"]["local_positions_missing_on_exchange"] == 1
+    assert any(item["type"] == "retain_local_position_missing_on_exchange" for item in first_report["actions"])
+    assert second_report["counts"]["local_positions_missing_on_exchange"] == 0
+    assert any(item["type"] == "close_managed_position_as_manual_sell" for item in second_report["actions"])
+    assert positions == []
+    assert plans and plans[0]["state"] == "CLOSED"
+    assert journal is not None
+    assert journal["status"] == "CLOSED"
+    assert journal["exit_order_uuid"] == "manual-exit-managed-1"
+    assert journal["exit_meta"]["close_verification_status"] == "verified_exit_order"
+    assert journal["close_reason_code"] == "MANUAL_SELL_DETECTED"
 
 
 def test_reconcile_infers_intent_from_exchange_bot_order(tmp_path: Path) -> None:

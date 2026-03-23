@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -25,7 +25,11 @@ from .model_handoff import resolve_live_model_ref_source
 UnknownOpenOrdersPolicy = Literal["halt", "ignore", "cancel"]
 UnknownPositionsPolicy = Literal["halt", "import_as_unmanaged", "attach_default_risk", "attach_strategy_risk"]
 IGNORED_DUST_POSITIONS_CHECKPOINT = "ignored_dust_positions"
+MANAGED_MISSING_POSITIONS_CHECKPOINT = "managed_missing_positions"
 _MANAGED_POSITION_CLOSE_EVIDENCE_GRACE_MS = 5_000
+_MANAGED_POSITION_MISSING_MANUAL_CLOSE_MIN_COUNT = 2
+_MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS = 15_000
+_MANUAL_CLOSE_LOOKBACK_MS = 30 * 60 * 1000
 
 
 def reconcile_exchange_snapshot(
@@ -36,6 +40,7 @@ def reconcile_exchange_snapshot(
     accounts_payload: Any,
     open_orders_payload: Any,
     fetch_order_detail: Callable[[str, str | None], Any] | None = None,
+    fetch_closed_orders: Callable[[str, int, int], Any] | None = None,
     fetch_market_chance: Callable[[str], Any] | None = None,
     unknown_open_orders_policy: UnknownOpenOrdersPolicy = "halt",
     unknown_positions_policy: UnknownPositionsPolicy = "halt",
@@ -57,6 +62,9 @@ def reconcile_exchange_snapshot(
     halted_reasons: list[str] = []
     previous_ignored_dust_checkpoint = store.get_checkpoint(name=IGNORED_DUST_POSITIONS_CHECKPOINT) if not dry_run else None
     previous_ignored_dust_markets = dict((previous_ignored_dust_checkpoint or {}).get("payload", {}).get("markets", {}))
+    previous_managed_missing_checkpoint = store.get_checkpoint(name=MANAGED_MISSING_POSITIONS_CHECKPOINT) if not dry_run else None
+    previous_managed_missing_markets = dict((previous_managed_missing_checkpoint or {}).get("payload", {}).get("markets", {}))
+    recent_closed_orders_cache: dict[str, list[dict[str, Any]]] = {}
 
     local_orders = {item["uuid"]: item for item in store.list_orders(open_only=False)}
     local_open_orders = {uuid: item for uuid, item in local_orders.items() if is_open_local_state(item.get("local_state"))}
@@ -269,6 +277,7 @@ def reconcile_exchange_snapshot(
     unknown_position_markets = sorted(set(exchange_positions) - set(local_positions))
     local_positions_missing_on_exchange = sorted(set(local_positions) - set(exchange_positions))
     ignored_dust_positions: list[dict[str, Any]] = []
+    current_managed_missing_markets: dict[str, dict[str, Any]] = {}
     retained_unknown_markets: list[str] = []
 
     for market in sorted(set(exchange_positions) & set(local_positions)):
@@ -509,17 +518,117 @@ def reconcile_exchange_snapshot(
             )
             continue
         if bool(local_position.get("managed", True)):
+            managed_missing_detail = _build_managed_missing_position_detail(
+                market=market,
+                local_position=local_position,
+                active_live_plans=active_live_plans,
+                previous_detail=previous_managed_missing_markets.get(market),
+                ts_ms=now_ts,
+            )
+            if _should_auto_close_managed_missing_position(
+                local_position=local_position,
+                active_live_plans=active_live_plans,
+                missing_detail=managed_missing_detail,
+                ts_ms=now_ts,
+            ):
+                if not dry_run:
+                    matched_manual_close = _match_recent_external_manual_close(
+                        market=market,
+                        local_position=local_position,
+                        fetch_closed_orders=fetch_closed_orders,
+                        closed_orders_cache=recent_closed_orders_cache,
+                        bot_id=bot_id,
+                        identifier_prefix=identifier_prefix,
+                        since_ts_ms=max(
+                            int(managed_missing_detail.get("first_missing_ts") or now_ts)
+                            - _MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS,
+                            now_ts - _MANUAL_CLOSE_LOOKBACK_MS,
+                        ),
+                        ts_ms=now_ts,
+                    )
+                    manual_close_order_uuid = None
+                    if matched_manual_close is not None:
+                        manual_close_order = _manual_close_order_record_from_payload(
+                            matched_manual_close,
+                            ts_ms=now_ts,
+                        )
+                        if manual_close_order is not None:
+                            store.upsert_order(manual_close_order)
+                            manual_close_order_uuid = manual_close_order.uuid
+                    close_trade_journal_for_market(
+                        store=store,
+                        market=market,
+                        position=local_position,
+                        ts_ms=now_ts,
+                        close_mode="external_manual_order",
+                        close_reason_code="MANUAL_SELL_DETECTED",
+                        exit_order_uuid=manual_close_order_uuid,
+                        plan_id=_as_optional_str((managed_missing_detail.get("selected_plan") or {}).get("plan_id")),
+                        exit_meta={
+                            "source": "reconcile_exchange_snapshot",
+                            "close_mode": "external_manual_order",
+                            "close_reason_code": "MANUAL_SELL_DETECTED",
+                            "manual_close": True,
+                            "managed_missing_on_exchange": True,
+                            "missing_observation_count": int(managed_missing_detail.get("missing_observation_count") or 0),
+                            "first_missing_ts": _as_optional_int(managed_missing_detail.get("first_missing_ts")),
+                            "last_missing_ts": _as_optional_int(managed_missing_detail.get("last_missing_ts")),
+                            "manual_close_order_uuid": manual_close_order_uuid,
+                        },
+                    )
+                    store.delete_position(market=market)
+                    for row in store.list_risk_plans(market=market):
+                        store.upsert_risk_plan(
+                            _risk_plan_record_from_row(
+                                row,
+                                state="CLOSED",
+                                current_exit_order_uuid=None,
+                                current_exit_order_identifier=None,
+                                updated_ts=now_ts,
+                                last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
+                            )
+                        )
+                actions.append(
+                    {
+                        "type": "close_managed_position_as_manual_sell",
+                        "market": market,
+                        "close_mode": "external_manual_order",
+                        "missing_observation_count": int(managed_missing_detail.get("missing_observation_count") or 0),
+                    }
+                )
+                continue
             retained_local_missing_markets.append(market)
+            current_managed_missing_markets[market] = managed_missing_detail
             warnings.append(f"managed position missing on exchange without close evidence market={market}")
             actions.append(
                 {
                     "type": "retain_local_position_missing_on_exchange",
                     "market": market,
                     "managed": True,
+                    "missing_observation_count": int(managed_missing_detail.get("missing_observation_count") or 0),
                 }
             )
             continue
         if not dry_run:
+            matched_manual_close = _match_recent_external_manual_close(
+                market=market,
+                local_position=local_position,
+                fetch_closed_orders=fetch_closed_orders,
+                closed_orders_cache=recent_closed_orders_cache,
+                bot_id=bot_id,
+                identifier_prefix=identifier_prefix,
+                since_ts_ms=now_ts - _MANUAL_CLOSE_LOOKBACK_MS,
+                ts_ms=now_ts,
+            )
+            manual_close_order_uuid = None
+            if matched_manual_close is not None:
+                manual_close_order = _manual_close_order_record_from_payload(
+                    matched_manual_close,
+                    ts_ms=now_ts,
+                )
+                if manual_close_order is not None:
+                    store.upsert_order(manual_close_order)
+                    manual_close_order_uuid = manual_close_order.uuid
             close_trade_journal_for_market(
                 store=store,
                 market=market,
@@ -527,12 +636,14 @@ def reconcile_exchange_snapshot(
                 ts_ms=now_ts,
                 close_mode="external_manual_order",
                 close_reason_code="MANUAL_SELL_DETECTED",
+                exit_order_uuid=manual_close_order_uuid,
                 plan_id=None,
                 exit_meta={
                     "source": "reconcile_exchange_snapshot",
                     "close_mode": "external_manual_order",
                     "close_reason_code": "MANUAL_SELL_DETECTED",
                     "manual_close": True,
+                    "manual_close_order_uuid": manual_close_order_uuid,
                 },
             )
             store.delete_position(market=market)
@@ -802,6 +913,14 @@ def reconcile_exchange_snapshot(
             name=IGNORED_DUST_POSITIONS_CHECKPOINT,
             payload={
                 "markets": current_ignored_dust_markets,
+                "updated_ts": now_ts,
+            },
+            ts_ms=now_ts,
+        )
+        store.set_checkpoint(
+            name=MANAGED_MISSING_POSITIONS_CHECKPOINT,
+            payload={
+                "markets": current_managed_missing_markets,
                 "updated_ts": now_ts,
             },
             ts_ms=now_ts,
@@ -1640,6 +1759,154 @@ def _build_ignored_dust_position_detail(
         "reference_notional_quote": reference_notional_quote,
         "min_total_quote": min_total_quote,
     }
+
+
+def _match_recent_external_manual_close(
+    *,
+    market: str,
+    local_position: dict[str, Any],
+    fetch_closed_orders: Callable[[str, int, int], Any] | None,
+    closed_orders_cache: dict[str, list[dict[str, Any]]],
+    bot_id: str,
+    identifier_prefix: str,
+    since_ts_ms: int,
+    ts_ms: int,
+) -> dict[str, Any] | None:
+    if fetch_closed_orders is None:
+        return None
+    market_value = str(market).strip().upper()
+    if not market_value:
+        return None
+    cached = closed_orders_cache.get(market_value)
+    if cached is None:
+        payload = fetch_closed_orders(
+            market_value,
+            max(int(since_ts_ms), int(ts_ms) - _MANUAL_CLOSE_LOOKBACK_MS),
+            int(ts_ms),
+        )
+        cached = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+        closed_orders_cache[market_value] = cached
+    target_qty = _as_optional_float(local_position.get("base_amount"))
+    matched: list[tuple[int, dict[str, Any]]] = []
+    for item in cached:
+        item_market = str(item.get("market") or "").strip().upper()
+        if item_market != market_value:
+            continue
+        if str(item.get("side") or "").strip().lower() != "ask":
+            continue
+        if str(item.get("state") or "").strip().lower() != "done":
+            continue
+        identifier = _as_optional_str(item.get("identifier"))
+        if is_bot_identifier(identifier, prefix=identifier_prefix, bot_id=bot_id):
+            continue
+        done_ts = _parse_created_ts(item.get("done_at") or item.get("updated_at") or item.get("created_at"), fallback_ts=0)
+        if done_ts <= 0 or done_ts < int(since_ts_ms) or done_ts > int(ts_ms):
+            continue
+        executed_volume = _as_optional_float(item.get("executed_volume"))
+        if executed_volume is None or executed_volume <= 0.0:
+            executed_volume = _as_optional_float(item.get("volume"))
+        if target_qty is not None and executed_volume is not None:
+            qty_tolerance = max(abs(float(target_qty)) * 0.01, 1e-8)
+            if abs(float(executed_volume) - float(target_qty)) > qty_tolerance:
+                continue
+        matched.append((done_ts, item))
+    if not matched:
+        return None
+    matched.sort(key=lambda item: (item[0], str(item[1].get("uuid") or "")), reverse=True)
+    return dict(matched[0][1])
+
+
+def _manual_close_order_record_from_payload(payload: dict[str, Any], *, ts_ms: int) -> OrderRecord | None:
+    record = _order_record_from_payload(payload, ts_ms=ts_ms)
+    if record is None:
+        return None
+    updated_ts = _parse_created_ts(
+        payload.get("done_at") or payload.get("updated_at") or payload.get("created_at"),
+        fallback_ts=ts_ms,
+    )
+    return replace(
+        record,
+        updated_ts=updated_ts,
+        local_state="DONE",
+        last_event_name="EXTERNAL_MANUAL_CLOSE_RECONCILE",
+        event_source="reconcile_manual_close",
+    )
+
+
+def _build_managed_missing_position_detail(
+    *,
+    market: str,
+    local_position: dict[str, Any],
+    active_live_plans: list[dict[str, Any]] | None,
+    previous_detail: dict[str, Any] | None,
+    ts_ms: int,
+) -> dict[str, Any]:
+    previous_payload = dict(previous_detail or {})
+    previous_count = max(int(previous_payload.get("missing_observation_count") or 0), 0)
+    first_missing_ts = int(previous_payload.get("first_missing_ts") or ts_ms)
+    if first_missing_ts <= 0:
+        first_missing_ts = int(ts_ms)
+    selected_plan = None
+    if active_live_plans:
+        selected_plan = max(
+            active_live_plans,
+            key=lambda item: (
+                int(item.get("updated_ts") or 0),
+                int(item.get("created_ts") or 0),
+                str(item.get("plan_id") or ""),
+            ),
+        )
+    return {
+        "market": str(market).strip().upper(),
+        "missing_observation_count": previous_count + 1,
+        "first_missing_ts": first_missing_ts,
+        "last_missing_ts": int(ts_ms),
+        "position_updated_ts": int(local_position.get("updated_ts") or 0),
+        "selected_plan": dict(selected_plan or {}),
+        "active_plan_count": len(active_live_plans or ()),
+    }
+
+
+def _should_auto_close_managed_missing_position(
+    *,
+    local_position: dict[str, Any],
+    active_live_plans: list[dict[str, Any]] | None,
+    missing_detail: dict[str, Any],
+    ts_ms: int,
+) -> bool:
+    missing_observation_count = max(int(missing_detail.get("missing_observation_count") or 0), 0)
+    first_missing_ts = int(missing_detail.get("first_missing_ts") or 0)
+    local_updated_ts = int(local_position.get("updated_ts") or 0)
+    missing_age_ms = max(int(ts_ms) - first_missing_ts, 0) if first_missing_ts > 0 else 0
+    local_position_age_ms = max(int(ts_ms) - local_updated_ts, 0) if local_updated_ts > 0 else 0
+    if missing_observation_count < _MANAGED_POSITION_MISSING_MANUAL_CLOSE_MIN_COUNT:
+        return False
+    if missing_age_ms < _MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS:
+        return False
+    if local_position_age_ms < _MANAGED_POSITION_MISSING_MANUAL_CLOSE_GRACE_MS:
+        return False
+    active_plans = list(active_live_plans or [])
+    if not active_plans:
+        return True
+    return all(_plan_is_manual_close_candidate(item) for item in active_plans)
+
+
+def _plan_is_manual_close_candidate(plan_row: dict[str, Any]) -> bool:
+    state = str(plan_row.get("state") or "").strip().upper()
+    plan_source = str(plan_row.get("plan_source") or "").strip().lower()
+    if state != "ACTIVE":
+        return False
+    if plan_source and not plan_source.startswith("model_alpha_v1"):
+        return False
+    if _as_optional_str(plan_row.get("current_exit_order_uuid")) is not None:
+        return False
+    if _as_optional_str(plan_row.get("current_exit_order_identifier")) is not None:
+        return False
+    if int(plan_row.get("last_action_ts_ms") or 0) > 0:
+        return False
+    if int(plan_row.get("replace_attempt") or 0) > 0:
+        return False
+    return True
 
 
 def _parse_created_ts(raw: object, *, fallback_ts: int) -> int:
