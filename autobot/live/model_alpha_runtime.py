@@ -19,6 +19,8 @@ from autobot.execution.order_supervisor import (
 )
 from autobot.execution.intent import new_order_intent
 from autobot.models.predictor import ModelPredictor, load_predictor_from_registry
+from autobot.models.registry import load_json
+from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.paper.engine import (
     MarketDataHub,
     UniverseProviderTop20,
@@ -642,7 +644,8 @@ def _startup_sync(
         prior_cancel_summary=cycle_result["cancel_summary"],
         ts_ms=int(time.time() * 1000),
     )
-    if bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store):
+    startup_online_only_halt = _startup_has_only_online_risk_halt(store)
+    if (bool(cycle_result["report"].get("halted")) or not _runtime_loop_allowed(store)) and not startup_online_only_halt:
         summary["halted"] = True
         summary["halted_reasons"] = list(
             active_breaker_decision(store).reason_codes or cycle_result["report"].get("halted_reasons", [])
@@ -660,6 +663,11 @@ def _startup_sync(
         ts_ms=int(time.time() * 1000),
     )
     _apply_runtime_status_to_summary(summary, runtime_status)
+    summary["startup_online_risk_recovery"] = _startup_online_risk_recovery(
+        store=store,
+        runtime_status=runtime_status,
+        ts_ms=int(time.time() * 1000),
+    )
     rollout_status = _evaluate_rollout_gate(
         store=store,
         client=client,
@@ -673,6 +681,98 @@ def _startup_sync(
         summary["halted_reasons"] = list(active_breaker_decision(store).reason_codes)
         return False
     return True
+
+
+_STARTUP_ONLINE_RISK_REASON_CODES = {
+    "RISK_CONTROL_ONLINE_BREACH_STREAK",
+    "RISK_CONTROL_MARTINGALE_EVIDENCE",
+    "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE",
+}
+
+
+def _startup_has_only_online_risk_halt(store: LiveStateStore) -> bool:
+    decision = active_breaker_decision(store)
+    if not bool(decision.active):
+        return False
+    reason_codes = [str(item).strip().upper() for item in (decision.reason_codes or ()) if str(item).strip()]
+    if not reason_codes:
+        return False
+    return all(code in _STARTUP_ONLINE_RISK_REASON_CODES for code in reason_codes)
+
+
+def _startup_online_risk_recovery(
+    *,
+    store: LiveStateStore,
+    runtime_status: dict[str, Any] | None,
+    ts_ms: int,
+) -> dict[str, Any]:
+    decision = active_breaker_decision(store)
+    active_reason_codes = [str(item).strip().upper() for item in (decision.reason_codes or ()) if str(item).strip()]
+    active_online_reason_codes = [code for code in active_reason_codes if code in _STARTUP_ONLINE_RISK_REASON_CODES]
+    if not active_online_reason_codes:
+        return {
+            "attempted": False,
+            "reason": "NO_ACTIVE_ONLINE_RISK_BREAKER",
+            "cleared_reason_codes": [],
+        }
+    current_contract = dict((runtime_status or {}).get("current_contract") or {})
+    run_id = str(current_contract.get("live_runtime_model_run_id") or (runtime_status or {}).get("live_runtime_model_run_id") or "").strip()
+    run_dir = str(current_contract.get("live_runtime_model_run_dir") or "").strip()
+    if not run_id or not run_dir:
+        return {
+            "attempted": False,
+            "reason": "RUNTIME_MODEL_CONTRACT_MISSING",
+            "active_online_reason_codes": active_online_reason_codes,
+            "cleared_reason_codes": [],
+        }
+    runtime_recommendations = normalize_runtime_recommendations_payload(
+        load_json(Path(run_dir) / "runtime_recommendations.json")
+    )
+    risk_control_payload = dict(runtime_recommendations.get("risk_control") or {})
+    if not risk_control_payload:
+        return {
+            "attempted": False,
+            "reason": "RISK_CONTROL_PAYLOAD_MISSING",
+            "run_id": run_id,
+            "run_dir": run_dir,
+            "active_online_reason_codes": active_online_reason_codes,
+            "cleared_reason_codes": [],
+        }
+    online_threshold = _runtime_execute.resolve_execution_risk_control_online_threshold(
+        store=store,
+        run_id=run_id,
+        risk_control_payload=risk_control_payload,
+    )
+    cleared_reason_codes: list[str] = []
+    for value in list(online_threshold.get("clear_reason_codes") or []):
+        reason_code = str(value).strip().upper()
+        if reason_code and reason_code not in cleared_reason_codes:
+            cleared_reason_codes.append(reason_code)
+    if not bool(online_threshold.get("halt_triggered")):
+        for reason_code in active_online_reason_codes:
+            if reason_code not in cleared_reason_codes:
+                cleared_reason_codes.append(reason_code)
+    if cleared_reason_codes:
+        clear_breaker_reasons(
+            store,
+            reason_codes=cleared_reason_codes,
+            source="startup_online_risk_recovery",
+            ts_ms=ts_ms,
+            details={
+                "run_id": run_id,
+                "run_dir": run_dir,
+                "active_online_reason_codes": active_online_reason_codes,
+                "online_threshold": online_threshold,
+            },
+        )
+    return {
+        "attempted": True,
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "active_online_reason_codes": active_online_reason_codes,
+        "cleared_reason_codes": cleared_reason_codes,
+        "online_threshold": online_threshold,
+    }
 
 
 def _load_predictor_for_runtime(*, store: LiveStateStore, settings: LiveModelAlphaRuntimeSettings) -> ModelPredictor:

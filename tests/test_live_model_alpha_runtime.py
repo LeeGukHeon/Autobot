@@ -2049,6 +2049,195 @@ def test_live_model_alpha_runtime_clears_stale_online_halt_from_previous_run(tmp
     assert breaker_state is None or breaker_state["active"] is False
 
 
+def test_startup_sync_rechecks_current_run_online_halt_before_stopping(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True).daemon
+    now_ms = int(time.time() * 1000)
+    registry_root = Path(settings.registry_root)
+    run_dir = registry_root / "train_v4_crypto_cs" / "run-live"
+    _write_json(
+        run_dir / "runtime_recommendations.json",
+        {
+            "version": 1,
+            "risk_control": {
+                "version": 1,
+                "policy": "execution_risk_control_hoeffding_v1",
+                "status": "ready",
+                "decision_metric_name": "expected_action_value",
+                "selected_threshold": 1.0,
+                "selected_coverage": 31,
+                "selected_nonpositive_rate_ucb": 0.18,
+                "selected_severe_loss_rate_ucb": 0.11,
+                "nonpositive_alpha": 0.30,
+                "severe_loss_alpha": 0.20,
+                "severe_loss_return_threshold": 0.01,
+                "confidence_delta": 0.20,
+                "live_gate": {
+                    "enabled": True,
+                    "metric_name": "expected_action_value",
+                    "threshold": 1.0,
+                    "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                },
+                "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+                "online_adaptation": {
+                    "enabled": True,
+                    "mode": "recent_closed_trade_hoeffding_stepup_v1",
+                    "lookback_trades": 12,
+                    "max_step_up": 2,
+                    "recovery_streak_required": 2,
+                    "min_halt_trade_count": 5,
+                    "halt_breach_streak": 3,
+                    "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+                    "confidence_delta": 0.20,
+                    "checkpoint_name": "execution_risk_control_online_buffer",
+                },
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        runtime_module,
+        "backfill_recent_bot_closed_orders",
+        lambda **_: {"orders_upserted": 0},
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_run_sync_cycle_with_breakers",
+        lambda **_: {
+            "report": {
+                "halted": False,
+                "halted_reasons": [],
+                "counts": {
+                    "exchange_bot_open_orders": 0,
+                    "exchange_open_orders": 0,
+                    "exchange_positions": 0,
+                    "external_open_orders": 0,
+                    "ignored_dust_positions": 0,
+                    "local_only_open_orders": 0,
+                    "local_open_orders": 0,
+                    "local_positions": 0,
+                    "local_positions_missing_on_exchange": 0,
+                    "unknown_bot_open_orders": 0,
+                    "unknown_positions": 0,
+                },
+            },
+            "cancel_summary": None,
+            "breaker_report": None,
+            "small_account_report": None,
+        },
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "resume_risk_plans_after_reconcile",
+        lambda **_: {"halted": False, "counts": {"plans_kept_active": 0}},
+    )
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        arm_breaker(
+            store,
+            reason_codes=["RISK_CONTROL_ONLINE_BREACH_STREAK"],
+            source="execution_risk_control_online_halt",
+            ts_ms=now_ms - 5000,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={
+                "checkpoint_base_name": "execution_risk_control_online_buffer",
+                "checkpoint_name": "execution_risk_control_online_buffer:run-live",
+                "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            },
+        )
+        for index in range(2):
+            store.upsert_trade_journal(
+                TradeJournalRecord(
+                    journal_id=f"journal-startup-online-clear-{index}",
+                    market="KRW-BTC",
+                    status="CLOSED",
+                    entry_intent_id=f"intent-startup-online-clear-{index}",
+                    entry_order_uuid=f"entry-startup-online-clear-{index}",
+                    exit_order_uuid=f"exit-startup-online-clear-{index}",
+                    plan_id=f"plan-startup-online-clear-{index}",
+                    entry_submitted_ts_ms=now_ms - (10_000 * (index + 2)),
+                    entry_filled_ts_ms=now_ms - (10_000 * (index + 2)),
+                    exit_ts_ms=now_ms - (5_000 * (index + 1)),
+                    entry_price=100.0,
+                    exit_price=98.0,
+                    qty=1.0,
+                    entry_notional_quote=100.0,
+                    exit_notional_quote=98.0,
+                    realized_pnl_quote=-2.0,
+                    realized_pnl_pct=-2.0,
+                    entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                    close_reason_code="STATE_MARK",
+                    close_mode="done_ask_order",
+                    model_prob=0.9,
+                    selection_policy_mode="rank_effective_quantile",
+                    trade_action="risk",
+                    expected_edge_bps=50.0,
+                    expected_downside_bps=20.0,
+                    expected_net_edge_bps=30.0,
+                    notional_multiplier=1.0,
+                    entry_meta_json=json.dumps({"runtime": {"live_runtime_model_run_id": "run-live"}}, ensure_ascii=False, sort_keys=True),
+                    exit_meta_json=json.dumps({"close_verified": True}, ensure_ascii=False, sort_keys=True),
+                    updated_ts=now_ms - (5_000 * (index + 1)),
+                )
+            )
+
+        summary = {
+            "cycles": 0,
+            "last_report": None,
+            "last_cancel_summary": None,
+            "breaker_report": None,
+            "small_account_report": None,
+            "last_breaker_cancel_summary": None,
+            "halted": False,
+            "halted_reasons": [],
+            "closed_orders_backfill": None,
+            "resume_report": None,
+            "runtime_handoff": None,
+            "rollout": None,
+            "rollout_start_allowed": False,
+            "rollout_order_emission_allowed": False,
+            "rollout_reason_codes": [],
+        }
+        ok = runtime_module._startup_sync(
+            store=store,
+            client=_PrivateClient(),
+            settings=settings,
+            summary=summary,
+        )
+        breaker_state = store.breaker_state(breaker_key="live")
+
+    assert ok is True
+    assert summary["halted"] is False
+    assert summary["startup_online_risk_recovery"]["attempted"] is True
+    assert "RISK_CONTROL_ONLINE_BREACH_STREAK" in summary["startup_online_risk_recovery"]["cleared_reason_codes"]
+    assert summary["rollout_start_allowed"] is True
+    assert summary["rollout_order_emission_allowed"] is True
+    assert breaker_state is None or breaker_state["active"] is False
+
+
 def test_live_model_alpha_runtime_halts_new_intents_when_martingale_evidence_triggers(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
