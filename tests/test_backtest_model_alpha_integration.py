@@ -1388,6 +1388,8 @@ def test_build_model_alpha_exit_plan_payload_includes_immediate_execution_cost_p
             "selected_stage": "JOIN",
             "selected_fill_probability": 0.55,
             "selected_expected_slippage_bps": 3.0,
+            "selected_expected_cleanup_cost_bps": 7.5,
+            "selected_expected_miss_cost_bps": 9.0,
             "selected_expected_time_to_fill_ms": 4500,
             "selected_price_mode": "JOIN",
         },
@@ -1395,6 +1397,8 @@ def test_build_model_alpha_exit_plan_payload_includes_immediate_execution_cost_p
 
     assert payload["expected_immediate_exit_fill_probability"] == 0.55
     assert payload["expected_immediate_exit_slippage_bps"] == 3.0
+    assert payload["expected_immediate_exit_cleanup_cost_bps"] == 7.5
+    assert payload["expected_immediate_exit_miss_cost_bps"] == 9.0
     assert payload["expected_immediate_exit_time_to_fill_ms"] == 4500
     assert payload["expected_immediate_exit_price_mode"] == "JOIN"
     assert payload["expected_immediate_exit_cost_ratio"] > payload["expected_exit_fee_rate"]

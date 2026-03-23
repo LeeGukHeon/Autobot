@@ -68,11 +68,21 @@ def resolve_path_risk_guidance_from_plan(
     terminal_return_q25 = _as_float(selected.get("terminal_return_q25"))
     terminal_return_q75 = _as_float(selected.get("terminal_return_q75"))
     terminal_return_mean = _as_float(selected.get("terminal_return_mean"))
+    mfe_q25 = _as_float(selected.get("mfe_q25"))
+    mfe_q50 = _as_float(selected.get("mfe_q50"))
+    mfe_q75 = _as_float(selected.get("mfe_q75"))
+    mfe_q90 = _as_float(selected.get("mfe_q90"))
+    mfe_above_10bps_rate = _as_float(selected.get("mfe_above_10bps_rate"))
+    mfe_above_25bps_rate = _as_float(selected.get("mfe_above_25bps_rate"))
+    mfe_above_50bps_rate = _as_float(selected.get("mfe_above_50bps_rate"))
     terminal_positive_rate = _as_float(selected.get("terminal_positive_rate"))
     terminal_nonnegative_rate = _as_float(selected.get("terminal_nonnegative_rate"))
     terminal_above_10bps_rate = _as_float(selected.get("terminal_above_10bps_rate"))
     terminal_above_25bps_rate = _as_float(selected.get("terminal_above_25bps_rate"))
     terminal_above_50bps_rate = _as_float(selected.get("terminal_above_50bps_rate"))
+    current_tp_ratio = _as_float(payload.get("tp_pct"))
+    if current_tp_ratio is None:
+        current_tp_ratio = _as_float(payload.get("tp_ratio"))
     min_tp_floor_ratio = max(_as_float(payload.get("min_tp_floor_pct")) or 0.0, 0.0)
     continuation_margin_ratio = max(min_tp_floor_ratio, 0.0005)
     continuation_profit_floor_ratio = max(min_tp_floor_ratio, 0.001)
@@ -137,6 +147,17 @@ def resolve_path_risk_guidance_from_plan(
         if reachable_tp_ratio is not None and immediate_exit_value_ratio is not None
         else None
     )
+    tp_hit_prob_at_current_tp = _resolve_tp_hit_probability(
+        target_ratio=current_tp_ratio,
+        reachable_tp_ratio=reachable_tp_ratio,
+        mfe_q25=mfe_q25,
+        mfe_q50=mfe_q50,
+        mfe_q75=mfe_q75,
+        mfe_q90=mfe_q90,
+        mfe_above_10bps_rate=mfe_above_10bps_rate,
+        mfe_above_25bps_rate=mfe_above_25bps_rate,
+        mfe_above_50bps_rate=mfe_above_50bps_rate,
+    )
     profit_preservation_rate = _resolve_profit_preservation_rate(
         current_return_ratio=immediate_exit_value_ratio,
         terminal_positive_rate=terminal_positive_rate,
@@ -176,6 +197,15 @@ def resolve_path_risk_guidance_from_plan(
                 continuation_should_exit = True
                 continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
             elif (
+                tp_hit_prob_at_current_tp is not None
+                and float(tp_hit_prob_at_current_tp) < 0.30
+                and exit_now_value_net is not None
+                and continue_value_net is not None
+                and float(exit_now_value_net) >= float(continue_value_net)
+            ):
+                continuation_should_exit = True
+                continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
+            elif (
                 profit_preservation_rate is not None
                 and float(profit_preservation_rate) < 0.45
                 and exit_now_value_net is not None
@@ -203,6 +233,13 @@ def resolve_path_risk_guidance_from_plan(
         "bounded_sl_ratio": bounded_sl_ratio,
         "drawdown_from_now_q80": drawdown_from_now_q80,
         "drawdown_from_now_q90": drawdown_from_now_q90,
+        "mfe_q25": mfe_q25,
+        "mfe_q50": mfe_q50,
+        "mfe_q75": mfe_q75,
+        "mfe_q90": mfe_q90,
+        "mfe_above_10bps_rate": mfe_above_10bps_rate,
+        "mfe_above_25bps_rate": mfe_above_25bps_rate,
+        "mfe_above_50bps_rate": mfe_above_50bps_rate,
         "terminal_return_q25": terminal_return_q25,
         "terminal_return_q50": terminal_return_q50,
         "terminal_return_q75": terminal_return_q75,
@@ -231,6 +268,8 @@ def resolve_path_risk_guidance_from_plan(
         "continuation_gap_ratio": continuation_gap_ratio,
         "continuation_advantage_ratio": continuation_advantage_ratio,
         "upside_left_ratio": upside_left_ratio,
+        "current_tp_ratio": current_tp_ratio,
+        "tp_hit_prob_at_current_tp": tp_hit_prob_at_current_tp,
         "continuation_margin_ratio": float(continuation_margin_ratio),
         "continuation_profit_floor_ratio": float(continuation_profit_floor_ratio),
         "continuation_threshold_ratio": continuation_threshold_ratio,
@@ -260,6 +299,60 @@ def _resolve_profit_preservation_rate(
     if current_return >= 0.0 and terminal_nonnegative_rate is not None:
         return float(terminal_nonnegative_rate)
     return terminal_positive_rate
+
+
+def _resolve_tp_hit_probability(
+    *,
+    target_ratio: float | None,
+    reachable_tp_ratio: float | None,
+    mfe_q25: float | None,
+    mfe_q50: float | None,
+    mfe_q75: float | None,
+    mfe_q90: float | None,
+    mfe_above_10bps_rate: float | None,
+    mfe_above_25bps_rate: float | None,
+    mfe_above_50bps_rate: float | None,
+) -> float | None:
+    target = _as_float(target_ratio)
+    if target is None or float(target) <= 0.0:
+        target = _as_float(reachable_tp_ratio)
+    if target is None or float(target) <= 0.0:
+        return None
+    target_value = float(target)
+    if target_value <= 0.0010 and mfe_above_10bps_rate is not None:
+        return float(mfe_above_10bps_rate)
+    if target_value <= 0.0025 and mfe_above_25bps_rate is not None:
+        return float(mfe_above_25bps_rate)
+    if target_value <= 0.0050 and mfe_above_50bps_rate is not None:
+        return float(mfe_above_50bps_rate)
+
+    quantile_points = [
+        (0.0, 1.0),
+        (_as_float(mfe_q25), 0.75),
+        (_as_float(mfe_q50), 0.50),
+        (_as_float(mfe_q75), 0.25),
+        (_as_float(mfe_q90), 0.10),
+    ]
+    filtered = [(float(level), float(prob)) for level, prob in quantile_points if level is not None and float(level) >= 0.0]
+    if not filtered:
+        return None
+    filtered.sort(key=lambda item: item[0])
+    if target_value <= filtered[0][0]:
+        return min(max(filtered[0][1], 0.0), 1.0)
+
+    previous_level, previous_prob = filtered[0]
+    for level, prob in filtered[1:]:
+        if target_value <= level:
+            span = max(level - previous_level, 1e-12)
+            weight = (target_value - previous_level) / span
+            interpolated = previous_prob + (prob - previous_prob) * weight
+            return min(max(float(interpolated), 0.0), 1.0)
+        previous_level, previous_prob = level, prob
+
+    tail_penalty = max(target_value - previous_level, 0.0)
+    tail_scale = max(previous_level, 0.0050, 1e-12)
+    tail_prob = previous_prob * max(1.0 - (tail_penalty / tail_scale), 0.0)
+    return min(max(float(tail_prob), 0.0), 1.0)
 
 
 def _select_path_risk_summary(

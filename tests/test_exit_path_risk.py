@@ -38,6 +38,8 @@ def test_build_exit_path_risk_summary_emits_pathwise_quantiles() -> None:
     assert by_horizon[1]["sample_count"] == 4
     assert by_horizon[2]["sample_count"] == 2
     assert by_horizon[2]["mfe_q50"] >= by_horizon[1]["mfe_q50"]
+    assert "mfe_q25" in by_horizon[1]
+    assert "mfe_above_25bps_rate" in by_horizon[1]
     assert "terminal_return_q25" in by_horizon[1]
     assert "terminal_positive_rate" in by_horizon[1]
     assert "drawdown_from_now_q80" in by_horizon[1]
@@ -227,3 +229,47 @@ def test_resolve_path_risk_guidance_uses_immediate_execution_cost_proxy() -> Non
     assert guidance["immediate_exit_fill_probability"] == 0.55
     assert guidance["immediate_exit_price_mode"] == "JOIN"
     assert guidance["exit_now_value_net"] == 0.002
+
+
+def test_resolve_path_risk_guidance_exposes_tp_hit_prob_at_current_tp() -> None:
+    guidance = resolve_path_risk_guidance_from_plan(
+        plan_payload={
+            "hold_bars": 6,
+            "bar_interval_ms": 300_000,
+            "tp_pct": 0.012,
+            "path_risk": {
+                "status": "ready",
+                "overall_by_horizon": [
+                    {
+                        "hold_bars": 3,
+                        "reachable_tp_q60": 0.006,
+                        "bounded_sl_q80": 0.008,
+                        "mfe_q25": 0.003,
+                        "mfe_q50": 0.006,
+                        "mfe_q75": 0.009,
+                        "mfe_q90": 0.011,
+                        "mfe_above_10bps_rate": 0.70,
+                        "mfe_above_25bps_rate": 0.52,
+                        "mfe_above_50bps_rate": 0.32,
+                        "terminal_return_q25": 0.001,
+                        "terminal_return_q50": 0.003,
+                        "terminal_return_q75": 0.004,
+                        "terminal_return_mean": 0.003,
+                        "terminal_positive_rate": 0.62,
+                        "terminal_nonnegative_rate": 0.66,
+                        "terminal_above_10bps_rate": 0.58,
+                        "terminal_above_25bps_rate": 0.44,
+                        "terminal_above_50bps_rate": 0.28,
+                        "drawdown_from_now_q80": 0.010,
+                        "drawdown_from_now_q90": 0.013,
+                    }
+                ],
+            },
+        },
+        elapsed_bars=3,
+        current_return_ratio=0.007,
+    )
+
+    assert guidance["tp_hit_prob_at_current_tp"] is not None
+    assert 0.0 <= guidance["tp_hit_prob_at_current_tp"] <= 1.0
+    assert guidance["tp_hit_prob_at_current_tp"] < 0.30

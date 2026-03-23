@@ -691,6 +691,18 @@ def _build_execution_stage_doc(
         }
     summary = dict(selected.get("summary", {}))
     grid_point = dict(selected.get("grid_point", {}))
+    fill_rate = float(summary.get("fill_rate", 0.0) or 0.0)
+    slippage_bps = float(summary.get("slippage_bps_mean", 0.0) or 0.0)
+    expected_cleanup_cost_bps = _estimate_execution_stage_cleanup_cost_bps(
+        price_mode=str(grid_point.get("price_mode", mode)).strip().upper() or str(mode).strip().upper(),
+        fill_rate=fill_rate,
+        slippage_bps=slippage_bps,
+    )
+    expected_miss_cost_bps = _estimate_execution_stage_miss_cost_bps(
+        cleanup_cost_bps=expected_cleanup_cost_bps,
+        fill_rate=fill_rate,
+        slippage_bps=slippage_bps,
+    )
     return {
         "stage": str(mode).strip().upper(),
         "supported": True,
@@ -700,16 +712,51 @@ def _build_execution_stage_doc(
         "recommended_timeout_bars": int(grid_point.get("timeout_bars", fallback_settings.timeout_bars)),
         "recommended_replace_max": int(grid_point.get("replace_max", fallback_settings.replace_max)),
         "objective_score": float(selected.get("utility_total", 0.0) or 0.0),
-        "expected_fill_probability": float(summary.get("fill_rate", 0.0) or 0.0),
+        "expected_fill_probability": fill_rate,
         "expected_time_to_fill_ms": float(summary.get("avg_time_to_fill_ms", 0.0) or 0.0),
         "p50_time_to_fill_ms": float(summary.get("p50_time_to_fill_ms", 0.0) or 0.0),
         "p90_time_to_fill_ms": float(summary.get("p90_time_to_fill_ms", 0.0) or 0.0),
-        "expected_slippage_bps": float(summary.get("slippage_bps_mean", 0.0) or 0.0),
+        "expected_slippage_bps": slippage_bps,
+        "expected_cleanup_cost_bps": float(expected_cleanup_cost_bps),
+        "expected_miss_cost_bps": float(expected_miss_cost_bps),
         "orders_filled": int(summary.get("orders_filled", 0) or 0),
         "realized_pnl_quote": float(summary.get("realized_pnl_quote", 0.0) or 0.0),
         "max_drawdown_pct": float(summary.get("max_drawdown_pct", 0.0) or 0.0),
         "summary": summary,
     }
+
+
+def _execution_cleanup_floor_bps(price_mode: str) -> float:
+    mode = str(price_mode).strip().upper()
+    if mode == "PASSIVE_MAKER":
+        return 4.0
+    if mode == "JOIN":
+        return 6.0
+    return 8.0
+
+
+def _estimate_execution_stage_cleanup_cost_bps(
+    *,
+    price_mode: str,
+    fill_rate: float,
+    slippage_bps: float,
+) -> float:
+    residual_nonfill = max(1.0 - max(min(float(fill_rate), 1.0), 0.0), 0.0)
+    slippage = max(float(slippage_bps), 0.0)
+    cleanup_floor = _execution_cleanup_floor_bps(price_mode)
+    return float(cleanup_floor + (slippage * max(residual_nonfill, 0.25)))
+
+
+def _estimate_execution_stage_miss_cost_bps(
+    *,
+    cleanup_cost_bps: float,
+    fill_rate: float,
+    slippage_bps: float,
+) -> float:
+    residual_nonfill = max(1.0 - max(min(float(fill_rate), 1.0), 0.0), 0.0)
+    cleanup_cost = max(float(cleanup_cost_bps), 0.0)
+    slippage = max(float(slippage_bps), 0.0)
+    return float(cleanup_cost + (max(slippage, cleanup_cost * 0.5) * residual_nonfill))
 
 
 def _resolve_execution_structure_metrics(summary: dict[str, Any]) -> dict[str, Any]:

@@ -1045,11 +1045,15 @@ def _resolve_runtime_execution_profile(
             continue
         fill_probability = _clamp01(_safe_optional_float(stage.get("expected_fill_probability")) or 0.0)
         slippage_bps = max(_safe_optional_float(stage.get("expected_slippage_bps")) or 0.0, 0.0)
+        cleanup_cost_bps = max(_safe_optional_float(stage.get("expected_cleanup_cost_bps")) or 0.0, 0.0)
+        miss_cost_bps = max(_safe_optional_float(stage.get("expected_miss_cost_bps")) or cleanup_cost_bps, 0.0)
         net_edge_bps = (float(expected_edge_bps) * float(fill_probability)) - float(slippage_bps)
         evaluation = {
             "stage": stage_name,
             "fill_probability": float(fill_probability),
             "expected_slippage_bps": float(slippage_bps),
+            "expected_cleanup_cost_bps": float(cleanup_cost_bps),
+            "expected_miss_cost_bps": float(miss_cost_bps),
             "expected_time_to_fill_ms": _safe_optional_float(stage.get("expected_time_to_fill_ms")),
             "net_edge_bps": float(net_edge_bps),
             "validation_comparable": bool(stage.get("validation_comparable", False)),
@@ -1061,6 +1065,8 @@ def _resolve_runtime_execution_profile(
             decision["selected_net_edge_bps"] = float(net_edge_bps)
             decision["selected_fill_probability"] = float(fill_probability)
             decision["selected_expected_slippage_bps"] = float(slippage_bps)
+            decision["selected_expected_cleanup_cost_bps"] = float(cleanup_cost_bps)
+            decision["selected_expected_miss_cost_bps"] = float(miss_cost_bps)
             decision["selected_expected_time_to_fill_ms"] = _safe_optional_float(stage.get("expected_time_to_fill_ms"))
             decision["selected_price_mode"] = str(stage.get("recommended_price_mode", "")).strip().upper()
             decision["status"] = "selected"
@@ -1192,6 +1198,8 @@ def build_model_alpha_exit_plan_payload(
             "expected_immediate_exit_fill_probability": float(immediate_execution_costs["fill_probability"]),
             "expected_immediate_exit_time_to_fill_ms": immediate_execution_costs["time_to_fill_ms"],
             "expected_immediate_exit_price_mode": str(immediate_execution_costs["price_mode"]),
+            "expected_immediate_exit_cleanup_cost_bps": float(immediate_execution_costs["cleanup_cost_bps"]),
+            "expected_immediate_exit_miss_cost_bps": float(immediate_execution_costs["miss_cost_bps"]),
             "expected_immediate_exit_cost_ratio": float(immediate_execution_costs["cost_ratio"]),
             "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
             "risk_vol_feature": str(settings.exit.risk_vol_feature),
@@ -1531,12 +1539,24 @@ def _resolve_immediate_exit_execution_costs(
     if slippage_bps is None:
         slippage_bps = _safe_optional_float(payload.get("expected_slippage_bps"))
     slippage_bps = max(float(slippage_bps if slippage_bps is not None else fallback_exit_slippage_bps), 0.0)
+    cleanup_cost_bps = _safe_optional_float(payload.get("selected_expected_cleanup_cost_bps"))
+    if cleanup_cost_bps is None:
+        cleanup_cost_bps = _safe_optional_float(payload.get("expected_cleanup_cost_bps"))
+    cleanup_cost_bps = max(float(cleanup_cost_bps or 0.0), 0.0)
+    miss_cost_bps = _safe_optional_float(payload.get("selected_expected_miss_cost_bps"))
+    if miss_cost_bps is None:
+        miss_cost_bps = _safe_optional_float(payload.get("expected_miss_cost_bps"))
+    miss_cost_bps = max(float(miss_cost_bps if miss_cost_bps is not None else cleanup_cost_bps), 0.0)
     fee_rate = max(float(fallback_exit_fee_rate), 0.0)
     uncertainty_bps = (1.0 - fill_probability) * max(float(slippage_bps), 5.0)
-    cost_ratio = fee_rate + (float(slippage_bps + uncertainty_bps) / 10_000.0)
+    residual_cleanup_bps = (1.0 - fill_probability) * max(float(cleanup_cost_bps), 0.0)
+    residual_miss_bps = (1.0 - fill_probability) * max(float(miss_cost_bps - cleanup_cost_bps), 0.0) * 0.25
+    cost_ratio = fee_rate + (float(slippage_bps + uncertainty_bps + residual_cleanup_bps + residual_miss_bps) / 10_000.0)
     return {
         "fee_rate": fee_rate,
         "slippage_bps": float(slippage_bps),
+        "cleanup_cost_bps": float(cleanup_cost_bps),
+        "miss_cost_bps": float(miss_cost_bps),
         "fill_probability": float(fill_probability),
         "time_to_fill_ms": _safe_optional_int(payload.get("selected_expected_time_to_fill_ms")),
         "price_mode": str(payload.get("selected_stage") or payload.get("selected_price_mode") or "").strip().upper() or "UNKNOWN",

@@ -201,6 +201,8 @@ def build_model_exit_plan_from_position(position: dict[str, Any] | None) -> dict
             "expected_immediate_exit_fill_probability": _as_float(_first_field("expected_immediate_exit_fill_probability")),
             "expected_immediate_exit_time_to_fill_ms": _as_int(_first_field("expected_immediate_exit_time_to_fill_ms")),
             "expected_immediate_exit_price_mode": _as_optional_str(_first_field("expected_immediate_exit_price_mode")),
+            "expected_immediate_exit_cleanup_cost_bps": _as_float(_first_field("expected_immediate_exit_cleanup_cost_bps")),
+            "expected_immediate_exit_miss_cost_bps": _as_float(_first_field("expected_immediate_exit_miss_cost_bps")),
             "expected_immediate_exit_cost_ratio": _as_float(_first_field("expected_immediate_exit_cost_ratio")),
         }
     )
@@ -238,6 +240,8 @@ def _build_position_policy_jsons(plan_payload: dict[str, Any]) -> tuple[str, str
         "expected_immediate_exit_fill_probability": _as_float(normalized_plan.get("expected_immediate_exit_fill_probability")),
         "expected_immediate_exit_time_to_fill_ms": _as_int(normalized_plan.get("expected_immediate_exit_time_to_fill_ms")),
         "expected_immediate_exit_price_mode": _as_optional_str(normalized_plan.get("expected_immediate_exit_price_mode")),
+        "expected_immediate_exit_cleanup_cost_bps": _as_float(normalized_plan.get("expected_immediate_exit_cleanup_cost_bps")),
+        "expected_immediate_exit_miss_cost_bps": _as_float(normalized_plan.get("expected_immediate_exit_miss_cost_bps")),
         "expected_immediate_exit_cost_ratio": _as_float(normalized_plan.get("expected_immediate_exit_cost_ratio")),
         "risk_scaling_mode": str(normalized_plan.get("risk_scaling_mode", "fixed")).strip().lower() or "fixed",
         "risk_vol_feature": str(normalized_plan.get("risk_vol_feature", "")).strip(),

@@ -851,6 +851,8 @@ def test_build_execution_doc_includes_stage_frontier_and_no_trade_region() -> No
     assert stage_map["PASSIVE_MAKER"]["expected_fill_probability"] == 0.45
     assert stage_map["JOIN"]["expected_time_to_fill_ms"] == 300_000.0
     assert stage_map["CROSS_1T"]["expected_slippage_bps"] == 6.5
+    assert stage_map["JOIN"]["expected_cleanup_cost_bps"] > 0.0
+    assert stage_map["JOIN"]["expected_miss_cost_bps"] >= stage_map["JOIN"]["expected_cleanup_cost_bps"]
     assert execution_doc["frontier_summary"]["best_stage_by_objective"] == "JOIN"
     assert execution_doc["frontier_summary"]["best_stage_by_fill_probability"] == "CROSS_1T"
     assert execution_doc["frontier_summary"]["best_stage_by_time_to_fill"] == "CROSS_1T"
