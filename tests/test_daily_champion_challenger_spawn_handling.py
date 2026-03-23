@@ -660,6 +660,58 @@ def test_spawn_only_does_not_restart_candidate_targets_when_overall_pass_is_fals
     assert restart_step["reason"] == "OVERALL_PASS_REQUIRED"
 
 
+def test_spawn_only_surfaces_execution_policy_veto_failure_reason(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "split_policy": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-vetoed"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BACKTEST_ACCEPTANCE_FAILED", "EXECUTION_POLICY_VETO_FAILURE"],
+        },
+        exit_code=2,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        active_units=["autobot-live-alpha-candidate.service"],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    start_step = latest["steps"]["start_challenger"]
+    restart_step = latest["steps"]["restart_candidate_targets"]
+    assert start_step["skipped"] is True
+    assert start_step["reason"] == "EXECUTION_POLICY_VETO_FAILURE"
+    assert restart_step["attempted"] is False
+    assert restart_step["reason"] == "EXECUTION_POLICY_VETO_FAILURE"
+
+
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

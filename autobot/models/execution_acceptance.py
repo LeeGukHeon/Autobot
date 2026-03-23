@@ -144,6 +144,7 @@ def run_model_execution_backtest(
             micro_gate=options.micro_gate,
             micro_order_policy=options.micro_order_policy,
             execution_contract_artifact_path=str(options.execution_contract_artifact_path),
+            artifact_mode="summary_only",
         ),
         upbit_settings=None,
     )

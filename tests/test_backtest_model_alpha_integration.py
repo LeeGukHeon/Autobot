@@ -2215,6 +2215,156 @@ def test_backtest_model_alpha_skips_execution_contract_when_learned_execution_is
     assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
 
 
+def test_backtest_model_alpha_reports_execution_policy_abort_counts(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    dataset_root = tmp_path / "features_v3"
+    registry_root = tmp_path / "registry"
+    out_root = tmp_path / "backtest"
+    contract_path = tmp_path / "live_execution_contract.json"
+    _write_candles(parquet_root / "candles_v1")
+    _write_features(dataset_root)
+    _save_model_run(registry_root=registry_root, dataset_root=dataset_root, thresholds={"top_5pct": 0.5})
+
+    contract_payload = {
+        "execution_contract": {
+            "policy": "live_execution_contract_v2",
+            "status": "ready",
+            "rows_total": 40,
+            "horizons_ms": [1_000, 3_000, 10_000, 30_000, 60_000, 180_000, 300_000],
+            "fill_model": {
+                "policy": "live_fill_hazard_survival_v2",
+                "status": "ready",
+                "rows_total": 40,
+                "horizons_ms": [1_000, 3_000, 10_000, 30_000, 60_000, 180_000, 300_000],
+                "action_stats": {
+                    "LIMIT_GTC_PASSIVE_MAKER": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.25,
+                        "p_fill_within_default": 0.10,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 120_000.0,
+                    },
+                    "LIMIT_GTC_JOIN": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.20,
+                        "p_fill_within_default": 0.08,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 180_000.0,
+                    },
+                    "BEST_IOC": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.40,
+                        "p_fill_within_default": 0.20,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 1_000.0,
+                    },
+                },
+                "price_mode_stats": {
+                    "PASSIVE_MAKER": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.25,
+                        "p_fill_within_default": 0.10,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 120_000.0,
+                    },
+                    "JOIN": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.20,
+                        "p_fill_within_default": 0.08,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 180_000.0,
+                    },
+                    "CROSS_1T": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.40,
+                        "p_fill_within_default": 0.20,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 1_000.0,
+                    },
+                },
+                "state_action_stats": {},
+                "global_stats": {
+                    "sample_count": 120,
+                    "p_fill_within_300000ms": 0.28,
+                    "p_fill_within_default": 0.12,
+                    "mean_shortfall_bps": 0.0,
+                    "mean_time_to_first_fill_ms": 100_000.0,
+                },
+            },
+            "miss_cost_model": {
+                "policy": "execution_miss_cost_summary_v2",
+                "status": "ready",
+                "action_stats": {
+                    "LIMIT_GTC_PASSIVE_MAKER": {"sample_count": 40, "mean_miss_cost_bps": 80.0},
+                    "LIMIT_GTC_JOIN": {"sample_count": 40, "mean_miss_cost_bps": 70.0},
+                    "BEST_IOC": {"sample_count": 40, "mean_miss_cost_bps": 60.0},
+                },
+                "price_mode_stats": {
+                    "PASSIVE_MAKER": {"sample_count": 40, "mean_miss_cost_bps": 80.0},
+                    "JOIN": {"sample_count": 40, "mean_miss_cost_bps": 70.0},
+                    "CROSS_1T": {"sample_count": 40, "mean_miss_cost_bps": 60.0},
+                },
+                "state_action_stats": {},
+                "global_stats": {"sample_count": 120, "mean_miss_cost_bps": 70.0},
+            },
+        }
+    }
+    contract_path.write_text(json.dumps(contract_payload, ensure_ascii=False), encoding="utf-8")
+
+    settings = BacktestRunSettings(
+        dataset_name="candles_v1",
+        parquet_root=str(parquet_root),
+        tf="5m",
+        quote="KRW",
+        top_n=2,
+        markets=("KRW-BTC", "KRW-ETH"),
+        universe_mode="fixed_list",
+        from_ts_ms=0,
+        to_ts_ms=3_600_000,
+        starting_krw=200_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=1,
+        output_root_dir=str(out_root),
+        strategy="model_alpha_v1",
+        model_ref="run_v3",
+        model_family="train_v3_mtf_micro",
+        feature_set="v3",
+        model_registry_root=str(registry_root),
+        model_feature_dataset_root=str(dataset_root),
+        execution_contract_artifact_path=str(contract_path),
+        model_alpha=ModelAlphaSettings(
+            model_ref="run_v3",
+            model_family="train_v3_mtf_micro",
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(max_positions_total=1, cooldown_bars=0),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+            execution=ModelAlphaExecutionSettings(
+                price_mode="PASSIVE_MAKER",
+                timeout_bars=3,
+                replace_max=4,
+                use_learned_recommendations=True,
+            ),
+        ),
+    )
+
+    summary = BacktestRunEngine(
+        run_settings=settings,
+        upbit_settings=None,
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    ).run()
+
+    run_dir = Path(summary.run_dir)
+    payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    abort_events = [item for item in payloads if item.get("event_type") == "EXECUTION_POLICY_ABORT"]
+    assert abort_events
+    assert summary.orders_submitted == 0
+    assert summary.candidates_aborted_by_policy > 0
+
+
 def test_backtest_model_alpha_v4_run_uses_v4_feature_dataset(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     dataset_root = tmp_path / "features_v4"

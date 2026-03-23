@@ -1068,6 +1068,10 @@ if ($runSpawnPhase) {
                 "TRAINER_EVIDENCE_REQUIRED_FAILED"
             } elseif ($acceptReasons -contains "SCOUT_ONLY_BUDGET_EVIDENCE") {
                 "SCOUT_ONLY_BUDGET_EVIDENCE"
+            } elseif ($acceptReasons -contains "EXECUTION_POLICY_VETO_FAILURE") {
+                "EXECUTION_POLICY_VETO_FAILURE"
+            } elseif ($acceptReasons -contains "RUNTIME_PARITY_EXECUTION_POLICY_VETO_FAILURE") {
+                "RUNTIME_PARITY_EXECUTION_POLICY_VETO_FAILURE"
             } elseif ($bootstrapOnly) {
                 "BOOTSTRAP_ONLY_POLICY"
             } elseif (-not $backtestPass) {

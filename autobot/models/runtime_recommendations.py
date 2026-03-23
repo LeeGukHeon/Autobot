@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
@@ -708,6 +709,18 @@ def _resolve_execution_structure_metrics(summary: dict[str, Any]) -> dict[str, A
     run_dir_raw = str(summary.get("run_dir", "")).strip()
     if not run_dir_raw:
         return _normalize_execution_structure_metrics({})
+    summary_json_path = Path(run_dir_raw) / "summary.json"
+    if summary_json_path.exists():
+        try:
+            parsed = json.loads(summary_json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            summary_metrics = parsed.get("execution_structure")
+            if isinstance(summary_metrics, dict) and summary_metrics:
+                normalized = _normalize_execution_structure_metrics(summary_metrics)
+                summary["execution_structure"] = normalized
+                return normalized
     trades_path = Path(run_dir_raw) / "trades.csv"
     if not trades_path.exists():
         return _normalize_execution_structure_metrics({})

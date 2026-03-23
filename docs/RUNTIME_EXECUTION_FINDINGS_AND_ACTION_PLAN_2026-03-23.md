@@ -5,6 +5,7 @@
 - Related docs:
   - `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
   - `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
+  - `docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md`
   - `docs/LIVE_EXECUTION_PARITY_REDESIGN.md`
   - `logs/live_execution_override_audit_remote/latest.md`
 

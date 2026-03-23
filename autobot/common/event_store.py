@@ -22,7 +22,15 @@ def _to_jsonable(value: Any) -> Any:
 
 
 class JsonlEventStore:
-    def __init__(self, run_dir: Path) -> None:
+    def __init__(
+        self,
+        run_dir: Path,
+        *,
+        write_events: bool = True,
+        write_orders: bool = True,
+        write_fills: bool = True,
+        write_equity: bool = True,
+    ) -> None:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -30,33 +38,40 @@ class JsonlEventStore:
         self._orders_path = self.run_dir / "orders.jsonl"
         self._fills_path = self.run_dir / "fills.jsonl"
         self._equity_path = self.run_dir / "equity.csv"
+        self._events_fp = self._events_path.open("a", encoding="utf-8") if write_events else None
+        self._orders_fp = self._orders_path.open("a", encoding="utf-8") if write_orders else None
+        self._fills_fp = self._fills_path.open("a", encoding="utf-8") if write_fills else None
+        self._equity_fp = self._equity_path.open("a", encoding="utf-8", newline="") if write_equity else None
 
-        self._events_fp = self._events_path.open("a", encoding="utf-8")
-        self._orders_fp = self._orders_path.open("a", encoding="utf-8")
-        self._fills_fp = self._fills_path.open("a", encoding="utf-8")
-        self._equity_fp = self._equity_path.open("a", encoding="utf-8", newline="")
-
-        self._equity_writer = csv.DictWriter(
-            self._equity_fp,
-            fieldnames=[
-                "ts_ms",
-                "equity_quote",
-                "cash_free",
-                "cash_locked",
-                "realized_pnl_quote",
-                "unrealized_pnl_quote",
-                "open_positions",
-            ],
+        self._equity_writer = (
+            csv.DictWriter(
+                self._equity_fp,
+                fieldnames=[
+                    "ts_ms",
+                    "equity_quote",
+                    "cash_free",
+                    "cash_locked",
+                    "realized_pnl_quote",
+                    "unrealized_pnl_quote",
+                    "open_positions",
+                ],
+            )
+            if self._equity_fp is not None
+            else None
         )
-        if self._equity_fp.tell() == 0:
+        if self._equity_fp is not None and self._equity_writer is not None and self._equity_fp.tell() == 0:
             self._equity_writer.writeheader()
             self._equity_fp.flush()
 
     def close(self) -> None:
-        self._events_fp.close()
-        self._orders_fp.close()
-        self._fills_fp.close()
-        self._equity_fp.close()
+        if self._events_fp is not None:
+            self._events_fp.close()
+        if self._orders_fp is not None:
+            self._orders_fp.close()
+        if self._fills_fp is not None:
+            self._fills_fp.close()
+        if self._equity_fp is not None:
+            self._equity_fp.close()
 
     def __enter__(self) -> JsonlEventStore:
         return self
@@ -65,6 +80,8 @@ class JsonlEventStore:
         self.close()
 
     def append_event(self, *, event_type: str, ts_ms: int, payload: dict[str, Any] | None = None) -> None:
+        if self._events_fp is None:
+            return
         record = {
             "ts_ms": int(ts_ms),
             "event_type": str(event_type),
@@ -73,12 +90,18 @@ class JsonlEventStore:
         self._write_jsonl(self._events_fp, record)
 
     def append_order(self, order: Any) -> None:
+        if self._orders_fp is None:
+            return
         self._write_jsonl(self._orders_fp, _to_jsonable(order))
 
     def append_fill(self, fill: Any) -> None:
+        if self._fills_fp is None:
+            return
         self._write_jsonl(self._fills_fp, _to_jsonable(fill))
 
     def append_equity(self, snapshot: Any) -> None:
+        if self._equity_writer is None or self._equity_fp is None:
+            return
         value = _to_jsonable(snapshot)
         if not isinstance(value, dict):
             return

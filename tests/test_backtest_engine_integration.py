@@ -72,3 +72,35 @@ def test_backtest_run_generates_artifacts(tmp_path: Path) -> None:
     assert summary_json["run_id"] == summary.run_id
     assert summary_json["bars_processed"] >= 1
     assert "execution_structure" in summary_json
+
+
+def test_backtest_run_summary_only_skips_heavy_artifacts(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_sample_parquet(parquet_root)
+
+    settings = BacktestRunSettings(
+        dataset_name="candles_v1",
+        parquet_root=str(parquet_root),
+        tf="1m",
+        market="KRW-BTC",
+        duration_days=1,
+        starting_krw=50_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=2,
+        output_root_dir=str(tmp_path / "backtest"),
+        artifact_mode="summary_only",
+    )
+    engine = BacktestRunEngine(run_settings=settings, upbit_settings=None, rules_provider=_StaticRulesProvider())  # type: ignore[arg-type]
+
+    summary = engine.run()
+    run_dir = Path(summary.run_dir)
+
+    assert (run_dir / "summary.json").exists()
+    assert (run_dir / "fills.jsonl").exists()
+    assert (run_dir / "equity.csv").exists()
+    assert not (run_dir / "events.jsonl").exists()
+    assert not (run_dir / "orders.jsonl").exists()
+    assert not (run_dir / "trades.csv").exists()
+    assert not (run_dir / "per_market.csv").exists()
+    assert not (run_dir / "selection_stats.json").exists()
+    assert not (run_dir / "debug_mismatch.json").exists()

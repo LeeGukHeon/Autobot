@@ -26,6 +26,8 @@ Read these when investigating current performance or execution behavior.
   - current research comparison and training/runtime diagnosis
 - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
   - current execution findings, deployment status, and concrete next actions
+- `docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md`
+  - current zero-fill veto failure analysis and research-backed execution-contract redesign
 
 ## Historical Root Docs
 
@@ -75,7 +77,8 @@ Do not treat them as the final word over:
 3. `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
 4. `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
 5. `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
-6. only then read older root docs, ADRs, tickets, and reports as background
+6. `docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md`
+7. only then read older root docs, ADRs, tickets, and reports as background
 
 ## Rule
 

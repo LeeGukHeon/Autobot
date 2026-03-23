@@ -2182,6 +2182,9 @@ class PaperRunEngine:
                     deadline_ms=max(int(exec_profile.timeout_ms), 1),
                 )
                 if str(execution_policy.get("status", "")).strip().lower() == "skip":
+                    self._runtime_counters["candidates_aborted_by_policy"] = int(
+                        self._runtime_counters.get("candidates_aborted_by_policy", 0)
+                    ) + 1
                     append_event(
                         "EXECUTION_POLICY_ABORT",
                         ts_ms=ts_ms,

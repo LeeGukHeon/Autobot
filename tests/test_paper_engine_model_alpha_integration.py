@@ -650,6 +650,172 @@ def test_paper_engine_model_alpha_skips_execution_contract_when_learned_executio
     assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
 
 
+def test_paper_engine_model_alpha_reports_execution_policy_abort_counts(tmp_path: Path) -> None:
+    events = [
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=100.0,
+            acc_trade_price_24h=1_000_000_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=301_000,
+            trade_price=101.0,
+            acc_trade_price_24h=1_000_500_000_000.0,
+        ),
+    ]
+    contract_path = tmp_path / "live_execution_contract.json"
+    contract_payload = {
+        "execution_contract": {
+            "policy": "live_execution_contract_v2",
+            "status": "ready",
+            "rows_total": 40,
+            "horizons_ms": [1_000, 3_000, 10_000, 30_000, 60_000, 180_000, 300_000],
+            "fill_model": {
+                "policy": "live_fill_hazard_survival_v2",
+                "status": "ready",
+                "rows_total": 40,
+                "horizons_ms": [1_000, 3_000, 10_000, 30_000, 60_000, 180_000, 300_000],
+                "action_stats": {
+                    "LIMIT_GTC_PASSIVE_MAKER": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.25,
+                        "p_fill_within_default": 0.10,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 120_000.0,
+                    },
+                    "LIMIT_GTC_JOIN": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.20,
+                        "p_fill_within_default": 0.08,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 180_000.0,
+                    },
+                    "BEST_IOC": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.40,
+                        "p_fill_within_default": 0.20,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 1_000.0,
+                    },
+                },
+                "price_mode_stats": {
+                    "PASSIVE_MAKER": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.25,
+                        "p_fill_within_default": 0.10,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 120_000.0,
+                    },
+                    "JOIN": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.20,
+                        "p_fill_within_default": 0.08,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 180_000.0,
+                    },
+                    "CROSS_1T": {
+                        "sample_count": 40,
+                        "p_fill_within_300000ms": 0.40,
+                        "p_fill_within_default": 0.20,
+                        "mean_shortfall_bps": 0.0,
+                        "mean_time_to_first_fill_ms": 1_000.0,
+                    },
+                },
+                "state_action_stats": {},
+                "global_stats": {
+                    "sample_count": 120,
+                    "p_fill_within_300000ms": 0.28,
+                    "p_fill_within_default": 0.12,
+                    "mean_shortfall_bps": 0.0,
+                    "mean_time_to_first_fill_ms": 100_000.0,
+                },
+            },
+            "miss_cost_model": {
+                "policy": "execution_miss_cost_summary_v2",
+                "status": "ready",
+                "action_stats": {
+                    "LIMIT_GTC_PASSIVE_MAKER": {"sample_count": 40, "mean_miss_cost_bps": 80.0},
+                    "LIMIT_GTC_JOIN": {"sample_count": 40, "mean_miss_cost_bps": 70.0},
+                    "BEST_IOC": {"sample_count": 40, "mean_miss_cost_bps": 60.0},
+                },
+                "price_mode_stats": {
+                    "PASSIVE_MAKER": {"sample_count": 40, "mean_miss_cost_bps": 80.0},
+                    "JOIN": {"sample_count": 40, "mean_miss_cost_bps": 70.0},
+                    "CROSS_1T": {"sample_count": 40, "mean_miss_cost_bps": 60.0},
+                },
+                "state_action_stats": {},
+                "global_stats": {"sample_count": 120, "mean_miss_cost_bps": 70.0},
+            },
+        }
+    }
+    contract_path.write_text(json.dumps(contract_payload, ensure_ascii=False), encoding="utf-8")
+
+    settings = UpbitSettings(
+        base_url="https://api.upbit.com",
+        timeout=UpbitTimeoutSettings(),
+        auth=UpbitAuthSettings(),
+        ratelimit=UpbitRateLimitSettings(),
+        retry=UpbitRetrySettings(),
+        websocket=UpbitWebSocketSettings(),
+    )
+    run_settings = PaperRunSettings(
+        duration_sec=2,
+        quote="KRW",
+        top_n=1,
+        tf="5m",
+        strategy="model_alpha_v1",
+        model_ref="latest_v3",
+        feature_set="v3",
+        execution_contract_artifact_path=str(contract_path),
+        model_alpha=ModelAlphaSettings(
+            model_ref="latest_v3",
+            execution=ModelAlphaExecutionSettings(
+                price_mode="PASSIVE_MAKER",
+                timeout_bars=3,
+                replace_max=4,
+                use_learned_recommendations=True,
+            ),
+        ),
+        print_every_sec=60,
+        decision_interval_sec=0.1,
+        universe_refresh_sec=1,
+        universe_hold_sec=0,
+        momentum_window_sec=60,
+        min_momentum_pct=0.2,
+        starting_krw=50_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=2,
+        out_root_dir=str(tmp_path),
+    )
+    dummy_strategy = _DummyModelStrategy(
+        intent_meta={"trade_action": {"expected_edge": 0.0020}},
+    )
+    engine = _PaperEngineWithDummyModel(
+        upbit_settings=settings,
+        run_settings=run_settings,
+        ws_client=_FakeWsClient(events),
+        market_loader=lambda quote: ["KRW-BTC"] if quote == "KRW" else [],
+        rules_provider=_StaticRulesProvider(),
+        micro_snapshot_provider=_StableMicroProvider(),  # type: ignore[arg-type]
+        dummy_strategy=dummy_strategy,
+    )
+
+    summary = asyncio.run(engine.run())
+
+    run_dir = Path(summary.run_dir)
+    events_payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    abort_events = [item for item in events_payloads if item.get("event_type") == "EXECUTION_POLICY_ABORT"]
+    assert abort_events
+    assert summary.orders_submitted == 0
+    assert summary.candidates_aborted_by_policy > 0
+
+
 def test_paper_engine_model_alpha_entry_sizing_respects_min_total_buffer(tmp_path: Path) -> None:
     events = [
         TickerEvent(

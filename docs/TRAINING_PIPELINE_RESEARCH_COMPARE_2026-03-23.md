@@ -7,6 +7,8 @@
   - `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
 - Follow-up action plan:
   - `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
+- Execution-policy veto redesign:
+  - `docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md`
 
 ## 1. Bottom Line
 

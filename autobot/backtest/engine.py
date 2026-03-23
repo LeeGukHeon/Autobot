@@ -124,6 +124,7 @@ class BacktestRunSettings:
     micro_gate: MicroGateSettings = field(default_factory=MicroGateSettings)
     micro_order_policy: MicroOrderPolicySettings = field(default_factory=MicroOrderPolicySettings)
     execution_contract_artifact_path: str = DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH
+    artifact_mode: str = "full"  # full | summary_only
 
 
 @dataclass(frozen=True)
@@ -876,7 +877,15 @@ class BacktestRunEngine:
             heapq.heappush(queue, (bars[0].ts_ms, queue_seq, market, 0))
             queue_seq += 1
 
-        with JsonlEventStore(run_root) as store:
+        artifact_mode = str(settings.artifact_mode).strip().lower() or "full"
+        summary_only_artifacts = artifact_mode == "summary_only"
+        with JsonlEventStore(
+            run_root,
+            write_events=not summary_only_artifacts,
+            write_orders=not summary_only_artifacts,
+            write_fills=True,
+            write_equity=True,
+        ) as store:
             event_count = 0
 
             def append_event(event_type: str, ts_ms: int, payload: dict[str, Any] | None = None) -> None:
@@ -1081,92 +1090,93 @@ class BacktestRunEngine:
         summary_payload = asdict(summary)
         summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))
         write_summary_json(run_root, summary_payload)
-        _write_json(
-            path=run_root / "micro_gate_blocked.json",
-            payload={
-                "candidates_total": candidates_total,
-                "candidates_blocked_by_micro": candidates_blocked_by_micro,
-                "blocked_ratio": micro_blocked_ratio,
-                "reasons": micro_blocked_reasons,
-            },
-        )
-        _write_json(
-            path=run_root / "micro_order_policy_report.json",
-            payload={
-                "enabled": bool(settings.micro_order_policy.enabled),
-                "mode": str(settings.micro_order_policy.mode),
-                "on_missing": str(settings.micro_order_policy.on_missing),
-                "tiers": _normalize_reason_counts(self._runtime_counters.get("micro_policy_tier_counts", {})),
-                "fallback_reasons": _normalize_reason_counts(
-                    self._runtime_counters.get("micro_policy_fallback_counts", {})
-                ),
-                "replace_reasons": _normalize_reason_counts(self._runtime_counters.get("order_supervisor_reasons", {})),
-                "replaces_total": replaces_total,
-                "cancels_total": cancels_total,
-                "aborted_timeout_total": aborted_timeout_total,
-                "dust_abort_total": dust_abort_total,
-                "avg_time_to_fill_ms": mean(ttf_values),
-                "p50_time_to_fill_ms": percentile(ttf_values, 0.50),
-                "p90_time_to_fill_ms": percentile(ttf_values, 0.90),
-                "slippage_bps_mean": mean(slippage_values),
-                "slippage_bps_p50": percentile(slippage_values, 0.50),
-                "slippage_bps_p90": percentile(slippage_values, 0.90),
-                "tick_bps_stats": {
-                    "mean": mean(policy_tick_bps_values),
-                    "p90": percentile(policy_tick_bps_values, 0.90),
-                    "max": max(policy_tick_bps_values) if policy_tick_bps_values else 0.0,
+        if not summary_only_artifacts:
+            _write_json(
+                path=run_root / "micro_gate_blocked.json",
+                payload={
+                    "candidates_total": candidates_total,
+                    "candidates_blocked_by_micro": candidates_blocked_by_micro,
+                    "blocked_ratio": micro_blocked_ratio,
+                    "reasons": micro_blocked_reasons,
                 },
-                "cross_block_reasons": _normalize_reason_counts(
-                    self._runtime_counters.get("micro_policy_cross_block_reasons", {})
-                ),
-                "cross_allowed_count": int(self._runtime_counters.get("micro_policy_cross_allowed_count", 0)),
-                "cross_used_count": int(self._runtime_counters.get("micro_policy_cross_used_count", 0)),
-                "resolver_failed_fallback_used_count": int(
-                    self._runtime_counters.get("micro_policy_resolver_failed_fallback_used", 0)
-                ),
-            },
-        )
-        _write_json(
-            path=run_root / "selection_stats.json",
-            payload={
-                "strategy": str(strategy_mode),
-                "scored_rows": scored_rows,
-                "eligible_rows": int(self._runtime_counters.get("eligible_rows", 0)),
-                "selected_rows": selected_rows,
-                "selection_ratio": selection_ratio,
-                "min_prob_used": float(self._runtime_state.get("model_alpha_min_prob_used", 0.0)),
-                "min_prob_source": str(self._runtime_state.get("model_alpha_min_prob_source", "manual")),
-                "top_pct_used": float(self._runtime_state.get("model_alpha_top_pct_used", 0.0)),
-                "top_pct_source": str(self._runtime_state.get("model_alpha_top_pct_source", "manual")),
-                "min_candidates_used": int(self._runtime_state.get("model_alpha_min_candidates_used", 0)),
-                "min_candidates_source": str(
-                    self._runtime_state.get("model_alpha_min_candidates_source", "manual")
-                ),
-                "dropped_min_prob_rows": int(self._runtime_counters.get("dropped_min_prob_rows", 0)),
-                "dropped_min_prob_ratio": (
-                    int(self._runtime_counters.get("dropped_min_prob_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
-                ),
-                "dropped_top_pct_rows": int(self._runtime_counters.get("dropped_top_pct_rows", 0)),
-                "dropped_top_pct_ratio": (
-                    int(self._runtime_counters.get("dropped_top_pct_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
-                ),
-                "blocked_min_candidates_ts": int(self._runtime_counters.get("blocked_min_candidates_ts", 0)),
-                "exit_intents_total": int(self._runtime_counters.get("exit_intents_total", 0)),
-                "per_ts": list(self._runtime_state.get("selection_per_ts", [])),
-            },
-        )
-        _write_json(
-            path=run_root / "debug_mismatch.json",
-            payload={
-                "strategy": str(strategy_mode),
-                "skipped_missing_features_rows": skipped_missing_features_rows,
-                "reasons": _normalize_reason_counts(self._runtime_counters.get("debug_mismatch_reasons", {})),
-            },
-        )
-        _write_trade_artifacts(
-            run_root=run_root,
-            fill_records=self._runtime_state.get("fill_records", []),
-        )
+            )
+            _write_json(
+                path=run_root / "micro_order_policy_report.json",
+                payload={
+                    "enabled": bool(settings.micro_order_policy.enabled),
+                    "mode": str(settings.micro_order_policy.mode),
+                    "on_missing": str(settings.micro_order_policy.on_missing),
+                    "tiers": _normalize_reason_counts(self._runtime_counters.get("micro_policy_tier_counts", {})),
+                    "fallback_reasons": _normalize_reason_counts(
+                        self._runtime_counters.get("micro_policy_fallback_counts", {})
+                    ),
+                    "replace_reasons": _normalize_reason_counts(self._runtime_counters.get("order_supervisor_reasons", {})),
+                    "replaces_total": replaces_total,
+                    "cancels_total": cancels_total,
+                    "aborted_timeout_total": aborted_timeout_total,
+                    "dust_abort_total": dust_abort_total,
+                    "avg_time_to_fill_ms": mean(ttf_values),
+                    "p50_time_to_fill_ms": percentile(ttf_values, 0.50),
+                    "p90_time_to_fill_ms": percentile(ttf_values, 0.90),
+                    "slippage_bps_mean": mean(slippage_values),
+                    "slippage_bps_p50": percentile(slippage_values, 0.50),
+                    "slippage_bps_p90": percentile(slippage_values, 0.90),
+                    "tick_bps_stats": {
+                        "mean": mean(policy_tick_bps_values),
+                        "p90": percentile(policy_tick_bps_values, 0.90),
+                        "max": max(policy_tick_bps_values) if policy_tick_bps_values else 0.0,
+                    },
+                    "cross_block_reasons": _normalize_reason_counts(
+                        self._runtime_counters.get("micro_policy_cross_block_reasons", {})
+                    ),
+                    "cross_allowed_count": int(self._runtime_counters.get("micro_policy_cross_allowed_count", 0)),
+                    "cross_used_count": int(self._runtime_counters.get("micro_policy_cross_used_count", 0)),
+                    "resolver_failed_fallback_used_count": int(
+                        self._runtime_counters.get("micro_policy_resolver_failed_fallback_used", 0)
+                    ),
+                },
+            )
+            _write_json(
+                path=run_root / "selection_stats.json",
+                payload={
+                    "strategy": str(strategy_mode),
+                    "scored_rows": scored_rows,
+                    "eligible_rows": int(self._runtime_counters.get("eligible_rows", 0)),
+                    "selected_rows": selected_rows,
+                    "selection_ratio": selection_ratio,
+                    "min_prob_used": float(self._runtime_state.get("model_alpha_min_prob_used", 0.0)),
+                    "min_prob_source": str(self._runtime_state.get("model_alpha_min_prob_source", "manual")),
+                    "top_pct_used": float(self._runtime_state.get("model_alpha_top_pct_used", 0.0)),
+                    "top_pct_source": str(self._runtime_state.get("model_alpha_top_pct_source", "manual")),
+                    "min_candidates_used": int(self._runtime_state.get("model_alpha_min_candidates_used", 0)),
+                    "min_candidates_source": str(
+                        self._runtime_state.get("model_alpha_min_candidates_source", "manual")
+                    ),
+                    "dropped_min_prob_rows": int(self._runtime_counters.get("dropped_min_prob_rows", 0)),
+                    "dropped_min_prob_ratio": (
+                        int(self._runtime_counters.get("dropped_min_prob_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
+                    ),
+                    "dropped_top_pct_rows": int(self._runtime_counters.get("dropped_top_pct_rows", 0)),
+                    "dropped_top_pct_ratio": (
+                        int(self._runtime_counters.get("dropped_top_pct_rows", 0)) / scored_rows if scored_rows > 0 else 0.0
+                    ),
+                    "blocked_min_candidates_ts": int(self._runtime_counters.get("blocked_min_candidates_ts", 0)),
+                    "exit_intents_total": int(self._runtime_counters.get("exit_intents_total", 0)),
+                    "per_ts": list(self._runtime_state.get("selection_per_ts", [])),
+                },
+            )
+            _write_json(
+                path=run_root / "debug_mismatch.json",
+                payload={
+                    "strategy": str(strategy_mode),
+                    "skipped_missing_features_rows": skipped_missing_features_rows,
+                    "reasons": _normalize_reason_counts(self._runtime_counters.get("debug_mismatch_reasons", {})),
+                },
+            )
+            _write_trade_artifacts(
+                run_root=run_root,
+                fill_records=self._runtime_state.get("fill_records", []),
+            )
         return summary
 
     def _run_candidate_cycle(
@@ -1594,6 +1604,9 @@ class BacktestRunEngine:
                     deadline_ms=max(int(exec_profile.timeout_ms), 1),
                 )
                 if str(execution_policy.get("status", "")).strip().lower() == "skip":
+                    self._runtime_counters["candidates_aborted_by_policy"] = int(
+                        self._runtime_counters.get("candidates_aborted_by_policy", 0)
+                    ) + 1
                     append_event(
                         "EXECUTION_POLICY_ABORT",
                         ts_ms=ts_ms,

@@ -36,7 +36,9 @@ def _make_fake_python_exe(
     budget_lane_class_effective: str = "promotion_eligible",
     budget_contract_id: str = "v4_promotion_eligible_budget_v1",
     budget_promotion_eligible_satisfied: bool = True,
+    candidate_orders_submitted: int = 64,
     candidate_orders_filled: int = 64,
+    candidate_candidates_aborted_by_policy: int = 0,
     profile_candidate_min_orders_filled: int = 30,
     feature_rows_by_window: dict[str, int] | None = None,
     feature_min_rows_for_train: int = 4000,
@@ -62,7 +64,9 @@ def _make_fake_python_exe(
             BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
             BUDGET_CONTRACT_ID = {budget_contract_id!r}
             BUDGET_PROMOTION_ELIGIBLE_SATISFIED = {str(budget_promotion_eligible_satisfied)}
+            CANDIDATE_ORDERS_SUBMITTED = {int(candidate_orders_submitted)}
             CANDIDATE_ORDERS_FILLED = {int(candidate_orders_filled)}
+            CANDIDATE_CANDIDATES_ABORTED_BY_POLICY = {int(candidate_candidates_aborted_by_policy)}
             PROFILE_CANDIDATE_MIN_ORDERS_FILLED = {int(profile_candidate_min_orders_filled)}
             FEATURE_ROWS_BY_WINDOW = {json.dumps(feature_rows_by_window or {})}
             FEATURE_MIN_ROWS_FOR_TRAIN = {int(feature_min_rows_for_train)}
@@ -498,22 +502,26 @@ def _make_fake_python_exe(
                 run_dir.mkdir(parents=True, exist_ok=True)
                 if model_ref == CANDIDATE_RUN_ID:
                     payload = {{
+                        "orders_submitted": CANDIDATE_ORDERS_SUBMITTED,
                         "orders_filled": CANDIDATE_ORDERS_FILLED,
                         "realized_pnl_quote": 250.0,
                         "fill_rate": 0.82,
                         "max_drawdown_pct": 0.05,
                         "slippage_bps_mean": 1.0,
+                        "candidates_aborted_by_policy": CANDIDATE_CANDIDATES_ABORTED_BY_POLICY,
                         "execution_structure": CANDIDATE_EXECUTION_STRUCTURE,
                     }}
                 else:
                     payload = HISTORY_ANCHOR_BACKTEST_BY_WINDOW.get(f"{{start_value}}|{{end_value}}")
                     if payload is None:
                         payload = {{
+                            "orders_submitted": 64,
                             "orders_filled": 64,
                             "realized_pnl_quote": 100.0,
                             "fill_rate": 0.80,
                             "max_drawdown_pct": 0.08,
                             "slippage_bps_mean": 1.4,
+                            "candidates_aborted_by_policy": 0,
                             "execution_structure": CHAMPION_EXECUTION_STRUCTURE,
                         }}
                 write_json(run_dir / "summary.json", payload)
@@ -1167,6 +1175,7 @@ def test_candidate_acceptance_selects_holdout_by_forward_validation_lcb_when_his
     assert report["steps"]["split_policy_selector"]["selected_holdout_days"] == 2
     assert report["windows_by_step"]["train"]["start"] == "2026-03-01"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+    assert report["config"]["train_lookback_days_effective"] == 5
     assert report["steps"]["backtest_candidate"]["start"] == "2026-03-06"
     assert report["steps"]["backtest_candidate"]["end"] == "2026-03-07"
 
@@ -1273,6 +1282,90 @@ def test_candidate_acceptance_backfills_selector_history_and_selects_holdout_whe
     assert history_records[0]["anchor_date"] == "2026-03-02"
     assert history_records[0]["status"] == "EVALUATED"
     assert history_records[0]["utility_score"] == 1200.0
+
+
+def test_candidate_acceptance_ignores_selector_history_before_quality_floor(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+    _write_split_policy_selector_history(
+        project_root,
+        task="cls",
+        records=[
+            {"task": "cls", "holdout_days": 2, "anchor_date": "2026-03-05", "status": "EVALUATED", "utility_score": 999.0},
+            {"task": "cls", "holdout_days": 2, "anchor_date": "2026-03-06", "status": "EVALUATED", "utility_score": 10.0},
+        ],
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        feature_rows_by_window={
+            "2026-03-04|2026-03-05": 5200,
+        },
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ACCEPTANCE_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(python_exe),
+            "-DailyPipelineScript",
+            str(daily_pipeline_script),
+            "-OutDir",
+            "logs/test_acceptance",
+            "-BatchDate",
+            "2026-03-07",
+            "-TrainDataQualityFloorDate",
+            "2026-03-04",
+            "-BacktestLookbackDays",
+            "2",
+            "-SplitPolicyHistoricalSelectorEnabled",
+            "-SplitPolicyCandidateHoldoutDays",
+            "2",
+            "-SplitPolicyMinHistoricalAnchors",
+            "1",
+            "-SplitPolicyMaxNewAnchorEvaluationsPerRun",
+            "0",
+            "-SkipPaperSoak",
+            "-SkipPromote",
+            "-SkipReportRefresh",
+            "-TrainerEvidenceMode",
+            "required",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert report["split_policy"]["selected_holdout_days"] == 2
+    assert report["split_policy"]["historical_anchor_count"] == 1
+    assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
+    assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+    assert report["config"]["train_lookback_days_effective"] == 2
 
 
 def test_candidate_acceptance_applies_train_data_quality_floor_date(tmp_path: Path) -> None:
@@ -1586,6 +1679,49 @@ def test_candidate_acceptance_uses_profile_governed_backtest_thresholds(
     assert report["gates"]["backtest"]["candidate_min_orders_pass"] is False
     assert report["gates"]["backtest"]["pass"] is False
     assert report["reasons"][0] == "BACKTEST_ACCEPTANCE_FAILED"
+
+
+def test_candidate_acceptance_surfaces_execution_policy_veto_failure(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        candidate_orders_submitted=0,
+        candidate_orders_filled=0,
+        candidate_candidates_aborted_by_policy=17,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(
+        project_root,
+        python_exe,
+        daily_pipeline_script,
+    )
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    certification_path = Path(report["candidate"]["certification_artifact_path"])
+    certification = json.loads(certification_path.read_text(encoding="utf-8-sig"))
+
+    assert report["gates"]["backtest"]["pass"] is False
+    assert report["gates"]["backtest"]["candidate_orders_submitted"] == 0
+    assert report["gates"]["backtest"]["candidate_candidates_aborted_by_policy"] == 17
+    assert report["gates"]["backtest"]["candidate_execution_policy_veto_failure"] is True
+    assert report["gates"]["backtest"]["decision_basis"] == "EXECUTION_POLICY_VETO_FAILURE"
+    assert "BACKTEST_ACCEPTANCE_FAILED" in report["reasons"]
+    assert "EXECUTION_POLICY_VETO_FAILURE" in report["reasons"]
+    assert "RUNTIME_PARITY_BACKTEST_FAILED" in report["reasons"]
+    assert "RUNTIME_PARITY_EXECUTION_POLICY_VETO_FAILURE" in report["reasons"]
+    assert certification["certification"]["gate"]["candidate_execution_policy_veto_failure"] is True
+    assert certification["certification"]["gate"]["decision_basis"] == "EXECUTION_POLICY_VETO_FAILURE"
 
 
 def test_candidate_acceptance_runs_runtime_parity_backtests_and_reports_gate(tmp_path: Path) -> None:

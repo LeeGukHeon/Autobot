@@ -1091,6 +1091,46 @@ function Resolve-SplitPolicyHoldoutWindows {
     return $result
 }
 
+function Get-DateWindowInclusiveDayCount {
+    param(
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    if ([string]::IsNullOrWhiteSpace($StartDate) -or [string]::IsNullOrWhiteSpace($EndDate)) {
+        return 0
+    }
+    try {
+        $startObj = [DateTime]::ParseExact($StartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+        $endObj = [DateTime]::ParseExact($EndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        return 0
+    }
+    if ($endObj -lt $startObj) {
+        return 0
+    }
+    return [int](($endObj - $startObj).TotalDays + 1)
+}
+
+function Test-SplitPolicyHistoryRecordUsable {
+    param(
+        [Parameter(Mandatory = $false)]$Record,
+        [string]$QualityFloorDate
+    )
+    if ([string]::IsNullOrWhiteSpace($QualityFloorDate)) {
+        return $true
+    }
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $Record) {
+        return $false
+    }
+    $holdoutDays = [int](To-Int64 (Get-PropValue -ObjectValue $Record -Name "holdout_days" -DefaultValue 0) 0)
+    $anchorDate = [string](Get-PropValue -ObjectValue $Record -Name "anchor_date" -DefaultValue "")
+    if (($holdoutDays -le 0) -or [string]::IsNullOrWhiteSpace($anchorDate)) {
+        return $false
+    }
+    $windowSpec = Resolve-SplitPolicyHoldoutWindows -BatchDateValue $anchorDate -HoldoutDays $holdoutDays -QualityFloorDate $QualityFloorDate
+    return (To-Bool (Get-PropValue -ObjectValue $windowSpec -Name "valid_for_strict" -DefaultValue $false) $false)
+}
+
 function Remove-DirectoryIfExists {
     param([string]$PathValue)
     if ([string]::IsNullOrWhiteSpace($PathValue)) {
@@ -1302,6 +1342,12 @@ function Resolve-SplitPolicySelection {
     $historyPath = Resolve-SplitPolicySelectorHistoryPath -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamily -TaskName $Task
     $candidateHoldoutDays = Resolve-SplitPolicyCandidateHoldoutDays -RequestedBacktestLookbackDays $BacktestLookbackDays -OverrideText $SplitPolicyCandidateHoldoutDays
     $historyRecords = Load-SplitPolicySelectorHistoryRecords -PathValue $historyPath
+    if (-not [string]::IsNullOrWhiteSpace($QualityFloorDate)) {
+        $historyRecords = @(
+            $historyRecords |
+                Where-Object { Test-SplitPolicyHistoryRecordUsable -Record $_ -QualityFloorDate $QualityFloorDate }
+        )
+    }
     $newEvaluations = New-Object System.Collections.Generic.List[object]
     $remainingEvaluationBudget = [Math]::Max([int]$SplitPolicyMaxNewAnchorEvaluationsPerRun, 0)
 
@@ -2765,7 +2811,10 @@ function Build-ReportMarkdown {
     $lines.Add("- trainer_evidence_mode: $([string](Get-PropValue -ObjectValue $config -Name 'trainer_evidence_mode' -DefaultValue ''))") | Out-Null
     $lines.Add("- lane_id: $([string](Get-PropValue -ObjectValue $config -Name 'lane_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- lane_role: $([string](Get-PropValue -ObjectValue $config -Name 'lane_role' -DefaultValue ''))") | Out-Null
+    $lines.Add("- backtest_orders_submitted: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'orders_submitted' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_orders_filled: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
+    $lines.Add("- backtest_candidates_aborted_by_policy: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'candidates_aborted_by_policy' -DefaultValue ''))") | Out-Null
+    $lines.Add("- backtest_execution_policy_veto_failure: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'execution_policy_veto_failure' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_fill_rate: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'fill_rate' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_max_drawdown_pct: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'max_drawdown_pct' -DefaultValue ''))") | Out-Null
@@ -2816,6 +2865,9 @@ function Build-ReportMarkdown {
     $lines.Add("- trainer_evidence_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_offline_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_offline_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- trainer_evidence_execution_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'trainer_evidence_execution_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_orders_submitted: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'candidate_orders_submitted' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_candidates_aborted_by_policy: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'candidate_candidates_aborted_by_policy' -DefaultValue ''))") | Out-Null
+    $lines.Add("- candidate_execution_policy_veto_failure: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'candidate_execution_policy_veto_failure' -DefaultValue ''))") | Out-Null
     $lines.Add("- budget_contract_gate_pass: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_contract_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- budget_lane_class_effective: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'budget_lane_class_effective' -DefaultValue ''))") | Out-Null
     $lines.Add("- lane_shadow_only: $([string](Get-PropValue -ObjectValue $backtestGate -Name 'lane_shadow_only' -DefaultValue ''))") | Out-Null
@@ -3089,6 +3141,11 @@ function Sync-SplitPolicyState {
     $report.split_policy.selection_summary = @($script:splitPolicySelectionSummary)
     $report.split_policy.history_path = $script:splitPolicyHistoryPath
     $report.split_policy.new_evaluations = @($script:splitPolicyNewEvaluations)
+    $actualTrainDays = Get-DateWindowInclusiveDayCount -StartDate $script:trainStartDate -EndDate $script:trainEndDate
+    if ($actualTrainDays -gt 0) {
+        $report.config.train_lookback_days = [int]$actualTrainDays
+        $report.config.train_lookback_days_effective = [int]$actualTrainDays
+    }
 }
 
 Sync-SplitPolicyState
@@ -4060,11 +4117,14 @@ try {
 
     $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -StartDate $certificationStartDate -EndDate $effectiveBatchDate
     $candidateSummary = $candidateBacktest.Summary
+    $candidateOrdersSubmitted = [int64](To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_submitted" -DefaultValue 0) 0)
     $candidateOrdersFilled = To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_filled" -DefaultValue 0) 0
     $candidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
     $candidateFillRate = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
     $candidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
     $candidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $candidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
+    $candidateAbortedByPolicy = [int64](To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "candidates_aborted_by_policy" -DefaultValue 0) 0)
+    $candidateExecutionPolicyVetoFailure = ($candidateOrdersSubmitted -le 0) -and ($candidateAbortedByPolicy -gt 0)
     $candidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $candidateRealizedPnl -MaxDrawdownPct $candidateMaxDrawdownPct
     $candidateExecutionStructure = Get-ExecutionStructureMetrics -Summary $candidateSummary
     $candidateExecutionStructureGate = Test-ExecutionStructureGate `
@@ -4375,7 +4435,9 @@ try {
     if ((-not $compareRequired) -and $decisionBasis -eq "PENDING_COMPARE") {
         $decisionBasis = "SANITY_ONLY_BACKTEST"
     }
-    if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
+    if ($candidateExecutionPolicyVetoFailure) {
+        $decisionBasis = "EXECUTION_POLICY_VETO_FAILURE"
+    } elseif (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $decisionBasis = "TRAINER_EVIDENCE_REQUIRED_FAIL"
     } elseif (-not (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "pass" -DefaultValue $true) $true)) {
         $decisionBasis = "EXECUTION_STRUCTURE_FAIL"
@@ -4393,6 +4455,7 @@ try {
         model_ref_used = $candidateBacktestModelRef
         run_dir = $candidateBacktest.RunDir
         summary_path = $candidateBacktest.SummaryPath
+        orders_submitted = [int64]$candidateOrdersSubmitted
         orders_filled = [int64]$candidateOrdersFilled
         realized_pnl_quote = [double]$candidateRealizedPnl
         fill_rate = [double]$candidateFillRate
@@ -4405,6 +4468,8 @@ try {
         deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
         probabilistic_sharpe_ratio = [double]$candidateProbabilisticSharpeRatio
         stat_validation = $candidateStatValidation
+        candidates_aborted_by_policy = [int64]$candidateAbortedByPolicy
+        execution_policy_veto_failure = $candidateExecutionPolicyVetoFailure
         execution_structure = (Get-PropValue -ObjectValue $candidateExecutionStructure -Name "payload" -DefaultValue @{})
     }
     $report.steps.backtest_champion = if ($championCompareEvaluated) {
@@ -4443,6 +4508,9 @@ try {
         promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
         candidate_min_orders_pass = ($candidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled)
         candidate_min_orders_threshold = [int]$promotionPolicyConfig.backtest_min_orders_filled
+        candidate_orders_submitted = [int64]$candidateOrdersSubmitted
+        candidate_candidates_aborted_by_policy = [int64]$candidateAbortedByPolicy
+        candidate_execution_policy_veto_failure = $candidateExecutionPolicyVetoFailure
         candidate_min_realized_pnl_pass = ($candidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote)
         candidate_min_realized_pnl_threshold = [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote
         candidate_dsr_evaluated = $candidateStatComparable
@@ -4524,6 +4592,9 @@ try {
     }
 
     $runtimeParityPass = $true
+    $runtimeParityCandidateExecutionPolicyVetoFailure = $false
+    $runtimeParityCandidateOrdersSubmitted = [int64]0
+    $runtimeParityCandidateAbortedByPolicy = [int64]0
     if (-not $BacktestRuntimeParityEnabled) {
         $report.steps.backtest_runtime_parity_candidate = [ordered]@{
             attempted = $false
@@ -4548,11 +4619,14 @@ try {
             -EndDate $effectiveBatchDate `
             -Preset "runtime_parity"
         $runtimeParityCandidateSummary = $runtimeParityCandidateBacktest.Summary
+        $runtimeParityCandidateOrdersSubmitted = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "orders_submitted" -DefaultValue 0) 0)
         $runtimeParityCandidateOrdersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "orders_filled" -DefaultValue 0) 0)
         $runtimeParityCandidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
         $runtimeParityCandidateFillRate = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
         $runtimeParityCandidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
         $runtimeParityCandidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
+        $runtimeParityCandidateAbortedByPolicy = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "candidates_aborted_by_policy" -DefaultValue 0) 0)
+        $runtimeParityCandidateExecutionPolicyVetoFailure = ($runtimeParityCandidateOrdersSubmitted -le 0) -and ($runtimeParityCandidateAbortedByPolicy -gt 0)
         $runtimeParityCandidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $runtimeParityCandidateRealizedPnl -MaxDrawdownPct $runtimeParityCandidateMaxDrawdownPct
         $runtimeParityCandidateStatValidation = Invoke-BacktestStatValidation `
             -PythonPath $resolvedPythonExe `
@@ -4574,6 +4648,7 @@ try {
             run_dir = $runtimeParityCandidateBacktest.RunDir
             summary_path = $runtimeParityCandidateBacktest.SummaryPath
             preset = "runtime_parity"
+            orders_submitted = [int64]$runtimeParityCandidateOrdersSubmitted
             orders_filled = [int64]$runtimeParityCandidateOrdersFilled
             realized_pnl_quote = [double]$runtimeParityCandidateRealizedPnl
             fill_rate = [double]$runtimeParityCandidateFillRate
@@ -4583,6 +4658,8 @@ try {
             deflated_sharpe_ratio_est = [double]$runtimeParityCandidateDeflatedSharpeRatio
             probabilistic_sharpe_ratio = [double]$runtimeParityCandidateProbabilisticSharpeRatio
             stat_validation = $runtimeParityCandidateStatValidation
+            candidates_aborted_by_policy = [int64]$runtimeParityCandidateAbortedByPolicy
+            execution_policy_veto_failure = $runtimeParityCandidateExecutionPolicyVetoFailure
         }
 
         $runtimeParityCompareRequired = [bool]$promotionPolicyConfig.backtest_compare_required -and (-not $SkipChampionCompare)
@@ -4647,6 +4724,9 @@ try {
         $runtimeParityCandidateDeflatedSharpePass = (-not $runtimeParityCandidateStatComparable) -or ($runtimeParityCandidateDeflatedSharpeRatio -ge [double]$promotionPolicyConfig.backtest_min_deflated_sharpe_ratio)
         $runtimeParityCandidatePass = ($runtimeParityCandidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled) -and ($runtimeParityCandidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote) -and $runtimeParityCandidateDeflatedSharpePass
         $runtimeParityDecisionBasis = if ($runtimeParityChampionCompareEvaluated) { "PENDING_COMPARE" } elseif ($SkipChampionCompare) { "SKIPPED_CHAMPION_COMPARE" } else { "NO_EXISTING_CHAMPION" }
+        if ($runtimeParityCandidateExecutionPolicyVetoFailure) {
+            $runtimeParityDecisionBasis = "EXECUTION_POLICY_VETO_FAILURE"
+        }
         $runtimeParityStrictPnlPass = $true
         $runtimeParityDrawdownImprovementPct = $null
         $runtimeParityDrawdownImprovementPass = $true
@@ -4697,6 +4777,9 @@ try {
                 $runtimeParityDecisionBasis = if ($runtimeParityComparePass) { "UTILITY_AND_EXECUTION_GUARDS_PASS" } else { "UTILITY_AND_EXECUTION_GUARDS_FAIL" }
             }
         }
+        if ($runtimeParityCandidateExecutionPolicyVetoFailure) {
+            $runtimeParityDecisionBasis = "EXECUTION_POLICY_VETO_FAILURE"
+        }
         $runtimeParityPass = $runtimeParityCandidatePass -and $runtimeParityComparePass
         $report.gates.runtime_parity = [ordered]@{
             evaluated = $true
@@ -4705,6 +4788,9 @@ try {
             preset = "runtime_parity"
             candidate_min_orders_pass = ($runtimeParityCandidateOrdersFilled -ge [int]$promotionPolicyConfig.backtest_min_orders_filled)
             candidate_min_orders_threshold = [int]$promotionPolicyConfig.backtest_min_orders_filled
+            candidate_orders_submitted = [int64]$runtimeParityCandidateOrdersSubmitted
+            candidate_candidates_aborted_by_policy = [int64]$runtimeParityCandidateAbortedByPolicy
+            candidate_execution_policy_veto_failure = $runtimeParityCandidateExecutionPolicyVetoFailure
             candidate_min_realized_pnl_pass = ($runtimeParityCandidateRealizedPnl -ge [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote)
             candidate_min_realized_pnl_threshold = [double]$promotionPolicyConfig.backtest_min_realized_pnl_quote
             candidate_dsr_evaluated = $runtimeParityCandidateStatComparable
@@ -4985,11 +5071,17 @@ try {
     if (-not $backtestPass) {
         $reasons += "BACKTEST_ACCEPTANCE_FAILED"
     }
+    if ($candidateExecutionPolicyVetoFailure) {
+        $reasons += "EXECUTION_POLICY_VETO_FAILURE"
+    }
     if (-not (To-Bool (Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "pass" -DefaultValue $true) $true)) {
         $reasons += @((Get-PropValue -ObjectValue $candidateExecutionStructureGate -Name "reasons" -DefaultValue @()))
     }
     if ($BacktestRuntimeParityEnabled -and (-not $runtimeParityPass)) {
         $reasons += "RUNTIME_PARITY_BACKTEST_FAILED"
+    }
+    if ($BacktestRuntimeParityEnabled -and $runtimeParityCandidateExecutionPolicyVetoFailure) {
+        $reasons += "RUNTIME_PARITY_EXECUTION_POLICY_VETO_FAILURE"
     }
     if (($TrainerEvidenceMode -eq "required") -and (-not $trainerEvidenceGatePass)) {
         $reasons += "TRAINER_EVIDENCE_REQUIRED_FAILED"

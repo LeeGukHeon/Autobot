@@ -68,6 +68,90 @@ def test_live_execution_policy_prefers_higher_fill_lower_shortfall_action() -> N
     assert decision["selected_action_code"] == "LIMIT_GTC_JOIN"
 
 
+def test_live_execution_policy_uses_matching_long_deadline_horizon() -> None:
+    attempts = [
+        {
+            "action_code": "LIMIT_GTC_JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+            "submitted_ts_ms": 0,
+            "first_fill_ts_ms": 250_000,
+            "shortfall_bps": 1.0,
+        }
+    ] * 24
+    model_payload = build_live_execution_contract(attempts=attempts)
+
+    decision = select_live_execution_action(
+        model_payload=model_payload,
+        current_state={
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+        },
+        expected_edge_bps=20.0,
+        candidate_actions=["LIMIT_GTC_JOIN"],
+        deadline_ms=300_000,
+    )
+
+    assert decision["status"] == "selected"
+    assert decision["selected_p_fill_source_horizon_ms"] == 300_000
+    assert decision["selected_p_fill_deadline"] > 0.8
+
+
+def test_live_execution_policy_unseen_action_uses_price_mode_prior() -> None:
+    attempts = (
+        [
+            {
+                "action_code": "LIMIT_GTC_JOIN",
+                "spread_bps": 4.0,
+                "depth_top5_notional_krw": 3_000_000.0,
+                "snapshot_age_ms": 100.0,
+                "expected_edge_bps": 20.0,
+                "submitted_ts_ms": 0,
+                "first_fill_ts_ms": 100_000,
+                "shortfall_bps": 1.0,
+            }
+        ]
+        * 10
+        + [
+            {
+                "action_code": "LIMIT_GTC_JOIN",
+                "spread_bps": 4.0,
+                "depth_top5_notional_krw": 3_000_000.0,
+                "snapshot_age_ms": 100.0,
+                "expected_edge_bps": 10.0,
+                "expected_net_edge_bps": 10.0,
+                "submitted_ts_ms": 0,
+                "final_state": "MISSED",
+                "shortfall_bps": 0.0,
+            }
+        ]
+        * 10
+    )
+    model_payload = build_live_execution_contract(attempts=attempts)
+
+    decision = select_live_execution_action(
+        model_payload=model_payload,
+        current_state={
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 20.0,
+        },
+        expected_edge_bps=20.0,
+        candidate_actions=["LIMIT_IOC_JOIN"],
+        deadline_ms=300_000,
+    )
+
+    assert decision["status"] == "selected"
+    assert decision["selected_action_code"] == "LIMIT_IOC_JOIN"
+    assert decision["selected_stats_source"] == "price_mode_prior"
+    assert decision["selected_p_fill_deadline"] > 0.0
+
+
 def test_live_execution_policy_canary_strong_edge_escalates_from_passive_to_join() -> None:
     model_payload = {
         "policy": "live_execution_contract_v1",
@@ -311,6 +395,10 @@ def test_live_execution_contract_contains_fill_and_miss_models() -> None:
 
     payload = build_live_execution_contract(attempts=attempts)
 
-    assert payload["policy"] == "live_execution_contract_v1"
-    assert payload["fill_model"]["policy"] == "live_fill_hazard_survival_v1"
-    assert payload["miss_cost_model"]["policy"] == "execution_miss_cost_summary_v1"
+    assert payload["policy"] == "live_execution_contract_v2"
+    assert payload["fill_model"]["policy"] == "live_fill_hazard_survival_v2"
+    assert payload["miss_cost_model"]["policy"] == "execution_miss_cost_summary_v2"
+    assert "price_mode_stats" in payload["fill_model"]
+    assert "global_stats" in payload["fill_model"]
+    assert "price_mode_stats" in payload["miss_cost_model"]
+    assert "global_stats" in payload["miss_cost_model"]
