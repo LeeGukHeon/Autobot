@@ -29,6 +29,7 @@ class BacktestSimExchange(PaperSimExchange):
         ts_ms: int,
         activate_on_index: int,
         latest_trade_price: float | None = None,
+        micro_snapshot: object | None = None,
         reprice_attempt: int = 0,
     ) -> tuple[PaperOrder, FillEvent | None]:
         if str(intent.time_in_force).strip().lower() in {"ioc", "fok"} or str(intent.ord_type).strip().lower() == "best":
@@ -41,6 +42,7 @@ class BacktestSimExchange(PaperSimExchange):
                 intent=intent,
                 rules=rules,
                 latest_trade_price=effective_trade_price,
+                micro_snapshot=micro_snapshot,
                 ts_ms=ts_ms,
                 reprice_attempt=reprice_attempt,
             )

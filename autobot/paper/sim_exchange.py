@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import math
 import time
 import uuid
+from typing import Any
 
 from autobot.execution.intent import OrderIntent
 
@@ -269,6 +270,7 @@ class PaperSimExchange:
         intent: OrderIntent,
         rules: MarketRules,
         latest_trade_price: float,
+        micro_snapshot: Any | None = None,
         ts_ms: int | None = None,
         reprice_attempt: int = 0,
     ) -> tuple[PaperOrder, FillEvent | None]:
@@ -277,6 +279,7 @@ class PaperSimExchange:
                 intent=intent,
                 rules=rules,
                 latest_trade_price=latest_trade_price,
+                micro_snapshot=micro_snapshot,
                 ts_ms=ts_ms,
                 reprice_attempt=reprice_attempt,
             )
@@ -294,13 +297,24 @@ class PaperSimExchange:
         intent: OrderIntent,
         rules: MarketRules,
         latest_trade_price: float,
+        micro_snapshot: Any | None = None,
         ts_ms: int | None = None,
         reprice_attempt: int = 0,
     ) -> tuple[PaperOrder, FillEvent | None]:
         now_ts_ms = int(ts_ms if ts_ms is not None else time.time() * 1000)
         side_value = str(intent.side).strip().lower()
-        market_price = max(float(latest_trade_price), 0.0)
-        if market_price <= 0.0:
+        executable_prices = _resolve_executable_price_proxy(
+            latest_trade_price=latest_trade_price,
+            micro_snapshot=micro_snapshot,
+        )
+        market_price = (
+            executable_prices["ask_price"]
+            if side_value == "bid"
+            else executable_prices["bid_price"]
+            if side_value == "ask"
+            else 0.0
+        )
+        if float(market_price) <= 0.0:
             failed = self._build_failed_order(intent=intent, ts_ms=now_ts_ms, reason="BEST_PRICE_UNAVAILABLE")
             return (self._clone_order(failed), None)
 
@@ -661,6 +675,32 @@ def _allow_immediate_fill(*, intent: OrderIntent) -> bool:
     if time_in_force == "post_only":
         return False
     return True
+
+
+def _resolve_executable_price_proxy(*, latest_trade_price: float, micro_snapshot: Any | None = None) -> dict[str, float]:
+    trade_price = max(float(latest_trade_price), EPSILON)
+    spread_bps = _safe_optional_float(getattr(micro_snapshot, "spread_bps_mean", None))
+    if spread_bps is None or float(spread_bps) <= 0.0:
+        return {
+            "bid_price": float(trade_price),
+            "ask_price": float(trade_price),
+        }
+    half_spread_ratio = max(float(spread_bps), 0.0) / 20_000.0
+    ask_price = max(float(trade_price) * (1.0 + half_spread_ratio), EPSILON)
+    bid_price = max(float(trade_price) * (1.0 - half_spread_ratio), EPSILON)
+    return {
+        "bid_price": float(bid_price),
+        "ask_price": float(ask_price),
+    }
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def order_volume_from_notional(*, notional_quote: float, price: float) -> float:

@@ -483,6 +483,11 @@ class PaperExecutionGateway:
     def submit_intent(self, *, intent: OrderIntent, latest_trade_price: float, ts_ms: int) -> ExecutionUpdate:
         update = ExecutionUpdate()
         rules = self._rules_provider.get_rules(market=intent.market, reference_price=intent.price, ts_ms=ts_ms)
+        snapshot = (
+            self._micro_snapshot_provider.get(intent.market, int(ts_ms))
+            if self._micro_snapshot_provider is not None
+            else None
+        )
         profile = order_exec_profile_from_dict(
             intent.meta.get("exec_profile"),
             fallback=self._default_profile,
@@ -497,6 +502,7 @@ class PaperExecutionGateway:
             intent=intent,
             rules=rules,
             latest_trade_price=latest_trade_price,
+            micro_snapshot=snapshot,
             ts_ms=ts_ms,
             reprice_attempt=0,
         )
@@ -691,6 +697,7 @@ class PaperExecutionGateway:
                 intent=reprice_intent,
                 rules=rules,
                 latest_trade_price=event.trade_price,
+                micro_snapshot=snapshot,
                 ts_ms=event.ts_ms,
                 reprice_attempt=pending.replace_count + 1,
             )

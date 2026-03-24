@@ -14,6 +14,7 @@ Implemented in the current branch:
    - engines no longer coerce `best -> limit` before simulation
 3. first-pass immediate taker handling
    - `best` orders now use a dedicated immediate submit path
+   - immediate fill price can use current spread proxy when a micro snapshot is available
 4. first-pass partial-fill reserve handling
    - partial bid/ask fills preserve residual locked quote/base
 5. first-pass accounting parity

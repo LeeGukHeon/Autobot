@@ -4,6 +4,7 @@ import pytest
 
 from autobot.execution.intent import new_order_intent
 from autobot.paper.sim_exchange import MarketRules, PaperSimExchange, order_volume_from_notional, round_price_to_tick
+from autobot.strategy.micro_snapshot import MicroSnapshot
 
 
 def test_order_volume_from_notional() -> None:
@@ -126,6 +127,45 @@ def test_sim_exchange_best_bid_fills_immediately_at_latest_trade_price() -> None
     assert order.volume_req == 10.0
     assert snapshot.cash_locked == 0.0
     assert snapshot.cash_free < 50_000.0
+
+
+def test_sim_exchange_best_bid_uses_spread_proxy_for_immediate_fill_price() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=1_000_000.0,
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+
+    order, fill = exchange.submit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert fill is not None
+    assert order.avg_fill_price == pytest.approx(1_005.0)
 
 
 def test_sim_exchange_partial_bid_fill_preserves_remaining_quote_lock_and_fee_basis() -> None:

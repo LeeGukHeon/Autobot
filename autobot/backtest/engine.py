@@ -396,6 +396,11 @@ class BacktestExecutionGateway:
         ts_ms: int,
     ) -> ExecutionUpdate:
         update = ExecutionUpdate()
+        snapshot = (
+            self._micro_snapshot_provider.get(intent.market, int(ts_ms))
+            if self._micro_snapshot_provider is not None
+            else None
+        )
         profile = order_exec_profile_from_dict(
             intent.meta.get("exec_profile"),
             fallback=self._default_profile,
@@ -412,6 +417,7 @@ class BacktestExecutionGateway:
             ts_ms=ts_ms,
             activate_on_index=bar_index + 1,
             latest_trade_price=latest_trade_price,
+            micro_snapshot=snapshot,
             reprice_attempt=0,
         )
         update.orders_submitted.append(order)
