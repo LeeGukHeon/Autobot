@@ -180,6 +180,8 @@ def test_sim_exchange_best_ioc_can_partially_fill_and_cancel_remainder() -> None
         trade_notional_krw=10000.0,
         spread_bps_mean=0.0,
         depth_top5_notional_krw=12_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=6_000.0,
         book_events=1,
         book_coverage_ms=1000,
         book_available=True,
@@ -209,6 +211,48 @@ def test_sim_exchange_best_ioc_can_partially_fill_and_cancel_remainder() -> None
     assert order.failure_reason == "IOC_PARTIAL_CANCELLED_REMAINDER"
     assert order.volume_filled == pytest.approx(6.0)
     assert snapshot_after.cash_locked == 0.0
+
+
+def test_sim_exchange_best_ioc_uses_side_specific_depth_proxy_when_available() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=0.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=8_000.0,
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+
+    order, fill = exchange.submit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert fill is not None
+    assert order.state == "CANCELED"
+    assert order.volume_filled == pytest.approx(8.0)
 
 
 def test_sim_exchange_best_fok_cancels_when_depth_is_insufficient() -> None:

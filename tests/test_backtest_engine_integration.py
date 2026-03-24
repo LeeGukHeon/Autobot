@@ -72,6 +72,10 @@ def test_backtest_run_generates_artifacts(tmp_path: Path) -> None:
     assert summary_json["run_id"] == summary.run_id
     assert summary_json["bars_processed"] >= 1
     assert "execution_structure" in summary_json
+    assert "orders_completed" in summary_json
+    assert "fill_events_total" in summary_json
+    assert "avg_time_to_first_fill_ms" in summary_json
+    assert "avg_time_to_complete_fill_ms" in summary_json
 
 
 def test_backtest_run_summary_only_skips_heavy_artifacts(tmp_path: Path) -> None:

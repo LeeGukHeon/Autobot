@@ -187,6 +187,15 @@ class PaperRunSummary:
     rolling_max_fill_concentration_ratio: float
     rolling_max_window_drawdown_pct: float
     rolling_worst_window_realized_pnl_quote: float
+    orders_partially_filled: int = 0
+    orders_completed: int = 0
+    fill_events_total: int = 0
+    avg_time_to_first_fill_ms: float = 0.0
+    p50_time_to_first_fill_ms: float = 0.0
+    p90_time_to_first_fill_ms: float = 0.0
+    avg_time_to_complete_fill_ms: float = 0.0
+    p50_time_to_complete_fill_ms: float = 0.0
+    p90_time_to_complete_fill_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -421,7 +430,9 @@ class ExecutionUpdate:
     orders_submitted: list[PaperOrder] = field(default_factory=list)
     orders_canceled: list[PaperOrder] = field(default_factory=list)
     orders_filled: list[PaperOrder] = field(default_factory=list)
+    orders_with_fill: list[PaperOrder] = field(default_factory=list)
     fills: list[FillEvent] = field(default_factory=list)
+    order_states_after_fill: dict[str, PaperOrder] = field(default_factory=dict)
     failed_markets: list[str] = field(default_factory=list)
     success_markets: list[str] = field(default_factory=list)
     supervisor_events: list[dict[str, Any]] = field(default_factory=list)
@@ -527,10 +538,13 @@ class PaperExecutionGateway:
         if fill is not None:
             update.fills.append(fill)
             latest = self._exchange.get_order(order.order_id)
-            if latest is not None and latest.state == "FILLED":
-                update.orders_filled.append(latest)
-                update.success_markets.append(intent.market)
-                self._clear_pending(intent.intent_id)
+            if latest is not None:
+                update.order_states_after_fill[latest.order_id] = latest
+                update.orders_with_fill.append(latest)
+                if latest.state == "FILLED":
+                    update.orders_filled.append(latest)
+                    update.success_markets.append(intent.market)
+                    self._clear_pending(intent.intent_id)
 
         return update
 
@@ -554,13 +568,16 @@ class PaperExecutionGateway:
         for fill in fills:
             update.fills.append(fill)
             current = self._exchange.get_order(fill.order_id)
-            if current is not None and current.state == "FILLED":
-                update.orders_filled.append(current)
-                intent_id = self._intent_by_order_id.pop(fill.order_id, None)
-                if intent_id is not None:
-                    pending = self._pending_by_intent.pop(intent_id, None)
-                    if pending is not None:
-                        update.success_markets.append(pending.intent.market)
+            if current is not None:
+                update.order_states_after_fill[current.order_id] = current
+                update.orders_with_fill.append(current)
+                if current.state == "FILLED":
+                    update.orders_filled.append(current)
+                    intent_id = self._intent_by_order_id.pop(fill.order_id, None)
+                    if intent_id is not None:
+                        pending = self._pending_by_intent.pop(intent_id, None)
+                        if pending is not None:
+                            update.success_markets.append(pending.intent.market)
 
         for intent_id, pending in list(self._pending_by_intent.items()):
             if pending.market != market_value:
@@ -748,9 +765,12 @@ class PaperExecutionGateway:
                 update.fills.append(new_fill)
                 latest = self._exchange.get_order(new_fill.order_id)
                 if latest is not None:
-                    update.orders_filled.append(latest)
-                update.success_markets.append(reprice_intent.market)
-                self._clear_pending(intent_id)
+                    update.order_states_after_fill[latest.order_id] = latest
+                    update.orders_with_fill.append(latest)
+                    if latest.state == "FILLED":
+                        update.orders_filled.append(latest)
+                        update.success_markets.append(reprice_intent.market)
+                        self._clear_pending(intent_id)
 
         return update
 
@@ -832,6 +852,9 @@ class PaperRunEngine:
             "micro_policy_cross_block_reasons": {},
             "micro_policy_resolver_failed_fallback_used": 0,
             "order_supervisor_reasons": {},
+            "orders_partially_filled": 0,
+            "orders_completed": 0,
+            "fill_events_total": 0,
             "scored_rows": 0,
             "eligible_rows": 0,
             "selected_rows": 0,
@@ -868,6 +891,9 @@ class PaperRunEngine:
             "micro_policy_cross_block_reasons": {},
             "micro_policy_resolver_failed_fallback_used": 0,
             "order_supervisor_reasons": {},
+            "orders_partially_filled": 0,
+            "orders_completed": 0,
+            "fill_events_total": 0,
             "scored_rows": 0,
             "eligible_rows": 0,
             "selected_rows": 0,
@@ -880,8 +906,14 @@ class PaperRunEngine:
         }
         self._runtime_state = {
             "intent_context": {},
-            "filled_intents": set(),
+            "first_filled_intents": set(),
+            "completed_intents": set(),
+            "filled_order_ids": set(),
+            "completed_order_ids": set(),
+            "partially_filled_order_ids": set(),
             "time_to_fill_ms": [],
+            "time_to_first_fill_ms": [],
+            "time_to_complete_fill_ms": [],
             "slippage_bps": [],
             "policy_tick_bps_values": [],
             "operational_micro_quality_scores": [],
@@ -1401,6 +1433,8 @@ class PaperRunEngine:
         wins = sum(1 for pnl in realized_trade_pnls if pnl > 0)
         win_rate = (wins / len(realized_trade_pnls)) if realized_trade_pnls else 0.0
         ttf_values = [float(value) for value in self._runtime_state.get("time_to_fill_ms", [])]
+        first_fill_values = [float(value) for value in self._runtime_state.get("time_to_first_fill_ms", [])]
+        complete_fill_values = [float(value) for value in self._runtime_state.get("time_to_complete_fill_ms", [])]
         slippage_values = [float(value) for value in self._runtime_state.get("slippage_bps", [])]
         policy_tick_bps_values = [float(value) for value in self._runtime_state.get("policy_tick_bps_values", [])]
         operational_quality_scores = [
@@ -1426,6 +1460,9 @@ class PaperRunEngine:
         cancels_total = int(self._runtime_counters.get("cancels_total", 0))
         aborted_timeout_total = int(self._runtime_counters.get("aborted_timeout_total", 0))
         dust_abort_total = int(self._runtime_counters.get("dust_abort_total", 0))
+        orders_partially_filled = int(self._runtime_counters.get("orders_partially_filled", 0))
+        orders_completed = int(self._runtime_counters.get("orders_completed", 0))
+        fill_events_total = int(self._runtime_counters.get("fill_events_total", 0))
 
         actual_duration_sec = max(time.monotonic() - run_started_monotonic, 0.0)
         summary = PaperRunSummary(
@@ -1480,6 +1517,15 @@ class PaperRunEngine:
             rolling_worst_window_realized_pnl_quote=float(
                 rolling_evidence.get("worst_window_realized_pnl_quote", 0.0)
             ),
+            orders_partially_filled=orders_partially_filled,
+            orders_completed=orders_completed,
+            fill_events_total=fill_events_total,
+            avg_time_to_first_fill_ms=mean(first_fill_values),
+            p50_time_to_first_fill_ms=percentile(first_fill_values, 0.50),
+            p90_time_to_first_fill_ms=percentile(first_fill_values, 0.90),
+            avg_time_to_complete_fill_ms=mean(complete_fill_values),
+            p50_time_to_complete_fill_ms=percentile(complete_fill_values, 0.50),
+            p90_time_to_complete_fill_ms=percentile(complete_fill_values, 0.90),
         )
         summary_payload = asdict(summary)
         summary_payload.update(runtime_metadata)
@@ -1538,6 +1584,12 @@ class PaperRunEngine:
                 "avg_time_to_fill_ms": mean(ttf_values),
                 "p50_time_to_fill_ms": percentile(ttf_values, 0.50),
                 "p90_time_to_fill_ms": percentile(ttf_values, 0.90),
+                "avg_time_to_first_fill_ms": mean(first_fill_values),
+                "p50_time_to_first_fill_ms": percentile(first_fill_values, 0.50),
+                "p90_time_to_first_fill_ms": percentile(first_fill_values, 0.90),
+                "avg_time_to_complete_fill_ms": mean(complete_fill_values),
+                "p50_time_to_complete_fill_ms": percentile(complete_fill_values, 0.50),
+                "p90_time_to_complete_fill_ms": percentile(complete_fill_values, 0.90),
                 "slippage_bps_mean": mean(slippage_values),
                 "slippage_bps_p50": percentile(slippage_values, 0.50),
                 "slippage_bps_p90": percentile(slippage_values, 0.90),
@@ -2349,13 +2401,23 @@ class PaperRunEngine:
     ) -> bool:
         has_ask_fill = False
         intent_context = self._runtime_state.setdefault("intent_context", {})
-        filled_intents = self._runtime_state.setdefault("filled_intents", set())
+        first_filled_intents = self._runtime_state.setdefault("first_filled_intents", set())
+        completed_intents = self._runtime_state.setdefault("completed_intents", set())
+        filled_order_ids = self._runtime_state.setdefault("filled_order_ids", set())
+        completed_order_ids = self._runtime_state.setdefault("completed_order_ids", set())
+        partially_filled_order_ids = self._runtime_state.setdefault("partially_filled_order_ids", set())
         time_to_fill_ms = self._runtime_state.setdefault("time_to_fill_ms", [])
+        time_to_first_fill_ms = self._runtime_state.setdefault("time_to_first_fill_ms", [])
+        time_to_complete_fill_ms = self._runtime_state.setdefault("time_to_complete_fill_ms", [])
         slippage_values = self._runtime_state.setdefault("slippage_bps", [])
         fill_records = self._runtime_state.setdefault("fill_records", [])
         order_exec_profile_by_order_id = self._runtime_state.setdefault("order_exec_profile_by_order_id", {})
         order_policy_diag_by_order_id = self._runtime_state.setdefault("order_policy_diag_by_order_id", {})
-        order_by_id = {order.order_id: order for order in update.orders_filled}
+        order_by_id = {
+            str(order_id): order
+            for order_id, order in update.order_states_after_fill.items()
+            if isinstance(order, PaperOrder)
+        }
 
         if isinstance(order_exec_profile_by_order_id, dict):
             for order_id, payload in update.order_exec_profiles.items():
@@ -2449,7 +2511,7 @@ class PaperRunEngine:
         for fill in update.fills:
             event_store.append_fill(fill)
             append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=asdict(fill))
-            counters["orders_filled"] += 1
+            counters["fill_events_total"] = int(counters.get("fill_events_total", 0)) + 1
             order = order_by_id.get(fill.order_id)
             reason_code = ""
             ref_price_value: float | None = None
@@ -2510,6 +2572,12 @@ class PaperRunEngine:
                         "order_id": str(fill.order_id),
                         "intent_id": (str(order.intent_id) if order is not None else ""),
                         "reason_code": reason_code,
+                        "order_state": (str(order.state).strip().upper() if order is not None else ""),
+                        "filled_fraction": (
+                            float(order.volume_filled) / max(float(order.volume_req), 1e-12)
+                            if order is not None and float(order.volume_req) > 0.0
+                            else None
+                        ),
                     }
                 )
             if order is not None and strategy_adapter is not None:
@@ -2534,14 +2602,41 @@ class PaperRunEngine:
                     # keep paper loop resilient even if strategy bookkeeping fails
                     pass
 
-        for order in update.orders_filled:
+        for order in update.orders_with_fill:
             event_store.append_order(order)
-            if order.side == "ask":
+            if order.side == "ask" and float(order.volume_filled) > 0.0:
                 has_ask_fill = True
+            if isinstance(filled_order_ids, set) and order.order_id not in filled_order_ids:
+                counters["orders_filled"] = int(counters.get("orders_filled", 0)) + 1
+                filled_order_ids.add(order.order_id)
+            if (
+                str(order.state).strip().upper() != "FILLED"
+                and float(order.volume_filled) > 0.0
+                and isinstance(partially_filled_order_ids, set)
+                and order.order_id not in partially_filled_order_ids
+            ):
+                counters["orders_partially_filled"] = int(counters.get("orders_partially_filled", 0)) + 1
+                partially_filled_order_ids.add(order.order_id)
+                append_event("ORDER_PARTIAL", ts_ms=order.updated_ts_ms, payload=asdict(order))
+            if (
+                float(order.volume_filled) > 0.0
+                and isinstance(first_filled_intents, set)
+                and order.intent_id not in first_filled_intents
+                and isinstance(intent_context, dict)
+            ):
+                context = intent_context.get(order.intent_id)
+                if isinstance(context, dict):
+                    first_submit_ts = int(context.get("first_submit_ts_ms", order.created_ts_ms))
+                else:
+                    first_submit_ts = int(order.created_ts_ms)
+                elapsed_ms = max(int(order.updated_ts_ms) - first_submit_ts, 0)
+                if isinstance(time_to_first_fill_ms, list):
+                    time_to_first_fill_ms.append(float(elapsed_ms))
+                first_filled_intents.add(order.intent_id)
             if (
                 str(order.state).strip().upper() == "FILLED"
-                and isinstance(filled_intents, set)
-                and order.intent_id not in filled_intents
+                and isinstance(completed_intents, set)
+                and order.intent_id not in completed_intents
                 and isinstance(intent_context, dict)
             ):
                 context = intent_context.get(order.intent_id)
@@ -2552,7 +2647,12 @@ class PaperRunEngine:
                 elapsed_ms = max(int(order.updated_ts_ms) - first_submit_ts, 0)
                 if isinstance(time_to_fill_ms, list):
                     time_to_fill_ms.append(float(elapsed_ms))
-                filled_intents.add(order.intent_id)
+                if isinstance(time_to_complete_fill_ms, list):
+                    time_to_complete_fill_ms.append(float(elapsed_ms))
+                if isinstance(completed_order_ids, set) and order.order_id not in completed_order_ids:
+                    counters["orders_completed"] = int(counters.get("orders_completed", 0)) + 1
+                    completed_order_ids.add(order.order_id)
+                completed_intents.add(order.intent_id)
 
         for market in update.success_markets:
             trade_gate.record_success(market)

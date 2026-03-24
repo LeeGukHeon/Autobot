@@ -27,6 +27,8 @@ class MicroSnapshot:
     trade_source: str = "none"
     spread_bps_mean: float | None = None
     depth_top5_notional_krw: float | None = None
+    depth_bid_top5_notional_krw: float | None = None
+    depth_ask_top5_notional_krw: float | None = None
     book_events: int = 0
     book_coverage_ms: int = 0
     book_available: bool = False
@@ -293,8 +295,13 @@ class LiveWsMicroSnapshotProvider:
         spread_values = [value for value in spreads if value is not None]
         spread_mean = (sum(spread_values) / float(len(spread_values))) if spread_values else None
 
-        depths = [_depth_topk_notional(event, topk=self._orderbook_topk) for event in books]
-        depth_values = [value for value in depths if value is not None]
+        bid_depths = [_depth_topk_notional_for_side(event, topk=self._orderbook_topk, side="bid") for event in books]
+        ask_depths = [_depth_topk_notional_for_side(event, topk=self._orderbook_topk, side="ask") for event in books]
+        bid_depth_values = [value for value in bid_depths if value is not None]
+        ask_depth_values = [value for value in ask_depths if value is not None]
+        bid_depth_mean = (sum(bid_depth_values) / float(len(bid_depth_values))) if bid_depth_values else None
+        ask_depth_mean = (sum(ask_depth_values) / float(len(ask_depth_values))) if ask_depth_values else None
+        depth_values = [value for value in (bid_depth_mean, ask_depth_mean) if value is not None]
         depth_mean = (sum(depth_values) / float(len(depth_values))) if depth_values else None
 
         last_event_ts_ms = max(trade_max_ts, book_max_ts)
@@ -309,6 +316,8 @@ class LiveWsMicroSnapshotProvider:
             trade_source="ws" if trade_events > 0 else "none",
             spread_bps_mean=spread_mean,
             depth_top5_notional_krw=depth_mean,
+            depth_bid_top5_notional_krw=bid_depth_mean,
+            depth_ask_top5_notional_krw=ask_depth_mean,
             book_events=int(book_events),
             book_coverage_ms=int(book_coverage_ms),
             book_available=bool(book_events > 0),
@@ -386,6 +395,8 @@ def _snapshot_from_row(*, market: str, row: dict[str, Any]) -> MicroSnapshot:
         trade_source=str(row.get("trade_source") or "none").strip().lower() or "none",
         spread_bps_mean=_to_float(row.get("spread_bps_mean")),
         depth_top5_notional_krw=depth_top5_notional_krw,
+        depth_bid_top5_notional_krw=depth_bid,
+        depth_ask_top5_notional_krw=depth_ask,
         book_events=int(book_events),
         book_coverage_ms=int(book_coverage_ms),
         book_available=bool(book_available),
@@ -430,6 +441,25 @@ def _depth_topk_notional(event: dict[str, Any], *, topk: int) -> float | None:
             used += 1
         if bid_p is not None and bid_s is not None:
             total += bid_p * bid_s
+            used += 1
+    if used <= 0:
+        return None
+    return total
+
+
+def _depth_topk_notional_for_side(event: dict[str, Any], *, topk: int, side: str) -> float | None:
+    total = 0.0
+    used = 0
+    side_value = str(side).strip().lower()
+    for idx in range(1, max(int(topk), 1) + 1):
+        if side_value == "bid":
+            price = _to_float(event.get(f"bid{idx}_price"))
+            size = _to_float(event.get(f"bid{idx}_size"))
+        else:
+            price = _to_float(event.get(f"ask{idx}_price"))
+            size = _to_float(event.get(f"ask{idx}_size"))
+        if price is not None and size is not None:
+            total += price * size
             used += 1
     if used <= 0:
         return None

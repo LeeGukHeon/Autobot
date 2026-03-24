@@ -45,6 +45,8 @@ def test_offline_provider_reads_snapshot_and_computes_notional(tmp_path: Path) -
     assert snapshot.trade_events == 3
     assert snapshot.trade_source == "ws"
     assert snapshot.trade_notional_krw == 200.0
+    assert snapshot.depth_bid_top5_notional_krw == 500_000.0
+    assert snapshot.depth_ask_top5_notional_krw == 550_000.0
     assert snapshot.depth_top5_notional_krw == 1_050_000.0
 
 

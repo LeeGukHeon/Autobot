@@ -796,6 +796,17 @@ def _resolve_executable_price_proxy(*, latest_trade_price: float, micro_snapshot
 
 
 def _resolve_executable_side_depth_quote(*, micro_snapshot: Any | None, side: str) -> float | None:
+    side_value = str(side).strip().lower()
+    side_specific = _safe_optional_float(
+        getattr(
+            micro_snapshot,
+            "depth_ask_top5_notional_krw" if side_value == "bid" else "depth_bid_top5_notional_krw",
+            None,
+        )
+    )
+    if side_specific is not None and float(side_specific) > 0.0:
+        return max(float(side_specific), 0.0)
+
     depth_total = _safe_optional_float(getattr(micro_snapshot, "depth_top5_notional_krw", None))
     if depth_total is None or float(depth_total) <= 0.0:
         return None

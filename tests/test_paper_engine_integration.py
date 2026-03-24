@@ -107,6 +107,10 @@ def test_paper_engine_generates_order_and_logs(tmp_path: Path) -> None:
     assert (run_dir / "equity.csv").exists()
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert "execution_structure" in summary_json
+    assert "orders_completed" in summary_json
+    assert "fill_events_total" in summary_json
+    assert "avg_time_to_first_fill_ms" in summary_json
+    assert "avg_time_to_complete_fill_ms" in summary_json
 
     event_types = {
         json.loads(line).get("event_type")

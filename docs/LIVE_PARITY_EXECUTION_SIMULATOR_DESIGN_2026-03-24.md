@@ -15,6 +15,7 @@ Implemented in the current branch:
 3. first-pass immediate taker handling
    - `best` orders now use a dedicated immediate submit path
    - immediate fill price can use current spread proxy when a micro snapshot is available
+   - side-specific executable depth now uses ask-depth for buy takers and bid-depth for sell takers when available
    - `limit IOC/FOK` now use immediate-taker semantics while `GTC/post_only` keep resting-limit semantics
 4. first-pass partial-fill reserve handling
    - partial bid/ask fills preserve residual locked quote/base
@@ -23,15 +24,25 @@ Implemented in the current branch:
    - flat round-trip realized PnL reconciles to equity in simulator tests
 6. terminal fill reporting tightened
    - engine success accounting now waits for terminal `FILLED` state
+7. first-pass partial-fill reporting parity
+   - paper/backtest execution updates now preserve final order snapshots for any fill, including partial-cancelled `IOC`
+   - `orders_filled` now counts unique orders with any fill instead of raw fill events
+   - `orders_completed` and `orders_partially_filled` are reported separately
+   - `ORDER_PARTIAL` events are emitted when an order has fill but is not terminal `FILLED`
+8. explicit fill-timing split
+   - paper/backtest summaries now expose:
+     - `avg/p50/p90_time_to_first_fill_ms`
+     - `avg/p50/p90_time_to_complete_fill_ms`
+   - legacy `avg/p50/p90_time_to_fill_ms` fields are preserved and now represent completion timing for compatibility
 
 Not yet implemented:
 
 1. richer executable-liquidity proxy for immediate takers
-   - current implementation still uses latest-trade / bar reference proxy, not replayed L1/L2 executable depth
+   - current implementation now uses spread plus side-specific top5 depth when available, but still does not replay explicit L1/L2 queue state
 2. fully realistic `FOK` partial rejection semantics under finite executable depth
-3. end-to-end partial-fill replace/cancel reporting parity
-4. explicit `time_to_first_fill` vs `time_to_complete` reporting split
-5. certification rerun to verify that blanket `IOC_FOK_NO_TOUCH` behavior is materially reduced
+3. end-to-end replace/cancel reporting parity for multi-step partial orders
+   - partial -> replace -> partial -> complete flows still need dedicated certification-style regression
+4. certification rerun to verify that blanket `IOC_FOK_NO_TOUCH` behavior is materially reduced
 
 ## Goal
 
@@ -315,6 +326,7 @@ Changes:
 2. keep partially filled orders pending correctly
 3. do not treat first fill as terminal success unless state is actually `FILLED`
 4. align reporting of fill counts vs completion
+5. emit explicit partial-fill order-state snapshots for reporting paths
 
 ### Phase 4. Accounting parity
 
@@ -370,7 +382,7 @@ Continue from `LIVE_PARITY_EXECUTION_SIMULATOR_DESIGN_2026-03-24.md`.
 
 Implement in this order:
 
-1. structural immediate-taker vs resting-order dispatch
-2. preserve final order class through paper/backtest engines
-3. remove deferred no-touch handling for `ioc/fok` in certification/backtest
-4. then move to partial-fill lifecycle and fee-basis parity
+1. upgrade immediate-taker executable-liquidity proxy beyond latest-trade / bar-reference heuristics
+2. tighten finite-depth `FOK` full-fill rejection semantics with explicit regression coverage
+3. extend partial-fill parity through replace/cancel multi-step flows
+4. rerun certification and compare blanket `IOC_FOK_NO_TOUCH` frequency before vs after simulator changes
