@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-import shutil
 from typing import Any, Callable
 
 from autobot.features.feature_spec import parse_date_to_ts_ms
@@ -252,7 +251,9 @@ def purge_execution_artifact_run_dirs(
     payload: dict[str, Any] = {
         "evaluated": True,
         "allowed_root": str(allowed_root),
+        "retention_mode": "deferred_storage_retention",
         "discovered_run_dirs": discovered,
+        "preserved_paths": [],
         "removed_paths": [],
         "missing_paths": [],
         "skipped_outside_root": [],
@@ -272,8 +273,8 @@ def purge_execution_artifact_run_dirs(
         if not resolved.exists() or not resolved.is_dir():
             payload["missing_paths"].append(str(resolved))
             continue
-        shutil.rmtree(resolved, ignore_errors=False)
-        payload["removed_paths"].append(str(resolved))
+        payload["preserved_paths"].append(str(resolved))
+    payload["preserved_count"] = len(payload["preserved_paths"])
     payload["removed_count"] = len(payload["removed_paths"])
     payload["missing_count"] = len(payload["missing_paths"])
     payload["skipped_count"] = len(payload["skipped_outside_root"])

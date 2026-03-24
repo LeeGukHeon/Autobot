@@ -32,6 +32,35 @@ class RegistrySavePayload:
     runtime_recommendations: dict[str, Any] | None = None
 
 
+ARTIFACT_STATUS_FILENAME = "artifact_status.json"
+_PROMOTION_REQUIRED_ARTIFACTS = (
+    ARTIFACT_STATUS_FILENAME,
+    "leaderboard_row.json",
+    "metrics.json",
+    "thresholds.json",
+    "selection_recommendations.json",
+    "selection_policy.json",
+    "selection_calibration.json",
+    "walk_forward_report.json",
+    "execution_acceptance_report.json",
+    "runtime_recommendations.json",
+    "promotion_decision.json",
+    "trainer_research_evidence.json",
+    "economic_objective_profile.json",
+    "lane_governance.json",
+    "decision_surface.json",
+    "certification_report.json",
+)
+_PROMOTION_REQUIRED_STATUS_FIELDS = (
+    "core_saved",
+    "support_artifacts_written",
+    "execution_acceptance_complete",
+    "runtime_recommendations_complete",
+    "governance_artifacts_complete",
+    "acceptance_completed",
+)
+
+
 def make_run_id(*, seed: int | None = None) -> str:
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     token = uuid.uuid4().hex[:8]
@@ -67,6 +96,66 @@ def save_run(payload: RegistrySavePayload, *, publish_pointers: bool = True) -> 
         update_latest_pointer(payload.registry_root, payload.model_family, payload.run_id)
         update_latest_pointer(payload.registry_root, "_global", payload.run_id, family=payload.model_family)
     return run_dir
+
+
+def artifact_status_path(run_dir: Path) -> Path:
+    return run_dir / ARTIFACT_STATUS_FILENAME
+
+
+def load_artifact_status(run_dir: Path) -> dict[str, Any]:
+    return _normalize_artifact_status(run_dir.name, load_json(artifact_status_path(run_dir)))
+
+
+def update_artifact_status(run_dir: Path, **changes: Any) -> Path:
+    current = load_artifact_status(run_dir)
+    current.update(changes)
+    _write_json(artifact_status_path(run_dir), _normalize_artifact_status(run_dir.name, current))
+    return artifact_status_path(run_dir)
+
+
+def verify_run_completeness(
+    run_dir: Path,
+    *,
+    require_acceptance_completed: bool = True,
+) -> dict[str, Any]:
+    required_artifacts = list(_PROMOTION_REQUIRED_ARTIFACTS)
+    required_status_fields = list(_PROMOTION_REQUIRED_STATUS_FIELDS)
+    if not require_acceptance_completed:
+        required_artifacts = [name for name in required_artifacts if name != "certification_report.json"]
+        required_status_fields = [name for name in required_status_fields if name != "acceptance_completed"]
+    missing_artifacts = [name for name in required_artifacts if not (run_dir / name).exists()]
+    artifact_status = load_artifact_status(run_dir)
+    missing_status_fields = [name for name in required_status_fields if not bool(artifact_status.get(name, False))]
+    return {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "checked_at_utc": _utc_now(),
+        "ready": (not missing_artifacts) and (not missing_status_fields),
+        "missing_artifacts": missing_artifacts,
+        "missing_status_fields": missing_status_fields,
+        "artifact_status": artifact_status,
+    }
+
+
+def ensure_run_completeness(
+    run_dir: Path,
+    *,
+    require_acceptance_completed: bool = True,
+) -> dict[str, Any]:
+    completeness = verify_run_completeness(
+        run_dir,
+        require_acceptance_completed=require_acceptance_completed,
+    )
+    if completeness["ready"]:
+        return completeness
+    missing_artifacts = ", ".join(completeness["missing_artifacts"]) or "none"
+    missing_status_fields = ", ".join(completeness["missing_status_fields"]) or "none"
+    raise ValueError(
+        "incomplete run cannot be promoted: "
+        f"run_id='{run_dir.name}' "
+        f"missing_artifacts=[{missing_artifacts}] "
+        f"missing_status_fields=[{missing_status_fields}]"
+    )
 
 
 def update_pointer(
@@ -186,6 +275,7 @@ def promote_run_to_champion(
     score_key: str = "test_precision_top5",
 ) -> dict[str, Any]:
     run_dir = resolve_run_dir(registry_root, model_ref=model_ref, model_family=model_family)
+    completeness = ensure_run_completeness(run_dir, require_acceptance_completed=True)
     resolved_family = str(model_family).strip() if model_family else run_dir.parent.name
     leaderboard_row = load_json(run_dir / "leaderboard_row.json")
     if not leaderboard_row:
@@ -200,7 +290,10 @@ def promote_run_to_champion(
         run_id=run_dir.name,
         score=score,
         score_key=score_key,
-        extra={"promotion_mode": "manual"},
+        extra={
+            "promotion_mode": "manual",
+            "completeness_checked_at_utc": completeness["checked_at_utc"],
+        },
     )
 
     promotion_path = run_dir / "promotion_decision.json"
@@ -219,6 +312,7 @@ def promote_run_to_champion(
         }
     )
     _write_json(promotion_path, payload)
+    update_artifact_status(run_dir, status="champion", promoted=True)
 
     return {
         "run_id": run_dir.name,
@@ -357,6 +451,24 @@ def _write_json(path: Path, payload: Any) -> None:
 def _write_yaml_like_json(path: Path, payload: Any) -> None:
     # Keep parser-free dependency surface for runtime by storing JSON content in .yaml extension.
     _write_json(path, payload)
+
+
+def _normalize_artifact_status(run_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    doc = dict(payload) if isinstance(payload, dict) else {}
+    return {
+        "run_id": str(doc.get("run_id", run_id)).strip() or run_id,
+        "status": str(doc.get("status", "pending")).strip() or "pending",
+        "core_saved": bool(doc.get("core_saved", False)),
+        "support_artifacts_written": bool(doc.get("support_artifacts_written", False)),
+        "execution_acceptance_complete": bool(doc.get("execution_acceptance_complete", False)),
+        "runtime_recommendations_complete": bool(doc.get("runtime_recommendations_complete", False)),
+        "governance_artifacts_complete": bool(doc.get("governance_artifacts_complete", False)),
+        "acceptance_completed": bool(doc.get("acceptance_completed", False)),
+        "candidate_adoptable": bool(doc.get("candidate_adoptable", False)),
+        "candidate_adopted": bool(doc.get("candidate_adopted", False)),
+        "promoted": bool(doc.get("promoted", False)),
+        "updated_at_utc": str(doc.get("updated_at_utc", "")).strip() or _utc_now(),
+    }
 
 
 def _utc_now() -> str:

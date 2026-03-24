@@ -100,6 +100,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:IsWindowsPlatform = [System.IO.Path]::DirectorySeparatorChar -eq '\'
+. (Join-Path $PSScriptRoot "v4_candidate_state_helpers.ps1")
 
 function Resolve-DefaultProjectRoot {
     return (Split-Path -Path $PSScriptRoot -Parent)
@@ -363,7 +364,12 @@ function Get-PropValue {
         }
         return $DefaultValue
     }
-    if ($ObjectValue.PSObject -and $ObjectValue.PSObject.Properties.Name -contains $Name) {
+    $propertyNames = @(
+        $ObjectValue.PSObject.Properties |
+            Where-Object { $null -ne $_ -and $null -ne $_.Name } |
+            ForEach-Object { [string]$_.Name }
+    )
+    if ($propertyNames -contains $Name) {
         return $ObjectValue.$Name
     }
     return $DefaultValue
@@ -2571,7 +2577,7 @@ function Resolve-RegistryPointerPath {
         [string]$Family,
         [string]$PointerName
     )
-    return (Join-Path (Join-Path $RegistryRoot $Family) ($PointerName + ".json"))
+    return (Resolve-V4RegistryPointerPath -RegistryRoot $RegistryRoot -Family $Family -PointerName $PointerName)
 }
 
 function Update-LatestCandidatePointers {
@@ -2580,26 +2586,43 @@ function Update-LatestCandidatePointers {
         [string]$Family,
         [string]$RunId
     )
-    if ([string]::IsNullOrWhiteSpace($RegistryRoot) -or [string]::IsNullOrWhiteSpace($Family) -or [string]::IsNullOrWhiteSpace($RunId)) {
-        return @{}
-    }
-    $updatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    $familyPath = Resolve-RegistryPointerPath -RegistryRoot $RegistryRoot -Family $Family -PointerName "latest_candidate"
-    $globalPath = Join-Path $RegistryRoot "latest_candidate.json"
-    Write-JsonFile -PathValue $familyPath -Payload ([ordered]@{
-        run_id = $RunId
-        updated_at_utc = $updatedAtUtc
-    })
-    Write-JsonFile -PathValue $globalPath -Payload ([ordered]@{
-        run_id = $RunId
-        model_family = $Family
-        updated_at_utc = $updatedAtUtc
-    })
-    return [ordered]@{
-        family_path = $familyPath
-        global_path = $globalPath
-        updated_at_utc = $updatedAtUtc
-    }
+    return (Update-V4LatestCandidatePointers -RegistryRoot $RegistryRoot -Family $Family -RunId $RunId -DryRun:$DryRun)
+}
+
+function Resolve-ArtifactStatusPath {
+    param([string]$RunDir)
+    return (Resolve-V4ArtifactStatusPath -RunDir $RunDir)
+}
+
+function Resolve-OptionalBool {
+    param(
+        [AllowNull()][Nullable[bool]]$Value,
+        [bool]$DefaultValue = $false
+    )
+    return (Resolve-V4OptionalBool -Value $Value -DefaultValue $DefaultValue)
+}
+
+function Update-RunArtifactStatus {
+    param(
+        [string]$RunDir,
+        [string]$RunId,
+        [string]$Status = "",
+        [AllowNull()][Nullable[bool]]$AcceptanceCompleted = $null,
+        [AllowNull()][Nullable[bool]]$CandidateAdoptable = $null,
+        [AllowNull()][Nullable[bool]]$CandidateAdopted = $null,
+        [AllowNull()][Nullable[bool]]$Promoted = $null
+    )
+    return (
+        Update-V4RunArtifactStatus `
+            -RunDir $RunDir `
+            -RunId $RunId `
+            -Status $Status `
+            -AcceptanceCompleted $AcceptanceCompleted `
+            -CandidateAdoptable $CandidateAdoptable `
+            -CandidateAdopted $CandidateAdopted `
+            -Promoted $Promoted `
+            -DryRun:$DryRun
+    )
 }
 
 function Invoke-BacktestAndLoadSummary {
@@ -3058,6 +3081,8 @@ $effectiveRestartUnits = if ($AutoRestartKnownUnits) {
 }
 $report.runtime_units_before = @($runtimeUnitsBefore)
 $report.restart_targets = @($effectiveRestartUnits)
+$candidateRunId = ""
+$candidateRunDir = ""
 
 function Sync-WindowRampState {
     param($WindowRampValue)
@@ -3779,15 +3804,6 @@ try {
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
     $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
     $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
-    if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
-        $latestPointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $latestPointerPath }
-        $candidateRunId = [string](Get-PropValue -ObjectValue $latestPointer -Name "run_id" -DefaultValue "")
-    }
-    if ([string]::IsNullOrWhiteSpace($candidateRunId)) {
-        $candidatePointer = if ($DryRun) { @{} } else { Load-JsonOrEmpty -PathValue $candidatePointerPath }
-        $candidateRunId = [string](Get-PropValue -ObjectValue $candidatePointer -Name "run_id" -DefaultValue "")
-        $candidateRunDir = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId }
-    }
     if ([string]::IsNullOrWhiteSpace($candidateRunDir) -and (-not [string]::IsNullOrWhiteSpace($candidateRunId))) {
         $candidateRunDir = Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId
     }
@@ -3918,6 +3934,14 @@ try {
     if (($trainExec.ExitCode -ne 0) -or ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($candidateRunId))) {
         $report.reasons = @("TRAIN_OR_CANDIDATE_POINTER_FAILED")
         $report.gates.overall_pass = $false
+        Update-RunArtifactStatus `
+            -RunDir $candidateRunDir `
+            -RunId $candidateRunId `
+            -Status "acceptance_incomplete" `
+            -AcceptanceCompleted $false `
+            -CandidateAdoptable $false `
+            -CandidateAdopted $false `
+            -Promoted $false | Out-Null
         $paths = Save-Report
         Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
         exit 2
@@ -4031,6 +4055,14 @@ try {
             }
             Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
         }
+        Update-RunArtifactStatus `
+            -RunDir $candidateRunDir `
+            -RunId $candidateRunId `
+            -Status "duplicate_candidate" `
+            -AcceptanceCompleted $true `
+            -CandidateAdoptable $false `
+            -CandidateAdopted $false `
+            -Promoted $false | Out-Null
         $paths = Save-Report
         Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
         Write-Host ("[{0}] duplicate_candidate={1}" -f $LogTag, $true)
@@ -4110,6 +4142,14 @@ try {
             }
             Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
         }
+        Update-RunArtifactStatus `
+            -RunDir $candidateRunDir `
+            -RunId $candidateRunId `
+            -Status "bootstrap_only" `
+            -AcceptanceCompleted $true `
+            -CandidateAdoptable $false `
+            -CandidateAdopted $false `
+            -Promoted $false | Out-Null
         $paths = Save-Report
         Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
         Write-Host ("[{0}] backtest_pass={1}" -f $LogTag, $false)
@@ -5216,6 +5256,27 @@ try {
         $report.steps.report_refresh = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     }
 
+    $candidateAdoptable = $overallPass -and (-not $laneShadowOnly) -and $lanePromotionAllowed
+    $candidateAdopted = To-Bool (Get-PropValue -ObjectValue $updateLatestCandidateStep -Name "updated" -DefaultValue $false) $false
+    $promotedSucceeded = To-Bool (Get-PropValue -ObjectValue $promoteStep -Name "promoted" -DefaultValue $false) $false
+    $artifactStatusValue = if ($promotedSucceeded) {
+        "champion"
+    } elseif ($candidateAdopted) {
+        "candidate_adopted"
+    } elseif ($candidateAdoptable) {
+        "candidate_adoptable"
+    } else {
+        "acceptance_completed"
+    }
+    Update-RunArtifactStatus `
+        -RunDir $candidateRunDir `
+        -RunId $candidateRunId `
+        -Status $artifactStatusValue `
+        -AcceptanceCompleted $true `
+        -CandidateAdoptable $candidateAdoptable `
+        -CandidateAdopted $candidateAdopted `
+        -Promoted $promotedSucceeded | Out-Null
+
     if ($DryRun) {
         $report.gates.overall_pass = $null
         $report.reasons = @("DRY_RUN_ONLY")
@@ -5254,6 +5315,14 @@ try {
         position_message = if ($null -eq $invocation) { "" } else { [string]$invocation.PositionMessage }
         script_stack_trace = [string]$_.ScriptStackTrace
     }
+    Update-RunArtifactStatus `
+        -RunDir $candidateRunDir `
+        -RunId $candidateRunId `
+        -Status "acceptance_incomplete" `
+        -AcceptanceCompleted $false `
+        -CandidateAdoptable $false `
+        -CandidateAdopted $false `
+        -Promoted $false | Out-Null
     $paths = Save-Report
     Write-Host ("[{0}][error] {1}" -f $LogTag, $exceptionMessage)
     Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false

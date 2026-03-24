@@ -64,7 +64,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 write_json(candidate_dir / "promotion_decision.json", {"status": "candidate"})
                 (candidate_dir / "model.bin").write_bytes(b"same-model")
                 write_json(candidate_dir / "thresholds.json", {"top_5pct": 0.75})
-                print("train_ok")
+                print(json.dumps({"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}))
                 sys.exit(0)
 
             print("unexpected fake python invocation: " + " ".join(args), file=sys.stderr)

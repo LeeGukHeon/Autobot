@@ -91,7 +91,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 )
                 write_json(registry_dir / "latest.json", {"run_id": CANDIDATE_RUN_ID})
                 write_json(candidate_dir / "promotion_decision.json", {"status": "PASS"})
-                print("train_ok")
+                print(json.dumps({"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):

@@ -94,6 +94,7 @@ from .registry import (
     load_json,
     make_run_id,
     save_run,
+    update_artifact_status,
     update_latest_pointer,
     update_latest_candidate_pointer,
 )
@@ -402,6 +403,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         ),
         publish_pointers=False,
     )
+    update_artifact_status(
+        run_dir,
+        status="core_saved",
+        core_saved=True,
+    )
     support_artifacts = _train_v4_persistence.persist_v4_support_artifacts(
         run_dir=run_dir,
         options=options,
@@ -411,6 +417,11 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         cpcv_lite=cpcv_lite,
         factor_block_selection=factor_block_selection,
         search_budget_decision=search_budget_decision,
+    )
+    update_artifact_status(
+        run_dir,
+        status="support_artifacts_written",
+        support_artifacts_written=True,
     )
     walk_forward_report_path = support_artifacts["walk_forward_report_path"]
     cpcv_lite_report_path = support_artifacts["cpcv_lite_report_path"]
@@ -533,6 +544,13 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         lane_governance=lane_governance,
         decision_surface=decision_surface,
     )
+    update_artifact_status(
+        run_dir,
+        status="trainer_artifacts_complete",
+        execution_acceptance_complete=True,
+        runtime_recommendations_complete=True,
+        governance_artifacts_complete=True,
+    )
     execution_acceptance_report_path = runtime_artifacts["execution_acceptance_report_path"]
     runtime_recommendations_path = runtime_artifacts["runtime_recommendations_path"]
     promotion_path = runtime_artifacts["promotion_path"]
@@ -549,6 +567,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
             family=options.model_family,
         )
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
+    update_artifact_status(run_dir, status=status)
 
     finished_at = time.time()
     duration_sec = round(finished_at - started_at, 3)

@@ -32,6 +32,7 @@ def _make_fake_python_exe(
     write_decision_surface: bool,
     write_trainer_research_evidence: bool = True,
     write_latest_candidate_pointer: bool = True,
+    emit_train_run_dir: bool = True,
     budget_lane_class_requested: str = "promotion_eligible",
     budget_lane_class_effective: str = "promotion_eligible",
     budget_contract_id: str = "v4_promotion_eligible_budget_v1",
@@ -60,6 +61,7 @@ def _make_fake_python_exe(
             WRITE_DECISION_SURFACE = {str(write_decision_surface)}
             WRITE_TRAINER_RESEARCH_EVIDENCE = {str(write_trainer_research_evidence)}
             WRITE_LATEST_CANDIDATE_POINTER = {str(write_latest_candidate_pointer)}
+            EMIT_TRAIN_RUN_DIR = {str(emit_train_run_dir)}
             BUDGET_LANE_CLASS_REQUESTED = {budget_lane_class_requested!r}
             BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
             BUDGET_CONTRACT_ID = {budget_contract_id!r}
@@ -449,7 +451,10 @@ def _make_fake_python_exe(
                             }}
                         }},
                     )
-                print(json.dumps({{"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}}))
+                if EMIT_TRAIN_RUN_DIR:
+                    print(json.dumps({{"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}}))
+                else:
+                    print("train_ok")
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "features", "build"):
@@ -1608,11 +1613,47 @@ def test_candidate_acceptance_resolves_fresh_run_from_train_stdout_when_candidat
     report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
     certification_path = Path(report["candidate"]["certification_artifact_path"])
     certification = json.loads(certification_path.read_text(encoding="utf-8-sig"))
+    artifact_status = json.loads((Path(report["candidate"]["run_dir"]) / "artifact_status.json").read_text(encoding="utf-8-sig"))
 
     assert report["candidate"]["run_id"] == "candidate-run-001"
     assert Path(report["candidate"]["run_dir"]).name == "candidate-run-001"
     assert report["gates"]["backtest"]["pass"] is True
     assert certification["candidate_run_id"] == "candidate-run-001"
+    assert artifact_status["acceptance_completed"] is True
+    assert artifact_status["candidate_adoptable"] is True
+    assert artifact_status["candidate_adopted"] is True
+    assert artifact_status["promoted"] is False
+
+
+def test_candidate_acceptance_does_not_fall_back_to_latest_when_train_stdout_has_no_run_dir(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest.json",
+        {"run_id": "stale-latest-run"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        emit_train_run_dir=False,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert report["reasons"] == ["TRAIN_OR_CANDIDATE_POINTER_FAILED"]
+    assert report["steps"]["train"]["candidate_run_id"] == ""
+    assert report["candidate"] == {}
 
 
 def test_candidate_acceptance_required_trainer_evidence_fails_without_decision_surface(

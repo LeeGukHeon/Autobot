@@ -12,6 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DAILY_CC_SCRIPT = REPO_ROOT / "scripts" / "daily_champion_challenger_v4_for_server.ps1"
 
 
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _powershell_exe() -> str:
     for name in ("powershell.exe", "pwsh"):
         resolved = shutil.which(name)
@@ -153,10 +158,22 @@ def _make_fake_acceptance_script(
             $ErrorActionPreference = "Stop"
             $reportPath = Join-Path $ProjectRoot "logs/fake_acceptance/report.json"
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $reportPath) | Out-Null
-            {prelude}
-            @'
+            $payload = @'
             {payload_json}
-            '@ | Set-Content -Path $reportPath -Encoding UTF8
+            '@ | ConvertFrom-Json
+            $candidateRunId = [string]($payload.steps.train.candidate_run_id)
+            if (-not [string]::IsNullOrWhiteSpace($candidateRunId)) {{
+                $runDir = Join-Path $ProjectRoot ("models/registry/train_v4_crypto_cs/" + $candidateRunId)
+                New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+                @{{ "run_id" = $candidateRunId; "updated_at_utc" = "2026-03-24T00:00:00Z" }} |
+                    ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $runDir "latest.json") -Encoding UTF8
+                @{{ "run_id" = $candidateRunId; "test_precision_top5" = 0.75 }} |
+                    ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $runDir "leaderboard_row.json") -Encoding UTF8
+                @{{ "run_id" = $candidateRunId; "core_saved" = $true; "support_artifacts_written" = $true; "execution_acceptance_complete" = $true; "runtime_recommendations_complete" = $true; "governance_artifacts_complete" = $true; "acceptance_completed" = $true; "candidate_adoptable" = $true; "candidate_adopted" = $false; "promoted" = $false; "status" = "candidate"; "updated_at_utc" = "2026-03-24T00:00:00Z" }} |
+                    ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $runDir "artifact_status.json") -Encoding UTF8
+            }}
+            {prelude}
+            $payload | ConvertTo-Json -Depth 20 | Set-Content -Path $reportPath -Encoding UTF8
             Write-Host ("[fake-accept] report={{0}}" -f $reportPath)
             exit {exit_code}
             """
@@ -607,6 +624,62 @@ def test_spawn_only_restarts_configured_candidate_targets_when_active(tmp_path: 
     assert restart_step["attempted"] is True
     assert restart_step["candidate_run_id"] == "candidate-run-live-canary"
     assert restart_step["restarted_units"] == ["autobot-live-alpha-candidate.service"]
+    assert restart_step["started_from_inactive_units"] == []
+    assert restart_step["skipped_units"] == []
+
+
+def test_spawn_only_starts_inactive_candidate_targets_when_adoption_succeeds(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+    systemctl_log = tmp_path / "systemctl.log"
+    _make_fake_sudo(tmp_path)
+    _make_fake_systemctl(tmp_path)
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "split_policy": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-live-canary-cold"},
+            },
+            "gates": {
+                "backtest": {"pass": True},
+                "overall_pass": True,
+            },
+            "reasons": [],
+        },
+        exit_code=0,
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        active_units=[],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    restart_step = latest["steps"]["restart_candidate_targets"]
+    assert restart_step["attempted"] is True
+    assert restart_step["candidate_run_id"] == "candidate-run-live-canary-cold"
+    assert restart_step["restarted_units"] == ["autobot-live-alpha-candidate.service"]
+    assert restart_step["started_from_inactive_units"] == ["autobot-live-alpha-candidate.service"]
     assert restart_step["skipped_units"] == []
 
 
@@ -844,3 +917,198 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
     assert promote_step["started_from_inactive_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
     assert promote_step["skipped_units"] == []
     assert "restart autobot-live-alpha.service" in systemctl_calls
+
+
+def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targets(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-15",
+                "candidate_run_id": "candidate-run-promote-clear",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
+    family_pointer.parent.mkdir(parents=True, exist_ok=True)
+    family_pointer.write_text(json.dumps({"run_id": "candidate-run-promote-clear"}), encoding="utf-8")
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
+    global_pointer.parent.mkdir(parents=True, exist_ok=True)
+    global_pointer.write_text(
+        json.dumps({"run_id": "candidate-run-promote-clear", "model_family": "train_v4_crypto_cs"}),
+        encoding="utf-8",
+    )
+
+    systemctl_log = tmp_path / "systemctl.log"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "promote_only",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_ACTIVE_UNITS": "autobot-live-alpha-candidate.service",
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+        },
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8")
+
+    assert latest["steps"]["promote_previous_challenger"]["promoted"] is True
+    assert latest["steps"]["stop_candidate_targets_after_promote"]["stopped_units"] == [
+        "autobot-live-alpha-candidate.service"
+    ]
+    assert latest["steps"]["clear_latest_candidate"]["removed_paths"] == [
+        str(family_pointer),
+        str(global_pointer),
+    ]
+    assert not family_pointer.exists()
+    assert not global_pointer.exists()
+    assert not state_path.exists()
+    assert "stop autobot-live-alpha-candidate.service" in systemctl_calls
+
+
+def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "candidate": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            },
+            "split_policy": {
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+                "policy_id": "v4_split_policy_forward_validation_lcb_v1",
+            },
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-e2e"},
+            },
+            "gates": {
+                "backtest": {"pass": True},
+                "overall_pass": True,
+            },
+            "reasons": [],
+        },
+        exit_code=0,
+    )
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-e2e"},
+    )
+
+    spawn_completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-RuntimeInstallScript",
+            str(runtime_install_script),
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        active_units=["autobot-live-alpha-candidate.service"],
+    )
+
+    assert spawn_completed.returncode == 0, spawn_completed.stdout + "\n" + spawn_completed.stderr
+    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    assert family_pointer.exists()
+    assert global_pointer.exists()
+    assert state_path.exists()
+
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+    systemctl_log = tmp_path / "systemctl.log"
+    promote_completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "promote_only",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_ACTIVE_UNITS": "autobot-live-alpha-candidate.service",
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+        },
+        check=False,
+    )
+
+    assert promote_completed.returncode == 0, promote_completed.stdout + "\n" + promote_completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    cutover = json.loads(
+        (project_root / "logs" / "model_v4_challenger" / "latest_promote_cutover.json").read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8")
+
+    assert latest["steps"]["promote_previous_challenger"]["promoted"] is True
+    assert latest["steps"]["promote_previous_challenger"]["candidate_run_id"] == "candidate-run-e2e"
+    assert latest["steps"]["clear_latest_candidate"]["removed_paths"] == [
+        str(family_pointer),
+        str(global_pointer),
+    ]
+    assert latest["steps"]["stop_candidate_targets_after_promote"]["stopped_units"] == [
+        "autobot-live-alpha-candidate.service"
+    ]
+    assert cutover["new_champion_run_id"] == "candidate-run-e2e"
+    assert not family_pointer.exists()
+    assert not global_pointer.exists()
+    assert not state_path.exists()
+    assert "restart autobot-paper-v4.service" in systemctl_calls
+    assert "stop autobot-live-alpha-candidate.service" in systemctl_calls

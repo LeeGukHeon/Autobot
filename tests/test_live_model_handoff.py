@@ -663,6 +663,108 @@ def test_runtime_installer_dry_run_exposes_model_contract_envs() -> None:
     assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v4_crypto_cs" in stdout
 
 
+def test_runtime_installer_rejects_challenger_role_without_pinned_candidate_ref() -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer dry-run test")
+    script = REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-PaperPreset",
+            "live_v4",
+            "-PaperRuntimeRole",
+            "challenger",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "cannot default to champion source" in (completed.stdout + completed.stderr)
+
+
+def test_runtime_installer_rejects_champion_role_with_candidate_default_source() -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer dry-run test")
+    script = REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-PaperPreset",
+            "candidate_v4",
+            "-PaperRuntimeRole",
+            "champion",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "cannot default to candidate source" in (completed.stdout + completed.stderr)
+
+
+def test_runtime_installer_allows_challenger_role_with_pinned_model_ref() -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer dry-run test")
+    script = REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-PaperPreset",
+            "live_v4",
+            "-PaperRuntimeRole",
+            "challenger",
+            "-PaperModelRefPinned",
+            "run-123",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "Environment=AUTOBOT_PAPER_RUNTIME_ROLE=challenger" in stdout
+    assert "Environment=AUTOBOT_PAPER_MODEL_REF_PINNED=run-123" in stdout
+
+
 def test_runtime_installer_requires_explicit_bootstrap_when_champion_missing(tmp_path: Path) -> None:
     pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
     if not pwsh:

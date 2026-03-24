@@ -3,6 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$AcceptanceScript = "",
     [string]$RuntimeInstallScript = "",
+    [string]$CandidateAdoptionScript = "",
     [string]$ExecutionPolicyRefreshScript = "",
     [string]$BatchDate = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
@@ -31,6 +32,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "systemd_service_utils.ps1")
+. (Join-Path $PSScriptRoot "v4_candidate_state_helpers.ps1")
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
@@ -42,6 +44,11 @@ function Resolve-DefaultRuntimeInstallScript {
     return (Join-Path $Root "scripts/install_server_runtime_services.ps1")
 }
 
+function Resolve-DefaultCandidateAdoptionScript {
+    param([string]$Root)
+    return (Join-Path $PSScriptRoot "adopt_v4_candidate_for_server.ps1")
+}
+
 function Resolve-DefaultExecutionPolicyRefreshScript {
     param([string]$Root)
     return (Join-Path $Root "scripts/refresh_live_execution_policy.ps1")
@@ -49,9 +56,15 @@ function Resolve-DefaultExecutionPolicyRefreshScript {
 
 function Resolve-ChampionRunId {
     param([string]$Root)
-    $pointerPath = Join-Path $Root "models/registry/train_v4_crypto_cs/champion.json"
-    $pointer = Load-JsonOrEmpty -PathValue $pointerPath
-    return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
+    return (Resolve-V4ChampionRunId -Root $Root)
+}
+
+function Clear-LatestCandidatePointers {
+    param(
+        [string]$RegistryRoot,
+        [string]$Family
+    )
+    return (Clear-V4LatestCandidatePointers -RegistryRoot $RegistryRoot -Family $Family -DryRun:$DryRun)
 }
 
 function Resolve-BatchDateValue {
@@ -166,7 +179,12 @@ function Get-PropValue {
         }
         return $DefaultValue
     }
-    if ($ObjectValue.PSObject -and $ObjectValue.PSObject.Properties.Name -contains $Name) {
+    $propertyNames = @(
+        $ObjectValue.PSObject.Properties |
+            Where-Object { $null -ne $_ -and $null -ne $_.Name } |
+            ForEach-Object { [string]$_.Name }
+    )
+    if ($propertyNames -contains $Name) {
         return $ObjectValue.$Name
     }
     return $DefaultValue
@@ -423,6 +441,33 @@ function Restart-Unit {
     }
 }
 
+function Stop-ConfiguredUnits {
+    param([string[]]$Units)
+    $stoppedUnits = New-Object System.Collections.Generic.List[string]
+    $skippedUnits = New-Object System.Collections.Generic.List[object]
+    foreach ($unit in @($Units)) {
+        $trimmedUnit = [string]$unit
+        if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
+            continue
+        }
+        $trimmedUnit = $trimmedUnit.Trim()
+        if (Test-SystemdUnitActive -UnitName $trimmedUnit) {
+            Stop-UnitIfActive -UnitName $trimmedUnit | Out-Null
+            $stoppedUnits.Add($trimmedUnit) | Out-Null
+        } else {
+            $skippedUnits.Add([ordered]@{
+                unit = $trimmedUnit
+                reason = "UNIT_NOT_ACTIVE"
+            }) | Out-Null
+        }
+    }
+    return [ordered]@{
+        attempted = $true
+        stopped_units = @($stoppedUnits.ToArray())
+        skipped_units = @($skippedUnits.ToArray())
+    }
+}
+
 function Start-OrUpdate-ChallengerUnit {
     param(
         [string]$RuntimeInstallScriptPath,
@@ -581,12 +626,14 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { Resolve-DefaultAcceptanceScript -Root $resolvedProjectRoot } else { $AcceptanceScript }
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
+$resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) { Resolve-DefaultCandidateAdoptionScript -Root $resolvedProjectRoot } else { $CandidateAdoptionScript }
 $resolvedExecutionPolicyRefreshScript = if ([string]::IsNullOrWhiteSpace($ExecutionPolicyRefreshScript)) { Resolve-DefaultExecutionPolicyRefreshScript -Root $resolvedProjectRoot } else { $ExecutionPolicyRefreshScript }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
 $resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
 $resolvedBlockOnActiveUnits = @(Get-StringArray -Value $BlockOnActiveUnits)
 $resolvedAcceptanceArgs = @(Get-StringArray -Value $AcceptanceArgs)
+$registryRoot = Join-Path $resolvedProjectRoot "models/registry"
 $stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
@@ -807,6 +854,10 @@ if ($runPromotionPhase) {
                 Write-JsonFile -PathValue $promoteCutoverLatestPath -Payload $promoteCutover
                 Write-JsonFile -PathValue $promoteCutoverArchivePath -Payload $promoteCutover
                 $script:rollbackPromoteCutoverArchivePath = $promoteCutoverArchivePath
+                $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
+                $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
+                $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
+                $report.steps.clear_latest_candidate = $clearCandidatePointerStep
                 $report.steps.promote_previous_challenger = [ordered]@{
                     attempted = $true
                     command = $promoteExec.Command
@@ -819,6 +870,14 @@ if ($runPromotionPhase) {
                     cutover_artifact = $promoteCutoverLatestPath
                 }
             } else {
+                $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                    attempted = $false
+                    reason = if ($shouldPromote) { "DRY_RUN" } else { "PROMOTION_NOT_PERFORMED" }
+                }
+                $report.steps.clear_latest_candidate = [ordered]@{
+                    attempted = $false
+                    reason = if ($shouldPromote) { "DRY_RUN" } else { "PROMOTION_NOT_PERFORMED" }
+                }
                 $report.steps.promote_previous_challenger = [ordered]@{
                     attempted = $false
                     promoted = $false
@@ -827,6 +886,16 @@ if ($runPromotionPhase) {
                 }
             }
         } elseif ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and ((-not $previousPromotionEligible) -or ($previousLaneMode -eq "bootstrap_latest_inclusive"))) {
+            $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                attempted = $false
+                reason = "BOOTSTRAP_ONLY_POLICY"
+                candidate_run_id = $candidateRunId
+            }
+            $report.steps.clear_latest_candidate = [ordered]@{
+                attempted = $false
+                reason = "BOOTSTRAP_ONLY_POLICY"
+                candidate_run_id = $candidateRunId
+            }
             $report.steps.promote_previous_challenger = [ordered]@{
                 attempted = $false
                 promoted = $false
@@ -836,6 +905,16 @@ if ($runPromotionPhase) {
                 promotion_eligible = $previousPromotionEligible
             }
         } else {
+            $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                attempted = $false
+                reason = "PREVIOUS_STATE_INCOMPLETE"
+                candidate_run_id = $candidateRunId
+            }
+            $report.steps.clear_latest_candidate = [ordered]@{
+                attempted = $false
+                reason = "PREVIOUS_STATE_INCOMPLETE"
+                candidate_run_id = $candidateRunId
+            }
             $report.steps.promote_previous_challenger = [ordered]@{
                 attempted = $false
                 promoted = $false
@@ -847,6 +926,14 @@ if ($runPromotionPhase) {
             Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
         }
     } else {
+        $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+            attempted = $false
+            reason = "NO_PREVIOUS_CHALLENGER_STATE"
+        }
+        $report.steps.clear_latest_candidate = [ordered]@{
+            attempted = $false
+            reason = "NO_PREVIOUS_CHALLENGER_STATE"
+        }
         $report.steps.promote_previous_challenger = [ordered]@{
             attempted = $false
             promoted = $false
@@ -854,6 +941,14 @@ if ($runPromotionPhase) {
         }
     }
 } else {
+    $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+        attempted = $false
+        reason = "SKIPPED_BY_MODE"
+    }
+    $report.steps.clear_latest_candidate = [ordered]@{
+        attempted = $false
+        reason = "SKIPPED_BY_MODE"
+    }
     $report.steps.promote_previous_challenger = [ordered]@{
         attempted = $false
         reason = "SKIPPED_BY_MODE"
@@ -978,79 +1073,118 @@ if ($runSpawnPhase) {
     }
 
     if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($backtestPass -or $bootstrapOnly)) {
-        $challengerInstallExec = Start-OrUpdate-ChallengerUnit `
-            -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
-            -Root $resolvedProjectRoot `
-            -PyExe $resolvedPythonExe `
-            -UnitName $ChallengerUnitName `
-            -CandidateRunId $candidateRunId
-        $report.steps.start_challenger = [ordered]@{
-            command = $challengerInstallExec.Command
-            output_preview = $challengerInstallExec.Output
-            candidate_run_id = $candidateRunId
-            lane_mode = $acceptLaneMode
-            promotion_eligible = $acceptPromotionEligible
-            bootstrap_only = $bootstrapOnly
-        }
-        $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
-        $nextState = [ordered]@{
-            batch_date = $resolvedBatchDate
-            candidate_run_id = $candidateRunId
-            champion_ref_at_start = "champion_v4"
-            champion_run_id_at_start = $championRunIdAtStart
-            started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
-            started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-            champion_unit = $ChampionUnitName
-            challenger_unit = $ChallengerUnitName
-            promotion_target_units = @($resolvedPromotionTargetUnits)
-            lane_mode = $acceptLaneMode
-            promotion_eligible = $acceptPromotionEligible
-            bootstrap_only = $bootstrapOnly
-            split_policy_id = [string](Get-PropValue -ObjectValue $acceptSplitPolicy -Name "policy_id" -DefaultValue "")
-            split_policy_artifact_path = [string](Get-PropValue -ObjectValue $acceptCandidate -Name "split_policy_artifact_path" -DefaultValue "")
-        }
-        if (-not $DryRun) {
-            Write-JsonFile -PathValue $statePath -Payload $nextState
-        }
-        $report.challenger_next = $nextState
-
-        if (($resolvedCandidateTargetUnits.Count -gt 0) -and $overallPass) {
-            $restartedCandidateUnits = @()
-            $skippedCandidateUnits = @()
-            foreach ($unit in $resolvedCandidateTargetUnits) {
-                $trimmedUnit = [string]$unit
-                if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
-                    continue
-                }
-                $trimmedUnit = $trimmedUnit.Trim()
-                if (Test-SystemdUnitActive -UnitName $trimmedUnit) {
-                    Restart-Unit -UnitName $trimmedUnit
-                    $restartedCandidateUnits += $trimmedUnit
-                } else {
-                    $skippedCandidateUnits += [ordered]@{
-                        unit = $trimmedUnit
-                        reason = "UNIT_NOT_ACTIVE"
-                    }
-                }
+        if ($overallPass) {
+            $adoptArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", $resolvedCandidateAdoptionScript,
+                "-ProjectRoot", $resolvedProjectRoot,
+                "-PythonExe", $resolvedPythonExe,
+                "-RuntimeInstallScript", $resolvedRuntimeInstallScript,
+                "-BatchDate", $resolvedBatchDate,
+                "-CandidateRunId", $candidateRunId,
+                "-ChampionUnitName", $ChampionUnitName,
+                "-ChallengerUnitName", $ChallengerUnitName,
+                "-LaneMode", $acceptLaneMode
+            )
+            if ($resolvedPromotionTargetUnits.Count -gt 0) {
+                $adoptArgs += @(
+                    "-PromotionTargetUnits",
+                    (Join-DelimitedStringArray -Values $resolvedPromotionTargetUnits)
+                )
             }
-            $report.steps.restart_candidate_targets = [ordered]@{
+            if ($resolvedCandidateTargetUnits.Count -gt 0) {
+                $adoptArgs += @(
+                    "-CandidateTargetUnits",
+                    (Join-DelimitedStringArray -Values $resolvedCandidateTargetUnits)
+                )
+            }
+            $splitPolicyIdValue = [string](Get-PropValue -ObjectValue $acceptSplitPolicy -Name "policy_id" -DefaultValue "")
+            if (-not [string]::IsNullOrWhiteSpace($splitPolicyIdValue)) {
+                $adoptArgs += @(
+                    "-SplitPolicyId",
+                    $splitPolicyIdValue
+                )
+            }
+            $splitPolicyArtifactPathValue = [string](Get-PropValue -ObjectValue $acceptCandidate -Name "split_policy_artifact_path" -DefaultValue "")
+            if (-not [string]::IsNullOrWhiteSpace($splitPolicyArtifactPathValue)) {
+                $adoptArgs += @(
+                    "-SplitPolicyArtifactPath",
+                    $splitPolicyArtifactPathValue
+                )
+            }
+            if ($bootstrapOnly) {
+                $adoptArgs += "-BootstrapOnly"
+            }
+            if ($DryRun) {
+                $adoptArgs += "-DryRun"
+            }
+            $adoptExec = Invoke-CommandCapture -Exe $psExe -ArgList $adoptArgs
+            $adoptReportPath = Resolve-ReportedJsonPath -OutputText $adoptExec.Output
+            $adoptReport = Load-JsonOrEmpty -PathValue $adoptReportPath
+            if ((-not $DryRun) -and (-not (Test-ObjectHasValues -ObjectValue $adoptReport))) {
+                throw ("candidate adoption report missing: " + $adoptReportPath)
+            }
+            $report.steps.adopt_candidate = [ordered]@{
                 attempted = $true
+                command = $adoptExec.Command
+                output_preview = $adoptExec.Output
+                report_path = $adoptReportPath
                 candidate_run_id = $candidateRunId
-                restarted_units = @($restartedCandidateUnits)
-                skipped_units = @($skippedCandidateUnits)
             }
-        } elseif ($resolvedCandidateTargetUnits.Count -gt 0) {
-            $report.steps.restart_candidate_targets = [ordered]@{
-                attempted = $false
-                candidate_run_id = $candidateRunId
-                reason = "OVERALL_PASS_REQUIRED"
-                overall_pass = $overallPass
-            }
+            $report.steps.update_latest_candidate = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "update_latest_candidate" -DefaultValue @{}
+            $report.steps.start_challenger = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "start_challenger" -DefaultValue @{}
+            $report.steps.restart_candidate_targets = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "restart_candidate_targets" -DefaultValue @{}
+            $report.challenger_next = Get-PropValue -ObjectValue $adoptReport -Name "current_state" -DefaultValue @{}
         } else {
-            $report.steps.restart_candidate_targets = [ordered]@{
-                attempted = $false
-                reason = "NO_CANDIDATE_TARGET_UNITS"
+            $challengerInstallExec = Start-OrUpdate-ChallengerUnit `
+                -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
+                -Root $resolvedProjectRoot `
+                -PyExe $resolvedPythonExe `
+                -UnitName $ChallengerUnitName `
+                -CandidateRunId $candidateRunId
+            $report.steps.start_challenger = [ordered]@{
+                command = $challengerInstallExec.Command
+                output_preview = $challengerInstallExec.Output
                 candidate_run_id = $candidateRunId
+                lane_mode = $acceptLaneMode
+                promotion_eligible = $acceptPromotionEligible
+                bootstrap_only = $bootstrapOnly
+            }
+            $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
+            $nextState = [ordered]@{
+                batch_date = $resolvedBatchDate
+                candidate_run_id = $candidateRunId
+                champion_ref_at_start = "champion_v4"
+                champion_run_id_at_start = $championRunIdAtStart
+                started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
+                started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+                champion_unit = $ChampionUnitName
+                challenger_unit = $ChallengerUnitName
+                promotion_target_units = @($resolvedPromotionTargetUnits)
+                lane_mode = $acceptLaneMode
+                promotion_eligible = $acceptPromotionEligible
+                bootstrap_only = $bootstrapOnly
+                split_policy_id = [string](Get-PropValue -ObjectValue $acceptSplitPolicy -Name "policy_id" -DefaultValue "")
+                split_policy_artifact_path = [string](Get-PropValue -ObjectValue $acceptCandidate -Name "split_policy_artifact_path" -DefaultValue "")
+            }
+            if (-not $DryRun) {
+                Write-JsonFile -PathValue $statePath -Payload $nextState
+            }
+            $report.challenger_next = $nextState
+            if ($resolvedCandidateTargetUnits.Count -gt 0) {
+                $report.steps.restart_candidate_targets = [ordered]@{
+                    attempted = $false
+                    candidate_run_id = $candidateRunId
+                    reason = "OVERALL_PASS_REQUIRED"
+                    overall_pass = $overallPass
+                }
+            } else {
+                $report.steps.restart_candidate_targets = [ordered]@{
+                    attempted = $false
+                    reason = "NO_CANDIDATE_TARGET_UNITS"
+                    candidate_run_id = $candidateRunId
+                }
             }
         }
     } else {

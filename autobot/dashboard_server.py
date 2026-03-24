@@ -1,4 +1,4 @@
-"""Read-only operations dashboard for training, paper, and live runtime."""
+﻿"""Read-only operations dashboard for training, paper, and live runtime."""
 
 from __future__ import annotations
 
@@ -2014,97 +2014,6 @@ def _latest_candidate_run_id(project_root: Path) -> str:
     return str(payload.get("run_id") or "").strip()
 
 
-def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
-    latest_candidate_run_id = _latest_candidate_run_id(project_root)
-    return {
-        "restart_paper_champion": {
-            "id": "restart_paper_champion",
-            "label": "Paper Champion Restart",
-            "description": "autobot-paper-v4.service 재시작",
-            "category": "services",
-            "confirm": "챔피언 paper 서비스를 재시작할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4.service"],
-        },
-        "restart_paper_challenger": {
-            "id": "restart_paper_challenger",
-            "label": "Paper Challenger Restart",
-            "description": "autobot-paper-v4-challenger.service 재시작",
-            "category": "services",
-            "confirm": "챌린저 paper 서비스를 재시작할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4-challenger.service"],
-        },
-        "restart_canary": {
-            "id": "restart_canary",
-            "label": "Canary Restart",
-            "description": "autobot-live-alpha-candidate.service 재시작",
-            "category": "services",
-            "confirm": "카나리아 live 서비스를 재시작할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
-        },
-        "try_restart_live_main": {
-            "id": "try_restart_live_main",
-            "label": "Main Live Try-Restart",
-            "description": "autobot-live-alpha.service try-restart",
-            "category": "services",
-            "confirm": "메인 live 서비스를 try-restart 할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "try-restart", "autobot-live-alpha.service"],
-        },
-        "restart_ws_public": {
-            "id": "restart_ws_public",
-            "label": "WS Public Restart",
-            "description": "autobot-ws-public.service 재시작",
-            "category": "services",
-            "confirm": "WS public 수집기를 재시작할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-ws-public.service"],
-        },
-        "start_spawn_only": {
-            "id": "start_spawn_only",
-            "label": "Spawn Only",
-            "description": "00:10 challenger spawn 수동 실행",
-            "category": "pipeline",
-            "confirm": "spawn_only를 지금 수동 실행할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-spawn.service"],
-        },
-        "start_promote_only": {
-            "id": "start_promote_only",
-            "label": "Promote Only",
-            "description": "23:50 challenger promote 수동 실행",
-            "category": "pipeline",
-            "confirm": "promote_only를 지금 수동 실행할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-promote.service"],
-        },
-        "start_rank_shadow": {
-            "id": "start_rank_shadow",
-            "label": "Rank Shadow",
-            "description": "rank shadow 사이클 수동 실행",
-            "category": "pipeline",
-            "confirm": "rank-shadow를 지금 수동 실행할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-rank-shadow.service"],
-        },
-        "adopt_latest_candidate": {
-            "id": "adopt_latest_candidate",
-            "label": "Adopt Latest Candidate",
-            "description": (
-                f"latest_candidate {latest_candidate_run_id}를 challenger paper와 canary에 반영"
-                if latest_candidate_run_id
-                else "latest_candidate를 challenger paper와 canary에 반영"
-            ),
-            "category": "binding",
-            "confirm": "현재 latest_candidate를 challenger paper와 canary에 바로 반영할까요?",
-            "kind": "adopt_latest_candidate",
-            "run_id": latest_candidate_run_id,
-        },
-    }
-
-
 def _run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, Any]:
     started_at = _utc_now_iso()
     try:
@@ -2147,100 +2056,30 @@ def _run_adopt_latest_candidate(project_root: Path, run_id: str) -> dict[str, An
         }
     pwsh_exe = _resolve_pwsh_exe()
     python_exe = _project_python_exe(project_root)
-    install_script = project_root / "scripts" / "install_server_runtime_services.ps1"
-    install_result = _run_dashboard_command(
+    adoption_script = project_root / "scripts" / "adopt_v4_candidate_for_server.ps1"
+    adoption_result = _run_dashboard_command(
         [
             pwsh_exe,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            str(install_script),
+            str(adoption_script),
             "-ProjectRoot",
             str(project_root),
             "-PythonExe",
             python_exe,
-            "-PaperUnitName",
-            "autobot-paper-v4-challenger.service",
-            "-PaperPreset",
-            "live_v4",
-            "-PaperRuntimeRole",
-            "challenger",
-            "-PaperLaneName",
-            "v4",
-            "-PaperModelRefPinned",
+            "-CandidateRunId",
             run_id_value,
-            "-NoBootstrapChampion",
-            "-NoEnable",
-            "-PaperCliArgs",
-            f"--model-ref,{run_id_value}",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
         ],
         timeout_sec=120,
     )
-    restart_result = _run_dashboard_command(
-        ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
-        timeout_sec=20,
-    )
     return {
-        "started_at": install_result.get("started_at"),
-        "completed_at": restart_result.get("completed_at"),
-        "exit_code": 0 if install_result.get("success") and restart_result.get("success") else 1,
-        "stdout_preview": _preview_text(
-            " | ".join(
-                part
-                for part in [
-                    str(install_result.get("stdout_preview") or "").strip(),
-                    str(restart_result.get("stdout_preview") or "").strip(),
-                ]
-                if part
-            )
-        ),
-        "stderr_preview": _preview_text(
-            " | ".join(
-                part
-                for part in [
-                    str(install_result.get("stderr_preview") or "").strip(),
-                    str(restart_result.get("stderr_preview") or "").strip(),
-                ]
-                if part
-            )
-        ),
-        "success": bool(install_result.get("success")) and bool(restart_result.get("success")),
+        **adoption_result,
         "run_id": run_id_value,
     }
-
-
-def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str, Any]:
-    catalog = _dashboard_ops_catalog(project_root)
-    action = catalog.get(str(action_id).strip())
-    if not action:
-        return {
-            "action_id": str(action_id).strip(),
-            "success": False,
-            "error": "unknown_action",
-        }
-    if not _DASHBOARD_OPS_LOCK.acquire(blocking=False):
-        return {
-            "action_id": action["id"],
-            "success": False,
-            "error": "ops_busy",
-        }
-    try:
-        if action.get("kind") == "adopt_latest_candidate":
-            result = _run_adopt_latest_candidate(project_root, str(action.get("run_id") or ""))
-        else:
-            result = _run_dashboard_command(list(action.get("command") or []), timeout_sec=20)
-        record = {
-            "action_id": action["id"],
-            "label": action["label"],
-            "description": action["description"],
-            "category": action["category"],
-            **result,
-        }
-        _append_dashboard_ops_history(project_root, record)
-        return record
-    finally:
-        _DASHBOARD_OPS_LOCK.release()
 
 
 def _build_dashboard_ops_snapshot(project_root: Path) -> dict[str, Any]:
@@ -2485,7 +2324,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "start_spawn_only": {
             "id": "start_spawn_only",
             "label": "스폰만 지금 실행",
-            "description": "00:10 challenger spawn 수동 실행",
+            "description": "00:20 challenger spawn 수동 실행",
             "category": "pipeline",
             "confirm": "spawn_only를 지금 수동 실행할까요?",
             "kind": "command",
@@ -2494,7 +2333,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "start_promote_only": {
             "id": "start_promote_only",
             "label": "승급만 지금 실행",
-            "description": "23:50 challenger promote 수동 실행",
+            "description": "00:10 challenger promote 수동 실행",
             "category": "pipeline",
             "confirm": "promote_only를 지금 수동 실행할까요?",
             "kind": "command",

@@ -7,6 +7,7 @@ import time
 import pytest
 
 from autobot.dashboard_server import (
+    _execute_dashboard_operation,
     _json_response,
     _load_dashboard_asset,
     _run_clear_live_breaker,
@@ -1039,6 +1040,59 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     assert actions["clear_canary_breaker"]["category"] == "recovery"
     assert "clear_live_main_breaker" in actions
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
+    assert actions["start_spawn_only"]["description"].startswith("00:20 challenger spawn")
+    assert actions["start_promote_only"]["description"].startswith("00:10 challenger promote")
+
+
+def test_dashboard_server_source_keeps_single_dashboard_ops_catalog_and_execute_definitions() -> None:
+    source = (Path(__file__).resolve().parents[1] / "autobot" / "dashboard_server.py").read_text(encoding="utf-8")
+
+    assert source.count("def _dashboard_ops_catalog(") == 1
+    assert source.count("def _execute_dashboard_operation(") == 1
+    assert "def _dashboard_ops_catalog_legacy_unused(" not in source
+    assert "def _execute_dashboard_operation_legacy_unused(" not in source
+
+
+def test_execute_dashboard_operation_adopt_latest_candidate_uses_shared_adoption_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json",
+        {"run_id": "run-001"},
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, object]:
+        captured["command"] = list(command)
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "started_at": "2026-03-24T00:00:00Z",
+            "completed_at": "2026-03-24T00:00:01Z",
+            "exit_code": 0,
+            "stdout_preview": "ok",
+            "stderr_preview": "",
+            "success": True,
+        }
+
+    monkeypatch.setattr("autobot.dashboard_server._run_dashboard_command", _fake_run_dashboard_command)
+    monkeypatch.setattr("autobot.dashboard_server._resolve_pwsh_exe", lambda: "pwsh")
+    monkeypatch.setattr("autobot.dashboard_server._project_python_exe", lambda root: "/venv/bin/python")
+
+    result = _execute_dashboard_operation(project_root, "adopt_latest_candidate")
+
+    assert result["success"] is True
+    assert result["run_id"] == "run-001"
+    command = list(captured["command"] or [])
+    assert command[0] == "pwsh"
+    assert str(project_root / "scripts" / "adopt_v4_candidate_for_server.ps1") in command
+    assert command[command.index("-CandidateRunId") + 1] == "run-001"
+    assert command[command.index("-CandidateTargetUnits") + 1] == "autobot-live-alpha-candidate.service"
+    assert int(captured["timeout_sec"]) == 120
+    history_path = project_root / "logs" / "dashboard_ops" / "ops_history.jsonl"
+    assert history_path.exists()
+    assert '"action_id": "adopt_latest_candidate"' in history_path.read_text(encoding="utf-8")
 
 
 def test_run_clear_live_breaker_resolves_breaker_state_and_cleans_online_buffer(tmp_path: Path) -> None:

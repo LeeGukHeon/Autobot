@@ -194,3 +194,15 @@ def test_t23_2_runtime_installer_keeps_explicit_bootstrap_switch() -> None:
 
     assert '[switch]$BootstrapChampion' in source
     assert 'install no longer auto-bootstraps' in source
+
+
+def test_t23_2_v4_candidate_state_helper_is_shared_by_scripts() -> None:
+    helper_snippet = '. (Join-Path $PSScriptRoot "v4_candidate_state_helpers.ps1")'
+
+    for script_name in (
+        "candidate_acceptance.ps1",
+        "adopt_v4_candidate_for_server.ps1",
+        "daily_champion_challenger_v4_for_server.ps1",
+    ):
+        source = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        assert helper_snippet in source

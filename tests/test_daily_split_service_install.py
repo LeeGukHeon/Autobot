@@ -41,8 +41,8 @@ def test_split_installer_generates_promote_and_spawn_units() -> None:
     stdout = completed.stdout
     assert "[daily-split-install][dry-run] promote_service=autobot-v4-challenger-promote.service" in stdout
     assert "[daily-split-install][dry-run] spawn_service=autobot-v4-challenger-spawn.service" in stdout
-    assert "OnCalendar=*-*-* 23:50:00" in stdout
     assert "OnCalendar=*-*-* 00:10:00" in stdout
+    assert "OnCalendar=*-*-* 00:20:00" in stdout
     assert "promote_only" in stdout
     assert "spawn_only" in stdout
     assert "ExecStart=/bin/bash -lc " in stdout

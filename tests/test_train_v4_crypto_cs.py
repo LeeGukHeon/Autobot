@@ -464,6 +464,7 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     train_config_doc = load_json(result.run_dir / "train_config.yaml")
     research_evidence_doc = load_json(result.run_dir / "trainer_research_evidence.json")
     decision_surface_doc = load_json(result.run_dir / "decision_surface.json")
+    artifact_status_doc = load_json(result.run_dir / "artifact_status.json")
     assert "by_threshold_key" in selection_doc
     assert selection_doc["version"] == 2
     assert selection_doc["optimizer"]["method"] == "walk_forward_grid_search"
@@ -500,16 +501,25 @@ def test_train_v4_cls_registers_candidate_without_auto_promotion(tmp_path, monke
     assert research_evidence_doc["support_lane"]["policy"] == "v4_certification_support_lane_v1"
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
+    assert artifact_status_doc["run_id"] == result.run_id
+    assert artifact_status_doc["status"] == "candidate"
+    assert artifact_status_doc["core_saved"] is True
+    assert artifact_status_doc["support_artifacts_written"] is True
+    assert artifact_status_doc["execution_acceptance_complete"] is True
+    assert artifact_status_doc["runtime_recommendations_complete"] is True
+    assert artifact_status_doc["governance_artifacts_complete"] is True
+    assert artifact_status_doc["acceptance_completed"] is False
+    assert artifact_status_doc["candidate_adoptable"] is False
+    assert artifact_status_doc["candidate_adopted"] is False
+    assert artifact_status_doc["promoted"] is False
     assert load_json(options.registry_root / options.model_family / "champion.json") == {}
-    assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
-    assert load_json(options.registry_root / "latest_candidate.json")["run_id"] == result.run_id
+    assert not (options.registry_root / options.model_family / "latest_candidate.json").exists()
+    assert not (options.registry_root / "latest_candidate.json").exists()
     assert load_json(options.registry_root / options.model_family / "latest.json")["run_id"] == result.run_id
     assert load_json(options.registry_root / "latest.json")["run_id"] == result.run_id
     assert pointer_events == [
         f"latest:train_v4_crypto_cs:{result.run_id}",
         f"latest:_global:{result.run_id}",
-        f"latest_candidate:train_v4_crypto_cs:{result.run_id}",
-        f"latest_candidate:_global:{result.run_id}",
     ]
     reasons = load_json(result.promotion_path)["reasons"]
     assert "MANUAL_PROMOTION_REQUIRED" in reasons
@@ -741,6 +751,7 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
 
     assert result.status == "candidate"
     selection_doc = load_json(result.run_dir / "selection_recommendations.json")
+    artifact_status_doc = load_json(result.run_dir / "artifact_status.json")
     assert "by_threshold_key" in selection_doc
     assert selection_doc["version"] == 2
     assert selection_doc["optimizer"]["method"] == "walk_forward_grid_search"
@@ -748,7 +759,15 @@ def test_train_v4_reg_registers_candidate_without_auto_promotion(tmp_path, monke
     assert result.walk_forward_report_path is not None
     assert result.walk_forward_report_path.exists()
     assert result.leaderboard_row["task"] == "reg"
-    assert load_json(options.registry_root / options.model_family / "latest_candidate.json")["run_id"] == result.run_id
+    assert artifact_status_doc["run_id"] == result.run_id
+    assert artifact_status_doc["status"] == "candidate"
+    assert artifact_status_doc["core_saved"] is True
+    assert artifact_status_doc["support_artifacts_written"] is True
+    assert artifact_status_doc["execution_acceptance_complete"] is True
+    assert artifact_status_doc["runtime_recommendations_complete"] is True
+    assert artifact_status_doc["governance_artifacts_complete"] is True
+    assert artifact_status_doc["acceptance_completed"] is False
+    assert not (options.registry_root / options.model_family / "latest_candidate.json").exists()
     reasons = load_json(result.promotion_path)["reasons"]
     assert "NO_WALK_FORWARD_EVIDENCE" in reasons
 
@@ -1111,8 +1130,12 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert result.decision_surface_path is not None
     assert result.decision_surface_path.exists()
     assert execution_doc["status"] == "compared"
-    assert execution_doc["artifacts_cleanup"]["removed_count"] == 5
-    assert runtime_doc["artifacts_cleanup"]["removed_count"] == 5
+    assert execution_doc["artifacts_cleanup"]["retention_mode"] == "deferred_storage_retention"
+    assert execution_doc["artifacts_cleanup"]["removed_count"] == 0
+    assert execution_doc["artifacts_cleanup"]["preserved_count"] == 5
+    assert runtime_doc["artifacts_cleanup"]["retention_mode"] == "deferred_storage_retention"
+    assert runtime_doc["artifacts_cleanup"]["removed_count"] == 0
+    assert runtime_doc["artifacts_cleanup"]["preserved_count"] == 5
     assert runtime_doc["exit"]["recommended_exit_mode"] == "risk"
     assert runtime_doc["exit"]["recommended_hold_bars"] == 12
     assert runtime_doc["exit"]["recommended_risk_scaling_mode"] == "volatility_scaled"
@@ -1126,11 +1149,11 @@ def test_train_v4_cls_writes_execution_acceptance_report_when_enabled(tmp_path, 
     assert runtime_doc["risk_control"]["status"] in {"ready", "skipped"}
     if runtime_doc["risk_control"]["status"] == "ready":
         assert "subgroup_family" in runtime_doc["risk_control"]
-    assert candidate_exec_run.exists() is False
-    assert champion_exec_run.exists() is False
-    assert hold_exec_run.exists() is False
-    assert risk_exec_run.exists() is False
-    assert execution_exec_run.exists() is False
+    assert candidate_exec_run.exists() is True
+    assert champion_exec_run.exists() is True
+    assert hold_exec_run.exists() is True
+    assert risk_exec_run.exists() is True
+    assert execution_exec_run.exists() is True
     assert promotion["execution_acceptance"]["compare_to_champion"]["decision"] == "candidate_edge"
     assert "EXECUTION_BALANCED_PARETO_PASS" in promotion["reasons"]
     assert promotion["risk_control_acceptance"]["required"] is True

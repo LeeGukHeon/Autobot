@@ -118,7 +118,41 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $runtimeSpec = Get-PaperRuntimeSpec -Preset $PaperPreset -UnitName $PaperUnitName
 $effectiveRuntimeRole = if ([string]::IsNullOrWhiteSpace($PaperRuntimeRole)) { [string]$runtimeSpec.RuntimeRole } else { [string]$PaperRuntimeRole }
+$normalizedRuntimeRole = ([string]$effectiveRuntimeRole).Trim().ToLowerInvariant()
+$defaultsToChampionSource = (
+    -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
+    -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
+)
+$defaultsToLatestCandidateSource = (
+    -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
+    -and $runtimeSpec.RuntimeModelRef.StartsWith("latest_candidate")
+)
+$pinnedModelRefPresent = (-not [string]::IsNullOrWhiteSpace($PaperModelRefPinned))
 $resolvedPaperCliArgs = @(Expand-DelimitedStringArray -Value $PaperCliArgs)
+$requiresPinnedCandidateModel = (
+    ($normalizedRuntimeRole -eq "challenger") `
+    -and $defaultsToChampionSource `
+    -and (-not $pinnedModelRefPresent)
+)
+if ($requiresPinnedCandidateModel) {
+    throw (
+        "runtime role '{0}' cannot default to champion source '{1}'; pass -PaperModelRefPinned or use candidate_v4 preset" -f
+        $effectiveRuntimeRole,
+        $runtimeSpec.RuntimeModelRef
+    )
+}
+$requiresChampionSource = (
+    ($normalizedRuntimeRole -eq "champion") `
+    -and $defaultsToLatestCandidateSource `
+    -and (-not $pinnedModelRefPresent)
+)
+if ($requiresChampionSource) {
+    throw (
+        "runtime role '{0}' cannot default to candidate source '{1}'; use a champion preset or pass an explicit pinned champion ref" -f
+        $effectiveRuntimeRole,
+        $runtimeSpec.RuntimeModelRef
+    )
+}
 $requiresChampionPointer = (
     -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
     -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
