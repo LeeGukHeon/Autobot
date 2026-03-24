@@ -30,6 +30,9 @@ def _make_fake_python_exe(
     tmp_path: Path,
     *,
     write_decision_surface: bool,
+    write_feature_validate_report: bool = True,
+    feature_validate_fail_files: int = 0,
+    feature_validate_leakage_smoke: str = "PASS",
     write_trainer_research_evidence: bool = True,
     write_latest_candidate_pointer: bool = True,
     emit_train_run_dir: bool = True,
@@ -59,6 +62,9 @@ def _make_fake_python_exe(
             CANDIDATE_RUN_ID = "candidate-run-001"
             CHAMPION_RUN_ID = "champion-run-000"
             WRITE_DECISION_SURFACE = {str(write_decision_surface)}
+            WRITE_FEATURE_VALIDATE_REPORT = {str(write_feature_validate_report)}
+            FEATURE_VALIDATE_FAIL_FILES = {int(feature_validate_fail_files)}
+            FEATURE_VALIDATE_LEAKAGE_SMOKE = {feature_validate_leakage_smoke!r}
             WRITE_TRAINER_RESEARCH_EVIDENCE = {str(write_trainer_research_evidence)}
             WRITE_LATEST_CANDIDATE_POINTER = {str(write_latest_candidate_pointer)}
             EMIT_TRAIN_RUN_DIR = {str(emit_train_run_dir)}
@@ -499,6 +505,68 @@ def _make_fake_python_exe(
                 print("features_ok")
                 sys.exit(0)
 
+            if command_key == ("-m", "autobot.cli", "features", "validate"):
+                start_value = arg_value("--start")
+                end_value = arg_value("--end")
+                append_log(
+                    {{
+                        "command": "features validate",
+                        "start": start_value,
+                        "end": end_value,
+                    }}
+                )
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "validate_report.json"
+                if WRITE_FEATURE_VALIDATE_REPORT:
+                    write_json(
+                        report_path,
+                        {{
+                            "dataset_name": "features_v4",
+                            "tf": "5m",
+                            "quote": "KRW",
+                            "checked_files": 1,
+                            "ok_files": 1 if FEATURE_VALIDATE_FAIL_FILES == 0 and FEATURE_VALIDATE_LEAKAGE_SMOKE == "PASS" else 0,
+                            "warn_files": 0,
+                            "fail_files": FEATURE_VALIDATE_FAIL_FILES,
+                            "schema_ok": FEATURE_VALIDATE_FAIL_FILES == 0,
+                            "null_ratio_overall": 0.0,
+                            "leakage_smoke": FEATURE_VALIDATE_LEAKAGE_SMOKE,
+                            "staleness_fail_rows": 0,
+                            "dropped_rows_no_micro": 0,
+                            "details": [],
+                        }},
+                    )
+                    print(f"[features][validate][v4] report={{report_path}}")
+                if (not WRITE_FEATURE_VALIDATE_REPORT) or FEATURE_VALIDATE_FAIL_FILES > 0 or FEATURE_VALIDATE_LEAKAGE_SMOKE != "PASS":
+                    print("[features][validate][v4] fail", file=sys.stderr)
+                    sys.exit(2)
+                print("features_validate_ok")
+                sys.exit(0)
+
+            if tuple(args[:3]) == ("-m", "autobot.ops.data_contract_registry", "--project-root"):
+                append_log(
+                    {{
+                        "command": "data contract registry",
+                        "project_root": arg_value("--project-root"),
+                    }}
+                )
+                report_path = ROOT / "data" / "_meta" / "data_contract_registry.json"
+                write_json(
+                    report_path,
+                    {{
+                        "version": 1,
+                        "entries": [
+                            {{"contract_id": "raw_ws_dataset:upbit_public"}},
+                            {{"contract_id": "raw_ticks_dataset:upbit_trades"}},
+                            {{"contract_id": "parquet_dataset:candles_v1"}},
+                            {{"contract_id": "micro_dataset:micro_v1"}},
+                            {{"contract_id": "feature_dataset:features_v4"}},
+                        ],
+                        "summary": {{"contract_count": 5}},
+                    }},
+                )
+                print(f"[ops][data-contract-registry] path={{report_path}}")
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
                 start_value = arg_value("--start")
@@ -743,6 +811,76 @@ def test_candidate_acceptance_ramps_train_window_from_available_micro_history(tm
     assert report["config"]["train_window_ramp_reason"] == "RAMP_ACTIVE"
     assert report["windows_by_step"]["train"]["start"] == "2026-03-04"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
+
+
+def test_candidate_acceptance_fails_when_features_v4_validate_report_is_missing(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        write_feature_validate_report=False,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["reasons"] == ["FEATURES_VALIDATE_MISSING_OR_FAILED"]
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [entry for entry in invocations if entry["command"] == "features validate"] == [
+        {"command": "features validate", "start": "2026-03-04", "end": "2026-03-05"}
+    ]
+    assert [entry for entry in invocations if entry["command"] == "model train"] == []
+
+
+def test_candidate_acceptance_generates_data_contract_registry_before_training(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [entry for entry in invocations if entry["command"] == "data contract registry"] == [
+        {"command": "data contract registry", "project_root": str(project_root)}
+    ]
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["steps"]["data_contract_registry"]["contract_count"] == 5
+    assert Path(report["steps"]["data_contract_registry"]["registry_path"]).exists()
 
 
 def test_candidate_acceptance_recomputes_window_ramp_after_daily_pipeline_updates_micro_history(

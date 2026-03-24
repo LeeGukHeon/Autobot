@@ -76,6 +76,49 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print("features_build_ok")
                 sys.exit(0)
 
+            if command_key == ("-m", "autobot.cli", "features", "validate"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "validate_report.json"
+                write_json(
+                    report_path,
+                    {
+                        "checked_files": 1,
+                        "ok_files": 1,
+                        "warn_files": 0,
+                        "fail_files": 0,
+                        "schema_ok": True,
+                        "leakage_smoke": "PASS",
+                    },
+                )
+                append_log(
+                    {
+                        "command": "features validate",
+                        "feature_set": arg_value("--feature-set"),
+                        "start": arg_value("--start"),
+                        "end": arg_value("--end"),
+                    }
+                )
+                print(f"[features][validate][v4] report={report_path}")
+                sys.exit(0)
+
+            if tuple(args[:3]) == ("-m", "autobot.ops.data_contract_registry", "--project-root"):
+                report_path = ROOT / "data" / "_meta" / "data_contract_registry.json"
+                write_json(
+                    report_path,
+                    {
+                        "version": 1,
+                        "entries": [{"contract_id": "feature_dataset:features_v4"}],
+                        "summary": {"contract_count": 1},
+                    },
+                )
+                append_log(
+                    {
+                        "command": "data contract registry",
+                        "project_root": arg_value("--project-root"),
+                    }
+                )
+                print(f"[ops][data-contract-registry] path={report_path}")
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "train"):
                 family = arg_value("--model-family", "train_v4_crypto_cs")
                 registry_dir = ROOT / "models" / "registry" / family

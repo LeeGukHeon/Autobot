@@ -2,6 +2,24 @@
 
 Automated trading system scaffold for Upbit that keeps one consistent architecture across backtest, paper trading, and live execution.
 
+## Mandatory Start For Implementation Contexts
+
+If you are starting a new implementation context for this repository, do not begin from memory or ad-hoc exploration.
+
+Start here, in this order:
+
+1. [START_HERE_NEXT_CONTEXT.md](/d:/MyApps/Autobot/START_HERE_NEXT_CONTEXT.md)
+2. [CODEX_MANDATORY_WORK_PRINCIPLES_2026-03-25.md](/d:/MyApps/Autobot/docs/CODEX_MANDATORY_WORK_PRINCIPLES_2026-03-25.md)
+3. [NEXT_CONTEXT_MANDATORY_EXECUTION_PROTOCOL_2026-03-25.md](/d:/MyApps/Autobot/docs/NEXT_CONTEXT_MANDATORY_EXECUTION_PROTOCOL_2026-03-25.md)
+4. [INTEGRATED_STRONG_MODEL_SYSTEM_ROADMAP_2026-03-25.md](/d:/MyApps/Autobot/docs/INTEGRATED_STRONG_MODEL_SYSTEM_ROADMAP_2026-03-25.md)
+
+The next implementation session is expected to follow the checklist in the mandatory execution protocol and work from the first unchecked item without skipping ahead.
+
+Unless the user explicitly waives it, implementation work in this repository is not considered complete until it has been committed, pushed, pulled on the OCI server, and then validated there.
+
+OCI server access reference:
+- [OCI_SERVER_ACCESS_REFERENCE_2026-03-25.md](/d:/MyApps/Autobot/docs/OCI_SERVER_ACCESS_REFERENCE_2026-03-25.md)
+
 ## Scope (T00)
 - Repository bootstrap and directory conventions
 - Config-first skeleton (`config/*.yaml`)

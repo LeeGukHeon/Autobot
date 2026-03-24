@@ -3271,6 +3271,40 @@ function Resolve-FeaturesBuildReportPathFromText {
     return $reportedPath.Trim()
 }
 
+function Resolve-FeaturesValidateReportPathFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+    $pattern = '(?m)^\[features\]\[validate\]\[[^\]]+\]\s+report=(.+)$'
+    $match = [Regex]::Match($TextValue, $pattern)
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
+function Resolve-DataContractRegistryPathFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+    $pattern = '(?m)^\[ops\]\[data-contract-registry\]\s+path=(.+)$'
+    $match = [Regex]::Match($TextValue, $pattern)
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
 function Get-DateRangeAscending {
     param(
         [string]$StartDate,
@@ -3354,6 +3388,109 @@ function Invoke-FeaturesBuildAndLoadReport {
         MinRowsForTrain = $minRows
         Status = $status
         ErrorMessage = $errorMessage
+        Usable = [bool]$usable
+    }
+}
+
+function Invoke-FeaturesValidateAndLoadReport {
+    param(
+        [string]$PythonPath,
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    $args = @(
+        "-m", "autobot.cli",
+        "features", "validate",
+        "--feature-set", $FeatureSet,
+        "--tf", $Tf,
+        "--quote", $Quote,
+        "--top-n", $TrainTopN,
+        "--start", $StartDate,
+        "--end", $EndDate
+    )
+    $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
+    $exec = $null
+    try {
+        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    } catch {
+        $exec = [PSCustomObject]@{
+            ExitCode = 2
+            Output = [string]$_.Exception.Message
+            Command = $commandText
+        }
+    }
+    $reportPath = if ($DryRun) { "" } else { Resolve-FeaturesValidateReportPathFromText -TextValue ([string]$exec.Output) }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (-not $DryRun)) {
+        $defaultReportPath = Join-Path $resolvedProjectRoot ("data/features/features_" + $FeatureSet + "/_meta/validate_report.json")
+        if (Test-Path $defaultReportPath) {
+            $reportPath = $defaultReportPath
+        }
+    }
+    $reportDoc = if ([string]::IsNullOrWhiteSpace($reportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $reportPath }
+    $checkedFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "checked_files" -DefaultValue 0) 0)
+    $okFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "ok_files" -DefaultValue 0) 0)
+    $warnFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "warn_files" -DefaultValue 0) 0)
+    $failFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "fail_files" -DefaultValue 0) 0)
+    $schemaOk = To-Bool (Get-PropValue -ObjectValue $reportDoc -Name "schema_ok" -DefaultValue $false) $false
+    $leakageSmoke = [string](Get-PropValue -ObjectValue $reportDoc -Name "leakage_smoke" -DefaultValue "")
+    $usable = ($exec.ExitCode -eq 0) -or (
+        ($checkedFiles -gt 0) `
+        -and ($failFiles -eq 0) `
+        -and ($schemaOk) `
+        -and ($leakageSmoke -eq "PASS")
+    )
+    return [PSCustomObject]@{
+        Exec = $exec
+        ReportPath = $reportPath
+        Report = $reportDoc
+        CheckedFiles = $checkedFiles
+        OkFiles = $okFiles
+        WarnFiles = $warnFiles
+        FailFiles = $failFiles
+        SchemaOk = [bool]$schemaOk
+        LeakageSmoke = $leakageSmoke
+        Usable = [bool]$usable
+    }
+}
+
+function Invoke-DataContractRegistryAndLoadReport {
+    param([string]$PythonPath)
+    $args = @(
+        "-m", "autobot.ops.data_contract_registry",
+        "--project-root", $resolvedProjectRoot
+    )
+    $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
+    $exec = $null
+    try {
+        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    } catch {
+        $exec = [PSCustomObject]@{
+            ExitCode = 2
+            Output = [string]$_.Exception.Message
+            Command = $commandText
+        }
+    }
+    $registryPath = if ($DryRun) { "" } else { Resolve-DataContractRegistryPathFromText -TextValue ([string]$exec.Output) }
+    if ([string]::IsNullOrWhiteSpace($registryPath) -and (-not $DryRun)) {
+        $defaultRegistryPath = Join-Path $resolvedProjectRoot "data/_meta/data_contract_registry.json"
+        if (Test-Path $defaultRegistryPath) {
+            $registryPath = $defaultRegistryPath
+        }
+    }
+    $registryDoc = if ([string]::IsNullOrWhiteSpace($registryPath)) { @{} } else { Load-JsonOrEmpty -PathValue $registryPath }
+    $entries = @(Get-PropValue -ObjectValue $registryDoc -Name "entries" -DefaultValue @())
+    $entryCount = $entries.Count
+    $summary = Get-PropValue -ObjectValue $registryDoc -Name "summary" -DefaultValue @{}
+    $contractCount = [int](To-Int64 (Get-PropValue -ObjectValue $summary -Name "contract_count" -DefaultValue 0) 0)
+    if ($contractCount -le 0) {
+        $contractCount = [int](To-Int64 $entryCount 0)
+    }
+    $usable = ($exec.ExitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($registryPath)) -and ($contractCount -gt 0)
+    return [PSCustomObject]@{
+        Exec = $exec
+        RegistryPath = $registryPath
+        Registry = $registryDoc
+        ContractCount = $contractCount
         Usable = [bool]$usable
     }
 }
@@ -3767,6 +3904,56 @@ try {
         }
         } else {
             $report.steps.features_build = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+        }
+    }
+
+    $dataContractRegistryAttempt = Invoke-DataContractRegistryAndLoadReport -PythonPath $resolvedPythonExe
+    $report.steps.data_contract_registry = [ordered]@{
+        attempted = $true
+        exit_code = [int]$dataContractRegistryAttempt.Exec.ExitCode
+        command = $dataContractRegistryAttempt.Exec.Command
+        output_preview = (Get-OutputPreview -Text ([string]$dataContractRegistryAttempt.Exec.Output))
+        registry_path = [string]$dataContractRegistryAttempt.RegistryPath
+        contract_count = [int]$dataContractRegistryAttempt.ContractCount
+    }
+    if (-not $dataContractRegistryAttempt.Usable) {
+        $report.reasons = @("DATA_CONTRACT_REGISTRY_MISSING_OR_FAILED")
+        $report.gates.overall_pass = $false
+        $paths = Save-Report
+        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+        exit 2
+    }
+
+    $featuresValidateAttempt = $null
+    if ([string]::Equals($FeatureSet, "v4", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $featuresValidateAttempt = Invoke-FeaturesValidateAndLoadReport `
+            -PythonPath $resolvedPythonExe `
+            -StartDate $trainStartDate `
+            -EndDate $trainEndDate
+        $report.steps.features_validate = [ordered]@{
+            attempted = $true
+            exit_code = [int]$featuresValidateAttempt.Exec.ExitCode
+            command = $featuresValidateAttempt.Exec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$featuresValidateAttempt.Exec.Output))
+            report_path = [string]$featuresValidateAttempt.ReportPath
+            checked_files = [int]$featuresValidateAttempt.CheckedFiles
+            ok_files = [int]$featuresValidateAttempt.OkFiles
+            warn_files = [int]$featuresValidateAttempt.WarnFiles
+            fail_files = [int]$featuresValidateAttempt.FailFiles
+            schema_ok = [bool]$featuresValidateAttempt.SchemaOk
+            leakage_smoke = [string]$featuresValidateAttempt.LeakageSmoke
+        }
+        if (-not $featuresValidateAttempt.Usable) {
+            $report.reasons = @("FEATURES_VALIDATE_MISSING_OR_FAILED")
+            $report.gates.overall_pass = $false
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.features_validate = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_FEATURE_SET"
         }
     }
 

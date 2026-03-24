@@ -1,37 +1,53 @@
 # Docs Guide
 
-- Updated: 2026-03-23
-- Purpose: separate current operational truth from historical design and investigation documents
+- Updated: 2026-03-25
+- Purpose: point implementation and investigation work to the right documents quickly
 
-## Current Truth
+## Start Here
 
-Read these first when you need the current system behavior.
+If the goal is to continue implementation work, read these first in order:
 
-- `docs/PROGRAM_RUNBOOK.md`
-  - current operational SSOT for lifecycle, runtime topology, services, timers, recovery, and deploy pattern
-- `docs/CONFIG_SCHEMA.md`
+1. [CODEX_MANDATORY_WORK_PRINCIPLES_2026-03-25.md](/d:/MyApps/Autobot/docs/CODEX_MANDATORY_WORK_PRINCIPLES_2026-03-25.md)
+2. [NEXT_CONTEXT_MANDATORY_EXECUTION_PROTOCOL_2026-03-25.md](/d:/MyApps/Autobot/docs/NEXT_CONTEXT_MANDATORY_EXECUTION_PROTOCOL_2026-03-25.md)
+3. [INTEGRATED_STRONG_MODEL_SYSTEM_ROADMAP_2026-03-25.md](/d:/MyApps/Autobot/docs/INTEGRATED_STRONG_MODEL_SYSTEM_ROADMAP_2026-03-25.md)
+
+Do not start from older analysis notes or by jumping directly into code changes.
+
+Unless the user explicitly waives it, implementation work is not complete at local code-change time.
+It must also be committed, pushed, pulled on the OCI server, and then validated there.
+
+OCI server access reference:
+- [OCI_SERVER_ACCESS_REFERENCE_2026-03-25.md](/d:/MyApps/Autobot/docs/OCI_SERVER_ACCESS_REFERENCE_2026-03-25.md)
+
+## Current SSOT
+
+- [PROGRAM_RUNBOOK.md](/d:/MyApps/Autobot/docs/PROGRAM_RUNBOOK.md)
+  - current operational SSOT for lifecycle, runtime topology, services, timers, recovery, and deployment pattern
+- [CONFIG_SCHEMA.md](/d:/MyApps/Autobot/docs/CONFIG_SCHEMA.md)
   - current config and runtime contract reference
-- `docs/CHANGE_POLICY.md`
+- [CHANGE_POLICY.md](/d:/MyApps/Autobot/docs/CHANGE_POLICY.md)
   - current change-management rules
-- `docs/EXIT_STATE_CONTRACT.md`
+- [EXIT_STATE_CONTRACT.md](/d:/MyApps/Autobot/docs/EXIT_STATE_CONTRACT.md)
   - current exit-state contract
+
+## Active Blueprints
+
+- [DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md)
+- [TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+- [BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+- [RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+- [SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md)
 
 ## Current Analysis
 
-Read these when investigating current performance or execution behavior.
+- [FOUNDATIONAL_FAILURE_MODES_2026-03-23.md](/d:/MyApps/Autobot/docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md)
+- [TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md](/d:/MyApps/Autobot/docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md)
+- [RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md](/d:/MyApps/Autobot/docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md)
+- [EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md](/d:/MyApps/Autobot/docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md)
 
-- `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
-  - current structural root-cause diagnosis and next-context handoff
-- `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
-  - current research comparison and training/runtime diagnosis
-- `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
-  - current execution findings, deployment status, and concrete next actions
-- `docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md`
-  - current zero-fill veto failure analysis and research-backed execution-contract redesign
+## Historical Background
 
-## Historical Root Docs
-
-These remain useful, but they are not the operational SSOT unless explicitly restated in the current runbook.
+These remain useful for background, but they are not the operational SSOT unless explicitly restated elsewhere.
 
 - `docs/ROADMAP.md`
 - `docs/LIFECYCLE_AUDIT_2026-03-20.md`
@@ -47,44 +63,20 @@ These remain useful, but they are not the operational SSOT unless explicitly res
 - `docs/API_NOTES.md`
 - `docs/PNL_REALIZATION_FLOW.md`
 
-Use them for:
-
-- design background
-- incident context
-- migration notes
-- cleanup candidates
-
-Do not treat them as the final word over:
-
-- current code
-- current OCI state
-- current runbook
-- current execution findings documents
-
 ## Directories
 
 - `docs/ADR/`
-  - architecture decision records; historical but still useful for why a contract exists
+  - architecture decision records
 - `docs/TICKETS/`
-  - design backlog and implementation history; not current operational truth
+  - design backlog and implementation history
 - `docs/reports/`
-  - generated or historical reports; not current operational truth unless specifically promoted into the runbook
-
-## Reading Order
-
-1. `docs/PROGRAM_RUNBOOK.md`
-2. `docs/CONFIG_SCHEMA.md`
-3. `docs/FOUNDATIONAL_FAILURE_MODES_2026-03-23.md`
-4. `docs/TRAINING_PIPELINE_RESEARCH_COMPARE_2026-03-23.md`
-5. `docs/RUNTIME_EXECUTION_FINDINGS_AND_ACTION_PLAN_2026-03-23.md`
-6. `docs/EXECUTION_POLICY_VETO_REDESIGN_2026-03-23.md`
-7. only then read older root docs, ADRs, tickets, and reports as background
+  - generated or historical reports
 
 ## Rule
 
-When docs disagree:
+When documents disagree:
 
 1. current code wins
 2. current OCI runtime state wins over older text
-3. `docs/PROGRAM_RUNBOOK.md` wins over historical documents
-4. the two `2026-03-23` analysis docs win over older investigation notes for current execution diagnosis
+3. [PROGRAM_RUNBOOK.md](/d:/MyApps/Autobot/docs/PROGRAM_RUNBOOK.md) wins over historical documents
+4. the current mandatory principles and execution protocol win over older working habits
