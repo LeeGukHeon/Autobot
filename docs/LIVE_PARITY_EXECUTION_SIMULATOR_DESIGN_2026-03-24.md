@@ -15,6 +15,7 @@ Implemented in the current branch:
 3. first-pass immediate taker handling
    - `best` orders now use a dedicated immediate submit path
    - immediate fill price can use current spread proxy when a micro snapshot is available
+   - `limit IOC/FOK` now use immediate-taker semantics while `GTC/post_only` keep resting-limit semantics
 4. first-pass partial-fill reserve handling
    - partial bid/ask fills preserve residual locked quote/base
 5. first-pass accounting parity

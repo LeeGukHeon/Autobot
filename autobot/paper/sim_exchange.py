@@ -185,6 +185,7 @@ class PaperSimExchange:
         intent: OrderIntent,
         rules: MarketRules,
         latest_trade_price: float,
+        micro_snapshot: Any | None = None,
         ts_ms: int | None = None,
         reprice_attempt: int = 0,
     ) -> tuple[PaperOrder, FillEvent | None]:
@@ -233,6 +234,40 @@ class PaperSimExchange:
             return (self._clone_order(order), None)
 
         self._orders[order.order_id] = order
+
+        if _allow_immediate_fill(intent=intent) and order.time_in_force in {"ioc", "fok"}:
+            immediate_fill = self._resolve_immediate_taker_fill(
+                order=order,
+                latest_trade_price=latest_trade_price,
+                micro_snapshot=micro_snapshot,
+                require_marketable=bool(order.time_in_force in {"ioc", "fok"}),
+            )
+            if order.time_in_force == "fok" and immediate_fill is not None and float(immediate_fill["fill_volume"]) + EPSILON < order.volume_req:
+                self._release_order_reserve(order)
+                order.state = "CANCELED"
+                order.updated_ts_ms = now_ts_ms
+                order.failure_reason = "FOK_NOT_FULLY_FILLED"
+                return (self._clone_order(order), None)
+            if immediate_fill is not None:
+                fill_event = self._fill_order(
+                    order=order,
+                    fill_price=float(immediate_fill["fill_price"]),
+                    fill_volume=float(immediate_fill["fill_volume"]),
+                    maker_or_taker=str(immediate_fill.get("maker_or_taker", "taker")),
+                    ts_ms=now_ts_ms,
+                    rules=rules,
+                )
+                if order.time_in_force == "fok" and order.state != "FILLED":
+                    self._release_order_reserve(order)
+                    order.state = "CANCELED"
+                    order.updated_ts_ms = now_ts_ms
+                    order.failure_reason = "FOK_NOT_FULLY_FILLED"
+                elif order.time_in_force == "ioc" and order.state != "FILLED":
+                    self._release_order_reserve(order)
+                    order.state = "CANCELED"
+                    order.updated_ts_ms = now_ts_ms
+                    order.failure_reason = "IOC_PARTIAL_CANCELLED_REMAINDER"
+                return (self._clone_order(order), fill_event)
 
         if _allow_immediate_fill(intent=intent):
             immediate_decision = self._fill_model.decide(
@@ -287,6 +322,7 @@ class PaperSimExchange:
             intent=intent,
             rules=rules,
             latest_trade_price=latest_trade_price,
+            micro_snapshot=micro_snapshot,
             ts_ms=ts_ms,
             reprice_attempt=reprice_attempt,
         )
@@ -364,14 +400,42 @@ class PaperSimExchange:
             return (self._clone_order(order), None)
 
         self._orders[order.order_id] = order
+        immediate_fill = self._resolve_immediate_taker_fill(
+            order=order,
+            latest_trade_price=latest_trade_price,
+            micro_snapshot=micro_snapshot,
+            require_marketable=False,
+        )
+        if immediate_fill is None:
+            self._release_order_reserve(order)
+            order.state = "CANCELED"
+            order.updated_ts_ms = now_ts_ms
+            order.failure_reason = "BEST_PRICE_UNAVAILABLE"
+            return (self._clone_order(order), None)
+        if order.time_in_force == "fok" and float(immediate_fill["fill_volume"]) + EPSILON < order.volume_req:
+            self._release_order_reserve(order)
+            order.state = "CANCELED"
+            order.updated_ts_ms = now_ts_ms
+            order.failure_reason = "FOK_NOT_FULLY_FILLED"
+            return (self._clone_order(order), None)
         fill_event = self._fill_order(
             order=order,
-            fill_price=market_price,
-            fill_volume=order.volume_req,
-            maker_or_taker="taker",
+            fill_price=float(immediate_fill["fill_price"]),
+            fill_volume=float(immediate_fill["fill_volume"]),
+            maker_or_taker=str(immediate_fill.get("maker_or_taker", "taker")),
             ts_ms=now_ts_ms,
             rules=rules,
         )
+        if order.time_in_force == "fok" and order.state != "FILLED":
+            self._release_order_reserve(order)
+            order.state = "CANCELED"
+            order.updated_ts_ms = now_ts_ms
+            order.failure_reason = "FOK_NOT_FULLY_FILLED"
+        elif order.time_in_force == "ioc" and order.state != "FILLED":
+            self._release_order_reserve(order)
+            order.state = "CANCELED"
+            order.updated_ts_ms = now_ts_ms
+            order.failure_reason = "IOC_PARTIAL_CANCELLED_REMAINDER"
         return (self._clone_order(order), fill_event)
 
     def process_ticker(
@@ -431,6 +495,43 @@ class PaperSimExchange:
             balance.locked = max(balance.locked - release_base, 0.0)
             balance.free += release_base
             order.locked_base = 0.0
+
+    def _resolve_immediate_taker_fill(
+        self,
+        *,
+        order: PaperOrder,
+        latest_trade_price: float,
+        micro_snapshot: Any | None,
+        require_marketable: bool,
+    ) -> dict[str, float | str] | None:
+        executable = _resolve_executable_price_proxy(
+            latest_trade_price=latest_trade_price,
+            micro_snapshot=micro_snapshot,
+        )
+        side_depth_quote = _resolve_executable_side_depth_quote(
+            micro_snapshot=micro_snapshot,
+            side=order.side,
+        )
+        if order.side == "bid":
+            executable_price = float(executable["ask_price"])
+            if require_marketable and float(order.price) + EPSILON < executable_price:
+                return None
+            requested_quote = float(order.price) * float(order.volume_req)
+            fill_quote = requested_quote if side_depth_quote is None else min(float(requested_quote), float(side_depth_quote))
+            fill_volume = fill_quote / max(executable_price, EPSILON)
+        else:
+            executable_price = float(executable["bid_price"])
+            if require_marketable and float(order.price) - EPSILON > executable_price:
+                return None
+            executable_volume = float(order.volume_req) if side_depth_quote is None else float(side_depth_quote) / max(executable_price, EPSILON)
+            fill_volume = min(float(order.volume_req), float(executable_volume))
+        if fill_volume <= EPSILON:
+            return None
+        return {
+            "fill_price": float(executable_price),
+            "fill_volume": float(min(fill_volume, order.volume_req)),
+            "maker_or_taker": "taker",
+        }
 
     def portfolio_snapshot(self, *, ts_ms: int, latest_prices: dict[str, float]) -> PortfolioSnapshot:
         total_equity = self._cash.free + self._cash.locked
@@ -692,6 +793,15 @@ def _resolve_executable_price_proxy(*, latest_trade_price: float, micro_snapshot
         "bid_price": float(bid_price),
         "ask_price": float(ask_price),
     }
+
+
+def _resolve_executable_side_depth_quote(*, micro_snapshot: Any | None, side: str) -> float | None:
+    depth_total = _safe_optional_float(getattr(micro_snapshot, "depth_top5_notional_krw", None))
+    if depth_total is None or float(depth_total) <= 0.0:
+        return None
+    # `depth_top5_notional_krw` is a combined top-of-book proxy, so use half as
+    # a conservative first-pass estimate for one-side immediately executable depth.
+    return max(float(depth_total) * 0.5, 0.0)
 
 
 def _safe_optional_float(value: Any) -> float | None:
