@@ -139,11 +139,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented in `autobot/ops/pointer_consistency_report.py` and `scripts/check_pointer_consistency.ps1`, tested locally and on the OCI server, and reflected as `logs/ops/pointer_consistency/latest.json` on the OCI server. Direct server validation on 2026-03-25 confirmed the checker exits nonzero on the current invalid state and the artifact records concrete violations such as `LATEST_CANDIDATE_WITHOUT_CURRENT_STATE` and `CHAMPION_EQUALS_LATEST_CANDIDATE_NO_TRANSITION_STATE`.
 
-- [ ] 05. Add pre-flight checks for server units, pointer resolvability, and dirty worktree state
+- [x] 05. Add pre-flight checks for server units, pointer resolvability, and dirty worktree state
   Required references:
   [SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md)
   Done when:
   batch scripts can fail fast before expensive train/adoption steps.
+  Current implementation note:
+  implemented in `scripts/check_server_preflight.ps1` and wired into `scripts/daily_candidate_acceptance_for_server.ps1` and `scripts/daily_champion_challenger_v4_for_server.ps1`. Local and OCI validation on 2026-03-25 confirmed the preflight writes `logs/ops/server_preflight/latest.json`, exits nonzero on dirty worktree, failed unit, and stale pointer/state conditions, and causes both server batch entrypoints to fail closed before train/adoption work begins.
 
 - [ ] 06. Define and apply replay legacy cleanup policy
   Required references:
