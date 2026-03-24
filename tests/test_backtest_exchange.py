@@ -5,6 +5,7 @@ from autobot.backtest.exchange import BacktestSimExchange
 from autobot.backtest.types import CandleBar
 from autobot.execution.intent import new_order_intent
 from autobot.paper.sim_exchange import MarketRules, round_price_to_tick
+from autobot.strategy.micro_snapshot import MicroSnapshot
 
 
 def _bar(*, ts_ms: int, low: float, high: float, close: float = 100.0) -> CandleBar:
@@ -75,3 +76,300 @@ def test_tick_rounding_and_fee_never_make_quote_negative() -> None:
     quote = exchange.quote_balance()
     assert quote.free >= 0.0
     assert quote.locked >= 0.0
+
+
+def test_resting_queue_requires_visible_queue_to_clear_before_fill() -> None:
+    exchange = BacktestSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    gateway = BacktestExecutionGateway(
+        exchange=exchange,
+        order_timeout_bars=5,
+        reprice_max_attempts=0,
+        reprice_tick_steps=1,
+    )
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="QUEUE_TEST",
+        ts_ms=0,
+    )
+    submit_snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=0,
+        last_event_ts_ms=0,
+        bid_levels=((100.0, 5.0),),
+        ask_levels=((101.0, 5.0),),
+        best_bid_price=100.0,
+        best_ask_price=101.0,
+        book_events=1,
+        book_available=True,
+    )
+    submit = gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
+    order = submit.orders_submitted[0]
+    exchange._initialize_resting_queue_state(order=order, micro_snapshot=submit_snapshot)  # noqa: SLF001
+
+    blocked = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=60_000, low=100.0, high=101.0),
+        bar_index=1,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=60_000,
+            last_event_ts_ms=60_000,
+            bid_levels=((100.0, 2.0),),
+            ask_levels=((101.0, 5.0),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert blocked == []
+
+    filled = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=120_000, low=99.0, high=101.0),
+        bar_index=2,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=120_000,
+            last_event_ts_ms=120_000,
+            bid_levels=(),
+            ask_levels=((101.0, 5.0),),
+            best_bid_price=99.0,
+            best_ask_price=100.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert len(filled) == 1
+
+
+def test_resting_queue_trade_at_level_consumes_queue_ahead_before_fill() -> None:
+    exchange = BacktestSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    gateway = BacktestExecutionGateway(
+        exchange=exchange,
+        order_timeout_bars=5,
+        reprice_max_attempts=0,
+        reprice_tick_steps=1,
+    )
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="QUEUE_TRADE_TEST",
+        ts_ms=0,
+    )
+
+    submit = gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
+    order = submit.orders_submitted[0]
+    exchange._initialize_resting_queue_state(  # noqa: SLF001
+        order=order,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=0,
+            last_event_ts_ms=0,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=(),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+
+    blocked = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=60_000, low=100.0, high=101.0),
+        bar_index=1,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=60_000,
+            last_event_ts_ms=60_000,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=((60_000, 100.0, 3.0, "sell"),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert blocked == []
+
+    filled = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=120_000, low=100.0, high=101.0),
+        bar_index=2,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=120_000,
+            last_event_ts_ms=120_000,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=((120_000, 100.0, 2.0, "sell"),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert len(filled) == 1
+
+
+def test_resting_queue_same_level_size_expansion_is_treated_as_behind_us_arrival() -> None:
+    exchange = BacktestSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    gateway = BacktestExecutionGateway(
+        exchange=exchange,
+        order_timeout_bars=5,
+        reprice_max_attempts=0,
+        reprice_tick_steps=1,
+    )
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="QUEUE_ARRIVAL_TEST",
+        ts_ms=0,
+    )
+
+    submit = gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
+    order = submit.orders_submitted[0]
+    exchange._initialize_resting_queue_state(  # noqa: SLF001
+        order=order,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=0,
+            last_event_ts_ms=0,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=(),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+
+    blocked = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=60_000, low=100.0, high=101.0),
+        bar_index=1,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=60_000,
+            last_event_ts_ms=60_000,
+            bid_levels=((100.0, 7.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=(),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert blocked == []
+
+    filled = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=120_000, low=99.0, high=101.0),
+        bar_index=2,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=120_000,
+            last_event_ts_ms=120_000,
+            bid_levels=((100.0, 0.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=(),
+            best_bid_price=99.0,
+            best_ask_price=100.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert len(filled) == 1
+
+
+def test_resting_queue_uses_orderbook_event_sequence_within_snapshot_window() -> None:
+    exchange = BacktestSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    gateway = BacktestExecutionGateway(
+        exchange=exchange,
+        order_timeout_bars=5,
+        reprice_max_attempts=0,
+        reprice_tick_steps=1,
+    )
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="QUEUE_BOOK_EVENT_TEST",
+        ts_ms=0,
+    )
+
+    submit = gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
+    order = submit.orders_submitted[0]
+    exchange._initialize_resting_queue_state(  # noqa: SLF001
+        order=order,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=0,
+            last_event_ts_ms=0,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_orderbook_events=(),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+
+    blocked = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=60_000, low=100.0, high=101.0),
+        bar_index=1,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=60_000,
+            last_event_ts_ms=60_000,
+            bid_levels=((100.0, 2.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_orderbook_events=(
+                (50_000, ((100.0, 4.0),), ((101.0, 5.0),), 100.0, 101.0),
+                (60_000, ((100.0, 2.0),), ((101.0, 5.0),), 100.0, 101.0),
+            ),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=2,
+            book_available=True,
+        ),
+    )
+    assert blocked == []
+
+    filled = exchange.match_orders_on_bar(
+        bar=_bar(ts_ms=120_000, low=99.0, high=101.0),
+        bar_index=2,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=120_000,
+            last_event_ts_ms=120_000,
+            bid_levels=(),
+            ask_levels=((101.0, 5.0),),
+            recent_orderbook_events=((120_000, (), ((101.0, 5.0),), 99.0, 100.0),),
+            best_bid_price=99.0,
+            best_ask_price=100.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert len(filled) == 1

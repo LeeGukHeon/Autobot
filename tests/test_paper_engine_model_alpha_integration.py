@@ -280,7 +280,12 @@ def test_paper_engine_model_alpha_micro_policy_guards_strategy_exec_profile(tmp_
         feature_set="v3",
         model_alpha=ModelAlphaSettings(
             model_ref="latest_v3",
-            execution=ModelAlphaExecutionSettings(price_mode="JOIN", timeout_bars=3, replace_max=4),
+            execution=ModelAlphaExecutionSettings(
+                price_mode="JOIN",
+                timeout_bars=3,
+                replace_max=4,
+                use_learned_recommendations=False,
+            ),
         ),
         micro_order_policy=policy,
         print_every_sec=60,
@@ -370,7 +375,12 @@ def test_paper_engine_model_alpha_uses_strategy_exec_profile_override(tmp_path: 
         feature_set="v3",
         model_alpha=ModelAlphaSettings(
             model_ref="latest_v3",
-            execution=ModelAlphaExecutionSettings(price_mode="JOIN", timeout_bars=3, replace_max=4),
+            execution=ModelAlphaExecutionSettings(
+                price_mode="JOIN",
+                timeout_bars=3,
+                replace_max=4,
+                use_learned_recommendations=False,
+            ),
         ),
         print_every_sec=60,
         decision_interval_sec=0.1,

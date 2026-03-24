@@ -463,8 +463,18 @@ class BacktestExecutionGateway:
         market_value = bar.market.strip().upper()
         self._trim_replace_window(market=market_value, now_ts_ms=bar.ts_ms)
         market_window = self._replace_window_by_market.setdefault(market_value, deque())
+        bar_snapshot = (
+            self._micro_snapshot_provider.get(market_value, int(bar.ts_ms))
+            if self._micro_snapshot_provider is not None
+            else None
+        )
 
-        fills = self._exchange.match_orders_on_bar(bar=bar, bar_index=bar_index, rules=rules)
+        fills = self._exchange.match_orders_on_bar(
+            bar=bar,
+            bar_index=bar_index,
+            rules=rules,
+            micro_snapshot=bar_snapshot,
+        )
         for fill in fills:
             update.fills.append(fill)
             current = self._exchange.get_order(fill.order_id)
@@ -494,11 +504,7 @@ class BacktestExecutionGateway:
             policy_diagnostics: dict[str, Any] = {}
             policy_abort_reason: str | None = None
             if self._micro_order_policy is not None:
-                snapshot = (
-                    self._micro_snapshot_provider.get(market_value, int(bar.ts_ms))
-                    if self._micro_snapshot_provider is not None
-                    else None
-                )
+                snapshot = bar_snapshot
                 model_prob = (
                     _safe_optional_float(pending.intent.meta.get("model_prob"))
                     if isinstance(pending.intent.meta, dict)
@@ -611,6 +617,7 @@ class BacktestExecutionGateway:
                 rules=rules,
                 ts_ms=bar.ts_ms,
                 activate_on_index=bar_index + 1,
+                micro_snapshot=bar_snapshot,
                 reprice_attempt=pending.replace_count + 1,
             )
             update.orders_submitted.append(new_order)
@@ -1911,9 +1918,17 @@ class BacktestRunEngine:
 
         for fill in update.fills:
             event_store.append_fill(fill)
-            append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=asdict(fill))
             counters["fill_events_total"] = int(counters.get("fill_events_total", 0)) + 1
             order = order_by_id.get(fill.order_id)
+            fill_payload = asdict(fill)
+            if order is not None:
+                fill_payload["order_state"] = str(order.state).strip().upper()
+                fill_payload["ord_type"] = str(order.ord_type).strip().lower()
+                fill_payload["time_in_force"] = str(order.time_in_force).strip().lower()
+                fill_payload["volume_req"] = float(order.volume_req)
+                fill_payload["volume_filled_cumulative"] = float(order.volume_filled)
+                fill_payload["remaining_volume"] = max(float(order.volume_req) - float(order.volume_filled), 0.0)
+            append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=fill_payload)
             reason_code = ""
             ref_price_value: float | None = None
             slippage_value: float | None = None
@@ -1974,6 +1989,15 @@ class BacktestRunEngine:
                         "intent_id": (str(order.intent_id) if order is not None else ""),
                         "reason_code": reason_code,
                         "order_state": (str(order.state).strip().upper() if order is not None else ""),
+                        "ord_type": (str(order.ord_type).strip().lower() if order is not None else ""),
+                        "time_in_force": (str(order.time_in_force).strip().lower() if order is not None else ""),
+                        "volume_req": (float(order.volume_req) if order is not None else None),
+                        "volume_filled_cumulative": (float(order.volume_filled) if order is not None else None),
+                        "remaining_volume": (
+                            max(float(order.volume_req) - float(order.volume_filled), 0.0)
+                            if order is not None
+                            else None
+                        ),
                         "filled_fraction": (
                             float(order.volume_filled) / max(float(order.volume_req), 1e-12)
                             if order is not None and float(order.volume_req) > 0.0
@@ -2066,7 +2090,12 @@ class BacktestRunEngine:
 
     def _resolve_micro_snapshot_provider(self) -> MicroSnapshotProvider | None:
         cfg = self._run_settings.micro_gate
-        if not (cfg.enabled or self._run_settings.micro_order_policy.enabled):
+        strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
+        execution_snapshot_needed = bool(
+            strategy_mode == "model_alpha_v1"
+            and bool(self._run_settings.model_alpha.execution.use_learned_recommendations)
+        )
+        if not (cfg.enabled or self._run_settings.micro_order_policy.enabled or execution_snapshot_needed):
             return None
         if self._micro_snapshot_provider is not None:
             return self._micro_snapshot_provider

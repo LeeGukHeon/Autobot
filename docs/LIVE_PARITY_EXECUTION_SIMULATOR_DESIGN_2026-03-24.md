@@ -15,7 +15,16 @@ Implemented in the current branch:
 3. first-pass immediate taker handling
    - `best` orders now use a dedicated immediate submit path
    - immediate fill price can use current spread proxy when a micro snapshot is available
+   - paper/live micro snapshots now carry explicit top-of-book bid/ask prices and top1 notionals when WS orderbook is available
+   - paper/live micro snapshots now also carry explicit bid/ask ladder levels from the latest WS orderbook event
+   - row/offline micro snapshots now preserve side-specific depth and optional top-of-book fields when those columns are available in feature rows
+   - offline micro snapshots now overlay historical raw orderbook ladder/top-of-book data when matching raw WS files are available
+   - when an offline raw orderbook overlay is used, `snapshot_ts_ms` is promoted to the actual raw orderbook timestamp so depletion keys align to real historical book snapshots rather than bar timestamps
+   - simulator uses that ladder first to compute immediate-taker VWAP and finite executable size before falling back to top-of-book/depth/trade proxies
+   - same-snapshot immediate takers now deplete remaining ladder size, so sequential orders at the same snapshot do not unrealistically reuse the full depth
+   - simulator prefers explicit top-of-book prices over spread-derived price proxy when those fields are present
    - side-specific executable depth now uses ask-depth for buy takers and bid-depth for sell takers when available
+   - when book depth is unavailable, immediate takers now fall back to a conservative directional trade-liquidity proxy using recent trade notional, coverage, and imbalance
    - `limit IOC/FOK` now use immediate-taker semantics while `GTC/post_only` keep resting-limit semantics
 4. first-pass partial-fill reserve handling
    - partial bid/ask fills preserve residual locked quote/base
@@ -34,14 +43,44 @@ Implemented in the current branch:
      - `avg/p50/p90_time_to_first_fill_ms`
      - `avg/p50/p90_time_to_complete_fill_ms`
    - legacy `avg/p50/p90_time_to_fill_ms` fields are preserved and now represent completion timing for compatibility
+9. multi-step partial/replace reporting regression coverage
+   - paper/backtest now have explicit regression coverage for:
+     - partial -> complete
+     - partial-cancelled IOC
+     - partial -> replace -> partial -> complete
+10. first-pass `FOK` rejection regression coverage
+   - simulator regressions now pin that insufficient executable depth:
+     - cancels `BEST_FOK` / `LIMIT_FOK_*`
+     - produces no partial fill side effect
+     - preserves flat portfolio / unlocked reserve state
+11. same-snapshot ladder depletion regression coverage
+   - simulator regressions now pin that:
+     - one IOC order can consume historical ladder depth
+     - a following IOC on the same snapshot only sees the remainder
+     - a following FOK can reject cleanly against depleted remaining depth
+12. first-pass inter-snapshot ladder carry
+   - simulator now carries remaining per-price ladder deficit into the next historical snapshot for the same market/side
+   - later snapshots can restore available size via replenishment above the carried deficit
+   - regressions now pin:
+     - inter-snapshot depletion carry
+     - inter-snapshot replenishment
+13. first-pass resting-order queue evolution in backtest
+   - resting backtest orders can now initialize queue-ahead volume from historical same-side visible size at the order price
+   - advancing historical snapshots shrink that queue-ahead volume when visible size at the same level contracts
+   - same-level visible size expansion is treated as behind-us arrival pressure, not ahead-of-us queue growth
+   - historical trade-at-level ticks now reduce queue-ahead directly when raw trade data is available
+   - historical orderbook event sequences now update queue state event-by-event within the snapshot window, instead of relying only on the final visible-size snapshot
+   - once queue-ahead clears and price-touch/through occurs, the resting order can fill
+   - regressions now pin queue-blocked then queue-cleared fill behavior across snapshots
 
 Not yet implemented:
 
 1. richer executable-liquidity proxy for immediate takers
-   - current implementation now uses spread plus side-specific top5 depth when available, but still does not replay explicit L1/L2 queue state
+   - current implementation now uses explicit live WS ladder levels, can overlay matching historical raw orderbook ladder snapshots in offline mode when raw files exist, depletes same-snapshot ladder depth, and carries per-price deficit into later snapshots, but still does not replay true queue-position evolution through historical L1/L2 state over time
 2. fully realistic `FOK` partial rejection semantics under finite executable depth
-3. end-to-end replace/cancel reporting parity for multi-step partial orders
-   - partial -> replace -> partial -> complete flows still need dedicated certification-style regression
+   - current implementation enforces no-partial rejection under insufficient proxy depth, same-snapshot depletion, and first-pass inter-snapshot carry, but does not yet replay full queue-priority/arrival dynamics over time
+3. fuller resting-order arrival-priority dynamics
+   - current implementation now uses explicit historical orderbook event sequences plus trade-at-level consumption as a first-pass queue-ahead model, and treats same-level expansions as behind-us arrivals, but does not yet replay full queue-priority aging and participant arrivals/cancellations with participant-level identity
 4. certification rerun to verify that blanket `IOC_FOK_NO_TOUCH` behavior is materially reduced
 
 ## Goal
@@ -151,7 +190,13 @@ Common message:
 
 ## Diagnosis Of Current Code
 
+This section records the original gap analysis that motivated the work below.
+Some items here have since been implemented; when that is the case, the note
+below marks the diagnosis as historical and points to the remaining delta.
+
 ### 1. `best` is still degraded in paper/backtest
+
+Status: historical diagnosis, now structurally addressed.
 
 Current behavior:
 
@@ -169,6 +214,8 @@ This loses the main venue distinction:
 
 ### 2. Backtest deferred path forces no-touch behavior before `ioc/fok`
 
+Status: historical diagnosis, now structurally addressed for immediate orders.
+
 Relevant file:
 
 - [autobot/backtest/exchange.py](/d:/MyApps/Autobot/autobot/backtest/exchange.py)
@@ -180,6 +227,8 @@ Current behavior:
 - it is structurally wrong for immediate orders
 
 ### 3. `sim_exchange` mixes immediate and resting semantics
+
+Status: partially resolved; generic dispatch exists, but executable-liquidity realism is still first-pass only.
 
 Relevant file:
 
@@ -193,6 +242,8 @@ Current issues:
 - `PARTIAL` state exists but lifecycle consistency is incomplete
 
 ### 4. Reporting semantics are only partially aligned
+
+Status: largely resolved for first-fill/complete parity; multi-step certification validation is still pending.
 
 Current issues:
 

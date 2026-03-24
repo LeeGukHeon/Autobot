@@ -19,6 +19,7 @@ from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSelectionSettings,
     ModelAlphaSettings,
     ModelAlphaStrategyV1,
+    _micro_snapshot_from_row,
     build_model_alpha_exit_plan_payload,
 )
 
@@ -42,6 +43,39 @@ class _DummyEstimator:
         probs = 1.0 / (1.0 + np.exp(-logits))
         probs = np.clip(probs, 1e-6, 1.0 - 1e-6)
         return np.column_stack([1.0 - probs, probs])
+
+
+def test_micro_snapshot_from_row_preserves_side_specific_depth_and_optional_top_of_book() -> None:
+    snapshot = _micro_snapshot_from_row(
+        row={
+            "market": "KRW-BTC",
+            "close": 100.0,
+            "m_trade_events": 10.0,
+            "m_book_events": 5.0,
+            "m_trade_coverage_ms": 5_000.0,
+            "m_book_coverage_ms": 5_000.0,
+            "m_trade_imbalance": -0.25,
+            "m_spread_proxy": 12.0,
+            "m_depth_bid_top5_mean": 20_000.0,
+            "m_depth_ask_top5_mean": 30_000.0,
+            "m_best_bid_price": 99.0,
+            "m_best_ask_price": 101.0,
+            "m_best_bid_notional_krw": 9_900.0,
+            "m_best_ask_notional_krw": 10_100.0,
+            "m_micro_available": 1.0,
+            "m_micro_book_available": 1.0,
+        },
+        ts_ms=123_000,
+    )
+
+    assert snapshot is not None
+    assert snapshot.depth_top5_notional_krw == 50_000.0
+    assert snapshot.depth_bid_top5_notional_krw == 20_000.0
+    assert snapshot.depth_ask_top5_notional_krw == 30_000.0
+    assert snapshot.best_bid_price == 99.0
+    assert snapshot.best_ask_price == 101.0
+    assert snapshot.best_bid_notional_krw == 9_900.0
+    assert snapshot.best_ask_notional_krw == 10_100.0
 
 
 def _build_strategy(

@@ -2510,9 +2510,17 @@ class PaperRunEngine:
 
         for fill in update.fills:
             event_store.append_fill(fill)
-            append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=asdict(fill))
             counters["fill_events_total"] = int(counters.get("fill_events_total", 0)) + 1
             order = order_by_id.get(fill.order_id)
+            fill_payload = asdict(fill)
+            if order is not None:
+                fill_payload["order_state"] = str(order.state).strip().upper()
+                fill_payload["ord_type"] = str(order.ord_type).strip().lower()
+                fill_payload["time_in_force"] = str(order.time_in_force).strip().lower()
+                fill_payload["volume_req"] = float(order.volume_req)
+                fill_payload["volume_filled_cumulative"] = float(order.volume_filled)
+                fill_payload["remaining_volume"] = max(float(order.volume_req) - float(order.volume_filled), 0.0)
+            append_event("ORDER_FILLED", ts_ms=fill.ts_ms, payload=fill_payload)
             reason_code = ""
             ref_price_value: float | None = None
             slippage_value: float | None = None
@@ -2573,6 +2581,15 @@ class PaperRunEngine:
                         "intent_id": (str(order.intent_id) if order is not None else ""),
                         "reason_code": reason_code,
                         "order_state": (str(order.state).strip().upper() if order is not None else ""),
+                        "ord_type": (str(order.ord_type).strip().lower() if order is not None else ""),
+                        "time_in_force": (str(order.time_in_force).strip().lower() if order is not None else ""),
+                        "volume_req": (float(order.volume_req) if order is not None else None),
+                        "volume_filled_cumulative": (float(order.volume_filled) if order is not None else None),
+                        "remaining_volume": (
+                            max(float(order.volume_req) - float(order.volume_filled), 0.0)
+                            if order is not None
+                            else None
+                        ),
                         "filled_fraction": (
                             float(order.volume_filled) / max(float(order.volume_req), 1e-12)
                             if order is not None and float(order.volume_req) > 0.0
@@ -2804,16 +2821,22 @@ class PaperRunEngine:
         cfg = self._run_settings.micro_gate
         policy_enabled = bool(self._run_settings.micro_order_policy.enabled)
         gate_enabled = bool(cfg.enabled)
+        strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
+        execution_snapshot_needed = bool(
+            strategy_mode == "model_alpha_v1"
+            and bool(self._run_settings.model_alpha.execution.use_learned_recommendations)
+        )
         requested_provider = _normalize_paper_micro_provider(self._run_settings.paper_micro_provider)
         decision: dict[str, Any] = {
             "requested_provider": requested_provider,
             "effective_provider": "NONE",
             "policy_enabled": bool(policy_enabled),
             "micro_gate_enabled": bool(gate_enabled),
+            "execution_snapshot_needed": bool(execution_snapshot_needed),
             "live_ws_config_enabled": bool(cfg.live_ws.enabled),
             "provider_decision": "UNSET",
         }
-        if not (gate_enabled or policy_enabled):
+        if not (gate_enabled or policy_enabled or execution_snapshot_needed):
             decision["provider_decision"] = "MICRO_DISABLED"
             self._runtime_state["micro_provider_decision"] = decision
             return None
@@ -2832,7 +2855,7 @@ class PaperRunEngine:
             )
             decision["auto_ws_public_running"] = bool(auto_live_ws)
 
-        live_ws_consumer_enabled = bool(policy_enabled or gate_enabled)
+        live_ws_consumer_enabled = bool(policy_enabled or gate_enabled or execution_snapshot_needed)
         use_live_ws = False
         if requested_provider == "LIVE_WS":
             if live_ws_consumer_enabled:

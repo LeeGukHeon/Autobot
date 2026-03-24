@@ -128,6 +128,7 @@ class PaperSimExchange:
         self._positions: dict[str, Position] = {}
         self._orders: dict[str, PaperOrder] = {}
         self._open_orders: dict[str, PaperOrder] = {}
+        self._book_replay_state: dict[tuple[str, str], dict[str, Any]] = {}
 
     def quote_balance(self) -> AssetBalance:
         return AssetBalance(free=self._cash.free, locked=self._cash.locked)
@@ -249,6 +250,7 @@ class PaperSimExchange:
                 order.failure_reason = "FOK_NOT_FULLY_FILLED"
                 return (self._clone_order(order), None)
             if immediate_fill is not None:
+                self._commit_immediate_taker_level_consumption(immediate_fill)
                 fill_event = self._fill_order(
                     order=order,
                     fill_price=float(immediate_fill["fill_price"]),
@@ -418,6 +420,7 @@ class PaperSimExchange:
             order.updated_ts_ms = now_ts_ms
             order.failure_reason = "FOK_NOT_FULLY_FILLED"
             return (self._clone_order(order), None)
+        self._commit_immediate_taker_level_consumption(immediate_fill)
         fill_event = self._fill_order(
             order=order,
             fill_price=float(immediate_fill["fill_price"]),
@@ -504,6 +507,14 @@ class PaperSimExchange:
         micro_snapshot: Any | None,
         require_marketable: bool,
     ) -> dict[str, float | str] | None:
+        ladder_fill = self._resolve_immediate_taker_fill_from_levels(
+            order=order,
+            micro_snapshot=micro_snapshot,
+            require_marketable=require_marketable,
+        )
+        if ladder_fill is not None:
+            return ladder_fill
+
         executable = _resolve_executable_price_proxy(
             latest_trade_price=latest_trade_price,
             micro_snapshot=micro_snapshot,
@@ -532,6 +543,148 @@ class PaperSimExchange:
             "fill_volume": float(min(fill_volume, order.volume_req)),
             "maker_or_taker": "taker",
         }
+
+    def _resolve_immediate_taker_fill_from_levels(
+        self,
+        *,
+        order: PaperOrder,
+        micro_snapshot: Any | None,
+        require_marketable: bool,
+    ) -> dict[str, float | str] | None:
+        side_value = str(order.side).strip().lower()
+        book_side = "ask" if side_value == "bid" else "bid"
+        levels = getattr(micro_snapshot, f"{book_side}_levels", ())
+        snapshot_ts_ms = _safe_optional_int(getattr(micro_snapshot, "snapshot_ts_ms", None))
+        if not isinstance(levels, tuple) or not levels or snapshot_ts_ms is None:
+            return None
+
+        state_key = (str(order.market).strip().upper(), book_side)
+        normalized_levels: list[list[float]] = []
+        for raw in levels:
+            if not isinstance(raw, tuple) or len(raw) != 2:
+                continue
+            price = _safe_optional_float(raw[0])
+            size = _safe_optional_float(raw[1])
+            if price is None or size is None or price <= 0.0 or size <= 0.0:
+                continue
+            normalized_levels.append([float(price), float(size)])
+        if not normalized_levels:
+            return None
+
+        replay_state = self._book_replay_state.get(state_key)
+        if replay_state is None or int(snapshot_ts_ms) < int(replay_state.get("snapshot_ts_ms", 0) or 0):
+            replay_state = {
+                "snapshot_ts_ms": int(snapshot_ts_ms),
+                "raw_levels": [[float(price), float(size)] for price, size in normalized_levels],
+                "remaining_levels": [[float(price), float(size)] for price, size in normalized_levels],
+            }
+            self._book_replay_state[state_key] = replay_state
+        elif int(snapshot_ts_ms) > int(replay_state.get("snapshot_ts_ms", 0) or 0):
+            deficit_by_price = _level_deficit_by_price(
+                raw_levels=replay_state.get("raw_levels"),
+                remaining_levels=replay_state.get("remaining_levels"),
+            )
+            carried_levels: list[list[float]] = []
+            for price, raw_size in normalized_levels:
+                deficit = float(deficit_by_price.get(float(price), 0.0))
+                carried_levels.append([float(price), max(float(raw_size) - deficit, 0.0)])
+            replay_state = {
+                "snapshot_ts_ms": int(snapshot_ts_ms),
+                "raw_levels": [[float(price), float(size)] for price, size in normalized_levels],
+                "remaining_levels": carried_levels,
+            }
+            self._book_replay_state[state_key] = replay_state
+
+        remaining_levels = replay_state.get("remaining_levels")
+        if not isinstance(remaining_levels, list) or not remaining_levels:
+            return None
+
+        if side_value == "bid":
+            best_price = remaining_levels[0][0]
+            if require_marketable and float(order.price) + EPSILON < best_price:
+                return None
+            remaining_volume = float(order.volume_req)
+            remaining_quote = float(order.price) * float(order.volume_req) if order.ord_type == "best" else None
+            filled_volume = 0.0
+            filled_quote = 0.0
+            consumption: list[tuple[int, float]] = []
+            for idx, (level_price, level_size) in enumerate(remaining_levels):
+                if order.ord_type != "best" and level_price > float(order.price) + EPSILON:
+                    break
+                available_volume = float(level_size)
+                if remaining_quote is not None:
+                    affordable_volume = max(float(remaining_quote) / max(level_price, EPSILON), 0.0)
+                    take_volume = min(available_volume, affordable_volume)
+                else:
+                    take_volume = min(available_volume, remaining_volume)
+                if take_volume <= EPSILON:
+                    continue
+                filled_volume += float(take_volume)
+                filled_quote += float(take_volume) * float(level_price)
+                remaining_volume = max(remaining_volume - float(take_volume), 0.0)
+                if remaining_quote is not None:
+                    remaining_quote = max(float(remaining_quote) - float(take_volume) * float(level_price), 0.0)
+                consumption.append((idx, float(take_volume)))
+                if remaining_volume <= EPSILON or (remaining_quote is not None and remaining_quote <= EPSILON):
+                    break
+            if filled_volume <= EPSILON:
+                return None
+            return {
+                "fill_price": float(filled_quote / max(filled_volume, EPSILON)),
+                "fill_volume": float(min(filled_volume, order.volume_req)),
+                "maker_or_taker": "taker",
+                "_level_state_key": state_key,
+                "_level_consumption": consumption,
+            }
+
+        best_price = remaining_levels[0][0]
+        if require_marketable and float(order.price) - EPSILON > best_price:
+            return None
+        remaining_volume = float(order.volume_req)
+        filled_volume = 0.0
+        filled_quote = 0.0
+        consumption: list[tuple[int, float]] = []
+        for idx, (level_price, level_size) in enumerate(remaining_levels):
+            if order.ord_type != "best" and level_price + EPSILON < float(order.price):
+                break
+            take_volume = min(float(level_size), remaining_volume)
+            if take_volume <= EPSILON:
+                continue
+            filled_volume += float(take_volume)
+            filled_quote += float(take_volume) * float(level_price)
+            remaining_volume = max(remaining_volume - float(take_volume), 0.0)
+            consumption.append((idx, float(take_volume)))
+            if remaining_volume <= EPSILON:
+                break
+        if filled_volume <= EPSILON:
+            return None
+        return {
+            "fill_price": float(filled_quote / max(filled_volume, EPSILON)),
+            "fill_volume": float(min(filled_volume, order.volume_req)),
+            "maker_or_taker": "taker",
+            "_level_state_key": state_key,
+            "_level_consumption": consumption,
+        }
+
+    def _commit_immediate_taker_level_consumption(self, payload: dict[str, float | str | object]) -> None:
+        state_key = payload.get("_level_state_key")
+        consumption = payload.get("_level_consumption")
+        if not isinstance(state_key, tuple) or not isinstance(consumption, list):
+            return
+        replay_state = self._book_replay_state.get(state_key)
+        if not isinstance(replay_state, dict):
+            return
+        remaining_levels = replay_state.get("remaining_levels")
+        if not isinstance(remaining_levels, list):
+            return
+        for item in consumption:
+            if not isinstance(item, tuple) or len(item) != 2:
+                continue
+            idx = int(item[0])
+            consumed_volume = float(item[1])
+            if idx < 0 or idx >= len(remaining_levels):
+                continue
+            remaining_levels[idx][1] = max(float(remaining_levels[idx][1]) - consumed_volume, 0.0)
 
     def portfolio_snapshot(self, *, ts_ms: int, latest_prices: dict[str, float]) -> PortfolioSnapshot:
         total_equity = self._cash.free + self._cash.locked
@@ -570,7 +723,6 @@ class PaperSimExchange:
             unrealized_pnl_quote=total_unrealized,
             positions=positions,
         )
-
     def _reserve_for_order(self, order: PaperOrder, rules: MarketRules) -> bool:
         if order.side == "bid":
             reserve_quote = order.price * order.volume_req * (1.0 + rules.max_bid_fee())
@@ -751,6 +903,26 @@ class PaperSimExchange:
         )
 
 
+def _level_deficit_by_price(*, raw_levels: Any, remaining_levels: Any) -> dict[float, float]:
+    if not isinstance(raw_levels, list) or not isinstance(remaining_levels, list):
+        return {}
+    deficits: dict[float, float] = {}
+    for idx, raw in enumerate(raw_levels):
+        if not isinstance(raw, list) or len(raw) != 2:
+            continue
+        price = _safe_optional_float(raw[0])
+        raw_size = _safe_optional_float(raw[1])
+        if price is None or raw_size is None:
+            continue
+        remaining_size = 0.0
+        if idx < len(remaining_levels):
+            remaining = remaining_levels[idx]
+            if isinstance(remaining, list) and len(remaining) == 2:
+                remaining_size = _safe_optional_float(remaining[1]) or 0.0
+        deficits[float(price)] = max(float(raw_size) - float(remaining_size), 0.0)
+    return deficits
+
+
 def parse_market(market: str) -> tuple[str, str]:
     raw = market.strip().upper()
     if "-" not in raw:
@@ -779,6 +951,20 @@ def _allow_immediate_fill(*, intent: OrderIntent) -> bool:
 
 
 def _resolve_executable_price_proxy(*, latest_trade_price: float, micro_snapshot: Any | None = None) -> dict[str, float]:
+    best_bid_price = _safe_optional_float(getattr(micro_snapshot, "best_bid_price", None))
+    best_ask_price = _safe_optional_float(getattr(micro_snapshot, "best_ask_price", None))
+    if (
+        best_bid_price is not None
+        and best_ask_price is not None
+        and float(best_bid_price) > 0.0
+        and float(best_ask_price) > 0.0
+        and float(best_ask_price) >= float(best_bid_price)
+    ):
+        return {
+            "bid_price": float(best_bid_price),
+            "ask_price": float(best_ask_price),
+        }
+
     trade_price = max(float(latest_trade_price), EPSILON)
     spread_bps = _safe_optional_float(getattr(micro_snapshot, "spread_bps_mean", None))
     if spread_bps is None or float(spread_bps) <= 0.0:
@@ -807,12 +993,130 @@ def _resolve_executable_side_depth_quote(*, micro_snapshot: Any | None, side: st
     if side_specific is not None and float(side_specific) > 0.0:
         return max(float(side_specific), 0.0)
 
+    top_level_notional = _safe_optional_float(
+        getattr(
+            micro_snapshot,
+            "best_ask_notional_krw" if side_value == "bid" else "best_bid_notional_krw",
+            None,
+        )
+    )
+    if top_level_notional is not None and float(top_level_notional) > 0.0:
+        return max(float(top_level_notional), 0.0)
+
     depth_total = _safe_optional_float(getattr(micro_snapshot, "depth_top5_notional_krw", None))
     if depth_total is None or float(depth_total) <= 0.0:
-        return None
+        return _resolve_trade_side_liquidity_quote(micro_snapshot=micro_snapshot, side=side_value)
     # `depth_top5_notional_krw` is a combined top-of-book proxy, so use half as
     # a conservative first-pass estimate for one-side immediately executable depth.
     return max(float(depth_total) * 0.5, 0.0)
+
+
+def _resolve_trade_side_liquidity_quote(*, micro_snapshot: Any | None, side: str) -> float | None:
+    trade_notional = _safe_optional_float(getattr(micro_snapshot, "trade_notional_krw", None))
+    if trade_notional is None or float(trade_notional) <= 0.0:
+        return None
+
+    trade_events = _safe_optional_float(getattr(micro_snapshot, "trade_events", None)) or 0.0
+    trade_coverage_ms = _safe_optional_float(getattr(micro_snapshot, "trade_coverage_ms", None)) or 0.0
+    if trade_events <= 0.0 or trade_coverage_ms <= 0.0:
+        return None
+
+    side_value = str(side).strip().lower()
+    imbalance = _safe_optional_float(getattr(micro_snapshot, "trade_imbalance", None))
+    if imbalance is None:
+        side_share = 0.5
+    else:
+        imbalance_value = max(min(float(imbalance), 1.0), -1.0)
+        directional_pressure = -imbalance_value if side_value == "bid" else imbalance_value
+        side_share = max(min(0.5 + 0.25 * directional_pressure, 0.9), 0.1)
+
+    event_confidence = min(float(trade_events) / 10.0, 1.0)
+    coverage_confidence = min(float(trade_coverage_ms) / 30_000.0, 1.0)
+    confidence = max(min(min(event_confidence, coverage_confidence), 1.0), 0.1)
+    return max(float(trade_notional) * float(side_share) * float(confidence), 0.0)
+
+
+def _resolve_immediate_taker_fill_from_levels(
+    *,
+    order: PaperOrder,
+    micro_snapshot: Any | None,
+    require_marketable: bool,
+) -> dict[str, float | str] | None:
+    levels = getattr(micro_snapshot, "ask_levels" if str(order.side).strip().lower() == "bid" else "bid_levels", ())
+    if not isinstance(levels, tuple) or not levels:
+        return None
+
+    normalized_levels: list[tuple[float, float]] = []
+    for raw in levels:
+        if not isinstance(raw, tuple) or len(raw) != 2:
+            continue
+        price = _safe_optional_float(raw[0])
+        size = _safe_optional_float(raw[1])
+        if price is None or size is None or price <= 0.0 or size <= 0.0:
+            continue
+        normalized_levels.append((float(price), float(size)))
+    if not normalized_levels:
+        return None
+
+    side_value = str(order.side).strip().lower()
+    if side_value == "bid":
+        best_price = normalized_levels[0][0]
+        if require_marketable and float(order.price) + EPSILON < best_price:
+            return None
+        remaining_volume = float(order.volume_req)
+        remaining_quote = float(order.price) * float(order.volume_req) if order.ord_type == "best" else None
+        filled_volume = 0.0
+        filled_quote = 0.0
+        for level_price, level_size in normalized_levels:
+            if order.ord_type != "best" and level_price > float(order.price) + EPSILON:
+                break
+            available_volume = float(level_size)
+            if remaining_quote is not None:
+                affordable_volume = max(float(remaining_quote) / max(level_price, EPSILON), 0.0)
+                take_volume = min(available_volume, affordable_volume)
+            else:
+                take_volume = min(available_volume, remaining_volume)
+            if take_volume <= EPSILON:
+                continue
+            filled_volume += float(take_volume)
+            filled_quote += float(take_volume) * float(level_price)
+            remaining_volume = max(remaining_volume - float(take_volume), 0.0)
+            if remaining_quote is not None:
+                remaining_quote = max(float(remaining_quote) - float(take_volume) * float(level_price), 0.0)
+            if remaining_volume <= EPSILON or (remaining_quote is not None and remaining_quote <= EPSILON):
+                break
+        if filled_volume <= EPSILON:
+            return None
+        return {
+            "fill_price": float(filled_quote / max(filled_volume, EPSILON)),
+            "fill_volume": float(min(filled_volume, order.volume_req)),
+            "maker_or_taker": "taker",
+        }
+
+    best_price = normalized_levels[0][0]
+    if require_marketable and float(order.price) - EPSILON > best_price:
+        return None
+    remaining_volume = float(order.volume_req)
+    filled_volume = 0.0
+    filled_quote = 0.0
+    for level_price, level_size in normalized_levels:
+        if order.ord_type != "best" and level_price + EPSILON < float(order.price):
+            break
+        take_volume = min(float(level_size), remaining_volume)
+        if take_volume <= EPSILON:
+            continue
+        filled_volume += float(take_volume)
+        filled_quote += float(take_volume) * float(level_price)
+        remaining_volume = max(remaining_volume - float(take_volume), 0.0)
+        if remaining_volume <= EPSILON:
+            break
+    if filled_volume <= EPSILON:
+        return None
+    return {
+        "fill_price": float(filled_quote / max(filled_volume, EPSILON)),
+        "fill_volume": float(min(filled_volume, order.volume_req)),
+        "maker_or_taker": "taker",
+    }
 
 
 def _safe_optional_float(value: Any) -> float | None:
@@ -820,6 +1124,15 @@ def _safe_optional_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 

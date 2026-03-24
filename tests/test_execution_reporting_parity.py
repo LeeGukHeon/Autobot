@@ -222,3 +222,134 @@ def test_apply_execution_update_reports_partial_cancelled_order_as_partial_fill(
     partial_events = [item for item in events if item["event_type"] == "ORDER_PARTIAL"]
     assert partial_events
     assert partial_events[0]["payload"]["failure_reason"] == "IOC_PARTIAL_CANCELLED_REMAINDER"
+
+
+@pytest.mark.parametrize(
+    ("engine_cls", "update_cls"),
+    [
+        (PaperRunEngine, PaperExecutionUpdate),
+        (BacktestRunEngine, BacktestExecutionUpdate),
+    ],
+)
+def test_apply_execution_update_enriches_order_filled_event_payload_with_order_state(
+    tmp_path: Path,
+    engine_cls: type[PaperRunEngine] | type[BacktestRunEngine],
+    update_cls: type[PaperExecutionUpdate] | type[BacktestExecutionUpdate],
+) -> None:
+    engine = _make_engine(engine_cls)
+    partial_order = _order(order_id="paper-order-3", state="PARTIAL", updated_ts_ms=1_500, volume_filled=4.0)
+    partial_fill = FillEvent(
+        order_id="paper-order-3",
+        market="KRW-BTC",
+        ts_ms=1_500,
+        price=101.0,
+        volume=4.0,
+        fee_quote=0.4,
+    )
+
+    events = _apply_update(
+        engine=engine,
+        update=update_cls(
+            orders_with_fill=[partial_order],
+            order_states_after_fill={partial_order.order_id: partial_order},
+            fills=[partial_fill],
+        ),
+        run_dir=tmp_path / "payload",
+    )
+
+    fill_events = [item for item in events if item["event_type"] == "ORDER_FILLED"]
+    assert fill_events
+    payload = fill_events[0]["payload"]
+    assert payload["order_state"] == "PARTIAL"
+    assert payload["ord_type"] == "limit"
+    assert payload["time_in_force"] == "gtc"
+    assert payload["volume_req"] == 10.0
+    assert payload["volume_filled_cumulative"] == 4.0
+    assert payload["remaining_volume"] == 6.0
+
+
+@pytest.mark.parametrize(
+    ("engine_cls", "update_cls"),
+    [
+        (PaperRunEngine, PaperExecutionUpdate),
+        (BacktestRunEngine, BacktestExecutionUpdate),
+    ],
+)
+def test_apply_execution_update_tracks_partial_replace_then_complete_flow(
+    tmp_path: Path,
+    engine_cls: type[PaperRunEngine] | type[BacktestRunEngine],
+    update_cls: type[PaperExecutionUpdate] | type[BacktestExecutionUpdate],
+) -> None:
+    engine = _make_engine(engine_cls)
+
+    partial_order_1 = _order(order_id="paper-order-a", state="PARTIAL", updated_ts_ms=1_500, volume_filled=4.0)
+    partial_fill_1 = FillEvent(
+        order_id="paper-order-a",
+        market="KRW-BTC",
+        ts_ms=1_500,
+        price=101.0,
+        volume=4.0,
+        fee_quote=0.4,
+    )
+    events_1 = _apply_update(
+        engine=engine,
+        update=update_cls(
+            orders_with_fill=[partial_order_1],
+            order_states_after_fill={partial_order_1.order_id: partial_order_1},
+            fills=[partial_fill_1],
+        ),
+        run_dir=tmp_path / "step1",
+    )
+
+    partial_order_2 = _order(order_id="paper-order-b", state="PARTIAL", updated_ts_ms=2_000, volume_filled=3.0)
+    partial_fill_2 = FillEvent(
+        order_id="paper-order-b",
+        market="KRW-BTC",
+        ts_ms=2_000,
+        price=101.0,
+        volume=3.0,
+        fee_quote=0.3,
+    )
+    events_2 = _apply_update(
+        engine=engine,
+        update=update_cls(
+            orders_canceled=[_order(order_id="paper-order-a", state="CANCELED", updated_ts_ms=1_900, volume_filled=4.0)],
+            orders_submitted=[_order(order_id="paper-order-b", state="PARTIAL", updated_ts_ms=1_900, volume_filled=0.0)],
+            orders_with_fill=[partial_order_2],
+            order_states_after_fill={partial_order_2.order_id: partial_order_2},
+            fills=[partial_fill_2],
+        ),
+        run_dir=tmp_path / "step2",
+    )
+
+    filled_order_2 = _order(order_id="paper-order-b", state="FILLED", updated_ts_ms=2_600, volume_filled=6.0)
+    filled_fill_2 = FillEvent(
+        order_id="paper-order-b",
+        market="KRW-BTC",
+        ts_ms=2_600,
+        price=101.0,
+        volume=3.0,
+        fee_quote=0.3,
+    )
+    events_3 = _apply_update(
+        engine=engine,
+        update=update_cls(
+            orders_with_fill=[filled_order_2],
+            order_states_after_fill={filled_order_2.order_id: filled_order_2},
+            orders_filled=[filled_order_2],
+            fills=[filled_fill_2],
+            success_markets=["KRW-BTC"],
+        ),
+        run_dir=tmp_path / "step3",
+    )
+
+    events = events_1 + events_2 + events_3
+    assert engine._runtime_counters["orders_filled"] == 2
+    assert engine._runtime_counters["orders_partially_filled"] == 2
+    assert engine._runtime_counters["orders_completed"] == 1
+    assert engine._runtime_counters["fill_events_total"] == 3
+    assert engine._runtime_state["time_to_first_fill_ms"] == [500.0]
+    assert engine._runtime_state["time_to_complete_fill_ms"] == [1600.0]
+
+    partial_events = [item for item in events if item["event_type"] == "ORDER_PARTIAL"]
+    assert len(partial_events) == 2

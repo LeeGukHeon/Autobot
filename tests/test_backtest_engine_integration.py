@@ -5,8 +5,10 @@ from pathlib import Path
 
 import polars as pl
 
+import autobot.backtest.engine as backtest_engine_mod
 from autobot.backtest.engine import BacktestRunEngine, BacktestRunSettings
 from autobot.paper.sim_exchange import MarketRules
+from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
 
 
 class _StaticRulesProvider:
@@ -108,3 +110,38 @@ def test_backtest_run_summary_only_skips_heavy_artifacts(tmp_path: Path) -> None
     assert not (run_dir / "per_market.csv").exists()
     assert not (run_dir / "selection_stats.json").exists()
     assert not (run_dir / "debug_mismatch.json").exists()
+
+
+def test_backtest_provider_selection_allows_execution_snapshot_runtime_without_gate_or_policy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_sample_parquet(parquet_root)
+    offline_root = tmp_path / "micro_v1"
+    offline_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        backtest_engine_mod,
+        "_resolve_micro_root",
+        lambda dataset_name, parquet_root: offline_root,
+    )
+
+    engine = BacktestRunEngine(
+        run_settings=BacktestRunSettings(
+            dataset_name="candles_v1",
+            parquet_root=str(parquet_root),
+            tf="1m",
+            market="KRW-BTC",
+            duration_days=1,
+            strategy="model_alpha_v1",
+            model_ref="champion_v4",
+            model_alpha=ModelAlphaSettings(
+                execution=ModelAlphaExecutionSettings(use_learned_recommendations=True),
+            ),
+        ),
+        upbit_settings=None,
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    )
+
+    provider = engine._resolve_micro_snapshot_provider()
+    assert provider is not None

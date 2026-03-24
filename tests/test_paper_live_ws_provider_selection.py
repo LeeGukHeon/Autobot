@@ -4,10 +4,12 @@ import asyncio
 import json
 from pathlib import Path
 
+import autobot.paper.engine as paper_engine_mod
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.micro_gate_v1 import MicroGateSettings
 from autobot.strategy.micro_snapshot import LiveWsMicroSnapshotProvider, LiveWsProviderSettings
+from autobot.strategy.model_alpha_v1 import ModelAlphaExecutionSettings, ModelAlphaSettings
 from autobot.strategy.micro_order_policy import MicroOrderPolicySettings
 from autobot.upbit.config import (
     UpbitAuthSettings,
@@ -196,3 +198,38 @@ def test_paper_live_ws_provider_consumes_real_trade_and_orderbook_streams(tmp_pa
     assert snapshot.trade_events >= 1
     assert snapshot.book_available is True
     assert snapshot.book_events >= 1
+    assert snapshot.best_ask_price == 101.2
+    assert snapshot.best_bid_price == 100.8
+    assert snapshot.best_ask_notional_krw == 121.44
+    assert snapshot.best_bid_notional_krw == 131.04
+    assert snapshot.ask_levels == ((101.2, 1.2), (101.3, 1.1))
+    assert snapshot.bid_levels == ((100.8, 1.3), (100.7, 1.2))
+
+
+def test_paper_provider_selection_allows_execution_snapshot_runtime_without_gate_or_policy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    offline_root = tmp_path / "micro_v1"
+    offline_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(paper_engine_mod, "_resolve_micro_root", lambda dataset_name: offline_root)
+
+    engine = PaperRunEngine(
+        upbit_settings=_make_settings(),
+        run_settings=PaperRunSettings(
+            out_root_dir=str(tmp_path),
+            strategy="model_alpha_v1",
+            model_alpha=ModelAlphaSettings(
+                execution=ModelAlphaExecutionSettings(use_learned_recommendations=True),
+            ),
+            micro_gate=MicroGateSettings(enabled=False),
+            micro_order_policy=MicroOrderPolicySettings(enabled=False),
+        ),
+        market_loader=lambda quote: ["KRW-BTC"] if quote == "KRW" else [],
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    )
+
+    provider = engine._resolve_micro_snapshot_provider(markets=["KRW-BTC"])
+
+    assert provider is not None
+    assert engine._runtime_state["micro_provider_decision"]["effective_provider"] == "OFFLINE_PARQUET"

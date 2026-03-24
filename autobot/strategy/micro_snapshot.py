@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 import time
@@ -29,6 +29,14 @@ class MicroSnapshot:
     depth_top5_notional_krw: float | None = None
     depth_bid_top5_notional_krw: float | None = None
     depth_ask_top5_notional_krw: float | None = None
+    best_bid_price: float | None = None
+    best_ask_price: float | None = None
+    best_bid_notional_krw: float | None = None
+    best_ask_notional_krw: float | None = None
+    bid_levels: tuple[tuple[float, float], ...] = ()
+    ask_levels: tuple[tuple[float, float], ...] = ()
+    recent_trade_ticks: tuple[tuple[int, float, float, str], ...] = ()
+    recent_orderbook_events: tuple[tuple[int, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...], float | None, float | None], ...] = ()
     book_events: int = 0
     book_coverage_ms: int = 0
     book_available: bool = False
@@ -93,6 +101,17 @@ class _OfflineDayCacheEntry:
     snapshots: dict[int, MicroSnapshot]
 
 
+@dataclass(frozen=True)
+class _OfflineOrderbookHourCacheEntry:
+    ts_values: tuple[int, ...]
+    rows_by_ts: dict[int, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _OfflineTradeHourCacheEntry:
+    ticks: tuple[tuple[int, float, float, str], ...]
+
+
 class OfflineMicroSnapshotProvider:
     """Parquet-backed micro snapshot provider for backtest/offline runs."""
 
@@ -102,12 +121,24 @@ class OfflineMicroSnapshotProvider:
         micro_root: str | Path,
         tf: str,
         cache_entries: int = 64,
+        raw_ws_root: str | Path | None = None,
+        orderbook_topk: int = 5,
     ) -> None:
         self._micro_root = Path(micro_root)
         self._tf = str(tf).strip().lower()
         self._cache_entries = max(int(cache_entries), 1)
         self._fallback_tolerance_ms = max(_interval_ms_from_tf(self._tf), 1)
+        self._raw_orderbook_tolerance_ms = min(self._fallback_tolerance_ms, 60_000)
+        self._raw_trade_window_ms = min(self._fallback_tolerance_ms, 60_000)
+        self._orderbook_topk = max(int(orderbook_topk), 1)
+        self._raw_ws_root = (
+            Path(raw_ws_root)
+            if raw_ws_root is not None
+            else _resolve_raw_ws_root_from_micro_root(self._micro_root)
+        )
         self._cache: OrderedDict[tuple[str, str], _OfflineDayCacheEntry] = OrderedDict()
+        self._orderbook_cache: OrderedDict[tuple[str, str, str], _OfflineOrderbookHourCacheEntry] = OrderedDict()
+        self._trade_cache: OrderedDict[tuple[str, str, str], _OfflineTradeHourCacheEntry] = OrderedDict()
 
     def get(self, market: str, ts_ms: int) -> MicroSnapshot | None:
         market_value = str(market).strip().upper()
@@ -130,7 +161,11 @@ class OfflineMicroSnapshotProvider:
             return None
         direct = day_entry.snapshots.get(ts_value)
         if direct is not None:
-            return direct
+            return self._overlay_raw_orderbook_snapshot(
+                snapshot=direct,
+                market=market_value,
+                ts_ms=ts_value,
+            )
 
         idx = bisect_right(day_entry.ts_values, ts_value) - 1
         if idx < 0:
@@ -138,7 +173,14 @@ class OfflineMicroSnapshotProvider:
         snapped_ts = int(day_entry.ts_values[idx])
         if (ts_value - snapped_ts) > self._fallback_tolerance_ms:
             return None
-        return day_entry.snapshots.get(snapped_ts)
+        snapshot = day_entry.snapshots.get(snapped_ts)
+        if snapshot is None:
+            return None
+        return self._overlay_raw_orderbook_snapshot(
+            snapshot=snapshot,
+            market=market_value,
+            ts_ms=ts_value,
+        )
 
     def _load_day_entry(self, *, market: str, date_value: str) -> _OfflineDayCacheEntry:
         day_dir = self._micro_root / f"tf={self._tf}" / f"market={market}" / f"date={date_value}"
@@ -174,6 +216,216 @@ class OfflineMicroSnapshotProvider:
             ts_values.append(int(ts_value))
         ts_values.sort()
         return _OfflineDayCacheEntry(ts_values=tuple(ts_values), snapshots=snapshots)
+
+    def _overlay_raw_orderbook_snapshot(
+        self,
+        *,
+        snapshot: MicroSnapshot,
+        market: str,
+        ts_ms: int,
+    ) -> MicroSnapshot:
+        raw_rows = self._get_raw_orderbook_rows(
+            market=market,
+            start_ts_ms=max(int(ts_ms) - self._raw_orderbook_tolerance_ms, 0),
+            end_ts_ms=int(ts_ms),
+        )
+        if not raw_rows:
+            return snapshot
+        raw_row = raw_rows[-1]
+
+        raw_ts_ms = _to_int(raw_row.get("ts_ms")) or int(snapshot.snapshot_ts_ms)
+
+        bid_levels = _extract_levels_from_book(raw_row, side="bid", topk=self._orderbook_topk)
+        ask_levels = _extract_levels_from_book(raw_row, side="ask", topk=self._orderbook_topk)
+        best_bid_price = _to_float(raw_row.get("bid1_price"))
+        best_ask_price = _to_float(raw_row.get("ask1_price"))
+        best_bid_size = _to_float(raw_row.get("bid1_size"))
+        best_ask_size = _to_float(raw_row.get("ask1_size"))
+        best_bid_notional = (
+            float(best_bid_price) * float(best_bid_size)
+            if best_bid_price is not None and best_bid_size is not None
+            else snapshot.best_bid_notional_krw
+        )
+        best_ask_notional = (
+            float(best_ask_price) * float(best_ask_size)
+            if best_ask_price is not None and best_ask_size is not None
+            else snapshot.best_ask_notional_krw
+        )
+        return replace(
+            snapshot,
+            snapshot_ts_ms=int(raw_ts_ms),
+            last_event_ts_ms=max(int(snapshot.last_event_ts_ms), int(raw_ts_ms)),
+            best_bid_price=(float(best_bid_price) if best_bid_price is not None else snapshot.best_bid_price),
+            best_ask_price=(float(best_ask_price) if best_ask_price is not None else snapshot.best_ask_price),
+            best_bid_notional_krw=best_bid_notional,
+            best_ask_notional_krw=best_ask_notional,
+            bid_levels=bid_levels or snapshot.bid_levels,
+            ask_levels=ask_levels or snapshot.ask_levels,
+            recent_trade_ticks=self._get_raw_trade_ticks(
+                market=market,
+                start_ts_ms=max(int(ts_ms) - self._raw_trade_window_ms, 0),
+                end_ts_ms=int(ts_ms),
+            )
+            or snapshot.recent_trade_ticks,
+            recent_orderbook_events=tuple(
+                (
+                    int(_to_int(row.get("ts_ms")) or 0),
+                    _extract_levels_from_book(row, side="bid", topk=self._orderbook_topk),
+                    _extract_levels_from_book(row, side="ask", topk=self._orderbook_topk),
+                    _to_float(row.get("bid1_price")),
+                    _to_float(row.get("ask1_price")),
+                )
+                for row in raw_rows
+            )
+            or snapshot.recent_orderbook_events,
+        )
+
+    def _get_raw_orderbook_row(self, *, market: str, ts_ms: int) -> dict[str, Any] | None:
+        rows = self._get_raw_orderbook_rows(
+            market=market,
+            start_ts_ms=max(int(ts_ms) - self._raw_orderbook_tolerance_ms, 0),
+            end_ts_ms=int(ts_ms),
+        )
+        return rows[-1] if rows else None
+
+    def _get_raw_orderbook_rows(
+        self,
+        *,
+        market: str,
+        start_ts_ms: int,
+        end_ts_ms: int,
+    ) -> list[dict[str, Any]]:
+        if self._raw_ws_root is None or not self._raw_ws_root.exists():
+            return []
+        end_dt = datetime.fromtimestamp(int(end_ts_ms) / 1000.0, tz=timezone.utc)
+        start_dt = datetime.fromtimestamp(max(int(start_ts_ms), 0) / 1000.0, tz=timezone.utc)
+        hour_candidates = {
+            end_dt.strftime("%Y-%m-%d:%H"),
+            start_dt.strftime("%Y-%m-%d:%H"),
+        }
+        rows: list[dict[str, Any]] = []
+        for item in sorted(hour_candidates):
+            date_value, hour_value = item.split(":", 1)
+            cache_key = (market, date_value, hour_value)
+            hour_entry = self._orderbook_cache.get(cache_key)
+            if hour_entry is None:
+                hour_entry = self._load_orderbook_hour_entry(
+                    market=market,
+                    date_value=date_value,
+                    hour_value=hour_value,
+                )
+                self._orderbook_cache[cache_key] = hour_entry
+                while len(self._orderbook_cache) > self._cache_entries:
+                    self._orderbook_cache.popitem(last=False)
+            else:
+                self._orderbook_cache.move_to_end(cache_key)
+            for ts_value in hour_entry.ts_values:
+                if int(start_ts_ms) <= int(ts_value) <= int(end_ts_ms):
+                    row = hour_entry.rows_by_ts.get(int(ts_value))
+                    if isinstance(row, dict):
+                        rows.append(row)
+        rows.sort(key=lambda item: int(_to_int(item.get("ts_ms")) or 0))
+        return rows
+
+    def _load_orderbook_hour_entry(
+        self,
+        *,
+        market: str,
+        date_value: str,
+        hour_value: str,
+    ) -> _OfflineOrderbookHourCacheEntry:
+        hour_dir = self._raw_ws_root / "orderbook" / f"date={date_value}" / f"hour={hour_value}"
+        if not hour_dir.exists():
+            return _OfflineOrderbookHourCacheEntry(ts_values=(), rows_by_ts={})
+
+        rows_by_ts: dict[int, dict[str, Any]] = {}
+        ts_values: list[int] = []
+        for path in sorted(hour_dir.glob("*.jsonl.zst")):
+            if not path.is_file():
+                continue
+            from autobot.data.micro.raw_readers import iter_jsonl_zst_rows
+            for row in iter_jsonl_zst_rows(path):
+                if str(row.get("channel", "")).strip().lower() != "orderbook":
+                    continue
+                if str(row.get("market", "")).strip().upper() != market:
+                    continue
+                ts_value = _to_int(row.get("ts_ms"))
+                if ts_value is None:
+                    continue
+                rows_by_ts[int(ts_value)] = row
+        if rows_by_ts:
+            ts_values = sorted(rows_by_ts.keys())
+        return _OfflineOrderbookHourCacheEntry(ts_values=tuple(ts_values), rows_by_ts=rows_by_ts)
+
+    def _get_raw_trade_ticks(
+        self,
+        *,
+        market: str,
+        start_ts_ms: int,
+        end_ts_ms: int,
+    ) -> tuple[tuple[int, float, float, str], ...]:
+        if self._raw_ws_root is None or not self._raw_ws_root.exists():
+            return ()
+        ticks: list[tuple[int, float, float, str]] = []
+        current_dt = datetime.fromtimestamp(int(end_ts_ms) / 1000.0, tz=timezone.utc)
+        hour_candidates = {
+            current_dt.strftime("%Y-%m-%d:%H"),
+            datetime.fromtimestamp(max(int(start_ts_ms), 0) / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d:%H"),
+        }
+        for item in sorted(hour_candidates):
+            date_value, hour_value = item.split(":", 1)
+            cache_key = (market, date_value, hour_value)
+            hour_entry = self._trade_cache.get(cache_key)
+            if hour_entry is None:
+                hour_entry = self._load_trade_hour_entry(
+                    market=market,
+                    date_value=date_value,
+                    hour_value=hour_value,
+                )
+                self._trade_cache[cache_key] = hour_entry
+                while len(self._trade_cache) > self._cache_entries:
+                    self._trade_cache.popitem(last=False)
+            else:
+                self._trade_cache.move_to_end(cache_key)
+            for tick in hour_entry.ticks:
+                ts_value = int(tick[0])
+                if int(start_ts_ms) <= ts_value <= int(end_ts_ms):
+                    ticks.append(tick)
+        ticks.sort(key=lambda item: int(item[0]))
+        return tuple(ticks)
+
+    def _load_trade_hour_entry(
+        self,
+        *,
+        market: str,
+        date_value: str,
+        hour_value: str,
+    ) -> _OfflineTradeHourCacheEntry:
+        if self._raw_ws_root is None:
+            return _OfflineTradeHourCacheEntry(ticks=())
+        hour_dir = self._raw_ws_root / "trade" / f"date={date_value}" / f"hour={hour_value}"
+        if not hour_dir.exists():
+            return _OfflineTradeHourCacheEntry(ticks=())
+        ticks: list[tuple[int, float, float, str]] = []
+        for path in sorted(hour_dir.glob("*.jsonl.zst")):
+            if not path.is_file():
+                continue
+            from autobot.data.micro.raw_readers import iter_jsonl_zst_rows
+            for row in iter_jsonl_zst_rows(path):
+                if str(row.get("channel", "")).strip().lower() != "trade":
+                    continue
+                if str(row.get("market", "")).strip().upper() != market:
+                    continue
+                ts_value = _to_int(row.get("trade_ts_ms"))
+                price = _to_float(row.get("price"))
+                volume = _to_float(row.get("volume"))
+                ask_bid = str(row.get("ask_bid", "")).strip().upper()
+                side = "buy" if ask_bid == "BID" else "sell" if ask_bid == "ASK" else ""
+                if ts_value is None or price is None or volume is None or not side:
+                    continue
+                ticks.append((int(ts_value), float(price), float(volume), side))
+        ticks.sort(key=lambda item: int(item[0]))
+        return _OfflineTradeHourCacheEntry(ticks=tuple(ticks))
 
 
 class LiveWsMicroSnapshotProvider:
@@ -303,6 +555,34 @@ class LiveWsMicroSnapshotProvider:
         ask_depth_mean = (sum(ask_depth_values) / float(len(ask_depth_values))) if ask_depth_values else None
         depth_values = [value for value in (bid_depth_mean, ask_depth_mean) if value is not None]
         depth_mean = (sum(depth_values) / float(len(depth_values))) if depth_values else None
+        latest_book = books[-1] if books else None
+        best_bid_price = _to_float(latest_book.get("bid1_price")) if isinstance(latest_book, dict) else None
+        best_ask_price = _to_float(latest_book.get("ask1_price")) if isinstance(latest_book, dict) else None
+        best_bid_size = _to_float(latest_book.get("bid1_size")) if isinstance(latest_book, dict) else None
+        best_ask_size = _to_float(latest_book.get("ask1_size")) if isinstance(latest_book, dict) else None
+        best_bid_notional = (
+            float(best_bid_price) * float(best_bid_size)
+            if best_bid_price is not None and best_bid_size is not None
+            else None
+        )
+        best_ask_notional = (
+            float(best_ask_price) * float(best_ask_size)
+            if best_ask_price is not None and best_ask_size is not None
+            else None
+        )
+        bid_levels = _extract_levels_from_book(latest_book, side="bid", topk=self._orderbook_topk)
+        ask_levels = _extract_levels_from_book(latest_book, side="ask", topk=self._orderbook_topk)
+        recent_orderbook_events = tuple(
+            (
+                int(event["ts_ms"]),
+                _extract_levels_from_book(event, side="bid", topk=self._orderbook_topk),
+                _extract_levels_from_book(event, side="ask", topk=self._orderbook_topk),
+                _to_float(event.get("bid1_price")),
+                _to_float(event.get("ask1_price")),
+            )
+            for event in books
+            if isinstance(event, dict) and event.get("ts_ms") is not None
+        )
 
         last_event_ts_ms = max(trade_max_ts, book_max_ts)
         return MicroSnapshot(
@@ -318,6 +598,23 @@ class LiveWsMicroSnapshotProvider:
             depth_top5_notional_krw=depth_mean,
             depth_bid_top5_notional_krw=bid_depth_mean,
             depth_ask_top5_notional_krw=ask_depth_mean,
+            best_bid_price=best_bid_price,
+            best_ask_price=best_ask_price,
+            best_bid_notional_krw=best_bid_notional,
+            best_ask_notional_krw=best_ask_notional,
+            bid_levels=bid_levels,
+            ask_levels=ask_levels,
+            recent_trade_ticks=tuple(
+                (
+                    int(event["ts_ms"]),
+                    float(event["price"]),
+                    float(event["volume"]),
+                    ("buy" if str(event.get("ask_bid")) == "BID" else "sell"),
+                )
+                for event in trades
+                if event.get("price") is not None and event.get("volume") is not None and str(event.get("ask_bid")) in {"BID", "ASK"}
+            ),
+            recent_orderbook_events=recent_orderbook_events,
             book_events=int(book_events),
             book_coverage_ms=int(book_coverage_ms),
             book_available=bool(book_events > 0),
@@ -417,6 +714,15 @@ def _normalize_markets(markets: Sequence[str], *, max_markets: int) -> tuple[str
     return tuple(normalized)
 
 
+def _resolve_raw_ws_root_from_micro_root(micro_root: Path) -> Path | None:
+    try:
+        data_root = micro_root.parents[1]
+    except IndexError:
+        return None
+    candidate = data_root / "raw_ws" / "upbit" / "public"
+    return candidate
+
+
 def _spread_bps(event: dict[str, Any]) -> float | None:
     bid = _to_float(event.get("bid1_price"))
     ask = _to_float(event.get("ask1_price"))
@@ -464,6 +770,25 @@ def _depth_topk_notional_for_side(event: dict[str, Any], *, topk: int, side: str
     if used <= 0:
         return None
     return total
+
+
+def _extract_levels_from_book(
+    event: dict[str, Any] | None,
+    *,
+    side: str,
+    topk: int,
+) -> tuple[tuple[float, float], ...]:
+    if not isinstance(event, dict):
+        return ()
+    side_value = str(side).strip().lower()
+    levels: list[tuple[float, float]] = []
+    for idx in range(1, max(int(topk), 1) + 1):
+        price = _to_float(event.get(f"{side_value}{idx}_price"))
+        size = _to_float(event.get(f"{side_value}{idx}_size"))
+        if price is None or size is None or price <= 0.0 or size <= 0.0:
+            continue
+        levels.append((float(price), float(size)))
+    return tuple(levels)
 
 
 def _collect_lazy(lazy_frame: pl.LazyFrame) -> pl.DataFrame:

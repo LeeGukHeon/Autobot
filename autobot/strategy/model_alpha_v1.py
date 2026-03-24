@@ -1389,11 +1389,11 @@ def _micro_snapshot_from_row(*, row: dict[str, Any] | None, ts_ms: int) -> Micro
     book_coverage_ms = max(_safe_optional_int(row.get("m_book_coverage_ms")) or 0, 0)
     trade_imbalance = _safe_optional_float(row.get("m_trade_imbalance"))
     spread_bps = _safe_optional_float(row.get("m_spread_proxy"))
+    bid_depth = _safe_optional_float(row.get("m_depth_bid_top5_mean"))
+    ask_depth = _safe_optional_float(row.get("m_depth_ask_top5_mean"))
     depth_top5_notional_krw = _safe_optional_float(row.get("m_depth_top5_notional_krw"))
     if depth_top5_notional_krw is None:
-        bid_depth = _safe_optional_float(row.get("m_depth_bid_top5_mean")) or 0.0
-        ask_depth = _safe_optional_float(row.get("m_depth_ask_top5_mean")) or 0.0
-        depth_top5_notional_krw = max(float(bid_depth) + float(ask_depth), 0.0)
+        depth_top5_notional_krw = max(float(bid_depth or 0.0) + float(ask_depth or 0.0), 0.0)
     last_event_ts_ms = max(
         [
             int(value)
@@ -1413,6 +1413,10 @@ def _micro_snapshot_from_row(*, row: dict[str, Any] | None, ts_ms: int) -> Micro
     close_value = _safe_optional_float(row.get("close")) or 0.0
     trade_volume_base = _safe_optional_float(row.get("m_trade_volume_base")) or 0.0
     trade_notional_krw = max(float(close_value) * float(trade_volume_base), 0.0)
+    best_bid_price = _safe_optional_float(row.get("m_best_bid_price"))
+    best_ask_price = _safe_optional_float(row.get("m_best_ask_price"))
+    best_bid_notional = _safe_optional_float(row.get("m_best_bid_notional_krw"))
+    best_ask_notional = _safe_optional_float(row.get("m_best_ask_notional_krw"))
     return MicroSnapshot(
         market=str(row.get("market", "")).strip().upper(),
         snapshot_ts_ms=int(ts_ms),
@@ -1424,6 +1428,12 @@ def _micro_snapshot_from_row(*, row: dict[str, Any] | None, ts_ms: int) -> Micro
         trade_source="dataset",
         spread_bps_mean=spread_bps,
         depth_top5_notional_krw=depth_top5_notional_krw,
+        depth_bid_top5_notional_krw=bid_depth,
+        depth_ask_top5_notional_krw=ask_depth,
+        best_bid_price=best_bid_price,
+        best_ask_price=best_ask_price,
+        best_bid_notional_krw=best_bid_notional,
+        best_ask_notional_krw=best_ask_notional,
         book_events=int(book_events),
         book_coverage_ms=int(book_coverage_ms),
         book_available=bool(book_available),

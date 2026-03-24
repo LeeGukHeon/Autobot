@@ -168,6 +168,423 @@ def test_sim_exchange_best_bid_uses_spread_proxy_for_immediate_fill_price() -> N
     assert order.avg_fill_price == pytest.approx(1_005.0)
 
 
+def test_sim_exchange_best_bid_prefers_explicit_top_of_book_price_when_available() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=1_000_000.0,
+        depth_bid_top5_notional_krw=500_000.0,
+        depth_ask_top5_notional_krw=500_000.0,
+        best_bid_price=995.0,
+        best_ask_price=1_008.0,
+        best_bid_notional_krw=30_000.0,
+        best_ask_notional_krw=30_000.0,
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+
+    order, fill = exchange.submit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert fill is not None
+    assert order.avg_fill_price == pytest.approx(1_008.0)
+
+
+def test_sim_exchange_limit_ioc_join_uses_explicit_ladder_vwap_when_available() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 2.0), (1002.0, 3.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+
+    order, fill = exchange.submit_limit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert fill is not None
+    assert order.state == "FILLED"
+    assert order.volume_filled == pytest.approx(5.0)
+    assert order.avg_fill_price == pytest.approx(1001.6)
+
+
+def test_sim_exchange_same_snapshot_ladder_depth_is_depleted_across_consecutive_ioc_orders() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 2.0), (1002.0, 4.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    first_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+    second_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+
+    first_order, first_fill = exchange.submit_limit_order(
+        intent=first_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+    second_order, second_fill = exchange.submit_limit_order(
+        intent=second_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert first_fill is not None
+    assert first_order.state == "FILLED"
+    assert first_order.volume_filled == pytest.approx(5.0)
+    assert first_order.avg_fill_price == pytest.approx(1001.6)
+    assert second_fill is not None
+    assert second_order.state == "CANCELED"
+    assert second_order.failure_reason == "IOC_PARTIAL_CANCELLED_REMAINDER"
+    assert second_order.volume_filled == pytest.approx(1.0)
+    assert second_order.avg_fill_price == pytest.approx(1002.0)
+
+
+def test_sim_exchange_same_snapshot_fok_sees_depleted_ladder_without_partial_side_effect() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 2.0), (1002.0, 4.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    first_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+    fok_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="fok",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+
+    first_order, first_fill = exchange.submit_limit_order(
+        intent=first_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+    fok_order, fok_fill = exchange.submit_limit_order(
+        intent=fok_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert first_fill is not None
+    assert first_order.state == "FILLED"
+    assert fok_fill is None
+    assert fok_order.state == "CANCELED"
+    assert fok_order.failure_reason == "FOK_NOT_FULLY_FILLED"
+    assert fok_order.volume_filled == 0.0
+
+
+def test_sim_exchange_inter_snapshot_ladder_carries_depletion_by_price_level() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot_1 = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 2.0), (1002.0, 4.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+    snapshot_2 = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=2,
+        last_event_ts_ms=2,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 2.0), (1002.0, 4.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    first_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+    second_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+
+    first_order, first_fill = exchange.submit_limit_order(
+        intent=first_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot_1,
+        ts_ms=1,
+    )
+    second_order, second_fill = exchange.submit_limit_order(
+        intent=second_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot_2,
+        ts_ms=2,
+    )
+
+    assert first_fill is not None
+    assert first_order.state == "FILLED"
+    assert second_fill is not None
+    assert second_order.state == "CANCELED"
+    assert second_order.failure_reason == "IOC_PARTIAL_CANCELLED_REMAINDER"
+    assert second_order.volume_filled == pytest.approx(1.0)
+    assert second_order.avg_fill_price == pytest.approx(1002.0)
+
+
+def test_sim_exchange_inter_snapshot_ladder_allows_replenishment_above_carried_deficit() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot_1 = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 2.0), (1002.0, 4.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+    snapshot_2 = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=2,
+        last_event_ts_ms=2,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10000.0,
+        spread_bps_mean=100.0,
+        depth_top5_notional_krw=100_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=50_000.0,
+        best_bid_price=999.0,
+        best_ask_price=1_001.0,
+        best_bid_notional_krw=10_000.0,
+        best_ask_notional_krw=20_020.0,
+        bid_levels=((999.0, 5.0),),
+        ask_levels=((1001.0, 4.0), (1002.0, 7.0)),
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    first_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+    second_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_010.0,
+        volume=5.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="ioc",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+
+    first_order, first_fill = exchange.submit_limit_order(
+        intent=first_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot_1,
+        ts_ms=1,
+    )
+    second_order, second_fill = exchange.submit_limit_order(
+        intent=second_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot_2,
+        ts_ms=2,
+    )
+
+    assert first_fill is not None
+    assert first_order.state == "FILLED"
+    assert second_fill is not None
+    assert second_order.state == "FILLED"
+    assert second_order.volume_filled == pytest.approx(5.0)
+    assert second_order.avg_fill_price == pytest.approx((2 * 1001.0 + 3 * 1002.0) / 5.0)
+
+
 def test_sim_exchange_best_ioc_can_partially_fill_and_cancel_remainder() -> None:
     exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
     rules = MarketRules(min_total=5_000.0, tick_size=1.0)
@@ -255,6 +672,111 @@ def test_sim_exchange_best_ioc_uses_side_specific_depth_proxy_when_available() -
     assert order.volume_filled == pytest.approx(8.0)
 
 
+def test_sim_exchange_best_ioc_uses_trade_liquidity_fallback_when_book_depth_missing() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=10,
+        trade_coverage_ms=30_000,
+        trade_notional_krw=20_000.0,
+        trade_imbalance=1.0,
+        spread_bps_mean=0.0,
+        depth_top5_notional_krw=None,
+        depth_bid_top5_notional_krw=None,
+        depth_ask_top5_notional_krw=None,
+        book_events=0,
+        book_coverage_ms=0,
+        book_available=False,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+
+    order, fill = exchange.submit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+
+    assert fill is not None
+    assert order.state == "CANCELED"
+    assert order.failure_reason == "IOC_PARTIAL_CANCELLED_REMAINDER"
+    assert order.volume_filled == pytest.approx(5.0)
+
+
+def test_sim_exchange_trade_liquidity_fallback_is_directional_for_sell_taker() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+
+    bid_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+    bid_order, bid_fill = exchange.submit_order(
+        intent=bid_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        ts_ms=1,
+    )
+    assert bid_fill is not None
+    assert bid_order.state == "FILLED"
+
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=2,
+        last_event_ts_ms=2,
+        trade_events=10,
+        trade_coverage_ms=30_000,
+        trade_notional_krw=20_000.0,
+        trade_imbalance=1.0,
+        spread_bps_mean=0.0,
+        depth_top5_notional_krw=None,
+        depth_bid_top5_notional_krw=None,
+        depth_ask_top5_notional_krw=None,
+        book_events=0,
+        book_coverage_ms=0,
+        book_available=False,
+    )
+
+    ask_intent = new_order_intent(
+        market="KRW-BTC",
+        side="ask",
+        price=1_000.0,
+        volume=10.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="ioc",
+    )
+    ask_order, ask_fill = exchange.submit_order(
+        intent=ask_intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=2,
+    )
+
+    assert ask_fill is not None
+    assert ask_order.state == "FILLED"
+    assert ask_order.volume_filled == pytest.approx(10.0)
+
+
 def test_sim_exchange_best_fok_cancels_when_depth_is_insufficient() -> None:
     exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
     rules = MarketRules(min_total=5_000.0, tick_size=1.0)
@@ -296,6 +818,99 @@ def test_sim_exchange_best_fok_cancels_when_depth_is_insufficient() -> None:
     assert order.failure_reason == "FOK_NOT_FULLY_FILLED"
     assert snapshot_after.cash_locked == 0.0
     assert snapshot_after.unrealized_pnl_quote == 0.0
+
+
+def test_sim_exchange_best_fok_rejects_without_partial_position_side_effects() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=10,
+        trade_coverage_ms=30_000,
+        trade_notional_krw=20_000.0,
+        trade_imbalance=1.0,
+        spread_bps_mean=0.0,
+        depth_top5_notional_krw=None,
+        depth_bid_top5_notional_krw=None,
+        depth_ask_top5_notional_krw=None,
+        book_events=0,
+        book_coverage_ms=0,
+        book_available=False,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="TEST",
+        ord_type="best",
+        time_in_force="fok",
+    )
+
+    order, fill = exchange.submit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+    snapshot_after = exchange.portfolio_snapshot(ts_ms=1, latest_prices={"KRW-BTC": 1_000.0})
+
+    assert fill is None
+    assert order.state == "CANCELED"
+    assert order.failure_reason == "FOK_NOT_FULLY_FILLED"
+    assert snapshot_after.cash_free == 50_000.0
+    assert snapshot_after.cash_locked == 0.0
+    assert snapshot_after.positions == []
+
+
+def test_sim_exchange_limit_fok_join_rejects_without_partial_fill_when_side_depth_is_short() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1,
+        last_event_ts_ms=1,
+        trade_events=1,
+        trade_coverage_ms=1000,
+        trade_notional_krw=10_000.0,
+        spread_bps_mean=0.0,
+        depth_top5_notional_krw=50_000.0,
+        depth_bid_top5_notional_krw=50_000.0,
+        depth_ask_top5_notional_krw=8_000.0,
+        book_events=1,
+        book_coverage_ms=1000,
+        book_available=True,
+    )
+
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=1_000.0,
+        volume=10.0,
+        reason_code="TEST",
+        ord_type="limit",
+        time_in_force="fok",
+        meta={"exec_profile": {"price_mode": "JOIN"}},
+    )
+
+    order, fill = exchange.submit_limit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=1_000.0,
+        micro_snapshot=snapshot,
+        ts_ms=1,
+    )
+    snapshot_after = exchange.portfolio_snapshot(ts_ms=1, latest_prices={"KRW-BTC": 1_000.0})
+
+    assert fill is None
+    assert order.state == "CANCELED"
+    assert order.failure_reason == "FOK_NOT_FULLY_FILLED"
+    assert snapshot_after.cash_locked == 0.0
+    assert snapshot_after.positions == []
 
 
 def test_sim_exchange_limit_ioc_join_uses_marketable_executable_price_proxy() -> None:
