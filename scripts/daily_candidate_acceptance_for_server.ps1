@@ -147,6 +147,43 @@ function Invoke-CommandCapture {
     }
 }
 
+function Invoke-PreflightCapture {
+    param(
+        [string]$PwshExe,
+        [string]$PreflightScriptPath,
+        [string]$Root
+    )
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PreflightScriptPath,
+        "-ProjectRoot", $Root,
+        "-ModelFamily", "train_v4_crypto_cs",
+        "-CheckCandidateStateConsistency",
+        "-FailOnDirtyWorktree"
+    )
+    if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
+        $requiredUnits = @(
+            "autobot-paper-v4.service",
+            "autobot-paper-v4-challenger.service"
+        )
+        $args += @(
+            "-RequiredUnitFiles",
+            (Join-DelimitedStringArray -Values $requiredUnits),
+            "-BlockOnFailedUnits",
+            (Join-DelimitedStringArray -Values $requiredUnits)
+        )
+    }
+    $output = & $PwshExe @args 2>&1
+    $exitCode = [int]$LASTEXITCODE
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = ($output -join "`n")
+        Command = ($PwshExe + " " + (($args | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "))
+        ReportPath = (Join-Path $Root "logs/ops/server_preflight/latest.json")
+    }
+}
+
 function Test-AcceptanceFatalFailure {
     param(
         [int]$ExitCode,
@@ -228,6 +265,14 @@ if ($activeBlockUnits.Count -gt 0) {
 }
 
 $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe" } else { Resolve-PwshExe }
+$preflightScriptPath = Join-Path $PSScriptRoot "check_server_preflight.ps1"
+$preflightExec = Invoke-PreflightCapture -PwshExe $psExe -PreflightScriptPath $preflightScriptPath -Root $resolvedProjectRoot
+Write-Host ("[daily-accept] preflight_command={0}" -f $preflightExec.Command)
+if ($preflightExec.ExitCode -ne 0) {
+    Write-Host ("[daily-accept][error] preflight_failed report={0}" -f $preflightExec.ReportPath)
+    exit $preflightExec.ExitCode
+}
+
 $argList = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",

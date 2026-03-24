@@ -25,6 +25,13 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
+def _git_exe() -> str:
+    resolved = shutil.which("git")
+    if not resolved:
+        pytest.skip("git executable is required for this test")
+    return resolved
+
+
 def _make_fake_sudo(tmp_path: Path) -> Path:
     if os.name == "nt":
         wrapper_path = tmp_path / "sudo.cmd"
@@ -783,6 +790,47 @@ def test_spawn_only_surfaces_execution_policy_veto_failure_reason(tmp_path: Path
     assert start_step["reason"] == "EXECUTION_POLICY_VETO_FAILURE"
     assert restart_step["attempted"] is False
     assert restart_step["reason"] == "EXECUTION_POLICY_VETO_FAILURE"
+
+
+def test_spawn_only_fails_fast_on_server_preflight_violation(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-000"}), encoding="utf-8")
+    (family_dir / "champion-run-000").mkdir(parents=True, exist_ok=True)
+    git_exe = _git_exe()
+    subprocess.run([git_exe, "init"], cwd=project_root, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [git_exe, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "init"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (project_root / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-ignored"},
+            },
+            "gates": {
+                "backtest": {"pass": True},
+                "overall_pass": True,
+            },
+            "reasons": [],
+        },
+        exit_code=0,
+    )
+
+    completed = _run_spawn_only(project_root, acceptance_script, dry_run=False)
+
+    assert completed.returncode == 2, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert latest["steps"]["preflight"]["exit_code"] == 2
+    assert latest["steps"]["preflight"]["summary"]["status"] == "violation"
+    assert not (project_root / "logs" / "fake_acceptance" / "report.json").exists()
 
 
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:

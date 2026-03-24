@@ -111,6 +111,54 @@ function Invoke-CommandCapture {
     }
 }
 
+function Invoke-PreflightCapture {
+    param(
+        [string]$PwshExe,
+        [string]$PreflightScriptPath,
+        [string]$Root,
+        [string]$ChampionUnit,
+        [string]$ChallengerUnit,
+        [string[]]$PromotionUnits,
+        [string[]]$CandidateUnits
+    )
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PreflightScriptPath,
+        "-ProjectRoot", $Root,
+        "-ModelFamily", "train_v4_crypto_cs",
+        "-FailOnDirtyWorktree"
+    )
+    if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
+        $args += @(
+            "-RequiredPointers",
+            "champion"
+        )
+        $requiredUnits = @(Merge-UniqueStringArray -First @($ChampionUnit, $ChallengerUnit) -Second @(Merge-UniqueStringArray -First $PromotionUnits -Second $CandidateUnits))
+        if ($requiredUnits.Count -gt 0) {
+            $serializedUnits = Join-DelimitedStringArray -Values $requiredUnits
+            $failedUnits = Join-DelimitedStringArray -Values (Merge-UniqueStringArray -First $requiredUnits -Second @(
+                "autobot-v4-challenger-spawn.service",
+                "autobot-v4-challenger-promote.service"
+            ))
+            $args += @(
+                "-RequiredUnitFiles",
+                $serializedUnits,
+                "-BlockOnFailedUnits",
+                $failedUnits
+            )
+        }
+    }
+    $output = & $PwshExe @args 2>&1
+    $exitCode = [int]$LASTEXITCODE
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = ($output -join "`n")
+        Command = ($PwshExe + " " + (($args | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "))
+        ReportPath = (Join-Path $Root "logs/ops/server_preflight/latest.json")
+    }
+}
+
 function Resolve-ReportedJsonPath {
     param([string]$OutputText)
     if ([string]::IsNullOrWhiteSpace($OutputText)) {
@@ -683,6 +731,42 @@ trap {
     Write-Host ("[daily-cc] report={0}" -f $reportPath)
     Write-Host ("[daily-cc] latest={0}" -f $latestReportPath)
     Write-Host ("[daily-cc] challenger_candidate_run_id={0}" -f $candidateRunId)
+    exit $exitCode
+}
+
+$preflightScriptPath = Join-Path $PSScriptRoot "check_server_preflight.ps1"
+$preflightExec = Invoke-PreflightCapture `
+    -PwshExe $psExe `
+    -PreflightScriptPath $preflightScriptPath `
+    -Root $resolvedProjectRoot `
+    -ChampionUnit $ChampionUnitName `
+    -ChallengerUnit $ChallengerUnitName `
+    -PromotionUnits $resolvedPromotionTargetUnits `
+    -CandidateUnits $resolvedCandidateTargetUnits
+$preflightReport = Load-JsonOrEmpty -PathValue $preflightExec.ReportPath
+$report.steps.preflight = [ordered]@{
+    attempted = $true
+    exit_code = [int]$preflightExec.ExitCode
+    command = $preflightExec.Command
+    output_preview = [string]$preflightExec.Output
+    report_path = $preflightExec.ReportPath
+    summary = Get-PropValue -ObjectValue $preflightReport -Name "summary" -DefaultValue @{}
+}
+if ($preflightExec.ExitCode -ne 0) {
+    $exitCode = 2
+    $report.exception = [ordered]@{
+        message = "server preflight failed"
+    }
+    $report.completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    if (-not $DryRun) {
+        Write-JsonFile -PathValue $reportPath -Payload $report
+        Write-JsonFile -PathValue $latestReportPath -Payload $report
+    }
+    Write-Host ("[daily-cc][error] mode={0} reason=SERVER_PREFLIGHT_FAILED" -f $Mode)
+    Write-Host ("[daily-cc] batch_date={0}" -f $resolvedBatchDate)
+    Write-Host ("[daily-cc] report={0}" -f $reportPath)
+    Write-Host ("[daily-cc] latest={0}" -f $latestReportPath)
+    Write-Host ("[daily-cc] preflight_report={0}" -f $preflightExec.ReportPath)
     exit $exitCode
 }
 

@@ -248,3 +248,45 @@ def test_daily_candidate_acceptance_prefers_final_json_report_over_daily_markdow
 
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
     assert "scout_nonfatal_reason=SCOUT_ONLY_BUDGET_EVIDENCE" in completed.stdout
+
+
+def test_daily_candidate_acceptance_fails_fast_on_server_preflight_violation(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "latest_candidate.json").write_text(json.dumps({"run_id": "candidate-run-stale"}), encoding="utf-8")
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        payload={"reasons": []},
+        exit_code=0,
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-AcceptanceScript",
+            str(acceptance_script),
+            "-BatchDate",
+            "2026-03-08",
+            "-SkipDailyPipeline",
+            "-SkipReportRefresh",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "preflight_failed" in completed.stdout
+    assert not (project_root / "logs" / "fake_acceptance" / "report.json").exists()
