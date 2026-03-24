@@ -2296,6 +2296,15 @@ class PaperRunEngine:
             str((execution_policy or {}).get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
         )
         simulated_ord_type = selected_ord_type
+        submit_price = limit_price
+        submit_volume = volume
+        if simulated_ord_type == "best":
+            if side_value == "bid":
+                submit_price = max(float(entry_notional_quote or self._run_settings.per_trade_krw), 1.0)
+                submit_volume = None
+            else:
+                submit_price = None
+                submit_volume = volume
         policy_payload = {
             "enabled": bool(micro_order_policy is not None),
             "tier": str(policy_decision.tier) if policy_decision is not None and policy_decision.tier is not None else None,
@@ -2334,13 +2343,15 @@ class PaperRunEngine:
             side=side_value,
             ord_type=simulated_ord_type,
             time_in_force=selected_time_in_force,
-            price=limit_price,
-            volume=volume,
+            price=submit_price,
+            volume=submit_volume,
             reason_code=reason_code_value,
             meta={
                 **candidate.meta,
                 "candidate_score": candidate.score,
                 "target_notional_quote": (float(entry_notional_quote) if entry_notional_quote is not None else None),
+                "submit_price": (float(submit_price) if submit_price is not None else None),
+                "submit_volume": (float(submit_volume) if submit_volume is not None else None),
                 "tick_size": rules.tick_size,
                 "min_total": rules.min_total,
                 "gate_severity": decision.severity,
