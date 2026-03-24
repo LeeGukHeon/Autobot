@@ -114,13 +114,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented in `autobot/ops/data_contract_registry.py`, tested locally and on the OCI server, wired into `scripts/candidate_acceptance.ps1`, committed, pushed, server-pulled, and reflected as `data/_meta/data_contract_registry.json` on the OCI server.
 
-- [ ] 02. Make `features_v4` validation artifact mandatory in the operational flow
+- [x] 02. Make `features_v4` validation artifact mandatory in the operational flow
   Required references:
   [DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md)
   Done when:
   `data/features/features_v4/_meta/validate_report.json` is generated or enforced, and acceptance can fail on its absence or invalid status.
   Current implementation note:
-  candidate acceptance now enforces `features validate` and fails on missing/invalid `validate_report.json`, but this is not yet proven across all operational entry paths. Do not treat this item as complete yet.
+  candidate acceptance enforces `features validate`, the main operational wrappers route into `candidate_acceptance.ps1`, server-side stale partitions causing the prior `ctrend_v1_rsi_14` schema failure were archived, and direct OCI validation on 2026-03-25 confirmed `python -m autobot.cli features validate --feature-set v4 ...` now succeeds and generates `data/features/features_v4/_meta/validate_report.json`. Local acceptance tests also verify failure on missing or invalid validate artifacts.
 
 - [ ] 03. Add a machine-readable `runtime topology report`
   Required references:
