@@ -11,6 +11,7 @@ import pytest
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepResult
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
+from autobot.models.live_execution_policy import build_live_execution_contract
 from autobot.live.breakers import ACTION_HALT_AND_CANCEL_BOT_ORDERS, ACTION_HALT_NEW_INTENTS, arm_breaker
 from autobot.live.daemon import LiveDaemonSettings
 from autobot.live.model_alpha_runtime import (
@@ -653,6 +654,228 @@ def test_live_model_alpha_runtime_canary_submits_when_armed(tmp_path: Path, monk
     assert intents[0]["status"] == "SUBMITTED"
     assert orders
     assert orders[0]["uuid"] == "order-1"
+
+
+def test_live_model_alpha_runtime_uses_exec_profile_timeout_for_execution_policy_deadline(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _StrategyWithExecProfile:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices, open_markets
+            profile = order_exec_profile_to_dict(
+                make_legacy_exec_profile(
+                    timeout_ms=60_000,
+                    replace_interval_ms=60_000,
+                    max_replaces=0,
+                    price_mode="JOIN",
+                    max_chase_bps=10_000,
+                    min_replace_interval_ms_global=1_500,
+                )
+            )
+            return StrategyStepResult(
+                intents=(
+                    StrategyOrderIntent(
+                        market="KRW-BTC",
+                        side="bid",
+                        ref_price=50_000_000.0,
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        prob=0.91,
+                        score=0.91,
+                        meta={
+                            "trade_action": {"expected_edge": 0.0100},
+                            "exec_profile": profile,
+                        },
+                    ),
+                ),
+                scored_rows=1,
+                eligible_rows=1,
+                selected_rows=1,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    attempts = [
+        {
+            "action_code": "LIMIT_GTC_JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 50.0,
+            "submitted_ts_ms": 0,
+            "first_fill_ts_ms": 25_000,
+            "shortfall_bps": 1.5,
+        }
+    ] * 30
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _StrategyWithExecProfile())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_checkpoint(
+            name="live_execution_policy_model",
+            payload={"execution_contract": build_live_execution_contract(attempts=attempts)},
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    execution_policy = meta_payload.get("execution_policy") or {}
+    execution_trace = meta_payload.get("execution_trace") or {}
+    assert execution_policy.get("deadline_ms") == 60_000
+    assert (execution_trace.get("execution_policy") or {}).get("deadline_ms") == 60_000
+
+
+def test_live_model_alpha_runtime_skips_execution_policy_when_learned_execution_disabled(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    class _StrategyWithExecProfile:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices, open_markets
+            profile = order_exec_profile_to_dict(
+                make_legacy_exec_profile(
+                    timeout_ms=60_000,
+                    replace_interval_ms=60_000,
+                    max_replaces=0,
+                    price_mode="PASSIVE_MAKER",
+                    max_chase_bps=10_000,
+                    min_replace_interval_ms_global=1_500,
+                )
+            )
+            return StrategyStepResult(
+                intents=(
+                    StrategyOrderIntent(
+                        market="KRW-BTC",
+                        side="bid",
+                        ref_price=50_000_000.0,
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        prob=0.91,
+                        score=0.91,
+                        meta={
+                            "trade_action": {"expected_edge": 0.0100},
+                            "exec_profile": profile,
+                        },
+                    ),
+                ),
+                scored_rows=1,
+                eligible_rows=1,
+                selected_rows=1,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    attempts = [
+        {
+            "action_code": "LIMIT_GTC_JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "expected_edge_bps": 50.0,
+            "submitted_ts_ms": 0,
+            "first_fill_ts_ms": 25_000,
+            "shortfall_bps": 1.5,
+        }
+    ] * 30
+
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: SimpleNamespace(run_dir=Path("run-live")))
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _StrategyWithExecProfile())
+
+    settings = replace(
+        _runtime_settings(tmp_path, rollout_mode="canary", canary=True),
+        model_alpha=replace(
+            _runtime_settings(tmp_path, rollout_mode="canary", canary=True).model_alpha,
+            execution=ModelAlphaExecutionSettings(
+                price_mode="PASSIVE_MAKER",
+                timeout_bars=2,
+                replace_max=0,
+                use_learned_recommendations=False,
+            ),
+        ),
+    )
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_checkpoint(
+            name="live_execution_policy_model",
+            payload={"execution_contract": build_live_execution_contract(attempts=attempts)},
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    assert meta_payload.get("execution_policy") == {}
+    exec_profile = ((meta_payload.get("execution") or {}).get("exec_profile")) or {}
+    assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
 
 
 def test_live_model_alpha_runtime_skips_when_execution_risk_control_blocks_entry(tmp_path: Path, monkeypatch) -> None:

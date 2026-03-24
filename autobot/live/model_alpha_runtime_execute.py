@@ -1013,31 +1013,42 @@ def resolve_live_strategy_execution(
         strategy_meta=strategy_meta,
         safe_optional_float_fn=safe_optional_float_fn,
     )
-    live_execution_model = _resolve_live_execution_model_payload(store=store)
-    execution_policy = select_live_execution_action(
-        model_payload=live_execution_model,
-        current_state=build_execution_policy_state(
-            micro_state={
-                **dict(micro_state),
-                "rollout_mode": str(settings.daemon.rollout_mode).strip().lower(),
-            },
+    execution_policy_enabled = bool(side == "bid" and bool(model_alpha_settings.execution.use_learned_recommendations))
+    if execution_policy_enabled:
+        live_execution_model = _resolve_live_execution_model_payload(store=store)
+        execution_policy = select_live_execution_action(
+            model_payload=live_execution_model,
+            current_state=build_execution_policy_state(
+                micro_state={
+                    **dict(micro_state),
+                    "rollout_mode": str(settings.daemon.rollout_mode).strip().lower(),
+                },
+                expected_edge_bps=expected_edge_bps,
+            ),
             expected_edge_bps=expected_edge_bps,
-        ),
-        expected_edge_bps=expected_edge_bps,
-        candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
-    )
+            candidate_actions=candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
+            deadline_ms=max(int(exec_profile.timeout_ms), 1),
+        )
+    else:
+        execution_policy = {}
     execution_trace["execution_policy"] = {
+        "enabled": bool(execution_policy_enabled),
         "input_exec_profile": order_exec_profile_to_dict_fn(exec_profile),
-        "candidate_action_codes": candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode)),
+        "candidate_action_codes": (
+            candidate_action_codes_for_price_mode(price_mode=str(exec_profile.price_mode))
+            if execution_policy_enabled
+            else []
+        ),
         "selected_action_code": str(execution_policy.get("selected_action_code", "")).strip().upper(),
         "selected_price_mode": str(execution_policy.get("selected_price_mode", "")).strip().upper(),
         "selected_ord_type": str(execution_policy.get("selected_ord_type", "")).strip().lower(),
         "selected_time_in_force": str(execution_policy.get("selected_time_in_force", "")).strip().lower(),
         "status": str(execution_policy.get("status", "")).strip().lower(),
+        "deadline_ms": int(exec_profile.timeout_ms),
         "changed_price_mode": str(execution_policy.get("selected_price_mode", "")).strip().upper()
         != str(exec_profile.price_mode).strip().upper(),
     }
-    if str(execution_policy.get("status", "")).strip().lower() == "skip":
+    if execution_policy_enabled and str(execution_policy.get("status", "")).strip().lower() == "skip":
         return resolution_cls(
             allowed=False,
             skip_reason=str(execution_policy.get("skip_reason_code", "LIVE_EXECUTION_NO_POSITIVE_UTILITY")),
@@ -1093,6 +1104,20 @@ def resolve_live_strategy_execution(
             tick_size=float(snapshot.tick_size),
             price_mode=exec_profile.price_mode,
         )
+        if side == "bid":
+            target_notional_quote = (
+                safe_optional_float_fn((sizing_payload or {}).get("target_notional_quote"))
+                or safe_optional_float_fn((sizing_payload or {}).get("admissible_notional_quote"))
+                or float(entry_notional_quote or settings.per_trade_krw)
+            )
+            sizing = derive_volume_from_target_notional_fn(
+                side="bid",
+                price=requested_price,
+                target_notional_quote=float(target_notional_quote),
+                fee_rate=max(float(snapshot.bid_fee), 0.0),
+            )
+            sizing_payload = sizing_envelope_to_payload_fn(sizing)
+            requested_volume = max(float(sizing.admissible_volume), 1e-12)
     execution_trace["after_execution_policy"] = order_exec_profile_to_dict_fn(exec_profile)
     submit_price = requested_price
     submit_volume = requested_volume

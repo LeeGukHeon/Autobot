@@ -480,12 +480,29 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             if float(notional_multiplier) <= 0.0:
                 _inc_reason(skipped_reasons, "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE")
                 continue
-            dynamic_exec_profile, execution_decision = _resolve_runtime_execution_profile(
-                execution_doc=self._execution_recommendation,
-                trade_action=trade_action_decision,
-                interval_ms=self._interval_ms,
-                fallback_settings=self._settings.execution,
-            )
+            if bool(self._settings.execution.use_learned_recommendations):
+                dynamic_exec_profile, execution_decision = _resolve_runtime_execution_profile(
+                    execution_doc=self._execution_recommendation,
+                    trade_action=trade_action_decision,
+                    interval_ms=self._interval_ms,
+                    fallback_settings=self._settings.execution,
+                )
+            else:
+                manual_timeout_ms = max(int(self._settings.execution.timeout_bars), 1) * max(int(self._interval_ms), 1)
+                dynamic_exec_profile = order_exec_profile_to_dict(
+                    make_legacy_exec_profile(
+                        timeout_ms=manual_timeout_ms,
+                        replace_interval_ms=manual_timeout_ms,
+                        max_replaces=max(int(self._settings.execution.replace_max), 0),
+                        price_mode=str(self._settings.execution.price_mode),
+                        max_chase_bps=10_000,
+                        min_replace_interval_ms_global=1_500,
+                    )
+                )
+                execution_decision = {
+                    "status": "disabled",
+                    "reason_code": "EXECUTION_LEARNED_RECOMMENDATIONS_DISABLED",
+                }
             if isinstance(execution_decision, dict) and str(execution_decision.get("status", "")).strip().lower() == "blocked":
                 _inc_reason(
                     skipped_reasons,

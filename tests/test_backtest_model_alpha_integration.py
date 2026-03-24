@@ -2240,6 +2240,7 @@ def test_backtest_model_alpha_skips_execution_contract_when_learned_execution_is
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})
     assert not intent_meta.get("execution_policy")
+    assert (intent_meta.get("execution_decision") or {}).get("reason_code") == "EXECUTION_LEARNED_RECOMMENDATIONS_DISABLED"
     exec_profile = intent_meta.get("exec_profile") or {}
     assert exec_profile.get("price_mode") == "PASSIVE_MAKER"
 
