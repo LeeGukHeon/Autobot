@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from autobot.backtest.engine import BacktestRunEngine, BacktestRunSettings
 from autobot.models.live_execution_policy import build_live_execution_contract
@@ -2605,6 +2606,92 @@ def test_backtest_model_alpha_entry_sizing_uses_prob_ramp_multiplier(tmp_path: P
     assert float(intent_payload.get("price", 0.0)) * float(intent_payload.get("volume", 0.0)) >= float(
         meta.get("target_notional_quote", 0.0)
     )
+
+
+def test_backtest_model_alpha_best_bid_uses_target_notional_as_submit_price(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parquet_root = tmp_path / "parquet"
+    dataset_root = tmp_path / "features_v3"
+    registry_root = tmp_path / "registry"
+    out_root = tmp_path / "backtest_out"
+    _write_candles(parquet_root / "candles_v1")
+    _write_features(dataset_root)
+    _save_model_run(registry_root=registry_root, dataset_root=dataset_root, thresholds={"top_5pct": 0.0})
+
+    settings = BacktestRunSettings(
+        dataset_name="candles_v1",
+        parquet_root=str(parquet_root),
+        tf="5m",
+        quote="KRW",
+        top_n=2,
+        markets=("KRW-BTC", "KRW-ETH"),
+        universe_mode="fixed_list",
+        from_ts_ms=0,
+        to_ts_ms=3_600_000,
+        starting_krw=200_000.0,
+        per_trade_krw=10_000.0,
+        max_positions=1,
+        output_root_dir=str(out_root),
+        strategy="model_alpha_v1",
+        model_ref="run_v3",
+        model_family="train_v3_mtf_micro",
+        feature_set="v3",
+        model_registry_root=str(registry_root),
+        model_feature_dataset_root=str(dataset_root),
+        model_alpha=ModelAlphaSettings(
+            model_ref="run_v3",
+            model_family="train_v3_mtf_micro",
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(
+                max_positions_total=1,
+                cooldown_bars=0,
+                sizing_mode="prob_ramp",
+                size_multiplier_min=0.5,
+                size_multiplier_max=1.5,
+            ),
+            execution=ModelAlphaExecutionSettings(use_learned_recommendations=True),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "autobot.backtest.engine.select_live_execution_action",
+        lambda **kwargs: {
+            "status": "ok",
+            "selected_ord_type": "best",
+            "selected_time_in_force": "ioc",
+            "selected_price_mode": "JOIN",
+        },
+    )
+    monkeypatch.setattr(
+        "autobot.backtest.engine.load_live_execution_contract_artifact",
+        lambda **kwargs: {"rows_total": 1},
+    )
+
+    summary = BacktestRunEngine(
+        run_settings=settings,
+        upbit_settings=None,
+        rules_provider=_StaticRulesProvider(),  # type: ignore[arg-type]
+    ).run()
+    run_dir = Path(summary.run_dir)
+    payloads = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    intent_events = [item for item in payloads if item.get("event_type") == "INTENT_CREATED"]
+    assert intent_events
+    intent_payload = intent_events[0].get("payload") or {}
+    meta = intent_payload.get("meta") or {}
+
+    assert intent_payload["ord_type"] == "best"
+    assert intent_payload["time_in_force"] == "ioc"
+    assert intent_payload["volume"] is None
+    assert float(meta.get("target_notional_quote", 0.0)) > 10_000.0
+    assert float(intent_payload["price"]) == pytest.approx(float(meta["target_notional_quote"]))
+    assert meta["submit_volume"] is None
 
 
 def _write_candles(dataset_root: Path) -> None:
