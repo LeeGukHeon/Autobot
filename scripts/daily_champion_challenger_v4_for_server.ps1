@@ -130,17 +130,28 @@ function Invoke-PreflightCapture {
         "-FailOnDirtyWorktree"
     )
     if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
-        $args += @(
-            "-RequiredPointers",
-            "champion"
-        )
-        $requiredUnits = @(Merge-UniqueStringArray -First @($ChampionUnit, $ChallengerUnit) -Second @(Merge-UniqueStringArray -First $PromotionUnits -Second $CandidateUnits))
+        $requiredUnits = @()
+        foreach ($value in @($ChampionUnit, $ChallengerUnit) + @($PromotionUnits) + @($CandidateUnits)) {
+            $text = [string]$value
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                continue
+            }
+            $trimmed = $text.Trim()
+            if ($requiredUnits -contains $trimmed) {
+                continue
+            }
+            $requiredUnits += $trimmed
+        }
         if ($requiredUnits.Count -gt 0) {
             $serializedUnits = Join-DelimitedStringArray -Values $requiredUnits
-            $failedUnits = Join-DelimitedStringArray -Values (Merge-UniqueStringArray -First $requiredUnits -Second @(
-                "autobot-v4-challenger-spawn.service",
-                "autobot-v4-challenger-promote.service"
-            ))
+            $failedUnitsList = @($requiredUnits)
+            foreach ($value in @("autobot-v4-challenger-spawn.service", "autobot-v4-challenger-promote.service")) {
+                if ($failedUnitsList -contains $value) {
+                    continue
+                }
+                $failedUnitsList += $value
+            }
+            $failedUnits = Join-DelimitedStringArray -Values $failedUnitsList
             $args += @(
                 "-RequiredUnitFiles",
                 $serializedUnits,
@@ -325,28 +336,6 @@ function Test-ObjectHasValues {
 function Get-StringArray {
     param([Parameter(Mandatory = $false)]$Value)
     return @(Expand-DelimitedStringArray -Value $Value)
-}
-
-function Merge-UniqueStringArray {
-    param(
-        [Parameter(Mandatory = $false)]$First,
-        [Parameter(Mandatory = $false)]$Second
-    )
-    $seen = @{}
-    $result = New-Object System.Collections.Generic.List[string]
-    foreach ($text in @((Get-StringArray -Value $First) + (Get-StringArray -Value $Second))) {
-        $value = [string]$text
-        if ([string]::IsNullOrWhiteSpace($value)) {
-            continue
-        }
-        $trimmed = $value.Trim()
-        if ($seen.ContainsKey($trimmed)) {
-            continue
-        }
-        $seen[$trimmed] = $true
-        $result.Add($trimmed) | Out-Null
-    }
-    return @($result.ToArray())
 }
 
 function Resolve-ExecutionContractRowsTotal {
