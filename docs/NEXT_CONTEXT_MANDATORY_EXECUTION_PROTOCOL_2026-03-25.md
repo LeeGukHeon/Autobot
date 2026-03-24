@@ -122,13 +122,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   candidate acceptance enforces `features validate`, the main operational wrappers route into `candidate_acceptance.ps1`, server-side stale partitions causing the prior `ctrend_v1_rsi_14` schema failure were archived, and direct OCI validation on 2026-03-25 confirmed `python -m autobot.cli features validate --feature-set v4 ...` now succeeds and generates `data/features/features_v4/_meta/validate_report.json`. Local acceptance tests also verify failure on missing or invalid validate artifacts.
 
-- [ ] 03. Add a machine-readable `runtime topology report`
+- [x] 03. Add a machine-readable `runtime topology report`
   Required references:
   [SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md)
   Done when:
   current server lane/unit/pointer/runtime state can be summarized by one artifact without manual SSH forensics.
   Current implementation note:
-  a local artifact-side topology report exists in `autobot/ops/runtime_topology_report.py`, but it does not yet include actual remote `systemd`/git/topology state. It cannot replace manual SSH forensics yet, so this item is not complete.
+  implemented in `autobot/ops/runtime_topology_report.py`, tested locally and on the OCI server, and reflected as `logs/runtime_topology/latest.json` on the OCI server. Direct server validation on 2026-03-25 confirmed the artifact now includes actual `systemd` service and timer snapshots, git HEAD and dirty worktree state, sibling replay-like path detection, and live failure facts such as `autobot-v4-challenger-spawn.service: failed/failed`, so current lane/unit/pointer/runtime state can be summarized without separate manual SSH forensics.
 
 - [ ] 04. Add a machine-readable `pointer consistency report`
   Required references:
