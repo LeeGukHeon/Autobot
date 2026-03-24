@@ -2,7 +2,9 @@
 
 __all__ = [
     "build_data_contract_registry",
+    "build_pointer_consistency_report",
     "write_data_contract_registry",
+    "write_pointer_consistency_report",
     "build_runtime_topology_report",
     "write_runtime_topology_report",
 ]
@@ -11,11 +13,14 @@ __all__ = [
 def __getattr__(name: str):
     if name in __all__:
         from .data_contract_registry import build_data_contract_registry, write_data_contract_registry
+        from .pointer_consistency_report import build_pointer_consistency_report, write_pointer_consistency_report
         from .runtime_topology_report import build_runtime_topology_report, write_runtime_topology_report
 
         exports = {
             "build_data_contract_registry": build_data_contract_registry,
+            "build_pointer_consistency_report": build_pointer_consistency_report,
             "write_data_contract_registry": write_data_contract_registry,
+            "write_pointer_consistency_report": write_pointer_consistency_report,
             "build_runtime_topology_report": build_runtime_topology_report,
             "write_runtime_topology_report": write_runtime_topology_report,
         }
