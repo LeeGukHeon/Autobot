@@ -106,13 +106,13 @@ The next context must start from the first unchecked item.
 
 ### Phase 0: Data And Server Foundation
 
-- [ ] 01. Add a machine-readable `data contract registry`
+- [x] 01. Add a machine-readable `data contract registry`
   Required references:
   [DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md)
   Done when:
   a repo-visible artifact exists for dataset lineage and contract identity.
   Current implementation note:
-  implemented locally in `autobot/ops/data_contract_registry.py`, tested locally, and wired into the local `scripts/candidate_acceptance.ps1`. However, it is not yet committed, pushed, server-pulled, or reflected on the OCI server; direct server inspection showed `data/_meta/data_contract_registry.json` missing and `autobot/ops/data_contract_registry.py` absent there. Do not treat this item as complete yet.
+  implemented in `autobot/ops/data_contract_registry.py`, tested locally and on the OCI server, wired into `scripts/candidate_acceptance.ps1`, committed, pushed, server-pulled, and reflected as `data/_meta/data_contract_registry.json` on the OCI server.
 
 - [ ] 02. Make `features_v4` validation artifact mandatory in the operational flow
   Required references:
