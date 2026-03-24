@@ -72,6 +72,14 @@ Implemented in the current branch:
    - historical orderbook event sequences now update queue state event-by-event within the snapshot window, instead of relying only on the final visible-size snapshot
    - once queue-ahead clears and price-touch/through occurs, the resting order can fill
    - regressions now pin queue-blocked then queue-cleared fill behavior across snapshots
+14. first-pass resting-order queue evolution in paper
+   - paper resting orders now use the same queue-ahead model family as backtest:
+     - same-side visible size at order price
+     - same-level visible size contraction
+     - same-level expansion as behind-us arrival pressure
+     - trade-at-level consumption
+     - explicit orderbook event sequence within the snapshot window
+   - regressions now pin queue-blocked then queue-cleared behavior under ticker-time processing
 
 Not yet implemented:
 
@@ -80,7 +88,7 @@ Not yet implemented:
 2. fully realistic `FOK` partial rejection semantics under finite executable depth
    - current implementation enforces no-partial rejection under insufficient proxy depth, same-snapshot depletion, and first-pass inter-snapshot carry, but does not yet replay full queue-priority/arrival dynamics over time
 3. fuller resting-order arrival-priority dynamics
-   - current implementation now uses explicit historical orderbook event sequences plus trade-at-level consumption as a first-pass queue-ahead model, and treats same-level expansions as behind-us arrivals, but does not yet replay full queue-priority aging and participant arrivals/cancellations with participant-level identity
+   - current implementation now uses explicit historical/live orderbook event sequences plus trade-at-level consumption as a first-pass queue-ahead model, and treats same-level expansions as behind-us arrivals, but does not yet replay full queue-priority aging and participant arrivals/cancellations with participant-level identity
 4. certification rerun to verify that blanket `IOC_FOK_NO_TOUCH` behavior is materially reduced
 
 ## Goal

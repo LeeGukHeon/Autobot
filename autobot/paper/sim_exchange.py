@@ -129,6 +129,7 @@ class PaperSimExchange:
         self._orders: dict[str, PaperOrder] = {}
         self._open_orders: dict[str, PaperOrder] = {}
         self._book_replay_state: dict[tuple[str, str], dict[str, Any]] = {}
+        self._resting_queue_state_by_order_id: dict[str, dict[str, float | int | str]] = {}
 
     def quote_balance(self) -> AssetBalance:
         return AssetBalance(free=self._cash.free, locked=self._cash.locked)
@@ -299,6 +300,7 @@ class PaperSimExchange:
             return (self._clone_order(order), None)
 
         self._open_orders[order.order_id] = order
+        self._initialize_resting_queue_state(order=order, micro_snapshot=micro_snapshot)
         return (self._clone_order(order), None)
 
     def submit_order(
@@ -448,11 +450,18 @@ class PaperSimExchange:
         trade_price: float,
         ts_ms: int,
         rules: MarketRules,
+        micro_snapshot: Any | None = None,
     ) -> list[FillEvent]:
         market_value = market.strip().upper()
         target_orders = [order for order in self._open_orders.values() if order.market == market_value]
         fills: list[FillEvent] = []
         for order in target_orders:
+            queue_ready = self._update_resting_queue_state(
+                order=order,
+                micro_snapshot=micro_snapshot,
+                trade_price=trade_price,
+                ts_ms=ts_ms,
+            )
             decision = self._fill_model.decide(
                 side=order.side,
                 limit_price=order.price,
@@ -460,6 +469,8 @@ class PaperSimExchange:
                 immediate=False,
             )
             if not decision.should_fill:
+                continue
+            if not queue_ready:
                 continue
             fill_event = self._fill_order(
                 order=order,
@@ -470,6 +481,8 @@ class PaperSimExchange:
                 rules=rules,
             )
             fills.append(fill_event)
+            if order.state == "FILLED":
+                self._resting_queue_state_by_order_id.pop(order.order_id, None)
         return fills
 
     def cancel_order(self, order_id: str, *, ts_ms: int, reason: str | None = None) -> PaperOrder | None:
@@ -483,7 +496,109 @@ class PaperSimExchange:
         if reason:
             order.failure_reason = str(reason)
         self._open_orders.pop(order_id, None)
+        self._resting_queue_state_by_order_id.pop(order_id, None)
         return self._clone_order(order)
+
+    def _initialize_resting_queue_state(self, *, order: PaperOrder, micro_snapshot: Any | None) -> None:
+        visible_size = _visible_size_at_order_price(
+            micro_snapshot=micro_snapshot,
+            side=str(order.side).strip().lower(),
+            price=float(order.price),
+        )
+        if visible_size is None:
+            return
+        snapshot_ts_ms = _safe_optional_int(getattr(micro_snapshot, "snapshot_ts_ms", None))
+        self._resting_queue_state_by_order_id[order.order_id] = {
+            "queue_ahead_volume": float(max(visible_size, 0.0)),
+            "queue_behind_volume": 0.0,
+            "last_visible_size": float(max(visible_size, 0.0)),
+            "queue_price": float(order.price),
+            "snapshot_ts_ms": int(snapshot_ts_ms) if snapshot_ts_ms is not None else int(order.created_ts_ms),
+            "last_processed_book_ts_ms": int(snapshot_ts_ms) if snapshot_ts_ms is not None else int(order.created_ts_ms),
+            "last_processed_trade_ts_ms": int(snapshot_ts_ms) if snapshot_ts_ms is not None else int(order.created_ts_ms),
+            "side": str(order.side).strip().lower(),
+        }
+
+    def _update_resting_queue_state(
+        self,
+        *,
+        order: PaperOrder,
+        micro_snapshot: Any | None,
+        trade_price: float,
+        ts_ms: int,
+    ) -> bool:
+        state = self._resting_queue_state_by_order_id.get(order.order_id)
+        if state is None:
+            return True
+
+        current_visible_size = _visible_size_at_order_price(
+            micro_snapshot=micro_snapshot,
+            side=str(order.side).strip().lower(),
+            price=float(order.price),
+        )
+        queue_ahead_volume = float(state.get("queue_ahead_volume", 0.0) or 0.0)
+        queue_behind_volume = float(state.get("queue_behind_volume", 0.0) or 0.0)
+        last_visible_size = state.get("last_visible_size")
+        processed_book_ts_ms = int(state.get("last_processed_book_ts_ms", 0) or 0)
+        orderbook_events = getattr(micro_snapshot, "recent_orderbook_events", ())
+        if isinstance(orderbook_events, tuple) and orderbook_events:
+            (
+                queue_ahead_volume,
+                queue_behind_volume,
+                last_visible_size,
+                processed_book_ts_ms,
+            ) = _apply_orderbook_events_to_queue_state(
+                order=order,
+                orderbook_events=orderbook_events,
+                queue_ahead_volume=queue_ahead_volume,
+                queue_behind_volume=queue_behind_volume,
+                last_visible_size=(float(last_visible_size) if last_visible_size is not None else current_visible_size),
+                last_processed_book_ts_ms=processed_book_ts_ms,
+            )
+        elif current_visible_size is not None and last_visible_size is not None:
+            delta_visible = float(current_visible_size) - float(last_visible_size)
+            if delta_visible < 0.0:
+                removal = abs(float(delta_visible))
+                ahead_reduction = min(queue_ahead_volume, removal)
+                queue_ahead_volume = max(queue_ahead_volume - ahead_reduction, 0.0)
+                removal -= ahead_reduction
+                if removal > 0.0:
+                    queue_behind_volume = max(queue_behind_volume - removal, 0.0)
+            elif delta_visible > 0.0:
+                queue_behind_volume += float(delta_visible)
+        elif current_visible_size is not None:
+            queue_ahead_volume = min(queue_ahead_volume, float(current_visible_size))
+
+        queue_ahead_volume = _consume_queue_from_trade_ticks(
+            order=order,
+            micro_snapshot=micro_snapshot,
+            queue_ahead_volume=queue_ahead_volume,
+            last_processed_trade_ts_ms=int(state.get("last_processed_trade_ts_ms", 0) or 0),
+        )
+
+        if current_visible_size is not None and not (isinstance(orderbook_events, tuple) and orderbook_events):
+            state["last_visible_size"] = float(current_visible_size)
+        elif last_visible_size is not None:
+            state["last_visible_size"] = float(last_visible_size)
+
+        if current_visible_size is None and _price_through_order_on_ticker(
+            order=order,
+            trade_price=trade_price,
+            micro_snapshot=micro_snapshot,
+        ):
+            queue_ahead_volume = 0.0
+
+        state["queue_ahead_volume"] = float(max(queue_ahead_volume, 0.0))
+        state["queue_behind_volume"] = float(max(queue_behind_volume, 0.0))
+        snapshot_ts_ms = _safe_optional_int(getattr(micro_snapshot, "snapshot_ts_ms", None))
+        if snapshot_ts_ms is not None:
+            state["snapshot_ts_ms"] = int(snapshot_ts_ms)
+            state["last_processed_trade_ts_ms"] = int(snapshot_ts_ms)
+        else:
+            state["last_processed_trade_ts_ms"] = int(ts_ms)
+        state["last_processed_book_ts_ms"] = int(processed_book_ts_ms)
+        self._resting_queue_state_by_order_id[order.order_id] = state
+        return float(state.get("queue_ahead_volume", 0.0) or 0.0) <= 0.0
 
     def _release_order_reserve(self, order: PaperOrder) -> None:
         if order.side == "bid":
@@ -921,6 +1036,142 @@ def _level_deficit_by_price(*, raw_levels: Any, remaining_levels: Any) -> dict[f
                 remaining_size = _safe_optional_float(remaining[1]) or 0.0
         deficits[float(price)] = max(float(raw_size) - float(remaining_size), 0.0)
     return deficits
+
+
+def _visible_size_at_order_price(*, micro_snapshot: object | None, side: str, price: float) -> float | None:
+    side_value = str(side).strip().lower()
+    levels = getattr(micro_snapshot, "bid_levels" if side_value == "bid" else "ask_levels", ())
+    if not isinstance(levels, tuple):
+        return None
+    for raw in levels:
+        if not isinstance(raw, tuple) or len(raw) != 2:
+            continue
+        try:
+            level_price = float(raw[0])
+            level_size = float(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if abs(level_price - float(price)) <= 1e-12:
+            return max(level_size, 0.0)
+    return None
+
+
+def _visible_size_at_price_from_levels(*, levels: object, price: float) -> float | None:
+    if not isinstance(levels, tuple):
+        return None
+    for raw in levels:
+        if not isinstance(raw, tuple) or len(raw) != 2:
+            continue
+        try:
+            level_price = float(raw[0])
+            level_size = float(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if abs(level_price - float(price)) <= 1e-12:
+            return max(level_size, 0.0)
+    return None
+
+
+def _price_through_order_on_ticker(*, order: PaperOrder, trade_price: float, micro_snapshot: object | None) -> bool:
+    side_value = str(order.side).strip().lower()
+    if side_value == "bid":
+        best_ask = getattr(micro_snapshot, "best_ask_price", None)
+        try:
+            if best_ask is not None and float(best_ask) <= float(order.price) + 1e-12:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return float(trade_price) < float(order.price) - 1e-12
+    best_bid = getattr(micro_snapshot, "best_bid_price", None)
+    try:
+        if best_bid is not None and float(best_bid) >= float(order.price) - 1e-12:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return float(trade_price) > float(order.price) + 1e-12
+
+
+def _consume_queue_from_trade_ticks(
+    *,
+    order: PaperOrder,
+    micro_snapshot: object | None,
+    queue_ahead_volume: float,
+    last_processed_trade_ts_ms: int,
+) -> float:
+    ticks = getattr(micro_snapshot, "recent_trade_ticks", ())
+    if not isinstance(ticks, tuple):
+        return float(max(queue_ahead_volume, 0.0))
+    remaining_queue = float(max(queue_ahead_volume, 0.0))
+    side_value = str(order.side).strip().lower()
+    for raw in ticks:
+        if not isinstance(raw, tuple) or len(raw) != 4:
+            continue
+        try:
+            ts_ms = int(raw[0])
+            price = float(raw[1])
+            volume = float(raw[2])
+            trade_side = str(raw[3]).strip().lower()
+        except (TypeError, ValueError):
+            continue
+        if ts_ms <= int(last_processed_trade_ts_ms):
+            continue
+        if side_value == "bid":
+            if price < float(order.price) - 1e-12 and trade_side == "sell":
+                return 0.0
+            if abs(price - float(order.price)) <= 1e-12 and trade_side == "sell":
+                remaining_queue = max(remaining_queue - float(volume), 0.0)
+        else:
+            if price > float(order.price) + 1e-12 and trade_side == "buy":
+                return 0.0
+            if abs(price - float(order.price)) <= 1e-12 and trade_side == "buy":
+                remaining_queue = max(remaining_queue - float(volume), 0.0)
+    return remaining_queue
+
+
+def _apply_orderbook_events_to_queue_state(
+    *,
+    order: PaperOrder,
+    orderbook_events: tuple[tuple[int, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...], float | None, float | None], ...],
+    queue_ahead_volume: float,
+    queue_behind_volume: float,
+    last_visible_size: float | None,
+    last_processed_book_ts_ms: int,
+) -> tuple[float, float, float | None, int]:
+    side_value = str(order.side).strip().lower()
+    visible_value = last_visible_size
+    processed_ts = int(last_processed_book_ts_ms)
+    for raw in orderbook_events:
+        if not isinstance(raw, tuple) or len(raw) != 5:
+            continue
+        try:
+            event_ts_ms = int(raw[0])
+        except (TypeError, ValueError):
+            continue
+        if event_ts_ms <= processed_ts:
+            continue
+        levels = raw[1] if side_value == "bid" else raw[2]
+        current_visible = _visible_size_at_price_from_levels(levels=levels, price=float(order.price))
+        if current_visible is not None and visible_value is not None:
+            delta_visible = float(current_visible) - float(visible_value)
+            if delta_visible < 0.0:
+                removal = abs(float(delta_visible))
+                ahead_reduction = min(queue_ahead_volume, removal)
+                queue_ahead_volume = max(queue_ahead_volume - ahead_reduction, 0.0)
+                removal -= ahead_reduction
+                if removal > 0.0:
+                    queue_behind_volume = max(queue_behind_volume - removal, 0.0)
+            elif delta_visible > 0.0:
+                queue_behind_volume += float(delta_visible)
+        elif current_visible is not None:
+            queue_ahead_volume = min(queue_ahead_volume, float(current_visible))
+        visible_value = current_visible
+        processed_ts = int(event_ts_ms)
+    return (
+        float(max(queue_ahead_volume, 0.0)),
+        float(max(queue_behind_volume, 0.0)),
+        (float(visible_value) if visible_value is not None else None),
+        int(processed_ts),
+    )
 
 
 def parse_market(market: str) -> tuple[str, str]:

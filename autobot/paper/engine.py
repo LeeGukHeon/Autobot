@@ -558,12 +558,18 @@ class PaperExecutionGateway:
         market_value = event.market.strip().upper()
         self._trim_replace_window(market=market_value, now_ts_ms=event.ts_ms)
         market_window = self._replace_window_by_market.setdefault(market_value, deque())
+        snapshot = (
+            self._micro_snapshot_provider.get(market_value, int(event.ts_ms))
+            if self._micro_snapshot_provider is not None
+            else None
+        )
 
         fills = self._exchange.process_ticker(
             market=event.market,
             trade_price=event.trade_price,
             ts_ms=event.ts_ms,
             rules=rules,
+            micro_snapshot=snapshot,
         )
         for fill in fills:
             update.fills.append(fill)
@@ -593,11 +599,6 @@ class PaperExecutionGateway:
             policy_diagnostics: dict[str, Any] = {}
             policy_abort_reason: str | None = None
             if self._micro_order_policy is not None:
-                snapshot = (
-                    self._micro_snapshot_provider.get(market_value, int(event.ts_ms))
-                    if self._micro_snapshot_provider is not None
-                    else None
-                )
                 model_prob = (
                     _safe_optional_float(pending.intent.meta.get("model_prob"))
                     if isinstance(pending.intent.meta, dict)

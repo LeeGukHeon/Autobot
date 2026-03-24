@@ -1103,3 +1103,150 @@ def test_sim_exchange_flat_round_trip_reconciles_realized_pnl_with_equity() -> N
     assert snapshot.cash_locked == 0.0
     assert snapshot.unrealized_pnl_quote == 0.0
     assert snapshot.realized_pnl_quote == pytest.approx(snapshot.equity_quote - 10_020.0)
+
+
+def test_paper_resting_queue_requires_visible_queue_to_clear_before_fill() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="QUEUE_TEST",
+        ts_ms=0,
+        time_in_force="gtc",
+        meta={"exec_profile": {"price_mode": "PASSIVE_MAKER"}},
+    )
+    order, fill = exchange.submit_limit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=101.0,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=0,
+            last_event_ts_ms=0,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+        ts_ms=0,
+    )
+    assert fill is None
+    assert order.state == "OPEN"
+
+    blocked = exchange.process_ticker(
+        market="KRW-BTC",
+        trade_price=100.0,
+        ts_ms=60_000,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=60_000,
+            last_event_ts_ms=60_000,
+            bid_levels=((100.0, 2.0),),
+            ask_levels=((101.0, 5.0),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert blocked == []
+
+    filled = exchange.process_ticker(
+        market="KRW-BTC",
+        trade_price=99.0,
+        ts_ms=120_000,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=120_000,
+            last_event_ts_ms=120_000,
+            bid_levels=(),
+            ask_levels=((101.0, 5.0),),
+            best_bid_price=99.0,
+            best_ask_price=100.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert len(filled) == 1
+
+
+def test_paper_resting_queue_trade_at_level_consumes_queue_ahead() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=50_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="QUEUE_TRADE_TEST",
+        ts_ms=0,
+        time_in_force="gtc",
+        meta={"exec_profile": {"price_mode": "PASSIVE_MAKER"}},
+    )
+    order, fill = exchange.submit_limit_order(
+        intent=intent,
+        rules=rules,
+        latest_trade_price=101.0,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=0,
+            last_event_ts_ms=0,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=(),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+        ts_ms=0,
+    )
+    assert fill is None
+    assert order.state == "OPEN"
+
+    blocked = exchange.process_ticker(
+        market="KRW-BTC",
+        trade_price=100.0,
+        ts_ms=60_000,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=60_000,
+            last_event_ts_ms=60_000,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=((60_000, 100.0, 3.0, "sell"),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert blocked == []
+
+    filled = exchange.process_ticker(
+        market="KRW-BTC",
+        trade_price=100.0,
+        ts_ms=120_000,
+        rules=rules,
+        micro_snapshot=MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=120_000,
+            last_event_ts_ms=120_000,
+            bid_levels=((100.0, 5.0),),
+            ask_levels=((101.0, 5.0),),
+            recent_trade_ticks=((120_000, 100.0, 2.0, "sell"),),
+            best_bid_price=100.0,
+            best_ask_price=101.0,
+            book_events=1,
+            book_available=True,
+        ),
+    )
+    assert len(filled) == 1
