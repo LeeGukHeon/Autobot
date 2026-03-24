@@ -125,6 +125,43 @@ def test_reset_counter_preserves_reason_when_other_scope_is_still_active(tmp_pat
     assert status["counters"]["replace_reject"]["count"] == 1
 
 
+def test_clear_breaker_marks_online_risk_checkpoint_baseline(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.set_checkpoint(
+            name="execution_risk_control_online_buffer:run-live",
+            payload={
+                "recent_max_exit_ts_ms": 12345,
+                "last_processed_exit_ts_ms": 12345,
+                "breach_streak": 4,
+                "halt_triggered": True,
+            },
+            ts_ms=1000,
+        )
+        arm_breaker(
+            store,
+            reason_codes=["RISK_CONTROL_ONLINE_BREACH_STREAK"],
+            source="execution_risk_control_online_halt",
+            ts_ms=1000,
+            action=ACTION_HALT_NEW_INTENTS,
+            details={
+                "checkpoint_name": "execution_risk_control_online_buffer:run-live",
+                "checkpoint_base_name": "execution_risk_control_online_buffer",
+                "recent_max_exit_ts_ms": 12345,
+                "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            },
+        )
+        clear_breaker(store, source="dashboard_ops_clear_canary_breaker", ts_ms=2000)
+        checkpoint = store.get_checkpoint(name="execution_risk_control_online_buffer:run-live")
+
+    assert checkpoint is not None
+    payload = checkpoint["payload"]
+    assert payload["history_reset_exit_ts_ms"] == 12345
+    assert payload["last_processed_exit_ts_ms"] == 12345
+    assert payload["breach_streak"] == 0
+    assert payload["halt_triggered"] is False
+
+
 def test_clear_breaker_reasons_preserves_structural_halts(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

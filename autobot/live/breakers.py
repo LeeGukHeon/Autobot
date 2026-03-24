@@ -271,6 +271,18 @@ def clear_breaker(
     ts_ms: int,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    current = store.breaker_state(breaker_key=BREAKER_KEY_LIVE)
+    _mark_online_risk_clear_baseline(
+        store=store,
+        current_state=current,
+        cleared_reason_codes=(
+            [str(item).strip().upper() for item in current.get("reason_codes", [])]
+            if isinstance(current, dict)
+            else []
+        ),
+        ts_ms=ts_ms,
+        source=source,
+    )
     _reset_all_counters(store=store, ts_ms=ts_ms)
     store.upsert_breaker_state(
         BreakerStateRecord(
@@ -320,6 +332,13 @@ def clear_breaker_reasons(
     detail_payload.update(dict(details or {}))
     detail_payload["cleared_reason_codes"] = list(normalized)
     detail_payload["remaining_reason_codes"] = list(remaining_reasons)
+    _mark_online_risk_clear_baseline(
+        store=store,
+        current_state=current,
+        cleared_reason_codes=normalized,
+        ts_ms=ts_ms,
+        source=source,
+    )
     next_action = choose_action(remaining_reasons) if remaining_reasons else None
     next_active = bool(remaining_reasons)
     armed_ts = int(current.get("armed_ts") or ts_ms) if next_active else 0
@@ -696,6 +715,64 @@ def _reset_all_counters(*, store: LiveStateStore, ts_ms: int) -> None:
 def _write_breaker_report(*, store: LiveStateStore, payload: dict[str, Any]) -> None:
     path = store.db_path.parent / "live_breaker_report.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+
+
+def _mark_online_risk_clear_baseline(
+    *,
+    store: LiveStateStore,
+    current_state: dict[str, Any] | None,
+    cleared_reason_codes: list[str],
+    ts_ms: int,
+    source: str,
+) -> None:
+    normalized = _normalize_reason_codes(cleared_reason_codes)
+    online_reason_codes = {
+        "RISK_CONTROL_ONLINE_BREACH_STREAK",
+        "RISK_CONTROL_MARTINGALE_EVIDENCE",
+        "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE",
+    }
+    if not any(item in online_reason_codes for item in normalized):
+        return
+    details = dict((current_state or {}).get("details") or {})
+    checkpoint_name = str(details.get("checkpoint_name") or "").strip()
+    if not checkpoint_name:
+        return
+    checkpoint = store.get_checkpoint(name=checkpoint_name)
+    payload = dict((checkpoint or {}).get("payload") or {})
+    baseline_exit_ts_ms = _coalesce_optional_int(
+        _safe_optional_int(details.get("recent_max_exit_ts_ms")),
+        _safe_optional_int(details.get("last_processed_exit_ts_ms")),
+        _safe_optional_int(payload.get("recent_max_exit_ts_ms")),
+        _safe_optional_int(payload.get("last_processed_exit_ts_ms")),
+    )
+    payload["history_reset_exit_ts_ms"] = baseline_exit_ts_ms
+    payload["history_reset_cleared_at_ts_ms"] = int(ts_ms)
+    payload["history_reset_source"] = str(source).strip()
+    payload["step_up"] = 0
+    payload["breach_streak"] = 0
+    payload["recovery_streak"] = 0
+    payload["halt_triggered"] = False
+    payload["clear_halt"] = True
+    payload["clear_reason_codes"] = list(normalized)
+    if baseline_exit_ts_ms is not None:
+        payload["last_processed_exit_ts_ms"] = int(baseline_exit_ts_ms)
+    store.set_checkpoint(name=checkpoint_name, payload=payload, ts_ms=ts_ms)
+
+
+def _coalesce_optional_int(*values: int | None) -> int | None:
+    for value in values:
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _safe_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_optional_upper(value: object) -> str | None:

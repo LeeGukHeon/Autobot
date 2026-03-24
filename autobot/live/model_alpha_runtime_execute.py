@@ -360,6 +360,7 @@ def resolve_execution_risk_control_online_threshold(
     )
     previous_checkpoint = store.get_checkpoint(name=resolved_checkpoint_name)
     previous_state = dict((previous_checkpoint or {}).get("payload") or {})
+    history_reset_exit_ts_ms = _safe_optional_int(previous_state.get("history_reset_exit_ts_ms"))
     lookback_trades = max(int(online_adaptation.get("lookback_trades", 0) or 0), 1)
     delta = max(float(online_adaptation.get("confidence_delta", 0.0) or 0.0), 1e-12)
     rows = []
@@ -374,6 +375,8 @@ def resolve_execution_risk_control_online_threshold(
         pnl_pct = _safe_optional_float(row.get("realized_pnl_pct"))
         exit_ts_ms = _safe_optional_int(row.get("exit_ts_ms")) or _safe_optional_int(row.get("updated_ts"))
         if pnl_pct is None or exit_ts_ms is None:
+            continue
+        if history_reset_exit_ts_ms is not None and int(exit_ts_ms) <= int(history_reset_exit_ts_ms):
             continue
         # live trade_journal stores pnl_pct in percentage points, but the
         # risk-control contract uses decimal returns (for example, 0.01 == 1%).

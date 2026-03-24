@@ -2012,6 +2012,111 @@ def test_resolve_execution_risk_control_online_threshold_isolates_checkpoint_by_
     assert float(new_state["adaptive_threshold"]) == 1.0
 
 
+def test_resolve_execution_risk_control_online_threshold_ignores_history_before_manual_clear_baseline(tmp_path: Path) -> None:
+    import autobot.live.model_alpha_runtime_execute as runtime_execute
+
+    payload = {
+        "version": 1,
+        "policy": "execution_risk_control_hoeffding_v1",
+        "status": "ready",
+        "selected_threshold": 1.0,
+        "threshold_results": [{"threshold": 2.0}, {"threshold": 1.0}],
+        "nonpositive_alpha": 0.30,
+        "severe_loss_alpha": 0.20,
+        "online_adaptation": {
+            "enabled": True,
+            "mode": "recent_closed_trade_hoeffding_stepup_v1",
+            "lookback_trades": 12,
+            "max_step_up": 2,
+            "recovery_streak_required": 2,
+            "min_halt_trade_count": 1,
+            "halt_breach_streak": 1,
+            "halt_reason_code": "RISK_CONTROL_ONLINE_BREACH_STREAK",
+            "confidence_delta": 0.20,
+            "checkpoint_name": "execution_risk_control_online_buffer",
+        },
+    }
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        checkpoint_name = runtime_execute._execution_risk_control_checkpoint_name(
+            base_name="execution_risk_control_online_buffer",
+            run_id="run-live",
+        )
+        store.set_checkpoint(
+            name=checkpoint_name,
+            payload={
+                "history_reset_exit_ts_ms": 200,
+                "last_processed_exit_ts_ms": 200,
+                "breach_streak": 0,
+                "halt_triggered": False,
+            },
+            ts_ms=300,
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-old",
+                market="KRW-BTC",
+                status="CLOSED",
+                entry_intent_id="intent-old",
+                entry_order_uuid="entry-old",
+                exit_order_uuid="exit-old",
+                plan_id="plan-old",
+                entry_submitted_ts_ms=100,
+                entry_filled_ts_ms=100,
+                exit_ts_ms=150,
+                entry_price=100.0,
+                exit_price=98.0,
+                qty=1.0,
+                entry_notional_quote=100.0,
+                exit_notional_quote=98.0,
+                realized_pnl_quote=-2.0,
+                realized_pnl_pct=-2.0,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="STATE_MARK",
+                close_mode="done_ask_order",
+                entry_meta_json=json.dumps({"runtime": {"live_runtime_model_run_id": "run-live"}}, ensure_ascii=False, sort_keys=True),
+                exit_meta_json=json.dumps({"close_verified": True}, ensure_ascii=False, sort_keys=True),
+                updated_ts=150,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-new",
+                market="KRW-BTC",
+                status="CLOSED",
+                entry_intent_id="intent-new",
+                entry_order_uuid="entry-new",
+                exit_order_uuid="exit-new",
+                plan_id="plan-new",
+                entry_submitted_ts_ms=250,
+                entry_filled_ts_ms=250,
+                exit_ts_ms=250,
+                entry_price=100.0,
+                exit_price=98.0,
+                qty=1.0,
+                entry_notional_quote=100.0,
+                exit_notional_quote=98.0,
+                realized_pnl_quote=-2.0,
+                realized_pnl_pct=-2.0,
+                entry_reason_code="MODEL_ALPHA_ENTRY_V1",
+                close_reason_code="STATE_MARK",
+                close_mode="done_ask_order",
+                entry_meta_json=json.dumps({"runtime": {"live_runtime_model_run_id": "run-live"}}, ensure_ascii=False, sort_keys=True),
+                exit_meta_json=json.dumps({"close_verified": True}, ensure_ascii=False, sort_keys=True),
+                updated_ts=250,
+            )
+        )
+
+        state = runtime_execute.resolve_execution_risk_control_online_threshold(
+            store=store,
+            run_id="run-live",
+            risk_control_payload=payload,
+        )
+
+    assert state["recent_trade_count"] == 1
+    assert state["halt_triggered"] is False
+
+
 def test_live_model_alpha_runtime_does_not_halt_online_breach_before_min_trade_count(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 
