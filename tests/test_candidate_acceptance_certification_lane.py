@@ -36,6 +36,7 @@ def _make_fake_python_exe(
     write_trainer_research_evidence: bool = True,
     write_latest_candidate_pointer: bool = True,
     emit_train_run_dir: bool = True,
+    emit_cli_prefixed_train_run_dir: bool = False,
     budget_lane_class_requested: str = "promotion_eligible",
     budget_lane_class_effective: str = "promotion_eligible",
     budget_contract_id: str = "v4_promotion_eligible_budget_v1",
@@ -68,6 +69,7 @@ def _make_fake_python_exe(
             WRITE_TRAINER_RESEARCH_EVIDENCE = {str(write_trainer_research_evidence)}
             WRITE_LATEST_CANDIDATE_POINTER = {str(write_latest_candidate_pointer)}
             EMIT_TRAIN_RUN_DIR = {str(emit_train_run_dir)}
+            EMIT_CLI_PREFIXED_TRAIN_RUN_DIR = {str(emit_cli_prefixed_train_run_dir)}
             BUDGET_LANE_CLASS_REQUESTED = {budget_lane_class_requested!r}
             BUDGET_LANE_CLASS_EFFECTIVE = {budget_lane_class_effective!r}
             BUDGET_CONTRACT_ID = {budget_contract_id!r}
@@ -457,7 +459,9 @@ def _make_fake_python_exe(
                             }}
                         }},
                     )
-                if EMIT_TRAIN_RUN_DIR:
+                if EMIT_TRAIN_RUN_DIR and EMIT_CLI_PREFIXED_TRAIN_RUN_DIR:
+                    print(f"[model][train][v4_crypto_cs] run_dir={{candidate_dir}}")
+                elif EMIT_TRAIN_RUN_DIR:
                     print(json.dumps({{"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}}))
                 else:
                     print("train_ok")
@@ -1761,6 +1765,32 @@ def test_candidate_acceptance_resolves_fresh_run_from_train_stdout_when_candidat
     assert artifact_status["candidate_adoptable"] is True
     assert artifact_status["candidate_adopted"] is True
     assert artifact_status["promoted"] is False
+
+
+def test_candidate_acceptance_resolves_fresh_run_from_cli_prefixed_train_stdout(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        write_latest_candidate_pointer=False,
+        emit_cli_prefixed_train_run_dir=True,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["candidate"]["run_id"] == "candidate-run-001"
+    assert Path(report["candidate"]["run_dir"]).name == "candidate-run-001"
 
 
 def test_candidate_acceptance_does_not_fall_back_to_latest_when_train_stdout_has_no_run_dir(

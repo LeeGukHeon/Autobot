@@ -3549,7 +3549,7 @@ function Resolve-RunDirFromText {
         }
     }
 
-    $lineMatch = [Regex]::Match($TextValue, '(?m)^\[[^\]]+\]\s+run_dir=(.+)$')
+    $lineMatch = [Regex]::Match($TextValue, '(?m)^(?:\[[^\]]+\])+\s+run_dir=(.+)$')
     if ($lineMatch.Success) {
         return ([string]$lineMatch.Groups[1].Value).Trim()
     }
