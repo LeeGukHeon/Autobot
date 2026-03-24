@@ -327,6 +327,28 @@ function Get-StringArray {
     return @(Expand-DelimitedStringArray -Value $Value)
 }
 
+function Merge-UniqueStringArray {
+    param(
+        [Parameter(Mandatory = $false)]$First,
+        [Parameter(Mandatory = $false)]$Second
+    )
+    $seen = @{}
+    $result = New-Object System.Collections.Generic.List[string]
+    foreach ($text in @((Get-StringArray -Value $First) + (Get-StringArray -Value $Second))) {
+        $value = [string]$text
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            continue
+        }
+        $trimmed = $value.Trim()
+        if ($seen.ContainsKey($trimmed)) {
+            continue
+        }
+        $seen[$trimmed] = $true
+        $result.Add($trimmed) | Out-Null
+    }
+    return @($result.ToArray())
+}
+
 function Resolve-ExecutionContractRowsTotal {
     param([Parameter(Mandatory = $false)]$Payload)
     $executionContract = Get-PropValue -ObjectValue $Payload -Name "execution_contract" -DefaultValue @{}
