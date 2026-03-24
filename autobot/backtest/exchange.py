@@ -21,15 +21,29 @@ class BacktestSimExchange(PaperSimExchange):
         self._candle_fill_model = fill_model or CandleFillModel()
         self._activate_on_index_by_order_id: dict[str, int] = {}
 
-    def submit_limit_order_deferred(
+    def submit_order_deferred(
         self,
         *,
         intent: OrderIntent,
         rules: MarketRules,
         ts_ms: int,
         activate_on_index: int,
+        latest_trade_price: float | None = None,
         reprice_attempt: int = 0,
     ) -> tuple[PaperOrder, FillEvent | None]:
+        if str(intent.time_in_force).strip().lower() in {"ioc", "fok"} or str(intent.ord_type).strip().lower() == "best":
+            effective_trade_price = (
+                float(latest_trade_price)
+                if latest_trade_price is not None
+                else float(intent.price if intent.price is not None else 0.0)
+            )
+            return super().submit_order(
+                intent=intent,
+                rules=rules,
+                latest_trade_price=effective_trade_price,
+                ts_ms=ts_ms,
+                reprice_attempt=reprice_attempt,
+            )
         # Ensure no same-bar immediate fill. Matching is handled only in `match_orders_on_bar`.
         non_touch_trade_price = (
             float(intent.price) * 10.0 + max(float(rules.tick_size), 1.0)

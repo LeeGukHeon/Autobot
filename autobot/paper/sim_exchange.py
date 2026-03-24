@@ -263,6 +263,103 @@ class PaperSimExchange:
         self._open_orders[order.order_id] = order
         return (self._clone_order(order), None)
 
+    def submit_order(
+        self,
+        *,
+        intent: OrderIntent,
+        rules: MarketRules,
+        latest_trade_price: float,
+        ts_ms: int | None = None,
+        reprice_attempt: int = 0,
+    ) -> tuple[PaperOrder, FillEvent | None]:
+        if str(intent.ord_type).strip().lower() == "best":
+            return self.submit_best_order(
+                intent=intent,
+                rules=rules,
+                latest_trade_price=latest_trade_price,
+                ts_ms=ts_ms,
+                reprice_attempt=reprice_attempt,
+            )
+        return self.submit_limit_order(
+            intent=intent,
+            rules=rules,
+            latest_trade_price=latest_trade_price,
+            ts_ms=ts_ms,
+            reprice_attempt=reprice_attempt,
+        )
+
+    def submit_best_order(
+        self,
+        *,
+        intent: OrderIntent,
+        rules: MarketRules,
+        latest_trade_price: float,
+        ts_ms: int | None = None,
+        reprice_attempt: int = 0,
+    ) -> tuple[PaperOrder, FillEvent | None]:
+        now_ts_ms = int(ts_ms if ts_ms is not None else time.time() * 1000)
+        side_value = str(intent.side).strip().lower()
+        market_price = max(float(latest_trade_price), 0.0)
+        if market_price <= 0.0:
+            failed = self._build_failed_order(intent=intent, ts_ms=now_ts_ms, reason="BEST_PRICE_UNAVAILABLE")
+            return (self._clone_order(failed), None)
+
+        if side_value == "bid":
+            requested_notional = float(intent.price) if intent.price is not None else 0.0
+            resolved_volume = order_volume_from_notional(
+                notional_quote=max(requested_notional, 0.0),
+                price=market_price,
+            )
+        elif side_value == "ask":
+            resolved_volume = float(intent.volume) if intent.volume is not None else 0.0
+            requested_notional = market_price * resolved_volume
+        else:
+            failed = self._build_failed_order(intent=intent, ts_ms=now_ts_ms, reason="INVALID_SIDE")
+            return (self._clone_order(failed), None)
+
+        order = PaperOrder(
+            order_id=f"paper-{uuid.uuid4().hex}",
+            intent_id=intent.intent_id,
+            state="OPEN",
+            created_ts_ms=now_ts_ms,
+            updated_ts_ms=now_ts_ms,
+            market=intent.market,
+            side=side_value,
+            ord_type="best",
+            time_in_force=intent.time_in_force,
+            price=float(market_price),
+            volume_req=float(resolved_volume),
+            volume_filled=0.0,
+            avg_fill_price=0.0,
+            fee_paid_quote=0.0,
+            maker_or_taker="unknown",
+            reprice_attempt=max(int(reprice_attempt), 0),
+        )
+
+        if order.volume_req <= 0.0 or requested_notional + EPSILON < max(float(rules.min_total), 0.0):
+            order.state = "FAILED"
+            order.failure_reason = "BELOW_MIN_TOTAL"
+            self._orders[order.order_id] = order
+            return (self._clone_order(order), None)
+
+        reserved = self._reserve_for_order(order, rules)
+        if not reserved:
+            order.state = "FAILED"
+            order.failure_reason = "INSUFFICIENT_BALANCE"
+            self._orders[order.order_id] = order
+            return (self._clone_order(order), None)
+
+        self._orders[order.order_id] = order
+        fill_event = self._fill_order(
+            order=order,
+            fill_price=market_price,
+            fill_volume=order.volume_req,
+            maker_or_taker="taker",
+            ts_ms=now_ts_ms,
+            rules=rules,
+        )
+        return (self._clone_order(order), fill_event)
+
     def process_ticker(
         self,
         *,
@@ -395,8 +492,15 @@ class PaperSimExchange:
         fee_rate = rules.fee_rate(side=order.side, maker_or_taker=maker_or_taker)
         fee_quote = fill_price * fill_volume_value * fee_rate
 
+        previous_volume_filled = float(order.volume_filled)
+        remaining_before_fill = max(order.volume_req - previous_volume_filled, 0.0)
         order.volume_filled = min(order.volume_req, order.volume_filled + fill_volume_value)
-        order.avg_fill_price = fill_price if order.avg_fill_price <= 0 else order.avg_fill_price
+        if order.avg_fill_price <= 0 or previous_volume_filled <= EPSILON:
+            order.avg_fill_price = fill_price
+        else:
+            total_quote_before = float(order.avg_fill_price) * float(previous_volume_filled)
+            total_quote_after = total_quote_before + (float(fill_price) * float(fill_volume_value))
+            order.avg_fill_price = total_quote_after / max(float(order.volume_filled), EPSILON)
         order.fee_paid_quote += fee_quote
         order.maker_or_taker = maker_or_taker
         order.updated_ts_ms = int(ts_ms)
@@ -404,11 +508,14 @@ class PaperSimExchange:
 
         if order.side == "bid":
             total_cost = fill_price * fill_volume_value + fee_quote
-            reserved = max(order.locked_quote, 0.0)
-            self._cash.locked = max(self._cash.locked - reserved, 0.0)
-            refund = max(reserved - total_cost, 0.0)
+            reserved_before = max(order.locked_quote, 0.0)
+            release_quote = reserved_before
+            if order.state == "PARTIAL" and remaining_before_fill > EPSILON:
+                release_quote = reserved_before * min(max(fill_volume_value / remaining_before_fill, 0.0), 1.0)
+            self._cash.locked = max(self._cash.locked - release_quote, 0.0)
+            refund = max(release_quote - total_cost, 0.0)
             self._cash.free += refund
-            order.locked_quote = 0.0
+            order.locked_quote = max(reserved_before - release_quote, 0.0)
 
             base_currency = _base_currency(order.market)
             coin_balance = self._coin_balance_mut(base_currency)
@@ -420,15 +527,18 @@ class PaperSimExchange:
             total_base_after = total_base_before + fill_volume_value
             position.base_amount = total_base_after
             position.avg_entry_price = (
-                0.0 if total_base_after <= EPSILON else (total_cost_before + fill_price * fill_volume_value) / total_base_after
+                0.0 if total_base_after <= EPSILON else (total_cost_before + total_cost) / total_base_after
             )
 
         else:
             base_currency = _base_currency(order.market)
             coin_balance = self._coin_balance_mut(base_currency)
-            reserved_base = max(order.locked_base, 0.0)
-            coin_balance.locked = max(coin_balance.locked - reserved_base, 0.0)
-            order.locked_base = 0.0
+            reserved_base_before = max(order.locked_base, 0.0)
+            release_base = reserved_base_before
+            if order.state == "PARTIAL" and remaining_before_fill > EPSILON:
+                release_base = reserved_base_before * min(max(fill_volume_value / remaining_before_fill, 0.0), 1.0)
+            coin_balance.locked = max(coin_balance.locked - release_base, 0.0)
+            order.locked_base = max(reserved_base_before - release_base, 0.0)
 
             quote_gain = fill_price * fill_volume_value - fee_quote
             self._cash.free += quote_gain
@@ -466,8 +576,8 @@ class PaperSimExchange:
             side=intent.side,
             ord_type=intent.ord_type,
             time_in_force=intent.time_in_force,
-            price=float(intent.price),
-            volume_req=float(intent.volume),
+            price=float(intent.price) if intent.price is not None else 0.0,
+            volume_req=float(intent.volume) if intent.volume is not None else 0.0,
             volume_filled=0.0,
             avg_fill_price=0.0,
             fee_paid_quote=0.0,

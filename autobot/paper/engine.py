@@ -493,7 +493,7 @@ class PaperExecutionGateway:
             if isinstance(intent.meta.get("micro_diagnostics"), dict)
             else {}
         )
-        order, fill = self._exchange.submit_limit_order(
+        order, fill = self._exchange.submit_order(
             intent=intent,
             rules=rules,
             latest_trade_price=latest_trade_price,
@@ -521,10 +521,10 @@ class PaperExecutionGateway:
         if fill is not None:
             update.fills.append(fill)
             latest = self._exchange.get_order(order.order_id)
-            if latest is not None:
+            if latest is not None and latest.state == "FILLED":
                 update.orders_filled.append(latest)
-            update.success_markets.append(intent.market)
-            self._clear_pending(intent.intent_id)
+                update.success_markets.append(intent.market)
+                self._clear_pending(intent.intent_id)
 
         return update
 
@@ -548,13 +548,13 @@ class PaperExecutionGateway:
         for fill in fills:
             update.fills.append(fill)
             current = self._exchange.get_order(fill.order_id)
-            if current is not None:
+            if current is not None and current.state == "FILLED":
                 update.orders_filled.append(current)
-            intent_id = self._intent_by_order_id.pop(fill.order_id, None)
-            if intent_id is not None:
-                pending = self._pending_by_intent.pop(intent_id, None)
-                if pending is not None:
-                    update.success_markets.append(pending.intent.market)
+                intent_id = self._intent_by_order_id.pop(fill.order_id, None)
+                if intent_id is not None:
+                    pending = self._pending_by_intent.pop(intent_id, None)
+                    if pending is not None:
+                        update.success_markets.append(pending.intent.market)
 
         for intent_id, pending in list(self._pending_by_intent.items()):
             if pending.market != market_value:
@@ -687,7 +687,7 @@ class PaperExecutionGateway:
                     "micro_diagnostics": dict(policy_diagnostics),
                 },
             )
-            new_order, new_fill = self._exchange.submit_limit_order(
+            new_order, new_fill = self._exchange.submit_order(
                 intent=reprice_intent,
                 rules=rules,
                 latest_trade_price=event.trade_price,
@@ -2235,7 +2235,7 @@ class PaperRunEngine:
         selected_time_in_force = (
             str((execution_policy or {}).get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
         )
-        simulated_ord_type = "limit" if selected_ord_type == "best" else selected_ord_type
+        simulated_ord_type = selected_ord_type
         policy_payload = {
             "enabled": bool(micro_order_policy is not None),
             "tier": str(policy_decision.tier) if policy_decision is not None and policy_decision.tier is not None else None,

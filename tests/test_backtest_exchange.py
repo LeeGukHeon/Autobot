@@ -39,7 +39,7 @@ def test_lookahead_guard_matches_from_next_bar_only() -> None:
         ts_ms=0,
     )
 
-    submit = gateway.submit_intent(intent=intent, rules=rules, bar_index=0, ts_ms=0)
+    submit = gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
     assert len(submit.orders_submitted) == 1
 
     same_bar = gateway.on_bar(bar=_bar(ts_ms=0, low=90.0, high=110.0), bar_index=0, rules=rules)
@@ -69,7 +69,7 @@ def test_tick_rounding_and_fee_never_make_quote_negative() -> None:
         reason_code="FEE_TEST",
         ts_ms=0,
     )
-    gateway.submit_intent(intent=intent, rules=rules, bar_index=0, ts_ms=0)
+    gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
     gateway.on_bar(bar=_bar(ts_ms=60_000, low=99.0, high=101.0), bar_index=1, rules=rules)
 
     quote = exchange.quote_balance()

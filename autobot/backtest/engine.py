@@ -391,6 +391,7 @@ class BacktestExecutionGateway:
         *,
         intent: OrderIntent,
         rules: MarketRules,
+        latest_trade_price: float,
         bar_index: int,
         ts_ms: int,
     ) -> ExecutionUpdate:
@@ -405,11 +406,12 @@ class BacktestExecutionGateway:
             if isinstance(intent.meta.get("micro_diagnostics"), dict)
             else {}
         )
-        order, fill = self._exchange.submit_limit_order_deferred(
+        order, fill = self._exchange.submit_order_deferred(
             intent=intent,
             rules=rules,
             ts_ms=ts_ms,
             activate_on_index=bar_index + 1,
+            latest_trade_price=latest_trade_price,
             reprice_attempt=0,
         )
         update.orders_submitted.append(order)
@@ -430,10 +432,10 @@ class BacktestExecutionGateway:
         if fill is not None:
             update.fills.append(fill)
             latest = self._exchange.get_order(order.order_id)
-            if latest is not None:
+            if latest is not None and latest.state == "FILLED":
                 update.orders_filled.append(latest)
-            update.success_markets.append(intent.market)
-            self._clear_pending(intent.intent_id)
+                update.success_markets.append(intent.market)
+                self._clear_pending(intent.intent_id)
         return update
 
     def on_bar(self, *, bar: CandleBar, bar_index: int, rules: MarketRules) -> ExecutionUpdate:
@@ -446,14 +448,14 @@ class BacktestExecutionGateway:
         for fill in fills:
             update.fills.append(fill)
             current = self._exchange.get_order(fill.order_id)
-            if current is not None:
+            if current is not None and current.state == "FILLED":
                 update.orders_filled.append(current)
-            intent_id = self._intent_by_order_id.pop(fill.order_id, None)
-            if intent_id is None:
-                continue
-            pending = self._pending_by_intent.pop(intent_id, None)
-            if pending is not None:
-                update.success_markets.append(pending.market)
+                intent_id = self._intent_by_order_id.pop(fill.order_id, None)
+                if intent_id is None:
+                    continue
+                pending = self._pending_by_intent.pop(intent_id, None)
+                if pending is not None:
+                    update.success_markets.append(pending.market)
 
         for intent_id, pending in list(self._pending_by_intent.items()):
             if pending.market != market_value:
@@ -1659,7 +1661,7 @@ class BacktestRunEngine:
         selected_time_in_force = (
             str((execution_policy or {}).get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
         )
-        simulated_ord_type = "limit" if selected_ord_type == "best" else selected_ord_type
+        simulated_ord_type = selected_ord_type
         policy_payload = {
             "enabled": bool(micro_order_policy is not None),
             "tier": str(policy_decision.tier) if policy_decision is not None and policy_decision.tier is not None else None,
@@ -1723,6 +1725,7 @@ class BacktestRunEngine:
         update = execution.submit_intent(
             intent=intent,
             rules=rules,
+            latest_trade_price=ref_price,
             bar_index=bar_index,
             ts_ms=ts_ms,
         )
