@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,9 @@ def build_runtime_topology_report(
         current_contract=current_contract,
         ws_public_contract=ws_public_contract,
     )
+    systemd_snapshot = _systemd_topology_snapshot()
+    git_snapshot = _git_topology_snapshot(root=root)
+    project_topology = _project_topology_snapshot(root=root)
 
     report = {
         "version": RUNTIME_TOPOLOGY_REPORT_VERSION,
@@ -102,6 +106,9 @@ def build_runtime_topology_report(
         "runtime_sync_status": runtime_sync_status,
         "runtime_contract_error": runtime_contract_error or None,
         "rollout_latest": rollout_latest,
+        "systemd": systemd_snapshot,
+        "git": git_snapshot,
+        "project_topology": project_topology,
         "summary": {
             "champion_run_id": _run_id_from_pointer(pointers.get("champion")),
             "latest_run_id": _run_id_from_pointer(pointers.get("latest")),
@@ -111,6 +118,11 @@ def build_runtime_topology_report(
             "live_db_present": bool(live_db),
             "model_pointer_divergence": bool(runtime_sync_status.get("model_pointer_divergence", False)),
             "ws_public_stale": bool(ws_public_contract.get("ws_public_stale", False)),
+            "systemd_available": bool(systemd_snapshot.get("available", False)),
+            "service_active_count": int(sum(1 for item in (systemd_snapshot.get("services") or []) if str(item.get("active", "")).strip().lower() == "active")),
+            "timer_active_count": int(sum(1 for item in (systemd_snapshot.get("timers") or []) if str(item.get("active", "")).strip().lower() == "active")),
+            "git_dirty": bool(git_snapshot.get("dirty", False)),
+            "replay_path_present": bool(project_topology.get("replay_path_present", False)),
         },
     }
     return report
@@ -245,6 +257,150 @@ def _all_primary_pointers_equal(pointers: dict[str, dict[str, Any]]) -> bool:
     ]
     values = [item for item in values if item]
     return len(set(values)) == 1 if values else False
+
+
+def _systemd_topology_snapshot() -> dict[str, Any]:
+    service_cmd = [
+        "systemctl",
+        "list-units",
+        "autobot*",
+        "--type=service",
+        "--all",
+        "--no-pager",
+        "--plain",
+        "--no-legend",
+    ]
+    timer_cmd = [
+        "systemctl",
+        "list-units",
+        "autobot*",
+        "--type=timer",
+        "--all",
+        "--no-pager",
+        "--plain",
+        "--no-legend",
+    ]
+    unit_file_cmd = [
+        "systemctl",
+        "list-unit-files",
+        "autobot*",
+        "--no-pager",
+        "--plain",
+        "--no-legend",
+    ]
+    service_result = _run_command(service_cmd)
+    timer_result = _run_command(timer_cmd)
+    unit_file_result = _run_command(unit_file_cmd)
+    available = bool(service_result["ok"] or timer_result["ok"] or unit_file_result["ok"])
+    return {
+        "available": available,
+        "services": _parse_systemd_unit_rows(service_result["stdout"]),
+        "timers": _parse_systemd_unit_rows(timer_result["stdout"]),
+        "unit_files": _parse_systemd_unit_file_rows(unit_file_result["stdout"]),
+        "errors": {
+            "services": service_result["stderr"] if not service_result["ok"] else "",
+            "timers": timer_result["stderr"] if not timer_result["ok"] else "",
+            "unit_files": unit_file_result["stderr"] if not unit_file_result["ok"] else "",
+        },
+    }
+
+
+def _git_topology_snapshot(*, root: Path) -> dict[str, Any]:
+    head_result = _run_command(["git", "rev-parse", "HEAD"], cwd=root)
+    branch_result = _run_command(["git", "branch", "--show-current"], cwd=root)
+    status_result = _run_command(["git", "status", "--short"], cwd=root)
+    remote_result = _run_command(["git", "remote", "get-url", "origin"], cwd=root)
+    status_lines = [line.rstrip() for line in str(status_result["stdout"]).splitlines() if line.strip()]
+    return {
+        "available": bool(head_result["ok"]),
+        "head": str(head_result["stdout"]).strip() if head_result["ok"] else "",
+        "branch": str(branch_result["stdout"]).strip() if branch_result["ok"] else "",
+        "remote_origin": str(remote_result["stdout"]).strip() if remote_result["ok"] else "",
+        "status_short": status_lines,
+        "dirty": bool(status_lines),
+        "errors": {
+            "head": head_result["stderr"] if not head_result["ok"] else "",
+            "branch": branch_result["stderr"] if not branch_result["ok"] else "",
+            "status": status_result["stderr"] if not status_result["ok"] else "",
+            "remote_origin": remote_result["stderr"] if not remote_result["ok"] else "",
+        },
+    }
+
+
+def _project_topology_snapshot(*, root: Path) -> dict[str, Any]:
+    parent = root.parent
+    sibling_dirs = sorted(path.name for path in parent.iterdir() if path.is_dir()) if parent.exists() else []
+    replay_paths = [name for name in sibling_dirs if name.startswith("Autobot_replay")]
+    return {
+        "project_root_parent": str(parent),
+        "sibling_directories": sibling_dirs,
+        "replay_like_paths": replay_paths,
+        "replay_path_present": bool(replay_paths),
+    }
+
+
+def _run_command(command: list[str], *, cwd: Path | None = None) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd is not None else None,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return {
+            "ok": False,
+            "stdout": "",
+            "stderr": str(exc),
+            "returncode": 127,
+        }
+    return {
+        "ok": completed.returncode == 0,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+        "returncode": completed.returncode,
+    }
+
+
+def _parse_systemd_unit_rows(text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            rows.append({"raw": line})
+            continue
+        payload = {
+            "unit": parts[0],
+            "load": parts[1],
+            "active": parts[2],
+            "sub": parts[3],
+            "description": parts[4] if len(parts) > 4 else "",
+        }
+        rows.append(payload)
+    return rows
+
+
+def _parse_systemd_unit_file_rows(text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            rows.append({"raw": line})
+            continue
+        payload = {
+            "unit_file": parts[0],
+            "state": parts[1],
+            "preset": parts[2] if len(parts) > 2 else "",
+        }
+        rows.append(payload)
+    return rows
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autobot.live.state_store import LiveStateStore
+import autobot.ops.runtime_topology_report as topology_module
 from autobot.ops.runtime_topology_report import build_runtime_topology_report, write_runtime_topology_report
 
 
@@ -73,7 +74,44 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         store.set_runtime_contract(payload={"live_runtime_model_run_id": "run-1"}, ts_ms=10_000)
         store.set_live_runtime_health(payload={"model_pointer_divergence": False}, ts_ms=10_000)
 
-    report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-candidate.service", ts_ms=10_000)
+    original_systemd = topology_module._systemd_topology_snapshot
+    original_git = topology_module._git_topology_snapshot
+    original_project = topology_module._project_topology_snapshot
+    topology_module._systemd_topology_snapshot = lambda: {
+        "available": True,
+        "services": [
+            {"unit": "autobot-paper-v4.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
+            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+        ],
+        "timers": [
+            {"unit": "autobot-v4-challenger-promote.timer", "active": "active", "sub": "waiting", "load": "loaded", "description": "Promote timer"},
+        ],
+        "unit_files": [
+            {"unit_file": "autobot-paper-v4.service", "state": "enabled", "preset": "enabled"},
+        ],
+        "errors": {},
+    }
+    topology_module._git_topology_snapshot = lambda *, root: {
+        "available": True,
+        "head": "abc123",
+        "branch": "main",
+        "remote_origin": "git@github.com:example/repo.git",
+        "status_short": ["?? docs/report.md"],
+        "dirty": True,
+        "errors": {},
+    }
+    topology_module._project_topology_snapshot = lambda *, root: {
+        "project_root_parent": str(root.parent),
+        "sibling_directories": ["Autobot", "Autobot_replay_123"],
+        "replay_like_paths": ["Autobot_replay_123"],
+        "replay_path_present": True,
+    }
+    try:
+        report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-candidate.service", ts_ms=10_000)
+    finally:
+        topology_module._systemd_topology_snapshot = original_systemd
+        topology_module._git_topology_snapshot = original_git
+        topology_module._project_topology_snapshot = original_project
 
     assert report["pointers"]["champion"]["run_id"] == "run-1"
     assert report["pointers"]["latest_candidate"]["run_id"] == "run-3"
@@ -86,6 +124,13 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["runtime_sync_status"]["model_pointer_divergence"] is True
     assert report["rollout_latest"]["target_unit"] == "autobot-live-alpha-candidate.service"
     assert report["summary"]["all_primary_pointers_equal"] is False
+    assert report["systemd"]["available"] is True
+    assert report["systemd"]["services"][0]["unit"] == "autobot-paper-v4.service"
+    assert report["git"]["dirty"] is True
+    assert report["project_topology"]["replay_path_present"] is True
+    assert report["summary"]["systemd_available"] is True
+    assert report["summary"]["git_dirty"] is True
+    assert report["summary"]["replay_path_present"] is True
 
 
 def test_write_runtime_topology_report_uses_default_output_path(tmp_path: Path) -> None:
