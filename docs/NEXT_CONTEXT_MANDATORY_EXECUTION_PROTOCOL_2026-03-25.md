@@ -130,12 +130,14 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented in `autobot/ops/runtime_topology_report.py`, tested locally and on the OCI server, and reflected as `logs/runtime_topology/latest.json` on the OCI server. Direct server validation on 2026-03-25 confirmed the artifact now includes actual `systemd` service and timer snapshots, git HEAD and dirty worktree state, sibling replay-like path detection, and live failure facts such as `autobot-v4-challenger-spawn.service: failed/failed`, so current lane/unit/pointer/runtime state can be summarized without separate manual SSH forensics.
 
-- [ ] 04. Add a machine-readable `pointer consistency report`
+- [x] 04. Add a machine-readable `pointer consistency report`
   Required references:
   [SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md)
   [FULLY_AUTOMATED_CHAMPION_CANDIDATE_OPERATING_CONTRACT_2026-03-24.md](/d:/MyApps/Autobot/docs/FULLY_AUTOMATED_CHAMPION_CANDIDATE_OPERATING_CONTRACT_2026-03-24.md)
   Done when:
   invalid steady-state pointer combinations are detectable by artifact and script.
+  Current implementation note:
+  implemented in `autobot/ops/pointer_consistency_report.py` and `scripts/check_pointer_consistency.ps1`, tested locally and on the OCI server, and reflected as `logs/ops/pointer_consistency/latest.json` on the OCI server. Direct server validation on 2026-03-25 confirmed the checker exits nonzero on the current invalid state and the artifact records concrete violations such as `LATEST_CANDIDATE_WITHOUT_CURRENT_STATE` and `CHAMPION_EQUALS_LATEST_CANDIDATE_NO_TRANSITION_STATE`.
 
 - [ ] 05. Add pre-flight checks for server units, pointer resolvability, and dirty worktree state
   Required references:
