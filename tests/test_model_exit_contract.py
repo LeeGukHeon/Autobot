@@ -165,3 +165,39 @@ def test_build_model_exit_plan_from_position_backfills_ratio_aliases() -> None:
     assert payload["trailing_vol_multiplier"] == 0.5
     assert payload["high_watermark_price"] == 110.5
     assert payload["armed_ts_ms"] == 1234
+
+
+def test_build_model_exit_plan_from_position_preserves_deferred_exit_cost_fields() -> None:
+    payload = build_model_exit_plan_from_position(
+        {
+            "tp": {
+                "enabled": True,
+                "source": "model_alpha_v1",
+                "mode": "risk",
+                "hold_bars": 6,
+                "timeout_delta_ms": 1_800_000,
+                "tp_pct": 2.0,
+                "expected_exit_fee_rate": 0.0005,
+                "expected_exit_slippage_bps": 3.0,
+            },
+            "sl": {
+                "enabled": True,
+                "source": "model_alpha_v1",
+                "mode": "risk",
+                "hold_bars": 6,
+                "timeout_delta_ms": 1_800_000,
+                "sl_pct": 1.0,
+            },
+            "trailing": {
+                "enabled": False,
+                "source": "model_alpha_v1",
+                "mode": "risk",
+                "hold_bars": 6,
+                "timeout_delta_ms": 1_800_000,
+            },
+        }
+    )
+
+    assert payload is not None
+    assert payload["expected_exit_fee_rate"] == 0.0005
+    assert payload["expected_exit_slippage_bps"] == 3.0

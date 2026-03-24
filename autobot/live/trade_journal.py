@@ -118,12 +118,13 @@ def activate_trade_journal_for_position(
         existing = store.trade_journal_by_plan_id(plan_id=plan_id_value)
     if existing is None and entry_order_uuid_value is not None:
         existing = store.trade_journal_by_entry_order_uuid(entry_order_uuid=entry_order_uuid_value)
+    active_existing = existing if _is_open_or_pending_trade_journal(existing) else None
     meta_dict = dict((intent_record or {}).get("meta") or {})
     meta_summary = _build_entry_meta_summary(meta_dict)
     entry_details = _extract_entry_details(meta_summary)
     entry_order_uuid = _coalesce_str(
         entry_order_uuid_value,
-        _as_optional_str((existing or {}).get("entry_order_uuid")),
+        _as_optional_str((active_existing or {}).get("entry_order_uuid")),
     )
     entry_order = _resolve_entry_order_for_journal(
         store=store,
@@ -131,25 +132,25 @@ def activate_trade_journal_for_position(
         entry_order_uuid=entry_order_uuid,
         entry_intent_id=entry_intent_id,
         target_entry_ts=_coalesce_int(
-            _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
-            _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
+            _as_optional_int((active_existing or {}).get("entry_filled_ts_ms")),
+            _as_optional_int((active_existing or {}).get("entry_submitted_ts_ms")),
             _as_optional_int((intent_record or {}).get("ts_ms")),
             _as_optional_int((entry_intent or {}).get("created_ts")),
         ),
     )
     submitted_ts = _coalesce_int(
-        _as_optional_int((existing or {}).get("entry_submitted_ts_ms")),
+        _as_optional_int((active_existing or {}).get("entry_submitted_ts_ms")),
         _as_optional_int((intent_record or {}).get("ts_ms")),
         _as_optional_int((entry_intent or {}).get("created_ts")),
     )
     filled_ts = _coalesce_int(
-        _as_optional_int((existing or {}).get("entry_filled_ts_ms")),
+        _as_optional_int((active_existing or {}).get("entry_filled_ts_ms")),
         _as_optional_int((entry_order or {}).get("updated_ts")),
         _as_optional_int((entry_order or {}).get("created_ts")),
         _as_optional_int(position.get("updated_ts")),
         int(ts_ms),
     )
-    journal_id = _resolve_journal_id(existing=existing, entry_intent_id=entry_intent_id, market=market_value, ts_ms=filled_ts)
+    journal_id = _resolve_journal_id(existing=active_existing, entry_intent_id=entry_intent_id, market=market_value, ts_ms=filled_ts)
     store.upsert_trade_journal(
         TradeJournalRecord(
             journal_id=journal_id,
@@ -157,55 +158,55 @@ def activate_trade_journal_for_position(
             status=TRADE_JOURNAL_STATUS_OPEN,
             entry_intent_id=entry_intent_id,
             entry_order_uuid=entry_order_uuid,
-            exit_order_uuid=_as_optional_str((existing or {}).get("exit_order_uuid")),
+            exit_order_uuid=None,
             plan_id=_coalesce_str(
                 plan_id_value,
-                _as_optional_str((existing or {}).get("plan_id")),
+                _as_optional_str((active_existing or {}).get("plan_id")),
             ),
             entry_submitted_ts_ms=submitted_ts,
             entry_filled_ts_ms=filled_ts,
-            exit_ts_ms=_as_optional_int((existing or {}).get("exit_ts_ms")),
-            entry_price=_coalesce_float(position_entry_price, _as_optional_float((existing or {}).get("entry_price"))),
-            exit_price=_as_optional_float((existing or {}).get("exit_price")),
-            qty=_coalesce_float(position_qty, _as_optional_float((existing or {}).get("qty"))),
+            exit_ts_ms=None,
+            entry_price=_coalesce_float(position_entry_price, _as_optional_float((active_existing or {}).get("entry_price"))),
+            exit_price=None,
+            qty=_coalesce_float(position_qty, _as_optional_float((active_existing or {}).get("qty"))),
             entry_notional_quote=(
                 position_entry_price * position_qty
                 if position_entry_price is not None and position_qty is not None
-                else _as_optional_float((existing or {}).get("entry_notional_quote"))
+                else _as_optional_float((active_existing or {}).get("entry_notional_quote"))
             ),
-            exit_notional_quote=_as_optional_float((existing or {}).get("exit_notional_quote")),
-            realized_pnl_quote=_as_optional_float((existing or {}).get("realized_pnl_quote")),
-            realized_pnl_pct=_as_optional_float((existing or {}).get("realized_pnl_pct")),
+            exit_notional_quote=None,
+            realized_pnl_quote=None,
+            realized_pnl_pct=None,
             entry_reason_code=_coalesce_str(
-                _as_optional_str((existing or {}).get("entry_reason_code")),
+                _as_optional_str((active_existing or {}).get("entry_reason_code")),
                 _as_optional_str((intent_record or {}).get("reason_code")),
             ),
-            close_reason_code=_as_optional_str((existing or {}).get("close_reason_code")),
-            close_mode=_as_optional_str((existing or {}).get("close_mode")),
-            model_prob=_coalesce_float(_as_optional_float((existing or {}).get("model_prob")), entry_details["model_prob"]),
+            close_reason_code=None,
+            close_mode=None,
+            model_prob=_coalesce_float(_as_optional_float((active_existing or {}).get("model_prob")), entry_details["model_prob"]),
             selection_policy_mode=_coalesce_str(
-                _as_optional_str((existing or {}).get("selection_policy_mode")),
+                _as_optional_str((active_existing or {}).get("selection_policy_mode")),
                 entry_details["selection_policy_mode"],
             ),
-            trade_action=_coalesce_str(_as_optional_str((existing or {}).get("trade_action")), entry_details["trade_action"]),
+            trade_action=_coalesce_str(_as_optional_str((active_existing or {}).get("trade_action")), entry_details["trade_action"]),
             expected_edge_bps=_coalesce_float(
-                _as_optional_float((existing or {}).get("expected_edge_bps")),
+                _as_optional_float((active_existing or {}).get("expected_edge_bps")),
                 entry_details["expected_edge_bps"],
             ),
             expected_downside_bps=_coalesce_float(
-                _as_optional_float((existing or {}).get("expected_downside_bps")),
+                _as_optional_float((active_existing or {}).get("expected_downside_bps")),
                 entry_details["expected_downside_bps"],
             ),
             expected_net_edge_bps=_coalesce_float(
-                _as_optional_float((existing or {}).get("expected_net_edge_bps")),
+                _as_optional_float((active_existing or {}).get("expected_net_edge_bps")),
                 entry_details["expected_net_edge_bps"],
             ),
             notional_multiplier=_coalesce_float(
-                _as_optional_float((existing or {}).get("notional_multiplier")),
+                _as_optional_float((active_existing or {}).get("notional_multiplier")),
                 entry_details["notional_multiplier"],
             ),
-            entry_meta_json=_json_dumps(meta_summary) if meta_summary else _json_dumps((existing or {}).get("entry_meta")),
-            exit_meta_json=_json_dumps((existing or {}).get("exit_meta")),
+            entry_meta_json=_json_dumps(meta_summary) if meta_summary else _json_dumps((active_existing or {}).get("entry_meta")),
+            exit_meta_json=_json_dumps({}),
             updated_ts=int(ts_ms),
         )
     )
@@ -218,6 +219,13 @@ def activate_trade_journal_for_position(
         ts_ms=filled_ts,
     )
     return journal_id
+
+
+def _is_open_or_pending_trade_journal(row: dict[str, Any] | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    status = str(row.get("status") or "").strip().upper()
+    return status in {TRADE_JOURNAL_STATUS_PENDING, TRADE_JOURNAL_STATUS_OPEN}
 
 
 def rebind_pending_entry_journal_order(

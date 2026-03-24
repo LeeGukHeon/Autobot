@@ -1963,6 +1963,112 @@ def test_reconcile_closes_local_position_when_bot_exit_is_done_and_exchange_posi
     assert plans[0]["source_intent_id"] == "intent-entry-1"
 
 
+def test_reconcile_closes_only_active_plan_and_preserves_historical_closed_plan(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-KITE",
+                base_currency="KITE",
+                base_amount=13.56787669,
+                avg_entry_price=442.0,
+                updated_ts=1000,
+                tp_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                sl_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                trailing_json=json.dumps({"enabled": False, "source": "model_alpha_v1"}, ensure_ascii=False),
+                managed=True,
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-intent-1",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="442",
+                qty_str="13.56787669",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="ACTIVE",
+                last_eval_ts_ms=1000,
+                last_action_ts_ms=0,
+                replace_attempt=0,
+                created_ts=1000,
+                updated_ts=1000,
+                timeout_ts_ms=1801000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-entry-1",
+            )
+        )
+        store.upsert_risk_plan(
+            RiskPlanRecord(
+                plan_id="model-risk-historical",
+                market="KRW-KITE",
+                side="long",
+                entry_price_str="430",
+                qty_str="5",
+                tp_enabled=False,
+                sl_enabled=False,
+                trailing_enabled=False,
+                state="CLOSED",
+                last_eval_ts_ms=500,
+                last_action_ts_ms=500,
+                replace_attempt=0,
+                current_exit_order_uuid="historical-exit-uuid",
+                current_exit_order_identifier="historical-exit-id",
+                created_ts=500,
+                updated_ts=500,
+                timeout_ts_ms=1000,
+                plan_source="model_alpha_v1",
+                source_intent_id="intent-historical",
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="exit-order-1",
+                identifier="AUTOBOT-autobot-001-exit-order-1",
+                market="KRW-KITE",
+                side="ask",
+                ord_type="limit",
+                price=450.0,
+                volume_req=13.56787669,
+                volume_filled=13.56787669,
+                state="done",
+                created_ts=1100,
+                updated_ts=2000,
+                intent_id=None,
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="test",
+                root_order_uuid="exit-order-1",
+            )
+        )
+
+        reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="halt",
+            dry_run=False,
+            ts_ms=3000,
+        )
+        active_plan = store.risk_plan_by_id(plan_id="model-risk-intent-1")
+        historical_plan = store.risk_plan_by_id(plan_id="model-risk-historical")
+
+    assert active_plan is not None
+    assert active_plan["state"] == "CLOSED"
+    assert active_plan["current_exit_order_uuid"] == "exit-order-1"
+    assert historical_plan is not None
+    assert historical_plan["state"] == "CLOSED"
+    assert historical_plan["current_exit_order_uuid"] == "historical-exit-uuid"
+    assert historical_plan["current_exit_order_identifier"] == "historical-exit-id"
+    assert historical_plan["updated_ts"] == 500
+
+
 def test_reconcile_closes_linked_done_exit_even_when_position_updated_after_order(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:

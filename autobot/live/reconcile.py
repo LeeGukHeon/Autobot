@@ -293,17 +293,14 @@ def reconcile_exchange_snapshot(
         ignored_dust_positions.append(dust_detail)
         if not dry_run:
             store.delete_position(market=market)
-            for row in store.list_risk_plans(market=market):
-                store.upsert_risk_plan(
-                    _risk_plan_record_from_row(
-                        row,
-                        state="CLOSED",
-                        current_exit_order_uuid=_as_optional_str(row.get("current_exit_order_uuid")),
-                        current_exit_order_identifier=_as_optional_str(row.get("current_exit_order_identifier")),
-                        updated_ts=now_ts,
-                        last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
-                    )
-                )
+            _close_active_risk_plans_for_market(
+                store=store,
+                market=market,
+                ts_ms=now_ts,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier=None,
+                preserve_existing_exit_link=True,
+            )
         actions.append(
             {
                 "type": "drop_managed_dust_position",
@@ -495,17 +492,13 @@ def reconcile_exchange_snapshot(
                     },
                 )
                 store.delete_position(market=market)
-                for row in store.list_risk_plans(market=market):
-                    store.upsert_risk_plan(
-                        _risk_plan_record_from_row(
-                            row,
-                            state="CLOSED",
-                            current_exit_order_uuid=matched_close.get("order_uuid"),
-                            current_exit_order_identifier=matched_close.get("order_identifier"),
-                            updated_ts=now_ts,
-                            last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
-                        )
-                    )
+                _close_active_risk_plans_for_market(
+                    store=store,
+                    market=market,
+                    ts_ms=now_ts,
+                    current_exit_order_uuid=_as_optional_str(matched_close.get("order_uuid")),
+                    current_exit_order_identifier=_as_optional_str(matched_close.get("order_identifier")),
+                )
                 if matched_close.get("order_uuid"):
                     store.mark_order_state(uuid=str(matched_close["order_uuid"]), state="done", updated_ts=now_ts)
             actions.append(
@@ -582,17 +575,13 @@ def reconcile_exchange_snapshot(
                         },
                     )
                     store.delete_position(market=market)
-                    for row in store.list_risk_plans(market=market):
-                        store.upsert_risk_plan(
-                            _risk_plan_record_from_row(
-                                row,
-                                state="CLOSED",
-                                current_exit_order_uuid=None,
-                                current_exit_order_identifier=None,
-                                updated_ts=now_ts,
-                                last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
-                            )
-                        )
+                    _close_active_risk_plans_for_market(
+                        store=store,
+                        market=market,
+                        ts_ms=now_ts,
+                        current_exit_order_uuid=None,
+                        current_exit_order_identifier=None,
+                    )
                 actions.append(
                     {
                         "type": "close_managed_position_as_manual_sell",
@@ -656,17 +645,13 @@ def reconcile_exchange_snapshot(
                 },
             )
             store.delete_position(market=market)
-            for row in store.list_risk_plans(market=market):
-                store.upsert_risk_plan(
-                    _risk_plan_record_from_row(
-                        row,
-                        state="CLOSED",
-                        current_exit_order_uuid=None,
-                        current_exit_order_identifier=None,
-                        updated_ts=now_ts,
-                        last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), now_ts),
-                    )
-                )
+            _close_active_risk_plans_for_market(
+                store=store,
+                market=market,
+                ts_ms=now_ts,
+                current_exit_order_uuid=None,
+                current_exit_order_identifier=None,
+            )
         actions.append(
             {
                 "type": "close_position_as_manual_sell",
@@ -1311,6 +1296,41 @@ def _risk_plan_record_from_row(
         plan_source=_as_optional_str(row.get("plan_source")),
         source_intent_id=_as_optional_str(row.get("source_intent_id")),
     )
+
+
+def _close_active_risk_plans_for_market(
+    *,
+    store: LiveStateStore,
+    market: str,
+    ts_ms: int,
+    current_exit_order_uuid: str | None,
+    current_exit_order_identifier: str | None,
+    preserve_existing_exit_link: bool = False,
+) -> None:
+    for row in store.list_risk_plans(
+        market=market,
+        states=("ACTIVE", "TRIGGERED", "EXITING"),
+    ):
+        next_exit_uuid = (
+            _as_optional_str(row.get("current_exit_order_uuid"))
+            if preserve_existing_exit_link and current_exit_order_uuid is None
+            else current_exit_order_uuid
+        )
+        next_exit_identifier = (
+            _as_optional_str(row.get("current_exit_order_identifier"))
+            if preserve_existing_exit_link and current_exit_order_identifier is None
+            else current_exit_order_identifier
+        )
+        store.upsert_risk_plan(
+            _risk_plan_record_from_row(
+                row,
+                state="CLOSED",
+                current_exit_order_uuid=next_exit_uuid,
+                current_exit_order_identifier=next_exit_identifier,
+                updated_ts=ts_ms,
+                last_eval_ts_ms=max(int(row.get("last_eval_ts_ms") or 0), ts_ms),
+            )
+        )
 
 
 def _order_record_from_row_dict(

@@ -473,6 +473,60 @@ def test_activate_trade_journal_does_not_reuse_other_open_journal_on_same_market
     assert rows[1]["entry_intent_id"] == "intent-old"
 
 
+def test_activate_trade_journal_does_not_resurrect_closed_row_for_same_plan(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-closed",
+                market="KRW-BSV",
+                status="CLOSED",
+                entry_intent_id="intent-old",
+                entry_order_uuid="order-old",
+                exit_order_uuid="exit-old",
+                plan_id="plan-shared",
+                entry_submitted_ts_ms=1_000,
+                entry_filled_ts_ms=1_100,
+                exit_ts_ms=1_800,
+                entry_price=22000.0,
+                exit_price=22150.0,
+                qty=0.2,
+                entry_notional_quote=4400.0,
+                exit_notional_quote=4430.0,
+                realized_pnl_quote=30.0,
+                realized_pnl_pct=0.68,
+                close_reason_code="POSITION_CLOSED",
+                close_mode="managed_exit_order",
+                exit_meta_json=json.dumps({"close_verified": True}, ensure_ascii=False, sort_keys=True),
+                updated_ts=1_800,
+            )
+        )
+        activate_trade_journal_for_position(
+            store=store,
+            market="KRW-BSV",
+            position={"market": "KRW-BSV", "base_amount": 0.25, "avg_entry_price": 22100.0, "updated_ts": 2_100},
+            ts_ms=2_100,
+            entry_intent=None,
+            plan_id="plan-shared",
+        )
+        rows = sorted(
+            store.list_trade_journal(market="KRW-BSV"),
+            key=lambda item: (int(item.get("updated_ts") or 0), str(item.get("journal_id") or "")),
+            reverse=True,
+        )
+
+    assert len(rows) == 2
+    assert rows[0]["status"] == "OPEN"
+    assert rows[0]["plan_id"] == "plan-shared"
+    assert rows[0]["exit_order_uuid"] is None
+    assert rows[0]["exit_ts_ms"] is None
+    assert rows[0]["close_reason_code"] is None
+    assert rows[0]["close_mode"] is None
+    assert rows[0]["realized_pnl_quote"] is None
+    assert rows[0]["exit_meta"] == {}
+    assert rows[1]["journal_id"] == "journal-closed"
+    assert rows[1]["status"] == "CLOSED"
+
+
 def test_cancel_pending_entry_journal_marks_cancelled_entry(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         record_entry_submission(
