@@ -168,7 +168,9 @@ function Invoke-PreflightCapture {
     if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
         $requiredUnits = @(
             "autobot-paper-v4.service",
-            "autobot-paper-v4-challenger.service"
+            "autobot-paper-v4-challenger.service",
+            "autobot-v4-challenger-spawn.timer",
+            "autobot-v4-challenger-promote.timer"
         )
         $failedUnits = @(
             "autobot-paper-v4.service",
@@ -176,11 +178,27 @@ function Invoke-PreflightCapture {
             "autobot-v4-challenger-spawn.service",
             "autobot-v4-challenger-promote.service"
         )
+        $expectedUnitStates = @(
+            "autobot-paper-v4.service=enabled",
+            "autobot-paper-v4-challenger.service=disabled",
+            "autobot-v4-challenger-spawn.timer=enabled",
+            "autobot-v4-challenger-promote.timer=enabled",
+            "autobot-paper-v4-replay.service=disabled",
+            "autobot-live-alpha-replay-shadow.service=disabled"
+        )
+        $requiredStateDbPaths = @(
+            "data/state/live_candidate/live_state.db",
+            "data/state/live_state.db"
+        )
         $args += @(
             "-RequiredUnitFiles",
             (Join-DelimitedStringArray -Values $requiredUnits),
             "-BlockOnFailedUnits",
-            (Join-DelimitedStringArray -Values $failedUnits)
+            (Join-DelimitedStringArray -Values $failedUnits),
+            "-ExpectedUnitStates",
+            (Join-DelimitedStringArray -Values $expectedUnitStates),
+            "-RequiredStateDbPaths",
+            (Join-DelimitedStringArray -Values $requiredStateDbPaths)
         )
     }
     $output = & $PwshExe @args 2>&1

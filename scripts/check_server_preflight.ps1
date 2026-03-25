@@ -4,6 +4,8 @@ param(
     [string]$ModelFamily = "train_v4_crypto_cs",
     [string[]]$RequiredUnitFiles = @(),
     [string[]]$BlockOnFailedUnits = @(),
+    [string[]]$ExpectedUnitStates = @(),
+    [string[]]$RequiredStateDbPaths = @(),
     [string[]]$RequiredPointers = @(),
     [switch]$CheckCandidateStateConsistency,
     [switch]$FailOnDirtyWorktree
@@ -225,6 +227,44 @@ function Parse-SystemdUnitFileRows {
     return @($rows)
 }
 
+function Parse-ExpectedUnitStateSpec {
+    param([string]$Spec)
+    $text = [string]$Spec
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [ordered]@{
+            valid = $false
+            raw = $Spec
+            unit = ""
+            expected_state = ""
+        }
+    }
+    $parts = $text.Split("=", 2)
+    if ($parts.Count -ne 2) {
+        return [ordered]@{
+            valid = $false
+            raw = $Spec
+            unit = ""
+            expected_state = ""
+        }
+    }
+    $unitName = [string]$parts[0]
+    $expectedState = [string]$parts[1]
+    if ([string]::IsNullOrWhiteSpace($unitName) -or [string]::IsNullOrWhiteSpace($expectedState)) {
+        return [ordered]@{
+            valid = $false
+            raw = $Spec
+            unit = ""
+            expected_state = ""
+        }
+    }
+    return [ordered]@{
+        valid = $true
+        raw = $Spec
+        unit = $unitName.Trim()
+        expected_state = $expectedState.Trim().ToLowerInvariant()
+    }
+}
+
 function Add-Check {
     param(
         [System.Collections.Generic.List[object]]$Checks,
@@ -315,6 +355,8 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) { "train_v4_crypto_cs" } else { $ModelFamily.Trim() }
 $resolvedRequiredUnitFiles = @(Get-StringArray -Value $RequiredUnitFiles)
 $resolvedBlockOnFailedUnits = @(Get-StringArray -Value $BlockOnFailedUnits)
+$resolvedExpectedUnitStates = @(Get-StringArray -Value $ExpectedUnitStates)
+$resolvedRequiredStateDbPaths = @(Get-StringArray -Value $RequiredStateDbPaths)
 $resolvedRequiredPointers = @(Get-StringArray -Value $RequiredPointers)
 $resolvedPythonExe = Resolve-PreflightPythonExe -Root $resolvedProjectRoot -ConfiguredPythonExe $PythonExe
 $registryRoot = Join-Path $resolvedProjectRoot "models/registry"
@@ -407,7 +449,7 @@ $systemdSnapshot = [ordered]@{
     services = @()
     unit_files = @()
 }
-if (($resolvedRequiredUnitFiles.Count -gt 0) -or ($resolvedBlockOnFailedUnits.Count -gt 0)) {
+if (($resolvedRequiredUnitFiles.Count -gt 0) -or ($resolvedBlockOnFailedUnits.Count -gt 0) -or ($resolvedExpectedUnitStates.Count -gt 0)) {
     $systemctlCmd = Get-Command systemctl -ErrorAction SilentlyContinue
     if ($null -eq $systemctlCmd) {
         Add-Check -Checks $checks -Code "SYSTEMCTL_UNAVAILABLE" -Status "violation" -Message "systemctl is unavailable while unit preflight checks are required."
@@ -420,6 +462,59 @@ if (($resolvedRequiredUnitFiles.Count -gt 0) -or ($resolvedBlockOnFailedUnits.Co
         if (-not $systemdSnapshot.available) {
             Add-Check -Checks $checks -Code "SYSTEMD_SNAPSHOT_FAILED" -Status "violation" -Message "systemd unit snapshot could not be collected."
         }
+    }
+}
+if ($resolvedExpectedUnitStates.Count -gt 0) {
+    foreach ($spec in $resolvedExpectedUnitStates) {
+        $parsedSpec = Parse-ExpectedUnitStateSpec -Spec $spec
+        if (-not [bool](Get-PropValue -ObjectValue $parsedSpec -Name "valid" -DefaultValue $false)) {
+            Add-Check -Checks $checks -Code "EXPECTED_UNIT_STATE_SPEC_INVALID" -Status "violation" -Message ("invalid expected unit state spec: " + [string]$spec) -Evidence ([ordered]@{
+                raw = [string]$spec
+            })
+            continue
+        }
+        $unitName = [string](Get-PropValue -ObjectValue $parsedSpec -Name "unit" -DefaultValue "")
+        $expectedState = [string](Get-PropValue -ObjectValue $parsedSpec -Name "expected_state" -DefaultValue "")
+        $match = @($systemdSnapshot.unit_files | Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "unit_file" -DefaultValue "") -eq $unitName })
+        if ($match.Count -eq 0) {
+            Add-Check -Checks $checks -Code "EXPECTED_UNIT_STATE_UNIT_MISSING" -Status "violation" -Message ("expected unit state cannot be verified because unit file is missing: " + $unitName) -Evidence ([ordered]@{
+                unit = $unitName
+                expected_state = $expectedState
+            })
+            continue
+        }
+        $actualState = [string](Get-PropValue -ObjectValue $match[0] -Name "state" -DefaultValue "")
+        if ($actualState.Trim().ToLowerInvariant() -ne $expectedState) {
+            Add-Check -Checks $checks -Code "UNIT_FILE_STATE_MISMATCH" -Status "violation" -Message ("unit file state mismatch for {0}: expected {1}, got {2}" -f $unitName, $expectedState, $actualState) -Evidence ([ordered]@{
+                unit = $unitName
+                expected_state = $expectedState
+                actual_state = $actualState
+                preset = [string](Get-PropValue -ObjectValue $match[0] -Name "preset" -DefaultValue "")
+            })
+        } else {
+            Add-Check -Checks $checks -Code "UNIT_FILE_STATE_EXPECTATION_OK" -Status "pass" -Message ("unit file state matches expectation: " + $unitName) -Evidence ([ordered]@{
+                unit = $unitName
+                expected_state = $expectedState
+                actual_state = $actualState
+            })
+        }
+    }
+}
+
+foreach ($rawPath in $resolvedRequiredStateDbPaths) {
+    $text = [string]$rawPath
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        continue
+    }
+    $resolvedPath = if ([System.IO.Path]::IsPathRooted($text)) { $text } else { Join-Path $resolvedProjectRoot $text }
+    if (Test-Path -Path $resolvedPath -PathType Leaf) {
+        Add-Check -Checks $checks -Code "STATE_DB_PATH_PRESENT" -Status "pass" -Message ("required state db path present: " + $resolvedPath) -Evidence ([ordered]@{
+            path = $resolvedPath
+        })
+    } else {
+        Add-Check -Checks $checks -Code "STATE_DB_PATH_MISSING" -Status "violation" -Message ("required state db path missing: " + $resolvedPath) -Evidence ([ordered]@{
+            path = $resolvedPath
+        })
     }
 }
 if ($resolvedRequiredUnitFiles.Count -gt 0) {
@@ -516,6 +611,8 @@ $report = [ordered]@{
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     required_unit_files = @($resolvedRequiredUnitFiles)
     block_on_failed_units = @($resolvedBlockOnFailedUnits)
+    expected_unit_states = @($resolvedExpectedUnitStates)
+    required_state_db_paths = @($resolvedRequiredStateDbPaths)
     required_pointers = @($resolvedRequiredPointers)
     fail_on_dirty_worktree = [bool]$FailOnDirtyWorktree
     check_candidate_state_consistency = [bool]$CheckCandidateStateConsistency

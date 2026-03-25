@@ -164,6 +164,12 @@ function Invoke-PreflightCapture {
             }
             $requiredUnits += $trimmed
         }
+        foreach ($timerUnit in @("autobot-v4-challenger-spawn.timer", "autobot-v4-challenger-promote.timer")) {
+            if ($requiredUnits -contains $timerUnit) {
+                continue
+            }
+            $requiredUnits += $timerUnit
+        }
         if ($requiredUnits.Count -gt 0) {
             $serializedUnits = Join-DelimitedStringArray -Values $requiredUnits
             $failedUnitsList = @($requiredUnits)
@@ -174,11 +180,34 @@ function Invoke-PreflightCapture {
                 $failedUnitsList += $value
             }
             $failedUnits = Join-DelimitedStringArray -Values $failedUnitsList
+            $expectedUnitStates = @(
+                ($ChampionUnit + "=enabled"),
+                ($ChallengerUnit + "=disabled"),
+                "autobot-v4-challenger-spawn.timer=enabled",
+                "autobot-v4-challenger-promote.timer=enabled",
+                "autobot-paper-v4-replay.service=disabled",
+                "autobot-live-alpha-replay-shadow.service=disabled"
+            )
+            foreach ($value in @($PromotionUnits) + @($CandidateUnits)) {
+                $text = [string]$value
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    continue
+                }
+                $expectedUnitStates += ($text.Trim() + "=enabled")
+            }
+            $requiredStateDbPaths = @(
+                "data/state/live_candidate/live_state.db",
+                "data/state/live_state.db"
+            )
             $args += @(
                 "-RequiredUnitFiles",
                 $serializedUnits,
                 "-BlockOnFailedUnits",
-                $failedUnits
+                $failedUnits,
+                "-ExpectedUnitStates",
+                (Join-DelimitedStringArray -Values $expectedUnitStates),
+                "-RequiredStateDbPaths",
+                (Join-DelimitedStringArray -Values $requiredStateDbPaths)
             )
         }
     }
