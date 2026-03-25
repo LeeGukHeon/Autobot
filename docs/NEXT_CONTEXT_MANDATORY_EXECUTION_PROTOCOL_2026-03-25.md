@@ -186,13 +186,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented by extending `StrategyOpportunityRecord` with `candidate_actions_json` and wiring `counterfactual_action_log.jsonl` emission through `autobot/common/opportunity_log.py` in `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed multiple candidate execution actions for the same opportunity are recoverable from the artifact, and live/paper reflected state writes the new counterfactual log alongside `opportunity_log`. Direct OCI operational validation on 2026-03-25 confirmed the currently active `autobot-paper-v4.service` and `autobot-live-alpha-candidate.service` are writing non-empty `counterfactual_action_log` artifacts in the running server environment.
 
-- [ ] 09. Implement minimal `paired paper` harness
+- [x] 09. Implement minimal `paired paper` harness
   Required references:
   [BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md)
   Done when:
   champion and challenger can be compared on the same feed and same decision clock.
   Current implementation note:
-  a minimal implementation exists in `autobot/paper/paired_reporting.py` and `autobot/paper/paired_engine.py`, and local plus OCI smoke validation confirmed it can write a machine-readable paired report over `opportunity_log`, `events.jsonl`, and `trades.csv`. However, the current operational promotion path still calls `autobot.common.paper_lane_evidence` from `scripts/daily_champion_challenger_v4_for_server.ps1`, does not invoke `autobot.paper.paired_engine`, and the running server topology is still separate champion/challenger paper services rather than one live paired fanout/event-clock harness. Therefore this item remains open until the actual OCI operating path is wired to paired paper and an actively-produced operational paired artifact is confirmed.
+  implemented in `autobot/paper/paired_reporting.py`, `autobot/paper/paired_runtime.py`, and `scripts/paired_paper_soak.ps1`, and wired into the actual promotion entrypoint `scripts/daily_champion_challenger_v4_for_server.ps1`. The promotion path now runs a one-feed captured paired paper soak before promotion comparison, writes `logs/paired_paper/latest.json`, and records the paired artifact in the promotion report state. Direct OCI operational validation on 2026-03-25 confirmed running the real batch entrypoint `daily_champion_challenger_v4_for_server.ps1 -Mode promote_only -DryRun -PairedPaperDurationSec 360` produced a fresh paired artifact with `gate.pass=true`, `pair_ready=true`, and `matched_opportunities=1`, so champion and challenger are now compared on the same captured feed and replay clock in the current server operating path.
 
 - [ ] 10. Add `risk_budget_ledger`
   Required references:
