@@ -94,6 +94,7 @@ from . import model_alpha_runtime_execute as _runtime_execute
 from . import model_alpha_projection as _model_alpha_projection
 from . import model_alpha_runtime_supervisor as _runtime_supervisor
 from .reconcile import resume_risk_plans_after_reconcile
+from .risk_budget_ledger import append_live_risk_budget_entry, reset_live_risk_budget_ledger
 from .risk_loop import apply_ticker_event
 from .small_account import (
     build_small_account_runtime_report,
@@ -232,10 +233,21 @@ async def run_live_model_alpha_runtime(
     summary["strategy_predictor_run_id"] = predictor.run_dir.name
     live_opportunity_log_path = _resolve_live_opportunity_log_path(settings=settings)
     live_counterfactual_log_path = _resolve_live_counterfactual_action_log_path(settings=settings)
+    live_risk_budget_ledger_path = _resolve_live_risk_budget_ledger_path(settings=settings)
+    live_risk_budget_latest_path = _resolve_live_risk_budget_latest_path(settings=settings)
     reset_opportunity_log(live_opportunity_log_path)
     reset_counterfactual_action_log(live_counterfactual_log_path)
+    reset_live_risk_budget_ledger(
+        ledger_path=live_risk_budget_ledger_path,
+        latest_path=live_risk_budget_latest_path,
+        lane=_resolve_live_opportunity_lane(settings=settings),
+        unit_name=str(settings.daemon.rollout_target_unit),
+        rollout_mode=str(settings.daemon.rollout_mode),
+    )
     summary["opportunity_log_path"] = str(live_opportunity_log_path)
     summary["counterfactual_action_log_path"] = str(live_counterfactual_log_path)
+    summary["risk_budget_ledger_path"] = str(live_risk_budget_ledger_path)
+    summary["risk_budget_latest_path"] = str(live_risk_budget_latest_path)
     summary["order_execution_backfill"] = backfill_order_execution_details(store=store, client=client)
     resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
         predictor=predictor,
@@ -670,6 +682,21 @@ def _resolve_live_opportunity_lane(*, settings: LiveModelAlphaRuntimeSettings) -
 
 def _resolve_live_counterfactual_action_log_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
     return _resolve_live_opportunity_log_path(settings=settings).with_name("counterfactual_action_log.jsonl")
+
+
+def _resolve_live_risk_budget_ledger_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
+    registry_root = Path(str(settings.daemon.registry_root)).resolve()
+    project_root = registry_root.parent.parent
+    unit_name = str(settings.daemon.rollout_target_unit).strip().lower() or "live"
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in unit_name).strip("_")
+    slug = "_".join(part for part in slug.split("_") if part)
+    if not slug:
+        slug = "live"
+    return project_root / "logs" / "risk_budget_ledger" / slug / "latest.jsonl"
+
+
+def _resolve_live_risk_budget_latest_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
+    return _resolve_live_risk_budget_ledger_path(settings=settings).with_name("latest.json")
 
 
 def _startup_sync(
@@ -1338,7 +1365,7 @@ def _handle_strategy_intent(
         trade_gate=trade_gate,
         ts_ms=ts_ms,
         canary_entry_guard_reason_fn=_canary_entry_guard_reason,
-        record_strategy_intent_fn=_record_strategy_intent,
+        record_strategy_intent_fn=lambda **kwargs: _record_strategy_intent(settings=settings, **kwargs),
         safe_optional_float_fn=_safe_optional_float,
         safe_float_fn=_safe_float,
         build_live_order_admissibility_snapshot_fn=build_live_order_admissibility_snapshot,
@@ -1364,12 +1391,13 @@ def _handle_strategy_intent(
         order_record_cls=OrderRecord,
         reset_counter_fn=reset_counter,
         record_entry_submission_fn=record_entry_submission,
-        handle_submit_reject_fn=_handle_submit_reject,
+        handle_submit_reject_fn=lambda **kwargs: _handle_submit_reject(settings=settings, **kwargs),
     )
 
 
 def _record_strategy_intent(
     *,
+    settings: LiveModelAlphaRuntimeSettings,
     store: LiveStateStore,
     market: str,
     side: str,
@@ -1381,7 +1409,7 @@ def _record_strategy_intent(
     ts_ms: int,
     intent_id: str | None = None,
 ) -> str:
-    return _runtime_execute.record_strategy_intent(
+    resolved_intent_id = _runtime_execute.record_strategy_intent(
         store=store,
         market=market,
         side=side,
@@ -1394,10 +1422,31 @@ def _record_strategy_intent(
         intent_id=intent_id,
         intent_record_cls=IntentRecord,
     )
+    ledger_entry, latest_payload = append_live_risk_budget_entry(
+        ledger_path=_resolve_live_risk_budget_ledger_path(settings=settings),
+        latest_path=_resolve_live_risk_budget_latest_path(settings=settings),
+        store=store,
+        lane=_resolve_live_opportunity_lane(settings=settings),
+        unit_name=str(settings.daemon.rollout_target_unit),
+        rollout_mode=str(settings.daemon.rollout_mode),
+        market=market,
+        side=side,
+        status=status,
+        reason_code=reason_code,
+        meta_payload=meta_payload,
+        ts_ms=ts_ms,
+        intent_id=resolved_intent_id,
+        base_budget_quote=float(settings.per_trade_krw),
+    )
+    if hasattr(store, "set_checkpoint"):
+        store.set_checkpoint(name="risk_budget_ledger_last_entry", payload=ledger_entry, ts_ms=ts_ms)
+        store.set_checkpoint(name="risk_budget_ledger_latest", payload=latest_payload, ts_ms=ts_ms)
+    return resolved_intent_id
 
 
 def _handle_submit_reject(
     *,
+    settings: LiveModelAlphaRuntimeSettings,
     store: LiveStateStore,
     intent: Any,
     ts_ms: int,
@@ -1420,7 +1469,7 @@ def _handle_submit_reject(
         record_counter_failure_fn=record_counter_failure,
         arm_breaker_fn=arm_breaker,
         action_full_kill_switch=ACTION_FULL_KILL_SWITCH,
-        record_strategy_intent_fn=_record_strategy_intent,
+        record_strategy_intent_fn=lambda **kwargs: _record_strategy_intent(settings=settings, **kwargs),
     )
 
 
