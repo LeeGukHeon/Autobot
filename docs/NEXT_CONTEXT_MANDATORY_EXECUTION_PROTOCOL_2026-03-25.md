@@ -147,11 +147,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented in `scripts/check_server_preflight.ps1` and wired into `scripts/daily_candidate_acceptance_for_server.ps1` and `scripts/daily_champion_challenger_v4_for_server.ps1`. Local and OCI validation on 2026-03-25 confirmed the preflight writes `logs/ops/server_preflight/latest.json`, refreshes `logs/runtime_topology/latest.json` and `logs/ops/pointer_consistency/latest.json`, exits nonzero on dirty worktree, failed unit, and stale pointer/state conditions, and causes both server batch entrypoints to fail closed before train/adoption work begins.
 
-- [ ] 06. Define and apply replay legacy cleanup policy
+- [x] 06. Define and apply replay legacy cleanup policy
   Required references:
   [SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/SERVER_OPERATIONS_AND_DEPLOYMENT_AUTOMATION_BLUEPRINT_2026-03-25.md)
   Done when:
   replay clone/service is explicitly classified as legacy and removed from target topology logic.
+  Current implementation note:
+  defined in [REPLAY_LEGACY_CLEANUP_POLICY_2026-03-25.md](/d:/MyApps/Autobot/docs/REPLAY_LEGACY_CLEANUP_POLICY_2026-03-25.md), reflected in `autobot/ops/runtime_topology_report.py` as `legacy_replay.classification=legacy_excluded_from_target_topology`, and applied in `scripts/install_server_daily_split_challenger_services.ps1` by disabling replay legacy services by default. Direct OCI validation on 2026-03-25 confirmed `autobot-paper-v4-replay.service` was stopped/disabled while the sibling replay clone remained only as a legacy path and no longer blocked or defined target topology logic.
 
 
 ### Phase 1: Logging And Matched Evaluation Foundation

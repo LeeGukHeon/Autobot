@@ -29,6 +29,8 @@ OCI server access reference:
   - current change-management rules
 - [EXIT_STATE_CONTRACT.md](/d:/MyApps/Autobot/docs/EXIT_STATE_CONTRACT.md)
   - current exit-state contract
+- [REPLAY_LEGACY_CLEANUP_POLICY_2026-03-25.md](/d:/MyApps/Autobot/docs/REPLAY_LEGACY_CLEANUP_POLICY_2026-03-25.md)
+  - current replay legacy exclusion policy for server topology
 
 ## Active Blueprints
 

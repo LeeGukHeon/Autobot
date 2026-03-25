@@ -46,6 +46,8 @@ def test_split_installer_generates_promote_and_spawn_units() -> None:
     assert "promote_only" in stdout
     assert "spawn_only" in stdout
     assert "ExecStart=/bin/bash -lc " in stdout
+    assert "disable_legacy_service=autobot-paper-v4-replay.service" in stdout
+    assert "disable_legacy_service=autobot-live-alpha-replay-shadow.service" in stdout
 
 
 def test_split_installer_can_pass_candidate_target_units_to_spawn_service() -> None:

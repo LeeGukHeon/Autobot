@@ -82,12 +82,14 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         "services": [
             {"unit": "autobot-paper-v4.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
             {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+            {"unit": "autobot-paper-v4-replay.service", "active": "active", "sub": "running", "load": "loaded", "description": "Replay paper"},
         ],
         "timers": [
             {"unit": "autobot-v4-challenger-promote.timer", "active": "active", "sub": "waiting", "load": "loaded", "description": "Promote timer"},
         ],
         "unit_files": [
             {"unit_file": "autobot-paper-v4.service", "state": "enabled", "preset": "enabled"},
+            {"unit_file": "autobot-paper-v4-replay.service", "state": "enabled", "preset": "enabled"},
         ],
         "errors": {},
     }
@@ -130,9 +132,16 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["systemd"]["services"][0]["unit"] == "autobot-paper-v4.service"
     assert report["git"]["dirty"] is True
     assert report["project_topology"]["replay_path_present"] is True
+    assert report["legacy_replay"]["classification"] == "legacy_excluded_from_target_topology"
+    assert report["legacy_replay"]["present"] is True
+    assert report["legacy_replay"]["active_unit_count"] == 1
     assert report["summary"]["systemd_available"] is True
     assert report["summary"]["git_dirty"] is True
     assert report["summary"]["replay_path_present"] is True
+    assert report["summary"]["legacy_replay_present"] is True
+    assert report["summary"]["legacy_replay_active"] is True
+    assert report["summary"]["target_topology_replay_excluded"] is True
+    assert report["summary"]["target_service_active_count"] == 2
 
 
 def test_write_runtime_topology_report_uses_default_output_path(tmp_path: Path) -> None:

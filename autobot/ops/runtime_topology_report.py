@@ -17,6 +17,10 @@ from .data_contract_registry import build_data_contract_registry
 
 RUNTIME_TOPOLOGY_REPORT_VERSION = 1
 DEFAULT_REPORT_REL_PATH = Path("logs") / "runtime_topology" / "latest.json"
+LEGACY_REPLAY_UNITS = (
+    "autobot-paper-v4-replay.service",
+    "autobot-live-alpha-replay-shadow.service",
+)
 
 
 def build_runtime_topology_report(
@@ -85,6 +89,7 @@ def build_runtime_topology_report(
     systemd_snapshot = _systemd_topology_snapshot()
     git_snapshot = _git_topology_snapshot(root=root)
     project_topology = _project_topology_snapshot(root=root)
+    legacy_replay = _legacy_replay_snapshot(systemd_snapshot=systemd_snapshot, project_topology=project_topology)
 
     report = {
         "version": RUNTIME_TOPOLOGY_REPORT_VERSION,
@@ -109,6 +114,7 @@ def build_runtime_topology_report(
         "systemd": systemd_snapshot,
         "git": git_snapshot,
         "project_topology": project_topology,
+        "legacy_replay": legacy_replay,
         "summary": {
             "champion_run_id": _run_id_from_pointer(pointers.get("champion")),
             "latest_run_id": _run_id_from_pointer(pointers.get("latest")),
@@ -120,9 +126,13 @@ def build_runtime_topology_report(
             "ws_public_stale": bool(ws_public_contract.get("ws_public_stale", False)),
             "systemd_available": bool(systemd_snapshot.get("available", False)),
             "service_active_count": int(sum(1 for item in (systemd_snapshot.get("services") or []) if str(item.get("active", "")).strip().lower() == "active")),
+            "target_service_active_count": int(sum(1 for item in (systemd_snapshot.get("services") or []) if _is_target_topology_service(item))),
             "timer_active_count": int(sum(1 for item in (systemd_snapshot.get("timers") or []) if str(item.get("active", "")).strip().lower() == "active")),
             "git_dirty": bool(git_snapshot.get("dirty", False)),
             "replay_path_present": bool(project_topology.get("replay_path_present", False)),
+            "legacy_replay_present": bool(legacy_replay.get("present", False)),
+            "legacy_replay_active": bool(int(legacy_replay.get("active_unit_count", 0)) > 0),
+            "target_topology_replay_excluded": bool(legacy_replay.get("target_topology_excluded", False)),
         },
     }
     return report
@@ -343,6 +353,61 @@ def _project_topology_snapshot(*, root: Path) -> dict[str, Any]:
         "replay_like_paths": replay_paths,
         "replay_path_present": bool(replay_paths),
     }
+
+
+def _legacy_replay_snapshot(*, systemd_snapshot: dict[str, Any], project_topology: dict[str, Any]) -> dict[str, Any]:
+    services = systemd_snapshot.get("services") or []
+    unit_files = systemd_snapshot.get("unit_files") or []
+    service_units: list[dict[str, Any]] = []
+    active_unit_count = 0
+    enabled_unit_count = 0
+    for unit_name in LEGACY_REPLAY_UNITS:
+        service_match = next((item for item in services if str(item.get("unit", "")).strip() == unit_name), {})
+        unit_file_match = next((item for item in unit_files if str(item.get("unit_file", "")).strip() == unit_name), {})
+        active = str(service_match.get("active", "")).strip().lower()
+        sub = str(service_match.get("sub", "")).strip().lower()
+        is_active_like = active == "active" and sub in {"running", "waiting", "listening", "exited"}
+        if is_active_like:
+            active_unit_count += 1
+        unit_file_state = str(unit_file_match.get("state", "")).strip().lower()
+        if unit_file_state == "enabled":
+            enabled_unit_count += 1
+        service_units.append(
+            {
+                "unit": unit_name,
+                "present": bool(service_match) or bool(unit_file_match),
+                "active": service_match.get("active"),
+                "sub": service_match.get("sub"),
+                "description": service_match.get("description"),
+                "unit_file_state": unit_file_match.get("state"),
+                "unit_file_preset": unit_file_match.get("preset"),
+                "is_active_like": is_active_like,
+            }
+        )
+    clone_paths = list(project_topology.get("replay_like_paths") or [])
+    present = bool(clone_paths or any(bool(item.get("present", False)) for item in service_units))
+    return {
+        "policy": "replay_legacy_cleanup_v1",
+        "classification": "legacy_excluded_from_target_topology",
+        "target_topology_excluded": True,
+        "present": present,
+        "clone_paths": clone_paths,
+        "service_units": service_units,
+        "active_unit_count": active_unit_count,
+        "enabled_unit_count": enabled_unit_count,
+        "cleanup_required": present,
+        "recommended_actions": [
+            "stop_and_disable_replay_services",
+            "archive_or_remove_replay_clone_after_review",
+        ],
+    }
+
+
+def _is_target_topology_service(item: dict[str, Any]) -> bool:
+    unit_name = str(item.get("unit", "")).strip()
+    if not unit_name:
+        return False
+    return unit_name not in LEGACY_REPLAY_UNITS
 
 
 def _run_command(command: list[str], *, cwd: Path | None = None) -> dict[str, Any]:

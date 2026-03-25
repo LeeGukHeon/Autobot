@@ -14,7 +14,7 @@ param(
     [string]$SpawnTimerUnitName = "autobot-v4-challenger-spawn.timer",
     [string]$SpawnOnCalendar = "*-*-* 00:20:00",
     [string[]]$DisableLegacyTimerNames = @("autobot-daily-micro.timer", "autobot-daily-v4-accept.timer"),
-    [string[]]$DisableLegacyServiceNames = @("autobot-daily-micro.service", "autobot-daily-v4-accept.service"),
+    [string[]]$DisableLegacyServiceNames = @("autobot-daily-micro.service", "autobot-daily-v4-accept.service", "autobot-paper-v4-replay.service", "autobot-live-alpha-replay-shadow.service"),
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
