@@ -132,10 +132,15 @@ If implementation changes or replaces existing logic, do not leave conflicting l
 
 Legacy paths in the touched area must be explicitly cleaned up, disabled, reconciled, or proven still correct with the new logic.
 
+If the changed logic sits later in the protocol order, it must remain compatible with the earlier prerequisite layers and prior implemented checklist items that feed into it.
+
+Do not change a later layer in a way that breaks the already-established earlier flow, artifacts, contracts, or operational assumptions.
+
 The implementation must also preserve exact consistency for prior numeric and semantic contracts unless an intentional migration is performed and documented.
 
 This includes, where relevant:
 
+- earlier pipeline stages, prerequisite artifacts, and previously completed checklist-item outputs
 - units and scales such as ratio, percent-points, bps, counts, and timestamps
 - threshold meanings
 - pointer meanings
