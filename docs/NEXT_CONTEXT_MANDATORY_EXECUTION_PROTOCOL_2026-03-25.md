@@ -149,6 +149,23 @@ This includes, where relevant:
 
 If exact compatibility cannot be preserved in the same session, report that explicitly to the user as a blocker or migration risk before closing the work.
 
+### Rule 12
+
+If a gap, limitation, or partially unsatisfied aspect of the current checklist item is expected to be completed by a later blueprint or checklist item, record that dependency explicitly.
+
+Do not leave such coverage implicit.
+
+The session output and, when relevant, the checklist implementation note must state:
+
+- what is fully covered now
+- what is intentionally deferred
+- which exact later blueprint or checklist item is expected to complete that deferred part
+- why that later item is the correct place for it
+
+Only do this when the later item clearly and directly covers the missing part.
+
+If that coverage is not clear, do not treat it as safely deferred. Report it as an open issue, blocker, or incomplete scope instead.
+
 
 ## 3. Canonical Ordered Checklist
 
