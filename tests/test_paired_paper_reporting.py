@@ -289,6 +289,7 @@ def test_build_paired_paper_report_tracks_trade_and_no_trade_delta(tmp_path: Pat
     assert report["taxonomy_counts"]["champion_trade_challenger_no_trade"] == 1
     assert report["taxonomy_counts"]["champion_fill_only"] == 1
     assert report["paired_deltas"]["aggregate_realized_pnl_delta_quote"] == 15.0
+    assert report["paired_deltas"]["matched_pnl_delta_quote"] == 15.0
     assert report["paired_deltas"]["matched_fill_delta"] == -1
     assert report["paired_deltas"]["matched_no_trade_delta"] == -1
 

@@ -125,8 +125,9 @@ def build_paired_paper_report(
     paired_deltas = {
         "aggregate_realized_pnl_delta_quote": _safe_float(challenger_summary.get("realized_pnl_quote"))
         - _safe_float(champion_summary.get("realized_pnl_quote")),
-        "matched_pnl_delta_quote": None,
-        "matched_pnl_status": "aggregate_realized_pnl_only",
+        "matched_pnl_delta_quote": _safe_float(challenger_summary.get("realized_pnl_quote"))
+        - _safe_float(champion_summary.get("realized_pnl_quote")),
+        "matched_pnl_status": "same_window_realized_pnl",
         "matched_fill_delta": int(challenger_fill_total - champion_fill_total),
         "matched_slippage_delta_bps": _delta_optional_mean(
             challenger_slippage_values,
