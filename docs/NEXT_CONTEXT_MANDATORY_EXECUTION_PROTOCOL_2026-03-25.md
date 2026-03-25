@@ -158,11 +158,13 @@ The next context must start from the first unchecked item.
 
 ### Phase 1: Logging And Matched Evaluation Foundation
 
-- [ ] 07. Add `opportunity_log` artifact skeleton across decision paths
+- [x] 07. Add `opportunity_log` artifact skeleton across decision paths
   Required references:
   [BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md)
   Done when:
   a single opportunity unit can be reconstructed from logs.
+  Current implementation note:
+  implemented via `autobot/common/opportunity_log.py` plus strategy-level `StrategyOpportunityRecord` emission in `autobot/strategy/model_alpha_v1.py`, and wired into `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed `opportunity_log.jsonl` is written for backtest/paper model-alpha runs and `logs/opportunity_log/<unit>/latest.jsonl` is written for live runtime decisions with stable `opportunity_id`, `feature_hash`, `selection_score`, `chosen_action`, and `skip_reason_code` skeleton fields.
 
 - [ ] 08. Add `counterfactual_action_log` or equivalent candidate-action capture
   Required references:

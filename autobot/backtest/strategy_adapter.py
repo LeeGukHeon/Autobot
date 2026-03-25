@@ -19,8 +19,28 @@ class StrategyOrderIntent:
 
 
 @dataclass(frozen=True)
+class StrategyOpportunityRecord:
+    opportunity_id: str
+    ts_ms: int
+    market: str
+    side: str
+    selection_score: float | None = None
+    selection_score_raw: float | None = None
+    feature_hash: str = ""
+    chosen_action: str = ""
+    reason_code: str = ""
+    skip_reason_code: str | None = None
+    intent_id: str | None = None
+    expected_edge_bps: float | None = None
+    uncertainty: float | None = None
+    run_id: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class StrategyStepResult:
     intents: tuple[StrategyOrderIntent, ...] = ()
+    opportunities: tuple[StrategyOpportunityRecord, ...] = ()
     scored_rows: int = 0
     eligible_rows: int = 0
     selected_rows: int = 0

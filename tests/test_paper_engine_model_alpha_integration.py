@@ -224,6 +224,15 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
     assert "min_prob_source" in selection_payload
     assert "top_pct_used" in selection_payload
     assert "min_candidates_used" in selection_payload
+    opportunity_rows = [
+        json.loads(line)
+        for line in (run_dir / "opportunity_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert opportunity_rows
+    assert opportunity_rows[0]["lane"] == "paper"
+    summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

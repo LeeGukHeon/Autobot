@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent
+from autobot.common.opportunity_log import append_strategy_opportunities, reset_opportunity_log
 from autobot.execution.order_supervisor import (
     OrderExecProfile,
     build_limit_price_from_mode,
@@ -224,6 +225,9 @@ async def run_live_model_alpha_runtime(
 
     predictor = _load_predictor_for_runtime(store=store, settings=settings)
     summary["strategy_predictor_run_id"] = predictor.run_dir.name
+    live_opportunity_log_path = _resolve_live_opportunity_log_path(settings=settings)
+    reset_opportunity_log(live_opportunity_log_path)
+    summary["opportunity_log_path"] = str(live_opportunity_log_path)
     summary["order_execution_backfill"] = backfill_order_execution_details(store=store, client=client)
     resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
         predictor=predictor,
@@ -436,6 +440,14 @@ async def run_live_model_alpha_runtime(
                         },
                         ts_ms=int(ticker.ts_ms),
                     )
+                    append_strategy_opportunities(
+                        path=live_opportunity_log_path,
+                        result=result,
+                        ts_ms=decision_ts_ms,
+                        run_id=str(predictor.run_dir.name),
+                        lane=_resolve_live_opportunity_lane(settings=settings),
+                        source="live_model_alpha_runtime",
+                    )
                     for strategy_intent in result.intents:
                         submit_result = _handle_strategy_intent(
                             store=store,
@@ -620,6 +632,24 @@ async def run_live_model_alpha_runtime(
     summary["elapsed_sec"] = max(time.monotonic() - started_monotonic, 0.0)
     store.set_checkpoint(name="live_model_alpha_last_run", payload=summary, ts_ms=summary["ended_ts_ms"])
     return summary
+
+
+def _resolve_live_opportunity_log_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
+    registry_root = Path(str(settings.daemon.registry_root)).resolve()
+    project_root = registry_root.parent.parent
+    unit_name = str(settings.daemon.rollout_target_unit).strip().lower() or "live"
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in unit_name).strip("_")
+    slug = "_".join(part for part in slug.split("_") if part)
+    if not slug:
+        slug = "live"
+    return project_root / "logs" / "opportunity_log" / slug / "latest.jsonl"
+
+
+def _resolve_live_opportunity_lane(*, settings: LiveModelAlphaRuntimeSettings) -> str:
+    target_unit = str(settings.daemon.rollout_target_unit).strip().lower()
+    if "candidate" in target_unit:
+        return "live_candidate"
+    return "live_champion"
 
 
 def _startup_sync(

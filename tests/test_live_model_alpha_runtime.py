@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from autobot.backtest.strategy_adapter import StrategyOrderIntent, StrategyStepResult
+from autobot.backtest.strategy_adapter import StrategyOpportunityRecord, StrategyOrderIntent, StrategyStepResult
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.models.live_execution_policy import build_live_execution_contract
 from autobot.live.breakers import ACTION_HALT_AND_CANCEL_BOT_ORDERS, ACTION_HALT_NEW_INTENTS, arm_breaker
@@ -261,6 +261,20 @@ class _Strategy:
                     reason_code="MODEL_ALPHA_ENTRY_V1",
                 ),
             ),
+            opportunities=(
+                StrategyOpportunityRecord(
+                    opportunity_id=f"entry:{int(ts_ms)}:KRW-BTC",
+                    ts_ms=int(ts_ms),
+                    market="KRW-BTC",
+                    side="bid",
+                    selection_score=0.0,
+                    selection_score_raw=0.0,
+                    feature_hash="test-hash",
+                    chosen_action="intent_created",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    run_id="run-live",
+                ),
+            ),
             scored_rows=1,
             eligible_rows=1,
             selected_rows=1,
@@ -473,6 +487,11 @@ def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: P
     assert summary["submitted_intents_total"] == 0
     assert intents
     assert intents[0]["status"] == "SHADOW"
+    opportunity_path = Path(str(summary["opportunity_log_path"]))
+    assert opportunity_path.exists()
+    records = [json.loads(line) for line in opportunity_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert records
+    assert records[0]["lane"] == "live_champion"
 
 
 @pytest.mark.parametrize(

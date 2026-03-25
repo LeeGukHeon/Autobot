@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import hashlib
+import json
 import math
 from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
 import polars as pl
 
-from autobot.backtest.strategy_adapter import BacktestStrategyAdapter, StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
+from autobot.backtest.strategy_adapter import (
+    BacktestStrategyAdapter,
+    StrategyFillEvent,
+    StrategyOpportunityRecord,
+    StrategyOrderIntent,
+    StrategyStepResult,
+)
 from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
@@ -202,12 +210,53 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     frame_by_market[market] = row
 
         intents: list[StrategyOrderIntent] = []
+        opportunities: list[StrategyOpportunityRecord] = []
         skipped_reasons: dict[str, int] = {}
         scored_rows = 0
         selected_rows = 0
         dropped_min_prob_rows = 0
         dropped_top_pct_rows = 0
         blocked_min_candidates_ts = 0
+
+        def append_entry_opportunity(
+            *,
+            row: dict[str, Any],
+            chosen_action: str,
+            reason_code: str,
+            skip_reason_code: str | None = None,
+            trade_action_decision: dict[str, Any] | None = None,
+            notional_multiplier: float | None = None,
+            support_level: str = "",
+            support_size_multiplier: float | None = None,
+        ) -> None:
+            market_name = str(row.get("market", "")).strip().upper()
+            if not market_name:
+                return
+            opportunities.append(
+                StrategyOpportunityRecord(
+                    opportunity_id=f"entry:{ts_value}:{market_name}",
+                    ts_ms=ts_value,
+                    market=market_name,
+                    side="bid",
+                    selection_score=_safe_optional_float(row.get("model_prob")),
+                    selection_score_raw=_safe_optional_float(row.get("model_prob_raw")),
+                    feature_hash=_build_opportunity_feature_hash(row=row),
+                    chosen_action=chosen_action,
+                    reason_code=str(reason_code).strip(),
+                    skip_reason_code=(str(skip_reason_code).strip() if skip_reason_code else None),
+                    expected_edge_bps=_resolve_trade_action_expected_edge_bps(trade_action_decision),
+                    uncertainty=_resolve_opportunity_uncertainty(row),
+                    run_id=self.predictor_run_id,
+                    meta={
+                        "selection_policy_mode": str(selection_mode),
+                        "selection_policy_source": str(selection_policy_source),
+                        "support_level": support_level or "full",
+                        "support_size_multiplier": support_size_multiplier,
+                        "notional_multiplier": notional_multiplier,
+                        "state_features": _build_live_state_feature_snapshot(row=row),
+                    },
+                )
+            )
 
         for market in sorted(tracked_open_markets):
             if market not in self._positions:
@@ -385,21 +434,45 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             _inc_reason(skipped_reasons, "MAX_POSITIONS_TOTAL")
         for row in selected.iter_rows(named=True):
             if can_open <= 0:
-                break
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="MAX_POSITIONS_TOTAL",
+                )
+                continue
             market = str(row.get("market", "")).strip().upper()
             if not market:
                 _inc_reason(skipped_reasons, "EMPTY_MARKET")
                 continue
             if market in tracked_open_markets:
                 _inc_reason(skipped_reasons, "ALREADY_OPEN")
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="ALREADY_OPEN",
+                )
                 continue
             cooldown_until = int(self._cooldown_until_ts_ms.get(market, 0))
             if ts_value < cooldown_until:
                 _inc_reason(skipped_reasons, "COOLDOWN_ACTIVE")
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="COOLDOWN_ACTIVE",
+                )
                 continue
             ref_price = _resolve_ref_price(row=row, latest_prices=latest_prices, market=market)
             if ref_price is None:
                 _inc_reason(skipped_reasons, "ENTRY_REF_PRICE_MISSING")
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="ENTRY_REF_PRICE_MISSING",
+                )
                 continue
             base_notional_multiplier = _resolve_entry_notional_multiplier(
                 prob=float(row.get("model_prob", 0.0)),
@@ -420,6 +493,16 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     skipped_reasons,
                     str(trade_action_decision.get("reason_code", "TRADE_ACTION_INSUFFICIENT_EVIDENCE")).strip()
                     or "TRADE_ACTION_INSUFFICIENT_EVIDENCE",
+                )
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code=(
+                        str(trade_action_decision.get("reason_code", "TRADE_ACTION_INSUFFICIENT_EVIDENCE")).strip()
+                        or "TRADE_ACTION_INSUFFICIENT_EVIDENCE"
+                    ),
+                    trade_action_decision=trade_action_decision,
                 )
                 continue
             effective_exit_settings = _resolve_trade_action_exit_settings(
@@ -454,6 +537,19 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     str(risk_control_decision.get("reason_code", "RISK_CONTROL_BELOW_THRESHOLD")).strip()
                     or "RISK_CONTROL_BELOW_THRESHOLD",
                 )
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code=(
+                        str(risk_control_decision.get("reason_code", "RISK_CONTROL_BELOW_THRESHOLD")).strip()
+                        or "RISK_CONTROL_BELOW_THRESHOLD"
+                    ),
+                    trade_action_decision=trade_action_decision,
+                    notional_multiplier=float(requested_notional_multiplier),
+                    support_level=trade_action_support_level,
+                    support_size_multiplier=float(trade_action_support_multiplier),
+                )
                 continue
             size_ladder_decision = _resolve_runtime_risk_control_size_decision(
                 payload=self._risk_control_policy,
@@ -476,9 +572,32 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     str(size_ladder_decision.get("reason_code", "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER")).strip()
                     or "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER",
                 )
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code=(
+                        str(size_ladder_decision.get("reason_code", "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER")).strip()
+                        or "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER"
+                    ),
+                    trade_action_decision=trade_action_decision,
+                    notional_multiplier=float(notional_multiplier),
+                    support_level=trade_action_support_level,
+                    support_size_multiplier=float(trade_action_support_multiplier),
+                )
                 continue
             if float(notional_multiplier) <= 0.0:
                 _inc_reason(skipped_reasons, "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE")
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE",
+                    trade_action_decision=trade_action_decision,
+                    notional_multiplier=float(notional_multiplier),
+                    support_level=trade_action_support_level,
+                    support_size_multiplier=float(trade_action_support_multiplier),
+                )
                 continue
             if bool(self._settings.execution.use_learned_recommendations):
                 dynamic_exec_profile, execution_decision = _resolve_runtime_execution_profile(
@@ -509,77 +628,99 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     str(execution_decision.get("reason_code", "EXECUTION_NO_TRADE_REGION")).strip()
                     or "EXECUTION_NO_TRADE_REGION",
                 )
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code=(
+                        str(execution_decision.get("reason_code", "EXECUTION_NO_TRADE_REGION")).strip()
+                        or "EXECUTION_NO_TRADE_REGION"
+                    ),
+                    trade_action_decision=trade_action_decision,
+                    notional_multiplier=float(notional_multiplier),
+                    support_level=trade_action_support_level,
+                    support_size_multiplier=float(trade_action_support_multiplier),
+                )
                 continue
             exit_recommendation_meta = _build_runtime_exit_recommendation_meta(
                 self._runtime_recommendation_state
             )
-            intents.append(
-                StrategyOrderIntent(
-                    market=market,
-                    side="bid",
-                    ref_price=ref_price,
-                    reason_code="MODEL_ALPHA_ENTRY_V1",
-                    prob=float(row.get("model_prob", 0.0)),
-                    score=float(row.get("model_prob", 0.0)),
-                    meta={
-                        "strategy": "model_alpha_v1",
-                        "model_prob": float(row.get("model_prob", 0.0)),
-                        "model_prob_raw": float(row.get("model_prob_raw", row.get("model_prob", 0.0))),
-                        "selection_min_prob_used": float(min_prob_used),
-                        "selection_min_prob_source": str(min_prob_source),
-                        "selection_top_pct_used": float(top_pct_used),
-                        "selection_top_pct_source": str(top_pct_source),
-                        "selection_min_candidates_used": int(min_candidates_used),
-                        "selection_min_candidates_source": str(min_candidates_source),
-                        "selection_policy_mode": str(selection_mode),
-                        "selection_policy_source": str(selection_policy_source),
-                        "support_level": trade_action_support_level or "full",
-                        "support_size_multiplier": float(trade_action_support_multiplier),
-                        "support_size_haircut_applied": bool(float(trade_action_support_multiplier) < 1.0),
-                        "sizing_mode": (
-                            "risk_control_size_ladder"
-                            if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
-                            else (
-                                "trade_action_policy"
-                                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                                else str(self._settings.position.sizing_mode)
-                            )
-                        ),
-                        "base_notional_multiplier": float(base_notional_multiplier),
-                        "notional_multiplier": float(notional_multiplier) * float(operational_risk_multiplier),
-                        "notional_multiplier_source": (
-                            "risk_control_size_ladder"
-                            if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
-                            else (
-                                "trade_action_policy"
-                                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                                else str(self._settings.position.sizing_mode)
-                            )
-                        ),
-                        "state_features": _build_live_state_feature_snapshot(row=row),
-                        "model_exit_plan": build_model_alpha_exit_plan_payload(
-                            settings=effective_exit_settings,
-                            row=row,
-                            interval_ms=self._interval_ms,
-                            observed_entry_fee_rate=0.0,
-                            exit_path_risk=dict(exit_recommendation_meta.get("path_risk") or {}),
-                            entry_selection_score=float(row.get("model_prob", 0.0)),
-                            execution_decision=dict(execution_decision or {}),
-                        ),
-                        "exit_recommendation": exit_recommendation_meta,
-                        "trade_action": dict(trade_action_decision or {}),
-                        "risk_control_static": dict(risk_control_decision or {}),
-                        "size_ladder_static": dict(size_ladder_decision or {}),
-                        "execution_decision": dict(execution_decision or {}),
-                        "exec_profile": dict(dynamic_exec_profile or {}),
-                        "operational_overlay": dict(operational_state),
-                    },
-                )
+            intent = StrategyOrderIntent(
+                market=market,
+                side="bid",
+                ref_price=ref_price,
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                prob=float(row.get("model_prob", 0.0)),
+                score=float(row.get("model_prob", 0.0)),
+                meta={
+                    "strategy": "model_alpha_v1",
+                    "model_prob": float(row.get("model_prob", 0.0)),
+                    "model_prob_raw": float(row.get("model_prob_raw", row.get("model_prob", 0.0))),
+                    "selection_min_prob_used": float(min_prob_used),
+                    "selection_min_prob_source": str(min_prob_source),
+                    "selection_top_pct_used": float(top_pct_used),
+                    "selection_top_pct_source": str(top_pct_source),
+                    "selection_min_candidates_used": int(min_candidates_used),
+                    "selection_min_candidates_source": str(min_candidates_source),
+                    "selection_policy_mode": str(selection_mode),
+                    "selection_policy_source": str(selection_policy_source),
+                    "support_level": trade_action_support_level or "full",
+                    "support_size_multiplier": float(trade_action_support_multiplier),
+                    "support_size_haircut_applied": bool(float(trade_action_support_multiplier) < 1.0),
+                    "sizing_mode": (
+                        "risk_control_size_ladder"
+                        if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                        else (
+                            "trade_action_policy"
+                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                            else str(self._settings.position.sizing_mode)
+                        )
+                    ),
+                    "base_notional_multiplier": float(base_notional_multiplier),
+                    "notional_multiplier": float(notional_multiplier) * float(operational_risk_multiplier),
+                    "notional_multiplier_source": (
+                        "risk_control_size_ladder"
+                        if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                        else (
+                            "trade_action_policy"
+                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                            else str(self._settings.position.sizing_mode)
+                        )
+                    ),
+                    "state_features": _build_live_state_feature_snapshot(row=row),
+                    "model_exit_plan": build_model_alpha_exit_plan_payload(
+                        settings=effective_exit_settings,
+                        row=row,
+                        interval_ms=self._interval_ms,
+                        observed_entry_fee_rate=0.0,
+                        exit_path_risk=dict(exit_recommendation_meta.get("path_risk") or {}),
+                        entry_selection_score=float(row.get("model_prob", 0.0)),
+                        execution_decision=dict(execution_decision or {}),
+                    ),
+                    "exit_recommendation": exit_recommendation_meta,
+                    "trade_action": dict(trade_action_decision or {}),
+                    "risk_control_static": dict(risk_control_decision or {}),
+                    "size_ladder_static": dict(size_ladder_decision or {}),
+                    "execution_decision": dict(execution_decision or {}),
+                    "exec_profile": dict(dynamic_exec_profile or {}),
+                    "operational_overlay": dict(operational_state),
+                },
+            )
+            intents.append(intent)
+            append_entry_opportunity(
+                row=row,
+                chosen_action="intent_created",
+                reason_code="MODEL_ALPHA_ENTRY_V1",
+                trade_action_decision=trade_action_decision,
+                notional_multiplier=float(notional_multiplier) * float(operational_risk_multiplier),
+                support_level=trade_action_support_level,
+                support_size_multiplier=float(trade_action_support_multiplier),
             )
             can_open -= 1
 
         return StrategyStepResult(
             intents=tuple(intents),
+            opportunities=tuple(opportunities),
             scored_rows=scored_rows,
             eligible_rows=eligible_rows,
             selected_rows=selected_rows,
@@ -1467,6 +1608,45 @@ def _build_live_state_feature_snapshot(*, row: dict[str, Any] | None) -> dict[st
     if depth_top5_notional_krw is not None:
         snapshot["m_depth_top5_notional_krw"] = float(depth_top5_notional_krw)
     return snapshot
+
+
+def _resolve_trade_action_expected_edge_bps(trade_action: dict[str, Any] | None = None) -> float | None:
+    if not isinstance(trade_action, dict):
+        return None
+    expected_edge = _safe_optional_float(trade_action.get("expected_edge"))
+    if expected_edge is None:
+        return None
+    return float(expected_edge) * 10_000.0
+
+
+def _resolve_opportunity_uncertainty(row: dict[str, Any] | None) -> float | None:
+    if not isinstance(row, dict):
+        return None
+    for key in ("score_std", "uncertainty_sigma", "prediction_std"):
+        resolved = _safe_optional_float(row.get(key))
+        if resolved is not None:
+            return float(resolved)
+    return None
+
+
+def _build_opportunity_feature_hash(*, row: dict[str, Any] | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    normalized: dict[str, Any] = {}
+    for key in sorted(str(item) for item in row.keys()):
+        value = row.get(key)
+        if hasattr(value, "item"):
+            try:
+                value = value.item()
+            except Exception:
+                value = str(value)
+        elif isinstance(value, (list, tuple, dict)):
+            value = json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        elif value is not None and not isinstance(value, (str, int, float, bool)):
+            value = str(value)
+        normalized[key] = value
+    payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _resolve_runtime_risk_exit_thresholds(
