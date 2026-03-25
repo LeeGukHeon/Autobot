@@ -136,6 +136,8 @@ def test_model_alpha_selection_allows_zero_without_forced_pick() -> None:
     )
     assert result.selected_rows == 0
     assert not any(intent.side == "bid" for intent in result.intents)
+    assert len(result.opportunities) == 2
+    assert {item.skip_reason_code for item in result.opportunities} == {"MIN_PROB_NOT_MET"}
 
 
 def test_model_alpha_uses_registry_threshold_when_min_prob_is_null() -> None:
@@ -237,6 +239,35 @@ def test_model_alpha_uses_registry_selection_recommendations_when_enabled() -> N
     assert result.min_candidates_used == 1
     assert result.eligible_rows == 3
     assert result.selected_rows == 1
+    assert any(item.skip_reason_code == "TOP_PCT_NOT_SELECTED" for item in result.opportunities)
+
+
+def test_model_alpha_logs_skip_opportunities_when_min_candidates_not_met() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [2.0],
+            "close": [100.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=0.5, min_candidates_per_ts=2),
+        ),
+    )
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    assert result.selected_rows == 0
+    assert result.blocked_min_candidates_ts == 1
+    assert len(result.opportunities) == 1
+    assert result.opportunities[0].skip_reason_code == "MIN_CANDIDATES_NOT_MET"
 
 
 def test_model_alpha_manual_selection_can_disable_registry_recommendations() -> None:

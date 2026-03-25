@@ -342,6 +342,15 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             eligible = scored.filter(pl.col("model_prob") >= float(min_prob_used))
             eligible_rows = int(eligible.height)
             dropped_min_prob_rows = max(scored_rows - eligible_rows, 0)
+            if dropped_min_prob_rows > 0:
+                for row in scored.filter(pl.col("model_prob") < float(min_prob_used)).iter_rows(named=True):
+                    _inc_reason(skipped_reasons, "MIN_PROB_NOT_MET")
+                    append_entry_opportunity(
+                        row=row,
+                        chosen_action="skip",
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        skip_reason_code="MIN_PROB_NOT_MET",
+                    )
         operational_state: dict[str, Any] = {}
         operational_regime_score = 0.0
         operational_risk_multiplier = 1.0
@@ -394,8 +403,16 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         if eligible_rows < min_candidates:
             blocked_min_candidates_ts = 1
             _inc_reason(skipped_reasons, "MIN_CANDIDATES_NOT_MET")
+            for row in eligible.iter_rows(named=True):
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="MIN_CANDIDATES_NOT_MET",
+                )
             return StrategyStepResult(
                 intents=tuple(intents),
+                opportunities=tuple(opportunities),
                 scored_rows=scored_rows,
                 eligible_rows=eligible_rows,
                 selected_rows=0,
@@ -428,6 +445,23 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             selected = eligible.head(0)
         selected_rows = int(selected.height)
         dropped_top_pct_rows = max(eligible_rows - selected_rows, 0)
+        if dropped_top_pct_rows > 0:
+            selected_markets = {
+                str(row.get("market", "")).strip().upper()
+                for row in selected.iter_rows(named=True)
+                if str(row.get("market", "")).strip()
+            }
+            for row in eligible.iter_rows(named=True):
+                market_name = str(row.get("market", "")).strip().upper()
+                if market_name in selected_markets:
+                    continue
+                _inc_reason(skipped_reasons, "TOP_PCT_NOT_SELECTED")
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code="TOP_PCT_NOT_SELECTED",
+                )
 
         active_positions = len(tracked_open_markets)
         max_positions = max(int(operational_max_positions), 1)
