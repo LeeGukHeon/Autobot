@@ -398,6 +398,11 @@ def _make_fake_paired_paper_script(
             {payload_json}
             '@ | ConvertFrom-Json
             $payload.report_path = $reportPath
+            if (-not $payload.paired_report) {{
+                $payload | Add-Member -NotePropertyName paired_report -NotePropertyValue ([PSCustomObject]@{{}}) -Force
+            }}
+            $payload.paired_report | Add-Member -NotePropertyName champion -NotePropertyValue ([PSCustomObject]@{{ paper_runtime_model_run_id = $ChampionModelRef }}) -Force
+            $payload.paired_report | Add-Member -NotePropertyName challenger -NotePropertyValue ([PSCustomObject]@{{ paper_runtime_model_run_id = $ChallengerModelRef }}) -Force
             $payload | ConvertTo-Json -Depth 20 | Set-Content -Path $reportPath -Encoding UTF8
             Write-Host ("[paired-paper] report={{0}}" -f $reportPath)
             Write-Host ($payload | ConvertTo-Json -Depth 20)

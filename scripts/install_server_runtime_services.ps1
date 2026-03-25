@@ -3,7 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$PaperUnitName = "autobot-paper-v4.service",
     [int]$PaperDurationSec = 0,
-    [ValidateSet("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline_v4")]
+    [ValidateSet("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline_v4", "paired_v4")]
     [string]$PaperPreset = "live_v4",
     [string[]]$PaperCliArgs = @(),
     [string]$PaperRuntimeRole = "",
@@ -73,6 +73,16 @@ function Get-PaperRuntimeSpec {
                 BootstrapRefs = @()
                 ModelFamily = "train_v4_crypto_cs"
                 RuntimeRole = "challenger"
+            }
+        }
+        "paired_v4" {
+            return [PSCustomObject]@{
+                Description = "Autobot Paired Paper Runtime (v4)"
+                SyslogIdentifier = "autobot-paper-v4-paired"
+                RuntimeModelRef = ""
+                BootstrapRefs = @()
+                ModelFamily = "train_v4_crypto_cs"
+                RuntimeRole = "paired"
             }
         }
         default {
@@ -207,21 +217,49 @@ if (
     throw ("runtime preset '{0}' requires champion pointer for family '{1}', but install no longer auto-bootstraps. Promote explicitly or rerun with -BootstrapChampion." -f $PaperPreset, $runtimeSpec.ModelFamily)
 }
 
-$paperArgList = @(
-    "-m", "autobot.cli",
-    "paper", "alpha",
-    "--duration-sec", [string]([Math]::Max($PaperDurationSec, 0)),
-    "--preset", $PaperPreset
-) + $resolvedPaperCliArgs
+$paperArgList = @()
+if ($PaperPreset -eq "paired_v4") {
+    $paperArgList = @(
+        "-m", "autobot.paper.paired_runtime",
+        "run-service",
+        "--project-root", $resolvedProjectRoot,
+        "--config-dir", "config",
+        "--quote", "KRW",
+        "--top-n", "20",
+        "--tf", "5m",
+        "--model-family", "train_v4_crypto_cs",
+        "--feature-set", "v4",
+        "--preset", "live_v4",
+        "--paper-feature-provider", "live_v4",
+        "--paper-micro-provider", "live_ws",
+        "--paper-micro-warmup-sec", "60",
+        "--paper-micro-warmup-min-trade-events-per-market", "1",
+        "--out-dir", "logs/paired_paper",
+        "--min-matched-opportunities", "1"
+    ) + $resolvedPaperCliArgs
+} else {
+    $paperArgList = @(
+        "-m", "autobot.cli",
+        "paper", "alpha",
+        "--duration-sec", [string]([Math]::Max($PaperDurationSec, 0)),
+        "--preset", $PaperPreset
+    ) + $resolvedPaperCliArgs
+}
 $paperCommand = ($paperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "
 $activatePath = Join-Path $resolvedProjectRoot ".venv/bin/activate"
 $execStart = "/bin/bash -lc " + (Quote-ShellArg ("source " + $activatePath + " && " + $resolvedPythonExe + " " + $paperCommand))
+$conditionPathExistsLine = if ($PaperPreset -eq "paired_v4") {
+    "ConditionPathExists=" + (Join-Path $resolvedProjectRoot "logs/model_v4_challenger/current_state.json")
+} else {
+    ""
+}
 
 $paperUnitContent = @"
 [Unit]
 Description=$($runtimeSpec.Description)
 After=network-online.target
 Wants=network-online.target
+$conditionPathExistsLine
 
 [Service]
 Type=simple

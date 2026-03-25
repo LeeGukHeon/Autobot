@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import signal
 from typing import Any, AsyncIterator, Callable, Sequence
 import uuid
 
@@ -138,6 +139,7 @@ class FanoutPublicWsClient:
         self._trade_task: asyncio.Task[None] | None = None
         self._orderbook_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._closed = False
 
     @property
     def capture_counts(self) -> dict[str, int]:
@@ -209,6 +211,8 @@ class FanoutPublicWsClient:
         queue: asyncio.Queue[Any] = asyncio.Queue()
         subscriber = _FanoutSubscriber(queue=queue, allowed_markets=allowed_markets)
         async with self._lock:
+            if self._closed:
+                return
             for event in history:
                 event_market = str(getattr(event, "market", "")).strip().upper()
                 if allowed_markets and event_market not in allowed_markets:
@@ -269,16 +273,24 @@ class FanoutPublicWsClient:
     ) -> None:
         try:
             if stream == "ticker":
-                generator = self._source_client.stream_ticker(self._source_markets, duration_sec=float(self._duration_sec))
+                generator = self._source_client.stream_ticker(
+                    self._source_markets,
+                    duration_sec=(float(self._duration_sec) if self._duration_sec > 0 else None),
+                )
             elif stream == "trade":
-                generator = self._source_client.stream_trade(self._source_markets, duration_sec=float(self._duration_sec))
+                generator = self._source_client.stream_trade(
+                    self._source_markets,
+                    duration_sec=(float(self._duration_sec) if self._duration_sec > 0 else None),
+                )
             else:
                 generator = self._source_client.stream_orderbook(
                     self._source_markets,
-                    duration_sec=float(self._duration_sec),
+                    duration_sec=(float(self._duration_sec) if self._duration_sec > 0 else None),
                     level=self._orderbook_level,
                 )
             async for event in generator:
+                if self._closed:
+                    break
                 history.append(event)
                 event_market = str(getattr(event, "market", "")).strip().upper()
                 async with self._lock:
@@ -292,6 +304,22 @@ class FanoutPublicWsClient:
                 targets = list(subscribers)
             for subscriber in targets:
                 subscriber.queue.put_nowait(_STREAM_SENTINEL)
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            ticker_subscribers = list(self._ticker_subscribers)
+            trade_subscribers = list(self._trade_subscribers)
+            orderbook_subscribers = list(self._orderbook_subscribers)
+            tasks = [task for task in (self._ticker_task, self._trade_task, self._orderbook_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for subscriber in ticker_subscribers + trade_subscribers + orderbook_subscribers:
+            subscriber.queue.put_nowait(_STREAM_SENTINEL)
 
 
 async def run_recorded_paired_paper(
@@ -571,6 +599,180 @@ async def run_live_paired_paper(
     return payload
 
 
+async def run_service_paired_paper(
+    *,
+    project_root: Path,
+    config_dir: Path,
+    quote: str,
+    top_n: int,
+    tf: str,
+    model_family: str,
+    feature_set: str,
+    preset: str,
+    paper_feature_provider: str,
+    paper_micro_provider: str,
+    paper_micro_warmup_sec: int,
+    paper_micro_warmup_min_trade_events_per_market: int,
+    out_dir: Path,
+    min_matched_opportunities: int,
+    min_challenger_hours: float,
+    min_orders_filled: int,
+    min_realized_pnl_quote: float,
+    min_micro_quality_score: float,
+    min_nonnegative_ratio: float,
+    max_drawdown_deterioration_factor: float,
+    micro_quality_tolerance: float,
+    nonnegative_ratio_tolerance: float,
+    max_time_to_fill_deterioration_factor: float,
+) -> dict[str, Any]:
+    root = Path(project_root).resolve()
+    state_path = root / "logs" / "model_v4_challenger" / "current_state.json"
+    state = _load_json(state_path)
+    candidate_run_id = str(state.get("candidate_run_id") or "").strip()
+    champion_run_id = str(state.get("champion_run_id_at_start") or "").strip()
+    if not candidate_run_id:
+        raise RuntimeError(f"paired paper service requires candidate_run_id in {state_path}")
+    if not champion_run_id:
+        raise RuntimeError(f"paired paper service requires champion_run_id_at_start in {state_path}")
+
+    upbit_settings = load_upbit_settings(config_dir)
+    markets = _load_quote_markets(upbit_settings, quote=str(quote).strip().upper())
+    if not markets:
+        raise RuntimeError(f"no quote markets available for quote={quote}")
+
+    champion_settings = _build_paper_run_settings(
+        model_ref=champion_run_id,
+        model_family=model_family,
+        feature_set=feature_set,
+        preset=preset,
+        quote=quote,
+        top_n=top_n,
+        tf=tf,
+        duration_sec=0,
+        paper_feature_provider=paper_feature_provider,
+        paper_micro_provider=paper_micro_provider,
+        paper_micro_warmup_sec=paper_micro_warmup_sec,
+        paper_micro_warmup_min_trade_events_per_market=paper_micro_warmup_min_trade_events_per_market,
+    )
+    challenger_settings = _build_paper_run_settings(
+        model_ref=candidate_run_id,
+        model_family=model_family,
+        feature_set=feature_set,
+        preset=preset,
+        quote=quote,
+        top_n=top_n,
+        tf=tf,
+        duration_sec=0,
+        paper_feature_provider=paper_feature_provider,
+        paper_micro_provider=paper_micro_provider,
+        paper_micro_warmup_sec=paper_micro_warmup_sec,
+        paper_micro_warmup_min_trade_events_per_market=paper_micro_warmup_min_trade_events_per_market,
+    )
+
+    fanout_client = FanoutPublicWsClient(
+        source_client=UpbitWebSocketPublicClient(upbit_settings.websocket),
+        source_markets=markets,
+        duration_sec=0,
+        orderbook_level=0,
+    )
+    output_root = Path(out_dir)
+    run_root = output_root / "runs" / ("paired-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
+    run_root.mkdir(parents=True, exist_ok=True)
+    champion_settings = replace(champion_settings, out_root_dir=str(run_root / "champion"))
+    challenger_settings = replace(challenger_settings, out_root_dir=str(run_root / "challenger"))
+
+    async def _run_engine_with_env(*, run_settings: PaperRunSettings, runtime_role: str) -> Any:
+        engine = PaperRunEngine(
+            upbit_settings=upbit_settings,
+            run_settings=run_settings,
+            ws_client=fanout_client,
+            market_loader=lambda quote_value: list(markets),
+        )
+        with _paper_runtime_env(
+            unit_name="autobot-paper-v4-paired.service",
+            runtime_role=runtime_role,
+            lane="v4",
+            pinned_model_ref=str(run_settings.model_ref or run_settings.model_alpha.model_ref or "").strip(),
+        ):
+            return await engine.run()
+
+    loop = asyncio.get_running_loop()
+    stop_requested = asyncio.Event()
+
+    def _request_stop() -> None:
+        if stop_requested.is_set():
+            return
+        stop_requested.set()
+        loop.create_task(fanout_client.close())
+
+    for signal_name in ("SIGTERM", "SIGINT"):
+        signal_value = getattr(signal, signal_name, None)
+        if signal_value is None:
+            continue
+        try:
+            loop.add_signal_handler(signal_value, _request_stop)
+        except NotImplementedError:
+            pass
+
+    try:
+        champion_summary, challenger_summary = await asyncio.gather(
+            _run_engine_with_env(run_settings=champion_settings, runtime_role="champion"),
+            _run_engine_with_env(run_settings=challenger_settings, runtime_role="challenger"),
+        )
+    finally:
+        await fanout_client.close()
+
+    paired_report_path = run_root / "paired_paper_report.json"
+    paired_report = build_paired_paper_report(
+        champion_run_dir=Path(champion_summary.run_dir),
+        challenger_run_dir=Path(challenger_summary.run_dir),
+    )
+    gate = _build_paired_gate(report=paired_report, min_matched_opportunities=min_matched_opportunities)
+    promotion_decision = _build_paired_promotion_decision(
+        champion_run_dir=Path(champion_summary.run_dir),
+        challenger_run_dir=Path(challenger_summary.run_dir),
+        paired_report=paired_report,
+        paired_gate=gate,
+        min_challenger_hours=min_challenger_hours,
+        min_orders_filled=min_orders_filled,
+        min_realized_pnl_quote=min_realized_pnl_quote,
+        min_micro_quality_score=min_micro_quality_score,
+        min_nonnegative_ratio=min_nonnegative_ratio,
+        max_drawdown_deterioration_factor=max_drawdown_deterioration_factor,
+        micro_quality_tolerance=micro_quality_tolerance,
+        nonnegative_ratio_tolerance=nonnegative_ratio_tolerance,
+        max_time_to_fill_deterioration_factor=max_time_to_fill_deterioration_factor,
+    )
+    payload = {
+        "artifact_version": PAIRED_RUNTIME_ARTIFACT_VERSION,
+        "mode": "paired_paper_live_service_v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "project_root": str(root),
+        "state_path": str(state_path),
+        "run_root": str(run_root),
+        "report_path": str(paired_report_path),
+        "champion_run_dir": str(champion_summary.run_dir),
+        "challenger_run_dir": str(challenger_summary.run_dir),
+        "capture": {
+            "duration_sec_requested": 0,
+            "markets_subscribed": int(len(markets)),
+            "ticker_events_captured": int(fanout_client.capture_counts["ticker_events_captured"]),
+            "trade_events_captured": int(fanout_client.capture_counts["trade_events_captured"]),
+            "orderbook_events_captured": int(fanout_client.capture_counts["orderbook_events_captured"]),
+            "source_mode": "live_ws_fanout_service",
+        },
+        "gate": gate,
+        "paired_report": paired_report,
+        "promotion_decision": promotion_decision,
+    }
+    write_paired_paper_report(report=paired_report, output_path=paired_report_path)
+    _write_json(output_root / "latest.json", payload)
+    archive_root = output_root / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    _write_json(archive_root / (run_root.name + ".json"), payload)
+    return payload
+
+
 def _build_paper_run_settings(
     *,
     model_ref: str,
@@ -815,6 +1017,31 @@ def _build_parser() -> argparse.ArgumentParser:
     live_parser.add_argument("--max-time-to-fill-deterioration-factor", type=float, default=1.25)
     live_parser.add_argument("--replay-time-scale", type=float, default=0.001)
     live_parser.add_argument("--replay-max-sleep-sec", type=float, default=0.25)
+
+    service_parser = subparsers.add_parser("run-service", help="Run long-lived paired paper lane until externally stopped.")
+    service_parser.add_argument("--project-root", required=True)
+    service_parser.add_argument("--config-dir", default="config")
+    service_parser.add_argument("--quote", default="KRW")
+    service_parser.add_argument("--top-n", type=int, default=20)
+    service_parser.add_argument("--tf", default="5m")
+    service_parser.add_argument("--model-family", default="train_v4_crypto_cs")
+    service_parser.add_argument("--feature-set", default="v4")
+    service_parser.add_argument("--preset", default=DEFAULT_PAIRED_PRESET)
+    service_parser.add_argument("--paper-feature-provider", default="live_v4")
+    service_parser.add_argument("--paper-micro-provider", default="live_ws")
+    service_parser.add_argument("--paper-micro-warmup-sec", type=int, default=60)
+    service_parser.add_argument("--paper-micro-warmup-min-trade-events-per-market", type=int, default=1)
+    service_parser.add_argument("--out-dir", default="logs/paired_paper")
+    service_parser.add_argument("--min-matched-opportunities", type=int, default=1)
+    service_parser.add_argument("--min-challenger-hours", type=float, default=12.0)
+    service_parser.add_argument("--min-orders-filled", type=int, default=2)
+    service_parser.add_argument("--min-realized-pnl-quote", type=float, default=0.0)
+    service_parser.add_argument("--min-micro-quality-score", type=float, default=0.25)
+    service_parser.add_argument("--min-nonnegative-ratio", type=float, default=0.34)
+    service_parser.add_argument("--max-drawdown-deterioration-factor", type=float, default=1.10)
+    service_parser.add_argument("--micro-quality-tolerance", type=float, default=0.02)
+    service_parser.add_argument("--nonnegative-ratio-tolerance", type=float, default=0.05)
+    service_parser.add_argument("--max-time-to-fill-deterioration-factor", type=float, default=1.25)
     return parser
 
 
@@ -830,6 +1057,37 @@ def main() -> int:
         if output_path is not None:
             write_paired_paper_report(report=report, output_path=output_path)
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "run-service":
+        payload = asyncio.run(
+            run_service_paired_paper(
+                project_root=Path(args.project_root),
+                config_dir=Path(args.config_dir),
+                quote=str(args.quote).strip().upper(),
+                top_n=int(args.top_n),
+                tf=str(args.tf).strip().lower(),
+                model_family=str(args.model_family).strip(),
+                feature_set=str(args.feature_set).strip().lower(),
+                preset=str(args.preset).strip().lower(),
+                paper_feature_provider=str(args.paper_feature_provider).strip().lower(),
+                paper_micro_provider=str(args.paper_micro_provider).strip().lower(),
+                paper_micro_warmup_sec=int(args.paper_micro_warmup_sec),
+                paper_micro_warmup_min_trade_events_per_market=int(args.paper_micro_warmup_min_trade_events_per_market),
+                out_dir=Path(args.out_dir),
+                min_matched_opportunities=int(args.min_matched_opportunities),
+                min_challenger_hours=float(args.min_challenger_hours),
+                min_orders_filled=int(args.min_orders_filled),
+                min_realized_pnl_quote=float(args.min_realized_pnl_quote),
+                min_micro_quality_score=float(args.min_micro_quality_score),
+                min_nonnegative_ratio=float(args.min_nonnegative_ratio),
+                max_drawdown_deterioration_factor=float(args.max_drawdown_deterioration_factor),
+                micro_quality_tolerance=float(args.micro_quality_tolerance),
+                nonnegative_ratio_tolerance=float(args.nonnegative_ratio_tolerance),
+                max_time_to_fill_deterioration_factor=float(args.max_time_to_fill_deterioration_factor),
+            )
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     payload = asyncio.run(

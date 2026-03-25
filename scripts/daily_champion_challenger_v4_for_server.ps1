@@ -9,6 +9,7 @@ param(
     [string]$BatchDate = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
+    [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
     [string[]]$BlockOnActiveUnits = @(),
@@ -241,6 +242,11 @@ function Resolve-ReportedJsonPath {
         }
     }
     return [string]$matches[$matches.Count - 1].Groups[1].Value.Trim()
+}
+
+function Resolve-PairedPaperLatestPath {
+    param([string]$Root)
+    return (Join-Path (Join-Path $Root "logs/paired_paper") "latest.json")
 }
 
 function Load-JsonOrEmpty {
@@ -606,6 +612,29 @@ function Start-OrUpdate-ChallengerUnit {
     return Invoke-CommandCapture -Exe $psExe -ArgList $args
 }
 
+function Start-OrUpdate-PairedPaperUnit {
+    param(
+        [string]$RuntimeInstallScriptPath,
+        [string]$Root,
+        [string]$PyExe,
+        [string]$UnitName
+    )
+    $psExe = Resolve-PwshExe
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $RuntimeInstallScriptPath,
+        "-ProjectRoot", $Root,
+        "-PythonExe", $PyExe,
+        "-PaperUnitName", $UnitName,
+        "-PaperPreset", "paired_v4",
+        "-PaperRuntimeRole", "paired",
+        "-PaperLaneName", "v4",
+        "-NoBootstrapChampion"
+    )
+    return Invoke-CommandCapture -Exe $psExe -ArgList $args
+}
+
 function Try-Restart-UnitBestEffort {
     param(
         [string]$UnitName,
@@ -763,6 +792,7 @@ $report = [ordered]@{
     started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     champion_unit = $ChampionUnitName
     challenger_unit = $ChallengerUnitName
+    paired_paper_unit = $PairedPaperUnitName
     promotion_target_units = @($resolvedPromotionTargetUnits)
     candidate_target_units = @($resolvedCandidateTargetUnits)
     steps = [ordered]@{}
@@ -840,11 +870,13 @@ $previousState = Load-JsonOrEmpty -PathValue $statePath
 $hasPreviousState = Test-ObjectHasValues -ObjectValue $previousState
 $challengerWasActive = Test-SystemdUnitActive -UnitName $ChallengerUnitName
 $championWasActive = Test-SystemdUnitActive -UnitName $ChampionUnitName
+$pairedPaperWasActive = Test-SystemdUnitActive -UnitName $PairedPaperUnitName
 $script:rollbackChallengerWasActive = $challengerWasActive
 $script:rollbackChampionWasActive = $championWasActive
 $report.steps.unit_snapshot = [ordered]@{
     challenger_was_active = $challengerWasActive
     champion_was_active = $championWasActive
+    paired_paper_was_active = $pairedPaperWasActive
     previous_state_present = $hasPreviousState
 }
 
@@ -885,11 +917,17 @@ $challengerStopped = $false
 if (($runPromotionPhase -or $runSpawnPhase) -and $challengerWasActive) {
     $challengerStopped = Stop-UnitIfActive -UnitName $ChallengerUnitName
 }
+$pairedPaperStopped = $false
+if ($runPromotionPhase -and $pairedPaperWasActive) {
+    $pairedPaperStopped = Stop-UnitIfActive -UnitName $PairedPaperUnitName
+}
 $report.steps.stop_units = [ordered]@{
     challenger_was_active = $challengerWasActive
     challenger_stopped = $challengerStopped
     champion_was_active = $championWasActive
     champion_stopped = $false
+    paired_paper_was_active = $pairedPaperWasActive
+    paired_paper_stopped = $pairedPaperStopped
 }
 
 $promotionPerformed = $false
@@ -903,55 +941,74 @@ if ($runPromotionPhase) {
         $previousLaneMode = [string](Get-PropValue -ObjectValue $previousState -Name "lane_mode" -DefaultValue "")
         $previousPromotionEligible = [bool](Get-PropValue -ObjectValue $previousState -Name "promotion_eligible" -DefaultValue $true)
         if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and $previousPromotionEligible -and ($previousLaneMode -ne "bootstrap_latest_inclusive")) {
-            $pairedPaperArgs = @(
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File", $resolvedPairedPaperScript,
-                "-ProjectRoot", $resolvedProjectRoot,
-                "-PythonExe", $resolvedPythonExe,
-                "-DurationSec", [string]$PairedPaperDurationSec,
-                "-Quote", $PairedPaperQuote,
-                "-TopN", [string]$PairedPaperTopN,
-                "-Tf", $PairedPaperTf,
-                "-ChampionModelRef", $championRunIdAtStart,
-                "-ChallengerModelRef", $candidateRunId,
-                "-ModelFamily", $PairedPaperModelFamily,
-                "-FeatureSet", $PairedPaperFeatureSet,
-                "-Preset", $PairedPaperPreset,
-                "-PaperMicroProvider", $PairedPaperMicroProvider,
-                "-PaperFeatureProvider", $PairedPaperFeatureProvider,
-                "-WarmupSec", [string]$PairedPaperWarmupSec,
-                "-WarmupMinTradeEventsPerMarket", [string]$PairedPaperWarmupMinTradeEventsPerMarket,
-                "-MinMatchedOpportunities", [string]$PairedPaperMinMatchedOpportunities,
-                "-MinChallengerHours", [string]$ChallengerMinHours,
-                "-MinOrdersFilled", [string]$ChallengerMinOrdersFilled,
-                "-MinRealizedPnlQuote", [string]$ChallengerMinRealizedPnlQuote,
-                "-MinMicroQualityScore", [string]$ChallengerMinMicroQualityScore,
-                "-MinNonnegativeRatio", [string]$ChallengerMinNonnegativeRatio,
-                "-MaxDrawdownDeteriorationFactor", [string]$ChallengerMaxDrawdownDeteriorationFactor,
-                "-MicroQualityTolerance", [string]$ChallengerMicroQualityTolerance,
-                "-NonnegativeRatioTolerance", [string]$ChallengerNonnegativeRatioTolerance,
-                "-OutDir", $pairedPaperRoot
-            )
-            $pairedPaperExec = Invoke-CommandCapture -Exe $psExe -ArgList $pairedPaperArgs -AllowFailure
-            $pairedPaperReportPath = Resolve-ReportedJsonPath -OutputText ([string]$pairedPaperExec.Output)
-            $pairedPaperArtifact = if ((-not [string]::IsNullOrWhiteSpace($pairedPaperReportPath)) -and (Test-Path $pairedPaperReportPath)) {
-                Load-JsonOrEmpty -PathValue $pairedPaperReportPath
-            } else {
-                @{}
-            }
+            $pairedPaperLatestPath = Resolve-PairedPaperLatestPath -Root $resolvedProjectRoot
+            $pairedPaperArtifact = Load-JsonOrEmpty -PathValue $pairedPaperLatestPath
+            $pairedPaperArtifactSource = "paired_service_latest"
             $pairedPaperGate = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "gate" -DefaultValue @{}
             $pairedPromotionDecision = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "promotion_decision" -DefaultValue @{}
+            $pairedReport = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "paired_report" -DefaultValue @{}
+            $pairedChampion = Get-PropValue -ObjectValue $pairedReport -Name "champion" -DefaultValue @{}
+            $pairedChallenger = Get-PropValue -ObjectValue $pairedReport -Name "challenger" -DefaultValue @{}
+            $pairedChampionRunId = [string](Get-PropValue -ObjectValue $pairedChampion -Name "paper_runtime_model_run_id" -DefaultValue "")
+            $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedChallenger -Name "paper_runtime_model_run_id" -DefaultValue "")
+            $pairedArtifactMatchesState = ($pairedChampionRunId -eq $championRunIdAtStart) -and ($pairedChallengerRunId -eq $candidateRunId)
+            if (((-not (Test-ObjectHasValues -ObjectValue $pairedPaperArtifact)) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPromotionDecision)) -or (-not $pairedArtifactMatchesState)) -and (-not [string]::IsNullOrWhiteSpace($resolvedPairedPaperScript)) -and (Test-Path $resolvedPairedPaperScript)) {
+                $pairedPaperArgs = @(
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", $resolvedPairedPaperScript,
+                    "-ProjectRoot", $resolvedProjectRoot,
+                    "-PythonExe", $resolvedPythonExe,
+                    "-DurationSec", [string]$PairedPaperDurationSec,
+                    "-Quote", $PairedPaperQuote,
+                    "-TopN", [string]$PairedPaperTopN,
+                    "-Tf", $PairedPaperTf,
+                    "-ChampionModelRef", $championRunIdAtStart,
+                    "-ChallengerModelRef", $candidateRunId,
+                    "-ModelFamily", $PairedPaperModelFamily,
+                    "-FeatureSet", $PairedPaperFeatureSet,
+                    "-Preset", $PairedPaperPreset,
+                    "-PaperMicroProvider", $PairedPaperMicroProvider,
+                    "-PaperFeatureProvider", $PairedPaperFeatureProvider,
+                    "-WarmupSec", [string]$PairedPaperWarmupSec,
+                    "-WarmupMinTradeEventsPerMarket", [string]$PairedPaperWarmupMinTradeEventsPerMarket,
+                    "-MinMatchedOpportunities", [string]$PairedPaperMinMatchedOpportunities,
+                    "-MinChallengerHours", [string]$ChallengerMinHours,
+                    "-MinOrdersFilled", [string]$ChallengerMinOrdersFilled,
+                    "-MinRealizedPnlQuote", [string]$ChallengerMinRealizedPnlQuote,
+                    "-MinMicroQualityScore", [string]$ChallengerMinMicroQualityScore,
+                    "-MinNonnegativeRatio", [string]$ChallengerMinNonnegativeRatio,
+                    "-MaxDrawdownDeteriorationFactor", [string]$ChallengerMaxDrawdownDeteriorationFactor,
+                    "-MicroQualityTolerance", [string]$ChallengerMicroQualityTolerance,
+                    "-NonnegativeRatioTolerance", [string]$ChallengerNonnegativeRatioTolerance,
+                    "-OutDir", $pairedPaperRoot
+                )
+                $pairedPaperExec = Invoke-CommandCapture -Exe $psExe -ArgList $pairedPaperArgs -AllowFailure
+                $pairedPaperReportPath = Resolve-ReportedJsonPath -OutputText ([string]$pairedPaperExec.Output)
+                if ((-not [string]::IsNullOrWhiteSpace($pairedPaperReportPath)) -and (Test-Path $pairedPaperReportPath)) {
+                    $pairedPaperArtifact = Load-JsonOrEmpty -PathValue $pairedPaperReportPath
+                    $pairedPaperArtifactSource = "paired_fallback_script"
+                    $pairedPaperGate = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "gate" -DefaultValue @{}
+                    $pairedPromotionDecision = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "promotion_decision" -DefaultValue @{}
+                    $pairedReport = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "paired_report" -DefaultValue @{}
+                    $pairedChampion = Get-PropValue -ObjectValue $pairedReport -Name "champion" -DefaultValue @{}
+                    $pairedChallenger = Get-PropValue -ObjectValue $pairedReport -Name "challenger" -DefaultValue @{}
+                    $pairedChampionRunId = [string](Get-PropValue -ObjectValue $pairedChampion -Name "paper_runtime_model_run_id" -DefaultValue "")
+                    $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedChallenger -Name "paper_runtime_model_run_id" -DefaultValue "")
+                    $pairedArtifactMatchesState = ($pairedChampionRunId -eq $championRunIdAtStart) -and ($pairedChallengerRunId -eq $candidateRunId)
+                }
+            }
             $report.steps.paired_paper_previous_challenger = [ordered]@{
                 attempted = $true
-                exit_code = [int]$pairedPaperExec.ExitCode
-                command = $pairedPaperExec.Command
-                output_preview = [string]$pairedPaperExec.Output
-                report_path = [string]$pairedPaperReportPath
+                exit_code = 0
+                command = $pairedPaperArtifactSource
+                output_preview = ""
+                report_path = [string]$pairedPaperLatestPath
                 gate = $pairedPaperGate
+                artifact_matches_state = $pairedArtifactMatchesState
             }
             $report.challenger_previous_paired = $pairedPaperArtifact
-            if (($pairedPaperExec.ExitCode -ne 0) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPaperArtifact)) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPromotionDecision))) {
+            if ((-not (Test-ObjectHasValues -ObjectValue $pairedPaperArtifact)) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPromotionDecision)) -or (-not $pairedArtifactMatchesState)) {
                 $promotionDecision = [ordered]@{
                     decision = [ordered]@{
                         promote = $false
@@ -960,8 +1017,8 @@ if ($runPromotionPhase) {
                     paired_paper = [ordered]@{
                         evaluated = $false
                         pass = $false
-                        reason = "PAIRED_PAPER_EXECUTION_FAILED"
-                        report_path = [string]$pairedPaperReportPath
+                        reason = if ($pairedArtifactMatchesState) { "PAIRED_PAPER_EXECUTION_FAILED" } else { "PAIRED_PAPER_ARTIFACT_STATE_MISMATCH" }
+                        report_path = [string]$pairedPaperLatestPath
                     }
                 }
                 $report.challenger_previous = $promotionDecision
@@ -1360,6 +1417,18 @@ if ($runSpawnPhase) {
             $report.steps.start_challenger = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "start_challenger" -DefaultValue @{}
             $report.steps.restart_candidate_targets = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "restart_candidate_targets" -DefaultValue @{}
             $report.challenger_next = Get-PropValue -ObjectValue $adoptReport -Name "current_state" -DefaultValue @{}
+            $pairedInstallExec = Start-OrUpdate-PairedPaperUnit `
+                -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
+                -Root $resolvedProjectRoot `
+                -PyExe $resolvedPythonExe `
+                -UnitName $PairedPaperUnitName
+            $report.steps.start_paired_paper = [ordered]@{
+                attempted = $true
+                command = $pairedInstallExec.Command
+                output_preview = $pairedInstallExec.Output
+                unit_name = $PairedPaperUnitName
+                candidate_run_id = $candidateRunId
+            }
         } else {
             $challengerInstallExec = Start-OrUpdate-ChallengerUnit `
                 -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
@@ -1396,6 +1465,18 @@ if ($runSpawnPhase) {
                 Write-JsonFile -PathValue $statePath -Payload $nextState
             }
             $report.challenger_next = $nextState
+            $pairedInstallExec = Start-OrUpdate-PairedPaperUnit `
+                -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
+                -Root $resolvedProjectRoot `
+                -PyExe $resolvedPythonExe `
+                -UnitName $PairedPaperUnitName
+            $report.steps.start_paired_paper = [ordered]@{
+                attempted = $true
+                command = $pairedInstallExec.Command
+                output_preview = $pairedInstallExec.Output
+                unit_name = $PairedPaperUnitName
+                candidate_run_id = $candidateRunId
+            }
             if ($resolvedCandidateTargetUnits.Count -gt 0) {
                 $report.steps.restart_candidate_targets = [ordered]@{
                     attempted = $false
@@ -1439,6 +1520,11 @@ if ($runSpawnPhase) {
             } else {
                 "UNKNOWN"
             }
+        }
+        $report.steps.start_paired_paper = [ordered]@{
+            skipped = $true
+            candidate_run_id = $candidateRunId
+            reason = [string]$report.steps.start_challenger.reason
         }
         $report.steps.restart_candidate_targets = [ordered]@{
             attempted = $false

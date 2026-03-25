@@ -189,6 +189,21 @@ def test_t23_2_runtime_installer_accepts_serialized_paper_cli_args() -> None:
     assert "bootstrap_champion=False" in stdout
 
 
+def test_t23_2_runtime_installer_supports_paired_paper_preset() -> None:
+    stdout = _run_script_dry_run(
+        "install_server_runtime_services.ps1",
+        "-PaperPreset",
+        "paired_v4",
+        "-PaperUnitName",
+        "autobot-paper-v4-paired.service",
+    )
+
+    assert "autobot.paper.paired_runtime" in stdout
+    assert "run-service" in stdout
+    assert "ConditionPathExists=" in stdout
+    assert "autobot-paper-v4-paired.service" in stdout
+
+
 def test_t23_2_runtime_installer_keeps_explicit_bootstrap_switch() -> None:
     source = (REPO_ROOT / "scripts" / "install_server_runtime_services.ps1").read_text(encoding="utf-8")
 
