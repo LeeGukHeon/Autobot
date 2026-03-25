@@ -232,11 +232,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented in `autobot/paper/paired_reporting.py`, `autobot/paper/paired_runtime.py`, and `scripts/paired_paper_soak.ps1`, with long-running lifecycle support wired into `scripts/daily_champion_challenger_v4_for_server.ps1` and service install support added via `scripts/install_server_runtime_services.ps1` preset `paired_v4`. The target flow is now `spawn -> paired service start -> long-running one-feed fanout lane -> promote stops/flushes paired service -> paired promotion_decision -> promote verdict`. Direct OCI validation confirmed the dedicated unit `autobot-paper-v4-paired.service` is now `enabled` and `active/running` without immediately exiting, produces `logs/paired_paper/latest.json` with `mode=paired_paper_live_service_v1` and `source_mode=live_ws_fanout_service`, writes paired run directories under `logs/paired_paper/runs/paired-*`, and the real promotion entrypoint consumes paired paper artifacts from the operational path.
 
-- [ ] 10. Add `risk_budget_ledger`
+- [x] 10. Add `risk_budget_ledger`
   Required references:
   [RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
   Done when:
   live sizing and skip reasons are traceable via a budget artifact.
+  Current implementation note:
+  implemented in `autobot/live/risk_budget_ledger.py` and wired through `autobot/live/model_alpha_runtime.py` plus `autobot/live/model_alpha_runtime_execute.py` so every persisted live strategy intent now appends a machine-readable budget ledger entry and refreshes a latest summary artifact. Local validation confirmed the new ledger path is created and populated through `tests/test_live_risk_budget_ledger.py`, `tests/test_live_small_account.py`, `tests/test_live_admissibility.py`, and targeted `tests/test_live_model_alpha_runtime.py` coverage for live shadow and lookup-failure paths. Direct OCI operational validation confirmed the active `autobot-live-alpha-candidate.service` now writes non-empty `logs/risk_budget_ledger/autobot_live_alpha_candidate_service/latest.jsonl` and `latest.json`, and a fresh live entry recorded actual sizing fields such as `target_notional_quote` and `position_budget_fraction`, skip reasons such as `RISK_CONTROL_ONLINE_BREACH_STREAK`, recent severe-loss evidence, current risk regime, and budget reason codes from the current operating path.
 
 - [ ] 11. Add minimal white-box `portfolio risk budget engine`
   Required references:
