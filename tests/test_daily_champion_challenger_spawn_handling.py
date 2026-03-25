@@ -339,6 +339,22 @@ def _make_fake_paired_paper_script(
                     "matched_opportunities": int(matched_opportunities),
                 }
             },
+            "promotion_decision": {
+                "comparison_mode": "paired_paper_runtime_decision_v1",
+                "paired_gate": {
+                    "evaluated": True,
+                    "pair_ready": bool(gate_pass),
+                    "matched_opportunities": int(matched_opportunities),
+                    "min_matched_opportunities": 1,
+                    "pass": bool(gate_pass),
+                    "reason": str(reason),
+                },
+                "decision": {
+                    "promote": bool(gate_pass),
+                    "decision": "promote_challenger" if gate_pass else "keep_champion",
+                    "hard_failures": ([] if gate_pass else [str(reason)]),
+                },
+            },
         }
     )
     script_path.write_text(

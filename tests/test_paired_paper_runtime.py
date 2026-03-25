@@ -183,6 +183,11 @@ def test_run_recorded_paired_paper_writes_operational_artifact(tmp_path: Path) -
             tape=tape,
             output_root=tmp_path / "paired-paper",
             min_matched_opportunities=1,
+            min_challenger_hours=0.0,
+            min_orders_filled=0,
+            min_realized_pnl_quote=0.0,
+            min_micro_quality_score=0.0,
+            min_nonnegative_ratio=0.0,
             engine_factory=_engine_factory,
             rules_provider=_StaticRulesProvider(),
             market_loader=lambda quote: ["KRW-BTC"],
@@ -195,5 +200,6 @@ def test_run_recorded_paired_paper_writes_operational_artifact(tmp_path: Path) -
     assert report_path.exists()
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
     assert latest["gate"]["pass"] is True
+    assert latest["promotion_decision"]["decision"]["promote"] is True
     assert latest["paired_report"]["clock_alignment"]["pair_ready"] is True
     assert latest["paired_report"]["taxonomy_counts"]["both_trade_different_action"] >= 1

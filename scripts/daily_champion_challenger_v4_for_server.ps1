@@ -923,6 +923,14 @@ if ($runPromotionPhase) {
                 "-WarmupSec", [string]$PairedPaperWarmupSec,
                 "-WarmupMinTradeEventsPerMarket", [string]$PairedPaperWarmupMinTradeEventsPerMarket,
                 "-MinMatchedOpportunities", [string]$PairedPaperMinMatchedOpportunities,
+                "-MinChallengerHours", [string]$ChallengerMinHours,
+                "-MinOrdersFilled", [string]$ChallengerMinOrdersFilled,
+                "-MinRealizedPnlQuote", [string]$ChallengerMinRealizedPnlQuote,
+                "-MinMicroQualityScore", [string]$ChallengerMinMicroQualityScore,
+                "-MinNonnegativeRatio", [string]$ChallengerMinNonnegativeRatio,
+                "-MaxDrawdownDeteriorationFactor", [string]$ChallengerMaxDrawdownDeteriorationFactor,
+                "-MicroQualityTolerance", [string]$ChallengerMicroQualityTolerance,
+                "-NonnegativeRatioTolerance", [string]$ChallengerNonnegativeRatioTolerance,
                 "-OutDir", $pairedPaperRoot
             )
             $pairedPaperExec = Invoke-CommandCapture -Exe $psExe -ArgList $pairedPaperArgs -AllowFailure
@@ -933,6 +941,7 @@ if ($runPromotionPhase) {
                 @{}
             }
             $pairedPaperGate = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "gate" -DefaultValue @{}
+            $pairedPromotionDecision = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "promotion_decision" -DefaultValue @{}
             $report.steps.paired_paper_previous_challenger = [ordered]@{
                 attempted = $true
                 exit_code = [int]$pairedPaperExec.ExitCode
@@ -942,7 +951,7 @@ if ($runPromotionPhase) {
                 gate = $pairedPaperGate
             }
             $report.challenger_previous_paired = $pairedPaperArtifact
-            if (($pairedPaperExec.ExitCode -ne 0) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPaperArtifact))) {
+            if (($pairedPaperExec.ExitCode -ne 0) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPaperArtifact)) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPromotionDecision))) {
                 $promotionDecision = [ordered]@{
                     decision = [ordered]@{
                         promote = $false
@@ -973,25 +982,7 @@ if ($runPromotionPhase) {
                     reason = "PAIRED_PAPER_EXECUTION_FAILED"
                 }
             } else {
-            $compareArgs = @(
-                "-m", "autobot.common.paper_lane_evidence",
-                "--paper-root", (Join-Path $resolvedProjectRoot "data/paper"),
-                "--lane", "v4",
-                "--challenger-model-ref", $candidateRunId,
-                "--champion-model-run-id", $championRunIdAtStart,
-                "--since-ts-ms", [string]$startedTsMs,
-                "--min-challenger-hours", [string]$ChallengerMinHours,
-                "--min-orders-filled", [string]$ChallengerMinOrdersFilled,
-                "--min-realized-pnl-quote", [string]$ChallengerMinRealizedPnlQuote,
-                "--min-micro-quality-score", [string]$ChallengerMinMicroQualityScore,
-                "--min-nonnegative-ratio", [string]$ChallengerMinNonnegativeRatio,
-                "--max-drawdown-deterioration-factor", [string]$ChallengerMaxDrawdownDeteriorationFactor,
-                "--micro-quality-tolerance", [string]$ChallengerMicroQualityTolerance,
-                "--nonnegative-ratio-tolerance", [string]$ChallengerNonnegativeRatioTolerance
-            )
-            $compareExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $compareArgs
-            $promotionDecision = $compareExec.Output | ConvertFrom-Json
-            $promotionDecision | Add-Member -NotePropertyName "paired_paper" -NotePropertyValue $pairedPaperArtifact -Force
+            $promotionDecision = $pairedPromotionDecision
             $report.challenger_previous = $promotionDecision
             if (-not $DryRun) {
                 New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
@@ -1003,10 +994,6 @@ if ($runPromotionPhase) {
                 })
             }
             $shouldPromote = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "promote" -DefaultValue $false)
-            $pairedPaperPass = [bool](Get-PropValue -ObjectValue $pairedPaperGate -Name "pass" -DefaultValue $false)
-            if (-not $pairedPaperPass) {
-                $shouldPromote = $false
-            }
             if ($shouldPromote -and (-not $DryRun)) {
                 $promotedAtTsMs = [int64](Get-Date -UFormat %s) * 1000
                 $promoteExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList @(
@@ -1110,10 +1097,14 @@ if ($runPromotionPhase) {
                     candidate_run_id = $candidateRunId
                     reason = if ($shouldPromote) {
                         "DRY_RUN"
-                    } elseif (-not $pairedPaperPass) {
-                        [string](Get-PropValue -ObjectValue $pairedPaperGate -Name "reason" -DefaultValue "PAIRED_PAPER_NOT_READY")
                     } else {
-                        [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "decision" -DefaultValue "keep_champion")
+                        $decisionDoc = Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}
+                        $hardFailures = @((Get-PropValue -ObjectValue $decisionDoc -Name "hard_failures" -DefaultValue @()))
+                        if ($hardFailures.Count -gt 0) {
+                            [string]$hardFailures[0]
+                        } else {
+                            [string](Get-PropValue -ObjectValue $decisionDoc -Name "decision" -DefaultValue "keep_champion")
+                        }
                     }
                 }
             }

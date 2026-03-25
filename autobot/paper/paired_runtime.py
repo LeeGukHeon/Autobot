@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Callable, Sequence
 import uuid
 
 from autobot.cli_model_helpers import paper_alpha_preset_overrides
+from autobot.common.paper_lane_evidence import aggregate_paper_lane_runs, compare_champion_challenger
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.paired_reporting import build_paired_paper_report, write_paired_paper_report
 from autobot.strategy.micro_gate_v1 import MicroGateSettings
@@ -113,6 +114,15 @@ async def run_recorded_paired_paper(
     tape: RecordedPublicEventTape,
     output_root: Path,
     min_matched_opportunities: int = 1,
+    min_challenger_hours: float = 12.0,
+    min_orders_filled: int = 2,
+    min_realized_pnl_quote: float = 0.0,
+    min_micro_quality_score: float = 0.25,
+    min_nonnegative_ratio: float = 0.34,
+    max_drawdown_deterioration_factor: float = 1.10,
+    micro_quality_tolerance: float = 0.02,
+    nonnegative_ratio_tolerance: float = 0.05,
+    max_time_to_fill_deterioration_factor: float = 1.25,
     replay_time_scale: float = 0.001,
     replay_max_sleep_sec: float = 0.25,
     engine_factory: Callable[..., Any] | None = None,
@@ -178,6 +188,21 @@ async def run_recorded_paired_paper(
         challenger_run_dir=Path(challenger_summary.run_dir),
     )
     gate = _build_paired_gate(report=paired_report, min_matched_opportunities=min_matched_opportunities)
+    promotion_decision = _build_paired_promotion_decision(
+        champion_run_dir=Path(champion_summary.run_dir),
+        challenger_run_dir=Path(challenger_summary.run_dir),
+        paired_report=paired_report,
+        paired_gate=gate,
+        min_challenger_hours=min_challenger_hours,
+        min_orders_filled=min_orders_filled,
+        min_realized_pnl_quote=min_realized_pnl_quote,
+        min_micro_quality_score=min_micro_quality_score,
+        min_nonnegative_ratio=min_nonnegative_ratio,
+        max_drawdown_deterioration_factor=max_drawdown_deterioration_factor,
+        micro_quality_tolerance=micro_quality_tolerance,
+        nonnegative_ratio_tolerance=nonnegative_ratio_tolerance,
+        max_time_to_fill_deterioration_factor=max_time_to_fill_deterioration_factor,
+    )
     payload = {
         "artifact_version": PAIRED_RUNTIME_ARTIFACT_VERSION,
         "mode": "paired_paper_live_runtime_v1",
@@ -197,6 +222,7 @@ async def run_recorded_paired_paper(
         },
         "gate": gate,
         "paired_report": paired_report,
+        "promotion_decision": promotion_decision,
     }
     write_paired_paper_report(report=paired_report, output_path=paired_report_path)
     _write_json(output_root / "latest.json", payload)
@@ -224,6 +250,15 @@ async def run_live_paired_paper(
     paper_micro_warmup_min_trade_events_per_market: int,
     out_dir: Path,
     min_matched_opportunities: int,
+    min_challenger_hours: float,
+    min_orders_filled: int,
+    min_realized_pnl_quote: float,
+    min_micro_quality_score: float,
+    min_nonnegative_ratio: float,
+    max_drawdown_deterioration_factor: float,
+    micro_quality_tolerance: float,
+    nonnegative_ratio_tolerance: float,
+    max_time_to_fill_deterioration_factor: float,
     replay_time_scale: float,
     replay_max_sleep_sec: float,
 ) -> dict[str, Any]:
@@ -274,6 +309,15 @@ async def run_live_paired_paper(
         tape=tape,
         output_root=Path(out_dir),
         min_matched_opportunities=min_matched_opportunities,
+        min_challenger_hours=min_challenger_hours,
+        min_orders_filled=min_orders_filled,
+        min_realized_pnl_quote=min_realized_pnl_quote,
+        min_micro_quality_score=min_micro_quality_score,
+        min_nonnegative_ratio=min_nonnegative_ratio,
+        max_drawdown_deterioration_factor=max_drawdown_deterioration_factor,
+        micro_quality_tolerance=micro_quality_tolerance,
+        nonnegative_ratio_tolerance=nonnegative_ratio_tolerance,
+        max_time_to_fill_deterioration_factor=max_time_to_fill_deterioration_factor,
         replay_time_scale=replay_time_scale,
         replay_max_sleep_sec=replay_max_sleep_sec,
         market_loader=lambda quote_value: list(markets),
@@ -396,6 +440,76 @@ def _build_paired_gate(*, report: dict[str, Any], min_matched_opportunities: int
     }
 
 
+def _build_paired_promotion_decision(
+    *,
+    champion_run_dir: Path,
+    challenger_run_dir: Path,
+    paired_report: dict[str, Any],
+    paired_gate: dict[str, Any],
+    min_challenger_hours: float,
+    min_orders_filled: int,
+    min_realized_pnl_quote: float,
+    min_micro_quality_score: float,
+    min_nonnegative_ratio: float,
+    max_drawdown_deterioration_factor: float,
+    micro_quality_tolerance: float,
+    nonnegative_ratio_tolerance: float,
+    max_time_to_fill_deterioration_factor: float,
+) -> dict[str, Any]:
+    champion_summary = _load_json(champion_run_dir / "summary.json")
+    challenger_summary = _load_json(challenger_run_dir / "summary.json")
+    champion_agg = aggregate_paper_lane_runs([champion_summary] if champion_summary else [])
+    challenger_agg = aggregate_paper_lane_runs([challenger_summary] if challenger_summary else [])
+    base_decision = compare_champion_challenger(
+        champion=champion_agg,
+        challenger=challenger_agg,
+        min_challenger_hours=min_challenger_hours,
+        min_orders_filled=min_orders_filled,
+        min_realized_pnl_quote=min_realized_pnl_quote,
+        min_micro_quality_score=min_micro_quality_score,
+        min_nonnegative_ratio=min_nonnegative_ratio,
+        max_drawdown_deterioration_factor=max_drawdown_deterioration_factor,
+        micro_quality_tolerance=micro_quality_tolerance,
+        nonnegative_ratio_tolerance=nonnegative_ratio_tolerance,
+        max_time_to_fill_deterioration_factor=max_time_to_fill_deterioration_factor,
+    )
+    hard_failures = list(base_decision.get("hard_failures") or [])
+    gate_pass = bool(paired_gate.get("pass"))
+    gate_reason = str(paired_gate.get("reason") or "").strip()
+    promote = bool(base_decision.get("promote", False)) and gate_pass
+    if not gate_pass and gate_reason:
+        hard_failures.append(gate_reason)
+    decision_text = "promote_challenger" if promote else ("keep_champion" if hard_failures else "hold_for_review")
+    return {
+        "comparison_mode": "paired_paper_runtime_decision_v1",
+        "paired_gate": dict(paired_gate),
+        "paired_report_excerpt": {
+            "clock_alignment": dict(paired_report.get("clock_alignment") or {}),
+            "paired_deltas": dict(paired_report.get("paired_deltas") or {}),
+            "taxonomy_counts": dict(paired_report.get("taxonomy_counts") or {}),
+            "report_path": str(paired_report.get("report_path") or ""),
+        },
+        "champion": champion_agg,
+        "challenger": challenger_agg,
+        "decision": {
+            **dict(base_decision),
+            "promote": promote,
+            "decision": decision_text,
+            "hard_failures": hard_failures,
+        },
+    }
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _load_quote_markets(upbit_settings: Any, *, quote: str) -> list[str]:
     quote_prefix = f"{str(quote).strip().upper()}-"
     with UpbitHttpClient(upbit_settings) as http_client:
@@ -475,6 +589,15 @@ def _build_parser() -> argparse.ArgumentParser:
     live_parser.add_argument("--paper-micro-warmup-min-trade-events-per-market", type=int, default=1)
     live_parser.add_argument("--out-dir", default="logs/paired_paper")
     live_parser.add_argument("--min-matched-opportunities", type=int, default=1)
+    live_parser.add_argument("--min-challenger-hours", type=float, default=12.0)
+    live_parser.add_argument("--min-orders-filled", type=int, default=2)
+    live_parser.add_argument("--min-realized-pnl-quote", type=float, default=0.0)
+    live_parser.add_argument("--min-micro-quality-score", type=float, default=0.25)
+    live_parser.add_argument("--min-nonnegative-ratio", type=float, default=0.34)
+    live_parser.add_argument("--max-drawdown-deterioration-factor", type=float, default=1.10)
+    live_parser.add_argument("--micro-quality-tolerance", type=float, default=0.02)
+    live_parser.add_argument("--nonnegative-ratio-tolerance", type=float, default=0.05)
+    live_parser.add_argument("--max-time-to-fill-deterioration-factor", type=float, default=1.25)
     live_parser.add_argument("--replay-time-scale", type=float, default=0.001)
     live_parser.add_argument("--replay-max-sleep-sec", type=float, default=0.25)
     return parser
@@ -512,6 +635,15 @@ def main() -> int:
             paper_micro_warmup_min_trade_events_per_market=int(args.paper_micro_warmup_min_trade_events_per_market),
             out_dir=Path(args.out_dir),
             min_matched_opportunities=int(args.min_matched_opportunities),
+            min_challenger_hours=float(args.min_challenger_hours),
+            min_orders_filled=int(args.min_orders_filled),
+            min_realized_pnl_quote=float(args.min_realized_pnl_quote),
+            min_micro_quality_score=float(args.min_micro_quality_score),
+            min_nonnegative_ratio=float(args.min_nonnegative_ratio),
+            max_drawdown_deterioration_factor=float(args.max_drawdown_deterioration_factor),
+            micro_quality_tolerance=float(args.micro_quality_tolerance),
+            nonnegative_ratio_tolerance=float(args.nonnegative_ratio_tolerance),
+            max_time_to_fill_deterioration_factor=float(args.max_time_to_fill_deterioration_factor),
             replay_time_scale=float(args.replay_time_scale),
             replay_max_sleep_sec=float(args.replay_max_sleep_sec),
         )
