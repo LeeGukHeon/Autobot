@@ -253,6 +253,12 @@ def _seed_preflight_minimum(project_root: Path) -> None:
     family_dir.mkdir(parents=True, exist_ok=True)
     (family_dir / "champion-run-000").mkdir(parents=True, exist_ok=True)
     (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-000"}), encoding="utf-8")
+    for state_db in (
+        project_root / "data" / "state" / "live_candidate" / "live_state.db",
+        project_root / "data" / "state" / "live_state.db",
+    ):
+        state_db.parent.mkdir(parents=True, exist_ok=True)
+        state_db.write_text("", encoding="utf-8")
 
 
 def _seed_latest_candidate_pointer(project_root: Path, run_id: str) -> None:
