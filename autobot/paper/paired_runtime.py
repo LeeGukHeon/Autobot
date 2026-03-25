@@ -127,7 +127,7 @@ class FanoutPublicWsClient:
     ) -> None:
         self._source_client = source_client
         self._source_markets = tuple(str(item).strip().upper() for item in source_markets if str(item).strip())
-        self._duration_sec = max(int(duration_sec), 1)
+        self._duration_sec = max(int(duration_sec), 0)
         self._orderbook_level = orderbook_level
         self._ticker_history: list[TickerEvent] = []
         self._trade_history: list[TradeEvent] = []
@@ -653,6 +653,7 @@ async def run_service_paired_paper(
         paper_micro_provider=paper_micro_provider,
         paper_micro_warmup_sec=paper_micro_warmup_sec,
         paper_micro_warmup_min_trade_events_per_market=paper_micro_warmup_min_trade_events_per_market,
+        allow_unbounded_duration=True,
     )
     challenger_settings = _build_paper_run_settings(
         model_ref=candidate_run_id,
@@ -667,6 +668,7 @@ async def run_service_paired_paper(
         paper_micro_provider=paper_micro_provider,
         paper_micro_warmup_sec=paper_micro_warmup_sec,
         paper_micro_warmup_min_trade_events_per_market=paper_micro_warmup_min_trade_events_per_market,
+        allow_unbounded_duration=True,
     )
 
     fanout_client = FanoutPublicWsClient(
@@ -787,6 +789,7 @@ def _build_paper_run_settings(
     paper_micro_provider: str,
     paper_micro_warmup_sec: int,
     paper_micro_warmup_min_trade_events_per_market: int,
+    allow_unbounded_duration: bool = False,
 ) -> PaperRunSettings:
     overrides = paper_alpha_preset_overrides(preset)
     selection_top_pct = float(overrides.get("top_pct", 0.50))
@@ -803,7 +806,7 @@ def _build_paper_run_settings(
     else:
         micro_order_policy = MicroOrderPolicySettings(enabled=True)
     return PaperRunSettings(
-        duration_sec=max(int(duration_sec), 1),
+        duration_sec=max(int(duration_sec), 0) if allow_unbounded_duration else max(int(duration_sec), 1),
         quote=str(quote).strip().upper() or "KRW",
         top_n=max(int(top_n), 1),
         tf=str(tf).strip().lower() or "5m",

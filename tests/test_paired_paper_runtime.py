@@ -129,6 +129,39 @@ class _FakeFanoutWsClient:
             yield None
 
 
+class _RecordingSourceWsClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, float | None]] = []
+
+    async def stream_ticker(self, markets: list[str] | tuple[str, ...], *, duration_sec: float | None = None):
+        _ = markets
+        self.calls.append(("ticker", duration_sec))
+        yield TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=100.0,
+            acc_trade_price_24h=1_000_000_000_000.0,
+        )
+
+    async def stream_trade(self, markets: list[str] | tuple[str, ...], *, duration_sec: float | None = None):
+        _ = markets
+        self.calls.append(("trade", duration_sec))
+        if False:
+            yield None
+
+    async def stream_orderbook(
+        self,
+        markets: list[str] | tuple[str, ...],
+        *,
+        duration_sec: float | None = None,
+        level: int | str | None = 0,
+    ):
+        _ = (markets, level)
+        self.calls.append(("orderbook", duration_sec))
+        if False:
+            yield None
+
+
 def _make_settings(*, model_ref: str, out_root: Path) -> PaperRunSettings:
     return PaperRunSettings(
         duration_sec=2,
@@ -318,3 +351,43 @@ def test_run_live_paired_paper_uses_single_feed_fanout_runtime(tmp_path: Path, m
     assert latest["capture"]["source_mode"] == "live_ws_fanout"
     assert latest["capture"]["ticker_events_captured"] == 3
     assert latest["promotion_decision"]["decision"]["promote"] is True
+
+
+def test_build_paper_run_settings_allows_unbounded_duration_for_service_mode() -> None:
+    settings = paired_runtime_module._build_paper_run_settings(
+        model_ref="candidate-run",
+        model_family="train_v4_crypto_cs",
+        feature_set="v4",
+        preset="live_v4",
+        quote="KRW",
+        top_n=1,
+        tf="5m",
+        duration_sec=0,
+        paper_feature_provider="live_v4",
+        paper_micro_provider="live_ws",
+        paper_micro_warmup_sec=60,
+        paper_micro_warmup_min_trade_events_per_market=1,
+        allow_unbounded_duration=True,
+    )
+
+    assert settings.duration_sec == 0
+
+
+def test_fanout_public_ws_client_preserves_unbounded_duration_when_zero() -> None:
+    source = _RecordingSourceWsClient()
+    client = paired_runtime_module.FanoutPublicWsClient(
+        source_client=source,
+        source_markets=["KRW-BTC"],
+        duration_sec=0,
+        orderbook_level=0,
+    )
+
+    async def _consume_one() -> None:
+        async for _event in client.stream_ticker(["KRW-BTC"]):
+            await client.close()
+            break
+
+    asyncio.run(_consume_one())
+
+    assert source.calls
+    assert source.calls[0] == ("ticker", None)
