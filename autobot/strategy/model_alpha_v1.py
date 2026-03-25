@@ -693,6 +693,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     "strategy": "model_alpha_v1",
                     "model_prob": float(row.get("model_prob", 0.0)),
                     "model_prob_raw": float(row.get("model_prob_raw", row.get("model_prob", 0.0))),
+                    "uncertainty": _resolve_opportunity_uncertainty(row),
                     "selection_min_prob_used": float(min_prob_used),
                     "selection_min_prob_source": str(min_prob_source),
                     "selection_top_pct_used": float(top_pct_used),

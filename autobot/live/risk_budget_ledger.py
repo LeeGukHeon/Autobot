@@ -309,11 +309,17 @@ def _summarize_current_exposure(
     decision_target_notional_quote: float | None,
 ) -> dict[str, Any]:
     positions = []
+    open_orders = []
     if hasattr(store, "list_positions"):
         try:
             positions = list(store.list_positions())
         except Exception:
             positions = []
+    if hasattr(store, "list_orders"):
+        try:
+            open_orders = list(store.list_orders(open_only=True))
+        except Exception:
+            open_orders = []
     current_total = 0.0
     cluster_map: dict[str, dict[str, Any]] = {}
     for row in positions:
@@ -329,13 +335,41 @@ def _summarize_current_exposure(
             cluster_id,
             {
                 "cluster_id": cluster_id,
+                "position_notional_quote": 0.0,
+                "open_bid_order_notional_quote": 0.0,
                 "gross_notional_quote": 0.0,
                 "position_count": 0,
+                "open_bid_order_count": 0,
                 "markets": [],
             },
         )
+        bucket["position_notional_quote"] = float(bucket["position_notional_quote"]) + float(notional_quote)
         bucket["gross_notional_quote"] = float(bucket["gross_notional_quote"]) + float(notional_quote)
         bucket["position_count"] = int(bucket["position_count"]) + 1
+        if market not in bucket["markets"]:
+            bucket["markets"].append(market)
+    for row in open_orders:
+        market = str((row or {}).get("market", "")).strip().upper()
+        exposure_quote = _estimate_open_bid_order_cash_at_risk_quote(row)
+        if not market or exposure_quote <= 0.0:
+            continue
+        current_total += exposure_quote
+        cluster_id = _classify_market_cluster(market)
+        bucket = cluster_map.setdefault(
+            cluster_id,
+            {
+                "cluster_id": cluster_id,
+                "position_notional_quote": 0.0,
+                "open_bid_order_notional_quote": 0.0,
+                "gross_notional_quote": 0.0,
+                "position_count": 0,
+                "open_bid_order_count": 0,
+                "markets": [],
+            },
+        )
+        bucket["open_bid_order_notional_quote"] = float(bucket["open_bid_order_notional_quote"]) + float(exposure_quote)
+        bucket["gross_notional_quote"] = float(bucket["gross_notional_quote"]) + float(exposure_quote)
+        bucket["open_bid_order_count"] = int(bucket["open_bid_order_count"]) + 1
         if market not in bucket["markets"]:
             bucket["markets"].append(market)
     decision_cluster_id = _classify_market_cluster(decision_market)
@@ -367,6 +401,32 @@ def _summarize_current_exposure(
             "decision_cluster_projected_notional_quote": float(decision_cluster_projected),
         },
     }
+
+
+def _estimate_open_bid_order_cash_at_risk_quote(order: dict[str, Any] | None) -> float:
+    payload = dict(order or {})
+    if str(payload.get("side", "")).strip().lower() != "bid":
+        return 0.0
+    ord_type = str(payload.get("ord_type", "")).strip().lower()
+    executed_funds = max(_safe_optional_float(payload.get("executed_funds")) or 0.0, 0.0)
+    remaining_fee = _safe_optional_float(payload.get("remaining_fee"))
+    reserved_fee = _safe_optional_float(payload.get("reserved_fee"))
+    paid_fee = max(_safe_optional_float(payload.get("paid_fee")) or 0.0, 0.0)
+    fee_reserve_quote = 0.0
+    if remaining_fee is not None:
+        fee_reserve_quote = max(float(remaining_fee), 0.0)
+    elif reserved_fee is not None:
+        fee_reserve_quote = max(float(reserved_fee) - float(paid_fee), 0.0)
+
+    if ord_type == "best":
+        quote_budget = max(_safe_optional_float(payload.get("price")) or 0.0, 0.0)
+        return max(float(quote_budget) - float(executed_funds), 0.0) + float(fee_reserve_quote)
+
+    price = max(_safe_optional_float(payload.get("price")) or 0.0, 0.0)
+    volume_req = max(_safe_optional_float(payload.get("volume_req")) or 0.0, 0.0)
+    volume_filled = max(_safe_optional_float(payload.get("volume_filled")) or 0.0, 0.0)
+    remaining_volume = max(float(volume_req) - float(volume_filled), 0.0)
+    return max(float(price) * float(remaining_volume), 0.0) + float(fee_reserve_quote)
 
 
 def _resolve_entry_state(
