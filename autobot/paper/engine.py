@@ -15,7 +15,12 @@ from typing import Any, Callable, Sequence
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent
 from autobot.common.execution_structure import summarize_fill_records
 from autobot.common.event_store import JsonlEventStore
-from autobot.common.opportunity_log import append_counterfactual_actions, append_strategy_opportunities
+from autobot.common.opportunity_log import (
+    append_counterfactual_actions,
+    append_strategy_opportunities,
+    reset_counterfactual_action_log,
+    reset_opportunity_log,
+)
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
     PRICE_MODE_CROSS_1T,
@@ -1086,6 +1091,8 @@ class PaperRunEngine:
         with JsonlEventStore(run_root) as store:
             runtime_metadata = _resolve_paper_runtime_metadata(self._run_settings)
             if strategy_mode == "model_alpha_v1" and model_strategy is not None:
+                reset_opportunity_log(run_root / "opportunity_log.jsonl")
+                reset_counterfactual_action_log(run_root / "counterfactual_action_log.jsonl")
                 predictor_run_id = str(getattr(model_strategy, "predictor_run_id", "")).strip()
                 if predictor_run_id:
                     runtime_metadata["paper_runtime_model_run_id"] = predictor_run_id

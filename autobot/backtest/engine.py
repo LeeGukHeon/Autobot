@@ -12,7 +12,12 @@ import time
 from typing import Any, Callable, Sequence
 
 from autobot.common.event_store import JsonlEventStore
-from autobot.common.opportunity_log import append_counterfactual_actions, append_strategy_opportunities
+from autobot.common.opportunity_log import (
+    append_counterfactual_actions,
+    append_strategy_opportunities,
+    reset_counterfactual_action_log,
+    reset_opportunity_log,
+)
 from autobot.common.execution_structure import summarize_fill_records
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
@@ -935,6 +940,9 @@ class BacktestRunEngine:
             write_fills=True,
             write_equity=True,
         ) as store:
+            if strategy_mode == "model_alpha_v1":
+                reset_opportunity_log(run_root / "opportunity_log.jsonl")
+                reset_counterfactual_action_log(run_root / "counterfactual_action_log.jsonl")
             event_count = 0
 
             def append_event(event_type: str, ts_ms: int, payload: dict[str, Any] | None = None) -> None:

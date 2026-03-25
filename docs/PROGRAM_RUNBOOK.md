@@ -401,6 +401,8 @@ Important log / artifact roots:
 - `logs/live_execution_override_audit`
 - `logs/live_rollout`
 - `logs/operational_overlay`
+- `logs/opportunity_log`
+  - live opportunity / counterfactual action logs by runtime unit
 
 Important rollout artifacts:
 
@@ -453,7 +455,6 @@ Observed on 2026-03-23:
 ### 7.1 Continuous Services
 
 - `autobot-paper-v4.service`
-- `autobot-paper-v4-replay.service`
 - `autobot-live-alpha.service`
 - `autobot-live-alpha-candidate.service`
 - `autobot-ws-public.service`
@@ -461,9 +462,10 @@ Observed on 2026-03-23:
 - `autobot-storage-retention.service`
   - timer-driven oneshot
 
-Historical or optional units still referenced by scripts:
+Legacy or optional units not part of target topology:
 
 - `autobot-paper-v4-challenger.service`
+- `autobot-paper-v4-replay.service`
 - `autobot-live-alpha-replay-shadow.service`
 
 ### 7.2 Timers
@@ -484,7 +486,6 @@ Historical or optional units still referenced by scripts:
 Observed current service state:
 
 - `autobot-paper-v4.service`: active
-- `autobot-paper-v4-replay.service`: active
 - `autobot-live-alpha.service`: inactive
 - `autobot-live-alpha-candidate.service`: active
 - `autobot-ws-public.service`: active
@@ -492,6 +493,11 @@ Observed current service state:
 - `autobot-v4-rank-shadow.service`: failed
 - `autobot-live-alpha-replay-shadow.service`: failed
 - `autobot-v4-challenger-spawn.service`: activating / start-running when inspected
+
+Replay note:
+
+- replay clone/service observed in older OCI state is legacy-only
+- it is excluded from target topology by [REPLAY_LEGACY_CLEANUP_POLICY_2026-03-25.md](/d:/MyApps/Autobot/docs/REPLAY_LEGACY_CLEANUP_POLICY_2026-03-25.md)
 
 Observed current registry / governance state:
 
@@ -571,7 +577,6 @@ cd /home/ubuntu/MyApps/Autobot
 git status --short
 git rev-parse HEAD
 systemctl status autobot-paper-v4.service --no-pager
-systemctl status autobot-paper-v4-replay.service --no-pager
 systemctl status autobot-live-alpha.service --no-pager
 systemctl status autobot-live-alpha-candidate.service --no-pager
 systemctl status autobot-ws-public.service --no-pager
@@ -583,7 +588,6 @@ systemctl list-timers --all | grep autobot
 
 ```bash
 journalctl -u autobot-paper-v4.service -n 200 --no-pager
-journalctl -u autobot-paper-v4-replay.service -n 200 --no-pager
 journalctl -u autobot-live-alpha.service -n 200 --no-pager
 journalctl -u autobot-live-alpha-candidate.service -n 200 --no-pager
 journalctl -u autobot-live-execution-policy.service -n 200 --no-pager
@@ -591,6 +595,14 @@ journalctl -u autobot-v4-challenger-spawn.service -n 200 --no-pager
 journalctl -u autobot-v4-challenger-promote.service -n 200 --no-pager
 journalctl -u autobot-v4-rank-shadow.service -n 200 --no-pager
 journalctl -u autobot-dashboard.service -n 200 --no-pager
+```
+
+Opportunity / counterfactual artifacts:
+
+```bash
+find data/paper/runs -maxdepth 2 -name 'opportunity_log.jsonl'
+find data/paper/runs -maxdepth 2 -name 'counterfactual_action_log.jsonl'
+find logs/opportunity_log -maxdepth 3 -type f
 ```
 
 ### 9.3 Rollout, Breaker, And Execution Checks
