@@ -4,7 +4,7 @@ from autobot.backtest.engine import BacktestExecutionGateway
 from autobot.backtest.exchange import BacktestSimExchange
 from autobot.backtest.types import CandleBar
 from autobot.execution.intent import new_order_intent
-from autobot.paper.sim_exchange import MarketRules, round_price_to_tick
+from autobot.paper.sim_exchange import MarketRules, PaperOrder, round_price_to_tick
 from autobot.strategy.micro_snapshot import MicroSnapshot
 
 
@@ -373,3 +373,95 @@ def test_resting_queue_uses_orderbook_event_sequence_within_snapshot_window() ->
         ),
     )
     assert len(filled) == 1
+
+
+class _ReplaceOnlyExchange:
+    def __init__(self) -> None:
+        self.orders: dict[str, PaperOrder] = {}
+        self.calls: list[dict[str, object]] = []
+
+    def submit_order_deferred(
+        self,
+        *,
+        intent,
+        rules,
+        ts_ms,
+        activate_on_index,
+        latest_trade_price=None,
+        micro_snapshot=None,
+        reprice_attempt=0,
+    ):
+        _ = (rules, activate_on_index, micro_snapshot)
+        order_id = f"order-{len(self.calls) + 1}"
+        order = PaperOrder(
+            order_id=order_id,
+            intent_id=intent.intent_id,
+            state="OPEN",
+            created_ts_ms=int(ts_ms),
+            updated_ts_ms=int(ts_ms),
+            market=intent.market,
+            side=intent.side,
+            ord_type=intent.ord_type,
+            time_in_force=intent.time_in_force,
+            price=float(intent.price),
+            volume_req=float(intent.volume),
+            volume_filled=0.0,
+            avg_fill_price=0.0,
+            fee_paid_quote=0.0,
+            maker_or_taker="maker",
+            reprice_attempt=int(reprice_attempt),
+        )
+        self.orders[order_id] = order
+        self.calls.append(
+            {
+                "order_id": order_id,
+                "latest_trade_price": latest_trade_price,
+                "reprice_attempt": int(reprice_attempt),
+            }
+        )
+        return order, None
+
+    def get_order(self, order_id: str):
+        return self.orders.get(order_id)
+
+    def match_orders_on_bar(self, *, bar, bar_index, rules, micro_snapshot=None):
+        _ = (bar, bar_index, rules, micro_snapshot)
+        return []
+
+    def cancel_order(self, order_id: str, *, ts_ms: int, reason: str | None = None):
+        order = self.orders.get(order_id)
+        if order is None:
+            return None
+        order.state = "CANCELED"
+        order.updated_ts_ms = int(ts_ms)
+        order.failure_reason = reason
+        return order
+
+
+def test_backtest_gateway_reprice_path_uses_submit_order_deferred() -> None:
+    exchange = _ReplaceOnlyExchange()
+    gateway = BacktestExecutionGateway(
+        exchange=exchange,  # type: ignore[arg-type]
+        order_timeout_bars=1,
+        reprice_max_attempts=1,
+        reprice_tick_steps=1,
+    )
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=100.0,
+        volume=100.0,
+        reason_code="REPRICE_TEST",
+        ts_ms=0,
+    )
+
+    submit = gateway.submit_intent(intent=intent, rules=rules, latest_trade_price=100.0, bar_index=0, ts_ms=0)
+    assert len(submit.orders_submitted) == 1
+
+    update = gateway.on_bar(bar=_bar(ts_ms=60_000, low=99.0, high=101.0, close=100.0), bar_index=1, rules=rules)
+
+    assert len(update.orders_submitted) == 1
+    assert update.orders_submitted[0].reprice_attempt == 1
+    assert exchange.calls[-1]["reprice_attempt"] == 1
+    assert exchange.calls[-1]["latest_trade_price"] == 100.0

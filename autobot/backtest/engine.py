@@ -612,11 +612,12 @@ class BacktestExecutionGateway:
                     "micro_diagnostics": dict(policy_diagnostics),
                 },
             )
-            new_order, new_fill = self._exchange.submit_limit_order_deferred(
+            new_order, new_fill = self._exchange.submit_order_deferred(
                 intent=reprice_intent,
                 rules=rules,
                 ts_ms=bar.ts_ms,
                 activate_on_index=bar_index + 1,
+                latest_trade_price=bar.close,
                 micro_snapshot=bar_snapshot,
                 reprice_attempt=pending.replace_count + 1,
             )
