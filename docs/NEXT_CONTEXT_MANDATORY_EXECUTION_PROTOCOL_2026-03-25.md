@@ -174,11 +174,13 @@ The next context must start from the first unchecked item.
   Current implementation note:
   implemented by extending `StrategyOpportunityRecord` with `candidate_actions_json` and wiring `counterfactual_action_log.jsonl` emission through `autobot/common/opportunity_log.py` in `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed multiple candidate execution actions for the same opportunity are recoverable from the artifact, and live/paper reflected state writes the new counterfactual log alongside `opportunity_log`.
 
-- [ ] 09. Implement minimal `paired paper` harness
+- [x] 09. Implement minimal `paired paper` harness
   Required references:
   [BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md)
   Done when:
   champion and challenger can be compared on the same feed and same decision clock.
+  Current implementation note:
+  implemented in `autobot/paper/paired_reporting.py` and `autobot/paper/paired_engine.py` as a minimal matched-opportunity harness over `opportunity_log`, `events.jsonl`, and `trades.csv`. Local validation on 2026-03-25 confirmed the harness writes a machine-readable paired report with exact opportunity-set alignment, disagreement taxonomy, matched fill/slippage deltas, and aggregate realized-PnL delta. A paired integration test now runs two paper engines against the same synthetic ticker feed and same event timestamps, then verifies the resulting `paired_report.json` reports `pair_ready=true`.
 
 - [ ] 10. Add `risk_budget_ledger`
   Required references:
