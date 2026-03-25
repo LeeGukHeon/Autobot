@@ -1399,6 +1399,10 @@ def handle_strategy_intent(
     )
     meta_payload = dict(execution_resolution.meta_payload)
     runtime_recommendations = getattr(predictor, "runtime_recommendations", {}) or {}
+    meta_payload["runtime"] = {
+        "live_runtime_model_run_id": predictor.run_dir.name,
+        "model_family": settings.daemon.runtime_model_family,
+    }
     selection_score_value = safe_optional_float_fn(getattr(strategy_intent, "prob", None))
     if selection_score_value is None:
         selection_score_value = safe_optional_float_fn(getattr(strategy_intent, "score", None))
@@ -1498,10 +1502,6 @@ def handle_strategy_intent(
             ts_ms=ts_ms,
         )
         return "skipped"
-    meta_payload["runtime"] = {
-        "live_runtime_model_run_id": predictor.run_dir.name,
-        "model_family": settings.daemon.runtime_model_family,
-    }
     meta_payload["admissibility"] = admissibility_report
     execution_payload = dict(meta_payload.get("execution") or {})
     execution_policy_payload = dict(meta_payload.get("execution_policy") or {})

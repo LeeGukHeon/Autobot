@@ -361,7 +361,7 @@ def _extract_budget_reason_codes(
         admissibility_decision.get("reject_code"),
     ):
         text = _optional_text(value)
-        if text is None or text in {"POLICY_DISABLED", "ALLOW", "OK", "PASSED"}:
+        if text is None or text in {"POLICY_DISABLED", "POLICY_OK", "ALLOW", "OK", "PASSED"}:
             continue
         if text not in reasons:
             reasons.append(text)

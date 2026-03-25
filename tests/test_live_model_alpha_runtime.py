@@ -505,6 +505,7 @@ def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: P
     risk_budget_rows = [json.loads(line) for line in risk_budget_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert risk_budget_rows
     assert risk_budget_rows[-1]["status"] == "SHADOW"
+    assert risk_budget_rows[-1]["runtime_model_run_id"] == "run-live"
     assert risk_budget_rows[-1]["sizing"]["target_notional_quote"] is not None
     risk_budget_latest_path = Path(str(summary["risk_budget_latest_path"]))
     assert risk_budget_latest_path.exists()
