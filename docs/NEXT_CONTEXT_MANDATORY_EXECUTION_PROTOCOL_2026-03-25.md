@@ -99,6 +99,18 @@ Unless the user explicitly waives it, do not mark implementation work complete u
 
 If only some of those steps were done, say so explicitly and do not call the work complete.
 
+### Rule 9
+
+For operational checklist items, code existence plus local/server tests are still not sufficient to close the checkbox.
+
+Do not mark an operational item complete unless all of the following are also confirmed:
+
+- the current OCI operating path is actually wired to use the new logic
+- the currently running unit, timer, or batch entrypoint is using it in practice
+- a live or actively-produced reflected artifact, log, or machine-readable linkage confirms that usage
+
+If an implementation exists but is only manually runnable or smoke-tested, keep the item unchecked and describe it as implemented but not yet operationally wired.
+
 
 ## 3. Canonical Ordered Checklist
 
@@ -164,7 +176,7 @@ The next context must start from the first unchecked item.
   Done when:
   a single opportunity unit can be reconstructed from logs.
   Current implementation note:
-  implemented via `autobot/common/opportunity_log.py` plus strategy-level `StrategyOpportunityRecord` emission in `autobot/strategy/model_alpha_v1.py`, and wired into `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed `opportunity_log.jsonl` is written for backtest/paper model-alpha runs and `logs/opportunity_log/<unit>/latest.jsonl` is written for live runtime decisions with stable `opportunity_id`, `feature_hash`, `selection_score`, `chosen_action`, and `skip_reason_code` skeleton fields.
+  implemented via `autobot/common/opportunity_log.py` plus strategy-level `StrategyOpportunityRecord` emission in `autobot/strategy/model_alpha_v1.py`, and wired into `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed `opportunity_log.jsonl` is written for backtest/paper model-alpha runs and `logs/opportunity_log/<unit>/latest.jsonl` is written for live runtime decisions with stable `opportunity_id`, `feature_hash`, `selection_score`, `chosen_action`, and `skip_reason_code` skeleton fields. Direct OCI operational validation on 2026-03-25 confirmed the currently active `autobot-paper-v4.service` and `autobot-live-alpha-candidate.service` are writing non-empty `opportunity_log` artifacts in the running server environment.
 
 - [x] 08. Add `counterfactual_action_log` or equivalent candidate-action capture
   Required references:
@@ -172,15 +184,15 @@ The next context must start from the first unchecked item.
   Done when:
   multiple candidate actions for the same opportunity are recoverable.
   Current implementation note:
-  implemented by extending `StrategyOpportunityRecord` with `candidate_actions_json` and wiring `counterfactual_action_log.jsonl` emission through `autobot/common/opportunity_log.py` in `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed multiple candidate execution actions for the same opportunity are recoverable from the artifact, and live/paper reflected state writes the new counterfactual log alongside `opportunity_log`.
+  implemented by extending `StrategyOpportunityRecord` with `candidate_actions_json` and wiring `counterfactual_action_log.jsonl` emission through `autobot/common/opportunity_log.py` in `autobot/backtest/engine.py`, `autobot/paper/engine.py`, and `autobot/live/model_alpha_runtime.py`. Local validation on 2026-03-25 confirmed multiple candidate execution actions for the same opportunity are recoverable from the artifact, and live/paper reflected state writes the new counterfactual log alongside `opportunity_log`. Direct OCI operational validation on 2026-03-25 confirmed the currently active `autobot-paper-v4.service` and `autobot-live-alpha-candidate.service` are writing non-empty `counterfactual_action_log` artifacts in the running server environment.
 
-- [x] 09. Implement minimal `paired paper` harness
+- [ ] 09. Implement minimal `paired paper` harness
   Required references:
   [BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md)
   Done when:
   champion and challenger can be compared on the same feed and same decision clock.
   Current implementation note:
-  implemented in `autobot/paper/paired_reporting.py` and `autobot/paper/paired_engine.py` as a minimal matched-opportunity harness over `opportunity_log`, `events.jsonl`, and `trades.csv`. Local validation on 2026-03-25 confirmed the harness writes a machine-readable paired report with exact opportunity-set alignment, disagreement taxonomy, matched fill/slippage deltas, and aggregate realized-PnL delta. A paired integration test now runs two paper engines against the same synthetic ticker feed and same event timestamps, then verifies the resulting `paired_report.json` reports `pair_ready=true`.
+  a minimal implementation exists in `autobot/paper/paired_reporting.py` and `autobot/paper/paired_engine.py`, and local plus OCI smoke validation confirmed it can write a machine-readable paired report over `opportunity_log`, `events.jsonl`, and `trades.csv`. However, the current operational promotion path still calls `autobot.common.paper_lane_evidence` from `scripts/daily_champion_challenger_v4_for_server.ps1`, does not invoke `autobot.paper.paired_engine`, and the running server topology is still separate champion/challenger paper services rather than one live paired fanout/event-clock harness. Therefore this item remains open until the actual OCI operating path is wired to paired paper and an actively-produced operational paired artifact is confirmed.
 
 - [ ] 10. Add `risk_budget_ledger`
   Required references:
