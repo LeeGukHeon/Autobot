@@ -1138,11 +1138,17 @@ if ($runPromotionPhase) {
                     cutover_artifact = $promoteCutoverLatestPath
                 }
             } else {
-                $report.steps.stop_candidate_targets_after_promote = [ordered]@{
-                    attempted = $false
-                    reason = if ($shouldPromote) { "DRY_RUN" } else { "PROMOTION_NOT_PERFORMED" }
+                if (-not $DryRun) {
+                    $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
+                    $report.steps.clear_latest_candidate = $clearCandidatePointerStep
+                } else {
+                    $report.steps.clear_latest_candidate = [ordered]@{
+                        attempted = $false
+                        reason = "DRY_RUN"
+                        candidate_run_id = $candidateRunId
+                    }
                 }
-                $report.steps.clear_latest_candidate = [ordered]@{
+                $report.steps.stop_candidate_targets_after_promote = [ordered]@{
                     attempted = $false
                     reason = if ($shouldPromote) { "DRY_RUN" } else { "PROMOTION_NOT_PERFORMED" }
                 }

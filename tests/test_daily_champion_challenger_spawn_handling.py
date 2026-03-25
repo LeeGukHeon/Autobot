@@ -1251,6 +1251,8 @@ def test_promote_only_holds_when_paired_paper_gate_fails(tmp_path: Path) -> None
     )
 
     state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
         json.dumps(
@@ -1296,6 +1298,13 @@ def test_promote_only_holds_when_paired_paper_gate_fails(tmp_path: Path) -> None
     assert latest["steps"]["paired_paper_previous_challenger"]["gate"]["pass"] is False
     assert latest["steps"]["promote_previous_challenger"]["promoted"] is False
     assert latest["steps"]["promote_previous_challenger"]["reason"] == "PAIRED_PAPER_NOT_READY"
+    assert latest["steps"]["clear_latest_candidate"]["removed_paths"] == [
+        str(family_pointer),
+        str(global_pointer),
+    ]
+    assert not family_pointer.exists()
+    assert not global_pointer.exists()
+    assert not state_path.exists()
 
 
 def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tmp_path: Path) -> None:
