@@ -749,6 +749,7 @@ def test_spawn_only_starts_bootstrap_candidate_as_non_promotable_challenger(tmp_
     assert latest["steps"]["train_candidate"]["bootstrap_only"] is True
     assert latest["steps"]["start_challenger"]["candidate_run_id"] == "candidate-run-bootstrap"
     assert latest["steps"]["start_paired_paper"]["unit_name"] == "autobot-paper-v4-paired.service"
+    assert latest["steps"]["start_paired_paper"]["candidate_run_id"] == "candidate-run-bootstrap"
     assert state["candidate_run_id"] == "candidate-run-bootstrap"
     assert state["lane_mode"] == "bootstrap_latest_inclusive"
     assert state["promotion_eligible"] is False
@@ -1346,9 +1347,12 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
     family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
     global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
     state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    spawn_latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
     assert family_pointer.exists()
     assert global_pointer.exists()
     assert state_path.exists()
+    assert spawn_latest["steps"]["start_paired_paper"]["unit_name"] == "autobot-paper-v4-paired.service"
+    assert spawn_latest["steps"]["start_paired_paper"]["candidate_run_id"] == "candidate-run-e2e"
 
     sudo_dir = tmp_path
     _make_fake_sudo(sudo_dir)
