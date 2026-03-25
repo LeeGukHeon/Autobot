@@ -123,6 +123,15 @@ function Invoke-ExternalCommand {
     }
 }
 
+function Stop-And-Disable-UnitBestEffort {
+    param([string]$UnitName)
+    if ([string]::IsNullOrWhiteSpace($UnitName)) {
+        return
+    }
+    & sudo systemctl stop $UnitName 2>$null
+    & sudo systemctl disable $UnitName 2>$null
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -307,6 +316,15 @@ if (-not $NoStart) {
     & sudo systemctl restart $PaperUnitName
     if ($LASTEXITCODE -ne 0) {
         throw "systemctl restart failed: $PaperUnitName"
+    }
+}
+
+if ($PaperPreset -eq "paired_v4") {
+    foreach ($legacyUnit in @("autobot-paper-v4.service", "autobot-paper-v4-challenger.service")) {
+        if ($legacyUnit -eq $PaperUnitName) {
+            continue
+        }
+        Stop-And-Disable-UnitBestEffort -UnitName $legacyUnit
     }
 }
 

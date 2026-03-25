@@ -748,7 +748,7 @@ def test_spawn_only_starts_bootstrap_candidate_as_non_promotable_challenger(tmp_
 
     assert latest["steps"]["train_candidate"]["bootstrap_only"] is True
     assert latest["steps"]["start_challenger"]["candidate_run_id"] == "candidate-run-bootstrap"
-    assert latest["steps"]["start_challenger"]["bootstrap_only"] is True
+    assert latest["steps"]["start_paired_paper"]["unit_name"] == "autobot-paper-v4-paired.service"
     assert state["candidate_run_id"] == "candidate-run-bootstrap"
     assert state["lane_mode"] == "bootstrap_latest_inclusive"
     assert state["promotion_eligible"] is False
@@ -1146,8 +1146,8 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
         "logs/paired_paper/latest.json"
     )
     assert promote_step["promoted"] is True
-    assert promote_step["restarted_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
-    assert promote_step["started_from_inactive_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
+    assert promote_step["restarted_units"] == ["autobot-live-alpha.service"]
+    assert promote_step["started_from_inactive_units"] == ["autobot-live-alpha.service"]
     assert promote_step["skipped_units"] == []
     assert "restart autobot-live-alpha.service" in systemctl_calls
 
@@ -1409,5 +1409,4 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
     assert not family_pointer.exists()
     assert not global_pointer.exists()
     assert not state_path.exists()
-    assert "restart autobot-paper-v4.service" in systemctl_calls
     assert "stop autobot-live-alpha-candidate.service" in systemctl_calls

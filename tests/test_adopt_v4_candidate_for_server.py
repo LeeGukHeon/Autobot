@@ -93,6 +93,8 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
                 [string]$ProjectRoot = "",
                 [string]$PythonExe = "",
                 [string]$PaperUnitName = "",
+                [string]$PaperPreset = "",
+                [string]$PaperRuntimeRole = "",
                 [string]$PaperModelRefPinned = "",
                 [string]$PaperCliArgs = ""
             )
@@ -101,6 +103,8 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
             @{
                 paper_unit_name = $PaperUnitName
+                paper_preset = $PaperPreset
+                paper_runtime_role = $PaperRuntimeRole
                 paper_model_ref_pinned = $PaperModelRefPinned
                 paper_cli_args = $PaperCliArgs
             } | ConvertTo-Json -Depth 4 | Set-Content -Path $logPath -Encoding UTF8
@@ -232,7 +236,9 @@ def test_adopt_v4_candidate_for_server_updates_pointers_state_and_artifact_statu
     assert report["steps"]["restart_candidate_targets"]["started_from_inactive_units"] == [
         "autobot-live-alpha-candidate.service"
     ]
-    assert runtime_install["paper_model_ref_pinned"] == "run-001"
+    assert runtime_install["paper_unit_name"] == "autobot-paper-v4-paired.service"
+    assert runtime_install["paper_preset"] == "paired_v4"
+    assert runtime_install["paper_runtime_role"] == "paired"
     assert artifact_status["status"] == "candidate_adopted"
     assert artifact_status["candidate_adopted"] is True
     assert "restart autobot-live-alpha-candidate.service" in systemctl_log

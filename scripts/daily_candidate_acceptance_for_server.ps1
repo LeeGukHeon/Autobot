@@ -179,8 +179,9 @@ function Invoke-PreflightCapture {
             "autobot-v4-challenger-promote.service"
         )
         $expectedUnitStates = @(
-            "autobot-paper-v4.service=enabled",
+            "autobot-paper-v4.service=disabled",
             "autobot-paper-v4-challenger.service=disabled",
+            "autobot-paper-v4-paired.service=enabled",
             "autobot-v4-challenger-spawn.timer=enabled",
             "autobot-v4-challenger-promote.timer=enabled",
             "autobot-paper-v4-replay.service=disabled",

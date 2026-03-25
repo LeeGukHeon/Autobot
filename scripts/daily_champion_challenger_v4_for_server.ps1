@@ -181,9 +181,10 @@ function Invoke-PreflightCapture {
                 $failedUnitsList += $value
             }
             $failedUnits = Join-DelimitedStringArray -Values $failedUnitsList
-            $expectedUnitStates = @(
-                ($ChampionUnit + "=enabled"),
+                $expectedUnitStates = @(
+                ($ChampionUnit + "=disabled"),
                 ($ChallengerUnit + "=disabled"),
+                ($PairedPaperUnitName + "=enabled"),
                 "autobot-v4-challenger-spawn.timer=enabled",
                 "autobot-v4-challenger-promote.timer=enabled",
                 "autobot-paper-v4-replay.service=disabled",
@@ -1064,18 +1065,12 @@ if ($runPromotionPhase) {
                 $restartedUnits = New-Object System.Collections.Generic.List[string]
                 $startedFromInactiveUnits = New-Object System.Collections.Generic.List[string]
                 $skippedUnits = New-Object System.Collections.Generic.List[object]
-                Restart-Unit -UnitName $ChampionUnitName
-                $restartedUnits.Add($ChampionUnitName) | Out-Null
-                if (-not $championWasActive) {
-                    $startedFromInactiveUnits.Add($ChampionUnitName) | Out-Null
-                    $script:rollbackStartedInactivePromotionUnits.Add($ChampionUnitName) | Out-Null
-                }
                 foreach ($unit in $resolvedPromotionTargetUnits) {
                     $trimmedUnit = [string]$unit
                     if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
                         continue
                     }
-                    if ($trimmedUnit -eq $ChampionUnitName) {
+                    if (($trimmedUnit -eq $ChampionUnitName) -or ($trimmedUnit -eq $PairedPaperUnitName)) {
                         continue
                     }
                     $targetPolicy = Resolve-PromotionTargetPolicy -Root $resolvedProjectRoot -UnitName $trimmedUnit
@@ -1238,12 +1233,7 @@ if ($runPromotionPhase) {
 
 $championRestartReason = ""
 if (-not $DryRun) {
-    if ($promotionPerformed) {
-        $championRestartReason = "PROMOTED_NEW_CHAMPION"
-    } elseif (-not $championWasActive) {
-        Restart-Unit -UnitName $ChampionUnitName
-        $championRestartReason = "CHAMPION_WAS_INACTIVE"
-    }
+    $championRestartReason = "PAIRED_PAPER_OWNS_PAPER_REFERENCE"
 }
 $report.steps.champion_runtime = [ordered]@{
     was_active_at_start = $championWasActive
@@ -1415,34 +1405,19 @@ if ($runSpawnPhase) {
             }
             $report.steps.update_latest_candidate = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "update_latest_candidate" -DefaultValue @{}
             $report.steps.start_challenger = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "start_challenger" -DefaultValue @{}
+            $report.steps.start_paired_paper = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "start_paired_paper" -DefaultValue @{}
             $report.steps.restart_candidate_targets = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $adoptReport -Name "steps" -DefaultValue @{}) -Name "restart_candidate_targets" -DefaultValue @{}
             $report.challenger_next = Get-PropValue -ObjectValue $adoptReport -Name "current_state" -DefaultValue @{}
-            $pairedInstallExec = Start-OrUpdate-PairedPaperUnit `
+        } else {
+            $challengerInstallExec = Start-OrUpdate-PairedPaperUnit `
                 -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
                 -Root $resolvedProjectRoot `
                 -PyExe $resolvedPythonExe `
                 -UnitName $PairedPaperUnitName
-            $report.steps.start_paired_paper = [ordered]@{
-                attempted = $true
-                command = $pairedInstallExec.Command
-                output_preview = $pairedInstallExec.Output
-                unit_name = $PairedPaperUnitName
-                candidate_run_id = $candidateRunId
-            }
-        } else {
-            $challengerInstallExec = Start-OrUpdate-ChallengerUnit `
-                -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
-                -Root $resolvedProjectRoot `
-                -PyExe $resolvedPythonExe `
-                -UnitName $ChallengerUnitName `
-                -CandidateRunId $candidateRunId
             $report.steps.start_challenger = [ordered]@{
-                command = $challengerInstallExec.Command
-                output_preview = $challengerInstallExec.Output
+                attempted = $false
+                reason = "REPLACED_BY_PAIRED_PAPER"
                 candidate_run_id = $candidateRunId
-                lane_mode = $acceptLaneMode
-                promotion_eligible = $acceptPromotionEligible
-                bootstrap_only = $bootstrapOnly
             }
             $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
             $nextState = [ordered]@{
@@ -1452,8 +1427,7 @@ if ($runSpawnPhase) {
                 champion_run_id_at_start = $championRunIdAtStart
                 started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
                 started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-                champion_unit = $ChampionUnitName
-                challenger_unit = $ChallengerUnitName
+                paired_paper_unit = $PairedPaperUnitName
                 promotion_target_units = @($resolvedPromotionTargetUnits)
                 lane_mode = $acceptLaneMode
                 promotion_eligible = $acceptPromotionEligible
@@ -1465,15 +1439,10 @@ if ($runSpawnPhase) {
                 Write-JsonFile -PathValue $statePath -Payload $nextState
             }
             $report.challenger_next = $nextState
-            $pairedInstallExec = Start-OrUpdate-PairedPaperUnit `
-                -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
-                -Root $resolvedProjectRoot `
-                -PyExe $resolvedPythonExe `
-                -UnitName $PairedPaperUnitName
             $report.steps.start_paired_paper = [ordered]@{
                 attempted = $true
-                command = $pairedInstallExec.Command
-                output_preview = $pairedInstallExec.Output
+                command = $challengerInstallExec.Command
+                output_preview = $challengerInstallExec.Output
                 unit_name = $PairedPaperUnitName
                 candidate_run_id = $candidateRunId
             }

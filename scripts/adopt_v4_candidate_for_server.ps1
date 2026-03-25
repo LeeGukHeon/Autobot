@@ -6,6 +6,7 @@ param(
     [string]$CandidateRunId = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
+    [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
     [string]$LaneMode = "",
@@ -218,8 +219,7 @@ $report = [ordered]@{
     batch_date = $resolvedBatchDate
     candidate_run_id = $resolvedCandidateRunId
     candidate_run_dir = $candidateRunDir
-    challenger_unit = $ChallengerUnitName
-    champion_unit = $ChampionUnitName
+    paired_paper_unit = $PairedPaperUnitName
     candidate_target_units = @($resolvedCandidateTargetUnits)
     promotion_target_units = @($resolvedPromotionTargetUnits)
     lane_mode = if ([string]::IsNullOrWhiteSpace($LaneMode)) { "promotion_strict" } else { $LaneMode }
@@ -270,24 +270,21 @@ try {
         "-File", $resolvedRuntimeInstallScript,
         "-ProjectRoot", $resolvedProjectRoot,
         "-PythonExe", $resolvedPythonExe,
-        "-PaperUnitName", $ChallengerUnitName,
-        "-PaperPreset", "live_v4",
-        "-PaperRuntimeRole", "challenger",
+        "-PaperUnitName", $PairedPaperUnitName,
+        "-PaperPreset", "paired_v4",
+        "-PaperRuntimeRole", "paired",
         "-PaperLaneName", "v4",
-        "-PaperModelRefPinned", $resolvedCandidateRunId,
-        "-NoBootstrapChampion",
-        "-NoEnable",
-        "-PaperCliArgs",
-        (Join-DelimitedStringArray -Values @("--model-ref", $resolvedCandidateRunId))
+        "-NoBootstrapChampion"
     )
     if ($DryRun) {
         $installArgs += "-DryRun"
     }
     $installExec = Invoke-CommandCapture -Exe $psExe -ArgList $installArgs
-    $report.steps.start_challenger = [ordered]@{
+    $report.steps.start_paired_paper = [ordered]@{
         attempted = $true
         command = $installExec.Command
         output_preview = $installExec.Output
+        unit_name = $PairedPaperUnitName
         candidate_run_id = $resolvedCandidateRunId
         lane_mode = $report.lane_mode
         promotion_eligible = [bool]$report.promotion_eligible
@@ -302,8 +299,7 @@ try {
         champion_run_id_at_start = $championRunIdAtStart
         started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
         started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-        champion_unit = $ChampionUnitName
-        challenger_unit = $ChallengerUnitName
+        paired_paper_unit = $PairedPaperUnitName
         promotion_target_units = @($resolvedPromotionTargetUnits)
         lane_mode = $report.lane_mode
         promotion_eligible = [bool]$report.promotion_eligible
@@ -346,6 +342,11 @@ try {
             candidate_run_id = $resolvedCandidateRunId
             reason = "NO_CANDIDATE_TARGET_UNITS"
         }
+    }
+    $report.steps.start_challenger = [ordered]@{
+        attempted = $false
+        reason = "REPLACED_BY_PAIRED_PAPER"
+        candidate_run_id = $resolvedCandidateRunId
     }
 
     $artifactStatusUpdate = Update-RunArtifactStatus -RunDir $candidateRunDir -RunId $resolvedCandidateRunId -Status "candidate_adopted"
