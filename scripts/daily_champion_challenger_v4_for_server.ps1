@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$AcceptanceScript = "",
+    [string]$PairedPaperScript = "",
     [string]$RuntimeInstallScript = "",
     [string]$CandidateAdoptionScript = "",
     [string]$ExecutionPolicyRefreshScript = "",
@@ -20,6 +21,18 @@ param(
     [double]$ChallengerMaxDrawdownDeteriorationFactor = 1.10,
     [double]$ChallengerMicroQualityTolerance = 0.02,
     [double]$ChallengerNonnegativeRatioTolerance = 0.05,
+    [int]$PairedPaperDurationSec = 360,
+    [int]$PairedPaperMinMatchedOpportunities = 1,
+    [string]$PairedPaperQuote = "KRW",
+    [int]$PairedPaperTopN = 20,
+    [string]$PairedPaperTf = "5m",
+    [string]$PairedPaperPreset = "live_v4",
+    [string]$PairedPaperModelFamily = "train_v4_crypto_cs",
+    [string]$PairedPaperFeatureSet = "v4",
+    [string]$PairedPaperFeatureProvider = "live_v4",
+    [string]$PairedPaperMicroProvider = "live_ws",
+    [int]$PairedPaperWarmupSec = 60,
+    [int]$PairedPaperWarmupMinTradeEventsPerMarket = 1,
     [int]$ExecutionContractMinRows = 20,
     [ValidateSet("combined", "promote_only", "spawn_only")]
     [string]$Mode = "combined",
@@ -37,6 +50,11 @@ Set-StrictMode -Version Latest
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
     return (Join-Path $Root "scripts/v4_governed_candidate_acceptance.ps1")
+}
+
+function Resolve-DefaultPairedPaperScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/paired_paper_soak.ps1")
 }
 
 function Resolve-DefaultRuntimeInstallScript {
@@ -688,6 +706,7 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { Resolve-DefaultAcceptanceScript -Root $resolvedProjectRoot } else { $AcceptanceScript }
+$resolvedPairedPaperScript = if ([string]::IsNullOrWhiteSpace($PairedPaperScript)) { Resolve-DefaultPairedPaperScript -Root $resolvedProjectRoot } else { $PairedPaperScript }
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
 $resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) { Resolve-DefaultCandidateAdoptionScript -Root $resolvedProjectRoot } else { $CandidateAdoptionScript }
 $resolvedExecutionPolicyRefreshScript = if ([string]::IsNullOrWhiteSpace($ExecutionPolicyRefreshScript)) { Resolve-DefaultExecutionPolicyRefreshScript -Root $resolvedProjectRoot } else { $ExecutionPolicyRefreshScript }
@@ -700,6 +719,7 @@ $registryRoot = Join-Path $resolvedProjectRoot "models/registry"
 $stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
+$pairedPaperRoot = Join-Path $resolvedProjectRoot "logs/paired_paper"
 $reportPath = Join-Path $stateRoot ("daily_loop_" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".json")
 $latestReportPath = Join-Path $stateRoot "latest.json"
 $promoteCutoverLatestPath = Join-Path $stateRoot "latest_promote_cutover.json"
@@ -718,6 +738,7 @@ $report = [ordered]@{
     candidate_target_units = @($resolvedCandidateTargetUnits)
     steps = [ordered]@{}
     challenger_previous = @{}
+    challenger_previous_paired = @{}
     challenger_next = @{}
 }
 $candidateRunId = ""
@@ -853,6 +874,76 @@ if ($runPromotionPhase) {
         $previousLaneMode = [string](Get-PropValue -ObjectValue $previousState -Name "lane_mode" -DefaultValue "")
         $previousPromotionEligible = [bool](Get-PropValue -ObjectValue $previousState -Name "promotion_eligible" -DefaultValue $true)
         if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and $previousPromotionEligible -and ($previousLaneMode -ne "bootstrap_latest_inclusive")) {
+            $pairedPaperArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", $resolvedPairedPaperScript,
+                "-ProjectRoot", $resolvedProjectRoot,
+                "-PythonExe", $resolvedPythonExe,
+                "-DurationSec", [string]$PairedPaperDurationSec,
+                "-Quote", $PairedPaperQuote,
+                "-TopN", [string]$PairedPaperTopN,
+                "-Tf", $PairedPaperTf,
+                "-ChampionModelRef", $championRunIdAtStart,
+                "-ChallengerModelRef", $candidateRunId,
+                "-ModelFamily", $PairedPaperModelFamily,
+                "-FeatureSet", $PairedPaperFeatureSet,
+                "-Preset", $PairedPaperPreset,
+                "-PaperMicroProvider", $PairedPaperMicroProvider,
+                "-PaperFeatureProvider", $PairedPaperFeatureProvider,
+                "-WarmupSec", [string]$PairedPaperWarmupSec,
+                "-WarmupMinTradeEventsPerMarket", [string]$PairedPaperWarmupMinTradeEventsPerMarket,
+                "-MinMatchedOpportunities", [string]$PairedPaperMinMatchedOpportunities,
+                "-OutDir", $pairedPaperRoot
+            )
+            $pairedPaperExec = Invoke-CommandCapture -Exe $psExe -ArgList $pairedPaperArgs -AllowFailure
+            $pairedPaperReportPath = Resolve-ReportedJsonPath -OutputText ([string]$pairedPaperExec.Output)
+            $pairedPaperArtifact = if ((-not [string]::IsNullOrWhiteSpace($pairedPaperReportPath)) -and (Test-Path $pairedPaperReportPath)) {
+                Load-JsonOrEmpty -PathValue $pairedPaperReportPath
+            } else {
+                @{}
+            }
+            $pairedPaperGate = Get-PropValue -ObjectValue $pairedPaperArtifact -Name "gate" -DefaultValue @{}
+            $report.steps.paired_paper_previous_challenger = [ordered]@{
+                attempted = $true
+                exit_code = [int]$pairedPaperExec.ExitCode
+                command = $pairedPaperExec.Command
+                output_preview = [string]$pairedPaperExec.Output
+                report_path = [string]$pairedPaperReportPath
+                gate = $pairedPaperGate
+            }
+            $report.challenger_previous_paired = $pairedPaperArtifact
+            if (($pairedPaperExec.ExitCode -ne 0) -or (-not (Test-ObjectHasValues -ObjectValue $pairedPaperArtifact))) {
+                $promotionDecision = [ordered]@{
+                    decision = [ordered]@{
+                        promote = $false
+                        decision = "keep_champion"
+                    }
+                    paired_paper = [ordered]@{
+                        evaluated = $false
+                        pass = $false
+                        reason = "PAIRED_PAPER_EXECUTION_FAILED"
+                        report_path = [string]$pairedPaperReportPath
+                    }
+                }
+                $report.challenger_previous = $promotionDecision
+                $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                    attempted = $false
+                    reason = "PAIRED_PAPER_EXECUTION_FAILED"
+                    candidate_run_id = $candidateRunId
+                }
+                $report.steps.clear_latest_candidate = [ordered]@{
+                    attempted = $false
+                    reason = "PAIRED_PAPER_EXECUTION_FAILED"
+                    candidate_run_id = $candidateRunId
+                }
+                $report.steps.promote_previous_challenger = [ordered]@{
+                    attempted = $false
+                    promoted = $false
+                    candidate_run_id = $candidateRunId
+                    reason = "PAIRED_PAPER_EXECUTION_FAILED"
+                }
+            } else {
             $compareArgs = @(
                 "-m", "autobot.common.paper_lane_evidence",
                 "--paper-root", (Join-Path $resolvedProjectRoot "data/paper"),
@@ -871,16 +962,22 @@ if ($runPromotionPhase) {
             )
             $compareExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $compareArgs
             $promotionDecision = $compareExec.Output | ConvertFrom-Json
+            $promotionDecision | Add-Member -NotePropertyName "paired_paper" -NotePropertyValue $pairedPaperArtifact -Force
             $report.challenger_previous = $promotionDecision
             if (-not $DryRun) {
                 New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
                 $archivePath = Join-Path $archiveRoot ("challenger_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
                 Write-JsonFile -PathValue $archivePath -Payload ([ordered]@{
                     state = $previousState
+                    paired_paper = $pairedPaperArtifact
                     comparison = $promotionDecision
                 })
             }
             $shouldPromote = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "promote" -DefaultValue $false)
+            $pairedPaperPass = [bool](Get-PropValue -ObjectValue $pairedPaperGate -Name "pass" -DefaultValue $false)
+            if (-not $pairedPaperPass) {
+                $shouldPromote = $false
+            }
             if ($shouldPromote -and (-not $DryRun)) {
                 $promotedAtTsMs = [int64](Get-Date -UFormat %s) * 1000
                 $promoteExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList @(
@@ -982,8 +1079,15 @@ if ($runPromotionPhase) {
                     attempted = $false
                     promoted = $false
                     candidate_run_id = $candidateRunId
-                    reason = if ($shouldPromote) { "DRY_RUN" } else { [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "decision" -DefaultValue "keep_champion") }
+                    reason = if ($shouldPromote) {
+                        "DRY_RUN"
+                    } elseif (-not $pairedPaperPass) {
+                        [string](Get-PropValue -ObjectValue $pairedPaperGate -Name "reason" -DefaultValue "PAIRED_PAPER_NOT_READY")
+                    } else {
+                        [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "decision" -DefaultValue "keep_champion")
+                    }
                 }
+            }
             }
         } elseif ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and ((-not $previousPromotionEligible) -or ($previousLaneMode -eq "bootstrap_latest_inclusive"))) {
             $report.steps.stop_candidate_targets_after_promote = [ordered]@{

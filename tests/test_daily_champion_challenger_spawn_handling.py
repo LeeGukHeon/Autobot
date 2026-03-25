@@ -313,6 +313,76 @@ def _make_failing_runtime_install_script(tmp_path: Path) -> Path:
     return script_path
 
 
+def _make_fake_paired_paper_script(
+    tmp_path: Path,
+    *,
+    gate_pass: bool = True,
+    reason: str = "PAIRED_PAPER_READY",
+    matched_opportunities: int = 1,
+) -> Path:
+    script_path = tmp_path / f"fake_paired_paper_{'pass' if gate_pass else 'fail'}.ps1"
+    payload_json = json.dumps(
+        {
+            "artifact_version": 1,
+            "report_path": "",
+            "gate": {
+                "evaluated": True,
+                "pair_ready": bool(gate_pass),
+                "matched_opportunities": int(matched_opportunities),
+                "min_matched_opportunities": 1,
+                "pass": bool(gate_pass),
+                "reason": str(reason),
+            },
+            "paired_report": {
+                "clock_alignment": {
+                    "pair_ready": bool(gate_pass),
+                    "matched_opportunities": int(matched_opportunities),
+                }
+            },
+        }
+    )
+    script_path.write_text(
+        textwrap.dedent(
+            f"""
+            param(
+                [string]$PythonExe = "",
+                [string]$ProjectRoot = "",
+                [int]$DurationSec = 0,
+                [string]$Quote = "",
+                [int]$TopN = 0,
+                [string]$Tf = "",
+                [string]$ChampionModelRef = "",
+                [string]$ChallengerModelRef = "",
+                [string]$ModelFamily = "",
+                [string]$FeatureSet = "",
+                [string]$Preset = "",
+                [string]$PaperMicroProvider = "",
+                [string]$PaperFeatureProvider = "",
+                [int]$WarmupSec = 0,
+                [int]$WarmupMinTradeEventsPerMarket = 0,
+                [int]$MinMatchedOpportunities = 0,
+                [double]$ReplayTimeScale = 0.0,
+                [double]$ReplayMaxSleepSec = 0.0,
+                [string]$OutDir = ""
+            )
+
+            $reportPath = Join-Path $ProjectRoot "logs/paired_paper/latest.json"
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $reportPath) | Out-Null
+            $payload = @'
+            {payload_json}
+            '@ | ConvertFrom-Json
+            $payload.report_path = $reportPath
+            $payload | ConvertTo-Json -Depth 20 | Set-Content -Path $reportPath -Encoding UTF8
+            Write-Host ("[paired-paper] report={{0}}" -f $reportPath)
+            Write-Host ($payload | ConvertTo-Json -Depth 20)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return script_path
+
+
 def _run_spawn_only(
     project_root: Path,
     acceptance_script: Path,
@@ -971,6 +1041,7 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
     fake_python = _make_fake_python(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(tmp_path)
 
     state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1016,6 +1087,8 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
             str(project_root),
             "-PythonExe",
             str(fake_python),
+            "-PairedPaperScript",
+            str(fake_paired),
             "-Mode",
             "promote_only",
             "-PromotionTargetUnits",
@@ -1038,6 +1111,9 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
     promote_step = latest["steps"]["promote_previous_challenger"]
     systemctl_calls = systemctl_log.read_text(encoding="utf-8")
 
+    assert latest["steps"]["paired_paper_previous_challenger"]["report_path"].replace("\\", "/").endswith(
+        "logs/paired_paper/latest.json"
+    )
     assert promote_step["promoted"] is True
     assert promote_step["restarted_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
     assert promote_step["started_from_inactive_units"] == ["autobot-paper-v4.service", "autobot-live-alpha.service"]
@@ -1056,6 +1132,9 @@ def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targe
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
     fake_python = _make_fake_python(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(tmp_path)
 
     state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1086,6 +1165,8 @@ def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targe
             str(project_root),
             "-PythonExe",
             str(fake_python),
+            "-PairedPaperScript",
+            str(fake_paired),
             "-Mode",
             "promote_only",
             "-CandidateTargetUnits",
@@ -1119,6 +1200,70 @@ def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targe
     assert not global_pointer.exists()
     assert not state_path.exists()
     assert "stop autobot-live-alpha-candidate.service" in systemctl_calls
+
+
+def test_promote_only_holds_when_paired_paper_gate_fails(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-paired-fail")
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(
+        tmp_path,
+        gate_pass=False,
+        reason="PAIRED_PAPER_NOT_READY",
+        matched_opportunities=0,
+    )
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-15",
+                "candidate_run_id": "candidate-run-paired-fail",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-PairedPaperScript",
+            str(fake_paired),
+            "-Mode",
+            "promote_only",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", "")},
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert latest["steps"]["paired_paper_previous_challenger"]["gate"]["pass"] is False
+    assert latest["steps"]["promote_previous_challenger"]["promoted"] is False
+    assert latest["steps"]["promote_previous_challenger"]["reason"] == "PAIRED_PAPER_NOT_READY"
 
 
 def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tmp_path: Path) -> None:
@@ -1178,6 +1323,7 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
     fake_python = _make_fake_python(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(tmp_path)
     systemctl_log = tmp_path / "systemctl.log"
     promote_completed = subprocess.run(
         [
@@ -1191,6 +1337,8 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
             str(project_root),
             "-PythonExe",
             str(fake_python),
+            "-PairedPaperScript",
+            str(fake_paired),
             "-Mode",
             "promote_only",
             "-CandidateTargetUnits",
