@@ -33,6 +33,9 @@ PAIRED_RUNTIME_ARTIFACT_VERSION = 1
 DEFAULT_PAIRED_PRESET = "live_v4"
 
 
+_STREAM_SENTINEL = object()
+
+
 @dataclass(frozen=True)
 class RecordedPublicEventTape:
     markets: tuple[str, ...]
@@ -104,6 +107,191 @@ class ReplayPublicWsClient:
                 await asyncio.sleep(0)
             previous_ts_ms = current_ts_ms
             yield event
+
+
+@dataclass
+class _FanoutSubscriber:
+    queue: asyncio.Queue[Any]
+    allowed_markets: set[str]
+
+
+class FanoutPublicWsClient:
+    def __init__(
+        self,
+        *,
+        source_client: UpbitWebSocketPublicClient,
+        source_markets: Sequence[str],
+        duration_sec: int,
+        orderbook_level: int | str | None = 0,
+    ) -> None:
+        self._source_client = source_client
+        self._source_markets = tuple(str(item).strip().upper() for item in source_markets if str(item).strip())
+        self._duration_sec = max(int(duration_sec), 1)
+        self._orderbook_level = orderbook_level
+        self._ticker_history: list[TickerEvent] = []
+        self._trade_history: list[TradeEvent] = []
+        self._orderbook_history: list[OrderbookEvent] = []
+        self._ticker_subscribers: list[_FanoutSubscriber] = []
+        self._trade_subscribers: list[_FanoutSubscriber] = []
+        self._orderbook_subscribers: list[_FanoutSubscriber] = []
+        self._ticker_task: asyncio.Task[None] | None = None
+        self._trade_task: asyncio.Task[None] | None = None
+        self._orderbook_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def capture_counts(self) -> dict[str, int]:
+        return {
+            "ticker_events_captured": len(self._ticker_history),
+            "trade_events_captured": len(self._trade_history),
+            "orderbook_events_captured": len(self._orderbook_history),
+        }
+
+    async def stream_ticker(
+        self,
+        markets: Sequence[str],
+        *,
+        duration_sec: float | None = None,
+    ) -> AsyncIterator[TickerEvent]:
+        _ = duration_sec
+        async for event in self._stream(
+            event_type="ticker",
+            markets=markets,
+            history=self._ticker_history,
+            subscribers=self._ticker_subscribers,
+            ensure_task=self._ensure_ticker_task,
+        ):
+            yield event
+
+    async def stream_trade(
+        self,
+        markets: Sequence[str],
+        *,
+        duration_sec: float | None = None,
+    ) -> AsyncIterator[TradeEvent]:
+        _ = duration_sec
+        async for event in self._stream(
+            event_type="trade",
+            markets=markets,
+            history=self._trade_history,
+            subscribers=self._trade_subscribers,
+            ensure_task=self._ensure_trade_task,
+        ):
+            yield event
+
+    async def stream_orderbook(
+        self,
+        markets: Sequence[str],
+        *,
+        duration_sec: float | None = None,
+        level: int | str | None = 0,
+    ) -> AsyncIterator[OrderbookEvent]:
+        _ = (duration_sec, level)
+        async for event in self._stream(
+            event_type="orderbook",
+            markets=markets,
+            history=self._orderbook_history,
+            subscribers=self._orderbook_subscribers,
+            ensure_task=self._ensure_orderbook_task,
+        ):
+            yield event
+
+    async def _stream(
+        self,
+        *,
+        event_type: str,
+        markets: Sequence[str],
+        history: list[Any],
+        subscribers: list[_FanoutSubscriber],
+        ensure_task: Callable[[], asyncio.Task[None]],
+    ) -> AsyncIterator[Any]:
+        allowed_markets = {str(item).strip().upper() for item in markets if str(item).strip()}
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        subscriber = _FanoutSubscriber(queue=queue, allowed_markets=allowed_markets)
+        async with self._lock:
+            for event in history:
+                event_market = str(getattr(event, "market", "")).strip().upper()
+                if allowed_markets and event_market not in allowed_markets:
+                    continue
+                queue.put_nowait(event)
+            subscribers.append(subscriber)
+            ensure_task()
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_SENTINEL:
+                    break
+                yield item
+        finally:
+            async with self._lock:
+                if subscriber in subscribers:
+                    subscribers.remove(subscriber)
+
+    def _ensure_ticker_task(self) -> asyncio.Task[None]:
+        if self._ticker_task is None:
+            self._ticker_task = asyncio.create_task(
+                self._pump_stream(
+                    stream="ticker",
+                    history=self._ticker_history,
+                    subscribers=self._ticker_subscribers,
+                )
+            )
+        return self._ticker_task
+
+    def _ensure_trade_task(self) -> asyncio.Task[None]:
+        if self._trade_task is None:
+            self._trade_task = asyncio.create_task(
+                self._pump_stream(
+                    stream="trade",
+                    history=self._trade_history,
+                    subscribers=self._trade_subscribers,
+                )
+            )
+        return self._trade_task
+
+    def _ensure_orderbook_task(self) -> asyncio.Task[None]:
+        if self._orderbook_task is None:
+            self._orderbook_task = asyncio.create_task(
+                self._pump_stream(
+                    stream="orderbook",
+                    history=self._orderbook_history,
+                    subscribers=self._orderbook_subscribers,
+                )
+            )
+        return self._orderbook_task
+
+    async def _pump_stream(
+        self,
+        *,
+        stream: str,
+        history: list[Any],
+        subscribers: list[_FanoutSubscriber],
+    ) -> None:
+        try:
+            if stream == "ticker":
+                generator = self._source_client.stream_ticker(self._source_markets, duration_sec=float(self._duration_sec))
+            elif stream == "trade":
+                generator = self._source_client.stream_trade(self._source_markets, duration_sec=float(self._duration_sec))
+            else:
+                generator = self._source_client.stream_orderbook(
+                    self._source_markets,
+                    duration_sec=float(self._duration_sec),
+                    level=self._orderbook_level,
+                )
+            async for event in generator:
+                history.append(event)
+                event_market = str(getattr(event, "market", "")).strip().upper()
+                async with self._lock:
+                    targets = list(subscribers)
+                for subscriber in targets:
+                    if subscriber.allowed_markets and event_market not in subscriber.allowed_markets:
+                        continue
+                    subscriber.queue.put_nowait(event)
+        finally:
+            async with self._lock:
+                targets = list(subscribers)
+            for subscriber in targets:
+                subscriber.queue.put_nowait(_STREAM_SENTINEL)
 
 
 async def run_recorded_paired_paper(
@@ -261,6 +449,9 @@ async def run_live_paired_paper(
     max_time_to_fill_deterioration_factor: float,
     replay_time_scale: float,
     replay_max_sleep_sec: float,
+    source_ws_client: UpbitWebSocketPublicClient | None = None,
+    engine_factory: Callable[..., Any] | None = None,
+    rules_provider: Any | None = None,
 ) -> dict[str, Any]:
     if int(duration_sec) <= 0:
         raise ValueError("duration_sec must be positive for paired live paper")
@@ -268,12 +459,6 @@ async def run_live_paired_paper(
     markets = _load_quote_markets(upbit_settings, quote=str(quote).strip().upper())
     if not markets:
         raise RuntimeError(f"no quote markets available for quote={quote}")
-
-    tape = await _collect_public_event_tape(
-        upbit_settings=upbit_settings,
-        markets=markets,
-        duration_sec=int(duration_sec),
-    )
     champion_settings = _build_paper_run_settings(
         model_ref=champion_model_ref,
         model_family=model_family,
@@ -302,13 +487,52 @@ async def run_live_paired_paper(
         paper_micro_warmup_sec=paper_micro_warmup_sec,
         paper_micro_warmup_min_trade_events_per_market=paper_micro_warmup_min_trade_events_per_market,
     )
-    return await run_recorded_paired_paper(
-        upbit_settings=upbit_settings,
-        champion_run_settings=champion_settings,
-        challenger_run_settings=challenger_settings,
-        tape=tape,
-        output_root=Path(out_dir),
-        min_matched_opportunities=min_matched_opportunities,
+    source_client = source_ws_client or UpbitWebSocketPublicClient(upbit_settings.websocket)
+    fanout_client = FanoutPublicWsClient(
+        source_client=source_client,
+        source_markets=markets,
+        duration_sec=int(duration_sec),
+        orderbook_level=0,
+    )
+    output_root = Path(out_dir)
+    run_root = output_root / "runs" / ("paired-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
+    run_root.mkdir(parents=True, exist_ok=True)
+    engine_ctor = engine_factory or PaperRunEngine
+    champion_settings = replace(champion_settings, out_root_dir=str(run_root / "champion"))
+    challenger_settings = replace(challenger_settings, out_root_dir=str(run_root / "challenger"))
+
+    async def _run_engine_with_env(*, run_settings: PaperRunSettings, runtime_role: str) -> Any:
+        engine = engine_ctor(
+            upbit_settings=upbit_settings,
+            run_settings=run_settings,
+            ws_client=fanout_client,
+            market_loader=lambda quote_value: list(markets),
+            rules_provider=rules_provider,
+        )
+        with _paper_runtime_env(
+            unit_name="autobot-paper-v4-paired.service",
+            runtime_role=runtime_role,
+            lane="v4",
+            pinned_model_ref=str(run_settings.model_ref or run_settings.model_alpha.model_ref or "").strip(),
+        ):
+            return await engine.run()
+
+    champion_summary, challenger_summary = await asyncio.gather(
+        _run_engine_with_env(run_settings=champion_settings, runtime_role="champion"),
+        _run_engine_with_env(run_settings=challenger_settings, runtime_role="challenger"),
+    )
+
+    paired_report_path = run_root / "paired_paper_report.json"
+    paired_report = build_paired_paper_report(
+        champion_run_dir=Path(champion_summary.run_dir),
+        challenger_run_dir=Path(challenger_summary.run_dir),
+    )
+    gate = _build_paired_gate(report=paired_report, min_matched_opportunities=min_matched_opportunities)
+    promotion_decision = _build_paired_promotion_decision(
+        champion_run_dir=Path(champion_summary.run_dir),
+        challenger_run_dir=Path(challenger_summary.run_dir),
+        paired_report=paired_report,
+        paired_gate=gate,
         min_challenger_hours=min_challenger_hours,
         min_orders_filled=min_orders_filled,
         min_realized_pnl_quote=min_realized_pnl_quote,
@@ -318,42 +542,33 @@ async def run_live_paired_paper(
         micro_quality_tolerance=micro_quality_tolerance,
         nonnegative_ratio_tolerance=nonnegative_ratio_tolerance,
         max_time_to_fill_deterioration_factor=max_time_to_fill_deterioration_factor,
-        replay_time_scale=replay_time_scale,
-        replay_max_sleep_sec=replay_max_sleep_sec,
-        market_loader=lambda quote_value: list(markets),
     )
-
-
-async def _collect_public_event_tape(
-    *,
-    upbit_settings: Any,
-    markets: Sequence[str],
-    duration_sec: int,
-) -> RecordedPublicEventTape:
-    client = UpbitWebSocketPublicClient(upbit_settings.websocket)
-    ticker_events: list[TickerEvent] = []
-    trade_events: list[TradeEvent] = []
-    orderbook_events: list[OrderbookEvent] = []
-
-    async def _collect(generator: AsyncIterator[Any], sink: list[Any]) -> None:
-        async for item in generator:
-            sink.append(item)
-
-    await asyncio.gather(
-        _collect(client.stream_ticker(markets, duration_sec=float(duration_sec)), ticker_events),
-        _collect(client.stream_trade(markets, duration_sec=float(duration_sec)), trade_events),
-        _collect(client.stream_orderbook(markets, duration_sec=float(duration_sec), level=0), orderbook_events),
-    )
-    ticker_events.sort(key=lambda item: int(getattr(item, "ts_ms", 0) or 0))
-    trade_events.sort(key=lambda item: int(getattr(item, "ts_ms", 0) or 0))
-    orderbook_events.sort(key=lambda item: int(getattr(item, "ts_ms", 0) or 0))
-    return RecordedPublicEventTape(
-        markets=tuple(str(item).strip().upper() for item in markets if str(item).strip()),
-        ticker_events=tuple(ticker_events),
-        trade_events=tuple(trade_events),
-        orderbook_events=tuple(orderbook_events),
-        duration_sec_requested=int(duration_sec),
-    )
+    payload = {
+        "artifact_version": PAIRED_RUNTIME_ARTIFACT_VERSION,
+        "mode": "paired_paper_live_fanout_v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "run_root": str(run_root),
+        "report_path": str(paired_report_path),
+        "champion_run_dir": str(champion_summary.run_dir),
+        "challenger_run_dir": str(challenger_summary.run_dir),
+        "capture": {
+            "duration_sec_requested": int(duration_sec),
+            "markets_subscribed": int(len(markets)),
+            "ticker_events_captured": int(fanout_client.capture_counts["ticker_events_captured"]),
+            "trade_events_captured": int(fanout_client.capture_counts["trade_events_captured"]),
+            "orderbook_events_captured": int(fanout_client.capture_counts["orderbook_events_captured"]),
+            "source_mode": "live_ws_fanout",
+        },
+        "gate": gate,
+        "paired_report": paired_report,
+        "promotion_decision": promotion_decision,
+    }
+    write_paired_paper_report(report=paired_report, output_path=paired_report_path)
+    _write_json(output_root / "latest.json", payload)
+    archive_root = output_root / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    _write_json(archive_root / (run_root.name + ".json"), payload)
+    return payload
 
 
 def _build_paper_run_settings(

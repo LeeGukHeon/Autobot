@@ -4,9 +4,10 @@ import asyncio
 import json
 from pathlib import Path
 
+import autobot.paper.paired_runtime as paired_runtime_module
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOpportunityRecord, StrategyOrderIntent, StrategyStepResult
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
-from autobot.paper.paired_runtime import RecordedPublicEventTape, run_recorded_paired_paper
+from autobot.paper.paired_runtime import RecordedPublicEventTape, run_live_paired_paper, run_recorded_paired_paper
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.model_alpha_v1 import ModelAlphaSettings
 from autobot.upbit.config import (
@@ -99,6 +100,33 @@ class _PaperEngineWithDummyModel(PaperRunEngine):
     ):
         _ = (active_markets, decision_start_ts_ms, decision_end_ts_ms)
         return self._dummy_strategy
+
+
+class _FakeFanoutWsClient:
+    def __init__(self, events: list[TickerEvent]) -> None:
+        self._events = list(events)
+
+    async def stream_ticker(self, markets: list[str] | tuple[str, ...], *, duration_sec: float | None = None):
+        _ = (markets, duration_sec)
+        for event in self._events:
+            await asyncio.sleep(0)
+            yield event
+
+    async def stream_trade(self, markets: list[str] | tuple[str, ...], *, duration_sec: float | None = None):
+        _ = (markets, duration_sec)
+        if False:
+            yield None
+
+    async def stream_orderbook(
+        self,
+        markets: list[str] | tuple[str, ...],
+        *,
+        duration_sec: float | None = None,
+        level: int | str | None = 0,
+    ):
+        _ = (markets, duration_sec, level)
+        if False:
+            yield None
 
 
 def _make_settings(*, model_ref: str, out_root: Path) -> PaperRunSettings:
@@ -203,3 +231,90 @@ def test_run_recorded_paired_paper_writes_operational_artifact(tmp_path: Path) -
     assert latest["promotion_decision"]["decision"]["promote"] is True
     assert latest["paired_report"]["clock_alignment"]["pair_ready"] is True
     assert latest["paired_report"]["taxonomy_counts"]["both_trade_different_action"] >= 1
+
+
+def test_run_live_paired_paper_uses_single_feed_fanout_runtime(tmp_path: Path, monkeypatch) -> None:
+    events = [
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=100.0,
+            acc_trade_price_24h=1_000_000_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=301_000,
+            trade_price=101.0,
+            acc_trade_price_24h=1_000_500_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=302_000,
+            trade_price=99.0,
+            acc_trade_price_24h=1_001_000_000_000.0,
+        ),
+    ]
+    settings = UpbitSettings(
+        base_url="https://api.upbit.com",
+        timeout=UpbitTimeoutSettings(),
+        auth=UpbitAuthSettings(),
+        ratelimit=UpbitRateLimitSettings(),
+        retry=UpbitRetrySettings(),
+        websocket=UpbitWebSocketSettings(),
+    )
+    fake_client = _FakeFanoutWsClient(events)
+
+    def _engine_factory(*, upbit_settings, run_settings, ws_client, market_loader, rules_provider):
+        action = "PASSIVE_MAKER" if str(run_settings.model_ref) == "champion-run" else "CROSS_1T"
+        return _PaperEngineWithDummyModel(
+            upbit_settings=upbit_settings,
+            run_settings=run_settings,
+            ws_client=ws_client,
+            market_loader=market_loader,
+            rules_provider=rules_provider,
+            dummy_strategy=_PairedDummyStrategy(chosen_action=action),
+        )
+
+    monkeypatch.setattr(paired_runtime_module, "load_upbit_settings", lambda config_dir: settings)
+    monkeypatch.setattr(paired_runtime_module, "_load_quote_markets", lambda upbit_settings, quote: ["KRW-BTC"])
+
+    payload = asyncio.run(
+        run_live_paired_paper(
+            config_dir=Path("config"),
+            duration_sec=2,
+            quote="KRW",
+            top_n=1,
+            tf="5m",
+            champion_model_ref="champion-run",
+            challenger_model_ref="candidate-run",
+            model_family="train_v4_crypto_cs",
+            feature_set="v4",
+            preset="live_v4",
+            paper_feature_provider="offline_parquet",
+            paper_micro_provider="offline_parquet",
+            paper_micro_warmup_sec=0,
+            paper_micro_warmup_min_trade_events_per_market=1,
+            out_dir=tmp_path / "paired-live",
+            min_matched_opportunities=1,
+            min_challenger_hours=0.0,
+            min_orders_filled=0,
+            min_realized_pnl_quote=0.0,
+            min_micro_quality_score=0.0,
+            min_nonnegative_ratio=0.0,
+            max_drawdown_deterioration_factor=1.10,
+            micro_quality_tolerance=0.02,
+            nonnegative_ratio_tolerance=0.05,
+            max_time_to_fill_deterioration_factor=1.25,
+            replay_time_scale=0.001,
+            replay_max_sleep_sec=0.25,
+            source_ws_client=fake_client,
+            engine_factory=_engine_factory,
+            rules_provider=_StaticRulesProvider(),
+        )
+    )
+
+    latest = json.loads((tmp_path / "paired-live" / "latest.json").read_text(encoding="utf-8"))
+    assert payload["mode"] == "paired_paper_live_fanout_v1"
+    assert latest["capture"]["source_mode"] == "live_ws_fanout"
+    assert latest["capture"]["ticker_events_captured"] == 3
+    assert latest["promotion_decision"]["decision"]["promote"] is True
