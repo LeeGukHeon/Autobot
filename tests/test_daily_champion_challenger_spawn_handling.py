@@ -1298,6 +1298,7 @@ def test_promote_only_holds_when_paired_paper_gate_fails(tmp_path: Path) -> None
     assert latest["steps"]["paired_paper_previous_challenger"]["gate"]["pass"] is False
     assert latest["steps"]["promote_previous_challenger"]["promoted"] is False
     assert latest["steps"]["promote_previous_challenger"]["reason"] == "PAIRED_PAPER_NOT_READY"
+    assert latest["steps"]["clear_latest_candidate"]["attempted"] is True
     assert latest["steps"]["clear_latest_candidate"]["removed_paths"] == [
         str(family_pointer),
         str(global_pointer),
