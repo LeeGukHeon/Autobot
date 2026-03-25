@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from autobot.risk.portfolio_budget import summarize_portfolio_exposure
+
 
 RISK_BUDGET_LEDGER_VERSION = 1
 
@@ -101,13 +103,25 @@ def build_live_risk_budget_entry(
     meta = dict(meta_payload or {})
     strategy = _as_dict(meta.get("strategy"))
     strategy_meta = _as_dict(strategy.get("meta"))
+    portfolio_budget = _as_dict(meta.get("portfolio_budget"))
     sizing = _resolve_sizing_payload(meta)
     admissibility = _as_dict(meta.get("admissibility"))
     admissibility_decision = _as_dict(admissibility.get("decision"))
     size_ladder = _as_dict(meta.get("size_ladder"))
     risk_control = _as_dict(meta.get("risk_control"))
     risk_control_online = _as_dict(meta.get("risk_control_online"))
-    exposure = _summarize_current_exposure(store=store, decision_market=market, decision_target_notional_quote=_safe_optional_float(sizing.get("target_notional_quote")))
+    if portfolio_budget:
+        exposure = {
+            "current_total_cash_at_risk_quote": float(portfolio_budget.get("current_total_cash_at_risk_quote", 0.0) or 0.0),
+            "projected_total_cash_at_risk_quote": float(portfolio_budget.get("projected_total_cash_at_risk_quote", 0.0) or 0.0),
+            "cluster_utilization": dict(portfolio_budget.get("cluster_utilization") or {}),
+        }
+    else:
+        exposure = summarize_portfolio_exposure(
+            store=store,
+            decision_market=market,
+            decision_target_notional_quote=_safe_optional_float(sizing.get("target_notional_quote")),
+        )
     budget_reason_codes = _extract_budget_reason_codes(
         status=status,
         meta_payload=meta,
@@ -120,7 +134,11 @@ def build_live_risk_budget_entry(
     if resolved_multiplier is None:
         resolved_multiplier = requested_multiplier
     target_notional_quote = _safe_optional_float(sizing.get("target_notional_quote"))
+    if target_notional_quote is None:
+        target_notional_quote = _safe_optional_float(portfolio_budget.get("target_notional_quote"))
     admissible_notional_quote = _safe_optional_float(sizing.get("admissible_notional_quote"))
+    if admissible_notional_quote is None:
+        admissible_notional_quote = _safe_optional_float(portfolio_budget.get("resolved_notional_quote"))
     adjusted_notional_quote = _safe_optional_float(admissibility_decision.get("adjusted_notional"))
     uncertainty = _resolve_uncertainty(strategy_meta)
     uncertainty_weighted_notional_quote = None
@@ -130,7 +148,9 @@ def build_live_risk_budget_entry(
         uncertainty_formula = "weighted_notional_quote = target_notional_quote / (1 + abs(uncertainty))"
     position_budget_fraction = None
     base_budget_value = _safe_optional_float(base_budget_quote)
-    if base_budget_value is not None and base_budget_value > 0.0 and target_notional_quote is not None:
+    if portfolio_budget and _safe_optional_float(portfolio_budget.get("position_budget_fraction")) is not None:
+        position_budget_fraction = float(_safe_optional_float(portfolio_budget.get("position_budget_fraction")) or 0.0)
+    elif base_budget_value is not None and base_budget_value > 0.0 and target_notional_quote is not None:
         position_budget_fraction = float(target_notional_quote) / float(base_budget_value)
     return {
         "artifact_version": RISK_BUDGET_LEDGER_VERSION,
@@ -173,6 +193,7 @@ def build_live_risk_budget_entry(
                 resolved_multiplier=resolved_multiplier,
                 risk_control_online=risk_control_online,
                 risk_control=risk_control,
+                portfolio_budget=portfolio_budget,
             ),
             "size_ladder_enabled": bool(size_ladder.get("enabled", False)),
             "size_ladder_clamped": bool(
@@ -192,6 +213,7 @@ def build_live_risk_budget_entry(
             "adjusted_notional_quote": adjusted_notional_quote,
             "requested_multiplier": requested_multiplier,
             "resolved_multiplier": resolved_multiplier,
+            "max_notional_quote": _safe_optional_float(portfolio_budget.get("max_notional_quote")),
             "fee_reserve_quote": _safe_optional_float(admissibility_decision.get("fee_reserve_quote")),
             "expected_edge_bps": _safe_optional_float(admissibility_decision.get("expected_edge_bps")),
             "expected_net_edge_bps": _safe_optional_float(admissibility_decision.get("expected_net_edge_bps")),
@@ -302,133 +324,6 @@ def _rebuild_latest_summary_from_ledger(
     return payload
 
 
-def _summarize_current_exposure(
-    *,
-    store: Any,
-    decision_market: str,
-    decision_target_notional_quote: float | None,
-) -> dict[str, Any]:
-    positions = []
-    open_orders = []
-    if hasattr(store, "list_positions"):
-        try:
-            positions = list(store.list_positions())
-        except Exception:
-            positions = []
-    if hasattr(store, "list_orders"):
-        try:
-            open_orders = list(store.list_orders(open_only=True))
-        except Exception:
-            open_orders = []
-    current_total = 0.0
-    cluster_map: dict[str, dict[str, Any]] = {}
-    for row in positions:
-        market = str((row or {}).get("market", "")).strip().upper()
-        base_amount = max(_safe_optional_float((row or {}).get("base_amount")) or 0.0, 0.0)
-        avg_entry_price = max(_safe_optional_float((row or {}).get("avg_entry_price")) or 0.0, 0.0)
-        notional_quote = float(base_amount) * float(avg_entry_price)
-        if not market or notional_quote <= 0.0:
-            continue
-        current_total += notional_quote
-        cluster_id = _classify_market_cluster(market)
-        bucket = cluster_map.setdefault(
-            cluster_id,
-            {
-                "cluster_id": cluster_id,
-                "position_notional_quote": 0.0,
-                "open_bid_order_notional_quote": 0.0,
-                "gross_notional_quote": 0.0,
-                "position_count": 0,
-                "open_bid_order_count": 0,
-                "markets": [],
-            },
-        )
-        bucket["position_notional_quote"] = float(bucket["position_notional_quote"]) + float(notional_quote)
-        bucket["gross_notional_quote"] = float(bucket["gross_notional_quote"]) + float(notional_quote)
-        bucket["position_count"] = int(bucket["position_count"]) + 1
-        if market not in bucket["markets"]:
-            bucket["markets"].append(market)
-    for row in open_orders:
-        market = str((row or {}).get("market", "")).strip().upper()
-        exposure_quote = _estimate_open_bid_order_cash_at_risk_quote(row)
-        if not market or exposure_quote <= 0.0:
-            continue
-        current_total += exposure_quote
-        cluster_id = _classify_market_cluster(market)
-        bucket = cluster_map.setdefault(
-            cluster_id,
-            {
-                "cluster_id": cluster_id,
-                "position_notional_quote": 0.0,
-                "open_bid_order_notional_quote": 0.0,
-                "gross_notional_quote": 0.0,
-                "position_count": 0,
-                "open_bid_order_count": 0,
-                "markets": [],
-            },
-        )
-        bucket["open_bid_order_notional_quote"] = float(bucket["open_bid_order_notional_quote"]) + float(exposure_quote)
-        bucket["gross_notional_quote"] = float(bucket["gross_notional_quote"]) + float(exposure_quote)
-        bucket["open_bid_order_count"] = int(bucket["open_bid_order_count"]) + 1
-        if market not in bucket["markets"]:
-            bucket["markets"].append(market)
-    decision_cluster_id = _classify_market_cluster(decision_market)
-    projected_total = float(current_total) + max(float(decision_target_notional_quote or 0.0), 0.0)
-    decision_cluster_current = float(cluster_map.get(decision_cluster_id, {}).get("gross_notional_quote", 0.0) or 0.0)
-    decision_cluster_projected = decision_cluster_current + max(float(decision_target_notional_quote or 0.0), 0.0)
-    cluster_rows = []
-    for cluster_id in sorted(cluster_map):
-        item = dict(cluster_map[cluster_id])
-        item["markets"] = sorted(str(value).strip().upper() for value in (item.get("markets") or []))
-        cluster_rows.append(item)
-    if decision_cluster_id not in {str(item.get("cluster_id")) for item in cluster_rows}:
-        cluster_rows.append(
-            {
-                "cluster_id": decision_cluster_id,
-                "gross_notional_quote": 0.0,
-                "position_count": 0,
-                "markets": [],
-            }
-        )
-        cluster_rows = sorted(cluster_rows, key=lambda item: str(item.get("cluster_id") or ""))
-    return {
-        "current_total_cash_at_risk_quote": float(current_total),
-        "projected_total_cash_at_risk_quote": float(projected_total),
-        "cluster_utilization": {
-            "clusters": cluster_rows,
-            "decision_cluster_id": decision_cluster_id,
-            "decision_cluster_current_notional_quote": float(decision_cluster_current),
-            "decision_cluster_projected_notional_quote": float(decision_cluster_projected),
-        },
-    }
-
-
-def _estimate_open_bid_order_cash_at_risk_quote(order: dict[str, Any] | None) -> float:
-    payload = dict(order or {})
-    if str(payload.get("side", "")).strip().lower() != "bid":
-        return 0.0
-    ord_type = str(payload.get("ord_type", "")).strip().lower()
-    executed_funds = max(_safe_optional_float(payload.get("executed_funds")) or 0.0, 0.0)
-    remaining_fee = _safe_optional_float(payload.get("remaining_fee"))
-    reserved_fee = _safe_optional_float(payload.get("reserved_fee"))
-    paid_fee = max(_safe_optional_float(payload.get("paid_fee")) or 0.0, 0.0)
-    fee_reserve_quote = 0.0
-    if remaining_fee is not None:
-        fee_reserve_quote = max(float(remaining_fee), 0.0)
-    elif reserved_fee is not None:
-        fee_reserve_quote = max(float(reserved_fee) - float(paid_fee), 0.0)
-
-    if ord_type == "best":
-        quote_budget = max(_safe_optional_float(payload.get("price")) or 0.0, 0.0)
-        return max(float(quote_budget) - float(executed_funds), 0.0) + float(fee_reserve_quote)
-
-    price = max(_safe_optional_float(payload.get("price")) or 0.0, 0.0)
-    volume_req = max(_safe_optional_float(payload.get("volume_req")) or 0.0, 0.0)
-    volume_filled = max(_safe_optional_float(payload.get("volume_filled")) or 0.0, 0.0)
-    remaining_volume = max(float(volume_req) - float(volume_filled), 0.0)
-    return max(float(price) * float(remaining_volume), 0.0) + float(fee_reserve_quote)
-
-
 def _resolve_entry_state(
     *,
     status: str,
@@ -437,12 +332,17 @@ def _resolve_entry_state(
     resolved_multiplier: float | None,
     risk_control_online: dict[str, Any],
     risk_control: dict[str, Any],
+    portfolio_budget: dict[str, Any],
 ) -> str:
     status_value = str(status).strip().upper()
     if bool(risk_control_online.get("halt_triggered", False)):
         return "online_halt"
     if bool(risk_control.get("enabled", False) and not bool(risk_control.get("allowed", True))):
         return "risk_blocked"
+    if portfolio_budget and not bool(portfolio_budget.get("allowed", True)):
+        return "portfolio_blocked"
+    if portfolio_budget and bool(portfolio_budget.get("budget_clamped", False)):
+        return "sized_down"
     if status_value in {"SKIPPED", "REJECTED_ADMISSIBILITY"}:
         return "blocked" if skip_reason else "rejected"
     if status_value == "SHADOW":
@@ -489,6 +389,10 @@ def _extract_budget_reason_codes(
         reject_code = _optional_text(admissibility_decision.get("reject_code"))
         if reject_code is not None and reject_code not in reasons:
             reasons.append(reject_code)
+    for item in _as_dict(meta_payload.get("portfolio_budget")).get("risk_reason_codes") or []:
+        text = _optional_text(item)
+        if text is not None and text not in reasons:
+            reasons.append(text)
     return reasons
 
 
@@ -506,18 +410,6 @@ def _resolve_uncertainty(strategy_meta: dict[str, Any]) -> float | None:
         if resolved is not None:
             return float(resolved)
     return None
-
-
-def _classify_market_cluster(market: str) -> str:
-    market_value = str(market).strip().upper()
-    if not market_value or "-" not in market_value:
-        return "UNKNOWN"
-    _, base = market_value.split("-", 1)
-    if base == "BTC":
-        return "BTC_LED"
-    if base == "ETH":
-        return "ETH_LED"
-    return "ALT_CLUSTER"
 
 
 def _inc(mapping: dict[str, Any], key: str) -> None:

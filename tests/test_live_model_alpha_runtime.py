@@ -1672,6 +1672,70 @@ def test_live_model_alpha_runtime_clamps_bid_notional_with_size_ladder(tmp_path:
     assert float(meta_payload["size_ladder"]["resolved_multiplier"]) == 1.5
 
 
+def test_live_model_alpha_runtime_clamps_bid_notional_with_portfolio_budget(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    predictor = SimpleNamespace(run_dir=Path("run-live"), runtime_recommendations={})
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: predictor)
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _LargeNotionalStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="live", canary=False)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ETH",
+                base_currency="ETH",
+                base_amount=0.0029,
+                avg_entry_price=5_000_000.0,
+                updated_ts=now_ms - 2000,
+            )
+        )
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="live",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    budget_payload = dict(meta_payload.get("portfolio_budget") or {})
+    assert budget_payload["enabled"] is True
+    assert "PORTFOLIO_GROSS_BUDGET_CLAMP" in list(budget_payload.get("risk_reason_codes") or [])
+    assert float(budget_payload["resolved_notional_quote"]) == pytest.approx(5_500.0)
+    assert float(budget_payload["position_budget_fraction"]) == pytest.approx(0.55)
+    assert float(((meta_payload.get("admissibility") or {}).get("decision") or {}).get("adjusted_notional")) == pytest.approx(5497.251374312844)
+
+
 def test_live_model_alpha_runtime_steps_up_threshold_from_recent_losses(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 

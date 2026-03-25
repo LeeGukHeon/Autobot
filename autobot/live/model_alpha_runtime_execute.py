@@ -25,6 +25,7 @@ from autobot.models.live_execution_policy import (
     candidate_action_codes_for_price_mode,
     select_live_execution_action,
 )
+from autobot.risk.portfolio_budget import resolve_portfolio_risk_budget
 
 CANARY_ENTRY_TIMEOUT_CAP_MS = 180_000
 
@@ -553,6 +554,7 @@ def resolve_live_strategy_execution(
     micro_order_policy: Any,
     trade_gate: Any,
     risk_control_payload: dict[str, Any] | None,
+    runtime_model_run_id: str | None,
     resolution_cls: type,
     safe_optional_float_fn: Callable[[object], float | None],
     safe_float_fn: Callable[..., float],
@@ -623,6 +625,7 @@ def resolve_live_strategy_execution(
             exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
             execution_trace["after_strategy_exec_profile"] = order_exec_profile_to_dict_fn(exec_profile)
     operational_payload: dict[str, Any] = {}
+    portfolio_budget_payload: dict[str, Any] = {}
     trade_gate_payload: dict[str, Any] = {"enabled": True}
     forced_volume = safe_optional_float_fn(strategy_meta.get("force_volume"))
     local_position = store.position_by_market(market=market) if side == "ask" else None
@@ -708,6 +711,56 @@ def resolve_live_strategy_execution(
         execution_trace["after_operational_overlay"] = order_exec_profile_to_dict_fn(exec_profile)
         if entry_notional_quote is not None:
             entry_notional_quote *= max(float(operational_decision.risk_multiplier), 0.0)
+
+    if side == "bid" and entry_notional_quote is not None:
+        portfolio_budget_payload = resolve_portfolio_risk_budget(
+            store=store,
+            market=market,
+            side=side,
+            target_notional_quote=float(entry_notional_quote),
+            base_budget_quote=float(settings.per_trade_krw),
+            quote_free=float(getattr(snapshot.quote_balance, "free", 0.0)),
+            min_total_krw=max(float(snapshot.min_total), float(settings.min_order_krw)),
+            effective_max_positions=effective_live_trade_gate_max_positions(settings),
+            rollout_mode=str(settings.daemon.rollout_mode),
+            state_features=(
+                dict(strategy_meta.get("state_features") or {})
+                if isinstance(strategy_meta.get("state_features"), dict)
+                else {}
+            ),
+            uncertainty=safe_optional_float_fn(strategy_meta.get("uncertainty")),
+            runtime_model_run_id=str(runtime_model_run_id or "").strip() or None,
+        )
+        if portfolio_budget_payload.get("enabled"):
+            if not bool(portfolio_budget_payload.get("allowed", True)):
+                return resolution_cls(
+                    allowed=False,
+                    skip_reason=(
+                        str(portfolio_budget_payload.get("primary_reason_code", "PORTFOLIO_BUDGET_BLOCKED")).strip()
+                        or "PORTFOLIO_BUDGET_BLOCKED"
+                    ),
+                    requested_price=effective_ref_price,
+                    requested_volume=safe_optional_float_fn(strategy_intent.volume),
+                    sizing_payload=None,
+                    meta_payload={
+                        "strategy": {
+                            "market": market,
+                            "side": side,
+                            "reason_code": str(strategy_intent.reason_code),
+                            "score": strategy_intent.score,
+                            "prob": strategy_intent.prob,
+                            "meta": strategy_meta,
+                        },
+                        "size_ladder": size_ladder_decision,
+                        "runtime": {
+                            "live_runtime_model_run_id": str(runtime_model_run_id or "").strip() or None,
+                            "model_family": settings.daemon.runtime_model_family,
+                        },
+                        "portfolio_budget": dict(portfolio_budget_payload),
+                        "operational_overlay": operational_payload,
+                    },
+                )
+            entry_notional_quote = float(portfolio_budget_payload.get("resolved_notional_quote", entry_notional_quote) or 0.0)
     canary_input_profile = order_exec_profile_to_dict_fn(exec_profile)
     exec_profile = apply_canary_entry_timeout_cap(
         store=store,
@@ -750,6 +803,7 @@ def resolve_live_strategy_execution(
                         "meta": strategy_meta,
                     },
                     "size_ladder": size_ladder_decision,
+                    "portfolio_budget": dict(portfolio_budget_payload),
                     "trade_gate": {
                         **trade_gate_payload,
                         "reason_code": "EXIT_PENDING_FLATTEN_IN_PROGRESS",
@@ -771,6 +825,7 @@ def resolve_live_strategy_execution(
                 meta_payload={
                     "strategy": {"market": market, "side": side, "meta": strategy_meta},
                     "size_ladder": size_ladder_decision,
+                    "portfolio_budget": dict(portfolio_budget_payload),
                 },
             )
         live_exit_plan_present = any(
@@ -791,6 +846,7 @@ def resolve_live_strategy_execution(
                 meta_payload={
                     "strategy": {"market": market, "side": side, "meta": strategy_meta},
                     "size_ladder": size_ladder_decision,
+                    "portfolio_budget": dict(portfolio_budget_payload),
                     "trade_gate": {
                         **trade_gate_payload,
                         "reason_code": "DUPLICATE_EXIT_ORDER",
@@ -810,6 +866,7 @@ def resolve_live_strategy_execution(
                 meta_payload={
                     "strategy": {"market": market, "side": side, "meta": strategy_meta},
                     "size_ladder": size_ladder_decision,
+                    "portfolio_budget": dict(portfolio_budget_payload),
                     "trade_gate": {
                         **trade_gate_payload,
                         "reason_code": "DUPLICATE_EXIT_ORDER",
@@ -842,6 +899,7 @@ def resolve_live_strategy_execution(
             meta_payload={
                 "strategy": {"market": market, "side": side, "meta": strategy_meta},
                 "size_ladder": size_ladder_decision,
+                "portfolio_budget": dict(portfolio_budget_payload),
                 "trade_gate": {
                     **trade_gate_payload,
                     "reason_code": "ZERO_VOLUME",
@@ -888,6 +946,7 @@ def resolve_live_strategy_execution(
                     "meta": strategy_meta,
                 },
                 "size_ladder": size_ladder_decision,
+                "portfolio_budget": dict(portfolio_budget_payload),
                 "execution": {
                     "initial_ref_price": float(initial_ref_price),
                     "latest_trade_price": float(latest_trade_price),
@@ -972,6 +1031,7 @@ def resolve_live_strategy_execution(
                     "micro_order_policy": policy_payload,
                     "micro_diagnostics": policy_diagnostics,
                     "operational_overlay": operational_payload,
+                    "portfolio_budget": dict(portfolio_budget_payload),
                 },
             )
         if policy_decision.profile is not None:
@@ -1008,6 +1068,7 @@ def resolve_live_strategy_execution(
                 meta_payload={
                     "strategy": {"market": market, "side": side, "meta": strategy_meta},
                     "size_ladder": size_ladder_decision,
+                    "portfolio_budget": dict(portfolio_budget_payload),
                 },
             )
 
@@ -1084,6 +1145,7 @@ def resolve_live_strategy_execution(
                 "micro_diagnostics": policy_diagnostics,
                 "trade_gate": trade_gate_payload,
                 "operational_overlay": operational_payload,
+                "portfolio_budget": dict(portfolio_budget_payload),
             },
         )
 
@@ -1181,6 +1243,7 @@ def resolve_live_strategy_execution(
             "micro_diagnostics": policy_diagnostics,
             "trade_gate": trade_gate_payload,
             "operational_overlay": operational_payload,
+            "portfolio_budget": dict(portfolio_budget_payload),
         },
     )
 
@@ -1364,6 +1427,7 @@ def handle_strategy_intent(
         micro_order_policy=micro_order_policy,
         trade_gate=trade_gate,
         risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
+        runtime_model_run_id=str(getattr(predictor.run_dir, "name", "")),
     )
     if not execution_resolution.allowed:
         record_strategy_intent_fn(

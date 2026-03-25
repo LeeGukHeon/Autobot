@@ -1513,6 +1513,7 @@ def _resolve_live_strategy_execution(
     micro_order_policy: MicroOrderPolicyV1 | None,
     trade_gate: TradeGateV1,
     risk_control_payload: dict[str, Any] | None,
+    runtime_model_run_id: str | None,
 ) -> _LiveStrategyExecutionResolution:
     return _runtime_execute.resolve_live_strategy_execution(
         market=market,
@@ -1529,6 +1530,7 @@ def _resolve_live_strategy_execution(
         micro_order_policy=micro_order_policy,
         trade_gate=trade_gate,
         risk_control_payload=risk_control_payload,
+        runtime_model_run_id=runtime_model_run_id,
         resolution_cls=_LiveStrategyExecutionResolution,
         safe_optional_float_fn=_safe_optional_float,
         safe_float_fn=_safe_float,
