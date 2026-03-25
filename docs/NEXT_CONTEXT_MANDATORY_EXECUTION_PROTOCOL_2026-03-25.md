@@ -126,6 +126,24 @@ That report must state:
 - why it could not be completed in this session
 - the exact blocker, risk, or missing prerequisite
 
+### Rule 11
+
+If implementation changes or replaces existing logic, do not leave conflicting legacy branches in place such that the old path can silently override, bypass, or break the new logic.
+
+Legacy paths in the touched area must be explicitly cleaned up, disabled, reconciled, or proven still correct with the new logic.
+
+The implementation must also preserve exact consistency for prior numeric and semantic contracts unless an intentional migration is performed and documented.
+
+This includes, where relevant:
+
+- units and scales such as ratio, percent-points, bps, counts, and timestamps
+- threshold meanings
+- pointer meanings
+- schema field meanings
+- artifact/report values derived from the changed logic
+
+If exact compatibility cannot be preserved in the same session, report that explicitly to the user as a blocker or migration risk before closing the work.
+
 
 ## 3. Canonical Ordered Checklist
 
