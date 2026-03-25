@@ -111,6 +111,21 @@ Do not mark an operational item complete unless all of the following are also co
 
 If an implementation exists but is only manually runnable or smoke-tested, keep the item unchecked and describe it as implemented but not yet operationally wired.
 
+### Rule 10
+
+Once code changes begin for the active item, implement the blueprint-defined scope as completely as reasonably possible in the same session.
+
+Do not stop at a shallow partial patch if the blueprint or checklist item clearly implies additional directly-related required work.
+
+If full blueprint-aligned implementation is difficult, incomplete, or blocked, report that explicitly to the user before closing the session.
+
+That report must state:
+
+- what was implemented
+- what required blueprint scope remains
+- why it could not be completed in this session
+- the exact blocker, risk, or missing prerequisite
+
 
 ## 3. Canonical Ordered Checklist
 
