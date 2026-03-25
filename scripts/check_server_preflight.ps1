@@ -1,5 +1,6 @@
 param(
     [string]$ProjectRoot = "",
+    [string]$PythonExe = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
     [string[]]$RequiredUnitFiles = @(),
     [string[]]$BlockOnFailedUnits = @(),
@@ -67,6 +68,20 @@ function Get-StringArray {
     return @(Expand-DelimitedStringArray -Value $Value)
 }
 
+function Test-ObjectHasValues {
+    param([Parameter(Mandatory = $false)]$ObjectValue)
+    if ($null -eq $ObjectValue) {
+        return $false
+    }
+    if ($ObjectValue -is [System.Collections.IDictionary]) {
+        return ($ObjectValue.Count -gt 0)
+    }
+    if ($ObjectValue.PSObject) {
+        return (@($ObjectValue.PSObject.Properties).Count -gt 0)
+    }
+    return $true
+}
+
 function Invoke-ProcessCapture {
     param(
         [string]$Exe,
@@ -106,6 +121,61 @@ function Invoke-ProcessCapture {
         Output = ($combined -join "`n")
         Command = $commandText
         WorkingDirectory = $WorkingDirectory
+    }
+}
+
+function Resolve-PreflightPythonExe {
+    param(
+        [string]$Root,
+        [string]$ConfiguredPythonExe
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPythonExe)) {
+        return $ConfiguredPythonExe
+    }
+    $defaultPythonExe = Resolve-DefaultPythonExe -Root $Root
+    if (-not [string]::IsNullOrWhiteSpace($defaultPythonExe) -and (Test-Path $defaultPythonExe)) {
+        return $defaultPythonExe
+    }
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -ne $pythonCmd -and -not [string]::IsNullOrWhiteSpace($pythonCmd.Source)) {
+        return [string]$pythonCmd.Source
+    }
+    return ""
+}
+
+function Invoke-ArtifactReportCapture {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$ModuleName,
+        [string[]]$ExtraArgs,
+        [string]$ExpectedReportPath
+    )
+    if ([string]::IsNullOrWhiteSpace($PythonPath)) {
+        return [PSCustomObject]@{
+            ExitCode = 127
+            Output = "python executable unavailable"
+            Command = ""
+            ReportPath = $ExpectedReportPath
+            Report = @{}
+        }
+    }
+    $argList = @(
+        "-m", $ModuleName,
+        "--project-root", $Root
+    )
+    if ($null -ne $ExtraArgs) {
+        $argList += @($ExtraArgs)
+    }
+    $moduleWorkingDirectory = Resolve-DefaultProjectRoot
+    $exec = Invoke-ProcessCapture -Exe $PythonPath -ArgList $argList -WorkingDirectory $moduleWorkingDirectory
+    $reportDoc = Load-JsonOrEmpty -PathValue $ExpectedReportPath
+    return [PSCustomObject]@{
+        ExitCode = [int]$exec.ExitCode
+        Output = [string]$exec.Output
+        Command = [string]$exec.Command
+        ReportPath = $ExpectedReportPath
+        Report = $reportDoc
     }
 }
 
@@ -246,6 +316,7 @@ $resolvedModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) { "train_
 $resolvedRequiredUnitFiles = @(Get-StringArray -Value $RequiredUnitFiles)
 $resolvedBlockOnFailedUnits = @(Get-StringArray -Value $BlockOnFailedUnits)
 $resolvedRequiredPointers = @(Get-StringArray -Value $RequiredPointers)
+$resolvedPythonExe = Resolve-PreflightPythonExe -Root $resolvedProjectRoot -ConfiguredPythonExe $PythonExe
 $registryRoot = Join-Path $resolvedProjectRoot "models/registry"
 $reportPath = Join-Path $resolvedProjectRoot "logs/ops/server_preflight/latest.json"
 $checks = New-Object System.Collections.Generic.List[object]
@@ -283,6 +354,51 @@ if ($FailOnDirtyWorktree -and [bool]$gitSnapshot.available -and [bool]$gitSnapsh
     Add-Check -Checks $checks -Code "WORKTREE_ACCEPTABLE" -Status "pass" -Message "git worktree is acceptable for this preflight." -Evidence ([ordered]@{
         git_available = [bool]$gitSnapshot.available
         dirty = [bool]$gitSnapshot.dirty
+    })
+}
+
+$runtimeTopologyCapture = Invoke-ArtifactReportCapture `
+    -PythonPath $resolvedPythonExe `
+    -Root $resolvedProjectRoot `
+    -ModuleName "autobot.ops.runtime_topology_report" `
+    -ExtraArgs @() `
+    -ExpectedReportPath (Join-Path $resolvedProjectRoot "logs/runtime_topology/latest.json")
+$runtimeTopologySummary = Get-PropValue -ObjectValue $runtimeTopologyCapture.Report -Name "summary" -DefaultValue @{}
+if (($runtimeTopologyCapture.ExitCode -ne 0) -or (-not (Test-Path $runtimeTopologyCapture.ReportPath)) -or (-not (Test-ObjectHasValues -ObjectValue $runtimeTopologyCapture.Report))) {
+    Add-Check -Checks $checks -Code "RUNTIME_TOPOLOGY_REPORT_FAILED" -Status "violation" -Message "runtime topology report refresh failed during preflight." -Evidence ([ordered]@{
+        exit_code = [int]$runtimeTopologyCapture.ExitCode
+        report_path = [string]$runtimeTopologyCapture.ReportPath
+        command = [string]$runtimeTopologyCapture.Command
+    })
+} else {
+    Add-Check -Checks $checks -Code "RUNTIME_TOPOLOGY_REPORT_REFRESHED" -Status "pass" -Message "runtime topology report refreshed during preflight." -Evidence ([ordered]@{
+        report_path = [string]$runtimeTopologyCapture.ReportPath
+        command = [string]$runtimeTopologyCapture.Command
+        champion_run_id = [string](Get-PropValue -ObjectValue $runtimeTopologySummary -Name "champion_run_id" -DefaultValue "")
+        latest_candidate_run_id = [string](Get-PropValue -ObjectValue $runtimeTopologySummary -Name "latest_candidate_run_id" -DefaultValue "")
+    })
+}
+
+$pointerConsistencyCapture = Invoke-ArtifactReportCapture `
+    -PythonPath $resolvedPythonExe `
+    -Root $resolvedProjectRoot `
+    -ModuleName "autobot.ops.pointer_consistency_report" `
+    -ExtraArgs @("--model-family", $resolvedModelFamily) `
+    -ExpectedReportPath (Join-Path $resolvedProjectRoot "logs/ops/pointer_consistency/latest.json")
+$pointerConsistencySummary = Get-PropValue -ObjectValue $pointerConsistencyCapture.Report -Name "summary" -DefaultValue @{}
+if (($pointerConsistencyCapture.ExitCode -ne 0) -or (-not (Test-Path $pointerConsistencyCapture.ReportPath)) -or (-not (Test-ObjectHasValues -ObjectValue $pointerConsistencyCapture.Report))) {
+    Add-Check -Checks $checks -Code "POINTER_CONSISTENCY_REPORT_FAILED" -Status "violation" -Message "pointer consistency report refresh failed during preflight." -Evidence ([ordered]@{
+        exit_code = [int]$pointerConsistencyCapture.ExitCode
+        report_path = [string]$pointerConsistencyCapture.ReportPath
+        command = [string]$pointerConsistencyCapture.Command
+    })
+} else {
+    Add-Check -Checks $checks -Code "POINTER_CONSISTENCY_REPORT_REFRESHED" -Status "pass" -Message "pointer consistency report refreshed during preflight." -Evidence ([ordered]@{
+        report_path = [string]$pointerConsistencyCapture.ReportPath
+        command = [string]$pointerConsistencyCapture.Command
+        status = [string](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "status" -DefaultValue "")
+        violation_count = [int](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "violation_count" -DefaultValue 0)
+        warning_count = [int](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "warning_count" -DefaultValue 0)
     })
 }
 
@@ -403,6 +519,21 @@ $report = [ordered]@{
     required_pointers = @($resolvedRequiredPointers)
     fail_on_dirty_worktree = [bool]$FailOnDirtyWorktree
     check_candidate_state_consistency = [bool]$CheckCandidateStateConsistency
+    python_exe = if ([string]::IsNullOrWhiteSpace($resolvedPythonExe)) { $null } else { $resolvedPythonExe }
+    runtime_topology_report = [ordered]@{
+        attempted = $true
+        exit_code = [int]$runtimeTopologyCapture.ExitCode
+        command = [string]$runtimeTopologyCapture.Command
+        report_path = [string]$runtimeTopologyCapture.ReportPath
+        summary = $runtimeTopologySummary
+    }
+    pointer_consistency_report = [ordered]@{
+        attempted = $true
+        exit_code = [int]$pointerConsistencyCapture.ExitCode
+        command = [string]$pointerConsistencyCapture.Command
+        report_path = [string]$pointerConsistencyCapture.ReportPath
+        summary = $pointerConsistencySummary
+    }
     git = $gitSnapshot
     systemd = $systemdSnapshot
     pointers = $pointerSnapshots

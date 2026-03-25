@@ -69,9 +69,17 @@ def _make_fake_acceptance_script(
     return script_path
 
 
+def _seed_preflight_minimum(project_root: Path) -> None:
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "champion-run-000").mkdir(parents=True, exist_ok=True)
+    (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-000"}), encoding="utf-8")
+
+
 def test_daily_candidate_acceptance_treats_scout_only_budget_rejection_as_success(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
     acceptance_script = _make_fake_acceptance_script(
         tmp_path,
         payload={
@@ -117,6 +125,7 @@ def test_daily_candidate_acceptance_treats_scout_only_budget_rejection_as_succes
 def test_daily_candidate_acceptance_preserves_fatal_acceptance_failure(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
     acceptance_script = _make_fake_acceptance_script(
         tmp_path,
         payload={
@@ -159,6 +168,7 @@ def test_daily_candidate_acceptance_preserves_fatal_acceptance_failure(tmp_path:
 def test_daily_candidate_acceptance_treats_bootstrap_only_policy_as_success(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
     acceptance_script = _make_fake_acceptance_script(
         tmp_path,
         payload={
@@ -207,6 +217,7 @@ def test_daily_candidate_acceptance_treats_bootstrap_only_policy_as_success(tmp_
 def test_daily_candidate_acceptance_prefers_final_json_report_over_daily_markdown_report(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
     acceptance_script = _make_fake_acceptance_script(
         tmp_path,
         payload={
@@ -253,8 +264,8 @@ def test_daily_candidate_acceptance_prefers_final_json_report_over_daily_markdow
 def test_daily_candidate_acceptance_fails_fast_on_server_preflight_violation(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
     family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
-    family_dir.mkdir(parents=True, exist_ok=True)
     (family_dir / "latest_candidate.json").write_text(json.dumps({"run_id": "candidate-run-stale"}), encoding="utf-8")
     acceptance_script = _make_fake_acceptance_script(
         tmp_path,
@@ -290,3 +301,6 @@ def test_daily_candidate_acceptance_fails_fast_on_server_preflight_violation(tmp
     assert completed.returncode == 2
     assert "preflight_failed" in completed.stdout
     assert not (project_root / "logs" / "fake_acceptance" / "report.json").exists()
+    preflight_report = json.loads((project_root / "logs" / "ops" / "server_preflight" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert preflight_report["required_pointers"] == ["champion"]
+    assert preflight_report["check_candidate_state_consistency"] is True

@@ -151,14 +151,17 @@ function Invoke-PreflightCapture {
     param(
         [string]$PwshExe,
         [string]$PreflightScriptPath,
-        [string]$Root
+        [string]$Root,
+        [string]$PythonPath
     )
     $args = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", $PreflightScriptPath,
         "-ProjectRoot", $Root,
+        "-PythonExe", $PythonPath,
         "-ModelFamily", "train_v4_crypto_cs",
+        "-RequiredPointers", "champion",
         "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"
     )
@@ -167,11 +170,17 @@ function Invoke-PreflightCapture {
             "autobot-paper-v4.service",
             "autobot-paper-v4-challenger.service"
         )
+        $failedUnits = @(
+            "autobot-paper-v4.service",
+            "autobot-paper-v4-challenger.service",
+            "autobot-v4-challenger-spawn.service",
+            "autobot-v4-challenger-promote.service"
+        )
         $args += @(
             "-RequiredUnitFiles",
             (Join-DelimitedStringArray -Values $requiredUnits),
             "-BlockOnFailedUnits",
-            (Join-DelimitedStringArray -Values $requiredUnits)
+            (Join-DelimitedStringArray -Values $failedUnits)
         )
     }
     $output = & $PwshExe @args 2>&1
@@ -266,7 +275,7 @@ if ($activeBlockUnits.Count -gt 0) {
 
 $psExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { "powershell.exe" } else { Resolve-PwshExe }
 $preflightScriptPath = Join-Path $PSScriptRoot "check_server_preflight.ps1"
-$preflightExec = Invoke-PreflightCapture -PwshExe $psExe -PreflightScriptPath $preflightScriptPath -Root $resolvedProjectRoot
+$preflightExec = Invoke-PreflightCapture -PwshExe $psExe -PreflightScriptPath $preflightScriptPath -Root $resolvedProjectRoot -PythonPath $resolvedPythonExe
 Write-Host ("[daily-accept] preflight_command={0}" -f $preflightExec.Command)
 if ($preflightExec.ExitCode -ne 0) {
     Write-Host ("[daily-accept][error] preflight_failed report={0}" -f $preflightExec.ReportPath)

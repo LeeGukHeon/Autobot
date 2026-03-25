@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -130,11 +131,22 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
 
 def _make_fake_python(tmp_path: Path, compare_payload: dict | None = None) -> Path:
     payload_json = json.dumps(compare_payload or {"decision": {"promote": True, "decision": "promote_challenger"}})
+    real_python = sys.executable.replace("\\", "\\\\")
     if os.name == "nt":
         wrapper_path = tmp_path / "fake_python.cmd"
         wrapper_path.write_text(
             "@echo off\r\n"
             "set args=%*\r\n"
+            "echo %args% | findstr /C:\"autobot.ops.runtime_topology_report\" >nul\r\n"
+            "if not errorlevel 1 (\r\n"
+            f"  \"{real_python}\" %*\r\n"
+            "  exit /b %ERRORLEVEL%\r\n"
+            ")\r\n"
+            "echo %args% | findstr /C:\"autobot.ops.pointer_consistency_report\" >nul\r\n"
+            "if not errorlevel 1 (\r\n"
+            f"  \"{real_python}\" %*\r\n"
+            "  exit /b %ERRORLEVEL%\r\n"
+            ")\r\n"
             "echo %args% | findstr /C:\"autobot.common.paper_lane_evidence\" >nul\r\n"
             "if not errorlevel 1 (\r\n"
             f"  echo {payload_json}\r\n"
@@ -155,6 +167,8 @@ def _make_fake_python(tmp_path: Path, compare_payload: dict | None = None) -> Pa
             "#!/bin/sh\n"
             "args=\"$*\"\n"
             "case \"$args\" in\n"
+            f"  *autobot.ops.runtime_topology_report*) \"{sys.executable}\" \"$@\" ;;\n"
+            f"  *autobot.ops.pointer_consistency_report*) \"{sys.executable}\" \"$@\" ;;\n"
             f"  *autobot.common.paper_lane_evidence*) printf '%s\\n' '{payload_json}' ;;\n"
             "  *'autobot.cli model promote'*) printf '{}\\n' ;;\n"
             "  *) printf '{}\\n' ;;\n"
@@ -230,6 +244,23 @@ def _make_fake_acceptance_script(
     return script_path
 
 
+def _seed_preflight_minimum(project_root: Path) -> None:
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / "champion-run-000").mkdir(parents=True, exist_ok=True)
+    (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-000"}), encoding="utf-8")
+
+
+def _seed_latest_candidate_pointer(project_root: Path, run_id: str) -> None:
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    (family_dir / run_id).mkdir(parents=True, exist_ok=True)
+    (family_dir / "latest_candidate.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
+    global_pointer.parent.mkdir(parents=True, exist_ok=True)
+    global_pointer.write_text(json.dumps({"run_id": run_id, "model_family": "train_v4_crypto_cs"}), encoding="utf-8")
+
+
 def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
     script_path = tmp_path / "fake_runtime_install.ps1"
     script_path.write_text(
@@ -290,6 +321,7 @@ def _run_spawn_only(
     extra_args: list[str] | None = None,
     active_units: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    _seed_preflight_minimum(project_root)
     sudo_dir = acceptance_script.parent
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
@@ -870,11 +902,16 @@ def test_spawn_only_fails_fast_on_server_preflight_violation(tmp_path: Path) -> 
     assert latest["steps"]["preflight"]["exit_code"] == 2
     assert latest["steps"]["preflight"]["summary"]["status"] == "violation"
     assert not (project_root / "logs" / "fake_acceptance" / "report.json").exists()
+    preflight_report = json.loads((project_root / "logs" / "ops" / "server_preflight" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert preflight_report["required_pointers"] == ["champion"]
+    assert preflight_report["check_candidate_state_consistency"] is True
 
 
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-bootstrap")
     sudo_dir = tmp_path
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
@@ -928,6 +965,8 @@ def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None
 def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-promote")
     sudo_dir = tmp_path
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
@@ -1009,6 +1048,10 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
 def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targets(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-promote-clear")
+    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
     sudo_dir = tmp_path
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
@@ -1027,16 +1070,6 @@ def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targe
                 "promotion_eligible": True,
             }
         ),
-        encoding="utf-8",
-    )
-
-    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
-    family_pointer.parent.mkdir(parents=True, exist_ok=True)
-    family_pointer.write_text(json.dumps({"run_id": "candidate-run-promote-clear"}), encoding="utf-8")
-    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
-    global_pointer.parent.mkdir(parents=True, exist_ok=True)
-    global_pointer.write_text(
-        json.dumps({"run_id": "candidate-run-promote-clear", "model_family": "train_v4_crypto_cs"}),
         encoding="utf-8",
     )
 

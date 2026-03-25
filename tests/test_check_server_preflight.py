@@ -62,6 +62,10 @@ def test_server_preflight_passes_for_clean_candidate_state(tmp_path: Path) -> No
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
     report = json.loads((project_root / "logs" / "ops" / "server_preflight" / "latest.json").read_text(encoding="utf-8-sig"))
     assert report["summary"]["status"] == "healthy"
+    assert report["runtime_topology_report"]["exit_code"] == 0
+    assert report["pointer_consistency_report"]["exit_code"] == 0
+    assert (project_root / "logs" / "runtime_topology" / "latest.json").exists()
+    assert (project_root / "logs" / "ops" / "pointer_consistency" / "latest.json").exists()
 
 
 def test_server_preflight_fails_on_dirty_worktree_and_candidate_state_mismatch(tmp_path: Path) -> None:
@@ -109,3 +113,5 @@ def test_server_preflight_fails_on_dirty_worktree_and_candidate_state_mismatch(t
     assert report["summary"]["status"] == "violation"
     assert "DIRTY_WORKTREE" in report["summary"]["violation_codes"]
     assert "LATEST_CANDIDATE_WITHOUT_CURRENT_STATE" in report["summary"]["violation_codes"]
+    assert report["required_pointers"] == ["champion"]
+    assert report["check_candidate_state_consistency"] is True

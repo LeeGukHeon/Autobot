@@ -55,7 +55,7 @@ def build_runtime_topology_report(
 
     rollout_latest = load_rollout_latest(root, target_unit=target_unit)
 
-    daemon_defaults = _load_live_defaults(root)
+    daemon_defaults = _load_live_defaults(root, target_unit=target_unit)
     ws_public_contract = load_ws_public_runtime_contract(
         meta_dir=Path(str(daemon_defaults["ws_public_meta_dir"])),
         raw_root=Path(str(daemon_defaults["ws_public_raw_root"])),
@@ -143,10 +143,16 @@ def write_runtime_topology_report(
     return path
 
 
-def _load_live_defaults(project_root: Path) -> dict[str, Any]:
+def _load_live_defaults(project_root: Path, *, target_unit: str | None = None) -> dict[str, Any]:
+    target_unit_text = str(target_unit or "").strip().lower()
+    runtime_model_ref_source = (
+        "latest_candidate_v4"
+        if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}
+        else "champion_v4"
+    )
     return {
         "registry_root": str(project_root / "models" / "registry"),
-        "runtime_model_ref_source": "champion_v4",
+        "runtime_model_ref_source": runtime_model_ref_source,
         "runtime_model_family": "train_v4_crypto_cs",
         "ws_public_raw_root": str(project_root / "data" / "raw_ws" / "upbit" / "public"),
         "ws_public_meta_dir": str(project_root / "data" / "raw_ws" / "upbit" / "_meta"),

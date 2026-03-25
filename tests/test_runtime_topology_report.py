@@ -120,8 +120,10 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["live_lane"]["runtime_contract"]["live_runtime_model_run_id"] == "run-1"
     assert report["ws_public_contract"]["ws_public_stale"] is False
     assert report["runtime_sync_status"]["live_runtime_model_run_id"] == "run-3"
+    assert report["runtime_sync_status"]["current_resolved_model_run_id"] == "run-3"
     assert report["runtime_sync_status"]["champion_pointer_run_id"] == "run-1"
     assert report["runtime_sync_status"]["model_pointer_divergence"] is True
+    assert report["current_runtime_contract"]["model_ref_source_requested"] == "latest_candidate_v4"
     assert report["rollout_latest"]["target_unit"] == "autobot-live-alpha-candidate.service"
     assert report["summary"]["all_primary_pointers_equal"] is False
     assert report["systemd"]["available"] is True

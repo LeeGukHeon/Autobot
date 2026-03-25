@@ -145,7 +145,7 @@ The next context must start from the first unchecked item.
   Done when:
   batch scripts can fail fast before expensive train/adoption steps.
   Current implementation note:
-  implemented in `scripts/check_server_preflight.ps1` and wired into `scripts/daily_candidate_acceptance_for_server.ps1` and `scripts/daily_champion_challenger_v4_for_server.ps1`. Local and OCI validation on 2026-03-25 confirmed the preflight writes `logs/ops/server_preflight/latest.json`, exits nonzero on dirty worktree, failed unit, and stale pointer/state conditions, and causes both server batch entrypoints to fail closed before train/adoption work begins.
+  implemented in `scripts/check_server_preflight.ps1` and wired into `scripts/daily_candidate_acceptance_for_server.ps1` and `scripts/daily_champion_challenger_v4_for_server.ps1`. Local and OCI validation on 2026-03-25 confirmed the preflight writes `logs/ops/server_preflight/latest.json`, refreshes `logs/runtime_topology/latest.json` and `logs/ops/pointer_consistency/latest.json`, exits nonzero on dirty worktree, failed unit, and stale pointer/state conditions, and causes both server batch entrypoints to fail closed before train/adoption work begins.
 
 - [ ] 06. Define and apply replay legacy cleanup policy
   Required references:

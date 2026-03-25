@@ -116,6 +116,7 @@ function Invoke-PreflightCapture {
         [string]$PwshExe,
         [string]$PreflightScriptPath,
         [string]$Root,
+        [string]$PythonPath,
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
         [string[]]$PromotionUnits,
@@ -126,7 +127,10 @@ function Invoke-PreflightCapture {
         "-ExecutionPolicy", "Bypass",
         "-File", $PreflightScriptPath,
         "-ProjectRoot", $Root,
+        "-PythonExe", $PythonPath,
         "-ModelFamily", "train_v4_crypto_cs",
+        "-RequiredPointers", "champion",
+        "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"
     )
     if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
@@ -750,6 +754,7 @@ $preflightExec = Invoke-PreflightCapture `
     -PwshExe $psExe `
     -PreflightScriptPath $preflightScriptPath `
     -Root $resolvedProjectRoot `
+    -PythonPath $resolvedPythonExe `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -PromotionUnits $resolvedPromotionTargetUnits `
