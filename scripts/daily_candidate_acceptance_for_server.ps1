@@ -169,12 +169,14 @@ function Invoke-PreflightCapture {
         $requiredUnits = @(
             "autobot-paper-v4.service",
             "autobot-paper-v4-challenger.service",
+            "autobot-paper-v4-paired.service",
             "autobot-v4-challenger-spawn.timer",
             "autobot-v4-challenger-promote.timer"
         )
         $failedUnits = @(
             "autobot-paper-v4.service",
             "autobot-paper-v4-challenger.service",
+            "autobot-paper-v4-paired.service",
             "autobot-v4-challenger-spawn.service",
             "autobot-v4-challenger-promote.service"
         )

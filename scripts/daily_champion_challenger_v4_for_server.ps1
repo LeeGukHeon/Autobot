@@ -165,6 +165,9 @@ function Invoke-PreflightCapture {
             }
             $requiredUnits += $trimmed
         }
+        if ($requiredUnits -notcontains $PairedPaperUnitName) {
+            $requiredUnits += $PairedPaperUnitName
+        }
         foreach ($timerUnit in @("autobot-v4-challenger-spawn.timer", "autobot-v4-challenger-promote.timer")) {
             if ($requiredUnits -contains $timerUnit) {
                 continue
