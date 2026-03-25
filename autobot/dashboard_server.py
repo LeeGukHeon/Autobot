@@ -742,7 +742,7 @@ def _paper_run_payload_to_summary(
     fallback_run_id: str,
 ) -> dict[str, Any]:
     role = str(payload.get("paper_runtime_role") or "").strip().lower()
-    role_label = "챔피언" if role == "champion" else "챌린저" if role == "challenger" else None
+    role_label = _paper_runtime_role_label(role)
     return {
         "run_id": payload.get("run_id") or fallback_run_id,
         "feature_provider": payload.get("feature_provider"),
@@ -767,6 +767,111 @@ def _paper_run_payload_to_summary(
         "updated_at": updated_at,
         "summary_path": summary_path,
     }
+
+
+def _paper_runtime_role_label(role: str | None) -> str | None:
+    normalized = str(role or "").strip().lower()
+    if normalized == "champion":
+        return "챔피언"
+    if normalized in {"challenger", "candidate"}:
+        return "챌린저"
+    if normalized == "paired":
+        return "페어드"
+    return None
+
+
+def _paired_paper_artifact_to_summary(
+    *,
+    project_root: Path,
+    payload: dict[str, Any],
+    artifact_path: Path,
+) -> dict[str, Any]:
+    paired_report = dict(payload.get("paired_report") or {})
+    clock_alignment = dict(paired_report.get("clock_alignment") or {})
+    paired_deltas = dict(paired_report.get("paired_deltas") or {})
+    champion = dict(paired_report.get("champion") or {})
+    challenger = dict(paired_report.get("challenger") or {})
+    gate = dict(payload.get("gate") or _dig(payload, "promotion_decision", "paired_gate", default={}) or {})
+    promotion_decision = dict(payload.get("promotion_decision") or {})
+    decision = dict(promotion_decision.get("decision") or {})
+    capture = dict(payload.get("capture") or {})
+    champion_run_id = str(champion.get("paper_runtime_model_run_id") or champion.get("run_id") or "").strip()
+    challenger_run_id = str(challenger.get("paper_runtime_model_run_id") or challenger.get("run_id") or "").strip()
+    return {
+        "mode": str(payload.get("mode") or "").strip() or None,
+        "generated_at": payload.get("generated_at_utc"),
+        "updated_at": _path_mtime_iso(artifact_path),
+        "artifact_path": str(artifact_path),
+        "run_root": payload.get("run_root"),
+        "report_path": payload.get("report_path"),
+        "pair_ready": bool(clock_alignment.get("pair_ready")),
+        "matched_opportunities": _coerce_int(clock_alignment.get("matched_opportunities")) or 0,
+        "matched_ratio_vs_champion": _coerce_float(clock_alignment.get("matched_ratio_vs_champion")),
+        "matched_ratio_vs_challenger": _coerce_float(clock_alignment.get("matched_ratio_vs_challenger")),
+        "feature_hash_match_ratio": _coerce_float(clock_alignment.get("feature_hash_match_ratio")),
+        "gate_pass": bool(gate.get("pass")),
+        "gate_reason": str(gate.get("reason") or "").strip() or None,
+        "decision": str(decision.get("decision") or "").strip() or None,
+        "promote": bool(decision.get("promote")),
+        "hard_failures": [str(item).strip() for item in list(decision.get("hard_failures") or []) if str(item).strip()],
+        "champion_run_id": champion_run_id or None,
+        "challenger_run_id": challenger_run_id or None,
+        "champion_run_dir": champion.get("run_dir") or payload.get("champion_run_dir"),
+        "challenger_run_dir": challenger.get("run_dir") or payload.get("challenger_run_dir"),
+        "champion_orders_filled": _coerce_int(champion.get("orders_filled")) or 0,
+        "challenger_orders_filled": _coerce_int(challenger.get("orders_filled")) or 0,
+        "champion_realized_pnl_quote": _coerce_float(champion.get("realized_pnl_quote")),
+        "challenger_realized_pnl_quote": _coerce_float(challenger.get("realized_pnl_quote")),
+        "matched_pnl_delta_quote": _coerce_float(paired_deltas.get("matched_pnl_delta_quote")),
+        "matched_fill_delta": _coerce_int(paired_deltas.get("matched_fill_delta")) or 0,
+        "matched_slippage_delta_bps": _coerce_float(paired_deltas.get("matched_slippage_delta_bps")),
+        "matched_no_trade_delta": _coerce_int(paired_deltas.get("matched_no_trade_delta")) or 0,
+        "duration_sec_requested": _coerce_int(capture.get("duration_sec_requested")),
+        "markets_subscribed": _coerce_int(capture.get("markets_subscribed")),
+        "ticker_events_captured": _coerce_int(capture.get("ticker_events_captured")),
+        "trade_events_captured": _coerce_int(capture.get("trade_events_captured")),
+        "orderbook_events_captured": _coerce_int(capture.get("orderbook_events_captured")),
+        "source_mode": str(capture.get("source_mode") or "").strip() or None,
+        "capture": capture,
+        "champion_model_provenance": _load_model_provenance(project_root, champion_run_id),
+        "challenger_model_provenance": _load_model_provenance(project_root, challenger_run_id),
+    }
+
+
+def _load_paired_paper_latest(project_root: Path) -> dict[str, Any]:
+    latest_path = project_root / "logs" / "paired_paper" / "latest.json"
+    payload = _load_json(latest_path)
+    if not payload:
+        return {}
+    return _paired_paper_artifact_to_summary(
+        project_root=project_root,
+        payload=payload,
+        artifact_path=latest_path,
+    )
+
+
+def _latest_paired_paper_history(project_root: Path, limit: int = 4) -> list[dict[str, Any]]:
+    archive_root = project_root / "logs" / "paired_paper" / "archive"
+    if not archive_root.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    archive_paths = sorted(
+        [path for path in archive_root.glob("paired-*.json") if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[: max(limit, 1)]
+    for archive_path in archive_paths:
+        payload = _load_json(archive_path)
+        if not payload:
+            continue
+        items.append(
+            _paired_paper_artifact_to_summary(
+                project_root=project_root,
+                payload=payload,
+                artifact_path=archive_path,
+            )
+        )
+    return items
 
 
 def _paper_run_started_payload(events_path: Path) -> dict[str, Any]:
@@ -2254,23 +2359,14 @@ def _run_clear_live_breaker(
 def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
     latest_candidate_run_id = _latest_candidate_run_id(project_root)
     return {
-        "restart_paper_champion": {
-            "id": "restart_paper_champion",
-            "label": "챔피언 페이퍼 재시작",
-            "description": "autobot-paper-v4.service 재시작",
+        "restart_paired_paper": {
+            "id": "restart_paired_paper",
+            "label": "페어드 페이퍼 재시작",
+            "description": "autobot-paper-v4-paired.service 재시작",
             "category": "services",
-            "confirm": "챔피언 페이퍼 서비스를 지금 재시작할까요?",
+            "confirm": "paired paper 서비스를 지금 재시작할까요?",
             "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4.service"],
-        },
-        "restart_paper_challenger": {
-            "id": "restart_paper_challenger",
-            "label": "챌린저 페이퍼 재시작",
-            "description": "autobot-paper-v4-challenger.service 재시작",
-            "category": "services",
-            "confirm": "챌린저 페이퍼 서비스를 지금 재시작할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4-challenger.service"],
+            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4-paired.service"],
         },
         "restart_canary": {
             "id": "restart_canary",
@@ -2352,12 +2448,12 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "id": "adopt_latest_candidate",
             "label": "최신 후보 즉시 반영",
             "description": (
-                f"latest_candidate {latest_candidate_run_id}를 challenger paper와 canary에 반영"
+                f"latest_candidate {latest_candidate_run_id}를 paired paper lane과 canary에 반영"
                 if latest_candidate_run_id
-                else "latest_candidate를 challenger paper와 canary에 반영"
+                else "latest_candidate를 paired paper lane과 canary에 반영"
             ),
             "category": "binding",
-            "confirm": "현재 latest_candidate를 challenger paper와 canary에 바로 반영할까요?",
+            "confirm": "현재 latest_candidate를 paired paper lane과 canary에 바로 반영할까요?",
             "kind": "adopt_latest_candidate",
             "run_id": latest_candidate_run_id,
         },
@@ -2426,6 +2522,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "services": {
             "paper_champion": _unit_snapshot("autobot-paper-v4.service"),
             "paper_challenger": _unit_snapshot("autobot-paper-v4-challenger.service"),
+            "paper_paired": _unit_snapshot("autobot-paper-v4-paired.service"),
             "ws_public": _unit_snapshot("autobot-ws-public.service"),
             "live_main": _unit_snapshot("autobot-live-alpha.service"),
             "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
@@ -2451,6 +2548,8 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         },
         "challenger": _summarize_challenger(challenger_latest, challenger_state),
         "paper": {
+            "paired_latest": _load_paired_paper_latest(project_root),
+            "paired_history": _latest_paired_paper_history(project_root),
             "recent_runs": _latest_paper_summaries(project_root),
         },
         "live": {

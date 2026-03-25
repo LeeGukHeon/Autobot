@@ -92,6 +92,7 @@
   const SERVICE_LABELS = {
     paper_champion: "페이퍼 챔피언",
     paper_challenger: "페이퍼 챌린저",
+    paper_paired: "페어드 페이퍼",
     ws_public: "WS 수집기",
     live_main: "메인 라이브",
     live_candidate: "후보 카나리아",
@@ -104,8 +105,7 @@
   };
 
   const OPS_ACTION_TEXT = {
-    restart_paper_champion: { label: "챔피언 페이퍼 재시작" },
-    restart_paper_challenger: { label: "챌린저 페이퍼 재시작" },
+    restart_paired_paper: { label: "페어드 페이퍼 재시작" },
     restart_canary: { label: "라이브 카나리아 재시작" },
     clear_canary_breaker: { label: "카나리아 브레이커 해제" },
     try_restart_live_main: { label: "메인 라이브 try-restart" },
@@ -139,8 +139,8 @@
     },
     paper: {
       eyebrow: "Paper Runs",
-      title: "Paper Experiments",
-      text: "최근 페이퍼 런의 제출, 체결, 손익 흐름을 빠르게 비교합니다."
+      title: "Paired Paper",
+      text: "현재 paired lane 상태와 최근 비교 판정을 중심으로 페이퍼 흐름을 읽는 탭입니다."
     },
     live: {
       eyebrow: "Live Desk",
@@ -1060,8 +1060,7 @@
 
     const liveStates = (snapshot.live || {}).states || [];
     const candidateLive = liveStates.find((item) => String(item.label || "").includes("후보")) || {};
-    const paperRuns = (snapshot.paper || {}).recent_runs || [];
-    const challengerPaper = paperRuns.find((item) => String(item.paper_runtime_role || "") === "challenger") || {};
+    const pairedLatest = ((snapshot.paper || {}).paired_latest || {});
     const provenanceItems = [
       {
         title: "Champion Pointer",
@@ -1079,9 +1078,9 @@
         provenance: (pointers.latest || {}).provenance || {},
       },
       {
-        title: "Challenger Paper Binding",
-        source: { run_id: challengerPaper.paper_runtime_model_run_id, updated_at_utc: challengerPaper.updated_at },
-        provenance: challengerPaper.model_provenance || {},
+        title: "Paired Candidate Binding",
+        source: { run_id: pairedLatest.challenger_run_id, updated_at_utc: pairedLatest.updated_at },
+        provenance: pairedLatest.challenger_model_provenance || {},
       },
       {
         title: "Canary Live Binding",
@@ -1120,58 +1119,138 @@
   }
 
   function renderPaper(snapshot) {
-    const rows = [...((snapshot.paper || {}).recent_runs || [])].sort((a, b) => {
+    const paper = snapshot.paper || {};
+    const pairedLatest = paper.paired_latest || {};
+    const pairedHistory = [...(paper.paired_history || [])].sort((a, b) => {
       return (coerceTs(b.updated_at) || 0) - (coerceTs(a.updated_at) || 0);
     });
-    const roleService = (role) => {
-      if (role === "champion") return ((snapshot.services || {}).paper_champion || {});
-      if (role === "challenger") return ((snapshot.services || {}).paper_challenger || {});
-      return {};
-    };
-    const groups = [
-      { key: "champion", title: "페이퍼 챔피언", rows: rows.filter((run) => String(run.paper_runtime_role || "") === "champion") },
-      { key: "challenger", title: "페이퍼 챌린저", rows: rows.filter((run) => String(run.paper_runtime_role || "") === "challenger") },
-      { key: "other", title: "기타 페이퍼 런", rows: rows.filter((run) => !run.paper_runtime_role) },
-    ].filter((group) => group.rows.length);
-
-    const renderRows = (paperRows, activeRunId) => terminalTable(
-      ["런", "주문 제출", "주문 체결", "체결 비율", "손익", "업데이트"],
-      paperRows.map((run) => ({
-        rowClass: run.run_id === activeRunId ? "current-paper-run" : "",
-        cells: [
-          cell(
-            shortRun(run.run_id),
-            [
-              run.run_id === activeRunId ? "현재 실행 중" : null,
-              maybe(run.paper_runtime_role_label),
-              maybe(run.paper_runtime_model_run_id),
-              `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`,
-            ].filter(Boolean).join(" · "),
-          ),
-          cell(maybe(run.orders_submitted, "0"), "전송된 주문 수"),
-          cell(maybe(run.orders_filled, "0"), "실제 체결된 주문 수"),
-          cell(run.fill_rate == null ? "-" : fmtPct(Number(run.fill_rate) * 100), "체결 / 제출"),
-          cell(fmtMoney(run.realized_pnl_quote, 2), `미실현 ${fmtMoney(run.unrealized_pnl_quote, 2)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
-          cell(fmtDateTime(run.updated_at)),
+    const rows = [...(paper.recent_runs || [])].sort((a, b) => {
+      return (coerceTs(b.updated_at) || 0) - (coerceTs(a.updated_at) || 0);
+    });
+    const pairedService = ((snapshot.services || {}).paper_paired || {});
+    const pairedActive = String(pairedService.active_state || "").trim().toLowerCase() === "active";
+    const currentPairedRunId = String(pairedLatest.run_root || pairedLatest.artifact_path || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
+    const latestSummary = pairedLatest.mode
+      ? `${pairedActive ? "현재 paired lane이 실행 중입니다." : "현재 paired lane은 대기 중입니다."} ${currentPairedRunId !== "-" ? `현재 run · ${shortRun(currentPairedRunId)}.` : ""} ${pairedLatest.decision ? `최근 판정은 ${translate(pairedLatest.decision)}입니다.` : ""}`.trim()
+      : "paired paper 최신 artifact가 아직 없습니다.";
+    const latestSections = [
+      compactRow({
+        title: "현재 Paired Lane",
+        summary: latestSummary,
+        items: [
+          compactStat("서비스", pairedActive ? "실행 중" : "대기"),
+          compactStat("모드", maybe(pairedLatest.mode)),
+          compactStat("소스", maybe(pairedLatest.source_mode)),
+          compactStat("최근 갱신", fmtDateTime(pairedLatest.updated_at || pairedLatest.generated_at)),
+          compactStat("챔피언 run", shortRun(pairedLatest.champion_run_id)),
+          compactStat("후보 run", shortRun(pairedLatest.challenger_run_id)),
+          compactStat("매칭 기회", maybe(pairedLatest.matched_opportunities)),
+          compactStat("pair ready", boolLabel(pairedLatest.pair_ready)),
+          compactStat("gate", boolLabel(pairedLatest.gate_pass)),
+          compactStat("판정", translate(pairedLatest.decision)),
+          compactStat("hard failures", joinTranslated(pairedLatest.hard_failures || [])),
+          compactStat("보고서", shortPath(pairedLatest.report_path || pairedLatest.artifact_path)),
         ],
-      })),
-    );
+      }),
+      compactRow({
+        title: "현재 비교 델타",
+        summary: pairedLatest.mode
+          ? `동일 feed 기준으로 손익 ${fmtMoney(pairedLatest.matched_pnl_delta_quote, 2)}, 체결 수 ${fmtNumber(pairedLatest.matched_fill_delta, 0)}, 슬리피지 ${fmtBps(pairedLatest.matched_slippage_delta_bps)} 차이를 기록했습니다.`
+          : "최근 paired comparison 결과가 아직 없습니다.",
+        items: [
+          compactStat("손익 델타", fmtMoney(pairedLatest.matched_pnl_delta_quote, 2), toneFromValue(pairedLatest.matched_pnl_delta_quote)),
+          compactStat("체결 수 델타", fmtNumber(pairedLatest.matched_fill_delta, 0), toneFromValue(pairedLatest.matched_fill_delta)),
+          compactStat("슬리피지 델타", fmtBps(pairedLatest.matched_slippage_delta_bps), toneFromValue(-1 * Number(pairedLatest.matched_slippage_delta_bps || 0))),
+          compactStat("no-trade 델타", fmtNumber(pairedLatest.matched_no_trade_delta, 0), toneFromValue(pairedLatest.matched_no_trade_delta)),
+          compactStat("ticker 이벤트", maybe(pairedLatest.ticker_events_captured)),
+          compactStat("trade 이벤트", maybe(pairedLatest.trade_events_captured)),
+          compactStat("주문서 이벤트", maybe(pairedLatest.orderbook_events_captured)),
+          compactStat("구독 시장 수", maybe(pairedLatest.markets_subscribed)),
+        ],
+      }),
+    ].join("");
 
-    document.getElementById("paper-grid").innerHTML = groups.length
-      ? groups.map((group) => {
-        const service = roleService(group.key);
-        const serviceActive = String(service.active_state || "").trim().toLowerCase() === "active";
-        const activeRunId = serviceActive && group.rows.length ? group.rows[0].run_id : null;
-        const serviceMeta = group.key === "other"
-          ? ""
-          : `<div class="paper-role-meta">${
-            serviceActive
-              ? `${pill("상태", "실행 중", "good")}<span class="paper-role-start">${esc(fmtDateTime(service.started_at))}</span><span class="paper-role-current">현재 run · ${esc(shortRun(activeRunId))}</span>`
-              : pill("상태", "대기", "neutral")
-          }</div>`;
-        return `<section class="paper-role-block"><div class="paper-role-head"><h3>${group.title}</h3>${serviceMeta}</div>${renderRows(group.rows, activeRunId)}</section>`;
-      }).join("")
-      : empty("최근 페이퍼 런이 없습니다.");
+    const pairedHistoryTable = pairedHistory.length
+      ? terminalTable(
+        ["Paired 런", "판정", "매칭", "델타", "입력", "업데이트"],
+        pairedHistory.map((item, index) => {
+          const pairedRunId = String(item.run_root || item.artifact_path || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
+          return {
+            rowClass: [
+              item.promote ? "positive" : "",
+              index === 0 ? "current-paper-run" : "",
+            ].filter(Boolean).join(" "),
+            cells: [
+              cell(shortRun(pairedRunId), [shortRun(item.champion_run_id), shortRun(item.challenger_run_id)].filter((value) => value && value !== "-").join(" → ")),
+              cell(
+                translate(item.decision),
+                [boolLabel(item.gate_pass), translate(item.gate_reason), joinTranslated(item.hard_failures || [])].filter((value) => value && value !== "-").join(" · "),
+              ),
+              cell(
+                maybe(item.matched_opportunities, "0"),
+                [
+                  `ready ${boolLabel(item.pair_ready)}`,
+                  item.matched_ratio_vs_champion == null ? null : `champ ${fmtPct(Number(item.matched_ratio_vs_champion) * 100)}`,
+                  item.matched_ratio_vs_challenger == null ? null : `cand ${fmtPct(Number(item.matched_ratio_vs_challenger) * 100)}`,
+                ].filter(Boolean).join(" · "),
+              ),
+              cell(
+                fmtMoney(item.matched_pnl_delta_quote, 2),
+                [
+                  `체결 ${fmtNumber(item.matched_fill_delta, 0)}`,
+                  `슬리피지 ${fmtBps(item.matched_slippage_delta_bps)}`,
+                ].join(" · "),
+                Number(item.matched_pnl_delta_quote || 0) > 0 ? "good" : Number(item.matched_pnl_delta_quote || 0) < 0 ? "bad" : "",
+                "right",
+              ),
+              cell(
+                maybe(item.source_mode),
+                [
+                  `ticker ${maybe(item.ticker_events_captured, "0")}`,
+                  `trade ${maybe(item.trade_events_captured, "0")}`,
+                  `book ${maybe(item.orderbook_events_captured, "0")}`,
+                ].join(" · "),
+              ),
+              cell(fmtDateTime(item.updated_at || item.generated_at)),
+            ],
+          };
+        }),
+      )
+      : empty("최근 paired paper 히스토리가 없습니다.");
+
+    const standaloneRuns = rows.length
+      ? terminalTable(
+        ["런", "역할", "주문 제출", "주문 체결", "손익", "업데이트"],
+        rows.map((run) => ({
+          cells: [
+            cell(shortRun(run.run_id), [shortRun(run.paper_runtime_model_run_id), `${maybe(run.feature_provider)} / ${maybe(run.micro_provider)}`].filter((value) => value && value !== "-").join(" · ")),
+            cell(maybe(run.paper_runtime_role_label), maybe(run.paper_unit_name)),
+            cell(maybe(run.orders_submitted, "0")),
+            cell(maybe(run.orders_filled, "0"), run.fill_rate == null ? "" : `비율 ${fmtPct(Number(run.fill_rate) * 100)}`),
+            cell(fmtMoney(run.realized_pnl_quote, 2), `미실현 ${fmtMoney(run.unrealized_pnl_quote, 2)}`, Number(run.realized_pnl_quote || 0) > 0 ? "good" : Number(run.realized_pnl_quote || 0) < 0 ? "bad" : "", "right"),
+            cell(fmtDateTime(run.updated_at)),
+          ],
+        })),
+      )
+      : empty("개별 또는 수동 paper run 기록이 없습니다.");
+
+    document.getElementById("paper-grid").innerHTML = `
+      <div class="dense-list">${latestSections}</div>
+      <section class="paper-role-block">
+        <div class="paper-role-head">
+          <h3>최근 Paired 비교</h3>
+          <div class="paper-role-meta">${pairedActive ? pill("상태", "실행 중", "good") : pill("상태", "대기", "neutral")}</div>
+        </div>
+        ${pairedHistoryTable}
+      </section>
+      <section class="paper-role-block">
+        <div class="paper-role-head">
+          <h3>개별 / 수동 Paper Runs</h3>
+          <div class="paper-role-meta">${pill("참고", "보조", "neutral")}</div>
+        </div>
+        ${standaloneRuns}
+      </section>
+    `;
   }
 
   function statePriority(item) {

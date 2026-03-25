@@ -391,6 +391,103 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 
 
+def test_build_dashboard_snapshot_includes_paired_paper_latest_and_history(tmp_path: Path) -> None:
+    project_root = tmp_path
+    paired_run_root = project_root / "logs" / "paired_paper" / "runs" / "paired-20260325-001000-demo"
+    latest_payload = {
+        "mode": "paired_paper_live_service_v1",
+        "generated_at_utc": "2026-03-25T00:10:00Z",
+        "run_root": str(paired_run_root),
+        "report_path": str(paired_run_root / "paired_paper_report.json"),
+        "capture": {
+            "duration_sec_requested": 0,
+            "markets_subscribed": 17,
+            "ticker_events_captured": 120,
+            "trade_events_captured": 90,
+            "orderbook_events_captured": 45,
+            "source_mode": "live_ws_fanout_service",
+        },
+        "gate": {
+            "evaluated": True,
+            "pair_ready": True,
+            "matched_opportunities": 12,
+            "min_matched_opportunities": 1,
+            "pass": True,
+            "reason": "PAIRED_PAPER_READY",
+        },
+        "paired_report": {
+            "champion": {
+                "run_dir": str(paired_run_root / "champion" / "runs" / "paper-20260325-000001"),
+                "run_id": "paper-20260325-000001",
+                "paper_runtime_role": "champion",
+                "paper_runtime_model_run_id": "champion-run-001",
+                "orders_filled": 3,
+                "realized_pnl_quote": 150.0,
+            },
+            "challenger": {
+                "run_dir": str(paired_run_root / "challenger" / "runs" / "paper-20260325-000001"),
+                "run_id": "paper-20260325-000001",
+                "paper_runtime_role": "challenger",
+                "paper_runtime_model_run_id": "candidate-run-001",
+                "orders_filled": 4,
+                "realized_pnl_quote": 175.0,
+            },
+            "clock_alignment": {
+                "matched_opportunities": 12,
+                "matched_ratio_vs_champion": 1.0,
+                "matched_ratio_vs_challenger": 0.92,
+                "feature_hash_match_ratio": 1.0,
+                "pair_ready": True,
+            },
+            "paired_deltas": {
+                "matched_pnl_delta_quote": 25.0,
+                "matched_fill_delta": 1,
+                "matched_slippage_delta_bps": -4.5,
+                "matched_no_trade_delta": 2,
+            },
+        },
+        "promotion_decision": {
+            "decision": {
+                "promote": True,
+                "decision": "promote_challenger",
+                "hard_failures": [],
+            }
+        },
+    }
+    history_payload = {
+        **latest_payload,
+        "generated_at_utc": "2026-03-24T00:10:00Z",
+        "promotion_decision": {
+            "decision": {
+                "promote": False,
+                "decision": "keep_champion",
+                "hard_failures": ["PAIRED_PAPER_NOT_READY"],
+            }
+        },
+    }
+    _write_json(project_root / "logs" / "paired_paper" / "latest.json", latest_payload)
+    _write_json(project_root / "logs" / "paired_paper" / "archive" / "paired-20260324-001000-demo.json", history_payload)
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    paired_latest = snapshot["paper"]["paired_latest"]
+    paired_history = snapshot["paper"]["paired_history"]
+
+    assert "paper_paired" in snapshot["services"]
+    assert paired_latest["mode"] == "paired_paper_live_service_v1"
+    assert paired_latest["source_mode"] == "live_ws_fanout_service"
+    assert paired_latest["matched_opportunities"] == 12
+    assert paired_latest["gate_pass"] is True
+    assert paired_latest["decision"] == "promote_challenger"
+    assert paired_latest["champion_run_id"] == "champion-run-001"
+    assert paired_latest["challenger_run_id"] == "candidate-run-001"
+    assert paired_latest["matched_pnl_delta_quote"] == pytest.approx(25.0)
+    assert paired_latest["matched_slippage_delta_bps"] == pytest.approx(-4.5)
+    assert len(paired_history) == 1
+    assert paired_history[0]["decision"] == "keep_champion"
+    assert paired_history[0]["hard_failures"] == ["PAIRED_PAPER_NOT_READY"]
+
+
 def test_build_dashboard_snapshot_reads_breaker_state_table_name_used_by_live_db(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": False}})
@@ -1036,12 +1133,17 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     snapshot = build_dashboard_snapshot(tmp_path)
     actions = {item["id"]: item for item in snapshot["operations"]["actions"]}
 
+    assert "restart_paired_paper" in actions
+    assert actions["restart_paired_paper"]["description"] == "autobot-paper-v4-paired.service 재시작"
+    assert "restart_paper_champion" not in actions
+    assert "restart_paper_challenger" not in actions
     assert "clear_canary_breaker" in actions
     assert actions["clear_canary_breaker"]["category"] == "recovery"
     assert "clear_live_main_breaker" in actions
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
     assert actions["start_spawn_only"]["description"].startswith("00:20 challenger spawn")
     assert actions["start_promote_only"]["description"].startswith("00:10 challenger promote")
+    assert "paired paper lane" in actions["adopt_latest_candidate"]["description"]
 
 
 def test_dashboard_server_source_keeps_single_dashboard_ops_catalog_and_execute_definitions() -> None:
