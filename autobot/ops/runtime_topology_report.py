@@ -126,7 +126,7 @@ def build_runtime_topology_report(
             "ws_public_stale": bool(ws_public_contract.get("ws_public_stale", False)),
             "systemd_available": bool(systemd_snapshot.get("available", False)),
             "service_active_count": int(sum(1 for item in (systemd_snapshot.get("services") or []) if str(item.get("active", "")).strip().lower() == "active")),
-            "target_service_active_count": int(sum(1 for item in (systemd_snapshot.get("services") or []) if _is_target_topology_service(item))),
+            "target_service_active_count": int(sum(1 for item in (systemd_snapshot.get("services") or []) if _is_target_topology_service(item) and str(item.get("active", "")).strip().lower() == "active")),
             "timer_active_count": int(sum(1 for item in (systemd_snapshot.get("timers") or []) if str(item.get("active", "")).strip().lower() == "active")),
             "git_dirty": bool(git_snapshot.get("dirty", False)),
             "replay_path_present": bool(project_topology.get("replay_path_present", False)),
