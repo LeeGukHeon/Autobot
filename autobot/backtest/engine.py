@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable, Sequence
 
 from autobot.common.event_store import JsonlEventStore
-from autobot.common.opportunity_log import append_strategy_opportunities
+from autobot.common.opportunity_log import append_counterfactual_actions, append_strategy_opportunities
 from autobot.common.execution_structure import summarize_fill_records
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
@@ -1152,6 +1152,7 @@ class BacktestRunEngine:
         )
         summary_payload = asdict(summary)
         summary_payload["opportunity_log_path"] = str(run_root / "opportunity_log.jsonl")
+        summary_payload["counterfactual_action_log_path"] = str(run_root / "counterfactual_action_log.jsonl")
         summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))
         write_summary_json(run_root, summary_payload)
         if not summary_only_artifacts:
@@ -1398,6 +1399,14 @@ class BacktestRunEngine:
 
         append_strategy_opportunities(
             path=Path(event_store.run_dir) / "opportunity_log.jsonl",
+            result=result,
+            ts_ms=ts_ms,
+            run_id=str(getattr(strategy, "predictor_run_id", "")).strip(),
+            lane="backtest",
+            source="backtest_engine",
+        )
+        append_counterfactual_actions(
+            path=Path(event_store.run_dir) / "counterfactual_action_log.jsonl",
             result=result,
             ts_ms=ts_ms,
             run_id=str(getattr(strategy, "predictor_run_id", "")).strip(),

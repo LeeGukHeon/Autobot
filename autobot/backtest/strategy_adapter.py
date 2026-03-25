@@ -34,6 +34,9 @@ class StrategyOpportunityRecord:
     expected_edge_bps: float | None = None
     uncertainty: float | None = None
     run_id: str | None = None
+    candidate_actions_json: tuple[dict[str, Any], ...] = ()
+    chosen_action_propensity: float | None = None
+    realized_outcome_json: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 
 

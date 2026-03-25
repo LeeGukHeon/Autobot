@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent, StrategyStepResult
+from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOpportunityRecord, StrategyOrderIntent, StrategyStepResult
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.sim_exchange import MarketRules
@@ -112,6 +112,24 @@ class _DummyModelStrategy:
                     score=self._score,
                     prob=self._prob,
                     meta=dict(self._intent_meta),
+                ),
+            ),
+            opportunities=(
+                StrategyOpportunityRecord(
+                    opportunity_id="entry:paper:KRW-BTC",
+                    ts_ms=int(ts_ms),
+                    market="KRW-BTC",
+                    side="bid",
+                    selection_score=self._score,
+                    selection_score_raw=self._score,
+                    feature_hash="paper-test-hash",
+                    chosen_action="intent_created",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    run_id="run-paper",
+                    candidate_actions_json=(
+                        {"action_code": "PASSIVE_MAKER", "selected": False, "predicted_utility_bps": 1.0},
+                        {"action_code": "JOIN", "selected": True, "predicted_utility_bps": 2.0},
+                    ),
                 ),
             ),
             scored_rows=1,
@@ -231,8 +249,15 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
     ]
     assert opportunity_rows
     assert opportunity_rows[0]["lane"] == "paper"
+    counterfactual_rows = [
+        json.loads(line)
+        for line in (run_dir / "counterfactual_action_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(counterfactual_rows) >= 2
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
+    assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

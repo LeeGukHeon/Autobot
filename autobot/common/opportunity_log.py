@@ -17,6 +17,11 @@ def reset_opportunity_log(path: Path) -> None:
     path.write_text("", encoding="utf-8")
 
 
+def reset_counterfactual_action_log(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+
+
 def append_strategy_opportunities(
     *,
     path: Path,
@@ -27,6 +32,25 @@ def append_strategy_opportunities(
     source: str,
 ) -> int:
     records = _build_records(result=result, ts_ms=ts_ms, run_id=run_id, lane=lane, source=source)
+    if not records:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return len(records)
+
+
+def append_counterfactual_actions(
+    *,
+    path: Path,
+    result: StrategyStepResult,
+    ts_ms: int,
+    run_id: str,
+    lane: str,
+    source: str,
+) -> int:
+    records = _build_counterfactual_records(result=result, ts_ms=ts_ms, run_id=run_id, lane=lane, source=source)
     if not records:
         return 0
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,6 +77,65 @@ def _build_records(
         _fallback_record_from_intent(intent=intent, ts_ms=ts_ms, run_id=run_id, lane=lane, source=source)
         for intent in result.intents
     ]
+
+
+def _build_counterfactual_records(
+    *,
+    result: StrategyStepResult,
+    ts_ms: int,
+    run_id: str,
+    lane: str,
+    source: str,
+) -> list[dict[str, Any]]:
+    records = _build_records(result=result, ts_ms=ts_ms, run_id=run_id, lane=lane, source=source)
+    counterfactual_rows: list[dict[str, Any]] = []
+    for record in records:
+        actions = record.get("candidate_actions_json")
+        if isinstance(actions, list) and actions:
+            for index, action in enumerate(actions):
+                payload = dict(action) if isinstance(action, dict) else {"action": action}
+                counterfactual_rows.append(
+                    {
+                        "artifact_version": OPPORTUNITY_LOG_VERSION,
+                        "opportunity_id": record.get("opportunity_id"),
+                        "ts_ms": record.get("ts_ms"),
+                        "market": record.get("market"),
+                        "side": record.get("side"),
+                        "run_id": record.get("run_id"),
+                        "lane": record.get("lane"),
+                        "source": record.get("source"),
+                        "action_index": index,
+                        "chosen_action": record.get("chosen_action"),
+                        "chosen_action_propensity": record.get("chosen_action_propensity"),
+                        "skip_reason_code": record.get("skip_reason_code"),
+                        "action_payload": payload,
+                    }
+                )
+            continue
+        chosen_action = str(record.get("chosen_action") or "").strip()
+        if not chosen_action:
+            continue
+        counterfactual_rows.append(
+            {
+                "artifact_version": OPPORTUNITY_LOG_VERSION,
+                "opportunity_id": record.get("opportunity_id"),
+                "ts_ms": record.get("ts_ms"),
+                "market": record.get("market"),
+                "side": record.get("side"),
+                "run_id": record.get("run_id"),
+                "lane": record.get("lane"),
+                "source": record.get("source"),
+                "action_index": 0,
+                "chosen_action": chosen_action,
+                "chosen_action_propensity": record.get("chosen_action_propensity"),
+                "skip_reason_code": record.get("skip_reason_code"),
+                "action_payload": {
+                    "action_code": chosen_action,
+                    "selected": True,
+                },
+            }
+        )
+    return counterfactual_rows
 
 
 def _normalize_explicit_record(

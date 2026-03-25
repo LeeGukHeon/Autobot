@@ -15,7 +15,7 @@ from typing import Any, Callable, Sequence
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOrderIntent
 from autobot.common.execution_structure import summarize_fill_records
 from autobot.common.event_store import JsonlEventStore
-from autobot.common.opportunity_log import append_strategy_opportunities
+from autobot.common.opportunity_log import append_counterfactual_actions, append_strategy_opportunities
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
     PRICE_MODE_CROSS_1T,
@@ -1532,6 +1532,7 @@ class PaperRunEngine:
         summary_payload = asdict(summary)
         summary_payload.update(runtime_metadata)
         summary_payload["opportunity_log_path"] = str(run_root / "opportunity_log.jsonl")
+        summary_payload["counterfactual_action_log_path"] = str(run_root / "counterfactual_action_log.jsonl")
         summary_payload["run_completed_ts_ms"] = int(final_ts_ms)
         summary_payload["rolling_evidence"] = dict(rolling_evidence)
         summary_payload["model_alpha_min_prob_used"] = float(self._runtime_state.get("model_alpha_min_prob_used", 0.0))
@@ -1749,6 +1750,14 @@ class PaperRunEngine:
         runtime_metadata = _resolve_paper_runtime_metadata(self._run_settings)
         append_strategy_opportunities(
             path=Path(event_store.run_dir) / "opportunity_log.jsonl",
+            result=result,
+            ts_ms=ts_ms,
+            run_id=str(runtime_metadata.get("paper_runtime_model_run_id") or getattr(strategy, "predictor_run_id", "") or "").strip(),
+            lane=_resolve_paper_opportunity_lane(runtime_metadata=runtime_metadata),
+            source="paper_engine",
+        )
+        append_counterfactual_actions(
+            path=Path(event_store.run_dir) / "counterfactual_action_log.jsonl",
             result=result,
             ts_ms=ts_ms,
             run_id=str(runtime_metadata.get("paper_runtime_model_run_id") or getattr(strategy, "predictor_run_id", "") or "").strip(),

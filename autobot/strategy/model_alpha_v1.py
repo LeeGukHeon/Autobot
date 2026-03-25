@@ -225,6 +225,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             reason_code: str,
             skip_reason_code: str | None = None,
             trade_action_decision: dict[str, Any] | None = None,
+            execution_decision: dict[str, Any] | None = None,
             notional_multiplier: float | None = None,
             support_level: str = "",
             support_size_multiplier: float | None = None,
@@ -247,6 +248,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     expected_edge_bps=_resolve_trade_action_expected_edge_bps(trade_action_decision),
                     uncertainty=_resolve_opportunity_uncertainty(row),
                     run_id=self.predictor_run_id,
+                    candidate_actions_json=tuple(_build_counterfactual_candidate_actions(execution_decision)),
                     meta={
                         "selection_policy_mode": str(selection_mode),
                         "selection_policy_source": str(selection_policy_source),
@@ -637,6 +639,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         or "EXECUTION_NO_TRADE_REGION"
                     ),
                     trade_action_decision=trade_action_decision,
+                    execution_decision=execution_decision,
                     notional_multiplier=float(notional_multiplier),
                     support_level=trade_action_support_level,
                     support_size_multiplier=float(trade_action_support_multiplier),
@@ -712,6 +715,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 chosen_action="intent_created",
                 reason_code="MODEL_ALPHA_ENTRY_V1",
                 trade_action_decision=trade_action_decision,
+                execution_decision=execution_decision,
                 notional_multiplier=float(notional_multiplier) * float(operational_risk_multiplier),
                 support_level=trade_action_support_level,
                 support_size_multiplier=float(trade_action_support_multiplier),
@@ -1647,6 +1651,33 @@ def _build_opportunity_feature_hash(*, row: dict[str, Any] | None) -> str:
         normalized[key] = value
     payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _build_counterfactual_candidate_actions(execution_decision: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(execution_decision, dict):
+        return []
+    selected_stage = str(execution_decision.get("selected_stage", "")).strip().upper()
+    rows: list[dict[str, Any]] = []
+    for item in execution_decision.get("evaluated_stages") or []:
+        if not isinstance(item, dict):
+            continue
+        stage_name = str(item.get("stage", "")).strip().upper()
+        if not stage_name:
+            continue
+        rows.append(
+            {
+                "action_code": stage_name,
+                "selected": bool(selected_stage and stage_name == selected_stage),
+                "predicted_utility_bps": _safe_optional_float(item.get("net_edge_bps")),
+                "fill_probability": _safe_optional_float(item.get("fill_probability")),
+                "expected_slippage_bps": _safe_optional_float(item.get("expected_slippage_bps")),
+                "expected_cleanup_cost_bps": _safe_optional_float(item.get("expected_cleanup_cost_bps")),
+                "expected_miss_cost_bps": _safe_optional_float(item.get("expected_miss_cost_bps")),
+                "expected_time_to_fill_ms": _safe_optional_float(item.get("expected_time_to_fill_ms")),
+                "validation_comparable": bool(item.get("validation_comparable", False)),
+            }
+        )
+    return rows
 
 
 def _resolve_runtime_risk_exit_thresholds(

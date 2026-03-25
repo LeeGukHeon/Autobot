@@ -1225,6 +1225,9 @@ def test_model_alpha_execution_frontier_selects_join_stage_when_passive_net_edge
     bid_intent = next(intent for intent in result.intents if intent.side == "bid")
     exec_profile = dict((bid_intent.meta or {}).get("exec_profile") or {})
     execution_decision = dict((bid_intent.meta or {}).get("execution_decision") or {})
+    opportunity = result.opportunities[0]
+    assert len(opportunity.candidate_actions_json) >= 2
+    assert {item["action_code"] for item in opportunity.candidate_actions_json} >= {"PASSIVE_MAKER", "JOIN"}
     assert exec_profile["price_mode"] == "JOIN"
     assert int(exec_profile["timeout_ms"]) == 600_000
     assert execution_decision["selected_stage"] == "JOIN"
@@ -2171,8 +2174,15 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert opportunity_rows
     assert opportunity_rows[0]["lane"] == "backtest"
     assert opportunity_rows[0]["chosen_action"] in {"intent_created", "skip"}
+    counterfactual_rows = [
+        json.loads(line)
+        for line in (run_dir / "counterfactual_action_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert counterfactual_rows
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
+    assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

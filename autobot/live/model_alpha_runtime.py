@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from autobot.backtest.strategy_adapter import StrategyOrderIntent
-from autobot.common.opportunity_log import append_strategy_opportunities, reset_opportunity_log
+from autobot.common.opportunity_log import (
+    append_counterfactual_actions,
+    append_strategy_opportunities,
+    reset_counterfactual_action_log,
+    reset_opportunity_log,
+)
 from autobot.execution.order_supervisor import (
     OrderExecProfile,
     build_limit_price_from_mode,
@@ -226,8 +231,11 @@ async def run_live_model_alpha_runtime(
     predictor = _load_predictor_for_runtime(store=store, settings=settings)
     summary["strategy_predictor_run_id"] = predictor.run_dir.name
     live_opportunity_log_path = _resolve_live_opportunity_log_path(settings=settings)
+    live_counterfactual_log_path = _resolve_live_counterfactual_action_log_path(settings=settings)
     reset_opportunity_log(live_opportunity_log_path)
+    reset_counterfactual_action_log(live_counterfactual_log_path)
     summary["opportunity_log_path"] = str(live_opportunity_log_path)
+    summary["counterfactual_action_log_path"] = str(live_counterfactual_log_path)
     summary["order_execution_backfill"] = backfill_order_execution_details(store=store, client=client)
     resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
         predictor=predictor,
@@ -448,6 +456,14 @@ async def run_live_model_alpha_runtime(
                         lane=_resolve_live_opportunity_lane(settings=settings),
                         source="live_model_alpha_runtime",
                     )
+                    append_counterfactual_actions(
+                        path=live_counterfactual_log_path,
+                        result=result,
+                        ts_ms=decision_ts_ms,
+                        run_id=str(predictor.run_dir.name),
+                        lane=_resolve_live_opportunity_lane(settings=settings),
+                        source="live_model_alpha_runtime",
+                    )
                     for strategy_intent in result.intents:
                         submit_result = _handle_strategy_intent(
                             store=store,
@@ -650,6 +666,10 @@ def _resolve_live_opportunity_lane(*, settings: LiveModelAlphaRuntimeSettings) -
     if "candidate" in target_unit:
         return "live_candidate"
     return "live_champion"
+
+
+def _resolve_live_counterfactual_action_log_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
+    return _resolve_live_opportunity_log_path(settings=settings).with_name("counterfactual_action_log.jsonl")
 
 
 def _startup_sync(
