@@ -10,7 +10,7 @@ from typing import Any
 RISK_BUDGET_LEDGER_VERSION = 1
 
 
-def reset_live_risk_budget_ledger(
+def initialize_live_risk_budget_ledger(
     *,
     ledger_path: Path,
     latest_path: Path,
@@ -19,20 +19,22 @@ def reset_live_risk_budget_ledger(
     rollout_mode: str,
 ) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text("", encoding="utf-8")
+    if not ledger_path.exists():
+        ledger_path.write_text("", encoding="utf-8")
     latest_path.parent.mkdir(parents=True, exist_ok=True)
-    latest_payload = {
-        "artifact_version": RISK_BUDGET_LEDGER_VERSION,
-        "lane": str(lane).strip(),
-        "unit_name": str(unit_name).strip(),
-        "rollout_mode": str(rollout_mode).strip().lower(),
-        "total_entries": 0,
-        "status_counts": {},
-        "skip_reason_counts": {},
-        "budget_reason_code_counts": {},
-        "latest_jsonl_path": str(ledger_path),
-        "last_entry": None,
-    }
+    latest_payload = _load_latest_summary(latest_path=latest_path)
+    if latest_payload is None:
+        latest_payload = _rebuild_latest_summary_from_ledger(
+            ledger_path=ledger_path,
+            lane=lane,
+            unit_name=unit_name,
+            rollout_mode=rollout_mode,
+        )
+    latest_payload["artifact_version"] = RISK_BUDGET_LEDGER_VERSION
+    latest_payload["lane"] = str(lane).strip()
+    latest_payload["unit_name"] = str(unit_name).strip()
+    latest_payload["rollout_mode"] = str(rollout_mode).strip().lower()
+    latest_payload["latest_jsonl_path"] = str(ledger_path)
     latest_path.write_text(json.dumps(latest_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -240,6 +242,63 @@ def _update_latest_summary(
     payload["last_entry"] = entry
     latest_path.parent.mkdir(parents=True, exist_ok=True)
     latest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def _load_latest_summary(*, latest_path: Path) -> dict[str, Any] | None:
+    if not latest_path.exists():
+        return None
+    try:
+        loaded = json.loads(latest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    return dict(loaded)
+
+
+def _rebuild_latest_summary_from_ledger(
+    *,
+    ledger_path: Path,
+    lane: str,
+    unit_name: str,
+    rollout_mode: str,
+) -> dict[str, Any]:
+    payload = {
+        "artifact_version": RISK_BUDGET_LEDGER_VERSION,
+        "lane": str(lane).strip(),
+        "unit_name": str(unit_name).strip(),
+        "rollout_mode": str(rollout_mode).strip().lower(),
+        "total_entries": 0,
+        "status_counts": {},
+        "skip_reason_counts": {},
+        "budget_reason_code_counts": {},
+        "latest_jsonl_path": str(ledger_path),
+        "last_entry": None,
+    }
+    if not ledger_path.exists():
+        return payload
+    for line in ledger_path.read_text(encoding="utf-8").splitlines():
+        text = str(line).strip()
+        if not text:
+            continue
+        try:
+            entry = json.loads(text)
+        except Exception:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        payload["total_entries"] = int(payload.get("total_entries", 0) or 0) + 1
+        _inc(payload["status_counts"], str(entry.get("status") or "UNKNOWN").strip().upper())
+        skip_reason = _optional_text(entry.get("skip_reason"))
+        if skip_reason is not None:
+            _inc(payload["skip_reason_counts"], skip_reason)
+        for item in entry.get("budget_reason_codes") or []:
+            reason_code = _optional_text(item)
+            if reason_code is not None:
+                _inc(payload["budget_reason_code_counts"], reason_code)
+        payload["last_entry"] = entry
+        payload["updated_ts_ms"] = int(entry.get("ts_ms") or 0)
     return payload
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from autobot.live.risk_budget_ledger import (
     append_live_risk_budget_entry,
-    reset_live_risk_budget_ledger,
+    initialize_live_risk_budget_ledger,
 )
 from autobot.live.state_store import LiveStateStore, PositionRecord
 
@@ -13,7 +13,7 @@ from autobot.live.state_store import LiveStateStore, PositionRecord
 def test_risk_budget_ledger_tracks_sizing_and_skip_reasons(tmp_path: Path) -> None:
     ledger_path = tmp_path / "logs" / "risk_budget_ledger" / "candidate" / "latest.jsonl"
     latest_path = ledger_path.with_name("latest.json")
-    reset_live_risk_budget_ledger(
+    initialize_live_risk_budget_ledger(
         ledger_path=ledger_path,
         latest_path=latest_path,
         lane="live_candidate",
@@ -88,3 +88,95 @@ def test_risk_budget_ledger_tracks_sizing_and_skip_reasons(tmp_path: Path) -> No
     assert entry["current_risk_regime"]["entry_state"] == "risk_blocked"
     assert summary["total_entries"] == 1
     assert latest["skip_reason_counts"]["RISK_CONTROL_BELOW_THRESHOLD"] == 1
+
+
+def test_initialize_risk_budget_ledger_preserves_existing_history_on_restart(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "logs" / "risk_budget_ledger" / "candidate" / "latest.jsonl"
+    latest_path = ledger_path.with_name("latest.json")
+    initialize_live_risk_budget_ledger(
+        ledger_path=ledger_path,
+        latest_path=latest_path,
+        lane="live_candidate",
+        unit_name="autobot-live-alpha-candidate.service",
+        rollout_mode="canary",
+    )
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        append_live_risk_budget_entry(
+            ledger_path=ledger_path,
+            latest_path=latest_path,
+            store=store,
+            lane="live_candidate",
+            unit_name="autobot-live-alpha-candidate.service",
+            rollout_mode="canary",
+            market="KRW-BTC",
+            side="bid",
+            status="SHADOW",
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"sizing": {"target_notional_quote": 5000.0}},
+            ts_ms=1000,
+            intent_id="intent-1",
+            base_budget_quote=10_000.0,
+        )
+
+    before_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    before_latest = json.loads(latest_path.read_text(encoding="utf-8"))
+
+    initialize_live_risk_budget_ledger(
+        ledger_path=ledger_path,
+        latest_path=latest_path,
+        lane="live_candidate",
+        unit_name="autobot-live-alpha-candidate.service",
+        rollout_mode="canary",
+    )
+
+    after_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    after_latest = json.loads(latest_path.read_text(encoding="utf-8"))
+
+    assert after_lines == before_lines
+    assert after_latest["total_entries"] == before_latest["total_entries"] == 1
+    assert after_latest["last_entry"]["intent_id"] == "intent-1"
+
+
+def test_initialize_risk_budget_ledger_rebuilds_latest_summary_when_missing(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "logs" / "risk_budget_ledger" / "candidate" / "latest.jsonl"
+    latest_path = ledger_path.with_name("latest.json")
+    initialize_live_risk_budget_ledger(
+        ledger_path=ledger_path,
+        latest_path=latest_path,
+        lane="live_candidate",
+        unit_name="autobot-live-alpha-candidate.service",
+        rollout_mode="canary",
+    )
+
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        append_live_risk_budget_entry(
+            ledger_path=ledger_path,
+            latest_path=latest_path,
+            store=store,
+            lane="live_candidate",
+            unit_name="autobot-live-alpha-candidate.service",
+            rollout_mode="canary",
+            market="KRW-ETH",
+            side="bid",
+            status="SKIPPED",
+            reason_code="MODEL_ALPHA_ENTRY_V1",
+            meta_payload={"skip_reason": "RISK_CONTROL_ONLINE_BREACH_STREAK", "sizing": {"target_notional_quote": 7000.0}},
+            ts_ms=2000,
+            intent_id="intent-2",
+            base_budget_quote=10_000.0,
+        )
+
+    latest_path.unlink()
+    initialize_live_risk_budget_ledger(
+        ledger_path=ledger_path,
+        latest_path=latest_path,
+        lane="live_candidate",
+        unit_name="autobot-live-alpha-candidate.service",
+        rollout_mode="canary",
+    )
+    rebuilt = json.loads(latest_path.read_text(encoding="utf-8"))
+
+    assert rebuilt["total_entries"] == 1
+    assert rebuilt["skip_reason_counts"]["RISK_CONTROL_ONLINE_BREACH_STREAK"] == 1
+    assert rebuilt["last_entry"]["intent_id"] == "intent-2"

@@ -94,7 +94,7 @@ from . import model_alpha_runtime_execute as _runtime_execute
 from . import model_alpha_projection as _model_alpha_projection
 from . import model_alpha_runtime_supervisor as _runtime_supervisor
 from .reconcile import resume_risk_plans_after_reconcile
-from .risk_budget_ledger import append_live_risk_budget_entry, reset_live_risk_budget_ledger
+from .risk_budget_ledger import append_live_risk_budget_entry, initialize_live_risk_budget_ledger
 from .risk_loop import apply_ticker_event
 from .small_account import (
     build_small_account_runtime_report,
@@ -237,7 +237,7 @@ async def run_live_model_alpha_runtime(
     live_risk_budget_latest_path = _resolve_live_risk_budget_latest_path(settings=settings)
     reset_opportunity_log(live_opportunity_log_path)
     reset_counterfactual_action_log(live_counterfactual_log_path)
-    reset_live_risk_budget_ledger(
+    initialize_live_risk_budget_ledger(
         ledger_path=live_risk_budget_ledger_path,
         latest_path=live_risk_budget_latest_path,
         lane=_resolve_live_opportunity_lane(settings=settings),
