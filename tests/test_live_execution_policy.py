@@ -314,6 +314,8 @@ def test_live_execution_attempts_store_submission_ws_fill_and_shortfall(tmp_path
                     "trade_coverage_ms": 60_000,
                     "book_coverage_ms": 60_000,
                     "snapshot_age_ms": 100,
+                },
+                "operational_overlay": {
                     "micro_quality_score": 0.8,
                 },
                 "execution_policy": {
@@ -367,6 +369,7 @@ def test_live_execution_attempts_store_submission_ws_fill_and_shortfall(tmp_path
     assert attempt["final_state"] == "FILLED"
     assert attempt["shortfall_bps"] is not None
     assert attempt["full_fill"] is True
+    assert attempt["micro_quality_score"] == 0.8
 
 
 def test_live_execution_attempts_mark_cancelled(tmp_path: Path) -> None:
@@ -495,3 +498,68 @@ def test_live_execution_contract_execution_twin_tracks_fill_replace_and_cancel()
     assert join_stats["replace_probability"] == 0.5
     assert join_stats["cancel_probability"] == 0.5
     assert join_stats["expected_shortfall_bps"] == 5.0
+
+
+def test_live_execution_contract_execution_twin_exposes_survival_and_queue_reactive_profiles() -> None:
+    attempts = [
+        {
+            "attempt_id": "a-1",
+            "action_code": "LIMIT_GTC_JOIN",
+            "price_mode": "JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "trade_coverage_ms": 60_000,
+            "book_coverage_ms": 60_000,
+            "micro_quality_score": 0.85,
+            "snapshot_age_ms": 100.0,
+            "submitted_ts_ms": 1_000,
+            "first_fill_ts_ms": 2_000,
+            "full_fill_ts_ms": 5_000,
+            "final_ts_ms": 5_000,
+            "final_state": "FILLED",
+            "fill_fraction": 1.0,
+            "shortfall_bps": 2.0,
+        },
+        {
+            "attempt_id": "a-2",
+            "action_code": "LIMIT_GTC_JOIN",
+            "price_mode": "JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 120_000.0,
+            "trade_coverage_ms": 5_000,
+            "book_coverage_ms": 5_000,
+            "micro_quality_score": 0.20,
+            "snapshot_age_ms": 100.0,
+            "submitted_ts_ms": 10_000,
+            "first_fill_ts_ms": 14_000,
+            "final_ts_ms": 15_000,
+            "final_state": "PARTIAL_CANCELLED",
+            "fill_fraction": 0.4,
+            "partial_fill": True,
+            "shortfall_bps": 5.0,
+        },
+    ]
+
+    payload = build_live_execution_contract(attempts=attempts)
+    twin = payload["execution_twin"]
+    join_stats = twin["action_stats"]["LIMIT_GTC_JOIN"]
+    first_curve = join_stats["first_fill_survival_curve"]
+
+    assert twin["model_form"] == "hazard_survival_queue_reactive_v1"
+    assert twin["queue_reactive_feature_fields"] == [
+        "spread_bps",
+        "depth_top5_notional_krw",
+        "trade_coverage_ms",
+        "book_coverage_ms",
+        "micro_quality_score",
+    ]
+    assert first_curve[0]["interval_start_ms"] == 0
+    assert first_curve[0]["interval_end_ms"] == 1000
+    assert first_curve[0]["cumulative_fill_probability"] == 0.5
+    assert first_curve[0]["survival_probability"] == 0.5
+    assert first_curve[0]["hazard_probability"] == 0.5
+    assert first_curve[1]["interval_start_ms"] == 1000
+    assert first_curve[1]["interval_end_ms"] == 3000
+    assert first_curve[1]["hazard_probability"] == 0.0
+    assert "spread_tight|depth_deep|trade_cov_dense|book_cov_dense|quality_high|LIMIT_GTC_JOIN" in twin["queue_reactive_action_stats"]
+    assert "spread_tight|depth_shallow|trade_cov_sparse|book_cov_sparse|quality_low|LIMIT_GTC_JOIN" in twin["queue_reactive_action_stats"]

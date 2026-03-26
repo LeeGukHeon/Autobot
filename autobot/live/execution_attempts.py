@@ -31,6 +31,9 @@ def record_execution_attempt_submission(
         dict(payload.get("execution_policy") or {}) if isinstance(payload.get("execution_policy"), dict) else {}
     )
     micro_state = dict(payload.get("micro_state") or {}) if isinstance(payload.get("micro_state"), dict) else {}
+    operational_overlay = (
+        dict(payload.get("operational_overlay") or {}) if isinstance(payload.get("operational_overlay"), dict) else {}
+    )
     admissibility = dict(payload.get("admissibility") or {}) if isinstance(payload.get("admissibility"), dict) else {}
     decision = dict(admissibility.get("decision") or {}) if isinstance(admissibility.get("decision"), dict) else {}
     sizing = dict(admissibility.get("sizing") or {}) if isinstance(admissibility.get("sizing"), dict) else {}
@@ -48,6 +51,9 @@ def record_execution_attempt_submission(
     if requested_notional_quote is None and requested_price is not None and requested_volume is not None:
         requested_notional_quote = float(requested_price) * float(requested_volume)
     snapshot_age_ms = _safe_optional_int(micro_state.get("snapshot_age_ms"))
+    micro_quality_score = _safe_optional_float(micro_state.get("micro_quality_score"))
+    if micro_quality_score is None:
+        micro_quality_score = _safe_optional_float(operational_overlay.get("micro_quality_score"))
     submission_outcome = _build_submission_outcome(
         payload=payload,
         execution_policy=execution_policy,
@@ -74,7 +80,7 @@ def record_execution_attempt_submission(
         trade_coverage_ms=_safe_optional_int(micro_state.get("trade_coverage_ms")),
         book_coverage_ms=_safe_optional_int(micro_state.get("book_coverage_ms")),
         snapshot_age_ms=snapshot_age_ms,
-        micro_quality_score=_safe_optional_float(micro_state.get("micro_quality_score")),
+        micro_quality_score=micro_quality_score,
         model_prob=_safe_optional_float(strategy_meta.get("model_prob")),
         expected_edge_bps=_safe_optional_float(
             decision.get("expected_edge_bps", _edge_bps_from_trade_action(trade_action))

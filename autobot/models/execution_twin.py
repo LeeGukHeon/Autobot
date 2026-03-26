@@ -7,6 +7,20 @@ from typing import Any
 DEFAULT_FILL_HORIZONS_MS: tuple[int, ...] = (1_000, 3_000, 10_000, 30_000, 60_000, 180_000, 300_000, 600_000)
 DEFAULT_SHORTFALL_TAIL_ALPHA = 0.10
 EXECUTION_TWIN_POLICY = "personalized_execution_twin_v1"
+EXECUTION_TWIN_MODEL_FORM = "hazard_survival_queue_reactive_v1"
+STATE_FEATURE_FIELDS = (
+    "spread_bps",
+    "depth_top5_notional_krw",
+    "snapshot_age_ms",
+    "expected_edge_bps",
+)
+QUEUE_REACTIVE_FEATURE_FIELDS = (
+    "spread_bps",
+    "depth_top5_notional_krw",
+    "trade_coverage_ms",
+    "book_coverage_ms",
+    "micro_quality_score",
+)
 
 
 def build_execution_twin(
@@ -21,20 +35,28 @@ def build_execution_twin(
     by_action: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_price_mode: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_state_action: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    by_queue_reactive_action: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    by_queue_reactive_price_mode: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in enriched_rows:
         action_code = _normalize_action_code(row.get("action_code"))
         price_mode = str(row.get("price_mode") or _infer_price_mode(action_code)).strip().upper() or _infer_price_mode(action_code)
         state_key = _state_bucket_key(row)
+        queue_reactive_key = _queue_reactivity_key(row)
         by_action[action_code].append(row)
         by_price_mode[price_mode].append(row)
         by_state_action[(state_key, action_code)].append(row)
+        by_queue_reactive_action[(queue_reactive_key, action_code)].append(row)
+        by_queue_reactive_price_mode[(queue_reactive_key, price_mode)].append(row)
 
     return {
         "policy": EXECUTION_TWIN_POLICY,
+        "model_form": EXECUTION_TWIN_MODEL_FORM,
         "status": "ready" if enriched_rows else "insufficient_history",
         "rows_total": int(len(enriched_rows)),
         "horizons_ms": [int(value) for value in normalized_horizons],
         "shortfall_tail_alpha": float(max(min(float(shortfall_tail_alpha), 0.5), 1e-6)),
+        "state_feature_fields": [str(value) for value in STATE_FEATURE_FIELDS],
+        "queue_reactive_feature_fields": [str(value) for value in QUEUE_REACTIVE_FEATURE_FIELDS],
         "action_stats": {
             action_code: _summarize_execution_twin_rows(
                 rows=rows,
@@ -58,6 +80,22 @@ def build_execution_twin(
                 shortfall_tail_alpha=shortfall_tail_alpha,
             )
             for (state_key, action_code), rows in sorted(by_state_action.items())
+        },
+        "queue_reactive_action_stats": {
+            f"{queue_reactive_key}|{action_code}": _summarize_execution_twin_rows(
+                rows=rows,
+                horizons_ms=normalized_horizons,
+                shortfall_tail_alpha=shortfall_tail_alpha,
+            )
+            for (queue_reactive_key, action_code), rows in sorted(by_queue_reactive_action.items())
+        },
+        "queue_reactive_price_mode_stats": {
+            f"{queue_reactive_key}|{price_mode}": _summarize_execution_twin_rows(
+                rows=rows,
+                horizons_ms=normalized_horizons,
+                shortfall_tail_alpha=shortfall_tail_alpha,
+            )
+            for (queue_reactive_key, price_mode), rows in sorted(by_queue_reactive_price_mode.items())
         },
         "global_stats": _summarize_execution_twin_rows(
             rows=enriched_rows,
@@ -124,6 +162,13 @@ def _summarize_execution_twin_rows(
     sample_count = len(rows)
     first_fill_delays = [int(item["first_fill_delay_ms"]) for item in rows if item.get("first_fill_delay_ms") is not None]
     full_fill_delays = [int(item["full_fill_delay_ms"]) for item in rows if item.get("full_fill_delay_ms") is not None]
+    fill_fractions = [
+        float(item["fill_fraction"])
+        for item in rows
+        if _safe_optional_float(item.get("fill_fraction")) is not None
+    ]
+    replace_counts = [max(_safe_optional_int(item.get("replace_count")) or 0, 0) for item in rows]
+    chain_attempt_counts = [max(_safe_optional_int(item.get("chain_attempt_count")) or 0, 0) for item in rows]
     downside_values = [
         _downside_observation_bps(item)
         for item in rows
@@ -143,12 +188,25 @@ def _summarize_execution_twin_rows(
         "replace_probability": _rate(rows, "replace_event"),
         "mean_time_to_first_fill_ms": _mean(first_fill_delays),
         "mean_time_to_full_fill_ms": _mean(full_fill_delays),
+        "mean_fill_fraction": _mean(fill_fractions),
+        "mean_replace_count": _mean(replace_counts),
+        "mean_chain_attempt_count": _mean(chain_attempt_counts),
         "mean_shortfall_bps": _mean(downside_values),
         "expected_shortfall_bps": _expected_shortfall(downside_values, alpha=shortfall_tail_alpha),
     }
     for horizon_ms in horizons_ms:
         summary[f"p_first_fill_within_{int(horizon_ms)}ms"] = _rate_within_delay(first_fill_delays, horizon_ms, sample_count)
         summary[f"p_full_fill_within_{int(horizon_ms)}ms"] = _rate_within_delay(full_fill_delays, horizon_ms, sample_count)
+    summary["first_fill_survival_curve"] = _build_survival_curve(
+        delays=first_fill_delays,
+        horizons_ms=horizons_ms,
+        sample_count=sample_count,
+    )
+    summary["full_fill_survival_curve"] = _build_survival_curve(
+        delays=full_fill_delays,
+        horizons_ms=horizons_ms,
+        sample_count=sample_count,
+    )
     return summary
 
 
@@ -185,6 +243,19 @@ def _state_bucket_key(payload: dict[str, Any] | None) -> str:
             _depth_bucket(depth_krw),
             _age_bucket(snapshot_age_ms),
             _edge_bucket(expected_edge_bps),
+        ]
+    )
+
+
+def _queue_reactivity_key(payload: dict[str, Any] | None) -> str:
+    doc = dict(payload or {})
+    return "|".join(
+        [
+            _spread_bucket(_safe_optional_float(doc.get("spread_bps"))),
+            _depth_bucket(_safe_optional_float(doc.get("depth_top5_notional_krw"))),
+            _trade_coverage_bucket(_safe_optional_float(doc.get("trade_coverage_ms"))),
+            _book_coverage_bucket(_safe_optional_float(doc.get("book_coverage_ms"))),
+            _micro_quality_bucket(_safe_optional_float(doc.get("micro_quality_score"))),
         ]
     )
 
@@ -240,6 +311,36 @@ def _edge_bucket(value: float | None) -> str:
     return "edge_strong"
 
 
+def _trade_coverage_bucket(value: float | None) -> str:
+    if value is None:
+        return "trade_cov_unknown"
+    if float(value) >= 45_000.0:
+        return "trade_cov_dense"
+    if float(value) >= 15_000.0:
+        return "trade_cov_patchy"
+    return "trade_cov_sparse"
+
+
+def _book_coverage_bucket(value: float | None) -> str:
+    if value is None:
+        return "book_cov_unknown"
+    if float(value) >= 45_000.0:
+        return "book_cov_dense"
+    if float(value) >= 15_000.0:
+        return "book_cov_patchy"
+    return "book_cov_sparse"
+
+
+def _micro_quality_bucket(value: float | None) -> str:
+    if value is None:
+        return "quality_unknown"
+    if float(value) >= 0.75:
+        return "quality_high"
+    if float(value) >= 0.40:
+        return "quality_mid"
+    return "quality_low"
+
+
 def _safe_optional_int(value: Any) -> int | None:
     try:
         if value is None or value == "":
@@ -270,6 +371,51 @@ def _rate_within_delay(delays: list[int], horizon_ms: int, sample_count: int) ->
         return 0.0
     hits = sum(1 for delay in delays if int(delay) <= int(horizon_ms))
     return float(hits) / float(sample_count)
+
+
+def _build_survival_curve(
+    *,
+    delays: list[int],
+    horizons_ms: tuple[int, ...],
+    sample_count: int,
+) -> list[dict[str, Any]]:
+    if sample_count <= 0:
+        return []
+    cleaned_delays = [int(delay) for delay in delays if int(delay) >= 0]
+    curve: list[dict[str, Any]] = []
+    previous_hits = 0
+    previous_horizon_ms = 0
+    survivors_before_interval = sample_count
+    for horizon_ms in horizons_ms:
+        hits = sum(1 for delay in cleaned_delays if int(delay) <= int(horizon_ms))
+        interval_hits = max(int(hits) - int(previous_hits), 0)
+        hazard_probability = (
+            float(interval_hits) / float(survivors_before_interval)
+            if survivors_before_interval > 0
+            else 0.0
+        )
+        cumulative_fill_probability = float(hits) / float(sample_count)
+        survival_probability = max(1.0 - cumulative_fill_probability, 0.0)
+        curve.append(
+            {
+                "interval_start_ms": int(previous_horizon_ms),
+                "interval_end_ms": int(horizon_ms),
+                "interval_fill_probability": (
+                    float(interval_hits) / float(sample_count)
+                    if sample_count > 0
+                    else 0.0
+                ),
+                "cumulative_fill_probability": cumulative_fill_probability,
+                "survival_probability": survival_probability,
+                "hazard_probability": hazard_probability,
+                "survivors_before_interval": int(survivors_before_interval),
+                "sample_count": int(sample_count),
+            }
+        )
+        previous_hits = int(hits)
+        previous_horizon_ms = int(horizon_ms)
+        survivors_before_interval = max(int(sample_count) - int(hits), 0)
+    return curve
 
 
 def _mean(values: list[float | int]) -> float | None:
