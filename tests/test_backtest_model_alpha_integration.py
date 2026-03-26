@@ -1350,6 +1350,13 @@ def test_model_alpha_execution_frontier_blocks_no_trade_region_when_all_stages_a
 
     assert not any(intent.side == "bid" for intent in result.intents)
     assert result.skipped_reasons["EXECUTION_NO_TRADE_REGION"] == 1
+    assert result.opportunities
+    opportunity = result.opportunities[0]
+    assert opportunity.decision_outcome == "skip"
+    assert opportunity.chosen_action == "NO_TRADE"
+    assert opportunity.chosen_action_propensity == 1.0
+    assert opportunity.no_trade_action_propensity == 1.0
+    assert any(item["action_code"] == "NO_TRADE" and item["propensity"] == 1.0 for item in opportunity.candidate_actions_json)
 
 
 def test_model_alpha_cooldown_and_hold_exit() -> None:
@@ -2204,13 +2211,20 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     ]
     assert opportunity_rows
     assert opportunity_rows[0]["lane"] == "backtest"
-    assert opportunity_rows[0]["chosen_action"] in {"intent_created", "skip"}
+    assert opportunity_rows[0]["decision_outcome"] in {"intent_created", "skip"}
+    assert opportunity_rows[0]["chosen_action"]
+    assert opportunity_rows[0]["behavior_policy_name"] == "model_alpha_execution_behavior_policy_v1"
+    assert opportunity_rows[0]["behavior_policy_support"] == "deterministic_no_exploration"
+    assert opportunity_rows[0]["chosen_action_propensity"] in {0.0, 1.0}
+    assert opportunity_rows[0]["no_trade_action_propensity"] in {0.0, 1.0}
     counterfactual_rows = [
         json.loads(line)
         for line in (run_dir / "counterfactual_action_log.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     assert counterfactual_rows
+    assert any(row["action_payload"].get("action_code") == "NO_TRADE" for row in counterfactual_rows)
+    assert all("action_propensity" in row for row in counterfactual_rows)
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")

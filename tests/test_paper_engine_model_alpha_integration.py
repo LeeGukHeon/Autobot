@@ -120,15 +120,22 @@ class _DummyModelStrategy:
                     ts_ms=int(ts_ms),
                     market="KRW-BTC",
                     side="bid",
+                    decision_outcome="intent_created",
                     selection_score=self._score,
                     selection_score_raw=self._score,
                     feature_hash="paper-test-hash",
-                    chosen_action="intent_created",
+                    chosen_action="JOIN",
                     reason_code="MODEL_ALPHA_ENTRY_V1",
                     run_id="run-paper",
+                    chosen_action_propensity=1.0,
+                    no_trade_action_propensity=0.0,
+                    behavior_policy_name="model_alpha_execution_behavior_policy_v1",
+                    behavior_policy_mode="deterministic_execution_stage",
+                    behavior_policy_support="deterministic_no_exploration",
                     candidate_actions_json=(
-                        {"action_code": "PASSIVE_MAKER", "selected": False, "predicted_utility_bps": 1.0},
-                        {"action_code": "JOIN", "selected": True, "predicted_utility_bps": 2.0},
+                        {"action_code": "PASSIVE_MAKER", "selected": False, "propensity": 0.0, "predicted_utility_bps": 1.0},
+                        {"action_code": "JOIN", "selected": True, "propensity": 1.0, "predicted_utility_bps": 2.0},
+                        {"action_code": "NO_TRADE", "selected": False, "propensity": 0.0, "predicted_utility_bps": 0.0},
                     ),
                 ),
             ),
@@ -249,12 +256,19 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
     ]
     assert opportunity_rows
     assert opportunity_rows[0]["lane"] == "paper"
+    assert opportunity_rows[0]["decision_outcome"] in {"intent_created", "skip"}
+    assert opportunity_rows[0]["chosen_action"]
+    assert opportunity_rows[0]["behavior_policy_name"] == "model_alpha_execution_behavior_policy_v1"
+    assert opportunity_rows[0]["chosen_action_propensity"] in {0.0, 1.0}
+    assert opportunity_rows[0]["no_trade_action_propensity"] in {0.0, 1.0}
     counterfactual_rows = [
         json.loads(line)
         for line in (run_dir / "counterfactual_action_log.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     assert len(counterfactual_rows) >= 2
+    assert any(row["action_payload"].get("action_code") == "NO_TRADE" for row in counterfactual_rows)
+    assert all("action_propensity" in row for row in counterfactual_rows)
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")

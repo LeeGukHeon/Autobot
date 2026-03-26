@@ -24,6 +24,7 @@ class StrategyOpportunityRecord:
     ts_ms: int
     market: str
     side: str
+    decision_outcome: str = ""
     selection_score: float | None = None
     selection_score_raw: float | None = None
     feature_hash: str = ""
@@ -36,6 +37,10 @@ class StrategyOpportunityRecord:
     run_id: str | None = None
     candidate_actions_json: tuple[dict[str, Any], ...] = ()
     chosen_action_propensity: float | None = None
+    no_trade_action_propensity: float | None = None
+    behavior_policy_name: str = ""
+    behavior_policy_mode: str = ""
+    behavior_policy_support: str = ""
     realized_outcome_json: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 

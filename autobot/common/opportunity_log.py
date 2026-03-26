@@ -105,9 +105,15 @@ def _build_counterfactual_records(
                         "lane": record.get("lane"),
                         "source": record.get("source"),
                         "action_index": index,
+                        "decision_outcome": record.get("decision_outcome"),
                         "chosen_action": record.get("chosen_action"),
                         "chosen_action_propensity": record.get("chosen_action_propensity"),
+                        "no_trade_action_propensity": record.get("no_trade_action_propensity"),
+                        "behavior_policy_name": record.get("behavior_policy_name"),
+                        "behavior_policy_mode": record.get("behavior_policy_mode"),
+                        "behavior_policy_support": record.get("behavior_policy_support"),
                         "skip_reason_code": record.get("skip_reason_code"),
+                        "action_propensity": payload.get("propensity"),
                         "action_payload": payload,
                     }
                 )
@@ -126,9 +132,15 @@ def _build_counterfactual_records(
                 "lane": record.get("lane"),
                 "source": record.get("source"),
                 "action_index": 0,
+                "decision_outcome": record.get("decision_outcome"),
                 "chosen_action": chosen_action,
                 "chosen_action_propensity": record.get("chosen_action_propensity"),
+                "no_trade_action_propensity": record.get("no_trade_action_propensity"),
+                "behavior_policy_name": record.get("behavior_policy_name"),
+                "behavior_policy_mode": record.get("behavior_policy_mode"),
+                "behavior_policy_support": record.get("behavior_policy_support"),
                 "skip_reason_code": record.get("skip_reason_code"),
+                "action_propensity": record.get("chosen_action_propensity"),
                 "action_payload": {
                     "action_code": chosen_action,
                     "selected": True,
@@ -156,6 +168,7 @@ def _normalize_explicit_record(
     payload["lane"] = str(lane).strip()
     payload["source"] = str(source).strip()
     payload["artifact_version"] = OPPORTUNITY_LOG_VERSION
+    payload.setdefault("decision_outcome", "")
     payload.setdefault("feature_hash", "")
     payload.setdefault("selection_score", None)
     payload.setdefault("selection_score_raw", None)
@@ -163,6 +176,10 @@ def _normalize_explicit_record(
     payload.setdefault("expected_edge_bps", None)
     payload.setdefault("candidate_actions_json", None)
     payload.setdefault("chosen_action_propensity", None)
+    payload.setdefault("no_trade_action_propensity", None)
+    payload.setdefault("behavior_policy_name", "")
+    payload.setdefault("behavior_policy_mode", "")
+    payload.setdefault("behavior_policy_support", "")
     payload.setdefault("skip_reason_code", None)
     payload.setdefault("realized_outcome_json", None)
     payload.setdefault("meta", {})
@@ -190,6 +207,7 @@ def _fallback_record_from_intent(
         "run_id": str(run_id).strip(),
         "lane": str(lane).strip(),
         "source": str(source).strip(),
+        "decision_outcome": "intent_created",
         "feature_hash": "",
         "selection_score": selection_score,
         "selection_score_raw": selection_score,
@@ -198,6 +216,10 @@ def _fallback_record_from_intent(
         "candidate_actions_json": None,
         "chosen_action": "intent_created",
         "chosen_action_propensity": None,
+        "no_trade_action_propensity": None,
+        "behavior_policy_name": "",
+        "behavior_policy_mode": "",
+        "behavior_policy_support": "",
         "skip_reason_code": None,
         "reason_code": str(intent.reason_code).strip(),
         "intent_id": None,

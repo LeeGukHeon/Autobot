@@ -267,15 +267,22 @@ class _Strategy:
                     ts_ms=int(ts_ms),
                     market="KRW-BTC",
                     side="bid",
+                    decision_outcome="intent_created",
                     selection_score=0.0,
                     selection_score_raw=0.0,
                     feature_hash="test-hash",
-                    chosen_action="intent_created",
+                    chosen_action="JOIN",
                     reason_code="MODEL_ALPHA_ENTRY_V1",
                     run_id="run-live",
+                    chosen_action_propensity=1.0,
+                    no_trade_action_propensity=0.0,
+                    behavior_policy_name="model_alpha_execution_behavior_policy_v1",
+                    behavior_policy_mode="deterministic_execution_stage",
+                    behavior_policy_support="deterministic_no_exploration",
                     candidate_actions_json=(
-                        {"action_code": "PASSIVE_MAKER", "selected": False, "predicted_utility_bps": 1.0},
-                        {"action_code": "JOIN", "selected": True, "predicted_utility_bps": 2.0},
+                        {"action_code": "PASSIVE_MAKER", "selected": False, "propensity": 0.0, "predicted_utility_bps": 1.0},
+                        {"action_code": "JOIN", "selected": True, "propensity": 1.0, "predicted_utility_bps": 2.0},
+                        {"action_code": "NO_TRADE", "selected": False, "propensity": 0.0, "predicted_utility_bps": 0.0},
                     ),
                 ),
             ),
@@ -496,10 +503,16 @@ def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: P
     records = [json.loads(line) for line in opportunity_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert records
     assert records[0]["lane"] == "live_champion"
+    assert records[0]["decision_outcome"] == "intent_created"
+    assert records[0]["chosen_action"] == "JOIN"
+    assert records[0]["chosen_action_propensity"] == 1.0
+    assert records[0]["no_trade_action_propensity"] == 0.0
     counterfactual_path = Path(str(summary["counterfactual_action_log_path"]))
     assert counterfactual_path.exists()
     counterfactual_rows = [json.loads(line) for line in counterfactual_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(counterfactual_rows) >= 2
+    assert any(row["action_payload"].get("action_code") == "NO_TRADE" for row in counterfactual_rows)
+    assert all("action_propensity" in row for row in counterfactual_rows)
     risk_budget_path = Path(str(summary["risk_budget_ledger_path"]))
     assert risk_budget_path.exists()
     risk_budget_rows = [json.loads(line) for line in risk_budget_path.read_text(encoding="utf-8").splitlines() if line.strip()]

@@ -226,6 +226,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             skip_reason_code: str | None = None,
             trade_action_decision: dict[str, Any] | None = None,
             execution_decision: dict[str, Any] | None = None,
+            execution_profile: dict[str, Any] | None = None,
             notional_multiplier: float | None = None,
             support_level: str = "",
             support_size_multiplier: float | None = None,
@@ -233,22 +234,34 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             market_name = str(row.get("market", "")).strip().upper()
             if not market_name:
                 return
+            behavior_policy = _build_behavior_policy_logging(
+                execution_decision=execution_decision,
+                execution_profile=execution_profile,
+                decision_outcome=chosen_action,
+                skip_reason_code=skip_reason_code,
+            )
             opportunities.append(
                 StrategyOpportunityRecord(
                     opportunity_id=f"entry:{ts_value}:{market_name}",
                     ts_ms=ts_value,
                     market=market_name,
                     side="bid",
+                    decision_outcome=str(chosen_action).strip(),
                     selection_score=_safe_optional_float(row.get("model_prob")),
                     selection_score_raw=_safe_optional_float(row.get("model_prob_raw")),
                     feature_hash=_build_opportunity_feature_hash(row=row),
-                    chosen_action=chosen_action,
+                    chosen_action=str(behavior_policy.get("chosen_action") or "").strip(),
                     reason_code=str(reason_code).strip(),
                     skip_reason_code=(str(skip_reason_code).strip() if skip_reason_code else None),
                     expected_edge_bps=_resolve_trade_action_expected_edge_bps(trade_action_decision),
                     uncertainty=_resolve_opportunity_uncertainty(row),
                     run_id=self.predictor_run_id,
-                    candidate_actions_json=tuple(_build_counterfactual_candidate_actions(execution_decision)),
+                    candidate_actions_json=tuple(behavior_policy.get("candidate_actions_json") or ()),
+                    chosen_action_propensity=_safe_optional_float(behavior_policy.get("chosen_action_propensity")),
+                    no_trade_action_propensity=_safe_optional_float(behavior_policy.get("no_trade_action_propensity")),
+                    behavior_policy_name=str(behavior_policy.get("behavior_policy_name") or "").strip(),
+                    behavior_policy_mode=str(behavior_policy.get("behavior_policy_mode") or "").strip(),
+                    behavior_policy_support=str(behavior_policy.get("behavior_policy_support") or "").strip(),
                     meta={
                         "selection_policy_mode": str(selection_mode),
                         "selection_policy_source": str(selection_policy_source),
@@ -256,6 +269,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "support_size_multiplier": support_size_multiplier,
                         "notional_multiplier": notional_multiplier,
                         "state_features": _build_live_state_feature_snapshot(row=row),
+                        "behavior_policy": dict(behavior_policy),
                     },
                 )
             )
@@ -679,6 +693,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         or "EXECUTION_NO_TRADE_REGION"
                     ),
                     trade_action_decision=trade_action_decision,
+                    execution_profile=dynamic_exec_profile,
                     execution_decision=execution_decision,
                     notional_multiplier=float(notional_multiplier),
                     support_level=trade_action_support_level,
@@ -756,6 +771,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 chosen_action="intent_created",
                 reason_code="MODEL_ALPHA_ENTRY_V1",
                 trade_action_decision=trade_action_decision,
+                execution_profile=dynamic_exec_profile,
                 execution_decision=execution_decision,
                 notional_multiplier=float(notional_multiplier) * float(operational_risk_multiplier),
                 support_level=trade_action_support_level,
@@ -1701,30 +1717,133 @@ def _build_opportunity_feature_hash(*, row: dict[str, Any] | None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _build_counterfactual_candidate_actions(execution_decision: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(execution_decision, dict):
-        return []
-    selected_stage = str(execution_decision.get("selected_stage", "")).strip().upper()
+def _build_behavior_policy_logging(
+    *,
+    execution_decision: dict[str, Any] | None,
+    execution_profile: dict[str, Any] | None,
+    decision_outcome: str,
+    skip_reason_code: str | None,
+) -> dict[str, Any]:
+    chosen_action = _resolve_behavior_policy_chosen_action(
+        execution_decision=execution_decision,
+        execution_profile=execution_profile,
+        decision_outcome=decision_outcome,
+    )
+    candidate_actions = _build_counterfactual_candidate_actions(
+        execution_decision=execution_decision,
+        execution_profile=execution_profile,
+        chosen_action=chosen_action,
+        skip_reason_code=skip_reason_code,
+    )
+    chosen_action_propensity = None
+    no_trade_action_propensity = None
+    for item in candidate_actions:
+        action_code = str(item.get("action_code") or "").strip().upper()
+        propensity = _safe_optional_float(item.get("propensity"))
+        if action_code == str(chosen_action).strip().upper():
+            chosen_action_propensity = propensity
+        if action_code == "NO_TRADE":
+            no_trade_action_propensity = propensity
+    mode = "pre_execution_no_trade" if str(chosen_action).strip().upper() == "NO_TRADE" else "deterministic_execution_stage"
+    if not candidate_actions:
+        mode = "behavior_policy_unavailable"
+    return {
+        "behavior_policy_name": "model_alpha_execution_behavior_policy_v1",
+        "behavior_policy_mode": mode,
+        "behavior_policy_support": "deterministic_no_exploration",
+        "chosen_action": str(chosen_action).strip().upper(),
+        "chosen_action_propensity": chosen_action_propensity,
+        "no_trade_action_propensity": no_trade_action_propensity,
+        "candidate_actions_json": candidate_actions,
+    }
+
+
+def _resolve_behavior_policy_chosen_action(
+    *,
+    execution_decision: dict[str, Any] | None,
+    execution_profile: dict[str, Any] | None,
+    decision_outcome: str,
+) -> str:
+    if str(decision_outcome).strip().lower() == "skip":
+        return "NO_TRADE"
+    if isinstance(execution_decision, dict):
+        selected_stage = str(execution_decision.get("selected_stage", "")).strip().upper()
+        if selected_stage:
+            return selected_stage
+    profile = dict(execution_profile or {})
+    price_mode = str(profile.get("price_mode", "")).strip().upper()
+    if price_mode:
+        return price_mode
+    return "INTENT_CREATED"
+
+
+def _build_counterfactual_candidate_actions(
+    execution_decision: dict[str, Any] | None,
+    *,
+    execution_profile: dict[str, Any] | None = None,
+    chosen_action: str | None = None,
+    skip_reason_code: str | None = None,
+) -> list[dict[str, Any]]:
+    chosen_action_code = str(chosen_action or "").strip().upper()
     rows: list[dict[str, Any]] = []
-    for item in execution_decision.get("evaluated_stages") or []:
-        if not isinstance(item, dict):
-            continue
-        stage_name = str(item.get("stage", "")).strip().upper()
-        if not stage_name:
-            continue
+    if isinstance(execution_decision, dict):
+        for item in execution_decision.get("evaluated_stages") or []:
+            if not isinstance(item, dict):
+                continue
+            stage_name = str(item.get("stage", "")).strip().upper()
+            if not stage_name:
+                continue
+            rows.append(
+                {
+                    "action_code": stage_name,
+                    "selected": bool(chosen_action_code and stage_name == chosen_action_code),
+                    "propensity": 1.0 if chosen_action_code and stage_name == chosen_action_code else 0.0,
+                    "action_family": "execution",
+                    "predicted_utility_bps": _safe_optional_float(item.get("net_edge_bps")),
+                    "fill_probability": _safe_optional_float(item.get("fill_probability")),
+                    "expected_slippage_bps": _safe_optional_float(item.get("expected_slippage_bps")),
+                    "expected_cleanup_cost_bps": _safe_optional_float(item.get("expected_cleanup_cost_bps")),
+                    "expected_miss_cost_bps": _safe_optional_float(item.get("expected_miss_cost_bps")),
+                    "expected_time_to_fill_ms": _safe_optional_float(item.get("expected_time_to_fill_ms")),
+                    "validation_comparable": bool(item.get("validation_comparable", False)),
+                }
+            )
+    if chosen_action_code and chosen_action_code not in {"NO_TRADE", "INTENT_CREATED"} and not any(
+        str(item.get("action_code") or "").strip().upper() == chosen_action_code for item in rows
+    ):
+        profile = dict(execution_profile or {})
         rows.append(
             {
-                "action_code": stage_name,
-                "selected": bool(selected_stage and stage_name == selected_stage),
-                "predicted_utility_bps": _safe_optional_float(item.get("net_edge_bps")),
-                "fill_probability": _safe_optional_float(item.get("fill_probability")),
-                "expected_slippage_bps": _safe_optional_float(item.get("expected_slippage_bps")),
-                "expected_cleanup_cost_bps": _safe_optional_float(item.get("expected_cleanup_cost_bps")),
-                "expected_miss_cost_bps": _safe_optional_float(item.get("expected_miss_cost_bps")),
-                "expected_time_to_fill_ms": _safe_optional_float(item.get("expected_time_to_fill_ms")),
-                "validation_comparable": bool(item.get("validation_comparable", False)),
+                "action_code": chosen_action_code,
+                "selected": True,
+                "propensity": 1.0,
+                "action_family": "execution",
+                "predicted_utility_bps": _safe_optional_float((execution_decision or {}).get("selected_net_edge_bps")),
+                "fill_probability": None,
+                "expected_slippage_bps": None,
+                "expected_cleanup_cost_bps": None,
+                "expected_miss_cost_bps": None,
+                "expected_time_to_fill_ms": _safe_optional_float(profile.get("timeout_ms")),
+                "validation_comparable": False,
             }
         )
+    no_trade_selected = chosen_action_code == "NO_TRADE"
+    rows.append(
+        {
+            "action_code": "NO_TRADE",
+            "selected": bool(no_trade_selected),
+            "propensity": 1.0 if no_trade_selected else 0.0,
+            "action_family": "no_trade",
+            "predicted_utility_bps": 0.0,
+            "fill_probability": None,
+            "expected_slippage_bps": None,
+            "expected_cleanup_cost_bps": None,
+            "expected_miss_cost_bps": None,
+            "expected_time_to_fill_ms": 0.0,
+            "validation_comparable": False,
+            "skip_reason_code": str(skip_reason_code).strip() or None,
+        }
+    )
     return rows
 
 
