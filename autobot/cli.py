@@ -35,14 +35,18 @@ from .data.collect import (
     CandlePlanOptions,
     TicksCollectOptions,
     TicksPlanOptions,
+    WsCandleCollectOptions,
+    WsCandlePlanOptions,
     WsPublicCollectOptions,
     WsPublicDaemonOptions,
     WsPublicPlanOptions,
     collect_candles_from_plan,
+    collect_ws_candles_from_plan,
     collect_ws_public_daemon,
     collect_ticks_from_plan,
     collect_ticks_stats,
     collect_ws_public_from_plan,
+    generate_ws_candle_collection_plan,
     collect_ws_public_stats,
     generate_candle_topup_plan,
     generate_ticks_collection_plan,
@@ -51,6 +55,7 @@ from .data.collect import (
     purge_ws_public_retention,
     validate_candles_api_dataset,
     validate_ticks_raw_dataset,
+    validate_ws_candle_dataset,
     validate_ws_public_raw_dataset,
 )
 from .data.micro import (
@@ -399,6 +404,57 @@ def build_parser() -> argparse.ArgumentParser:
     collect_plan_ws_parser.add_argument("--orderbook-topk", type=int, default=5)
     collect_plan_ws_parser.add_argument("--orderbook-level", default="0")
     collect_plan_ws_parser.add_argument("--orderbook-min-write-interval-ms", type=int, default=200)
+
+    collect_plan_ws_candles_parser = collect_subparsers.add_parser(
+        "plan-ws-candles",
+        help="Generate websocket candle collection plan.",
+    )
+    collect_plan_ws_candles_parser.add_argument("--base-dataset", help="Dataset name for ws candle layer, ex: ws_candle_v1")
+    collect_plan_ws_candles_parser.add_argument(
+        "--market-source-dataset",
+        help="Dataset used for market selection/value estimates when ws_candle_v1 is still sparse or empty",
+    )
+    collect_plan_ws_candles_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_plan_ws_candles_parser.add_argument(
+        "--out",
+        default="data/collect/_meta/ws_candle_plan.json",
+        help="Plan output path",
+    )
+    collect_plan_ws_candles_parser.add_argument("--quote", default="KRW")
+    collect_plan_ws_candles_parser.add_argument(
+        "--market-mode",
+        default="top_n_by_recent_value_est",
+        choices=("fixed_list", "top_n_by_recent_value_est", "one_m_existing_only"),
+    )
+    collect_plan_ws_candles_parser.add_argument("--top-n", type=int, default=20)
+    collect_plan_ws_candles_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_plan_ws_candles_parser.add_argument("--tf", help="Comma separated ws candle timeframe set, ex: 1s,1m,3m,5m")
+    collect_plan_ws_candles_parser.add_argument(
+        "--format",
+        default="DEFAULT",
+        choices=("DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"),
+    )
+    collect_plan_ws_candles_parser.add_argument("--snapshot-only", default="false", help="true|false")
+    collect_plan_ws_candles_parser.add_argument("--realtime-only", default="false", help="true|false")
+
+    collect_ws_candles_parser = collect_subparsers.add_parser(
+        "ws-candles",
+        help="Collect websocket candle stream into ws_candle_v1 parquet.",
+    )
+    collect_ws_candles_parser.add_argument("--plan", default="data/collect/_meta/ws_candle_plan.json")
+    collect_ws_candles_parser.add_argument("--out-dataset", default="ws_candle_v1")
+    collect_ws_candles_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_ws_candles_parser.add_argument("--meta-dir", default="data/collect/_meta")
+    collect_ws_candles_parser.add_argument("--duration-sec", type=int, default=120)
+    collect_ws_candles_parser.add_argument("--rate-limit-strict", default="true", help="true|false")
+    collect_ws_candles_parser.add_argument("--reconnect-max-per-min", type=int, default=3)
+    collect_ws_candles_parser.add_argument(
+        "--keepalive-mode",
+        default="auto",
+        choices=("message", "frame", "auto", "off"),
+    )
+    collect_ws_candles_parser.add_argument("--keepalive-interval-sec", type=int, default=60)
+    collect_ws_candles_parser.add_argument("--keepalive-stale-sec", type=int, default=120)
 
     collect_ticks_parser = collect_subparsers.add_parser("ticks", help="Collect raw REST ticks.")
     collect_ticks_parser.add_argument("--plan", default="data/raw_ticks/upbit/_meta/ticks_plan.json")
@@ -1452,6 +1508,10 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
         return _handle_collect_plan_candles(args, base_config)
     if args.collect_command == "candles":
         return _handle_collect_candles(args, config_dir, base_config)
+    if args.collect_command == "plan-ws-candles":
+        return _handle_collect_plan_ws_candles(args, base_config)
+    if args.collect_command == "ws-candles":
+        return _handle_collect_ws_candles(args, config_dir, base_config)
     if args.collect_command == "plan-ticks":
         return _handle_collect_plan_ticks(args, base_config)
     if args.collect_command == "plan-ws-public":
@@ -1581,6 +1641,85 @@ def _default_candle_validate_report_path(options: CandleCollectOptions) -> Path:
     safe = "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_")
     safe = safe or "candles"
     return options.collect_meta_dir / f"{safe}_validate_report.json"
+
+
+def _handle_collect_plan_ws_candles(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    defaults = _data_defaults(config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+    base_dataset = str(args.base_dataset or "ws_candle_v1").strip() or "ws_candle_v1"
+
+    plan_options = WsCandlePlanOptions(
+        parquet_root=parquet_root,
+        base_dataset=base_dataset,
+        market_source_dataset=(str(args.market_source_dataset).strip() if args.market_source_dataset else None) or None,
+        output_path=Path(args.out),
+        quote=str(args.quote).strip().upper() or "KRW",
+        market_mode=str(args.market_mode).strip().lower(),
+        top_n=max(int(args.top_n), 1),
+        fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+        tf_set=_parse_csv_list(args.tf, normalize=str.lower) or ("1s", "1m"),
+        format=str(args.format).strip().upper() or "DEFAULT",
+        is_only_snapshot=_parse_bool_arg(args.snapshot_only, default=False),
+        is_only_realtime=_parse_bool_arg(args.realtime_only, default=False),
+    )
+    plan = generate_ws_candle_collection_plan(plan_options)
+    print(
+        "[collect][plan-ws-candles] "
+        f"selected_markets={plan['summary']['selected_markets']} "
+        f"codes_count={plan['summary']['codes_count']} "
+        f"tf_count={plan['summary']['tf_count']}"
+    )
+    print(f"[collect][plan-ws-candles] out={plan_options.output_path}")
+    return 0
+
+
+def _handle_collect_ws_candles(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
+    defaults = _data_defaults(base_config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+
+    collect_options = WsCandleCollectOptions(
+        plan_path=Path(args.plan),
+        parquet_root=parquet_root,
+        out_dataset=str(args.out_dataset).strip() or "ws_candle_v1",
+        meta_dir=Path(args.meta_dir),
+        duration_sec=max(int(args.duration_sec), 1),
+        rate_limit_strict=_parse_bool_arg(args.rate_limit_strict, default=True),
+        reconnect_max_per_min=max(int(args.reconnect_max_per_min), 1),
+        keepalive_mode=str(args.keepalive_mode).strip().lower(),
+        keepalive_interval_sec=max(int(args.keepalive_interval_sec), 1),
+        keepalive_stale_sec=max(int(args.keepalive_stale_sec), 30),
+        config_dir=config_dir,
+    )
+
+    collect_summary = collect_ws_candles_from_plan(collect_options)
+    print(
+        "[collect][ws-candles] "
+        f"run_id={collect_summary.run_id} duration={collect_summary.duration_sec}s "
+        f"codes={collect_summary.codes_count} tf_count={collect_summary.tf_count} "
+        f"received={collect_summary.received_messages} snapshot={collect_summary.snapshot_messages} "
+        f"realtime={collect_summary.realtime_messages} rows_buffered={collect_summary.rows_buffered} "
+        f"rows_written={collect_summary.rows_written} persisted_pairs={collect_summary.persisted_pairs} "
+        f"reconnect={collect_summary.reconnect_count}"
+    )
+    print(f"[collect][ws-candles] collect_report={collect_summary.collect_report_file}")
+    print(f"[collect][ws-candles] build_report={collect_summary.build_report_file}")
+    print(f"[collect][ws-candles] manifest={collect_summary.manifest_file}")
+
+    validate_summary = validate_ws_candle_dataset(
+        parquet_root=parquet_root,
+        dataset_name=collect_options.out_dataset,
+        report_path=collect_options.validate_report_path,
+    )
+    print(
+        "[collect][ws-candles][validate] "
+        f"checked={validate_summary.checked_files} ok={validate_summary.ok_files} "
+        f"warn={validate_summary.warn_files} fail={validate_summary.fail_files} "
+        f"schema_ok={validate_summary.schema_ok} ohlc_ok={validate_summary.ohlc_ok}"
+    )
+    print(f"[collect][ws-candles][validate] report={validate_summary.validate_report_file}")
+    if collect_summary.failures or validate_summary.fail_files > 0:
+        return 2
+    return 0
 
 
 def _handle_collect_plan_ws_public(args: argparse.Namespace, config: dict[str, Any]) -> int:

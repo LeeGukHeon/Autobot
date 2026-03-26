@@ -12,7 +12,7 @@ from .schema_contract import expected_interval_ms
 
 
 DAY_MS = 86_400_000
-DEFAULT_TFS: tuple[str, ...] = ("1m", "5m", "15m", "60m", "240m")
+DEFAULT_TFS: tuple[str, ...] = ("1s", "1m", "3m", "5m", "10m", "15m", "30m", "60m", "240m")
 
 
 def default_inventory_window(*, lookback_months: int = 24, end_ts_ms: int | None = None) -> tuple[int, int]:
@@ -185,7 +185,7 @@ def estimate_recent_value_by_market(
     end_ts_ms: int,
     lookback_days: int = 30,
     quote: str | None = None,
-    preferred_tfs: tuple[str, ...] = ("1m", "5m", "15m", "60m", "240m"),
+    preferred_tfs: tuple[str, ...] = ("1s", "1m", "3m", "5m", "10m", "15m", "30m", "60m", "240m"),
 ) -> tuple[dict[str, float], str | None]:
     """Estimate recent quote-value by market from local parquet candles."""
 
