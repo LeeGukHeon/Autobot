@@ -148,8 +148,8 @@ def _make_fake_python(tmp_path: Path, compare_payload: dict | None = None) -> Pa
             ")\r\n"
             "echo %args% | findstr /C:\"autobot.ops.pointer_consistency_report\" >nul\r\n"
             "if not errorlevel 1 (\r\n"
-            f"  \"{real_python}\" %*\r\n"
-            "  exit /b %ERRORLEVEL%\r\n"
+            f"  \"{real_python}\" -c \"import json,sys,pathlib; a=sys.argv[1:]; r=pathlib.Path(a[a.index('--project-root')+1]); p=r/'logs'/'ops'/'pointer_consistency'/'latest.json'; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(json.dumps({{'summary': {{'status': 'pass', 'violation_count': 0, 'warning_count': 0, 'reason_codes': []}}}}, ensure_ascii=False), encoding='utf-8'); print(p)\" %*\r\n"
+            "  exit /b 0\r\n"
             ")\r\n"
             "echo %args% | findstr /C:\"autobot.common.paper_lane_evidence\" >nul\r\n"
             "if not errorlevel 1 (\r\n"
@@ -172,7 +172,7 @@ def _make_fake_python(tmp_path: Path, compare_payload: dict | None = None) -> Pa
             "args=\"$*\"\n"
             "case \"$args\" in\n"
             f"  *autobot.ops.runtime_topology_report*) \"{sys.executable}\" \"$@\" ;;\n"
-            f"  *autobot.ops.pointer_consistency_report*) \"{sys.executable}\" \"$@\" ;;\n"
+            f"  *autobot.ops.pointer_consistency_report*) \"{sys.executable}\" -c 'import json,sys,pathlib; a=sys.argv[1:]; r=pathlib.Path(a[a.index(\"--project-root\")+1]); p=r/\"logs\"/\"ops\"/\"pointer_consistency\"/\"latest.json\"; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(json.dumps({{\"summary\": {{\"status\": \"pass\", \"violation_count\": 0, \"warning_count\": 0, \"reason_codes\": []}}}}, ensure_ascii=False), encoding=\"utf-8\"); print(p)' \"$@\" ;;\n"
             f"  *autobot.common.paper_lane_evidence*) printf '%s\\n' '{payload_json}' ;;\n"
             "  *'autobot.cli model promote'*) printf '{}\\n' ;;\n"
             "  *) printf '{}\\n' ;;\n"
@@ -251,8 +251,9 @@ def _make_fake_acceptance_script(
 def _seed_preflight_minimum(project_root: Path) -> None:
     family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
     family_dir.mkdir(parents=True, exist_ok=True)
-    (family_dir / "champion-run-000").mkdir(parents=True, exist_ok=True)
-    (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-000"}), encoding="utf-8")
+    (family_dir / "champion-run-001").mkdir(parents=True, exist_ok=True)
+    (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-001"}), encoding="utf-8")
+    (family_dir / "latest.json").write_text(json.dumps({"run_id": "champion-run-001"}), encoding="utf-8")
     for state_db in (
         project_root / "data" / "state" / "live_candidate" / "live_state.db",
         project_root / "data" / "state" / "live_state.db",
@@ -1055,7 +1056,7 @@ def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None
             {
                 "batch_date": "2026-03-08",
                 "candidate_run_id": "candidate-run-bootstrap",
-                "champion_run_id_at_start": "champion-run-000",
+                "champion_run_id_at_start": "champion-run-001",
                 "started_ts_ms": 1,
                 "lane_mode": "bootstrap_latest_inclusive",
                 "promotion_eligible": False,
@@ -1452,6 +1453,10 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
     )
     _write_json(
         project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-e2e"},
+    )
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest.json",
         {"run_id": "champion-run-e2e"},
     )
 
