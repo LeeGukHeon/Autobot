@@ -453,6 +453,7 @@ def _run_spawn_only(
     dry_run: bool = True,
     extra_args: list[str] | None = None,
     active_units: list[str] | None = None,
+    python_exe: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     _seed_preflight_minimum(project_root)
     sudo_dir = acceptance_script.parent
@@ -468,7 +469,7 @@ def _run_spawn_only(
         "-ProjectRoot",
         str(project_root),
         "-PythonExe",
-        "python",
+        str(python_exe or sys.executable),
         "-AcceptanceScript",
         str(acceptance_script),
         "-Mode",
@@ -1077,7 +1078,7 @@ def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None
             "-ProjectRoot",
             str(project_root),
             "-PythonExe",
-            "python",
+            sys.executable,
             "-Mode",
             "promote_only",
         ],
