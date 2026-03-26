@@ -200,7 +200,7 @@ def write_paired_paper_report(*, report: dict[str, Any], output_path: Path) -> N
 def _build_run_index(*, run_dir: Path) -> dict[str, Any]:
     summary = _load_json(run_dir / "summary.json")
     opportunities = _load_jsonl(run_dir / "opportunity_log.jsonl")
-    intent_queue_exact, intent_queue_loose = _build_intent_queues(run_dir=run_dir)
+    intent_queue_exact, intent_queue_loose, intent_queue_reason, intent_queue_market = _build_intent_queues(run_dir=run_dir)
     trade_metrics_by_intent = _load_trade_metrics_by_intent(run_dir=run_dir)
 
     indexed: dict[str, dict[str, Any]] = {}
@@ -212,6 +212,8 @@ def _build_run_index(*, run_dir: Path) -> dict[str, Any]:
             row=row,
             exact_queue=intent_queue_exact,
             loose_queue=intent_queue_loose,
+            reason_queue=intent_queue_reason,
+            market_queue=intent_queue_market,
         )
         metrics = trade_metrics_by_intent.get(intent_id or "", {})
         indexed[opportunity_id] = {
@@ -244,9 +246,16 @@ def _build_run_index(*, run_dir: Path) -> dict[str, Any]:
 def _build_intent_queues(
     *,
     run_dir: Path,
-) -> tuple[dict[tuple[int, str, str, str], deque[str]], dict[tuple[int, str, str], deque[str]]]:
+) -> tuple[
+    dict[tuple[int, str, str, str], deque[str]],
+    dict[tuple[int, str, str], deque[str]],
+    dict[tuple[str, str, str], deque[str]],
+    dict[tuple[str, str], deque[str]],
+]:
     exact_queue: dict[tuple[int, str, str, str], deque[str]] = defaultdict(deque)
     loose_queue: dict[tuple[int, str, str], deque[str]] = defaultdict(deque)
+    reason_queue: dict[tuple[str, str, str], deque[str]] = defaultdict(deque)
+    market_queue: dict[tuple[str, str], deque[str]] = defaultdict(deque)
     for item in _load_jsonl(run_dir / "events.jsonl"):
         if str(item.get("event_type") or "").strip().upper() != "INTENT_CREATED":
             continue
@@ -264,7 +273,9 @@ def _build_intent_queues(
             continue
         exact_queue[(ts_ms, market, side, reason_code)].append(intent_id)
         loose_queue[(ts_ms, market, side)].append(intent_id)
-    return exact_queue, loose_queue
+        reason_queue[(market, side, reason_code)].append(intent_id)
+        market_queue[(market, side)].append(intent_id)
+    return exact_queue, loose_queue, reason_queue, market_queue
 
 
 def _resolve_intent_id(
@@ -272,6 +283,8 @@ def _resolve_intent_id(
     row: dict[str, Any],
     exact_queue: dict[tuple[int, str, str, str], deque[str]],
     loose_queue: dict[tuple[int, str, str], deque[str]],
+    reason_queue: dict[tuple[str, str, str], deque[str]],
+    market_queue: dict[tuple[str, str], deque[str]],
 ) -> str | None:
     explicit_intent_id = _optional_text(row.get("intent_id"))
     if explicit_intent_id is not None:
@@ -288,6 +301,12 @@ def _resolve_intent_id(
     loose_key = (ts_ms, market, side)
     if loose_key in loose_queue and loose_queue[loose_key]:
         return loose_queue[loose_key].popleft()
+    reason_key = (market, side, reason_code)
+    if reason_key in reason_queue and reason_queue[reason_key]:
+        return reason_queue[reason_key].popleft()
+    market_key = (market, side)
+    if market_key in market_queue and market_queue[market_key]:
+        return market_queue[market_key].popleft()
     return None
 
 
