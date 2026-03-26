@@ -15,10 +15,11 @@ from autobot.common.event_store import JsonlEventStore
 from autobot.common.opportunity_log import (
     append_counterfactual_actions,
     append_strategy_opportunities,
+    backfill_realized_outcomes,
     reset_counterfactual_action_log,
     reset_opportunity_log,
 )
-from autobot.common.execution_structure import summarize_fill_records
+from autobot.common.execution_structure import build_intent_outcomes_from_trade_csv, summarize_fill_records
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
     PRICE_MODE_CROSS_1T,
@@ -1255,6 +1256,11 @@ class BacktestRunEngine:
             _write_trade_artifacts(
                 run_root=run_root,
                 fill_records=self._runtime_state.get("fill_records", []),
+            )
+            backfill_realized_outcomes(
+                opportunity_log_path=run_root / "opportunity_log.jsonl",
+                counterfactual_log_path=run_root / "counterfactual_action_log.jsonl",
+                outcome_by_intent=build_intent_outcomes_from_trade_csv(run_root / "trades.csv"),
             )
         return summary
 

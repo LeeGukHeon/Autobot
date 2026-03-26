@@ -60,6 +60,35 @@ def append_counterfactual_actions(
     return len(records)
 
 
+def backfill_realized_outcomes(
+    *,
+    opportunity_log_path: Path,
+    outcome_by_intent: dict[str, dict[str, Any]] | None,
+    counterfactual_log_path: Path | None = None,
+) -> dict[str, int]:
+    outcomes = {
+        str(key).strip(): dict(value)
+        for key, value in (outcome_by_intent or {}).items()
+        if str(key).strip() and isinstance(value, dict)
+    }
+    opportunity_rows = _load_jsonl_rows(opportunity_log_path)
+    updated_opportunities = _apply_realized_outcomes(rows=opportunity_rows, outcome_by_intent=outcomes)
+    if updated_opportunities > 0:
+        _write_jsonl_rows(opportunity_log_path, opportunity_rows)
+
+    updated_counterfactual = 0
+    if counterfactual_log_path is not None:
+        counterfactual_rows = _load_jsonl_rows(counterfactual_log_path)
+        updated_counterfactual = _apply_realized_outcomes(rows=counterfactual_rows, outcome_by_intent=outcomes)
+        if updated_counterfactual > 0:
+            _write_jsonl_rows(counterfactual_log_path, counterfactual_rows)
+
+    return {
+        "updated_opportunity_rows": int(updated_opportunities),
+        "updated_counterfactual_rows": int(updated_counterfactual),
+    }
+
+
 def _build_records(
     *,
     result: StrategyStepResult,
@@ -113,6 +142,8 @@ def _build_counterfactual_records(
                         "behavior_policy_mode": record.get("behavior_policy_mode"),
                         "behavior_policy_support": record.get("behavior_policy_support"),
                         "skip_reason_code": record.get("skip_reason_code"),
+                        "intent_id": record.get("intent_id"),
+                        "realized_outcome_json": record.get("realized_outcome_json"),
                         "action_propensity": payload.get("propensity"),
                         "action_payload": payload,
                     }
@@ -140,6 +171,8 @@ def _build_counterfactual_records(
                 "behavior_policy_mode": record.get("behavior_policy_mode"),
                 "behavior_policy_support": record.get("behavior_policy_support"),
                 "skip_reason_code": record.get("skip_reason_code"),
+                "intent_id": record.get("intent_id"),
+                "realized_outcome_json": record.get("realized_outcome_json"),
                 "action_propensity": record.get("chosen_action_propensity"),
                 "action_payload": {
                     "action_code": chosen_action,
@@ -252,3 +285,89 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+    return rows
+
+
+def _write_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _apply_realized_outcomes(
+    *,
+    rows: list[dict[str, Any]],
+    outcome_by_intent: dict[str, dict[str, Any]],
+) -> int:
+    updated = 0
+    for row in rows:
+        intent_id = str(row.get("intent_id") or "").strip()
+        if not intent_id:
+            continue
+        outcome = outcome_by_intent.get(intent_id)
+        if not isinstance(outcome, dict):
+            continue
+        if row.get("realized_outcome_json") == outcome:
+            continue
+        row["realized_outcome_json"] = dict(outcome)
+        updated += 1
+    return updated
+
+
+def build_trade_journal_outcomes_by_intent(rows: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    outcomes: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        intent_id = str(row.get("entry_intent_id") or "").strip()
+        if not intent_id:
+            continue
+        outcomes[intent_id] = {
+            "intent_id": intent_id,
+            "market": str(row.get("market") or "").strip().upper(),
+            "status": str(row.get("status") or "").strip().upper() or None,
+            "close_mode": _optional_text(row.get("close_mode")),
+            "close_reason_code": _optional_text(row.get("close_reason_code")),
+            "realized_pnl_quote": _safe_optional_float(row.get("realized_pnl_quote")),
+            "realized_pnl_pct": _safe_optional_float(row.get("realized_pnl_pct")),
+            "expected_net_edge_bps": _safe_optional_float(row.get("expected_net_edge_bps")),
+            "entry_notional_quote": _safe_optional_float(row.get("entry_notional_quote")),
+            "exit_notional_quote": _safe_optional_float(row.get("exit_notional_quote")),
+            "entry_filled_ts_ms": _safe_optional_int(row.get("entry_filled_ts_ms")),
+            "exit_ts_ms": _safe_optional_int(row.get("exit_ts_ms")),
+            "closed": str(row.get("status") or "").strip().upper() == "CLOSED",
+            "source": "trade_journal",
+        }
+    return outcomes
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None

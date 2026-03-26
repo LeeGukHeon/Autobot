@@ -196,6 +196,7 @@ def _write_trades_csv(
     price_mode: str,
     slippage_bps: float,
     with_fill: bool,
+    exit_fill_price: float | None = None,
 ) -> None:
     fields = [
         "ts_ms",
@@ -232,13 +233,34 @@ def _write_trades_csv(
                     "price_mode": price_mode,
                     "price": 100.1,
                     "volume": 0.1,
-                    "notional_quote": 10_010.0,
+                    "notional_quote": 10.01,
                     "fee_quote": 5.0,
                     "order_id": f"order-{intent_id}",
                     "intent_id": intent_id,
                     "reason_code": "MODEL_ALPHA_ENTRY_V1",
                 }
             )
+            if exit_fill_price is not None:
+                writer.writerow(
+                    {
+                        "ts_ms": 2_000,
+                        "market": "KRW-BTC",
+                        "side": "ask",
+                        "ref_price": 101.0,
+                        "tick_bps": 0.0,
+                        "order_price": exit_fill_price,
+                        "fill_price": exit_fill_price,
+                        "slippage_bps": 1.0,
+                        "price_mode": "JOIN",
+                        "price": exit_fill_price,
+                        "volume": 0.1,
+                        "notional_quote": float(exit_fill_price) * 0.1,
+                        "fee_quote": 5.0,
+                        "order_id": f"order-exit-{intent_id}",
+                        "intent_id": f"{intent_id}-exit",
+                        "reason_code": "MODEL_ALPHA_EXIT_TP",
+                    }
+                )
 
 
 def test_build_paired_paper_report_tracks_trade_and_no_trade_delta(tmp_path: Path) -> None:
@@ -270,6 +292,7 @@ def test_build_paired_paper_report_tracks_trade_and_no_trade_delta(tmp_path: Pat
         price_mode="PASSIVE_MAKER",
         slippage_bps=1.5,
         with_fill=True,
+        exit_fill_price=101.5,
     )
     _write_trades_csv(
         challenger_run,
@@ -289,7 +312,8 @@ def test_build_paired_paper_report_tracks_trade_and_no_trade_delta(tmp_path: Pat
     assert report["taxonomy_counts"]["champion_trade_challenger_no_trade"] == 1
     assert report["taxonomy_counts"]["champion_fill_only"] == 1
     assert report["paired_deltas"]["aggregate_realized_pnl_delta_quote"] == 15.0
-    assert report["paired_deltas"]["matched_pnl_delta_quote"] == 15.0
+    assert report["paired_deltas"]["matched_pnl_delta_quote"] > 0.0
+    assert report["paired_deltas"]["matched_pnl_covered_opportunity_count"] == 1
     assert report["paired_deltas"]["matched_fill_delta"] == -1
     assert report["paired_deltas"]["matched_no_trade_delta"] == -1
 

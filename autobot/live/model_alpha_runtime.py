@@ -14,6 +14,8 @@ from autobot.backtest.strategy_adapter import StrategyOrderIntent
 from autobot.common.opportunity_log import (
     append_counterfactual_actions,
     append_strategy_opportunities,
+    backfill_realized_outcomes,
+    build_trade_journal_outcomes_by_intent,
     reset_counterfactual_action_log,
     reset_opportunity_log,
 )
@@ -312,12 +314,22 @@ async def run_live_model_alpha_runtime(
     )
     known_positions = _snapshot_position_state(store)
     summary["trade_journal_backfill"] = recompute_trade_journal_records(store=store)
+    _backfill_live_opportunity_outcomes(
+        store=store,
+        opportunity_log_path=live_opportunity_log_path,
+        counterfactual_log_path=live_counterfactual_log_path,
+    )
     summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
         store=store,
         client=client,
         bot_id=daemon_settings.bot_id,
         identifier_prefix=daemon_settings.identifier_prefix,
         now_ts_ms=int(time.time() * 1000),
+    )
+    _backfill_live_opportunity_outcomes(
+        store=store,
+        opportunity_log_path=live_opportunity_log_path,
+        counterfactual_log_path=live_counterfactual_log_path,
     )
     _bootstrap_strategy_positions(
         store=store,
@@ -706,6 +718,23 @@ def _resolve_live_opportunity_lane(*, settings: LiveModelAlphaRuntimeSettings) -
 
 def _resolve_live_counterfactual_action_log_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
     return _resolve_live_opportunity_log_path(settings=settings).with_name("counterfactual_action_log.jsonl")
+
+
+def _backfill_live_opportunity_outcomes(
+    *,
+    store: LiveStateStore,
+    opportunity_log_path: Path,
+    counterfactual_log_path: Path,
+) -> None:
+    try:
+        rows = list(store.list_trade_journal(limit=1000))
+    except Exception:
+        rows = []
+    backfill_realized_outcomes(
+        opportunity_log_path=opportunity_log_path,
+        counterfactual_log_path=counterfactual_log_path,
+        outcome_by_intent=build_trade_journal_outcomes_by_intent(rows),
+    )
 
 
 def _resolve_live_risk_budget_ledger_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
@@ -1669,6 +1698,11 @@ def _drain_private_ws_events(
             state_value = str(ws_event.state or "").strip().lower()
             if state_value in {"done", "cancel", "cancelled"}:
                 summary["trade_journal_backfill"] = recompute_trade_journal_records(store=store)
+                _backfill_live_opportunity_outcomes(
+                    store=store,
+                    opportunity_log_path=live_opportunity_log_path,
+                    counterfactual_log_path=live_counterfactual_log_path,
+                )
         summary["breaker_report"] = breaker_status(store)
     if private_ws_task is not None and private_ws_task.done():
         if private_ws_client is not None and hasattr(private_ws_client, "stats"):

@@ -7,6 +7,8 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from autobot.common.execution_structure import build_intent_outcomes_from_trade_csv
+
 
 PAIRED_PAPER_REPORT_VERSION = 1
 
@@ -122,12 +124,21 @@ def build_paired_paper_report(
     challenger_total = len(challenger_ids)
     matched_total = len(matched_ids)
 
+    matched_realized_pnl_pairs = []
+    for opportunity_id in matched_ids:
+        champion_realized = _safe_optional_float(champion_opportunities[opportunity_id].get("realized_pnl_quote"))
+        challenger_realized = _safe_optional_float(challenger_opportunities[opportunity_id].get("realized_pnl_quote"))
+        if champion_realized is None and challenger_realized is None:
+            continue
+        matched_realized_pnl_pairs.append((champion_realized, challenger_realized))
     paired_deltas = {
         "aggregate_realized_pnl_delta_quote": _safe_float(challenger_summary.get("realized_pnl_quote"))
         - _safe_float(champion_summary.get("realized_pnl_quote")),
-        "matched_pnl_delta_quote": _safe_float(challenger_summary.get("realized_pnl_quote"))
-        - _safe_float(champion_summary.get("realized_pnl_quote")),
-        "matched_pnl_status": "same_window_realized_pnl",
+        "matched_pnl_delta_quote": float(
+            sum(float(challenger or 0.0) - float(champion or 0.0) for champion, challenger in matched_realized_pnl_pairs)
+        ),
+        "matched_pnl_status": "matched_entry_realized_pnl",
+        "matched_pnl_covered_opportunity_count": int(len(matched_realized_pnl_pairs)),
         "matched_fill_delta": int(challenger_fill_total - champion_fill_total),
         "matched_slippage_delta_bps": _delta_optional_mean(
             challenger_slippage_values,
@@ -218,6 +229,8 @@ def _build_run_index(*, run_dir: Path) -> dict[str, Any]:
             "fill_count": int(metrics.get("fill_count", 0)),
             "filled_notional_quote": float(metrics.get("filled_notional_quote", 0.0)),
             "mean_slippage_bps": _safe_optional_float(metrics.get("mean_slippage_bps")),
+            "realized_pnl_quote": _safe_optional_float(metrics.get("realized_pnl_quote")),
+            "closed": bool(metrics.get("closed", False)),
             "total_fee_quote": float(metrics.get("total_fee_quote", 0.0)),
             "price_modes": dict(metrics.get("price_modes") or {}),
             "has_trade": bool(intent_id),
@@ -282,6 +295,7 @@ def _load_trade_metrics_by_intent(*, run_dir: Path) -> dict[str, dict[str, Any]]
     rows_path = run_dir / "trades.csv"
     if not rows_path.exists():
         return {}
+    outcomes_by_intent = build_intent_outcomes_from_trade_csv(rows_path)
     metrics_by_intent: dict[str, dict[str, Any]] = {}
     with rows_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -315,6 +329,21 @@ def _load_trade_metrics_by_intent(*, run_dir: Path) -> dict[str, dict[str, Any]]
     for item in metrics_by_intent.values():
         item["mean_slippage_bps"] = _optional_mean(item.get("slippages", []))
         item.pop("slippages", None)
+    for intent_id, outcome in outcomes_by_intent.items():
+        item = metrics_by_intent.setdefault(
+            intent_id,
+            {
+                "fill_count": 0,
+                "filled_notional_quote": 0.0,
+                "total_fee_quote": 0.0,
+                "price_modes": {},
+            },
+        )
+        item["realized_pnl_quote"] = _safe_optional_float(outcome.get("realized_pnl_quote"))
+        item["closed"] = bool(outcome.get("closed", False))
+        exit_reason_counts = dict(outcome.get("exit_reason_counts") or {})
+        if exit_reason_counts:
+            item["exit_reason_counts"] = exit_reason_counts
     return metrics_by_intent
 
 
@@ -342,6 +371,8 @@ def _example_projection(item: dict[str, Any]) -> dict[str, Any]:
         "fill_count": int(item.get("fill_count") or 0),
         "filled_notional_quote": float(item.get("filled_notional_quote") or 0.0),
         "mean_slippage_bps": _safe_optional_float(item.get("mean_slippage_bps")),
+        "realized_pnl_quote": _safe_optional_float(item.get("realized_pnl_quote")),
+        "closed": bool(item.get("closed", False)),
     }
 
 
