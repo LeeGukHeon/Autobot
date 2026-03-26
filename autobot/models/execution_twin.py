@@ -92,7 +92,8 @@ def _enrich_attempt_rows(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]
             cancel_event = final_state in {"MISSED", "PARTIAL_CANCELLED", "CANCELLED"} or row.get("cancelled_ts_ms") is not None
             full_fill_event = bool(row.get("full_fill")) or final_state == "FILLED" or full_fill_delay_ms is not None
             first_fill_event = first_fill_delay_ms is not None
-            replace_event = index < (chain_count - 1)
+            explicit_replace_count = max(_safe_optional_int(row.get("replace_count")) or 0, 0)
+            replace_event = bool(explicit_replace_count > 0 or index < (chain_count - 1))
             enriched_row = dict(row)
             enriched_row.update(
                 {
@@ -105,6 +106,7 @@ def _enrich_attempt_rows(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]
                     "partial_fill_event": bool(partial_fill),
                     "cancel_event": bool(cancel_event),
                     "replace_event": bool(replace_event),
+                    "replace_count": int(explicit_replace_count),
                     "price_mode": str(row.get("price_mode") or _infer_price_mode(row.get("action_code"))).strip().upper()
                     or _infer_price_mode(row.get("action_code")),
                 }
@@ -122,10 +124,10 @@ def _summarize_execution_twin_rows(
     sample_count = len(rows)
     first_fill_delays = [int(item["first_fill_delay_ms"]) for item in rows if item.get("first_fill_delay_ms") is not None]
     full_fill_delays = [int(item["full_fill_delay_ms"]) for item in rows if item.get("full_fill_delay_ms") is not None]
-    shortfalls = [
-        float(item.get("shortfall_bps"))
+    downside_values = [
+        _downside_observation_bps(item)
         for item in rows
-        if item.get("shortfall_bps") is not None and math.isfinite(float(item.get("shortfall_bps")))
+        if _downside_observation_bps(item) is not None
     ]
     summary: dict[str, Any] = {
         "sample_count": int(sample_count),
@@ -141,8 +143,8 @@ def _summarize_execution_twin_rows(
         "replace_probability": _rate(rows, "replace_event"),
         "mean_time_to_first_fill_ms": _mean(first_fill_delays),
         "mean_time_to_full_fill_ms": _mean(full_fill_delays),
-        "mean_shortfall_bps": _mean(shortfalls),
-        "expected_shortfall_bps": _expected_shortfall(shortfalls, alpha=shortfall_tail_alpha),
+        "mean_shortfall_bps": _mean(downside_values),
+        "expected_shortfall_bps": _expected_shortfall(downside_values, alpha=shortfall_tail_alpha),
     }
     for horizon_ms in horizons_ms:
         summary[f"p_first_fill_within_{int(horizon_ms)}ms"] = _rate_within_delay(first_fill_delays, horizon_ms, sample_count)
@@ -275,6 +277,18 @@ def _mean(values: list[float | int]) -> float | None:
     if not clean:
         return None
     return float(sum(clean) / float(len(clean)))
+
+
+def _downside_observation_bps(row: dict[str, Any]) -> float | None:
+    candidates = [
+        _safe_optional_float(row.get("shortfall_bps")),
+        _safe_optional_float(row.get("journal_realized_downside_bps")),
+        _safe_optional_float(row.get("journal_edge_gap_bps")),
+    ]
+    clean = [float(value) for value in candidates if value is not None and math.isfinite(float(value))]
+    if not clean:
+        return None
+    return float(max(clean))
 
 
 def _expected_shortfall(values: list[float], *, alpha: float) -> float | None:

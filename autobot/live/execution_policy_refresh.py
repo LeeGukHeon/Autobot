@@ -21,19 +21,14 @@ def load_execution_attempts_from_db(
     limit: int = 5000,
 ) -> list[dict[str, Any]]:
     with LiveStateStore(db_path) as store:
-        now_ts_ms = int(time.time() * 1000)
-        since_ts_ms = now_ts_ms - (max(int(lookback_days), 1) * 86_400_000)
-        attempts = store.list_execution_attempts(
-            final_only=True,
-            since_ts_ms=since_ts_ms,
-            limit=max(int(limit), 1),
+        attempts = _load_execution_twin_source_rows(
+            store=store,
+            lookback_days=lookback_days,
+            limit=limit,
         )
-    payloads: list[dict[str, Any]] = []
-    for item in attempts:
-        row = dict(item)
+    for row in attempts:
         row["source_db_path"] = str(db_path)
-        payloads.append(row)
-    return payloads
+    return attempts
 
 
 def build_execution_policy_refresh_payload(
@@ -42,9 +37,11 @@ def build_execution_policy_refresh_payload(
     lookback_days: int = 14,
     limit: int = 5000,
 ) -> dict[str, Any]:
-    now_ts_ms = int(time.time() * 1000)
-    since_ts_ms = now_ts_ms - (max(int(lookback_days), 1) * 86_400_000)
-    attempts = store.list_execution_attempts(final_only=True, since_ts_ms=since_ts_ms, limit=max(int(limit), 1))
+    attempts = _load_execution_twin_source_rows(
+        store=store,
+        lookback_days=lookback_days,
+        limit=limit,
+    )
     execution_contract = build_live_execution_contract(attempts=attempts)
     return {
         "policy": "live_execution_policy_refresh_v1",
@@ -56,6 +53,82 @@ def build_execution_policy_refresh_payload(
         "execution_twin": dict(execution_contract.get("execution_twin") or {}),
         "execution_contract": execution_contract,
     }
+
+
+def _load_execution_twin_source_rows(
+    *,
+    store: LiveStateStore,
+    lookback_days: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    now_ts_ms = int(time.time() * 1000)
+    since_ts_ms = now_ts_ms - (max(int(lookback_days), 1) * 86_400_000)
+    attempts = store.list_execution_attempts(
+        final_only=True,
+        since_ts_ms=since_ts_ms,
+        limit=max(int(limit), 1),
+    )
+    journal_cache_by_id: dict[str, dict[str, Any] | None] = {}
+    journal_cache_by_intent: dict[str, dict[str, Any] | None] = {}
+    lineage_cache_by_intent: dict[str, list[dict[str, Any]]] = {}
+    payloads: list[dict[str, Any]] = []
+    for item in attempts:
+        row = dict(item)
+        journal_id = str(row.get("journal_id") or "").strip()
+        intent_id = str(row.get("intent_id") or "").strip()
+        journal = None
+        if journal_id:
+            if journal_id not in journal_cache_by_id:
+                journal_cache_by_id[journal_id] = store.trade_journal_by_id(journal_id=journal_id)
+            journal = journal_cache_by_id.get(journal_id)
+        if journal is None and intent_id:
+            if intent_id not in journal_cache_by_intent:
+                journal_cache_by_intent[intent_id] = store.trade_journal_by_entry_intent(entry_intent_id=intent_id)
+            journal = journal_cache_by_intent.get(intent_id)
+        lineage_rows: list[dict[str, Any]] = []
+        if intent_id:
+            if intent_id not in lineage_cache_by_intent:
+                lineage_cache_by_intent[intent_id] = store.list_order_lineage(intent_id=intent_id)
+            lineage_rows = list(lineage_cache_by_intent.get(intent_id) or [])
+        row.update(_execution_twin_journal_fields(journal))
+        row["replace_count"] = int(len(lineage_rows))
+        payloads.append(row)
+    return payloads
+
+
+def _execution_twin_journal_fields(journal: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(journal or {})
+    entry_notional_quote = _safe_optional_float(payload.get("entry_notional_quote"))
+    realized_pnl_quote = _safe_optional_float(payload.get("realized_pnl_quote"))
+    expected_net_edge_bps = _safe_optional_float(payload.get("expected_net_edge_bps"))
+    realized_pnl_bps = None
+    realized_downside_bps = None
+    edge_gap_bps = None
+    if entry_notional_quote is not None and entry_notional_quote > 0.0 and realized_pnl_quote is not None:
+        realized_pnl_bps = float(realized_pnl_quote) / float(entry_notional_quote) * 10_000.0
+        realized_downside_bps = max(-float(realized_pnl_bps), 0.0)
+        if expected_net_edge_bps is not None:
+            edge_gap_bps = max(float(expected_net_edge_bps) - float(realized_pnl_bps), 0.0)
+    return {
+        "journal_status": str(payload.get("status") or "").strip().upper() or None,
+        "journal_close_mode": str(payload.get("close_mode") or "").strip() or None,
+        "journal_realized_pnl_quote": realized_pnl_quote,
+        "journal_realized_pnl_pct": _safe_optional_float(payload.get("realized_pnl_pct")),
+        "journal_entry_notional_quote": entry_notional_quote,
+        "journal_expected_net_edge_bps": expected_net_edge_bps,
+        "journal_realized_pnl_bps": realized_pnl_bps,
+        "journal_realized_downside_bps": realized_downside_bps,
+        "journal_edge_gap_bps": edge_gap_bps,
+    }
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_combined_execution_policy_refresh_payload(

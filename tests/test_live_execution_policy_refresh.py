@@ -10,7 +10,7 @@ from autobot.live.execution_policy_refresh import (
     refresh_combined_execution_policy,
     refresh_execution_policy,
 )
-from autobot.live.state_store import LiveStateStore
+from autobot.live.state_store import ExecutionAttemptRecord, LiveStateStore, OrderLineageRecord, TradeJournalRecord
 
 
 def _insert_attempt(store: LiveStateStore, *, attempt_id: str, action_code: str, first_fill_delay_ms: int, shortfall_bps: float) -> None:
@@ -34,6 +34,71 @@ def _insert_attempt(store: LiveStateStore, *, attempt_id: str, action_code: str,
         ),
     )
     store._conn.commit()  # noqa: SLF001
+
+
+def test_build_execution_policy_refresh_payload_enriches_twin_from_journal_and_lineage(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    now_ts_ms = int(time.time() * 1000)
+    with LiveStateStore(db_path) as store:
+        store.upsert_execution_attempt(
+            ExecutionAttemptRecord(
+                attempt_id="attempt-1",
+                journal_id="journal-1",
+                intent_id="intent-1",
+                order_uuid="order-new",
+                order_identifier="AUTOBOT-NEW",
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                time_in_force="gtc",
+                action_code="LIMIT_GTC_JOIN",
+                price_mode="JOIN",
+                expected_net_edge_bps=20.0,
+                submitted_ts_ms=now_ts_ms,
+                first_fill_ts_ms=now_ts_ms + 1_000,
+                cancelled_ts_ms=now_ts_ms + 2_000,
+                final_ts_ms=now_ts_ms + 2_000,
+                final_state="PARTIAL_CANCELLED",
+                shortfall_bps=2.0,
+                fill_fraction=0.5,
+                partial_fill=True,
+                updated_ts=now_ts_ms + 2_000,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-1",
+                market="KRW-BTC",
+                status="CLOSED",
+                entry_intent_id="intent-1",
+                entry_notional_quote=100.0,
+                exit_notional_quote=95.0,
+                realized_pnl_quote=-5.0,
+                realized_pnl_pct=-5.0,
+                expected_net_edge_bps=20.0,
+                close_mode="managed_exit_order",
+                updated_ts=now_ts_ms + 2_000,
+            )
+        )
+        store.append_order_lineage(
+            OrderLineageRecord(
+                ts_ms=now_ts_ms + 1_500,
+                event_source="risk_manager",
+                intent_id="intent-1",
+                prev_uuid="order-old",
+                prev_identifier="AUTOBOT-OLD",
+                new_uuid="order-new",
+                new_identifier="AUTOBOT-NEW",
+                replace_seq=1,
+            )
+        )
+        payload = build_execution_policy_refresh_payload(store=store, lookback_days=30, limit=100)
+
+    twin = payload["execution_twin"]["action_stats"]["LIMIT_GTC_JOIN"]
+    assert twin["replace_probability"] == 1.0
+    assert twin["cancel_probability"] == 1.0
+    assert twin["partial_fill_probability"] == 1.0
+    assert twin["expected_shortfall_bps"] == 520.0
 
 
 def test_refresh_execution_policy_writes_checkpoint_and_output(tmp_path: Path) -> None:
