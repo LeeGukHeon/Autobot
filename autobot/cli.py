@@ -35,6 +35,7 @@ from .data.collect import (
     CandlePlanOptions,
     Lob30CollectOptions,
     Lob30PlanOptions,
+    SequenceTensorBuildOptions,
     TicksCollectOptions,
     TicksPlanOptions,
     WsCandleCollectOptions,
@@ -45,6 +46,7 @@ from .data.collect import (
     collect_candles_from_plan,
     collect_lob30_from_plan,
     collect_ws_candles_from_plan,
+    build_sequence_tensor_store,
     collect_ws_public_daemon,
     collect_ticks_from_plan,
     collect_ticks_stats,
@@ -59,6 +61,7 @@ from .data.collect import (
     purge_ws_public_retention,
     validate_candles_api_dataset,
     validate_lob30_dataset,
+    validate_sequence_tensor_store,
     validate_ticks_raw_dataset,
     validate_ws_candle_dataset,
     validate_ws_public_raw_dataset,
@@ -510,6 +513,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_lob30_parser.add_argument("--keepalive-interval-sec", type=int, default=60)
     collect_lob30_parser.add_argument("--keepalive-stale-sec", type=int, default=120)
+
+    collect_tensors_parser = collect_subparsers.add_parser(
+        "tensors",
+        help="Build sequence_v1 tensor cache and contracts from second/ws/micro/lob datasets.",
+    )
+    collect_tensors_parser.add_argument("--out-dataset", default="sequence_v1")
+    collect_tensors_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_tensors_parser.add_argument("--second-dataset", default="candles_second_v1")
+    collect_tensors_parser.add_argument("--ws-candle-dataset", default="ws_candle_v1")
+    collect_tensors_parser.add_argument("--micro-dataset", default="micro_v1")
+    collect_tensors_parser.add_argument("--lob-dataset", default="lob30_v1")
+    collect_tensors_parser.add_argument("--markets", help="Comma separated markets, ex: KRW-BTC,KRW-ETH")
+    collect_tensors_parser.add_argument("--date", help="Anchor date UTC YYYY-MM-DD")
+    collect_tensors_parser.add_argument("--max-markets", type=int, default=5)
+    collect_tensors_parser.add_argument("--max-anchors-per-market", type=int, default=32)
+    collect_tensors_parser.add_argument("--second-lookback-steps", type=int, default=120)
+    collect_tensors_parser.add_argument("--minute-lookback-steps", type=int, default=30)
+    collect_tensors_parser.add_argument("--micro-lookback-steps", type=int, default=30)
+    collect_tensors_parser.add_argument("--lob-lookback-steps", type=int, default=32)
 
     collect_ticks_parser = collect_subparsers.add_parser("ticks", help="Collect raw REST ticks.")
     collect_ticks_parser.add_argument("--plan", default="data/raw_ticks/upbit/_meta/ticks_plan.json")
@@ -1571,6 +1593,8 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
         return _handle_collect_plan_lob30(args, base_config)
     if args.collect_command == "lob30":
         return _handle_collect_lob30(args, config_dir, base_config)
+    if args.collect_command == "tensors":
+        return _handle_collect_tensors(args, base_config)
     if args.collect_command == "plan-ticks":
         return _handle_collect_plan_ticks(args, base_config)
     if args.collect_command == "plan-ws-public":
@@ -1853,6 +1877,50 @@ def _handle_collect_lob30(args: argparse.Namespace, config_dir: Path, base_confi
     )
     print(f"[collect][lob30][validate] report={validate_summary.validate_report_file}")
     if collect_summary.failures or validate_summary.fail_files > 0:
+        return 2
+    return 0
+
+
+def _handle_collect_tensors(args: argparse.Namespace, base_config: dict[str, Any]) -> int:
+    defaults = _data_defaults(base_config)
+    parquet_root = Path(args.parquet_root or defaults["parquet_root"])
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset=str(args.out_dataset).strip() or "sequence_v1",
+        second_dataset=str(args.second_dataset).strip() or "candles_second_v1",
+        ws_candle_dataset=str(args.ws_candle_dataset).strip() or "ws_candle_v1",
+        micro_dataset=str(args.micro_dataset).strip() or "micro_v1",
+        lob_dataset=str(args.lob_dataset).strip() or "lob30_v1",
+        markets=_parse_csv_list(args.markets, normalize=str.upper),
+        date=(str(args.date).strip() if args.date else None) or None,
+        max_markets=max(int(args.max_markets), 1),
+        max_anchors_per_market=max(int(args.max_anchors_per_market), 1),
+        second_lookback_steps=max(int(args.second_lookback_steps), 1),
+        minute_lookback_steps=max(int(args.minute_lookback_steps), 1),
+        micro_lookback_steps=max(int(args.micro_lookback_steps), 1),
+        lob_lookback_steps=max(int(args.lob_lookback_steps), 1),
+    )
+
+    summary = build_sequence_tensor_store(options)
+    print(
+        "[collect][tensors] "
+        f"markets={summary.selected_markets} discovered_anchors={summary.discovered_anchors} "
+        f"built={summary.built_anchors} ok={summary.ok_anchors} warn={summary.warn_anchors} fail={summary.fail_anchors}"
+    )
+    print(f"[collect][tensors] manifest={summary.manifest_file}")
+    print(f"[collect][tensors] build_report={summary.build_report_file}")
+    print(f"[collect][tensors] sequence_contract={summary.sequence_contract_file}")
+    print(f"[collect][tensors] lob_contract={summary.lob_contract_file}")
+
+    validate_summary = validate_sequence_tensor_store(options=options)
+    print(
+        "[collect][tensors][validate] "
+        f"checked={validate_summary.checked_files} ok={validate_summary.ok_files} "
+        f"warn={validate_summary.warn_files} fail={validate_summary.fail_files}"
+    )
+    print(f"[collect][tensors][validate] report={validate_summary.validate_report_file}")
+    if summary.fail_anchors > 0 or validate_summary.fail_files > 0:
         return 2
     return 0
 
