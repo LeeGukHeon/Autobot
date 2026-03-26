@@ -325,7 +325,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
 
         selection_mode = str(selection_policy.get("mode", "raw_threshold")).strip().lower()
         matrix = frame_active.select(list(self._predictor.feature_columns)).to_numpy().astype(np.float32, copy=False)
-        raw_probs = self._predictor.predict_scores(matrix).astype(np.float64, copy=False)
+        score_contract = self._predictor.predict_score_contract(matrix)
+        raw_probs = np.asarray(score_contract["score_mean"], dtype=np.float64)
         if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
             probs = self._predictor.predict_selection_scores(matrix).astype(np.float64, copy=False)
         else:
@@ -333,6 +334,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         scored = frame_active.with_columns(
             pl.Series(name="model_prob", values=probs),
             pl.Series(name="model_prob_raw", values=raw_probs),
+            pl.Series(name="score_mean", values=np.asarray(score_contract["score_mean"], dtype=np.float64)),
+            pl.Series(name="score_std", values=_optional_float_list(score_contract["score_std"])),
+            pl.Series(name="score_lcb", values=np.asarray(score_contract["score_lcb"], dtype=np.float64)),
         )
         if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
             eligible = scored
@@ -1666,6 +1670,13 @@ def _resolve_opportunity_uncertainty(row: dict[str, Any] | None) -> float | None
         if resolved is not None:
             return float(resolved)
     return None
+
+
+def _optional_float_list(values: np.ndarray) -> list[float | None]:
+    result: list[float | None] = []
+    for value in np.asarray(values, dtype=np.float64):
+        result.append(float(value) if np.isfinite(value) else None)
+    return result
 
 
 def _build_opportunity_feature_hash(*, row: dict[str, Any] | None) -> str:

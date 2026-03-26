@@ -564,7 +564,10 @@ def _build_v5_metrics_doc(
         "uncertainty_temperature": float(meta_fit.get("uncertainty_temperature", 1.0)),
         "final_output_contract": {
             "score_field": "final_rank_score",
-            "uncertainty_field": "component_disagreement_std",
+            "score_mean_field": "score_mean",
+            "score_std_field": "score_std",
+            "score_lcb_field": "score_lcb",
+            "uncertainty_field": "score_std",
         },
     }
     return metrics
@@ -629,6 +632,15 @@ def _build_v5_train_config(
     payload["trainer"] = "v5_panel_ensemble"
     payload["task"] = "cls"
     payload["panel_ensemble"] = dict(ensemble_contract or {})
+    payload["predictor_contract"] = {
+        "version": 1,
+        "score_mean_field": "score_mean",
+        "score_std_field": "score_std",
+        "score_lcb_field": "score_lcb",
+        "final_rank_score_field": "final_rank_score",
+        "final_uncertainty_field": "score_std",
+        "score_lcb_formula": "score_lcb = clip(score_mean - score_std, 0, 1)",
+    }
     return payload
 
 
@@ -905,6 +917,18 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
     )
     update_artifact_status(run_dir, status="core_saved", core_saved=True)
     _write_json(run_dir / "panel_ensemble_contract.json", metrics.get("panel_ensemble", {}))
+    _write_json(
+        run_dir / "predictor_contract.json",
+        {
+            "version": 1,
+            "score_mean_field": "score_mean",
+            "score_std_field": "score_std",
+            "score_lcb_field": "score_lcb",
+            "final_rank_score_field": "final_rank_score",
+            "final_uncertainty_field": "score_std",
+            "score_lcb_formula": "score_lcb = clip(score_mean - score_std, 0, 1)",
+        },
+    )
     support_artifacts = v4_persistence.persist_v4_support_artifacts(
         run_dir=run_dir,
         options=options,

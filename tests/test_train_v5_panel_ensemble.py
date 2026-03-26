@@ -209,6 +209,8 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
 
     assert result.run_dir.exists()
     assert (result.run_dir / "panel_ensemble_contract.json").exists()
+    assert (result.run_dir / "predictor_contract.json").exists()
     assert result.promotion_path.exists()
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_panel_ensemble"
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["policy"] == "v5_panel_ensemble_v1"
+    assert load_json(result.run_dir / "predictor_contract.json")["score_lcb_field"] == "score_lcb"

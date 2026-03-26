@@ -29,6 +29,7 @@ class ModelPredictor:
     runtime_recommendations: dict[str, Any] = field(default_factory=dict)
     selection_policy: dict[str, Any] = field(default_factory=dict)
     selection_calibration: dict[str, Any] = field(default_factory=dict)
+    predictor_contract: dict[str, Any] = field(default_factory=dict)
 
     @property
     def dataset_root(self) -> Path | None:
@@ -45,6 +46,32 @@ class ModelPredictor:
             self.predict_scores(x),
             self.selection_calibration if isinstance(self.selection_calibration, dict) else {},
         )
+
+    def predict_uncertainty(self, x: np.ndarray) -> np.ndarray | None:
+        estimator = self.model_bundle.get("estimator") if isinstance(self.model_bundle, dict) else None
+        if estimator is None or not hasattr(estimator, "predict_uncertainty"):
+            return None
+        values = np.asarray(estimator.predict_uncertainty(x), dtype=np.float64)
+        if values.ndim != 1:
+            raise ValueError("predict_uncertainty must return a 1-D array")
+        return values
+
+    def predict_score_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+        score_mean = self.predict_scores(x).astype(np.float64, copy=False)
+        score_std = self.predict_uncertainty(x)
+        if score_std is None:
+            score_lcb = score_mean.copy()
+            uncertainty_available = False
+        else:
+            score_std = np.maximum(np.asarray(score_std, dtype=np.float64), 0.0)
+            score_lcb = np.clip(score_mean - score_std, 0.0, 1.0)
+            uncertainty_available = True
+        return {
+            "score_mean": score_mean,
+            "score_std": score_std if uncertainty_available else np.full(score_mean.shape[0], np.nan, dtype=np.float64),
+            "score_lcb": score_lcb,
+            "uncertainty_available": np.full(score_mean.shape[0], uncertainty_available, dtype=bool),
+        }
 
 
 def load_predictor_from_registry(
@@ -96,6 +123,11 @@ def load_predictor_from_registry(
         selection_policy = normalize_selection_policy(selection_policy, fallback_threshold_key="top_5pct")
     if selection_calibration:
         selection_calibration = normalize_selection_calibration(selection_calibration)
+    predictor_contract = load_json(run_dir / "predictor_contract.json")
+    if not predictor_contract:
+        raw_predictor_contract = train_config.get("predictor_contract")
+        if isinstance(raw_predictor_contract, dict):
+            predictor_contract = raw_predictor_contract
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -119,4 +151,5 @@ def load_predictor_from_registry(
         runtime_recommendations=runtime_recommendations if isinstance(runtime_recommendations, dict) else {},
         selection_policy=selection_policy if isinstance(selection_policy, dict) else {},
         selection_calibration=selection_calibration if isinstance(selection_calibration, dict) else {},
+        predictor_contract=predictor_contract if isinstance(predictor_contract, dict) else {},
     )
