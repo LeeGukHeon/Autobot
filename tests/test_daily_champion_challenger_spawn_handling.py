@@ -72,8 +72,9 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
             ")\r\n"
             "exit /b 0\r\n"
             ":list_unit_files\r\n"
-            "echo autobot-paper-v4.service enabled enabled\r\n"
+            "echo autobot-paper-v4.service disabled enabled\r\n"
             "echo autobot-paper-v4-challenger.service disabled enabled\r\n"
+            "echo autobot-paper-v4-paired.service enabled enabled\r\n"
             "echo autobot-live-alpha.service enabled enabled\r\n"
             "echo autobot-live-alpha-candidate.service enabled enabled\r\n"
             "echo autobot-v4-challenger-spawn.timer enabled enabled\r\n"
@@ -106,8 +107,9 @@ def _make_fake_systemctl(tmp_path: Path) -> Path:
             "  exit 0\n"
             "fi\n"
             "if [ \"$1\" = \"list-unit-files\" ]; then\n"
-            "  echo \"autobot-paper-v4.service enabled enabled\"\n"
+            "  echo \"autobot-paper-v4.service disabled enabled\"\n"
             "  echo \"autobot-paper-v4-challenger.service disabled enabled\"\n"
+            "  echo \"autobot-paper-v4-paired.service enabled enabled\"\n"
             "  echo \"autobot-live-alpha.service enabled enabled\"\n"
             "  echo \"autobot-live-alpha-candidate.service enabled enabled\"\n"
             "  echo \"autobot-v4-challenger-spawn.timer enabled enabled\"\n"
@@ -254,6 +256,10 @@ def _seed_preflight_minimum(project_root: Path) -> None:
     (family_dir / "champion-run-001").mkdir(parents=True, exist_ok=True)
     (family_dir / "champion.json").write_text(json.dumps({"run_id": "champion-run-001"}), encoding="utf-8")
     (family_dir / "latest.json").write_text(json.dumps({"run_id": "champion-run-001"}), encoding="utf-8")
+    (project_root / "models" / "registry" / "latest.json").write_text(
+        json.dumps({"run_id": "champion-run-001", "model_family": "train_v4_crypto_cs"}),
+        encoding="utf-8",
+    )
     for state_db in (
         project_root / "data" / "state" / "live_candidate" / "live_state.db",
         project_root / "data" / "state" / "live_state.db",
