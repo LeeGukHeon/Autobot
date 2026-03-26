@@ -493,7 +493,11 @@ foreach ($reasonCode in @($pointerConsistencyReasons)) {
     if ([string]::IsNullOrWhiteSpace($code)) {
         continue
     }
+    $unitContractChecksRequested = ($resolvedRequiredUnitFiles.Count -gt 0) -or ($resolvedBlockOnFailedUnits.Count -gt 0) -or ($resolvedExpectedUnitStates.Count -gt 0)
     if ($code.StartsWith("CURRENT_STATE_") -and (-not $CheckCandidateStateConsistency)) {
+        continue
+    }
+    if ((@("CANDIDATE_UNITS_ACTIVE_WITHOUT_LATEST_CANDIDATE", "LATEST_CANDIDATE_WITH_NO_ACTIVE_CANDIDATE_LANE") -contains $code) -and (-not $unitContractChecksRequested)) {
         continue
     }
     if (($code.StartsWith("LATEST_CANDIDATE_") -or $code.StartsWith("CANDIDATE_") -or $code.StartsWith("CHAMPION_EQUALS_LATEST_CANDIDATE")) -and (-not $CheckCandidateStateConsistency) -and (-not (@($resolvedRequiredPointers) -contains "latest_candidate"))) {
