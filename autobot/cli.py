@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace as v4_replace
 import json
 import os
 from pathlib import Path
@@ -142,6 +142,7 @@ from .models import (
     train_and_register_v2_micro,
     train_and_register_v3_mtf_micro,
     train_and_register_v4_crypto_cs,
+    train_and_register_v5_panel_ensemble,
 )
 from .models.registry import promote_run_to_champion
 from .strategy import TopTradeValueScanner
@@ -635,7 +636,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
-    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs"))
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
@@ -2350,6 +2351,38 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer == "v5_panel_ensemble":
+                options_v5 = _cli_train_v4_helpers.build_v4_train_options(
+                    args=args,
+                    defaults=defaults,
+                    backtest_defaults=backtest_defaults,
+                    features_v4_config=features_v4_config,
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    top_n=top_n,
+                    resolve_backtest_dataset_name_for_model_features=_resolve_backtest_dataset_name_for_model_features,
+                    clamp_prob_value=_clamp_prob_value,
+                    optional_float_value=_optional_float_value,
+                )
+                options_v5 = v4_replace(options_v5, feature_set="v4", label_set="v3")
+                if not getattr(args, "model_family", None):
+                    options_v5 = v4_replace(options_v5, model_family="train_v5_panel_ensemble")
+                summary_v5 = train_and_register_v5_panel_ensemble(options_v5)
+                print(
+                    "[model][train][v5_panel_ensemble] "
+                    f"run_id={summary_v5.run_id} status={summary_v5.status} "
+                    f"test_precision_top5={summary_v5.leaderboard_row.get('test_precision_top5', 0.0):.6f} "
+                    f"test_pr_auc={summary_v5.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+                )
+                print(f"[model][train][v5_panel_ensemble] run_dir={summary_v5.run_dir}")
+                print(f"[model][train][v5_panel_ensemble] train_report={summary_v5.train_report_path}")
+                if summary_v5.walk_forward_report_path is not None:
+                    print(f"[model][train][v5_panel_ensemble] walk_forward={summary_v5.walk_forward_report_path}")
+                if summary_v5.factor_block_selection_path is not None:
+                    print(f"[model][train][v5_panel_ensemble] factor_blocks={summary_v5.factor_block_selection_path}")
+                if summary_v5.search_budget_decision_path is not None:
+                    print(f"[model][train][v5_panel_ensemble] search_budget={summary_v5.search_budget_decision_path}")
+                return 0
             if trainer == "v4_crypto_cs":
                 options_v4 = _cli_train_v4_helpers.build_v4_train_options(
                     args=args,

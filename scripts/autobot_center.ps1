@@ -846,7 +846,7 @@ function Invoke-ModelTrainWizard {
     $task = "cls"
 
     if (-not $UseDefaultsMode) {
-        $trainer = (Read-DefaultValue -Prompt "Trainer (v1, v2_micro, v3_mtf_micro, v4_crypto_cs)" -DefaultValue $trainer).ToLowerInvariant()
+        $trainer = (Read-DefaultValue -Prompt "Trainer (v1, v2_micro, v3_mtf_micro, v4_crypto_cs, v5_panel_ensemble)" -DefaultValue $trainer).ToLowerInvariant()
         $lookbackDays = Read-DefaultInt -Prompt "Train window lookback days" -DefaultValue $lookbackDays
         $tf = Read-DefaultValue -Prompt "Timeframe" -DefaultValue $tf
         $quote = Read-DefaultValue -Prompt "Quote" -DefaultValue $quote
@@ -863,8 +863,9 @@ function Invoke-ModelTrainWizard {
     if ($trainer -eq "v2") { $trainer = "v2_micro" }
     if ($trainer -eq "v3") { $trainer = "v3_mtf_micro" }
     if ($trainer -eq "v4") { $trainer = "v4_crypto_cs" }
+    if ($trainer -eq "v5") { $trainer = "v5_panel_ensemble" }
 
-    if (@("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs") -notcontains $trainer) {
+    if (@("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble") -notcontains $trainer) {
         Write-Host "[warn] invalid trainer. fallback to v3_mtf_micro." -ForegroundColor Yellow
         $trainer = "v3_mtf_micro"
     }
@@ -889,6 +890,12 @@ function Invoke-ModelTrainWizard {
         "v4_crypto_cs" {
             $featureSet = "v4"
             $family = "train_v4_crypto_cs"
+            $labelSet = "v3"
+            $task = "cls"
+        }
+        "v5_panel_ensemble" {
+            $featureSet = "v4"
+            $family = "train_v5_panel_ensemble"
             $labelSet = "v3"
             $task = "cls"
         }
@@ -927,7 +934,7 @@ function Invoke-ModelTrainWizard {
         }
     }
 
-    if ($trainer -eq "v4_crypto_cs") {
+    if (@("v4_crypto_cs", "v5_panel_ensemble") -contains $trainer) {
         $buildArgs = @(
             "-m", "autobot.cli",
             "features", "build",
@@ -940,7 +947,7 @@ function Invoke-ModelTrainWizard {
             "--end", $endDate
         )
         $buildResult = Run-Command `
-            -Description ("Features Build Wizard (v4, label_" + $labelSet + ")") `
+            -Description ("Features Build Wizard (v4, label_" + $labelSet + ", trainer_" + $trainer + ")") `
             -Exe $script:PythonExe `
             -Arguments $buildArgs `
             -Tag "menu6_features_build_v4"

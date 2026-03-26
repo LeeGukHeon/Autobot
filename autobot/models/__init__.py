@@ -27,6 +27,11 @@ from .train_v4_crypto_cs import (
     TrainV4CryptoCsResult,
     train_and_register_v4_crypto_cs,
 )
+from .train_v5_panel_ensemble import (
+    TrainV5PanelEnsembleOptions,
+    TrainV5PanelEnsembleResult,
+    train_and_register_v5_panel_ensemble,
+)
 from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
 from .metric_audit import MetricAuditOptions, MetricAuditResult, audit_predictions, audit_registered_model
 from .ablation import AblationOptions, AblationResult, run_ablation, select_ablation_feature_columns
@@ -51,6 +56,9 @@ __all__ = [
     "TrainV4CryptoCsOptions",
     "TrainV4CryptoCsResult",
     "train_and_register_v4_crypto_cs",
+    "TrainV5PanelEnsembleOptions",
+    "TrainV5PanelEnsembleResult",
+    "train_and_register_v5_panel_ensemble",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",
     "run_modelbt_proxy",
