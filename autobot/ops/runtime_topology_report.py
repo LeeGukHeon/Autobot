@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from autobot.live.breaker_taxonomy import annotate_reason_payload
 from autobot.live.model_handoff import build_live_runtime_sync_status, load_ws_public_runtime_contract, resolve_live_runtime_model_contract
 from autobot.live.rollout import load_rollout_latest
 from autobot.models.registry import load_json
@@ -229,6 +230,10 @@ def _load_state_topology(*, db_path: Path | None) -> dict[str, Any]:
                     "updated_ts": breaker_row["updated_ts"],
                     "armed_ts": breaker_row["armed_ts"],
                 }
+                breaker_state = annotate_reason_payload(
+                    breaker_state,
+                    reason_codes=breaker_state.get("reason_codes") or [],
+                )
         return {
             "db_path": str(db_path),
             "exists": True,

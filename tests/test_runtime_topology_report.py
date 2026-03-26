@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from autobot.live.breakers import arm_breaker
 from autobot.live.state_store import LiveStateStore
 import autobot.ops.runtime_topology_report as topology_module
 from autobot.ops.runtime_topology_report import build_runtime_topology_report, write_runtime_topology_report
@@ -67,6 +68,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         store.set_live_runtime_health(payload={"model_pointer_divergence": True}, ts_ms=10_000)
         store.set_live_rollout_status(payload={"mode": "canary", "order_emission_allowed": True}, ts_ms=10_000)
         store.set_live_rollout_contract(payload={"armed": True, "mode": "canary"}, ts_ms=10_000)
+        arm_breaker(store, reason_codes=["MODEL_POINTER_UNRESOLVED"], source="test", ts_ms=10_000)
 
     live_db = project_root / "data" / "state" / "live" / "live_state.db"
     live_db.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +128,8 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["runtime_sync_status"]["champion_pointer_run_id"] == "run-1"
     assert report["runtime_sync_status"]["model_pointer_divergence"] is True
     assert report["current_runtime_contract"]["model_ref_source_requested"] == "latest_candidate_v4"
+    assert report["candidate_lane"]["breaker_state"]["primary_reason_type"] == "STATE_INTEGRITY"
+    assert report["candidate_lane"]["breaker_state"]["typed_reason_codes"][0]["reason_code"] == "MODEL_POINTER_UNRESOLVED"
     assert report["rollout_latest"]["target_unit"] == "autobot-live-alpha-candidate.service"
     assert report["summary"]["all_primary_pointers_equal"] is False
     assert report["systemd"]["available"] is True

@@ -88,6 +88,8 @@ def test_state_store_upserts_and_exports(tmp_path: Path) -> None:
         exported_after_breaker = store.export_state()
         assert len(exported_after_breaker["breaker_state"]) == 1
         assert exported_after_breaker["breaker_state"][0]["active"] is True
+        assert exported_after_breaker["breaker_state"][0]["primary_reason_type"] == "OPERATIONAL_POLICY"
+        assert exported_after_breaker["breaker_state"][0]["typed_reason_codes"][0]["clear_policy"] == "MANUAL"
 
         store.release_run_lock(bot_id="autobot-001")
 

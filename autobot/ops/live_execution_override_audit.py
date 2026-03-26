@@ -8,6 +8,7 @@ import sqlite3
 import time
 from typing import Any
 
+from autobot.live.breaker_taxonomy import annotate_reason_payload
 from autobot.models.live_execution_policy import build_live_execution_contract
 from autobot.models.registry import resolve_run_dir
 
@@ -450,7 +451,7 @@ def _load_breaker_events(
         payload = dict(row)
         payload["reason_codes"] = _safe_json_load(payload.pop("reason_codes_json"), default=[])
         payload["details"] = _safe_json_load(payload.pop("details_json"), default={})
-        payloads.append(payload)
+        payloads.append(annotate_reason_payload(payload, reason_codes=payload.get("reason_codes") or []))
     return payloads
 
 
@@ -471,7 +472,7 @@ def _load_breaker_state(*, db_path: Path) -> list[dict[str, Any]]:
         payload["reason_codes"] = _safe_json_load(payload.pop("reason_codes_json"), default=[])
         payload["details"] = _safe_json_load(payload.pop("details_json"), default={})
         payload["active"] = bool(payload.get("active"))
-        payloads.append(payload)
+        payloads.append(annotate_reason_payload(payload, reason_codes=payload.get("reason_codes") or []))
     return payloads
 
 
@@ -737,21 +738,32 @@ def _summarize_breakers(
 ) -> dict[str, Any]:
     reason_counter: Counter[str] = Counter()
     source_counter: Counter[str] = Counter()
+    type_counter: Counter[str] = Counter()
     for event in breaker_events:
         source_counter[str(event.get("source", "")).strip() or "UNKNOWN"] += 1
         for reason_code in event.get("reason_codes") or []:
             normalized = str(reason_code).strip().upper()
             if normalized:
                 reason_counter[normalized] += 1
+        for reason_type in event.get("reason_types") or []:
+            normalized_type = str(reason_type).strip().upper()
+            if normalized_type:
+                type_counter[normalized_type] += 1
 
     active_live_breaker = False
     active_live_reasons: list[str] = []
+    active_live_reason_types: list[str] = []
+    active_live_primary_reason_type: str | None = None
+    active_live_typed_reason_codes: list[dict[str, Any]] = []
     for row in breaker_state:
         if str(row.get("breaker_key", "")).strip().lower() != "live":
             continue
         if bool(row.get("active")):
             active_live_breaker = True
             active_live_reasons = [str(item).strip() for item in (row.get("reason_codes") or []) if str(item).strip()]
+            active_live_reason_types = [str(item).strip() for item in (row.get("reason_types") or []) if str(item).strip()]
+            active_live_primary_reason_type = str(row.get("primary_reason_type") or "").strip() or None
+            active_live_typed_reason_codes = list(row.get("typed_reason_codes") or [])
             break
 
     rollout_payload = dict((rollout_status_checkpoint or {}).get("payload") or {})
@@ -759,11 +771,18 @@ def _summarize_breakers(
     return {
         "live_breaker_active": bool(active_live_breaker),
         "live_breaker_reason_codes": active_live_reasons,
+        "live_breaker_reason_types": active_live_reason_types,
+        "live_breaker_primary_reason_type": active_live_primary_reason_type,
+        "live_breaker_typed_reason_codes": active_live_typed_reason_codes,
         "rollout_mode": str(rollout_status.get("mode", "")).strip(),
         "rollout_start_allowed": bool(rollout_status.get("start_allowed", False)),
         "rollout_order_emission_allowed": bool(rollout_status.get("order_emission_allowed", False)),
         "rollout_reason_codes": [
             str(item).strip() for item in (rollout_status.get("reason_codes") or []) if str(item).strip()
+        ],
+        "reason_type_counts": [
+            {"reason_type": reason_type, "count": int(count)}
+            for reason_type, count in sorted(type_counter.items(), key=lambda item: (-item[1], item[0]))
         ],
         "reason_code_counts": [
             {"reason_code": code, "count": int(count)}

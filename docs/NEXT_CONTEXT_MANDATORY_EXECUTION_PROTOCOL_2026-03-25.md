@@ -321,9 +321,11 @@ The next context must start from the first unchecked item.
 
 ### Phase 3: Stronger Risk And Runtime Control
 
-- [ ] 15. Introduce typed breaker taxonomy
+- [x] 15. Introduce typed breaker taxonomy
   Required references:
   [RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+  Current implementation note:
+  implemented by adding `autobot/live/breaker_taxonomy.py` as the machine-readable SSOT for live breaker reason typing and wiring it through `autobot/live/breakers.py`, `autobot/live/state_store.py`, `autobot/live/rollout.py`, `autobot/ops/runtime_topology_report.py`, `autobot/ops/live_execution_override_audit.py`, and `autobot/dashboard_server.py`. The live breaker report, persisted breaker state/events, rollout status payload, runtime-topology snapshot, live execution override audit, and dashboard live DB summary now expose `taxonomy_version`, per-reason typed metadata, `reason_types`, `primary_reason_type`, `reason_type_counts`, and `clear_policies`, so current active reasons are explicitly classified into blueprint-aligned families such as `INFRA`, `STATE_INTEGRITY`, `STATISTICAL_RISK`, and `OPERATIONAL_POLICY`. Local validation confirmed the contract through `tests/test_live_breakers.py`, `tests/test_live_rollout.py`, `tests/test_live_state_store.py`, `tests/test_runtime_topology_report.py`, `tests/test_live_execution_override_audit.py`, plus targeted daemon/risk/runtime regression coverage. Deferred explicitly to later items: stronger statistical monitor families and new confidence-sequence evidence generation belong to `#16 Add confidence-sequence based online monitors`, while protective liquidation policy families remain part of `#17 Add execution-calibrated protective liquidation policy`.
 
 - [ ] 16. Add confidence-sequence based online monitors
   Required references:

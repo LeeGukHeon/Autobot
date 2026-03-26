@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 from typing import Any
 
+from .breaker_taxonomy import annotate_reason_payload
 
 LIVE_ROLLOUT_CONTRACT_CHECKPOINT = "live_rollout_contract"
 LIVE_TEST_ORDER_CHECKPOINT = "live_rollout_test_order"
@@ -235,7 +236,7 @@ def evaluate_live_rollout_gate(
 
 
 def rollout_gate_to_payload(value: LiveRolloutGate) -> dict[str, Any]:
-    return {
+    payload = {
         "mode": value.mode,
         "target_unit": value.target_unit,
         "armed": value.armed,
@@ -250,6 +251,7 @@ def rollout_gate_to_payload(value: LiveRolloutGate) -> dict[str, Any]:
         "contract": dict(value.contract),
         "test_order": dict(value.test_order),
     }
+    return annotate_reason_payload(payload, reason_codes=payload["reason_codes"])
 
 
 def load_rollout_latest(project_root: Path, *, target_unit: str | None = None) -> dict[str, Any]:

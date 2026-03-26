@@ -17,6 +17,7 @@ from autobot.live.rollout import (
     evaluate_live_rollout_gate,
     load_rollout_latest,
     resolve_rollout_gate_inputs,
+    rollout_gate_to_payload,
     rollout_latest_artifact_path,
     write_rollout_latest,
 )
@@ -124,6 +125,28 @@ def test_rollout_canary_requires_arm_and_test_order() -> None:
     assert gate.order_emission_allowed is False
     assert "LIVE_ROLLOUT_NOT_ARMED" in gate.reason_codes
     assert "LIVE_TEST_ORDER_REQUIRED" in gate.reason_codes
+
+
+def test_rollout_payload_exposes_operational_reason_taxonomy() -> None:
+    gate = evaluate_live_rollout_gate(
+        mode="canary",
+        target_unit="autobot-live-alpha.service",
+        contract={},
+        test_order={},
+        breaker_active=False,
+        require_test_order=True,
+        test_order_max_age_sec=86400,
+        small_account_single_slot_ready=True,
+        ts_ms=10_000,
+    )
+
+    payload = rollout_gate_to_payload(gate)
+
+    assert payload["taxonomy_version"] == 1
+    assert payload["primary_reason_type"] == "OPERATIONAL_POLICY"
+    assert payload["reason_types"] == ["OPERATIONAL_POLICY"]
+    assert payload["typed_reason_codes"][0]["reason_code"] == "LIVE_ROLLOUT_NOT_ARMED"
+    assert payload["typed_reason_codes"][0]["clear_policy"] == "ROLLOUT_RECOVERY"
 
 
 def test_rollout_canary_passes_with_matching_contract_and_fresh_test_order() -> None:

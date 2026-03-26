@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
+from autobot.live.breaker_taxonomy import annotate_reason_payload
 from autobot.live.breakers import breaker_status, clear_breaker
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 from autobot.live.state_store import LiveStateStore
@@ -1670,11 +1671,14 @@ def _load_live_db_summary(
             "account_summary": dict(account_summary or {}),
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
-                {
+                annotate_reason_payload(
+                    {
                     **row,
                     "reason_codes": _normalize_json_text(row.get("reason_codes_json")) or [],
                     "details": _normalize_json_text(row.get("details_json")) or {},
-                }
+                    },
+                    reason_codes=_normalize_json_text(row.get("reason_codes_json")) or [],
+                )
                 for row in active_breakers[:8]
             ],
             "runtime_health": runtime_health,

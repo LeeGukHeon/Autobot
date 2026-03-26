@@ -10,6 +10,7 @@ import sqlite3
 import time
 from typing import Any
 
+from .breaker_taxonomy import annotate_reason_payload
 from .order_state import is_open_local_state, normalize_order_state, resolve_transition
 
 
@@ -1779,7 +1780,7 @@ def _row_to_order_lineage(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _row_to_breaker_state(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    payload = {
         "breaker_key": row["breaker_key"],
         "active": bool(row["active"]),
         "action": row["action"],
@@ -1789,10 +1790,11 @@ def _row_to_breaker_state(row: sqlite3.Row) -> dict[str, Any]:
         "updated_ts": int(row["updated_ts"]),
         "armed_ts": int(row["armed_ts"]),
     }
+    return annotate_reason_payload(payload, reason_codes=payload["reason_codes"])
 
 
 def _row_to_breaker_event(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    payload = {
         "event_id": int(row["event_id"]),
         "ts_ms": int(row["ts_ms"]),
         "breaker_key": row["breaker_key"],
@@ -1802,6 +1804,7 @@ def _row_to_breaker_event(row: sqlite3.Row) -> dict[str, Any]:
         "reason_codes": _parse_json_list(row["reason_codes_json"]),
         "details": _parse_json(row["details_json"]),
     }
+    return annotate_reason_payload(payload, reason_codes=payload["reason_codes"])
 
 
 def _is_pending_order_uuid(value: object) -> bool:

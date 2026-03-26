@@ -8,12 +8,17 @@ from typing import Any
 
 from autobot.upbit.exceptions import AuthError, RateLimitError, UpbitError
 
+from .breaker_taxonomy import (
+    ACTION_FULL_KILL_SWITCH,
+    ACTION_HALT_AND_CANCEL_BOT_ORDERS,
+    ACTION_HALT_NEW_INTENTS,
+    ACTION_SEVERITY,
+    ACTION_WARN,
+    annotate_reason_payload,
+    choose_action,
+    normalize_reason_codes,
+)
 from .state_store import BreakerEventRecord, BreakerStateRecord, LiveStateStore
-
-ACTION_WARN = "WARN"
-ACTION_HALT_NEW_INTENTS = "HALT_NEW_INTENTS"
-ACTION_HALT_AND_CANCEL_BOT_ORDERS = "HALT_AND_CANCEL_BOT_ORDERS"
-ACTION_FULL_KILL_SWITCH = "FULL_KILL_SWITCH"
 
 BREAKER_KEY_LIVE = "live"
 EVENT_KIND_WARN = "WARN"
@@ -28,46 +33,6 @@ HALTING_ACTIONS = frozenset(
     }
 )
 BOT_CANCEL_ACTIONS = frozenset({ACTION_HALT_AND_CANCEL_BOT_ORDERS, ACTION_FULL_KILL_SWITCH})
-
-ACTION_SEVERITY = {
-    ACTION_WARN: 0,
-    ACTION_HALT_NEW_INTENTS: 1,
-    ACTION_HALT_AND_CANCEL_BOT_ORDERS: 2,
-    ACTION_FULL_KILL_SWITCH: 3,
-}
-
-REASON_ACTION_MAP = {
-    "UNKNOWN_OPEN_ORDERS_DETECTED": ACTION_HALT_AND_CANCEL_BOT_ORDERS,
-    "UNKNOWN_POSITIONS_DETECTED": ACTION_FULL_KILL_SWITCH,
-    "LOCAL_POSITION_MISSING_ON_EXCHANGE": ACTION_HALT_AND_CANCEL_BOT_ORDERS,
-    "LOCAL_OPEN_ORDER_NOT_FOUND_ON_EXCHANGE": ACTION_WARN,
-    "STALE_PRIVATE_WS_STREAM": ACTION_HALT_NEW_INTENTS,
-    "STALE_EXECUTOR_STREAM": ACTION_HALT_NEW_INTENTS,
-    "WS_PUBLIC_STALE": ACTION_HALT_NEW_INTENTS,
-    "LIVE_RUNTIME_LOOP_FAILED": ACTION_HALT_NEW_INTENTS,
-    "MODEL_POINTER_DIVERGENCE": ACTION_HALT_NEW_INTENTS,
-    "MODEL_POINTER_UNRESOLVED": ACTION_HALT_NEW_INTENTS,
-    "LIVE_ROLLOUT_NOT_ARMED": ACTION_HALT_NEW_INTENTS,
-    "LIVE_ROLLOUT_UNIT_MISMATCH": ACTION_HALT_NEW_INTENTS,
-    "LIVE_ROLLOUT_MODE_MISMATCH": ACTION_HALT_NEW_INTENTS,
-    "LIVE_TEST_ORDER_REQUIRED": ACTION_HALT_NEW_INTENTS,
-    "LIVE_TEST_ORDER_STALE": ACTION_HALT_NEW_INTENTS,
-    "LIVE_BREAKER_ACTIVE": ACTION_HALT_NEW_INTENTS,
-    "LIVE_CANARY_REQUIRES_SINGLE_SLOT": ACTION_HALT_NEW_INTENTS,
-    "REPEATED_CANCEL_REJECTS": ACTION_HALT_NEW_INTENTS,
-    "REPEATED_REPLACE_REJECTS": ACTION_HALT_NEW_INTENTS,
-    "REPEATED_RATE_LIMIT_ERRORS": ACTION_HALT_NEW_INTENTS,
-    "RISK_CONTROL_ONLINE_BREACH_STREAK": ACTION_HALT_NEW_INTENTS,
-    "RISK_CONTROL_MARTINGALE_EVIDENCE": ACTION_HALT_NEW_INTENTS,
-    "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE": ACTION_HALT_AND_CANCEL_BOT_ORDERS,
-    "REPEATED_AUTH_ERRORS": ACTION_FULL_KILL_SWITCH,
-    "REPEATED_NONCE_ERRORS": ACTION_FULL_KILL_SWITCH,
-    "EXECUTOR_REPLACE_PERSIST_FAILED": ACTION_HALT_NEW_INTENTS,
-    "RISK_EXIT_STUCK_MAX_REPLACES": ACTION_HALT_NEW_INTENTS,
-    "RISK_EXIT_REPLACE_PERSIST_FAILED": ACTION_HALT_NEW_INTENTS,
-    "IDENTIFIER_COLLISION": ACTION_FULL_KILL_SWITCH,
-    "MANUAL_KILL_SWITCH": ACTION_FULL_KILL_SWITCH,
-}
 
 COUNTER_CONFIG = {
     "cancel_reject": {
@@ -104,14 +69,10 @@ class BreakerDecision:
 
 
 def action_for_reason(reason_code: str) -> str:
-    return REASON_ACTION_MAP.get(str(reason_code).strip().upper(), ACTION_WARN)
-
-
-def choose_action(reason_codes: list[str] | tuple[str, ...]) -> str:
-    normalized = [str(item).strip().upper() for item in reason_codes if str(item).strip()]
+    normalized = _normalize_reason_codes([reason_code])
     if not normalized:
         return ACTION_WARN
-    return max((action_for_reason(item) for item in normalized), key=lambda item: ACTION_SEVERITY[item])
+    return choose_action(normalized)
 
 
 def breaker_status(store: LiveStateStore) -> dict[str, Any]:
@@ -131,6 +92,7 @@ def breaker_status(store: LiveStateStore) -> dict[str, Any]:
         "counters": counters,
         "recent_events": events,
     }
+    report.update(annotate_reason_payload(None, reason_codes=report["reason_codes"]))
     _write_breaker_report(store=store, payload=report)
     return report
 
@@ -698,13 +660,7 @@ def _counter_reason_still_active(*, store: LiveStateStore, counter_name: str) ->
 
 
 def _normalize_reason_codes(reason_codes: list[str] | tuple[str, ...]) -> list[str]:
-    unique: list[str] = []
-    for item in reason_codes:
-        code = str(item).strip().upper()
-        if not code or code in unique:
-            continue
-        unique.append(code)
-    return unique
+    return normalize_reason_codes(reason_codes)
 
 
 def _reset_all_counters(*, store: LiveStateStore, ts_ms: int) -> None:

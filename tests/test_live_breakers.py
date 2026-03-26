@@ -42,6 +42,26 @@ def test_breaker_arm_and_clear_persists_state(tmp_path: Path) -> None:
     assert (tmp_path / "live_breaker_report.json").exists()
 
 
+def test_breaker_status_exposes_typed_taxonomy(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        status = arm_breaker(
+            store,
+            reason_codes=["MANUAL_KILL_SWITCH", "WS_PUBLIC_STALE"],
+            source="test",
+            ts_ms=1000,
+            action=ACTION_FULL_KILL_SWITCH,
+        )
+
+    assert status["taxonomy_version"] == 1
+    assert status["primary_reason_type"] == "OPERATIONAL_POLICY"
+    assert status["reason_types"] == ["OPERATIONAL_POLICY", "INFRA"]
+    assert status["reason_type_counts"] == {"OPERATIONAL_POLICY": 1, "INFRA": 1}
+    assert status["clear_policies"] == ["MANUAL", "AUTO_HEALTH_RECOVERY"]
+    assert status["typed_reason_codes"][0]["reason_code"] == "MANUAL_KILL_SWITCH"
+    assert status["typed_reason_codes"][1]["reason_code"] == "WS_PUBLIC_STALE"
+
+
 def test_breaker_counter_arms_after_threshold(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     with LiveStateStore(db_path) as store:
@@ -188,6 +208,21 @@ def test_clear_breaker_reasons_preserves_structural_halts(tmp_path: Path) -> Non
 def test_classify_upbit_exception_is_exact() -> None:
     assert classify_upbit_exception(RateLimitError("slow down", status_code=429)) == "REPEATED_RATE_LIMIT_ERRORS"
     assert classify_upbit_exception(AuthError("nonce used", status_code=401)) == "REPEATED_NONCE_ERRORS"
+
+
+def test_breaker_event_rows_include_typed_taxonomy(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        status = arm_breaker(
+            store,
+            reason_codes=["RISK_CONTROL_MARTINGALE_EVIDENCE"],
+            source="test",
+            ts_ms=1000,
+        )
+
+    assert len(status["recent_events"]) == 1
+    assert status["recent_events"][0]["primary_reason_type"] == "STATISTICAL_RISK"
+    assert status["recent_events"][0]["typed_reason_codes"][0]["clear_policy"] == "ONLINE_BASELINE_CLEAR"
 
 
 def test_evaluate_cycle_contracts_clears_recovered_position_mismatch_reason(tmp_path: Path) -> None:
