@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .execution_twin import build_execution_twin
+
 ACTION_CONFIGS: dict[str, dict[str, Any]] = {
     "LIMIT_GTC_PASSIVE_MAKER": {
         "ord_type": "limit",
@@ -110,6 +112,10 @@ def build_live_execution_contract(
         attempts=normalized_attempts,
         horizons_ms=normalized_horizons,
     )
+    execution_twin = build_execution_twin(
+        attempts=normalized_attempts,
+        horizons_ms=normalized_horizons,
+    )
     miss_cost_model = _build_miss_cost_model(attempts=normalized_attempts)
     return {
         "policy": "live_execution_contract_v2",
@@ -117,6 +123,7 @@ def build_live_execution_contract(
         "rows_total": int(len(normalized_attempts)),
         "horizons_ms": [int(value) for value in normalized_horizons],
         "fill_model": fill_model,
+        "execution_twin": execution_twin,
         "miss_cost_model": miss_cost_model,
     }
 
@@ -126,6 +133,7 @@ def normalize_live_execution_contract(payload: dict[str, Any] | None) -> dict[st
     policy = str(doc.get("policy", "")).strip()
     if policy in {"live_execution_contract_v1", "live_execution_contract_v2"}:
         fill_model = dict(doc.get("fill_model") or {})
+        execution_twin = dict(doc.get("execution_twin") or {})
         miss_cost_model = dict(doc.get("miss_cost_model") or {})
         return {
             "policy": policy or "live_execution_contract_v2",
@@ -134,6 +142,7 @@ def normalize_live_execution_contract(payload: dict[str, Any] | None) -> dict[st
             "rows_total": int(doc.get("rows_total", fill_model.get("rows_total", 0)) or 0),
             "horizons_ms": [int(value) for value in (doc.get("horizons_ms") or fill_model.get("horizons_ms") or [])],
             "fill_model": fill_model,
+            "execution_twin": execution_twin,
             "miss_cost_model": miss_cost_model,
         }
     if doc:
@@ -144,6 +153,7 @@ def normalize_live_execution_contract(payload: dict[str, Any] | None) -> dict[st
             "rows_total": int(fill_model.get("rows_total", 0) or 0),
             "horizons_ms": [int(value) for value in (fill_model.get("horizons_ms") or [])],
             "fill_model": fill_model,
+            "execution_twin": {},
             "miss_cost_model": _build_miss_cost_model(attempts=[]),
         }
     return {
@@ -152,6 +162,7 @@ def normalize_live_execution_contract(payload: dict[str, Any] | None) -> dict[st
         "rows_total": 0,
         "horizons_ms": [],
         "fill_model": {},
+        "execution_twin": {},
         "miss_cost_model": _build_miss_cost_model(attempts=[]),
     }
 

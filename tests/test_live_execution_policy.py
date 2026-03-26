@@ -422,8 +422,76 @@ def test_live_execution_contract_contains_fill_and_miss_models() -> None:
 
     assert payload["policy"] == "live_execution_contract_v2"
     assert payload["fill_model"]["policy"] == "live_fill_hazard_survival_v2"
+    assert payload["execution_twin"]["policy"] == "personalized_execution_twin_v1"
     assert payload["miss_cost_model"]["policy"] == "execution_miss_cost_summary_v2"
     assert "price_mode_stats" in payload["fill_model"]
     assert "global_stats" in payload["fill_model"]
+    assert "price_mode_stats" in payload["execution_twin"]
+    assert "global_stats" in payload["execution_twin"]
     assert "price_mode_stats" in payload["miss_cost_model"]
     assert "global_stats" in payload["miss_cost_model"]
+
+
+def test_live_execution_contract_execution_twin_tracks_fill_replace_and_cancel() -> None:
+    attempts = [
+        {
+            "attempt_id": "a-1",
+            "intent_id": "intent-1",
+            "action_code": "LIMIT_GTC_JOIN",
+            "price_mode": "JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "submitted_ts_ms": 1_000,
+            "first_fill_ts_ms": 2_000,
+            "full_fill_ts_ms": 5_000,
+            "final_ts_ms": 5_000,
+            "final_state": "FILLED",
+            "fill_fraction": 1.0,
+            "shortfall_bps": 2.0,
+        },
+        {
+            "attempt_id": "a-2",
+            "intent_id": "intent-2",
+            "action_code": "LIMIT_GTC_JOIN",
+            "price_mode": "JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "submitted_ts_ms": 10_000,
+            "first_fill_ts_ms": 12_000,
+            "cancelled_ts_ms": 15_000,
+            "final_ts_ms": 15_000,
+            "final_state": "PARTIAL_CANCELLED",
+            "fill_fraction": 0.4,
+            "partial_fill": True,
+            "shortfall_bps": 5.0,
+        },
+        {
+            "attempt_id": "a-3",
+            "intent_id": "intent-2",
+            "action_code": "LIMIT_IOC_JOIN",
+            "price_mode": "JOIN",
+            "spread_bps": 4.0,
+            "depth_top5_notional_krw": 3_000_000.0,
+            "snapshot_age_ms": 100.0,
+            "submitted_ts_ms": 16_000,
+            "final_ts_ms": 17_000,
+            "final_state": "MISSED",
+            "fill_fraction": 0.0,
+            "shortfall_bps": 0.0,
+        },
+    ]
+
+    payload = build_live_execution_contract(attempts=attempts)
+    twin = payload["execution_twin"]
+    join_stats = twin["action_stats"]["LIMIT_GTC_JOIN"]
+
+    assert twin["rows_total"] == 3
+    assert join_stats["sample_count"] == 2
+    assert join_stats["first_fill_probability"] == 1.0
+    assert join_stats["full_fill_probability"] == 0.5
+    assert join_stats["partial_fill_probability"] == 0.5
+    assert join_stats["replace_probability"] == 0.5
+    assert join_stats["cancel_probability"] == 0.5
+    assert join_stats["expected_shortfall_bps"] == 5.0

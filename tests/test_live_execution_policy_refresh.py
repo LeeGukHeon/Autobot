@@ -54,11 +54,13 @@ def test_refresh_execution_policy_writes_checkpoint_and_output(tmp_path: Path) -
     assert output_path.exists()
     written = json.loads(output_path.read_text(encoding="utf-8"))
     assert written["model"]["rows_total"] == 2
+    assert written["execution_twin"]["rows_total"] == 2
     assert written["execution_contract"]["rows_total"] == 2
     with LiveStateStore(db_path) as store:
         checkpoint = store.get_checkpoint(name="live_execution_policy_model")
     assert checkpoint is not None
     assert checkpoint["payload"]["model"]["rows_total"] == 2
+    assert checkpoint["payload"]["execution_twin"]["rows_total"] == 2
     assert checkpoint["payload"]["execution_contract"]["rows_total"] == 2
 
 
@@ -71,6 +73,7 @@ def test_build_execution_policy_refresh_payload_uses_recent_attempts(tmp_path: P
     assert payload["policy"] == "live_execution_policy_refresh_v1"
     assert payload["model"]["status"] == "ready"
     assert payload["model"]["rows_total"] == 1
+    assert payload["execution_twin"]["rows_total"] == 1
     assert payload["execution_contract"]["rows_total"] == 1
 
 
@@ -101,6 +104,8 @@ def test_refresh_combined_execution_policy_pools_multiple_live_dbs(tmp_path: Pat
     assert candidate_checkpoint is not None
     assert live_checkpoint["payload"]["rows_total"] == 2
     assert candidate_checkpoint["payload"]["rows_total"] == 2
+    assert live_checkpoint["payload"]["execution_twin"]["rows_total"] == 2
+    assert candidate_checkpoint["payload"]["execution_twin"]["rows_total"] == 2
     assert live_checkpoint["payload"]["execution_contract"]["rows_total"] == 2
     assert candidate_checkpoint["payload"]["execution_contract"]["rows_total"] == 2
 
@@ -121,5 +126,6 @@ def test_build_combined_execution_policy_refresh_payload_records_db_counts(tmp_p
 
     assert payload["rows_total"] == 2
     assert payload["model"]["rows_total"] == 2
+    assert payload["execution_twin"]["rows_total"] == 2
     assert payload["execution_contract"]["rows_total"] == 2
     assert {item["rows_total"] for item in payload["db_row_counts"]} == {1}

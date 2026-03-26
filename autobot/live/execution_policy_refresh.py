@@ -53,6 +53,7 @@ def build_execution_policy_refresh_payload(
         "lookback_days": max(int(lookback_days), 1),
         "rows_total": int(len(attempts)),
         "model": dict(execution_contract.get("fill_model") or {}),
+        "execution_twin": dict(execution_contract.get("execution_twin") or {}),
         "execution_contract": execution_contract,
     }
 
@@ -97,6 +98,7 @@ def build_combined_execution_policy_refresh_payload(
         "rows_total": int(len(attempts)),
         "db_row_counts": db_row_counts,
         "model": dict(execution_contract.get("fill_model") or {}),
+        "execution_twin": dict(execution_contract.get("execution_twin") or {}),
         "execution_contract": execution_contract,
     }
 
