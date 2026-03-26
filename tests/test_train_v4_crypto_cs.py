@@ -1477,6 +1477,7 @@ def test_train_v4_use_latest_factor_block_selection_subsets_feature_columns(tmp_
 
     def _fake_load_feature_dataset(request, *, feature_columns, **kwargs):
         selected_feature_capture["feature_columns"] = tuple(feature_columns)
+        selected_feature_capture["dataset_label_columns"] = dict(kwargs)
         return dataset
 
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.load_feature_dataset", _fake_load_feature_dataset)
@@ -1551,6 +1552,11 @@ def test_train_v4_use_latest_factor_block_selection_subsets_feature_columns(tmp_
     result = train_and_register_v4_crypto_cs(options)
 
     assert selected_feature_capture["feature_columns"] == ("logret_1", "volume_z", "btc_ret_1")
+    assert selected_feature_capture["dataset_label_columns"] == {
+        "y_cls_column": "y_cls_topq_12",
+        "y_reg_column": "y_reg_net_12",
+        "y_rank_column": "y_rank_cs_12",
+    }
     assert result.factor_block_selection_path is not None
     assert result.factor_block_selection_path.exists()
     assert result.search_budget_decision_path is not None
@@ -1610,7 +1616,28 @@ def test_train_v4_guarded_auto_policy_applies_pruned_features_and_triggers_cpcv(
     )
     monkeypatch.setattr(
         "autobot.models.train_v4_crypto_cs.load_label_spec",
-        lambda dataset_root: {"label_columns": ["y_reg_net_12", "y_cls_topq_12"]},
+        lambda dataset_root: {
+            "label_columns": [
+                "y_reg_net_12",
+                "y_rank_cs_12",
+                "y_cls_topq_12",
+                "y_reg_net_h3",
+                "y_reg_net_h6",
+                "y_reg_net_h12",
+                "y_reg_net_h24",
+                "y_rank_cs_h3",
+                "y_rank_cs_h6",
+                "y_rank_cs_h12",
+                "y_rank_cs_h24",
+            ],
+            "training_default_columns": {
+                "y_reg": "y_reg_net_12",
+                "y_rank": "y_rank_cs_12",
+                "y_cls": "y_cls_topq_12",
+            },
+            "multi_horizon_bars": [3, 6, 12, 24],
+            "horizon_bars": 12,
+        },
     )
     monkeypatch.setattr(
         "autobot.models.train_v4_crypto_cs.feature_columns_from_spec",
@@ -1619,6 +1646,7 @@ def test_train_v4_guarded_auto_policy_applies_pruned_features_and_triggers_cpcv(
 
     def _fake_load_feature_dataset(request, *, feature_columns, **kwargs):
         selected_feature_capture["feature_columns"] = tuple(feature_columns)
+        selected_feature_capture["dataset_label_columns"] = dict(kwargs)
         return dataset
 
     monkeypatch.setattr("autobot.models.train_v4_crypto_cs.load_feature_dataset", _fake_load_feature_dataset)
@@ -1718,6 +1746,11 @@ def test_train_v4_guarded_auto_policy_applies_pruned_features_and_triggers_cpcv(
     result = train_and_register_v4_crypto_cs(options)
 
     assert selected_feature_capture["feature_columns"] == ("logret_1", "volume_z", "one_m_count", "btc_ret_1")
+    assert selected_feature_capture["dataset_label_columns"] == {
+        "y_cls_column": "y_cls_topq_12",
+        "y_reg_column": "y_reg_net_12",
+        "y_rank_column": "y_rank_cs_12",
+    }
     assert cpcv_capture == {"enabled": True, "trigger": "guarded_policy"}
     train_config = load_json(result.run_dir / "train_config.yaml")
     assert train_config["factor_block_selection"]["resolution_context"]["applied"] is True

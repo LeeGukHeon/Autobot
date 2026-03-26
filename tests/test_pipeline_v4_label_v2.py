@@ -53,7 +53,9 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
             enable_liquidity_rank=False,
         ),
         label_v2=LabelV2CryptoCsConfig(
-            horizon_bars=2,
+            horizon_bars=12,
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
             fee_bps_est=10.0,
             safety_bps=5.0,
             top_quantile=0.49,
@@ -106,7 +108,28 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
 
     label_spec = json.loads((features_root / "features_v4_test" / "_meta" / "label_spec.json").read_text(encoding="utf-8"))
     assert label_spec["label_set_version"] == "v2_crypto_cs"
-    assert label_spec["label_columns"] == ["y_reg_net_12", "y_rank_cs_12", "y_cls_topq_12"]
+    assert label_spec["label_bundle_version"] == "multi_horizon_v1"
+    assert label_spec["multi_horizon_bars"] == [3, 6, 12, 24]
+    assert label_spec["training_default_columns"] == {
+        "y_reg": "y_reg_net_12",
+        "y_rank": "y_rank_cs_12",
+        "y_cls": "y_cls_topq_12",
+    }
+    assert set(
+        [
+            "y_reg_net_12",
+            "y_rank_cs_12",
+            "y_cls_topq_12",
+            "y_reg_net_h3",
+            "y_reg_net_h6",
+            "y_reg_net_h12",
+            "y_reg_net_h24",
+            "y_rank_cs_h3",
+            "y_rank_cs_h6",
+            "y_rank_cs_h12",
+            "y_rank_cs_h24",
+        ]
+    ).issubset(set(label_spec["label_columns"]))
     feature_spec = json.loads(
         (features_root / "features_v4_test" / "_meta" / "feature_spec.json").read_text(encoding="utf-8")
     )
@@ -141,7 +164,23 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     files = sorted((features_root / "features_v4_test").glob("tf=5m/market=*/date=*/*.parquet"))
     assert files
     frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical_relaxed")
-    assert set(("market", "sample_weight", "y_reg_net_12", "y_rank_cs_12", "y_cls_topq_12")).issubset(frame.columns)
+    assert set(
+        (
+            "market",
+            "sample_weight",
+            "y_reg_net_12",
+            "y_rank_cs_12",
+            "y_cls_topq_12",
+            "y_reg_net_h3",
+            "y_reg_net_h6",
+            "y_reg_net_h12",
+            "y_reg_net_h24",
+            "y_rank_cs_h3",
+            "y_rank_cs_h6",
+            "y_rank_cs_h12",
+            "y_rank_cs_h24",
+        )
+    ).issubset(frame.columns)
     assert set(
         (
             "btc_ret_12",
@@ -240,7 +279,9 @@ def test_pipeline_v4_requires_micro_validate_report_overlap(tmp_path: Path) -> N
             enable_liquidity_rank=False,
         ),
         label_v2=LabelV2CryptoCsConfig(
-            horizon_bars=2,
+            horizon_bars=12,
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
             fee_bps_est=10.0,
             safety_bps=5.0,
             top_quantile=0.49,

@@ -166,6 +166,32 @@ Only do this when the later item clearly and directly covers the missing part.
 
 If that coverage is not clear, do not treat it as safely deferred. Report it as an open issue, blocker, or incomplete scope instead.
 
+### Rule 13
+
+Do not arbitrarily downscope a blueprint-defined implementation to only the smallest subset currently consumed by one caller.
+
+If the active checklist item clearly requires a contract expansion such as:
+
+- multiple required columns
+- new artifact fields
+- new validation expectations
+- new machine-readable linkage
+
+then implement that contract as a complete connected slice for the touched path, not as a shallow partial stub.
+
+Do not close an item by saying it is done when only:
+
+- one of several required columns exists
+- build writes the new shape but validate/stats/trainer metadata still expect the old shape
+- the new contract exists only as an internal value and is not reflected in artifacts or specs
+
+If compatibility with earlier layers requires temporary aliases or transitional fields, that is allowed.
+
+But in that case the session must explicitly preserve both:
+
+- the new canonical contract required by the active item
+- the compatibility path needed so earlier implemented layers do not break
+
 
 ## 3. Canonical Ordered Checklist
 
@@ -268,9 +294,13 @@ The next context must start from the first unchecked item.
 
 ### Phase 2: Stronger Predictor Baseline
 
-- [ ] 12. Add multi-horizon label bundle
+- [x] 12. Add multi-horizon label bundle
   Required references:
   [TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+  Done when:
+  `features_v4` carries a machine-readable multi-horizon label contract instead of only a single-horizon target.
+  Current implementation note:
+  implemented in `autobot/features/labeling_v2_crypto_cs.py` and `autobot/features/pipeline_v4.py` by generating canonical multi-horizon `y_reg_net_h3/h6/h12/h24` and `y_rank_cs_h3/h6/h12/h24` columns while preserving the existing primary-horizon compatibility aliases `y_reg_net_12`, `y_rank_cs_12`, and `y_cls_topq_12`. The label contract is now reflected in `label_spec.json` through `multi_horizon_bars`, `training_default_columns`, and canonical multi-horizon column lists, and `validate_features_dataset_v4`, `features_stats_v4`, `train_v4_core`, and persisted trainer `train_config.yaml` now consume that machine-readable contract rather than hard-coded label names alone. Local validation confirmed the bundle and compatibility path via `tests/test_labeling_v2_crypto_cs.py`, `tests/test_pipeline_v4_label_v2.py`, `tests/test_train_v4_crypto_cs.py`, and `tests/test_model_compare_v4.py`. Deferred explicitly to later items: the new bundle is now present and wired as the data/contract foundation, while actual multi-task consumption of the extra horizons belongs to `#13 Implement train_v5_panel_ensemble`, and uncertainty-aware predictor outputs that build on that richer bundle belong to `#14 Export uncertainty-aware predictor contract`.
 
 - [ ] 13. Implement `train_v5_panel_ensemble`
   Required references:

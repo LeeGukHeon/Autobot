@@ -35,6 +35,8 @@ label_v1:
 
 label_v2:
   horizon_bars: 12
+  horizons_bars: [3, 6, 12, 24]
+  primary_horizon_bars: 12
   fee_bps_est: 10
   safety_bps: 5
   top_quantile: 0.2

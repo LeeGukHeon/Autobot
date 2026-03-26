@@ -114,6 +114,7 @@ def train_config_snapshot_v4(
     task: str,
     feature_cols: tuple[str, ...],
     markets: tuple[str, ...],
+    label_contract: dict[str, Any],
     selection_recommendations: dict[str, Any],
     selection_policy: dict[str, Any],
     selection_calibration: dict[str, Any],
@@ -150,10 +151,12 @@ def train_config_snapshot_v4(
     payload["trainer"] = "v4_crypto_cs"
     payload["run_scope"] = normalize_factor_block_run_scope(options.run_scope)
     payload["task"] = task
-    payload["y_cls_column"] = "y_cls_topq_12"
-    payload["y_reg_column"] = "y_reg_net_12"
-    payload["y_rank_column"] = "y_rank_cs_12"
-    payload["label_columns"] = ["y_cls_topq_12", "y_reg_net_12", "y_rank_cs_12"]
+    payload["y_cls_column"] = str((label_contract or {}).get("y_cls_column", "y_cls_topq_12"))
+    payload["y_reg_column"] = str((label_contract or {}).get("y_reg_column", "y_reg_net_12"))
+    payload["y_rank_column"] = str((label_contract or {}).get("y_rank_column", "y_rank_cs_12"))
+    payload["label_columns"] = list((label_contract or {}).get("label_columns") or [payload["y_cls_column"], payload["y_reg_column"], payload["y_rank_column"]])
+    payload["primary_horizon_bars"] = int((label_contract or {}).get("primary_horizon_bars", 12) or 12)
+    payload["multi_horizon_bars"] = list((label_contract or {}).get("multi_horizon_bars") or [])
     payload["ranker_budget_profile"] = ranker_budget_profile
     payload["cpcv_lite"] = {
         "enabled": bool((cpcv_lite_runtime or {}).get("enabled", False)),

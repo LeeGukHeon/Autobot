@@ -329,6 +329,8 @@
 ### Label v2 Crypto Cross-Section
 - config file: `config/features_v4.yaml`
 - `label_v2.horizon_bars`: integer (default: `12`)
+- `label_v2.horizons_bars`: integer array (default compatibility fallback: `[horizon_bars]`; current primary config uses `[3,6,12,24]`)
+- `label_v2.primary_horizon_bars`: integer nullable (default: `horizon_bars`)
 - `label_v2.fee_bps_est`: number (default: `10`)
 - `label_v2.safety_bps`: number (default: `5`)
 - `label_v2.top_quantile`: float in `(0, 0.5)` (default: `0.2`)

@@ -97,3 +97,30 @@ def test_drop_neutral_rows_v2_crypto_cs_and_distribution() -> None:
         ),
     )
     assert dropped.filter(pl.col("ts_ms") == 1).height == 2
+
+
+def test_apply_labeling_v2_crypto_cs_adds_multi_horizon_bundle_and_keeps_primary_aliases() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1, 2, 3, 1, 2, 3],
+            "market": ["KRW-A", "KRW-A", "KRW-A", "KRW-B", "KRW-B", "KRW-B"],
+            "close": [100.0, 101.0, 103.0, 100.0, 99.0, 98.0],
+        }
+    )
+    config = LabelV2CryptoCsConfig(
+        horizon_bars=2,
+        horizons_bars=(1, 2),
+        primary_horizon_bars=2,
+        fee_bps_est=0.0,
+        safety_bps=0.0,
+        top_quantile=0.49,
+        bottom_quantile=0.49,
+        neutral_policy="drop",
+    )
+
+    labeled = apply_labeling_v2_crypto_cs(frame, config=config).sort(["ts_ms", "market"])
+    assert set(("y_reg_net_h1", "y_reg_net_h2", "y_rank_cs_h1", "y_rank_cs_h2")).issubset(set(labeled.columns))
+
+    non_null = labeled.filter(pl.col("y_reg_net_h2").is_not_null()).sort(["ts_ms", "market"])
+    assert non_null.get_column("y_reg_net_12").to_list() == non_null.get_column("y_reg_net_h2").to_list()
+    assert non_null.get_column("y_rank_cs_12").to_list() == non_null.get_column("y_rank_cs_h2").to_list()

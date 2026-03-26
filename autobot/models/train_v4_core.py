@@ -10,6 +10,34 @@ import numpy as np
 from . import live_domain_reweighting as _live_domain_reweighting
 
 
+def resolve_v4_label_contract(label_spec: dict[str, Any]) -> dict[str, Any]:
+    spec = dict(label_spec or {})
+    default_columns = spec.get("training_default_columns") if isinstance(spec.get("training_default_columns"), dict) else {}
+    y_cls_column = str(default_columns.get("y_cls", "")).strip()
+    y_reg_column = str(default_columns.get("y_reg", "")).strip()
+    y_rank_column = str(default_columns.get("y_rank", "")).strip()
+    label_columns = [str(value).strip() for value in (spec.get("label_columns") or []) if str(value).strip()]
+    if label_columns:
+        if not y_cls_column:
+            y_cls_column = next((value for value in label_columns if value.startswith("y_cls")), "y_cls_topq_12")
+        if not y_reg_column:
+            y_reg_column = next((value for value in label_columns if value.startswith("y_reg")), "y_reg_net_12")
+        if not y_rank_column:
+            y_rank_column = next((value for value in label_columns if value.startswith("y_rank")), "y_rank_cs_12")
+    return {
+        "y_cls_column": y_cls_column or "y_cls_topq_12",
+        "y_reg_column": y_reg_column or "y_reg_net_12",
+        "y_rank_column": y_rank_column or "y_rank_cs_12",
+        "label_columns": label_columns,
+        "primary_horizon_bars": int(spec.get("horizon_bars", 12) or 12),
+        "multi_horizon_bars": [
+            int(value)
+            for value in (spec.get("multi_horizon_bars") or [])
+            if value is not None and str(value).strip()
+        ],
+    }
+
+
 def prepare_v4_training_inputs(
     *,
     options: Any,
@@ -41,6 +69,7 @@ def prepare_v4_training_inputs(
     )
     feature_spec = load_feature_spec_fn(options.dataset_root)
     label_spec = load_label_spec_fn(options.dataset_root)
+    label_contract = resolve_v4_label_contract(label_spec)
     high_tfs = tuple(
         str(item).strip()
         for item in (feature_spec.get("high_tfs") or ("15m", "60m", "240m"))
@@ -73,17 +102,17 @@ def prepare_v4_training_inputs(
     dataset = load_feature_dataset_fn(
         request,
         feature_columns=feature_cols,
-        y_cls_column="y_cls_topq_12",
-        y_reg_column="y_reg_net_12",
-        y_rank_column="y_rank_cs_12",
+        y_cls_column=label_contract["y_cls_column"],
+        y_reg_column=label_contract["y_reg_column"],
+        y_rank_column=label_contract["y_rank_column"],
     )
     try:
         action_aux_frame = load_feature_aux_frame_fn(
             request,
             columns=("close", "rv_12", "rv_36", "atr_14", "atr_pct_14"),
-            y_cls_column="y_cls_topq_12",
-            y_reg_column="y_reg_net_12",
-            y_rank_column="y_rank_cs_12",
+            y_cls_column=label_contract["y_cls_column"],
+            y_reg_column=label_contract["y_reg_column"],
+            y_rank_column=label_contract["y_rank_column"],
         )
         if action_aux_frame.height != dataset.rows:
             raise ValueError(
@@ -202,6 +231,7 @@ def prepare_v4_training_inputs(
         "request": request,
         "feature_spec": feature_spec,
         "label_spec": label_spec,
+        "label_contract": label_contract,
         "feature_cols": feature_cols,
         "factor_block_selection_context": factor_block_selection_context,
         "search_budget_decision": search_budget_decision,

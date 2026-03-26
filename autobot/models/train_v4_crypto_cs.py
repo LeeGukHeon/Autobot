@@ -287,6 +287,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
     request = prepared["request"]
     feature_spec = prepared["feature_spec"]
     label_spec = prepared["label_spec"]
+    label_contract = prepared["label_contract"]
     factor_block_selection_context = prepared["factor_block_selection_context"]
     search_budget_decision = prepared["search_budget_decision"]
     effective_booster_sweep_trials = int(prepared["effective_booster_sweep_trials"])
@@ -321,6 +322,7 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         options=options,
         task=task,
         dataset=dataset,
+        label_contract=label_contract,
         action_aux_arrays=action_aux_arrays,
         interval_ms=interval_ms,
         thresholds=thresholds,
@@ -1709,6 +1711,7 @@ def _train_config_snapshot_v4(
     task: str,
     feature_cols: tuple[str, ...],
     markets: tuple[str, ...],
+    label_contract: dict[str, Any],
     selection_recommendations: dict[str, Any],
     selection_policy: dict[str, Any],
     selection_calibration: dict[str, Any],
@@ -1727,6 +1730,7 @@ def _train_config_snapshot_v4(
         task=task,
         feature_cols=feature_cols,
         markets=markets,
+        label_contract=label_contract,
         selection_recommendations=selection_recommendations,
         selection_policy=selection_policy,
         selection_calibration=selection_calibration,
