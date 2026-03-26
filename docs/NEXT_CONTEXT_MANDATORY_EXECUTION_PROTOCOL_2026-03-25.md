@@ -430,10 +430,13 @@ The next context must start from the first unchecked item.
 
 ### Phase 8: Sequential Canary Promotion
 
-- [ ] 29. Add canary confidence-sequence artifact
+- [x] 29. Add canary confidence-sequence artifact
   Required references:
   [BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/BACKTEST_PAPER_LIVE_STRENGTHENING_BLUEPRINT_2026-03-25.md)
   [RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/RISK_AND_LIVE_CONTROL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+
+  Current implementation note:
+  implemented by adding `autobot/live/canary_confidence_sequence.py`, wiring periodic artifact emission through `autobot/live/model_alpha_runtime_execute.py` and `autobot/live/model_alpha_runtime.py`, and exposing the reflected artifact in candidate dashboard state via `autobot/dashboard_server.py`. The new artifact no longer treats canary as a plain cumulative trade summary only; it defines a current-run closed-trade reward stream, builds a time-uniform lower/upper confidence band on mean realized return, combines that with severe-loss-rate and expected-vs-realized edge-gap confidence-sequence monitors, and emits an anytime decision state `promote_eligible | continue | abort` as a machine-readable canary-evidence contract under `logs/canary_confidence_sequence/<unit>/latest.json`. The report also carries the current-run canary summary and the cumulative candidate canary summary side by side, so operator-facing trade counts remain available without replacing the new sequential evidence lane. Local validation covered `tests/test_canary_confidence_sequence.py`, `tests/test_entry_boundary.py`, `tests/test_train_v5_fusion.py`, `tests/test_train_v5_lob.py`, `tests/test_train_v5_sequence.py`, `tests/test_cli_alpha_shortcuts.py`, `tests/test_sequence_tensor_store.py`, `tests/test_predictor_contract.py`, `tests/test_candidate_canary_report.py`, and targeted dashboard candidate-state tests. Direct OCI validation confirmed the same relevant suite passes on the server, and a live write on the current candidate DB produced a reflected `logs/canary_confidence_sequence/autobot_live_alpha_candidate_service/latest.json` with `policy=canary_confidence_sequence_v1`, `decision.status=abort`, current run id `20260322T093201Z-s42-da19a911`, sample count `4`, and triggered sequential reasons `RISK_CONTROL_EDGE_GAP_CS_BREACH` plus `RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH`. Open note retained explicitly: the current artifact uses a current-run closed-trade realized-return stream plus divergence/rate monitors as the first practical sequential-evidence lane, while feature-divergence source artifacts remain unavailable and a fully matched challenger-minus-champion live delta stream is still future methodology work rather than silently claimed here.
 
 - [ ] 30. Integrate promote/abort/continue state machine into automation
   Required references:
