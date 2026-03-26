@@ -41,6 +41,8 @@ class _DummyPrivateClient:
         return {
             "uuid": kwargs.get("uuid") or "u-1",
             "identifier": kwargs.get("identifier"),
+            "market": "KRW-BTC",
+            "side": "ask",
             "remaining_volume": "0.1",
         }
 
@@ -207,3 +209,47 @@ def test_direct_gateway_replace_order_accepts_identifier_when_uuid_lookup_is_pen
     assert result.new_order_uuid is None
     assert result.new_identifier == "AUTOBOT-4"
     assert client.orders[0]["identifier"] == "AUTOBOT-4"
+
+
+def test_direct_gateway_replace_order_uses_cancel_submit_fallback_for_ioc() -> None:
+    client = _DummyPrivateClient()
+    gateway = DirectRestExecutionGateway(client=client)
+
+    result = gateway.replace_order(
+        intent_id="intent-4",
+        prev_order_uuid="u-1",
+        prev_order_identifier=None,
+        new_identifier="AUTOBOT-IOC",
+        new_price_str="1003",
+        new_volume_str="0.2",
+        new_time_in_force="ioc",
+    )
+
+    assert result.accepted is True
+    assert result.new_order_uuid == "u-1"
+    assert client.replaced == []
+    assert client.orders[0]["uuid"] == "u-1"
+    assert client.cancelled[0]["uuid"] == "u-1"
+    assert client.created[0]["identifier"] == "AUTOBOT-IOC"
+    assert client.created[0]["time_in_force"] == "ioc"
+
+
+def test_direct_gateway_replace_order_fallback_surfaces_cancel_reject() -> None:
+    class _DoneOrderCancelClient(_DummyPrivateClient):
+        def cancel_order(self, **kwargs):
+            raise ClientRequestError("이미 체결된 주문입니다.", status_code=400, error_name="done_order")
+
+    gateway = DirectRestExecutionGateway(client=_DoneOrderCancelClient())
+
+    result = gateway.replace_order(
+        intent_id="intent-5",
+        prev_order_uuid="u-1",
+        prev_order_identifier=None,
+        new_identifier="AUTOBOT-IOC-2",
+        new_price_str="1004",
+        new_volume_str="0.2",
+        new_time_in_force="ioc",
+    )
+
+    assert result.accepted is False
+    assert "done_order" in result.reason

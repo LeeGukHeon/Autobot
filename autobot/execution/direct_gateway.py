@@ -81,6 +81,10 @@ def _extract_replace_result(
     return cancelled_uuid, new_uuid, new_identifier or requested_new_identifier
 
 
+def _requires_cancel_submit_replace_fallback(*, new_time_in_force: str | None) -> bool:
+    return str(new_time_in_force or "").strip().lower() in {"ioc", "fok"}
+
+
 @dataclass(frozen=True)
 class DirectRestExecutionGateway:
     """Thin execution adapter that submits directly via Upbit private REST."""
@@ -241,6 +245,16 @@ class DirectRestExecutionGateway:
                 new_order_uuid=None,
                 new_identifier=new_identifier,
             )
+        if _requires_cancel_submit_replace_fallback(new_time_in_force=new_time_in_force):
+            return self._replace_via_cancel_submit(
+                intent_id=intent_id,
+                prev_order_uuid=prev_order_uuid,
+                prev_order_identifier=prev_order_identifier,
+                new_identifier=new_identifier,
+                new_price_str=new_price_str,
+                new_volume_str=resolved_new_volume,
+                new_time_in_force=new_time_in_force,
+            )
         try:
             payload = self.client.cancel_and_new_order(
                 prev_order_uuid=prev_order_uuid,
@@ -281,6 +295,74 @@ class DirectRestExecutionGateway:
             cancelled_order_uuid=cancelled_uuid,
             new_order_uuid=new_uuid,
             new_identifier=resolved_new_identifier,
+        )
+
+    def _replace_via_cancel_submit(
+        self,
+        *,
+        intent_id: str,
+        prev_order_uuid: str | None,
+        prev_order_identifier: str | None,
+        new_identifier: str,
+        new_price_str: str,
+        new_volume_str: str,
+        new_time_in_force: str | None,
+    ) -> ExecutorReplaceResult:
+        try:
+            previous_order = self.client.order(uuid=prev_order_uuid, identifier=prev_order_identifier)
+        except UpbitError as exc:
+            return ExecutorReplaceResult(
+                accepted=False,
+                reason=str(exc),
+                cancelled_order_uuid=_optional_str(prev_order_uuid),
+                new_order_uuid=None,
+                new_identifier=new_identifier,
+            )
+        market = _optional_str(previous_order.get("market") if isinstance(previous_order, dict) else None)
+        side = _optional_str(previous_order.get("side") if isinstance(previous_order, dict) else None)
+        if not market or not side:
+            return ExecutorReplaceResult(
+                accepted=False,
+                reason="replace_cancel_submit_missing_market_side",
+                cancelled_order_uuid=_optional_str(prev_order_uuid),
+                new_order_uuid=None,
+                new_identifier=new_identifier,
+            )
+        try:
+            cancelled = self.client.cancel_order(uuid=prev_order_uuid, identifier=prev_order_identifier)
+        except UpbitError as exc:
+            return ExecutorReplaceResult(
+                accepted=False,
+                reason=str(exc),
+                cancelled_order_uuid=_optional_str(prev_order_uuid),
+                new_order_uuid=None,
+                new_identifier=new_identifier,
+            )
+        try:
+            payload = self.client.create_order(
+                market=market,
+                side=side,
+                ord_type="limit",
+                price=new_price_str,
+                volume=new_volume_str,
+                time_in_force=new_time_in_force,
+                identifier=new_identifier,
+            )
+        except UpbitError as exc:
+            return ExecutorReplaceResult(
+                accepted=False,
+                reason=str(exc),
+                cancelled_order_uuid=_optional_str(cancelled.get("uuid") if isinstance(cancelled, dict) else prev_order_uuid),
+                new_order_uuid=None,
+                new_identifier=new_identifier,
+            )
+        _ = intent_id
+        return ExecutorReplaceResult(
+            accepted=True,
+            reason="",
+            cancelled_order_uuid=_optional_str(cancelled.get("uuid") if isinstance(cancelled, dict) else prev_order_uuid),
+            new_order_uuid=_optional_str(payload.get("uuid") if isinstance(payload, dict) else None),
+            new_identifier=_optional_str(payload.get("identifier") if isinstance(payload, dict) else None) or new_identifier,
         )
 
     def _resolve_replace_volume(
