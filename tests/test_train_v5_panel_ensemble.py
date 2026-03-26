@@ -217,5 +217,13 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["policy"] == "v5_panel_ensemble_v1"
     assert load_json(result.run_dir / "predictor_contract.json")["score_lcb_field"] == "score_lcb"
     assert load_json(result.run_dir / "predictor_contract.json")["final_rank_score_field"] == "final_rank_score"
+    assert load_json(result.run_dir / "predictor_contract.json")["final_expected_return_field"] == "final_expected_return"
+    assert load_json(result.run_dir / "predictor_contract.json")["final_expected_es_field"] == "final_expected_es"
+    assert load_json(result.run_dir / "predictor_contract.json")["final_tradability_field"] == "final_tradability"
+    assert load_json(result.run_dir / "predictor_contract.json")["final_alpha_lcb_field"] == "final_alpha_lcb"
     assert load_json(result.run_dir / "predictor_contract.json")["distributional_contract"]["quantile_levels"] == [0.1, 0.5, 0.9]
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["score_aliases"]["final_rank_score"] == "score_mean"
+    assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["expected_return_field"] == "final_expected_return"
+    assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["expected_es_field"] == "final_expected_es"
+    assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["tradability_field"] == "final_tradability"
+    assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["alpha_lcb_field"] == "final_alpha_lcb"

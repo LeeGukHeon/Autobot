@@ -45,7 +45,6 @@ TrainV5PanelEnsembleResult = v4.TrainV4CryptoCsResult
 
 _STACK_COMPONENT_ORDER = ("cls_score", "rank_score", "mu_h3", "mu_h6", "mu_h12", "mu_h24")
 
-
 @dataclass(frozen=True)
 class _StackMetaModel:
     intercept: float
@@ -74,6 +73,7 @@ class V5PanelEnsembleEstimator:
     meta_model: _StackMetaModel
     meta_ensemble: tuple[_StackMetaModel, ...]
     regression_horizons: tuple[int, ...]
+    primary_horizon: int
     uncertainty_temperature: float = 1.0
 
     def _predict_regression_distribution(self, x: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
@@ -179,6 +179,31 @@ class V5PanelEnsembleEstimator:
             "return_quantiles_by_horizon": quantiles_by_horizon,
             "sigma_by_horizon": sigma_by_horizon,
             "expected_shortfall_proxy_by_horizon": es_proxy_by_horizon,
+        }
+
+    def predict_panel_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+        score_mean = self.predict(x).astype(np.float64, copy=False)
+        score_std = self.predict_uncertainty(x).astype(np.float64, copy=False)
+        distribution = self.predict_distributional_contract(x)
+        primary_key = f"h{int(self.primary_horizon)}"
+        mu_by_horizon = dict(distribution.get("mu_by_horizon") or {})
+        es_by_horizon = dict(distribution.get("expected_shortfall_proxy_by_horizon") or {})
+        primary_mu = np.asarray(mu_by_horizon.get(primary_key, score_mean), dtype=np.float64)
+        primary_es_raw = np.asarray(es_by_horizon.get(primary_key, np.zeros_like(primary_mu)), dtype=np.float64)
+        primary_es = np.abs(primary_es_raw)
+        final_alpha_lcb = primary_mu - primary_es - score_std
+        final_tradability = np.clip(1.0 / (1.0 + primary_es + score_std), 0.0, 1.0)
+        score_lcb = np.clip(score_mean - score_std, 0.0, 1.0)
+        return {
+            "final_rank_score": score_mean,
+            "final_uncertainty": score_std,
+            "score_mean": score_mean,
+            "score_std": score_std,
+            "score_lcb": score_lcb,
+            "final_expected_return": primary_mu,
+            "final_expected_es": primary_es,
+            "final_tradability": final_tradability,
+            "final_alpha_lcb": final_alpha_lcb,
         }
 
 
@@ -620,6 +645,7 @@ def _build_v5_metrics_doc(
     regressor_results: dict[str, dict[str, Any]],
     meta_fit: dict[str, Any],
     meta_ensemble_count: int,
+    primary_horizon: int,
 ) -> dict[str, Any]:
     metrics = build_v4_metrics_doc(
         run_id=run_id,
@@ -657,22 +683,29 @@ def _build_v5_metrics_doc(
         "uncertainty_mode": "walk_forward_meta_ensemble_std_v1",
         "uncertainty_member_count": int(meta_ensemble_count),
         "uncertainty_temperature": float(meta_fit.get("uncertainty_temperature", 1.0)),
-        "distributional_contract": {
-            "version": 1,
-            "quantile_levels": [0.10, 0.50, 0.90],
-            "return_quantiles_field_prefix": "return_quantiles",
-            "sigma_field_prefix": "return_sigma",
-            "expected_shortfall_proxy_field_prefix": "return_expected_shortfall_proxy",
-            "horizon_keys": [f"h{int(key.replace('h', ''))}" for key in sorted(regressor_results.keys(), key=lambda item: int(item.replace("h", "")))],
-            "member_ensemble_source": "walk_forward_regression_members",
-        },
+            "distributional_contract": {
+                "version": 1,
+                "quantile_levels": [0.10, 0.50, 0.90],
+                "return_quantiles_field_prefix": "return_quantiles",
+                "sigma_field_prefix": "return_sigma",
+                "expected_shortfall_proxy_field_prefix": "return_expected_shortfall_proxy",
+                "horizon_keys": [f"h{int(key.replace('h', ''))}" for key in sorted(regressor_results.keys(), key=lambda item: int(item.replace("h", "")))],
+                "member_ensemble_source": "walk_forward_regression_members",
+                "primary_horizon_key": f"h{int(primary_horizon)}",
+            },
         "final_output_contract": {
             "score_field": "final_rank_score",
             "score_mean_field": "score_mean",
             "score_std_field": "score_std",
             "score_lcb_field": "score_lcb",
             "uncertainty_field": "score_std",
+            "expected_return_field": "final_expected_return",
+            "expected_es_field": "final_expected_es",
+            "tradability_field": "final_tradability",
+            "alpha_lcb_field": "final_alpha_lcb",
             "score_aliases": {"final_rank_score": "score_mean", "final_uncertainty": "score_std"},
+            "tradability_mode": "panel_risk_confidence_proxy_v1",
+            "alpha_lcb_formula": "final_alpha_lcb = final_expected_return - final_expected_es - final_uncertainty",
         },
     }
     return metrics
@@ -744,8 +777,13 @@ def _build_v5_train_config(
         "score_lcb_field": "score_lcb",
         "final_rank_score_field": "final_rank_score",
         "final_uncertainty_field": "score_std",
+        "final_expected_return_field": "final_expected_return",
+        "final_expected_es_field": "final_expected_es",
+        "final_tradability_field": "final_tradability",
+        "final_alpha_lcb_field": "final_alpha_lcb",
         "score_aliases": {"final_rank_score": "score_mean", "final_uncertainty": "score_std"},
         "score_lcb_formula": "score_lcb = clip(score_mean - score_std, 0, 1)",
+        "alpha_lcb_formula": "final_alpha_lcb = final_expected_return - final_expected_es - final_uncertainty",
         "distributional_contract": dict((ensemble_contract or {}).get("distributional_contract") or {}),
     }
     return payload
@@ -922,6 +960,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         meta_model=meta_fit["meta_model"],
         meta_ensemble=tuple(oof.get("meta_models", [])),
         regression_horizons=tuple(int(key.replace("h", "")) for key in sorted(regressor_results.keys(), key=lambda item: int(item.replace("h", "")))),
+        primary_horizon=int(label_contract.get("primary_horizon_bars", 12)),
         uncertainty_temperature=float(meta_fit.get("uncertainty_temperature", 1.0)),
     )
     final_bundle = {"model_type": "v5_panel_ensemble", "scaler": None, "estimator": estimator}
@@ -1035,6 +1074,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         regressor_results=regressor_results,
         meta_fit=meta_fit,
         meta_ensemble_count=len(oof.get("meta_models", [])),
+        primary_horizon=int(label_contract.get("primary_horizon_bars", 12)),
     )
     leaderboard_row = _build_v5_leaderboard_row(run_id=run_id, options=options, rows=rows, test_metrics=test_metrics)
     train_config = _build_v5_train_config(
@@ -1098,8 +1138,13 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
             "score_lcb_field": "score_lcb",
             "final_rank_score_field": "final_rank_score",
             "final_uncertainty_field": "score_std",
+            "final_expected_return_field": "final_expected_return",
+            "final_expected_es_field": "final_expected_es",
+            "final_tradability_field": "final_tradability",
+            "final_alpha_lcb_field": "final_alpha_lcb",
             "score_aliases": {"final_rank_score": "score_mean", "final_uncertainty": "score_std"},
             "score_lcb_formula": "score_lcb = clip(score_mean - score_std, 0, 1)",
+            "alpha_lcb_formula": "final_alpha_lcb = final_expected_return - final_expected_es - final_uncertainty",
             "distributional_contract": dict((metrics.get("panel_ensemble", {}) or {}).get("distributional_contract") or {}),
         },
     )

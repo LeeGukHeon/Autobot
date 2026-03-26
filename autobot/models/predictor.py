@@ -75,8 +75,34 @@ class ModelPredictor:
         return dict(payload) if isinstance(payload, dict) else {}
 
     def predict_score_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+        estimator = self.model_bundle.get("estimator") if isinstance(self.model_bundle, dict) else None
+        if estimator is not None and hasattr(estimator, "predict_panel_contract"):
+            payload = estimator.predict_panel_contract(x)
+            if isinstance(payload, dict):
+                result = {
+                    key: np.asarray(value, dtype=np.float64) if key != "uncertainty_available" else np.asarray(value)
+                    for key, value in payload.items()
+                    if value is not None
+                }
+                if "uncertainty_available" not in result:
+                    size = len(next(iter(result.values()))) if result else 0
+                    result["uncertainty_available"] = np.full(size, True, dtype=bool)
+                return result
         score_mean = self.predict_scores(x).astype(np.float64, copy=False)
         score_std = self.predict_uncertainty(x)
+        distributional = self.predict_distributional_contract(x)
+        mu_by_horizon = dict(distributional.get("mu_by_horizon") or {})
+        es_by_horizon = dict(distributional.get("expected_shortfall_proxy_by_horizon") or {})
+        primary_mu = None
+        primary_es = None
+        for key in ("h12", "h6", "h3", "h24"):
+            if key in mu_by_horizon:
+                primary_mu = np.asarray(mu_by_horizon[key], dtype=np.float64)
+                break
+        for key in ("h12", "h6", "h3", "h24"):
+            if key in es_by_horizon:
+                primary_es = np.abs(np.asarray(es_by_horizon[key], dtype=np.float64))
+                break
         if score_std is None:
             score_lcb = score_mean.copy()
             uncertainty_available = False
@@ -84,12 +110,27 @@ class ModelPredictor:
             score_std = np.maximum(np.asarray(score_std, dtype=np.float64), 0.0)
             score_lcb = np.clip(score_mean - score_std, 0.0, 1.0)
             uncertainty_available = True
+        if primary_mu is None:
+            primary_mu = np.full(score_mean.shape[0], np.nan, dtype=np.float64)
+        if primary_es is None:
+            primary_es = np.full(score_mean.shape[0], np.nan, dtype=np.float64)
+        final_tradability = np.full(score_mean.shape[0], np.nan, dtype=np.float64)
+        valid_proxy = np.isfinite(primary_es) & np.isfinite(score_std if score_std is not None else np.full(score_mean.shape[0], np.nan))
+        if np.any(valid_proxy):
+            safe_std = score_std if score_std is not None else np.full(score_mean.shape[0], np.nan, dtype=np.float64)
+            proxy_values = np.clip(1.0 / (1.0 + np.abs(primary_es) + np.abs(safe_std)), 0.0, 1.0)
+            final_tradability = proxy_values.astype(np.float64, copy=False)
+        final_alpha_lcb = primary_mu - primary_es - (score_std if score_std is not None else np.full(score_mean.shape[0], np.nan, dtype=np.float64))
         return {
             "final_rank_score": score_mean,
             "final_uncertainty": score_std if uncertainty_available else np.full(score_mean.shape[0], np.nan, dtype=np.float64),
             "score_mean": score_mean,
             "score_std": score_std if uncertainty_available else np.full(score_mean.shape[0], np.nan, dtype=np.float64),
             "score_lcb": score_lcb,
+            "final_expected_return": primary_mu,
+            "final_expected_es": primary_es,
+            "final_tradability": final_tradability,
+            "final_alpha_lcb": final_alpha_lcb,
             "uncertainty_available": np.full(score_mean.shape[0], uncertainty_available, dtype=bool),
         }
 

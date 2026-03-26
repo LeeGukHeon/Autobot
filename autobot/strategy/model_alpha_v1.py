@@ -713,6 +713,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 meta={
                     "strategy": "model_alpha_v1",
                     "model_prob": float(row.get("model_prob", 0.0)),
+                    "score_mean": _safe_optional_float(row.get("score_mean", row.get("model_prob"))),
+                    "score_std": _safe_optional_float(row.get("score_std")),
+                    "score_lcb": _safe_optional_float(row.get("score_lcb")),
+                    "final_expected_return": _safe_optional_float(row.get("final_expected_return")),
+                    "final_expected_es": _safe_optional_float(row.get("final_expected_es")),
+                    "final_tradability": _safe_optional_float(row.get("final_tradability")),
+                    "final_alpha_lcb": _safe_optional_float(row.get("final_alpha_lcb")),
                     "model_prob_raw": float(row.get("model_prob_raw", row.get("model_prob", 0.0))),
                     "uncertainty": _resolve_opportunity_uncertainty(row),
                     "selection_min_prob_used": float(min_prob_used),

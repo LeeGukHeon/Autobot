@@ -135,6 +135,36 @@ def test_resolve_portfolio_risk_budget_applies_recent_loss_streak_haircut(tmp_pa
     assert "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" in payload["risk_reason_codes"]
 
 
+def test_resolve_portfolio_risk_budget_uses_alpha_es_and_tradability_inputs(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        payload = resolve_portfolio_risk_budget(
+            store=store,
+            market="KRW-XRP",
+            side="bid",
+            target_notional_quote=10_000.0,
+            base_budget_quote=10_000.0,
+            quote_free=20_000.0,
+            min_total_krw=5_000.0,
+            effective_max_positions=2,
+            rollout_mode="live",
+            uncertainty=0.25,
+            expected_return_bps=8.0,
+            expected_es_bps=16.0,
+            tradability_prob=0.40,
+            alpha_lcb_bps=4.0,
+            runtime_model_run_id="run-live",
+        )
+
+    assert payload["alpha_strength_haircut"] == 0.75
+    assert payload["expected_es_haircut"] == 0.5
+    assert payload["tradability_haircut"] == 0.5
+    assert payload["confidence_haircut"] == 0.8
+    assert payload["resolved_notional_quote"] == 5_000.0
+    assert "PORTFOLIO_ALPHA_LCB_HAIRCUT" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_EXPECTED_ES_HAIRCUT" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_TRADABILITY_HAIRCUT" in payload["risk_reason_codes"]
+
+
 def test_resolve_portfolio_risk_budget_canary_bypasses_soft_haircuts_but_keeps_warning(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         payload = resolve_portfolio_risk_budget(

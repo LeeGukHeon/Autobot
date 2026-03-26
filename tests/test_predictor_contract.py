@@ -45,12 +45,20 @@ def test_model_predictor_exports_uncertainty_aware_score_contract() -> None:
         "score_mean",
         "score_std",
         "score_lcb",
+        "final_expected_return",
+        "final_expected_es",
+        "final_tradability",
+        "final_alpha_lcb",
         "uncertainty_available",
     }
     assert np.allclose(payload["final_rank_score"], payload["score_mean"])
     assert np.allclose(payload["final_uncertainty"], payload["score_std"])
     assert np.allclose(payload["score_std"], np.asarray([0.05, 0.05], dtype=np.float64))
     assert np.all(payload["score_lcb"] <= payload["score_mean"])
+    assert np.allclose(payload["final_expected_return"], np.asarray([0.1, 0.1], dtype=np.float64))
+    assert np.allclose(payload["final_expected_es"], np.asarray([0.05, 0.05], dtype=np.float64))
+    assert np.all(payload["final_alpha_lcb"] <= payload["final_expected_return"])
+    assert np.all((payload["final_tradability"] >= 0.0) & (payload["final_tradability"] <= 1.0))
 
 
 def test_model_predictor_exposes_distributional_contract_when_estimator_supports_it() -> None:

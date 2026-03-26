@@ -858,6 +858,22 @@ def resolve_live_strategy_execution(
                 else {}
             ),
             uncertainty=safe_optional_float_fn(strategy_meta.get("uncertainty")),
+            expected_return_bps=(
+                safe_optional_float_fn(strategy_meta.get("final_expected_return")) * 10_000.0
+                if safe_optional_float_fn(strategy_meta.get("final_expected_return")) is not None
+                else None
+            ),
+            expected_es_bps=(
+                safe_optional_float_fn(strategy_meta.get("final_expected_es")) * 10_000.0
+                if safe_optional_float_fn(strategy_meta.get("final_expected_es")) is not None
+                else None
+            ),
+            tradability_prob=safe_optional_float_fn(strategy_meta.get("final_tradability")),
+            alpha_lcb_bps=(
+                safe_optional_float_fn(strategy_meta.get("final_alpha_lcb")) * 10_000.0
+                if safe_optional_float_fn(strategy_meta.get("final_alpha_lcb")) is not None
+                else None
+            ),
             runtime_model_run_id=str(runtime_model_run_id or "").strip() or None,
         )
         if portfolio_budget_payload.get("enabled"):
