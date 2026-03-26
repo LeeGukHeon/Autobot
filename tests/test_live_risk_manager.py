@@ -11,6 +11,11 @@ from autobot.live.breakers import ACTION_FULL_KILL_SWITCH, ACTION_HALT_NEW_INTEN
 from autobot.live.model_risk_plan import build_model_derived_risk_records
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
 from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
+from autobot.risk.liquidation_policy import (
+    TIER_EMERGENCY_FLATTEN,
+    TIER_SOFT_EXIT,
+    resolve_protective_liquidation_policy,
+)
 from autobot.risk.live_risk_manager import LiveRiskManager
 from autobot.risk.models import RiskManagerConfig
 from autobot.strategy.micro_snapshot import MicroSnapshot
@@ -22,8 +27,10 @@ class _SubmitCall:
     identifier: str
     market: str
     side: str
-    price: float
-    volume: float
+    ord_type: str
+    time_in_force: str | None
+    price: float | None
+    volume: float | None
 
 
 @dataclass
@@ -50,8 +57,10 @@ class _FakeExecutorGateway:
                 identifier=identifier,
                 market=str(intent.market),
                 side=str(intent.side),
-                price=float(intent.price),
-                volume=float(intent.volume),
+                ord_type=str(intent.ord_type),
+                time_in_force=str(intent.time_in_force),
+                price=(float(intent.price) if intent.price is not None else None),
+                volume=(float(intent.volume) if intent.volume is not None else None),
             )
         )
         return SimpleNamespace(
@@ -175,6 +184,102 @@ def test_risk_manager_tp_trigger_submits_exit(tmp_path: Path) -> None:
     assert exit_order is not None
     assert exit_order["tp_sl_link"] == plan.plan_id
     assert exit_order["local_state"] == "OPEN"
+
+
+def test_protective_liquidation_policy_resolves_soft_vs_emergency_tiers() -> None:
+    soft = resolve_protective_liquidation_policy(
+        trigger_reason="PATH_RISK_CONTINUATION",
+        entry_price=100.0,
+        qty=1.0,
+        last_price=101.0,
+        tick_size=1.0,
+        base_exit_aggress_bps=8.0,
+        base_timeout_sec=20,
+        base_replace_max=2,
+        ts_ms=2_000,
+        created_ts_ms=1_000,
+        trigger_ts_ms=2_000,
+        breaker_action="",
+        micro_snapshot=_micro_snapshot(
+            market="KRW-BTC",
+            ts_ms=2_000,
+            trade_imbalance=0.4,
+            spread_bps_mean=2.0,
+            depth_top5_notional_krw=10_000_000.0,
+        ),
+        active_order_present=False,
+        stop_breach_ratio=0.0,
+    )
+    emergency = resolve_protective_liquidation_policy(
+        trigger_reason="SL",
+        entry_price=100.0,
+        qty=1.0,
+        last_price=94.0,
+        tick_size=1.0,
+        base_exit_aggress_bps=8.0,
+        base_timeout_sec=20,
+        base_replace_max=2,
+        ts_ms=10_000,
+        created_ts_ms=1_000,
+        trigger_ts_ms=5_000,
+        breaker_action="HALT_AND_CANCEL_BOT_ORDERS",
+        micro_snapshot=_micro_snapshot(
+            market="KRW-BTC",
+            ts_ms=10_000,
+            trade_imbalance=-0.9,
+            spread_bps_mean=45.0,
+            depth_top5_notional_krw=40_000.0,
+        ),
+        active_order_present=False,
+        stop_breach_ratio=0.02,
+    )
+
+    assert soft.tier_name == TIER_SOFT_EXIT
+    assert soft.ord_type == "limit"
+    assert soft.time_in_force == "gtc"
+    assert emergency.tier_name == TIER_EMERGENCY_FLATTEN
+    assert emergency.ord_type == "best"
+    assert emergency.time_in_force == "ioc"
+
+
+def test_risk_manager_emergency_flatten_uses_best_ioc_and_writes_report(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=8.0, default_sl_pct=2.0, default_tp_pct=3.0),
+            tick_size_resolver=lambda market: 1.0 if market == "KRW-BTC" else None,
+        )
+        plan = manager.attach_default_risk(
+            market="KRW-BTC",
+            entry_price=100.0,
+            qty=1.25,
+            ts_ms=1_000,
+        )
+        actions = manager.evaluate_price(
+            market="KRW-BTC",
+            last_price=94.0,
+            ts_ms=10_000,
+            micro_snapshot=_micro_snapshot(
+                market="KRW-BTC",
+                ts_ms=10_000,
+                trade_imbalance=-0.9,
+                spread_bps_mean=45.0,
+                depth_top5_notional_krw=40_000.0,
+            ),
+        )
+
+    assert any(item["type"] == "risk_exit_submitted" for item in actions)
+    assert gateway.submit_calls[0].ord_type == "best"
+    assert gateway.submit_calls[0].time_in_force == "ioc"
+    assert gateway.submit_calls[0].price is None
+    report_path = Path(actions[0]["protective_liquidation_report_path"])
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["policy"]["tier_name"] == TIER_EMERGENCY_FLATTEN
+    assert payload["policy"]["ord_type"] == "best"
 
 
 def test_risk_manager_trailing_watermark_then_trigger(tmp_path: Path) -> None:
@@ -583,7 +688,7 @@ def test_risk_manager_replace_and_close_recovery(tmp_path: Path) -> None:
     assert any(item["type"] == "risk_exit_replaced" for item in replace_actions)
     assert len(gateway.replace_calls) == 1
     assert str(gateway.replace_calls[0].new_identifier).startswith("AUTOBOT-autobot-001-RISKREP-")
-    assert gateway.replace_calls[0].new_price_str == "480"
+    assert gateway.replace_calls[0].new_price_str == "479"
     assert persisted_after_replace is not None
     assert persisted_after_replace["state"] == "EXITING"
     assert persisted_after_replace["replace_attempt"] == 1
@@ -840,6 +945,7 @@ def test_risk_manager_timeout_trigger_submits_exit(tmp_path: Path) -> None:
     assert any(item["type"] == "risk_exit_submitted" and item["trigger_reason"] == "TIMEOUT" for item in actions)
     assert len(gateway.submit_calls) == 1
     assert gateway.submit_calls[0].price == 442.0
+    assert gateway.submit_calls[0].time_in_force == "gtc"
     assert persisted is not None
     assert persisted["state"] == "EXITING"
     assert persisted["timeout_ts_ms"] == 2000

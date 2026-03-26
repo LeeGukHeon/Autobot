@@ -12,6 +12,7 @@ from autobot.execution.intent import new_order_intent
 from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
     arm_breaker,
+    breaker_status,
     classify_executor_reject_reason,
     clear_recovered_risk_exit_stuck_breaker,
     protective_orders_allowed,
@@ -28,6 +29,11 @@ from autobot.live.order_state import normalize_order_state
 from autobot.live.state_store import LiveStateStore, OrderLineageRecord, OrderRecord, RiskPlanRecord
 from autobot.strategy.operational_overlay_v1 import ModelAlphaOperationalSettings, load_calibrated_operational_settings
 
+from .liquidation_policy import (
+    protective_liquidation_policy_to_dict,
+    resolve_protective_liquidation_policy,
+    write_protective_liquidation_report,
+)
 from .models import RiskManagerConfig, RiskPlan
 
 MODEL_ALPHA_MICRO_OVERLAY_PLAN_SOURCE = "model_alpha_v1_micro_overlay"
@@ -184,12 +190,18 @@ class LiveRiskManager:
                         trigger_reason=trigger,
                         last_price=last_price,
                         ts_ms=now_ts,
+                        micro_snapshot=micro_snapshot,
                     )
                     actions.append(action)
             elif updated.state == "EXITING":
                 timeout_ms = max(int(self._config.order_timeout_sec), 1) * 1000
                 if updated.last_action_ts_ms > 0 and now_ts - updated.last_action_ts_ms >= timeout_ms:
-                    updated, action = self._replace_exit_order(updated, last_price=last_price, ts_ms=now_ts)
+                    updated, action = self._replace_exit_order(
+                        updated,
+                        last_price=last_price,
+                        ts_ms=now_ts,
+                        micro_snapshot=micro_snapshot,
+                    )
                     actions.append(action)
 
             self._upsert_plan(updated)
@@ -297,12 +309,21 @@ class LiveRiskManager:
         trigger_reason: str,
         last_price: float,
         ts_ms: int,
+        micro_snapshot: Any | None,
     ) -> tuple[RiskPlan, dict[str, Any]]:
         if not protective_orders_allowed(self._store):
             updated = replace(plan, state="TRIGGERED", updated_ts=ts_ms)
             return updated, {"type": "risk_blocked_by_breaker", "plan_id": plan.plan_id, "reason": trigger_reason}
-        exit_price = self._resolve_exit_price(market=plan.market, last_price=last_price, step=1)
-        volume = _format_decimal(plan.qty, self._config.volume_digits)
+        liquidation_policy = self._resolve_protective_liquidation_policy(
+            plan=plan,
+            trigger_reason=trigger_reason,
+            last_price=last_price,
+            ts_ms=ts_ms,
+            micro_snapshot=micro_snapshot,
+            active_order_present=False,
+        )
+        exit_price = liquidation_policy.target_price
+        volume = _format_decimal(plan.qty, self._config.volume_digits) if plan.qty > 0.0 else "0"
         identifier = new_protective_order_identifier(
             prefix=self._identifier_prefix,
             bot_id=self._bot_id,
@@ -320,7 +341,8 @@ class LiveRiskManager:
                 "trigger_reason": trigger_reason,
                 "entry_price": plan.entry_price,
                 "last_price": float(last_price),
-                "exit_price": float(exit_price),
+                "exit_price": float(exit_price) if exit_price is not None else None,
+                "protective_liquidation_policy": protective_liquidation_policy_to_dict(liquidation_policy),
             }
         }
         intent = new_order_intent(
@@ -329,11 +351,29 @@ class LiveRiskManager:
             price=exit_price,
             volume=plan.qty,
             reason_code=f"RISK_{trigger_reason}",
-            ord_type="limit",
-            time_in_force="gtc",
+            ord_type=str(liquidation_policy.ord_type),
+            time_in_force=str(liquidation_policy.time_in_force),
             meta=meta,
             ts_ms=ts_ms,
         )
+        report_payload = {
+            "ts_ms": int(ts_ms),
+            "phase": "submit",
+            "market": plan.market,
+            "plan_id": plan.plan_id,
+            "trigger_reason": trigger_reason,
+            "policy": protective_liquidation_policy_to_dict(liquidation_policy),
+        }
+        report_path = write_protective_liquidation_report(
+            state_db_path=self._store.db_path,
+            payload=report_payload,
+        )
+        if hasattr(self._store, "set_checkpoint"):
+            self._store.set_checkpoint(
+                name="protective_liquidation_last_report",
+                payload={**report_payload, "report_path": str(report_path)},
+                ts_ms=ts_ms,
+            )
         result = self._executor_gateway.submit_intent(
             intent=intent,
             identifier=identifier,
@@ -383,8 +423,11 @@ class LiveRiskManager:
                 "plan_id": plan.plan_id,
                 "trigger_reason": trigger_reason,
                 "identifier": updated.current_exit_order_identifier,
-                "price_str": _format_decimal(exit_price, self._config.price_digits),
+                "price_str": _optional_decimal(exit_price, self._config.price_digits),
                 "volume_str": volume,
+                "liquidation_policy_tier": liquidation_policy.tier_name,
+                "liquidation_policy": protective_liquidation_policy_to_dict(liquidation_policy),
+                "protective_liquidation_report_path": str(report_path),
             }
 
         reject_reason = str(getattr(result, "reason", "") or "")
@@ -430,6 +473,9 @@ class LiveRiskManager:
             "plan_id": plan.plan_id,
             "trigger_reason": trigger_reason,
             "reason": str(getattr(result, "reason", "")),
+            "liquidation_policy_tier": liquidation_policy.tier_name,
+            "liquidation_policy": protective_liquidation_policy_to_dict(liquidation_policy),
+            "protective_liquidation_report_path": str(report_path),
         }
 
     def _replace_exit_order(
@@ -438,6 +484,7 @@ class LiveRiskManager:
         *,
         last_price: float,
         ts_ms: int,
+        micro_snapshot: Any | None,
     ) -> tuple[RiskPlan, dict[str, Any]]:
         if not protective_orders_allowed(self._store):
             updated = replace(plan, updated_ts=ts_ms)
@@ -447,11 +494,15 @@ class LiveRiskManager:
             return updated, {"type": "risk_replace_no_executor", "plan_id": plan.plan_id}
 
         replace_step = plan.replace_attempt + 1
-        new_price = self._resolve_exit_price(
-            market=plan.market,
+        liquidation_policy = self._resolve_protective_liquidation_policy(
+            plan=plan,
+            trigger_reason="REPLACE_TIMEOUT",
             last_price=last_price,
-            step=max(replace_step, 1),
+            ts_ms=ts_ms,
+            micro_snapshot=micro_snapshot,
+            active_order_present=True,
         )
+        new_price = float(liquidation_policy.target_price or last_price)
         new_identifier = new_protective_order_identifier(
             prefix=self._identifier_prefix,
             bot_id=self._bot_id,
@@ -467,8 +518,27 @@ class LiveRiskManager:
             new_identifier=new_identifier,
             new_price_str=_format_decimal(new_price, self._config.price_digits),
             new_volume_str="remain_only",
-            new_time_in_force="gtc",
+            new_time_in_force=str(liquidation_policy.time_in_force),
         )
+        report_payload = {
+            "ts_ms": int(ts_ms),
+            "phase": "replace",
+            "market": plan.market,
+            "plan_id": plan.plan_id,
+            "trigger_reason": "REPLACE_TIMEOUT",
+            "policy": protective_liquidation_policy_to_dict(liquidation_policy),
+            "replace_step": int(replace_step),
+        }
+        report_path = write_protective_liquidation_report(
+            state_db_path=self._store.db_path,
+            payload=report_payload,
+        )
+        if hasattr(self._store, "set_checkpoint"):
+            self._store.set_checkpoint(
+                name="protective_liquidation_last_report",
+                payload={**report_payload, "report_path": str(report_path)},
+                ts_ms=ts_ms,
+            )
         if bool(getattr(result, "accepted", False)):
             reset_counter(
                 self._store,
@@ -585,6 +655,9 @@ class LiveRiskManager:
                 "plan_id": plan.plan_id,
                 "replace_attempt": replace_step,
                 "identifier": updated.current_exit_order_identifier,
+                "liquidation_policy_tier": liquidation_policy.tier_name,
+                "liquidation_policy": protective_liquidation_policy_to_dict(liquidation_policy),
+                "protective_liquidation_report_path": str(report_path),
             }
             if lineage_warning is not None:
                 action["warning_reason_code"] = "RISK_EXIT_REPLACE_PERSIST_FAILED"
@@ -663,6 +736,9 @@ class LiveRiskManager:
             "replace_max": int(self._config.replace_max),
             "escalation_active": bool(escalation_active),
             "reason": str(getattr(result, "reason", "")),
+            "liquidation_policy_tier": liquidation_policy.tier_name,
+            "liquidation_policy": protective_liquidation_policy_to_dict(liquidation_policy),
+            "protective_liquidation_report_path": str(report_path),
         }
 
     def _resolve_exit_price(self, *, market: str, last_price: float, step: int) -> float:
@@ -679,6 +755,41 @@ class LiveRiskManager:
             price=raw,
             tick_size=float(tick_size),
             side="ask",
+        )
+
+    def _resolve_protective_liquidation_policy(
+        self,
+        *,
+        plan: RiskPlan,
+        trigger_reason: str,
+        last_price: float,
+        ts_ms: int,
+        micro_snapshot: Any | None,
+        active_order_present: bool,
+    ):
+        sl_price = plan.resolve_sl_price()
+        stop_breach_ratio = None
+        if sl_price is not None and float(last_price) < float(sl_price):
+            stop_breach_ratio = max((float(sl_price) - float(last_price)) / max(float(plan.entry_price), 1e-12), 0.0)
+        tick_size = self._resolve_tick_size(plan.market)
+        breaker_state = breaker_status(self._store)
+        trigger_ts_ms = _as_int(plan.last_action_ts_ms) if str(plan.state).strip().upper() == "EXITING" else _as_int(ts_ms)
+        return resolve_protective_liquidation_policy(
+            trigger_reason=trigger_reason,
+            entry_price=float(plan.entry_price),
+            qty=float(plan.qty),
+            last_price=float(last_price),
+            tick_size=tick_size,
+            base_exit_aggress_bps=float(self._config.exit_aggress_bps),
+            base_timeout_sec=int(self._config.order_timeout_sec),
+            base_replace_max=int(self._config.replace_max),
+            ts_ms=int(ts_ms),
+            created_ts_ms=int(plan.created_ts),
+            trigger_ts_ms=trigger_ts_ms,
+            breaker_action=str(breaker_state.get("action") or ""),
+            micro_snapshot=micro_snapshot,
+            active_order_present=bool(active_order_present),
+            stop_breach_ratio=stop_breach_ratio,
         )
 
     def _resolve_tick_size(self, market: str) -> float | None:
