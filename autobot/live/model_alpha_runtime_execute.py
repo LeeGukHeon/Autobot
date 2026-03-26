@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import math
+from pathlib import Path
 from typing import Any, Callable
 
 from autobot.execution.order_supervisor import (
@@ -24,6 +25,11 @@ from autobot.models.live_execution_policy import (
     build_live_execution_contract,
     candidate_action_codes_for_price_mode,
     select_live_execution_action,
+)
+from autobot.risk.confidence_monitor import (
+    build_live_risk_confidence_sequence_report,
+    live_risk_confidence_sequence_latest_path,
+    write_live_risk_confidence_sequence_report,
 )
 from autobot.risk.portfolio_budget import resolve_portfolio_risk_budget
 
@@ -400,6 +406,12 @@ def resolve_execution_risk_control_online_threshold(
             observations=[],
         )
         merged = _merge_online_risk_states(base_state=base_state, martingale_state=martingale_state)
+        merged["confidence_sequence"] = _build_confidence_sequence_state(
+            store=store,
+            run_id=run_id,
+            risk_control_payload=payload,
+        )
+        merged = _merge_confidence_sequence_state(merged=merged)
         merged["checkpoint_name"] = resolved_checkpoint_name
         merged["checkpoint_base_name"] = checkpoint_name
         return merged
@@ -423,6 +435,12 @@ def resolve_execution_risk_control_online_threshold(
         observations=recent,
     )
     merged = _merge_online_risk_states(base_state=base_state, martingale_state=martingale_state)
+    merged["confidence_sequence"] = _build_confidence_sequence_state(
+        store=store,
+        run_id=run_id,
+        risk_control_payload=payload,
+    )
+    merged = _merge_confidence_sequence_state(merged=merged)
     merged["checkpoint_name"] = resolved_checkpoint_name
     merged["checkpoint_base_name"] = checkpoint_name
     return merged
@@ -497,6 +515,117 @@ def _merge_online_risk_states(*, base_state: dict[str, Any], martingale_state: d
             clear_reason_codes.append(reason_code)
     merged["clear_reason_codes"] = clear_reason_codes
     return merged
+
+
+def _build_confidence_sequence_state(
+    *,
+    store: Any,
+    run_id: str,
+    risk_control_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(risk_control_payload or {})
+    config = dict(payload.get("confidence_sequence_monitors") or {})
+    if not bool(config.get("enabled", False)):
+        return {
+            "artifact_version": 1,
+            "available_monitor_count": 0,
+            "triggered_monitor_count": 0,
+            "halt_triggered": False,
+            "triggered_reason_codes": [],
+            "clear_reason_codes": [],
+            "monitors": {},
+        }
+    runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
+    rollout_status = store.live_rollout_status() if hasattr(store, "live_rollout_status") else {}
+    return build_live_risk_confidence_sequence_report(
+        store=store,
+        run_id=str(run_id).strip(),
+        confidence_monitor_config=config,
+        runtime_health=runtime_health if isinstance(runtime_health, dict) else {},
+        lane=_resolve_confidence_sequence_lane(store=store),
+        unit_name=_resolve_confidence_sequence_unit_name(store=store),
+        rollout_mode=str((rollout_status or {}).get("mode") or "").strip().lower(),
+        ts_ms=0,
+    )
+
+
+def _merge_confidence_sequence_state(*, merged: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(merged)
+    confidence_sequence = dict(payload.get("confidence_sequence") or {})
+    if not bool(confidence_sequence.get("halt_triggered")):
+        clear_reason_codes = list(payload.get("clear_reason_codes") or [])
+        for reason_code in confidence_sequence.get("clear_reason_codes") or []:
+            text = str(reason_code).strip()
+            if text and text not in clear_reason_codes:
+                clear_reason_codes.append(text)
+        payload["clear_reason_codes"] = clear_reason_codes
+        return payload
+
+    halt_reason_codes = list(payload.get("halt_reason_codes") or [])
+    for reason_code in confidence_sequence.get("triggered_reason_codes") or []:
+        text = str(reason_code).strip()
+        if text and text not in halt_reason_codes:
+            halt_reason_codes.append(text)
+    payload["halt_triggered"] = True
+    payload["halt_reason_codes"] = halt_reason_codes
+    current_reason_code = str(payload.get("halt_reason_code") or "").strip()
+    if current_reason_code not in halt_reason_codes:
+        payload["halt_reason_code"] = str((confidence_sequence.get("triggered_reason_codes") or [""])[0]).strip()
+    payload["halt_action"] = "HALT_NEW_INTENTS"
+    return payload
+
+
+def _resolve_confidence_sequence_lane(*, store: Any) -> str:
+    rollout_contract = store.live_rollout_contract() if hasattr(store, "live_rollout_contract") else {}
+    target_unit = str((rollout_contract or {}).get("target_unit") or "").strip().lower()
+    if "candidate" in target_unit:
+        return "live_candidate"
+    if target_unit:
+        return "live_champion"
+    return "live"
+
+
+def _resolve_confidence_sequence_unit_name(*, store: Any) -> str:
+    rollout_contract = store.live_rollout_contract() if hasattr(store, "live_rollout_contract") else {}
+    target_unit = str((rollout_contract or {}).get("target_unit") or "").strip()
+    if target_unit:
+        return target_unit
+    return "live"
+
+
+def write_live_confidence_sequence_artifact(
+    *,
+    store: Any,
+    settings: Any,
+    run_id: str,
+    risk_control_payload: dict[str, Any] | None,
+    ts_ms: int,
+) -> dict[str, Any]:
+    runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
+    lane = "live_candidate" if "candidate" in str(settings.daemon.rollout_target_unit).strip().lower() else "live_champion"
+    report = build_live_risk_confidence_sequence_report(
+        store=store,
+        run_id=str(run_id).strip(),
+        confidence_monitor_config=dict((risk_control_payload or {}).get("confidence_sequence_monitors") or {}),
+        runtime_health=runtime_health if isinstance(runtime_health, dict) else {},
+        lane=lane,
+        unit_name=str(settings.daemon.rollout_target_unit),
+        rollout_mode=str(settings.daemon.rollout_mode),
+        ts_ms=int(ts_ms),
+    )
+    registry_root = getattr(settings.daemon, "registry_root", "models/registry")
+    latest_path = live_risk_confidence_sequence_latest_path(
+        project_root=Path(str(registry_root)).resolve().parent.parent,
+        unit_name=str(settings.daemon.rollout_target_unit),
+    )
+    write_live_risk_confidence_sequence_report(latest_path=latest_path, payload=report)
+    if hasattr(store, "set_checkpoint"):
+        store.set_checkpoint(
+            name="live_risk_confidence_sequence_latest",
+            payload=report,
+            ts_ms=int(ts_ms),
+        )
+    return report
 
 
 def _resolve_stale_online_breaker_recovery(
@@ -1532,9 +1661,18 @@ def handle_strategy_intent(
         halt_action = str(online_threshold.get("halt_action", "")).strip() or action_halt_new_intents
         if halt_action not in {action_halt_new_intents, action_halt_and_cancel_bot_orders}:
             halt_action = action_halt_new_intents
+        halt_reason_codes = [
+            str(item).strip()
+            for item in (online_threshold.get("halt_reason_codes") or [])
+            if str(item).strip()
+        ]
+        if not halt_reason_codes:
+            fallback_reason_code = str(online_threshold.get("halt_reason_code", "")).strip()
+            if fallback_reason_code:
+                halt_reason_codes = [fallback_reason_code]
         arm_breaker_fn(
             store,
-            reason_codes=[str(online_threshold.get("halt_reason_code", ""))],
+            reason_codes=halt_reason_codes,
             source="execution_risk_control_online_halt",
             ts_ms=ts_ms,
             action=halt_action,

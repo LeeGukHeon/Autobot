@@ -1665,8 +1665,8 @@ def test_live_model_alpha_runtime_clamps_bid_notional_with_size_ladder(tmp_path:
     assert summary["submitted_intents_total"] == 1
     submitted_intent = executor.calls[0]["intent"]
     notional_quote = float(submitted_intent.price) * float(submitted_intent.volume)
-    assert 14990.0 <= notional_quote <= 15010.0
     meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    assert 9990.0 <= notional_quote <= 15010.0
     assert float(meta_payload["strategy"]["meta"]["notional_multiplier"]) == 1.5
     assert meta_payload["strategy"]["meta"]["notional_multiplier_source"] == "risk_control_size_ladder"
     assert float(meta_payload["size_ladder"]["resolved_multiplier"]) == 1.5

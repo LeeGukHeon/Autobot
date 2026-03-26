@@ -239,6 +239,8 @@ def test_build_execution_risk_control_selects_feasible_action_value_threshold() 
     assert payload["live_gate"]["mode"] == "safety_executor_only_v1"
     assert payload["live_gate"]["metric_name"] == "edge_to_es_ratio"
     assert payload["live_gate"]["positive_edge_required"] is True
+    assert payload["confidence_sequence_monitors"]["enabled"] is True
+    assert payload["confidence_sequence_monitors"]["mode"] == "time_uniform_chernoff_rate_v1"
     assert payload["size_ladder"]["status"] == "ready"
     assert float(payload["size_ladder"]["global_max_multiplier"]) > 0.0
 
@@ -285,6 +287,25 @@ def test_runtime_recommendations_normalize_keeps_valid_risk_control_contract() -
                     "max_step_up": 2,
                     "confidence_delta": 0.10,
                     "checkpoint_name": "execution_risk_control_online_buffer",
+                },
+                "confidence_sequence_monitors": {
+                    "enabled": True,
+                    "mode": "time_uniform_chernoff_rate_v1",
+                    "confidence_delta": 0.10,
+                    "min_closed_trade_count": 8,
+                    "min_execution_attempt_count": 12,
+                    "nonpositive_rate_threshold": 0.45,
+                    "severe_loss_rate_threshold": 0.20,
+                    "execution_miss_rate_threshold": 0.55,
+                    "edge_gap_breach_rate_threshold": 0.60,
+                    "edge_gap_tolerance_bps": 5.0,
+                    "severe_loss_return_threshold": 0.01,
+                    "nonpositive_rate_reason_code": "RISK_CONTROL_NONPOSITIVE_RATE_CS_BREACH",
+                    "severe_loss_rate_reason_code": "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH",
+                    "execution_miss_rate_reason_code": "EXECUTION_MISS_RATE_CS_BREACH",
+                    "edge_gap_rate_reason_code": "RISK_CONTROL_EDGE_GAP_CS_BREACH",
+                    "feature_divergence_rate_threshold": 0.10,
+                    "feature_divergence_rate_reason_code": "FEATURE_DIVERGENCE_CS_BREACH",
                 },
             },
         }

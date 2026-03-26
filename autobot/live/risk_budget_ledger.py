@@ -384,6 +384,10 @@ def _extract_budget_reason_codes(
             continue
         if text not in reasons:
             reasons.append(text)
+    for item in _as_dict(meta_payload.get("risk_control_online")).get("halt_reason_codes") or []:
+        text = _optional_text(item)
+        if text is not None and text not in reasons:
+            reasons.append(text)
     status_value = str(status).strip().upper()
     if status_value == "REJECTED_ADMISSIBILITY":
         reject_code = _optional_text(admissibility_decision.get("reject_code"))

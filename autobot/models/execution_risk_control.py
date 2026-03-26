@@ -49,6 +49,16 @@ DEFAULT_ONLINE_MARTINGALE_HALT_THRESHOLD = 20.0
 DEFAULT_ONLINE_MARTINGALE_CLEAR_THRESHOLD = 2.0
 DEFAULT_ONLINE_MARTINGALE_ESCALATION_THRESHOLD = 100.0
 DEFAULT_ONLINE_MARTINGALE_BET_FRACTION = 1.0
+DEFAULT_CONFIDENCE_SEQUENCE_MIN_CLOSED_TRADE_COUNT = 8
+DEFAULT_CONFIDENCE_SEQUENCE_MIN_EXECUTION_ATTEMPT_COUNT = 12
+DEFAULT_CONFIDENCE_SEQUENCE_EXECUTION_MISS_RATE_THRESHOLD = 0.55
+DEFAULT_CONFIDENCE_SEQUENCE_EDGE_GAP_BREACH_RATE_THRESHOLD = 0.60
+DEFAULT_CONFIDENCE_SEQUENCE_EDGE_GAP_TOLERANCE_BPS = 5.0
+DEFAULT_CONFIDENCE_SEQUENCE_NONPOSITIVE_RATE_REASON_CODE = "RISK_CONTROL_NONPOSITIVE_RATE_CS_BREACH"
+DEFAULT_CONFIDENCE_SEQUENCE_SEVERE_LOSS_RATE_REASON_CODE = "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH"
+DEFAULT_CONFIDENCE_SEQUENCE_EXECUTION_MISS_RATE_REASON_CODE = "EXECUTION_MISS_RATE_CS_BREACH"
+DEFAULT_CONFIDENCE_SEQUENCE_EDGE_GAP_RATE_REASON_CODE = "RISK_CONTROL_EDGE_GAP_CS_BREACH"
+DEFAULT_CONFIDENCE_SEQUENCE_FEATURE_DIVERGENCE_RATE_REASON_CODE = "FEATURE_DIVERGENCE_CS_BREACH"
 
 
 def build_execution_risk_control_from_oos_rows(
@@ -409,6 +419,25 @@ def build_execution_risk_control_from_oos_rows(
             "confidence_delta": float(delta_value),
             "checkpoint_name": "execution_risk_control_online_buffer",
         },
+        "confidence_sequence_monitors": {
+            "enabled": True,
+            "mode": "time_uniform_chernoff_rate_v1",
+            "confidence_delta": float(delta_value),
+            "min_closed_trade_count": int(DEFAULT_CONFIDENCE_SEQUENCE_MIN_CLOSED_TRADE_COUNT),
+            "min_execution_attempt_count": int(DEFAULT_CONFIDENCE_SEQUENCE_MIN_EXECUTION_ATTEMPT_COUNT),
+            "nonpositive_rate_threshold": float(nonpositive_alpha_value),
+            "severe_loss_rate_threshold": float(severe_alpha_value),
+            "execution_miss_rate_threshold": float(DEFAULT_CONFIDENCE_SEQUENCE_EXECUTION_MISS_RATE_THRESHOLD),
+            "edge_gap_breach_rate_threshold": float(DEFAULT_CONFIDENCE_SEQUENCE_EDGE_GAP_BREACH_RATE_THRESHOLD),
+            "edge_gap_tolerance_bps": float(DEFAULT_CONFIDENCE_SEQUENCE_EDGE_GAP_TOLERANCE_BPS),
+            "severe_loss_return_threshold": float(severe_threshold),
+            "nonpositive_rate_reason_code": DEFAULT_CONFIDENCE_SEQUENCE_NONPOSITIVE_RATE_REASON_CODE,
+            "severe_loss_rate_reason_code": DEFAULT_CONFIDENCE_SEQUENCE_SEVERE_LOSS_RATE_REASON_CODE,
+            "execution_miss_rate_reason_code": DEFAULT_CONFIDENCE_SEQUENCE_EXECUTION_MISS_RATE_REASON_CODE,
+            "edge_gap_rate_reason_code": DEFAULT_CONFIDENCE_SEQUENCE_EDGE_GAP_RATE_REASON_CODE,
+            "feature_divergence_rate_threshold": float(severe_alpha_value),
+            "feature_divergence_rate_reason_code": DEFAULT_CONFIDENCE_SEQUENCE_FEATURE_DIVERGENCE_RATE_REASON_CODE,
+        },
     }
 
 
@@ -560,6 +589,80 @@ def normalize_execution_risk_control_payload(payload: dict[str, Any] | None) -> 
         online_adaptation["confidence_delta"] = float(online_adaptation.get("confidence_delta", 0.0) or 0.0)
         online_adaptation["checkpoint_name"] = str(online_adaptation.get("checkpoint_name", "")).strip()
         normalized["online_adaptation"] = online_adaptation
+    confidence_sequence_monitors = normalized.get("confidence_sequence_monitors")
+    if not isinstance(confidence_sequence_monitors, dict):
+        confidence_sequence_monitors = {
+            "enabled": False,
+            "mode": "",
+            "confidence_delta": 0.0,
+            "min_closed_trade_count": DEFAULT_CONFIDENCE_SEQUENCE_MIN_CLOSED_TRADE_COUNT,
+            "min_execution_attempt_count": DEFAULT_CONFIDENCE_SEQUENCE_MIN_EXECUTION_ATTEMPT_COUNT,
+            "nonpositive_rate_threshold": 0.0,
+            "severe_loss_rate_threshold": 0.0,
+            "execution_miss_rate_threshold": 0.0,
+            "edge_gap_breach_rate_threshold": 0.0,
+            "edge_gap_tolerance_bps": 0.0,
+            "severe_loss_return_threshold": 0.0,
+            "nonpositive_rate_reason_code": "",
+            "severe_loss_rate_reason_code": "",
+            "execution_miss_rate_reason_code": "",
+            "edge_gap_rate_reason_code": "",
+            "feature_divergence_rate_threshold": 0.0,
+            "feature_divergence_rate_reason_code": "",
+        }
+        normalized["confidence_sequence_monitors"] = confidence_sequence_monitors
+        backfilled_fields.append("confidence_sequence_monitors")
+    if isinstance(confidence_sequence_monitors, dict):
+        confidence_sequence_monitors["enabled"] = bool(confidence_sequence_monitors.get("enabled", False))
+        confidence_sequence_monitors["mode"] = str(confidence_sequence_monitors.get("mode", "")).strip()
+        confidence_sequence_monitors["confidence_delta"] = float(
+            confidence_sequence_monitors.get("confidence_delta", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["min_closed_trade_count"] = int(
+            confidence_sequence_monitors.get("min_closed_trade_count", DEFAULT_CONFIDENCE_SEQUENCE_MIN_CLOSED_TRADE_COUNT)
+            or DEFAULT_CONFIDENCE_SEQUENCE_MIN_CLOSED_TRADE_COUNT
+        )
+        confidence_sequence_monitors["min_execution_attempt_count"] = int(
+            confidence_sequence_monitors.get("min_execution_attempt_count", DEFAULT_CONFIDENCE_SEQUENCE_MIN_EXECUTION_ATTEMPT_COUNT)
+            or DEFAULT_CONFIDENCE_SEQUENCE_MIN_EXECUTION_ATTEMPT_COUNT
+        )
+        confidence_sequence_monitors["nonpositive_rate_threshold"] = float(
+            confidence_sequence_monitors.get("nonpositive_rate_threshold", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["severe_loss_rate_threshold"] = float(
+            confidence_sequence_monitors.get("severe_loss_rate_threshold", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["execution_miss_rate_threshold"] = float(
+            confidence_sequence_monitors.get("execution_miss_rate_threshold", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["edge_gap_breach_rate_threshold"] = float(
+            confidence_sequence_monitors.get("edge_gap_breach_rate_threshold", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["edge_gap_tolerance_bps"] = float(
+            confidence_sequence_monitors.get("edge_gap_tolerance_bps", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["severe_loss_return_threshold"] = float(
+            confidence_sequence_monitors.get("severe_loss_return_threshold", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["nonpositive_rate_reason_code"] = str(
+            confidence_sequence_monitors.get("nonpositive_rate_reason_code", "")
+        ).strip()
+        confidence_sequence_monitors["severe_loss_rate_reason_code"] = str(
+            confidence_sequence_monitors.get("severe_loss_rate_reason_code", "")
+        ).strip()
+        confidence_sequence_monitors["execution_miss_rate_reason_code"] = str(
+            confidence_sequence_monitors.get("execution_miss_rate_reason_code", "")
+        ).strip()
+        confidence_sequence_monitors["edge_gap_rate_reason_code"] = str(
+            confidence_sequence_monitors.get("edge_gap_rate_reason_code", "")
+        ).strip()
+        confidence_sequence_monitors["feature_divergence_rate_threshold"] = float(
+            confidence_sequence_monitors.get("feature_divergence_rate_threshold", 0.0) or 0.0
+        )
+        confidence_sequence_monitors["feature_divergence_rate_reason_code"] = str(
+            confidence_sequence_monitors.get("feature_divergence_rate_reason_code", "")
+        ).strip()
+        normalized["confidence_sequence_monitors"] = confidence_sequence_monitors
     size_ladder = normalized.get("size_ladder")
     if isinstance(size_ladder, dict):
         normalized["size_ladder"] = _normalize_size_ladder(size_ladder)

@@ -236,6 +236,7 @@ async def run_live_model_alpha_runtime(
     live_counterfactual_log_path = _resolve_live_counterfactual_action_log_path(settings=settings)
     live_risk_budget_ledger_path = _resolve_live_risk_budget_ledger_path(settings=settings)
     live_risk_budget_latest_path = _resolve_live_risk_budget_latest_path(settings=settings)
+    live_risk_confidence_sequence_path = _resolve_live_risk_confidence_sequence_path(settings=settings)
     reset_opportunity_log(live_opportunity_log_path)
     reset_counterfactual_action_log(live_counterfactual_log_path)
     initialize_live_risk_budget_ledger(
@@ -249,7 +250,15 @@ async def run_live_model_alpha_runtime(
     summary["counterfactual_action_log_path"] = str(live_counterfactual_log_path)
     summary["risk_budget_ledger_path"] = str(live_risk_budget_ledger_path)
     summary["risk_budget_latest_path"] = str(live_risk_budget_latest_path)
+    summary["risk_confidence_sequence_path"] = str(live_risk_confidence_sequence_path)
     summary["order_execution_backfill"] = backfill_order_execution_details(store=store, client=client)
+    _runtime_execute.write_live_confidence_sequence_artifact(
+        store=store,
+        settings=settings,
+        run_id=str(predictor.run_dir.name),
+        risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
+        ts_ms=int(time.time() * 1000),
+    )
     resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
         predictor=predictor,
         settings=settings.model_alpha,
@@ -500,6 +509,13 @@ async def run_live_model_alpha_runtime(
                             summary["submitted_intents_total"] = int(summary["submitted_intents_total"]) + 1
                         else:
                             summary["skipped_intents_total"] = int(summary["skipped_intents_total"]) + 1
+                    _runtime_execute.write_live_confidence_sequence_artifact(
+                        store=store,
+                        settings=settings,
+                        run_id=str(predictor.run_dir.name),
+                        risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
+                        ts_ms=int(decision_ts_ms),
+                    )
                     last_model_decision_ts_ms = decision_ts_ms
                 next_decision_at = now_monotonic + max(float(settings.decision_interval_sec), 0.2)
 
@@ -548,6 +564,13 @@ async def run_live_model_alpha_runtime(
                     settings=daemon_settings,
                     report=cycle_result["report"],
                     prior_cancel_summary=cycle_result["cancel_summary"],
+                    ts_ms=int(time.time() * 1000),
+                )
+                _runtime_execute.write_live_confidence_sequence_artifact(
+                    store=store,
+                    settings=settings,
+                    run_id=str(predictor.run_dir.name),
+                    risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
                     ts_ms=int(time.time() * 1000),
                 )
                 known_positions = _apply_position_sync_to_strategy(
@@ -700,6 +723,13 @@ def _resolve_live_risk_budget_latest_path(*, settings: LiveModelAlphaRuntimeSett
     return _resolve_live_risk_budget_ledger_path(settings=settings).with_name("latest.json")
 
 
+def _resolve_live_risk_confidence_sequence_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
+    return _runtime_execute.live_risk_confidence_sequence_latest_path(
+        project_root=Path(str(settings.daemon.registry_root)).resolve().parent.parent,
+        unit_name=str(settings.daemon.rollout_target_unit),
+    )
+
+
 def _startup_sync(
     *,
     store: LiveStateStore,
@@ -839,6 +869,11 @@ def _startup_online_risk_recovery(
         reason_code = str(value).strip().upper()
         if reason_code and reason_code not in cleared_reason_codes:
             cleared_reason_codes.append(reason_code)
+    confidence_sequence = dict(online_threshold.get("confidence_sequence") or {})
+    for value in list(confidence_sequence.get("clear_reason_codes") or []):
+        reason_code = str(value).strip().upper()
+        if reason_code and reason_code not in cleared_reason_codes:
+            cleared_reason_codes.append(reason_code)
     if not bool(online_threshold.get("halt_triggered")):
         for reason_code in active_online_reason_codes:
             if reason_code not in cleared_reason_codes:
@@ -863,6 +898,7 @@ def _startup_online_risk_recovery(
         "active_online_reason_codes": active_online_reason_codes,
         "cleared_reason_codes": cleared_reason_codes,
         "online_threshold": online_threshold,
+        "confidence_sequence": confidence_sequence,
     }
 
 
