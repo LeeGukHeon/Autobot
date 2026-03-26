@@ -1356,6 +1356,7 @@ def test_model_alpha_execution_frontier_blocks_no_trade_region_when_all_stages_a
     assert opportunity.chosen_action == "NO_TRADE"
     assert opportunity.chosen_action_propensity == 1.0
     assert opportunity.no_trade_action_propensity == 1.0
+    assert {item["action_code"] for item in opportunity.candidate_actions_json} >= {"PASSIVE_MAKER", "JOIN", "NO_TRADE"}
     assert any(item["action_code"] == "NO_TRADE" and item["propensity"] == 1.0 for item in opportunity.candidate_actions_json)
 
 

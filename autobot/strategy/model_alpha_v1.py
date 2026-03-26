@@ -1278,7 +1278,7 @@ def _resolve_runtime_execution_profile(
             "validation_comparable": bool(stage.get("validation_comparable", False)),
         }
         decision["evaluated_stages"].append(evaluation)
-        if float(net_edge_bps) > 0.0:
+        if float(net_edge_bps) > 0.0 and selected_stage is None:
             selected_stage = stage
             decision["selected_stage"] = stage_name
             decision["selected_net_edge_bps"] = float(net_edge_bps)
@@ -1290,7 +1290,6 @@ def _resolve_runtime_execution_profile(
             decision["selected_price_mode"] = str(stage.get("recommended_price_mode", "")).strip().upper()
             decision["status"] = "selected"
             decision["reason_code"] = f"EXECUTION_STAGE_{stage_name}"
-            break
     if selected_stage is None:
         if positive_edge_required:
             decision["status"] = "blocked"
@@ -1841,7 +1840,7 @@ def _build_counterfactual_candidate_actions(
             "expected_miss_cost_bps": None,
             "expected_time_to_fill_ms": 0.0,
             "validation_comparable": False,
-            "skip_reason_code": str(skip_reason_code).strip() or None,
+            "skip_reason_code": (str(skip_reason_code).strip() if skip_reason_code is not None else None) or None,
         }
     )
     return rows
