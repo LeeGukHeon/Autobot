@@ -349,6 +349,27 @@ def test_build_parser_supports_v5_panel_ensemble_trainer_choice() -> None:
     assert args.label_set == "v3"
 
 
+def test_build_parser_supports_v5_sequence_trainer_choice() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "model",
+            "train",
+            "--trainer",
+            "v5_sequence",
+            "--sequence-backbone",
+            "patchtst",
+            "--sequence-pretrain-method",
+            "ts2vec_like",
+        ]
+    )
+
+    assert args.command == "model"
+    assert args.model_command == "train"
+    assert args.trainer == "v5_sequence"
+    assert args.sequence_backbone == "patchtst"
+
+
 def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> None:
     args = argparse.Namespace(
         backtest_command="alpha",
