@@ -1369,8 +1369,12 @@ def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_
         {
             "last_entry": {
                 "ts_ms": int(time.time() * 1000),
-                "skip_reason": "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL",
+                "skip_reason": None,
                 "budget_reason_codes": ["PORTFOLIO_BUDGET_BELOW_MIN_TOTAL", "PORTFOLIO_SPREAD_HAIRCUT"],
+                "portfolio_budget_control": {
+                    "warning_only": True,
+                    "warning_reason_codes": ["CANARY_PORTFOLIO_BUDGET_NOT_APPLIED", "PORTFOLIO_SPREAD_HAIRCUT"],
+                },
             }
         },
     )
@@ -1392,7 +1396,7 @@ def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_
     assert suppressor["active"] is False
     assert suppressor["current_reason_codes"] == []
     assert suppressor["warning_active"] is True
-    assert "CANARY_SPREAD_MIN_TOTAL_SKIP" in suppressor["warning_reason_codes"]
+    assert "CANARY_PORTFOLIO_BUDGET_NOT_APPLIED" in suppressor["warning_reason_codes"]
     assert suppressor["portfolio_budget"]["canary_warning_only"] is True
 
 

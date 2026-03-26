@@ -1749,6 +1749,90 @@ def test_live_model_alpha_runtime_clamps_bid_notional_with_portfolio_budget(tmp_
     assert float(((meta_payload.get("admissibility") or {}).get("decision") or {}).get("adjusted_notional")) == pytest.approx(5497.251374312844)
 
 
+def test_live_model_alpha_runtime_canary_does_not_apply_spread_budget_haircut(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    predictor = SimpleNamespace(run_dir=Path("run-live"), runtime_recommendations={})
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: predictor)
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+
+    class _CanarySpreadStrategy:
+        def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+            _ = ts_ms, active_markets, latest_prices, open_markets
+            return StrategyStepResult(
+                intents=(
+                    StrategyOrderIntent(
+                        market="KRW-BTC",
+                        side="bid",
+                        ref_price=50_000_000.0,
+                        reason_code="MODEL_ALPHA_ENTRY_V1",
+                        prob=0.91,
+                        score=0.91,
+                        meta={
+                            "model_prob": 0.91,
+                            "notional_multiplier": 0.56,
+                            "state_features": {"m_spread_proxy": 35.0},
+                            "trade_action": {"recommended_action": "risk", "expected_edge": 0.012},
+                        },
+                    ),
+                ),
+                scored_rows=1,
+                eligible_rows=1,
+                selected_rows=1,
+            )
+
+        def on_fill(self, event):  # noqa: ANN201
+            _ = event
+
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _CanarySpreadStrategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="canary", canary=True)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="canary",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    budget_payload = dict(meta_payload.get("portfolio_budget") or {})
+    assert budget_payload["warning_only"] is True
+    assert budget_payload["enforcement_mode"] == "warning_only"
+    assert "CANARY_PORTFOLIO_BUDGET_NOT_APPLIED" in list(budget_payload.get("warning_reason_codes") or [])
+    assert float(budget_payload["resolved_notional_quote"]) == pytest.approx(5600.0)
+    assert float(budget_payload["diagnostic_resolved_notional_quote"]) == pytest.approx(4200.0)
+
+
 def test_live_model_alpha_runtime_steps_up_threshold_from_recent_losses(tmp_path: Path, monkeypatch) -> None:
     import autobot.live.model_alpha_runtime as runtime_module
 

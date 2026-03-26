@@ -68,9 +68,10 @@ def resolve_portfolio_risk_budget(
 
     soft_haircut = min(confidence_haircut, liquidity_haircut, streak_haircut)
     max_notional_quote = max(structural_cap_quote, 0.0)
-    resolved_notional_quote = min(target_quote, max_notional_quote) * float(soft_haircut)
-    resolved_notional_quote = min(resolved_notional_quote, max_notional_quote)
-    resolved_notional_quote = max(resolved_notional_quote, 0.0)
+    structural_resolved_notional_quote = max(min(target_quote, max_notional_quote), 0.0)
+    diagnostic_resolved_notional_quote = structural_resolved_notional_quote * float(soft_haircut)
+    diagnostic_resolved_notional_quote = min(diagnostic_resolved_notional_quote, max_notional_quote)
+    diagnostic_resolved_notional_quote = max(diagnostic_resolved_notional_quote, 0.0)
 
     reason_codes: list[str] = []
     if gross_budget_remaining_quote + 1e-12 < target_quote and "PORTFOLIO_GROSS_BUDGET_CLAMP" not in reason_codes:
@@ -91,6 +92,27 @@ def resolve_portfolio_risk_budget(
             reason_codes.append(code)
     if confidence_haircut < 0.999999 and "PORTFOLIO_CONFIDENCE_HAIRCUT" not in reason_codes:
         reason_codes.append("PORTFOLIO_CONFIDENCE_HAIRCUT")
+
+    enforcement_mode = "enforced"
+    warning_only = False
+    warning_reason_codes: list[str] = []
+    resolved_notional_quote = float(diagnostic_resolved_notional_quote)
+    min_effective_total = max(min_total_value, 1.0)
+    soft_reduction_present = bool(diagnostic_resolved_notional_quote + 1e-12 < structural_resolved_notional_quote)
+    if rollout_mode_value == "canary" and structural_resolved_notional_quote >= min_effective_total and soft_reduction_present:
+        enforcement_mode = "warning_only"
+        warning_only = True
+        warning_reason_codes.append("CANARY_PORTFOLIO_BUDGET_NOT_APPLIED")
+        for code in reason_codes:
+            if code in {
+                "PORTFOLIO_SPREAD_HAIRCUT",
+                "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT",
+                "PORTFOLIO_CONFIDENCE_HAIRCUT",
+                "PORTFOLIO_LIQUIDITY_HAIRCUT",
+                "PORTFOLIO_VOLATILITY_HAIRCUT",
+            } and code not in warning_reason_codes:
+                warning_reason_codes.append(code)
+        resolved_notional_quote = float(structural_resolved_notional_quote)
 
     allowed = bool(resolved_notional_quote >= max(min_total_value, 1.0))
     primary_reason_code = ""
@@ -116,12 +138,17 @@ def resolve_portfolio_risk_budget(
     return {
         "enabled": True,
         "allowed": bool(allowed),
+        "enforcement_mode": str(enforcement_mode),
+        "warning_only": bool(warning_only),
+        "warning_reason_codes": warning_reason_codes,
         "primary_reason_code": str(primary_reason_code).strip(),
         "risk_reason_codes": reason_codes,
         "market": market_value,
         "side": side_value,
         "target_notional_quote": float(target_quote),
         "resolved_notional_quote": float(resolved_notional_quote),
+        "diagnostic_resolved_notional_quote": float(diagnostic_resolved_notional_quote),
+        "structural_resolved_notional_quote": float(structural_resolved_notional_quote),
         "max_notional_quote": float(max_notional_quote),
         "position_budget_fraction": position_budget_fraction,
         "gross_cap_quote": float(gross_cap_quote),
@@ -130,6 +157,7 @@ def resolve_portfolio_risk_budget(
         "cluster_budget_remaining_quote": float(cluster_budget_remaining_quote),
         "available_quote_to_use": float(quote_free_value),
         "budget_clamped": bool(resolved_notional_quote + 1e-12 < target_quote),
+        "soft_budget_clamped": bool(diagnostic_resolved_notional_quote + 1e-12 < target_quote),
         "confidence_haircut": float(confidence_haircut),
         "liquidity_haircut": float(liquidity_haircut),
         "recent_loss_streak_haircut": float(streak_haircut),

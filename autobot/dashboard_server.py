@@ -722,6 +722,7 @@ def _load_live_suppressor_state(
         )
         if str(item).strip()
     ]
+    portfolio_budget_control = dict(budget_last_entry.get("portfolio_budget_control") or {})
     confidence_triggered = bool(confidence_latest.get("halt_triggered"))
     confidence_ts_ms = _coerce_int(confidence_latest.get("ts_ms"))
     confidence_fresh_after_reset = not (
@@ -734,27 +735,15 @@ def _load_live_suppressor_state(
         for item in (confidence_latest.get("triggered_reason_codes") or [])
         if str(item).strip()
     ]
-    is_canary_service = str(service_key or "").strip().lower() == "live_candidate"
     recent_loss_active = budget_fresh_after_reset and any(code == "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" for code in budget_reason_codes)
     spread_active = budget_fresh_after_reset and any(code == "PORTFOLIO_SPREAD_HAIRCUT" for code in budget_reason_codes)
     portfolio_blocked = budget_fresh_after_reset and str(budget_last_entry.get("skip_reason") or "").strip() == "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL"
-    canary_warning_only = bool(
-        is_canary_service
-        and portfolio_blocked
-        and spread_active
-        and not recent_loss_active
-        and not (confidence_triggered and confidence_fresh_after_reset)
-        and all(
-            code in {"PORTFOLIO_BUDGET_BELOW_MIN_TOTAL", "PORTFOLIO_SPREAD_HAIRCUT"}
-            for code in budget_reason_codes
-        )
-    )
-    warning_reason_codes: list[str] = []
-    if canary_warning_only:
-        warning_reason_codes.append("CANARY_SPREAD_MIN_TOTAL_SKIP")
-        for code in budget_reason_codes:
-            if code not in warning_reason_codes:
-                warning_reason_codes.append(code)
+    canary_warning_only = bool(portfolio_budget_control.get("warning_only", False))
+    warning_reason_codes: list[str] = [
+        str(item).strip()
+        for item in (portfolio_budget_control.get("warning_reason_codes") or [])
+        if str(item).strip()
+    ]
     suppressor_active = (
         (confidence_triggered and confidence_fresh_after_reset)
         or recent_loss_active
@@ -790,6 +779,7 @@ def _load_live_suppressor_state(
             "spread_haircut_active": bool(spread_active),
             "portfolio_blocked": bool(portfolio_blocked),
             "canary_warning_only": bool(canary_warning_only),
+            "control": portfolio_budget_control,
             "ts_ms": budget_entry_ts_ms,
             "stale_before_reset": bool(risk_budget_latest) and not bool(budget_fresh_after_reset),
         },

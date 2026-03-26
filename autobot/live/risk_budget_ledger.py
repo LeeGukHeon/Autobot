@@ -205,6 +205,20 @@ def build_live_risk_budget_entry(
             "risk_control_online_halt_triggered": bool(risk_control_online.get("halt_triggered", False)),
         },
         "budget_reason_codes": budget_reason_codes,
+        "portfolio_budget_control": {
+            "enabled": bool(portfolio_budget.get("enabled", False)),
+            "allowed": bool(portfolio_budget.get("allowed", True)),
+            "enforcement_mode": _optional_text(portfolio_budget.get("enforcement_mode")),
+            "warning_only": bool(portfolio_budget.get("warning_only", False)),
+            "warning_reason_codes": [
+                _optional_text(item)
+                for item in (portfolio_budget.get("warning_reason_codes") or [])
+                if _optional_text(item) is not None
+            ],
+            "resolved_notional_quote": _safe_optional_float(portfolio_budget.get("resolved_notional_quote")),
+            "diagnostic_resolved_notional_quote": _safe_optional_float(portfolio_budget.get("diagnostic_resolved_notional_quote")),
+            "structural_resolved_notional_quote": _safe_optional_float(portfolio_budget.get("structural_resolved_notional_quote")),
+        },
         "sizing": {
             "base_budget_quote": base_budget_value,
             "position_budget_fraction": position_budget_fraction,
@@ -341,6 +355,8 @@ def _resolve_entry_state(
         return "risk_blocked"
     if portfolio_budget and not bool(portfolio_budget.get("allowed", True)):
         return "portfolio_blocked"
+    if portfolio_budget and bool(portfolio_budget.get("warning_only", False)):
+        return "canary_warning"
     if portfolio_budget and bool(portfolio_budget.get("budget_clamped", False)):
         return "sized_down"
     if status_value in {"SKIPPED", "REJECTED_ADMISSIBILITY"}:

@@ -135,6 +135,32 @@ def test_resolve_portfolio_risk_budget_applies_recent_loss_streak_haircut(tmp_pa
     assert "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" in payload["risk_reason_codes"]
 
 
+def test_resolve_portfolio_risk_budget_canary_bypasses_soft_haircuts_but_keeps_warning(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        payload = resolve_portfolio_risk_budget(
+            store=store,
+            market="KRW-XRP",
+            side="bid",
+            target_notional_quote=5_600.0,
+            base_budget_quote=10_000.0,
+            quote_free=20_000.0,
+            min_total_krw=5_000.0,
+            effective_max_positions=1,
+            rollout_mode="canary",
+            state_features={"spread_bps": 35.0},
+            runtime_model_run_id="run-live",
+        )
+
+    assert payload["allowed"] is True
+    assert payload["warning_only"] is True
+    assert payload["enforcement_mode"] == "warning_only"
+    assert "CANARY_PORTFOLIO_BUDGET_NOT_APPLIED" in payload["warning_reason_codes"]
+    assert "PORTFOLIO_SPREAD_HAIRCUT" in payload["warning_reason_codes"]
+    assert payload["resolved_notional_quote"] == 5_600.0
+    assert payload["diagnostic_resolved_notional_quote"] == 4_200.0
+    assert payload["soft_budget_clamped"] is True
+
+
 def test_resolve_portfolio_risk_budget_ignores_pre_reset_loss_streak_history(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         store.upsert_trade_journal(

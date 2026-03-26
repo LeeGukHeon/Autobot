@@ -51,6 +51,7 @@
     PORTFOLIO_SPREAD_HAIRCUT: "스프레드 악화로 보수 감액",
     PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT: "최근 손실 연속으로 보수 감액",
     CANARY_SPREAD_MIN_TOTAL_SKIP: "카나리아 소액 lane이라 최소 주문 금액 미달 스킵",
+    CANARY_PORTFOLIO_BUDGET_NOT_APPLIED: "카나리아에서는 포트폴리오 예산 삭감을 실제 주문에 적용하지 않음",
     RISK_CONTROL_NONPOSITIVE_RATE_CS_BREACH: "비수익 비율 신뢰수열 한계 초과",
     RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH: "큰 손실 비율 신뢰수열 한계 초과",
     EXECUTION_MISS_RATE_CS_BREACH: "미체결 비율 신뢰수열 한계 초과",
