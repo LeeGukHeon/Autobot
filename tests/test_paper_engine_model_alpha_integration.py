@@ -272,6 +272,7 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
     summary_json = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")
+    assert summary_json["execution_ope_report_path"].endswith("execution_ope_report.json")
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

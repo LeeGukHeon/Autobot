@@ -23,6 +23,7 @@ from autobot.common.opportunity_log import (
     reset_opportunity_log,
 )
 from autobot.common.execution_structure import build_intent_outcomes_from_trade_csv
+from autobot.models.offpolicy_evaluation import write_execution_dr_ope_report
 from autobot.execution.intent import OrderIntent, new_order_intent
 from autobot.execution.order_supervisor import (
     PRICE_MODE_CROSS_1T,
@@ -1569,7 +1570,6 @@ class PaperRunEngine:
         summary_payload["warmup_trade_events_total"] = int(warmup_trade_events_total)
         summary_payload["micro_cache_markets_with_samples"] = int(warmup_markets_with_samples)
         summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))
-        _write_json(path=run_root / "summary.json", payload=summary_payload)
         _write_json(
             path=run_root / "micro_gate_blocked.json",
             payload={
@@ -1630,6 +1630,13 @@ class PaperRunEngine:
             counterfactual_log_path=run_root / "counterfactual_action_log.jsonl",
             outcome_by_intent=build_intent_outcomes_from_trade_csv(run_root / "trades.csv"),
         )
+        summary_payload["execution_ope_report_path"] = str(
+            write_execution_dr_ope_report(
+                run_dir=run_root,
+                execution_contract=dict(self._runtime_state.get("execution_contract") or {}),
+            )
+        )
+        _write_json(path=run_root / "summary.json", payload=summary_payload)
         return summary
 
     def _run_model_alpha_cycle(

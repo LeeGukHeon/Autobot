@@ -144,6 +144,7 @@ from .models import (
     train_and_register_v4_crypto_cs,
     train_and_register_v5_panel_ensemble,
 )
+from .models.offpolicy_evaluation import write_execution_dr_ope_report
 from .models.registry import promote_run_to_champion
 from .strategy import TopTradeValueScanner
 from .strategy.model_alpha_v1 import (
@@ -779,6 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
     model_compare_parser.add_argument("--split", default="test", choices=("train", "valid", "test"))
     model_compare_parser.add_argument("--start", help="Start date YYYY-MM-DD")
     model_compare_parser.add_argument("--end", help="End date YYYY-MM-DD")
+
+    model_ope_parser = model_subparsers.add_parser("ope-execution", help="Build execution DR-OPE report from run artifacts.")
+    model_ope_parser.add_argument("--run-dir", required=True, help="Backtest/paper run directory containing opportunity/counterfactual logs.")
+    model_ope_parser.add_argument("--execution-contract-artifact", help="Optional execution-contract artifact path.")
+    model_ope_parser.add_argument("--weight-clip", type=float, default=10.0)
+    model_ope_parser.add_argument("--out", help="Optional output path override.")
 
     model_audit_parser = model_subparsers.add_parser("audit", help="Audit registered model metrics against sklearn.")
     model_audit_parser.add_argument("--model-ref", default="latest", help="latest|champion|run_id|run_dir")
@@ -2642,6 +2649,25 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 end=(str(args.end).strip() if args.end else None),
             )
             _print_json(result)
+            return 0
+
+        if args.model_command == "ope-execution":
+            artifact_path = Path(str(args.execution_contract_artifact)) if getattr(args, "execution_contract_artifact", None) else None
+            execution_contract = {}
+            if artifact_path is not None and artifact_path.exists():
+                raw = load_json(artifact_path)
+                if isinstance(raw.get("execution_contract"), dict):
+                    execution_contract = dict(raw.get("execution_contract") or {})
+                elif isinstance(raw, dict):
+                    execution_contract = dict(raw)
+            output_path = Path(str(args.out)) if getattr(args, "out", None) else None
+            report_path = write_execution_dr_ope_report(
+                run_dir=Path(str(args.run_dir)),
+                execution_contract=execution_contract,
+                output_path=output_path,
+                weight_clip=max(float(args.weight_clip), 1.0),
+            )
+            print(f"[model][ope-execution] path={report_path}")
             return 0
 
         if args.model_command == "audit":

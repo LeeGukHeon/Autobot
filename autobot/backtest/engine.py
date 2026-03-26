@@ -40,6 +40,7 @@ from autobot.execution.order_supervisor import (
     percentile,
     slippage_bps,
 )
+from autobot.models.offpolicy_evaluation import write_execution_dr_ope_report
 from autobot.paper.sim_exchange import (
     FillEvent,
     MarketRules,
@@ -1163,7 +1164,6 @@ class BacktestRunEngine:
         summary_payload["opportunity_log_path"] = str(run_root / "opportunity_log.jsonl")
         summary_payload["counterfactual_action_log_path"] = str(run_root / "counterfactual_action_log.jsonl")
         summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))
-        write_summary_json(run_root, summary_payload)
         if not summary_only_artifacts:
             _write_json(
                 path=run_root / "micro_gate_blocked.json",
@@ -1262,6 +1262,15 @@ class BacktestRunEngine:
                 counterfactual_log_path=run_root / "counterfactual_action_log.jsonl",
                 outcome_by_intent=build_intent_outcomes_from_trade_csv(run_root / "trades.csv"),
             )
+            summary_payload["execution_ope_report_path"] = str(
+                write_execution_dr_ope_report(
+                    run_dir=run_root,
+                    execution_contract=dict(self._runtime_state.get("execution_contract") or {}),
+                )
+            )
+        else:
+            summary_payload["execution_ope_report_path"] = ""
+        write_summary_json(run_root, summary_payload)
         return summary
 
     def _run_candidate_cycle(
