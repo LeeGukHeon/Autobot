@@ -470,8 +470,9 @@ def _resolve_context_end_ts_ms(*, anchor_ts_ms: int, second_frame: pl.DataFrame,
 
 
 def _build_second_tensor(*, frame: pl.DataFrame, anchor_ts_ms: int, lookback_steps: int) -> tuple[np.ndarray, np.ndarray, float]:
-    start_ts_ms = anchor_ts_ms - ((max(int(lookback_steps), 1) - 1) * 1_000)
-    selected = _slice_rows(frame=frame, start_ts_ms=start_ts_ms, end_ts_ms=anchor_ts_ms)
+    selected = _slice_rows(frame=frame, start_ts_ms=None, end_ts_ms=anchor_ts_ms)
+    if selected.height > max(int(lookback_steps), 1):
+        selected = selected.tail(max(int(lookback_steps), 1))
     rows = []
     prev_close: float | None = None
     for row in selected.iter_rows(named=True):
