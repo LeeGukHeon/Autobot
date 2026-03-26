@@ -119,6 +119,30 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(f"[ops][data-contract-registry] path={report_path}")
                 sys.exit(0)
 
+            if tuple(args[:3]) == ("-m", "autobot.ops.live_feature_parity_report", "--project-root"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "live_feature_parity_report.json"
+                write_json(
+                    report_path,
+                    {
+                        "artifact_version": 1,
+                        "policy": "live_feature_parity_report_v1",
+                        "sampled_pairs": 1,
+                        "compared_pairs": 1,
+                        "passing_pairs": 1,
+                        "acceptable": True,
+                        "status": "PASS",
+                        "details": [],
+                    },
+                )
+                append_log(
+                    {
+                        "command": "live feature parity",
+                        "project_root": arg_value("--project-root"),
+                    }
+                )
+                print(f"[ops][live-feature-parity] path={report_path}")
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "train"):
                 family = arg_value("--model-family", "train_v4_crypto_cs")
                 registry_dir = ROOT / "models" / "registry" / family

@@ -85,6 +85,7 @@ def test_build_pointer_consistency_report_is_healthy_for_aligned_candidate_state
         {
             "candidate_run_id": "run-3",
             "champion_run_id_at_start": "run-1",
+            "started_ts_ms": 10_000,
             "started_at_utc": "2026-03-25T00:00:00Z",
             "lane_mode": "promotion_strict",
             "promotion_eligible": True,
@@ -112,6 +113,46 @@ def test_build_pointer_consistency_report_is_healthy_for_aligned_candidate_state
     assert report["summary"]["status"] == "healthy"
     assert report["summary"]["violation_count"] == 0
     assert report["summary"]["warning_count"] == 0
+
+
+def test_build_pointer_consistency_report_flags_missing_current_state_contract_fields(tmp_path: Path) -> None:
+    project_root = tmp_path
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(family_dir / "champion.json", {"run_id": "run-1"})
+    _write_json(family_dir / "latest.json", {"run_id": "run-2"})
+    _write_json(family_dir / "latest_candidate.json", {"run_id": "run-3"})
+    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-3", "model_family": "train_v4_crypto_cs"})
+    (family_dir / "run-1").mkdir(parents=True, exist_ok=True)
+    (family_dir / "run-2").mkdir(parents=True, exist_ok=True)
+    (family_dir / "run-3").mkdir(parents=True, exist_ok=True)
+    _write_json(
+        project_root / "logs" / "model_v4_challenger" / "current_state.json",
+        {
+            "candidate_run_id": "run-3",
+            "champion_run_id_at_start": "",
+            "lane_mode": "",
+        },
+    )
+
+    original_systemd = pointer_module._systemd_topology_snapshot
+    pointer_module._systemd_topology_snapshot = lambda: {
+        "available": True,
+        "services": [],
+        "timers": [],
+        "unit_files": [],
+        "errors": {},
+    }
+    try:
+        report = build_pointer_consistency_report(project_root=project_root, ts_ms=10_000)
+    finally:
+        pointer_module._systemd_topology_snapshot = original_systemd
+
+    assert report["summary"]["status"] == "violation"
+    assert "CURRENT_STATE_CHAMPION_BASELINE_MISSING" in report["summary"]["violation_codes"]
+    assert "CURRENT_STATE_STARTED_TS_MISSING" in report["summary"]["violation_codes"]
+    assert "CURRENT_STATE_LANE_MODE_MISSING" in report["summary"]["violation_codes"]
 
 
 def test_write_pointer_consistency_report_uses_default_output_path(tmp_path: Path) -> None:

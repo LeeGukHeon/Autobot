@@ -218,3 +218,50 @@ def test_server_preflight_checks_expected_unit_states_and_state_db_paths(tmp_pat
     assert report["required_state_db_paths"] == ["data/state/live_candidate/live_state.db"]
     assert "UNIT_FILE_STATE_EXPECTATION_OK" not in report["summary"]["violation_codes"]
     assert "STATE_DB_PATH_MISSING" not in report["summary"]["violation_codes"]
+
+
+def test_server_preflight_fails_on_pointer_report_only_violation(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(family_dir / "champion.json", {"run_id": "run-001"})
+    _write_json(family_dir / "latest.json", {"run_id": "run-002"})
+    _write_json(family_dir / "latest_candidate.json", {"run_id": "run-003"})
+    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-002", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-003", "model_family": "train_v4_crypto_cs"})
+    (family_dir / "run-001").mkdir(parents=True, exist_ok=True)
+    (family_dir / "run-002").mkdir(parents=True, exist_ok=True)
+    (family_dir / "run-003").mkdir(parents=True, exist_ok=True)
+    _write_json(
+        project_root / "logs" / "model_v4_challenger" / "current_state.json",
+        {
+            "candidate_run_id": "run-003",
+            "champion_run_id_at_start": "",
+            "lane_mode": "",
+        },
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-RequiredPointers",
+            "champion",
+            "-CheckCandidateStateConsistency",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2, completed.stdout + "\n" + completed.stderr
+    report = json.loads((project_root / "logs" / "ops" / "server_preflight" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["summary"]["status"] == "violation"
+    assert "POINTER_CONSISTENCY_VIOLATION" in report["summary"]["violation_codes"]

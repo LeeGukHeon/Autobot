@@ -33,6 +33,8 @@ def _make_fake_python_exe(
     write_feature_validate_report: bool = True,
     feature_validate_fail_files: int = 0,
     feature_validate_leakage_smoke: str = "PASS",
+    write_live_feature_parity_report: bool = True,
+    live_feature_parity_acceptable: bool = True,
     write_trainer_research_evidence: bool = True,
     write_latest_candidate_pointer: bool = True,
     emit_train_run_dir: bool = True,
@@ -66,6 +68,8 @@ def _make_fake_python_exe(
             WRITE_FEATURE_VALIDATE_REPORT = {str(write_feature_validate_report)}
             FEATURE_VALIDATE_FAIL_FILES = {int(feature_validate_fail_files)}
             FEATURE_VALIDATE_LEAKAGE_SMOKE = {feature_validate_leakage_smoke!r}
+            WRITE_LIVE_FEATURE_PARITY_REPORT = {str(write_live_feature_parity_report)}
+            LIVE_FEATURE_PARITY_ACCEPTABLE = {str(live_feature_parity_acceptable)}
             WRITE_TRAINER_RESEARCH_EVIDENCE = {str(write_trainer_research_evidence)}
             WRITE_LATEST_CANDIDATE_POINTER = {str(write_latest_candidate_pointer)}
             EMIT_TRAIN_RUN_DIR = {str(emit_train_run_dir)}
@@ -571,6 +575,34 @@ def _make_fake_python_exe(
                 print(f"[ops][data-contract-registry] path={{report_path}}")
                 sys.exit(0)
 
+            if tuple(args[:3]) == ("-m", "autobot.ops.live_feature_parity_report", "--project-root"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "live_feature_parity_report.json"
+                append_log(
+                    {{
+                        "command": "live feature parity",
+                        "project_root": arg_value("--project-root"),
+                    }}
+                )
+                if WRITE_LIVE_FEATURE_PARITY_REPORT:
+                    write_json(
+                        report_path,
+                        {{
+                            "artifact_version": 1,
+                            "policy": "live_feature_parity_report_v1",
+                            "sampled_pairs": 1,
+                            "compared_pairs": 1,
+                            "passing_pairs": 1 if LIVE_FEATURE_PARITY_ACCEPTABLE else 0,
+                            "acceptable": LIVE_FEATURE_PARITY_ACCEPTABLE,
+                            "status": "PASS" if LIVE_FEATURE_PARITY_ACCEPTABLE else "FAIL",
+                            "details": [],
+                        }},
+                    )
+                    print(f"[ops][live-feature-parity] path={{report_path}}")
+                if (not WRITE_LIVE_FEATURE_PARITY_REPORT) or (not LIVE_FEATURE_PARITY_ACCEPTABLE):
+                    print("[ops][live-feature-parity] fail", file=sys.stderr)
+                    sys.exit(2)
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
                 start_value = arg_value("--start")
@@ -852,6 +884,35 @@ def test_candidate_acceptance_fails_when_features_v4_validate_report_is_missing(
         {"command": "features validate", "start": "2026-03-04", "end": "2026-03-05"}
     ]
     assert [entry for entry in invocations if entry["command"] == "model train"] == []
+
+
+def test_candidate_acceptance_fails_when_live_feature_parity_report_is_missing_or_failed(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _write_micro_dates(
+        project_root,
+        tf="5m",
+        market="KRW-BTC",
+        dates=["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        live_feature_parity_acceptable=False,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["reasons"] == ["FEATURE_PARITY_MISSING_OR_FAILED"]
+    assert report["gates"]["overall_pass"] is False
+    assert report["steps"]["train"]["attempted"] is False
 
 
 def test_candidate_acceptance_generates_data_contract_registry_before_training(tmp_path: Path) -> None:

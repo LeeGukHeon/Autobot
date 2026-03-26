@@ -96,6 +96,11 @@ def build_pointer_consistency_report(
         latest_candidate_pointer=pointers["latest_candidate"],
         champion_pointer=pointers["champion"],
     )
+    _check_current_state_contract_fields(
+        checks=checks,
+        current_state=current_state,
+        current_state_path=current_state_path,
+    )
     _check_candidate_units(
         checks=checks,
         runtime_units=runtime_units,
@@ -123,6 +128,7 @@ def build_pointer_consistency_report(
             "current_state": {
                 "candidate_run_id": str(current_state.get("candidate_run_id", "")).strip() or None,
                 "champion_run_id_at_start": str(current_state.get("champion_run_id_at_start", "")).strip() or None,
+                "started_ts_ms": int(current_state.get("started_ts_ms") or 0) if current_state.get("started_ts_ms") is not None else None,
                 "started_at_utc": str(current_state.get("started_at_utc", "")).strip() or None,
                 "lane_mode": str(current_state.get("lane_mode", "")).strip() or None,
                 "promotion_eligible": bool(current_state.get("promotion_eligible", False)),
@@ -473,6 +479,61 @@ def _check_candidate_units(
             "current_state_exists": current_state_exists,
         },
     )
+
+
+def _check_current_state_contract_fields(
+    *,
+    checks: list[dict[str, Any]],
+    current_state: dict[str, Any],
+    current_state_path: Path,
+) -> None:
+    if not current_state_path.exists():
+        return
+    candidate_run_id = str(current_state.get("candidate_run_id") or "").strip()
+    champion_run_id_at_start = str(current_state.get("champion_run_id_at_start") or "").strip()
+    started_ts_ms = current_state.get("started_ts_ms")
+    lane_mode = str(current_state.get("lane_mode") or "").strip()
+    if not candidate_run_id:
+        _append_check(
+            checks,
+            code="CURRENT_STATE_CANDIDATE_RUN_ID_MISSING",
+            status="violation",
+            message="current_state.json is present but candidate_run_id is blank.",
+        )
+    if not champion_run_id_at_start:
+        _append_check(
+            checks,
+            code="CURRENT_STATE_CHAMPION_BASELINE_MISSING",
+            status="violation",
+            message="current_state.json is present but champion_run_id_at_start is blank.",
+        )
+    if started_ts_ms in (None, "", 0):
+        _append_check(
+            checks,
+            code="CURRENT_STATE_STARTED_TS_MISSING",
+            status="violation",
+            message="current_state.json is present but started_ts_ms is missing.",
+        )
+    if not lane_mode:
+        _append_check(
+            checks,
+            code="CURRENT_STATE_LANE_MODE_MISSING",
+            status="violation",
+            message="current_state.json is present but lane_mode is missing.",
+        )
+    if candidate_run_id and champion_run_id_at_start and started_ts_ms not in (None, "", 0) and lane_mode:
+        _append_check(
+            checks,
+            code="CURRENT_STATE_CONTRACT_FIELDS_PRESENT",
+            status="pass",
+            message="current_state.json carries the required challenger handoff fields.",
+            evidence={
+                "candidate_run_id": candidate_run_id,
+                "champion_run_id_at_start": champion_run_id_at_start,
+                "started_ts_ms": int(started_ts_ms),
+                "lane_mode": lane_mode,
+            },
+        )
 
 
 def _check_latest_challenger_report(

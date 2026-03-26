@@ -420,6 +420,39 @@ if (($runtimeTopologyCapture.ExitCode -ne 0) -or (-not (Test-Path $runtimeTopolo
         latest_candidate_run_id = [string](Get-PropValue -ObjectValue $runtimeTopologySummary -Name "latest_candidate_run_id" -DefaultValue "")
     })
 }
+$runtimeTopologyHealthStatus = [string](Get-PropValue -ObjectValue $runtimeTopologySummary -Name "topology_health_status" -DefaultValue "")
+$runtimeTopologyHealthReasons = @((Get-PropValue -ObjectValue $runtimeTopologySummary -Name "topology_health_reason_codes" -DefaultValue @()))
+$blockingRuntimeTopologyReasons = @()
+foreach ($reasonCode in @($runtimeTopologyHealthReasons)) {
+    $code = [string]$reasonCode
+    if ([string]::IsNullOrWhiteSpace($code)) {
+        continue
+    }
+    if (($code -eq "SYSTEMD_UNAVAILABLE") -or ($code -eq "WS_PUBLIC_STALE")) {
+        continue
+    }
+    if (($code -eq "LIVE_DB_MISSING") -and (-not (@($resolvedRequiredStateDbPaths) | Where-Object { ([string]$_ -match "live_state\.db$") -and (-not ([string]$_ -match "live_candidate")) }))) {
+        continue
+    }
+    if (($code -eq "CANDIDATE_DB_MISSING") -and (-not (@($resolvedRequiredStateDbPaths) | Where-Object { [string]$_ -match "live_candidate.+live_state\.db$" }))) {
+        continue
+    }
+    if (($code -eq "SYSTEMD_UNAVAILABLE") -and (($resolvedRequiredUnitFiles.Count -eq 0) -and ($resolvedBlockOnFailedUnits.Count -eq 0) -and ($resolvedExpectedUnitStates.Count -eq 0))) {
+        continue
+    }
+    $blockingRuntimeTopologyReasons += $code
+}
+if (($runtimeTopologyHealthStatus -eq "violation") -and ($blockingRuntimeTopologyReasons.Count -gt 0)) {
+    Add-Check -Checks $checks -Code "RUNTIME_TOPOLOGY_HEALTH_VIOLATION" -Status "violation" -Message "runtime topology report summary is in violation state." -Evidence ([ordered]@{
+        status = $runtimeTopologyHealthStatus
+        reason_codes = @($blockingRuntimeTopologyReasons)
+    })
+} elseif (($runtimeTopologyHealthStatus -eq "degraded") -and ($blockingRuntimeTopologyReasons.Count -gt 0)) {
+    Add-Check -Checks $checks -Code "RUNTIME_TOPOLOGY_HEALTH_DEGRADED" -Status "warning" -Message "runtime topology report summary is degraded." -Evidence ([ordered]@{
+        status = $runtimeTopologyHealthStatus
+        reason_codes = @($blockingRuntimeTopologyReasons)
+    })
+}
 
 $pointerConsistencyCapture = Invoke-ArtifactReportCapture `
     -PythonPath $resolvedPythonExe `
@@ -441,6 +474,39 @@ if (($pointerConsistencyCapture.ExitCode -ne 0) -or (-not (Test-Path $pointerCon
         status = [string](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "status" -DefaultValue "")
         violation_count = [int](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "violation_count" -DefaultValue 0)
         warning_count = [int](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "warning_count" -DefaultValue 0)
+    })
+}
+$pointerConsistencyStatus = [string](Get-PropValue -ObjectValue $pointerConsistencySummary -Name "status" -DefaultValue "")
+$pointerConsistencyReasons = @((Get-PropValue -ObjectValue $pointerConsistencySummary -Name "reason_codes" -DefaultValue @()))
+$blockingPointerConsistencyReasons = @()
+foreach ($reasonCode in @($pointerConsistencyReasons)) {
+    $code = [string]$reasonCode
+    if ([string]::IsNullOrWhiteSpace($code)) {
+        continue
+    }
+    if ($code.StartsWith("CURRENT_STATE_") -and (-not $CheckCandidateStateConsistency)) {
+        continue
+    }
+    if (($code.StartsWith("LATEST_CANDIDATE_") -or $code.StartsWith("CANDIDATE_") -or $code.StartsWith("CHAMPION_EQUALS_LATEST_CANDIDATE")) -and (-not $CheckCandidateStateConsistency) -and (-not (@($resolvedRequiredPointers) -contains "latest_candidate"))) {
+        continue
+    }
+    if ($code.StartsWith("LATEST_") -and (-not $code.StartsWith("LATEST_CANDIDATE_")) -and (-not (@($resolvedRequiredPointers) -contains "latest"))) {
+        continue
+    }
+    if ($code.StartsWith("CHAMPION_") -and (-not (@($resolvedRequiredPointers) -contains "champion")) -and (-not $CheckCandidateStateConsistency)) {
+        continue
+    }
+    $blockingPointerConsistencyReasons += $code
+}
+if (($pointerConsistencyStatus -eq "violation") -and ($blockingPointerConsistencyReasons.Count -gt 0)) {
+    Add-Check -Checks $checks -Code "POINTER_CONSISTENCY_VIOLATION" -Status "violation" -Message "pointer consistency report summary is in violation state." -Evidence ([ordered]@{
+        status = $pointerConsistencyStatus
+        reason_codes = @($blockingPointerConsistencyReasons)
+    })
+} elseif (($pointerConsistencyStatus -eq "warning") -and ($blockingPointerConsistencyReasons.Count -gt 0)) {
+    Add-Check -Checks $checks -Code "POINTER_CONSISTENCY_WARNING" -Status "warning" -Message "pointer consistency report summary is warning-only." -Evidence ([ordered]@{
+        status = $pointerConsistencyStatus
+        reason_codes = @($blockingPointerConsistencyReasons)
     })
 }
 

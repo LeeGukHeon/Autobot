@@ -3305,6 +3305,23 @@ function Resolve-DataContractRegistryPathFromText {
     return $reportedPath.Trim()
 }
 
+function Resolve-LiveFeatureParityReportPathFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+    $pattern = '(?m)^\[ops\]\[live-feature-parity\]\s+path=(.+)$'
+    $match = [Regex]::Match($TextValue, $pattern)
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
 function Get-DateRangeAscending {
     param(
         [string]$StartDate,
@@ -3491,6 +3508,54 @@ function Invoke-DataContractRegistryAndLoadReport {
         RegistryPath = $registryPath
         Registry = $registryDoc
         ContractCount = $contractCount
+        Usable = [bool]$usable
+    }
+}
+
+function Invoke-LiveFeatureParityAndLoadReport {
+    param([string]$PythonPath)
+    $args = @(
+        "-m", "autobot.ops.live_feature_parity_report",
+        "--project-root", $resolvedProjectRoot,
+        "--feature-set", $FeatureSet,
+        "--tf", $Tf,
+        "--quote", $Quote,
+        "--top-n", $TrainTopN
+    )
+    $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
+    $exec = $null
+    try {
+        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    } catch {
+        $exec = [PSCustomObject]@{
+            ExitCode = 2
+            Output = [string]$_.Exception.Message
+            Command = $commandText
+        }
+    }
+    $reportPath = if ($DryRun) { "" } else { Resolve-LiveFeatureParityReportPathFromText -TextValue ([string]$exec.Output) }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (-not $DryRun)) {
+        $defaultReportPath = Join-Path $resolvedProjectRoot ("data/features/features_" + $FeatureSet + "/_meta/live_feature_parity_report.json")
+        if (Test-Path $defaultReportPath) {
+            $reportPath = $defaultReportPath
+        }
+    }
+    $reportDoc = if ([string]::IsNullOrWhiteSpace($reportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $reportPath }
+    $sampledPairs = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "sampled_pairs" -DefaultValue 0) 0)
+    $comparedPairs = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "compared_pairs" -DefaultValue 0) 0)
+    $passingPairs = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "passing_pairs" -DefaultValue 0) 0)
+    $acceptable = To-Bool (Get-PropValue -ObjectValue $reportDoc -Name "acceptable" -DefaultValue $false) $false
+    $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
+    $usable = ($exec.ExitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($reportPath)) -and ($sampledPairs -gt 0) -and ($acceptable) -and ($status -eq "PASS")
+    return [PSCustomObject]@{
+        Exec = $exec
+        ReportPath = $reportPath
+        Report = $reportDoc
+        SampledPairs = $sampledPairs
+        ComparedPairs = $comparedPairs
+        PassingPairs = $passingPairs
+        Acceptable = [bool]$acceptable
+        Status = $status
         Usable = [bool]$usable
     }
 }
@@ -3952,6 +4017,41 @@ try {
         }
     } else {
         $report.steps.features_validate = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_FEATURE_SET"
+        }
+    }
+
+    $featureParityAttempt = $null
+    if ([string]::Equals($FeatureSet, "v4", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $featureParityAttempt = Invoke-LiveFeatureParityAndLoadReport -PythonPath $resolvedPythonExe
+        $report.steps.features_live_parity = [ordered]@{
+            attempted = $true
+            exit_code = [int]$featureParityAttempt.Exec.ExitCode
+            command = $featureParityAttempt.Exec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$featureParityAttempt.Exec.Output))
+            report_path = [string]$featureParityAttempt.ReportPath
+            sampled_pairs = [int]$featureParityAttempt.SampledPairs
+            compared_pairs = [int]$featureParityAttempt.ComparedPairs
+            passing_pairs = [int]$featureParityAttempt.PassingPairs
+            acceptable = [bool]$featureParityAttempt.Acceptable
+            status = [string]$featureParityAttempt.Status
+        }
+        if (-not $featureParityAttempt.Usable) {
+            $report.steps.train = [ordered]@{
+                attempted = $false
+                reason = "FEATURE_PARITY_MISSING_OR_FAILED"
+                start = $trainStartDate
+                end = $trainEndDate
+            }
+            $report.reasons = @("FEATURE_PARITY_MISSING_OR_FAILED")
+            $report.gates.overall_pass = $false
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.features_live_parity = [ordered]@{
             attempted = $false
             reason = "NOT_REQUIRED_FOR_FEATURE_SET"
         }
