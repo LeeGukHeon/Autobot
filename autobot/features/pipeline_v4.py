@@ -1,4 +1,4 @@
-"""Feature store v4 research lane: native v4 live-base + label_v2 crypto cross-section."""
+"""Feature store v4 research lane: native v4 live-base with v2/v3 crypto label contracts."""
 
 from __future__ import annotations
 
@@ -39,6 +39,14 @@ from .labeling_v2_crypto_cs import (
     drop_neutral_rows_v2_crypto_cs,
     label_distribution_v2_crypto_cs,
     resolve_label_horizons_v2_crypto_cs,
+)
+from .labeling_v3_crypto_cs import (
+    LabelV3CryptoCsConfig,
+    apply_labeling_v3_crypto_cs,
+    build_label_column_contract_v3_crypto_cs,
+    drop_neutral_rows_v3_crypto_cs,
+    label_distribution_v3_crypto_cs,
+    resolve_label_horizons_v3_crypto_cs,
 )
 from .micro_required_join_v1 import load_market_micro_for_base, resolve_micro_dataset_root
 from .order_flow_panel_v1 import (
@@ -113,6 +121,7 @@ class FeaturesV4Config:
     time_range: TimeRangeConfig
     feature_set_v1: FeatureSetV1Config
     label_v2: LabelV2CryptoCsConfig
+    label_v3: LabelV3CryptoCsConfig
     validation: FeaturesV4ValidateConfig
     float_dtype: str = "float32"
 
@@ -208,6 +217,7 @@ def load_features_v4_config(
     root = raw.get("features_v4", {}) if isinstance(raw.get("features_v4"), dict) else {}
     validation_cfg = root.get("validation", {}) if isinstance(root.get("validation"), dict) else {}
     label_cfg = raw.get("label_v2", {}) if isinstance(raw.get("label_v2"), dict) else {}
+    label_v3_cfg = raw.get("label_v3", {}) if isinstance(raw.get("label_v3"), dict) else {}
 
     high_tfs_raw = root.get("high_tfs", ["15m", "60m", "240m"])
     high_tfs = tuple(
@@ -240,6 +250,23 @@ def load_features_v4_config(
         neutral_policy=str(label_cfg.get("neutral_policy", "drop")).strip().lower() or "drop",
     )
     _validate_v2_label_config(label_v2)
+    label_v3 = LabelV3CryptoCsConfig(
+        horizons_bars=tuple(
+            max(int(value), 1)
+            for value in (
+                label_v3_cfg.get("horizons_bars")
+                if isinstance(label_v3_cfg.get("horizons_bars"), list)
+                else [3, 6, 12, 24]
+            )
+        ),
+        primary_horizon_bars=max(int(label_v3_cfg.get("primary_horizon_bars", 12)), 1),
+        fee_bps_est=float(label_v3_cfg.get("fee_bps_est", 10.0)),
+        safety_bps=float(label_v3_cfg.get("safety_bps", 5.0)),
+        top_quantile=float(label_v3_cfg.get("top_quantile", 0.2)),
+        bottom_quantile=float(label_v3_cfg.get("bottom_quantile", 0.2)),
+        neutral_policy=str(label_v3_cfg.get("neutral_policy", "drop")).strip().lower() or "drop",
+    )
+    _validate_v3_label_config(label_v3)
 
     return FeaturesV4Config(
         build=FeaturesV4BuildConfig(
@@ -269,6 +296,7 @@ def load_features_v4_config(
         time_range=shared.time_range,
         feature_set_v1=shared.feature_set_v1,
         label_v2=label_v2,
+        label_v3=label_v3,
         validation=FeaturesV4ValidateConfig(
             leakage_fail_on_future_ts=bool(validation_cfg.get("leakage_fail_on_future_ts", True))
         ),
@@ -279,8 +307,9 @@ def load_features_v4_config(
 def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4Options) -> FeatureBuildV4Summary:
     if options.feature_set != "v4":
         raise ValueError("feature_set currently supports only v4 in pipeline_v4")
-    if options.label_set != "v2":
-        raise ValueError("label_set currently supports only v2 in pipeline_v4")
+    selected_label_set = str(options.label_set).strip().lower() or "v2"
+    if selected_label_set not in {"v2", "v3"}:
+        raise ValueError("label_set currently supports only v2 or v3 in pipeline_v4")
 
     tf = str(options.tf or config.build.tf).strip().lower()
     if tf != "5m":
@@ -346,7 +375,26 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
         )
 
     feature_cols = list(feature_columns_v4(high_tfs=config.build.high_tfs))
-    label_contract = build_label_column_contract_v2_crypto_cs(config.label_v2)
+    if selected_label_set == "v3":
+        label_contract = build_label_column_contract_v3_crypto_cs(config.label_v3)
+        horizons_bars, _ = resolve_label_horizons_v3_crypto_cs(config.label_v3)
+        label_distribution_fn = label_distribution_v3_crypto_cs
+        drop_neutral_fn = drop_neutral_rows_v3_crypto_cs
+        apply_labeling_fn = apply_labeling_v3_crypto_cs
+        selected_label_config = config.label_v3
+    else:
+        label_contract = build_label_column_contract_v2_crypto_cs(config.label_v2)
+        horizons_bars, _ = resolve_label_horizons_v2_crypto_cs(config.label_v2)
+        label_distribution_fn = label_distribution_v2_crypto_cs
+        drop_neutral_fn = drop_neutral_rows_v2_crypto_cs
+        apply_labeling_fn = apply_labeling_v2_crypto_cs
+        selected_label_config = config.label_v2
+    primary_y_cls_column = str(
+        (label_contract.get("training_default_columns") or {}).get(
+            "y_cls",
+            (label_contract.get("legacy") or {}).get("y_cls", "y_cls_topq_12"),
+        )
+    ).strip() or "y_cls_topq_12"
     label_cols = list(label_contract["label_columns"])
     feature_spec_hash = sha256_json(feature_cols)
     label_spec_hash = sha256_json(label_cols)
@@ -402,13 +450,16 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
 
     interval_ms = expected_interval_ms(tf)
     extended_start_ts_ms = start_ts_ms - _warmup_ms(config=config, base_tf=tf)
-    horizons_bars, _ = resolve_label_horizons_v2_crypto_cs(config.label_v2)
     extended_end_ts_ms = end_ts_ms + max(horizons_bars) * interval_ms
     target_dates = _date_strings_between(start_text, end_text)
     for market in selected_markets:
         _cleanup_market_target_dates(dataset_root=output_root, tf=tf, market=market, target_dates=target_dates)
 
-    bootstrap_label = _bootstrap_label_v1_from_v2(config.label_v2)
+    bootstrap_label = _bootstrap_label_v1_for_v4_label_contract(
+        label_set=selected_label_set,
+        label_v2=config.label_v2,
+        label_v3=config.label_v3,
+    )
     market_frames: list[pl.DataFrame] = []
     rows: list[dict[str, Any]] = []
     details: list[dict[str, Any]] = []
@@ -497,7 +548,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
 
             per_market_bootstrap[market] = {
                 "market": market,
-                "status": "PENDING_V2",
+                "status": "PENDING_LABEL_CONTRACT",
                 "rows_base_total": int(result.rows_base_total),
                 "rows_after_multitf": int(result.rows_after_multitf),
                 "rows_after_bootstrap_label": int(result.rows_after_label),
@@ -544,15 +595,15 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             float_dtype=config.float_dtype,
         )
         order_flow_diagnostics = order_flow_panel_v1_diagnostics(enriched)
-        labeled = apply_labeling_v2_crypto_cs(
+        labeled = apply_labeling_fn(
             enriched,
-            config=config.label_v2,
+            config=selected_label_config,
             ts_col="ts_ms",
             market_col="market",
             close_col="close",
         )
-        label_dist_before_drop = label_distribution_v2_crypto_cs(labeled, config=config.label_v2)
-        labeled = drop_neutral_rows_v2_crypto_cs(labeled, config=config.label_v2)
+        label_dist_before_drop = label_distribution_fn(labeled, config=selected_label_config)
+        labeled = drop_neutral_fn(labeled, config=selected_label_config)
         required_non_null = [
             "ts_ms",
             "market",
@@ -586,13 +637,13 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
         min_ts_total = _safe_min(min_ts_total, market_min_ts)
         max_ts_total = _safe_max(max_ts_total, market_max_ts)
 
-        pos_rows = int(market_frame.filter(pl.col(label_contract["legacy"]["y_cls"]) == 1).height) if market_rows_final > 0 else 0
-        neg_rows = int(market_frame.filter(pl.col(label_contract["legacy"]["y_cls"]) == 0).height) if market_rows_final > 0 else 0
+        pos_rows = int(market_frame.filter(pl.col(primary_y_cls_column) == 1).height) if market_rows_final > 0 else 0
+        neg_rows = int(market_frame.filter(pl.col(primary_y_cls_column) == 0).height) if market_rows_final > 0 else 0
         reasons: list[str] = []
         status = "OK"
         if market_rows_final <= 0:
             status = "WARN"
-            reasons.append("NO_ROWS_AFTER_LABEL_V2")
+            reasons.append("NO_ROWS_AFTER_LABEL_CONTRACT")
         elif pos_rows <= 0 or neg_rows <= 0:
             status = "WARN"
             reasons.append("IMBALANCED_LABELS")
@@ -685,7 +736,15 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             order_flow_diagnostics=order_flow_diagnostics,
         ),
     )
-    write_json(meta_root / "label_spec.json", _build_label_spec_payload_v4(config=config, tf=tf, label_cols=label_cols))
+    write_json(
+        meta_root / "label_spec.json",
+        _build_label_spec_payload_v4(
+            config=config,
+            tf=tf,
+            label_cols=label_cols,
+            label_set=selected_label_set,
+        ),
+    )
 
     effective_start = _ts_to_date(min_ts_total)
     effective_end = _ts_to_date(max_ts_total)
@@ -1058,7 +1117,44 @@ def _build_feature_spec_payload_v4(
         },
     }
 
-def _build_label_spec_payload_v4(*, config: FeaturesV4Config, tf: str, label_cols: list[str]) -> dict[str, Any]:
+def _build_label_spec_payload_v4(
+    *,
+    config: FeaturesV4Config,
+    tf: str,
+    label_cols: list[str],
+    label_set: str,
+) -> dict[str, Any]:
+    selected_label_set = str(label_set).strip().lower() or "v2"
+    if selected_label_set == "v3":
+        label_contract = build_label_column_contract_v3_crypto_cs(config.label_v3)
+        label_version = "v3_crypto_cs_residualized"
+        label_bundle_version = "multi_horizon_residualized_v1"
+        payload = {
+            "dataset_name": config.dataset_name,
+            "tf": tf,
+            "label_columns": label_cols,
+            "label_set_version": label_version,
+            "label_bundle_version": label_bundle_version,
+            "horizon_bars": int(label_contract["primary_horizon_bars"]),
+            "multi_horizon_bars": list(label_contract["horizons_bars"]),
+            "fee_bps_est": float(config.label_v3.fee_bps_est),
+            "safety_bps": float(config.label_v3.safety_bps),
+            "top_quantile": float(config.label_v3.top_quantile),
+            "bottom_quantile": float(config.label_v3.bottom_quantile),
+            "neutral_policy": str(config.label_v3.neutral_policy),
+            "training_default_columns": dict(label_contract["training_default_columns"]),
+            "raw_multi_horizon_columns": list(label_contract["raw_reg_columns"]),
+            "canonical_multi_horizon_columns": {
+                "y_reg_resid_btc": list(label_contract["residual_reg_columns"]["btc"]),
+                "y_reg_resid_eth": list(label_contract["residual_reg_columns"]["eth"]),
+                "y_reg_resid_leader": list(label_contract["residual_reg_columns"]["leader"]),
+                "y_rank_resid_leader": list(label_contract["rank_columns"]),
+                "y_cls_resid_leader": list(label_contract["cls_columns"]),
+            },
+            "definition": "future log return net of estimated costs with BTC/ETH/leader residualized target families and leader-residual default rank/class targets",
+        }
+        return payload
+
     label_contract = build_label_column_contract_v2_crypto_cs(config.label_v2)
     return {
         "dataset_name": config.dataset_name,
@@ -1122,6 +1218,15 @@ def _config_snapshot_v4(config: FeaturesV4Config) -> dict[str, Any]:
             "bottom_quantile": config.label_v2.bottom_quantile,
             "neutral_policy": config.label_v2.neutral_policy,
         },
+        "label_v3": {
+            "horizons_bars": list(build_label_column_contract_v3_crypto_cs(config.label_v3)["horizons_bars"]),
+            "primary_horizon_bars": build_label_column_contract_v3_crypto_cs(config.label_v3)["primary_horizon_bars"],
+            "fee_bps_est": config.label_v3.fee_bps_est,
+            "safety_bps": config.label_v3.safety_bps,
+            "top_quantile": config.label_v3.top_quantile,
+            "bottom_quantile": config.label_v3.bottom_quantile,
+            "neutral_policy": config.label_v3.neutral_policy,
+        },
         "float_dtype": config.float_dtype,
     }
 
@@ -1136,6 +1241,28 @@ def _bootstrap_label_v1_from_v2(label_v2: LabelV2CryptoCsConfig) -> LabelV1Confi
         fee_bps_est=float(label_v2.fee_bps_est),
         safety_bps=float(label_v2.safety_bps),
     )
+
+
+def _bootstrap_label_v1_from_v3(label_v3: LabelV3CryptoCsConfig) -> LabelV1Config:
+    horizons_bars, _ = resolve_label_horizons_v3_crypto_cs(label_v3)
+    return LabelV1Config(
+        horizon_bars=max(horizons_bars),
+        thr_bps=1.0,
+        neutral_policy="keep_as_class",
+        fee_bps_est=float(label_v3.fee_bps_est),
+        safety_bps=float(label_v3.safety_bps),
+    )
+
+
+def _bootstrap_label_v1_for_v4_label_contract(
+    *,
+    label_set: str,
+    label_v2: LabelV2CryptoCsConfig,
+    label_v3: LabelV3CryptoCsConfig,
+) -> LabelV1Config:
+    if str(label_set).strip().lower() == "v3":
+        return _bootstrap_label_v1_from_v3(label_v3)
+    return _bootstrap_label_v1_from_v2(label_v2)
 
 
 def _write_market_date_partitions_v4(*, frame: pl.DataFrame, dataset_root: Path, tf: str, market: str) -> None:
@@ -1167,6 +1294,21 @@ def _validate_v2_label_config(config: LabelV2CryptoCsConfig) -> None:
         raise ValueError("label_v2.horizons_bars must contain at least one positive horizon")
     if primary_horizon not in horizons_bars:
         raise ValueError("label_v2.primary_horizon_bars must be one of label_v2.horizons_bars")
+
+
+def _validate_v3_label_config(config: LabelV3CryptoCsConfig) -> None:
+    neutral_policy = str(config.neutral_policy).strip().lower()
+    if neutral_policy not in {"drop", "keep_as_class"}:
+        raise ValueError("label_v3.neutral_policy must be one of: drop, keep_as_class")
+    if not 0.0 < float(config.top_quantile) < 0.5:
+        raise ValueError("label_v3.top_quantile must be between 0 and 0.5")
+    if not 0.0 < float(config.bottom_quantile) < 0.5:
+        raise ValueError("label_v3.bottom_quantile must be between 0 and 0.5")
+    horizons_bars, primary_horizon = resolve_label_horizons_v3_crypto_cs(config)
+    if not horizons_bars:
+        raise ValueError("label_v3.horizons_bars must contain at least one positive horizon")
+    if primary_horizon not in horizons_bars:
+        raise ValueError("label_v3.primary_horizon_bars must be one of label_v3.horizons_bars")
 
 
 def _failure_manifest_row(*, config: FeaturesV4Config, tf: str, market: str, error_message: str) -> dict[str, Any]:

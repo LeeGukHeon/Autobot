@@ -9,6 +9,7 @@ import pytest
 
 from autobot.features.feature_spec import FeatureSetV1Config, FeatureWindows, TimeRangeConfig, UniverseConfig
 from autobot.features.labeling_v2_crypto_cs import LabelV2CryptoCsConfig
+from autobot.features.labeling_v3_crypto_cs import LabelV3CryptoCsConfig
 from autobot.features.pipeline_v4 import (
     FeatureBuildV4Options,
     FeatureValidateV4Options,
@@ -54,6 +55,15 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
         ),
         label_v2=LabelV2CryptoCsConfig(
             horizon_bars=12,
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
+        label_v3=LabelV3CryptoCsConfig(
             horizons_bars=(3, 6, 12, 24),
             primary_horizon_bars=12,
             fee_bps_est=10.0,
@@ -288,6 +298,15 @@ def test_pipeline_v4_requires_micro_validate_report_overlap(tmp_path: Path) -> N
             bottom_quantile=0.49,
             neutral_policy="drop",
         ),
+        label_v3=LabelV3CryptoCsConfig(
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
         validation=FeaturesV4ValidateConfig(leakage_fail_on_future_ts=True),
         float_dtype="float32",
     )
@@ -306,6 +325,100 @@ def test_pipeline_v4_requires_micro_validate_report_overlap(tmp_path: Path) -> N
                 dry_run=False,
             ),
         )
+
+
+def test_pipeline_v4_builds_label_v3_residualized_bundle(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    features_root = tmp_path / "features"
+    _write_candles(parquet_root / "candles_api_v1")
+    _write_candles_history(parquet_root / "candles_v1")
+    _write_micro(parquet_root / "micro_v1")
+
+    config = FeaturesV4Config(
+        build=FeaturesV4BuildConfig(
+            output_dataset="features_v4_v3_test",
+            tf="5m",
+            base_candles_dataset="candles_api_v1",
+            micro_dataset="micro_v1",
+            high_tfs=("15m", "60m", "240m"),
+            high_tf_staleness_multiplier=2.0,
+            one_m_required_bars=5,
+            one_m_max_missing_ratio=0.2,
+            sample_weight_half_life_days=60.0,
+            min_rows_for_train=1,
+            require_micro_validate_pass=True,
+        ),
+        parquet_root=parquet_root,
+        features_root=features_root,
+        universe=UniverseConfig(quote="KRW", mode="static_start", top_n=2, lookback_days=7, fixed_list=()),
+        time_range=TimeRangeConfig(start="2026-01-01", end="2026-01-03"),
+        feature_set_v1=FeatureSetV1Config(
+            windows=FeatureWindows(ret=(1, 3, 6, 12), rv=(12, 36), ema=(12, 36), rsi=14, atr=14, vol_z=36),
+            enable_factor_features=False,
+            factor_markets=(),
+            enable_liquidity_rank=False,
+        ),
+        label_v2=LabelV2CryptoCsConfig(
+            horizon_bars=12,
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
+        label_v3=LabelV3CryptoCsConfig(
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
+        validation=FeaturesV4ValidateConfig(leakage_fail_on_future_ts=True),
+        float_dtype="float32",
+    )
+
+    summary = build_features_dataset_v4(
+        config,
+        FeatureBuildV4Options(
+            tf="5m",
+            quote="KRW",
+            top_n=2,
+            start="2026-01-01",
+            end="2026-01-03",
+            feature_set="v4",
+            label_set="v3",
+            dry_run=False,
+        ),
+    )
+
+    assert summary.rows_final > 0
+    label_spec = json.loads(
+        (features_root / "features_v4_v3_test" / "_meta" / "label_spec.json").read_text(encoding="utf-8")
+    )
+    assert label_spec["label_set_version"] == "v3_crypto_cs_residualized"
+    assert label_spec["training_default_columns"]["y_reg"] == "y_reg_resid_leader_h12"
+    assert "y_reg_resid_btc_h3" in label_spec["label_columns"]
+    assert "y_reg_resid_eth_h24" in label_spec["label_columns"]
+    assert "y_rank_resid_leader_h12" in label_spec["label_columns"]
+    assert "y_cls_resid_leader_topq_h12" in label_spec["label_columns"]
+
+    files = sorted((features_root / "features_v4_v3_test").glob("tf=5m/market=*/date=*/*.parquet"))
+    assert files
+    frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical_relaxed")
+    assert set(
+        (
+            "y_reg_net_h3",
+            "y_reg_resid_btc_h3",
+            "y_reg_resid_eth_h3",
+            "y_reg_resid_leader_h3",
+            "y_rank_resid_leader_h12",
+            "y_cls_resid_leader_topq_h12",
+        )
+    ).issubset(frame.columns)
 
 
 def _write_candles(dataset_root: Path) -> None:

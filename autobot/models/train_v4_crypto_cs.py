@@ -252,8 +252,8 @@ def train_and_register_v4_crypto_cs(options: TrainV4CryptoCsOptions) -> TrainV4C
         raise ValueError("task currently supports only 'cls', 'reg', or 'rank'")
     if options.feature_set != "v4":
         raise ValueError("trainer v4_crypto_cs requires --feature-set v4")
-    if options.label_set != "v2":
-        raise ValueError("trainer v4_crypto_cs requires --label-set v2")
+    if options.label_set not in {"v2", "v3"}:
+        raise ValueError("trainer v4_crypto_cs requires --label-set v2 or v3")
     if _try_import_xgboost() is None:
         raise RuntimeError("xgboost is required for trainer=v4_crypto_cs")
 

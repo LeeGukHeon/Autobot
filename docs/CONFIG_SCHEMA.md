@@ -337,6 +337,16 @@
 - `label_v2.bottom_quantile`: float in `(0, 0.5)` (default: `0.2`)
 - `label_v2.neutral_policy`: `drop | keep_as_class` (default: `drop`)
 
+### Label v3 Crypto Cross-Section
+- config file: `config/features_v4.yaml`
+- `label_v3.horizons_bars`: integer array (default: `[3,6,12,24]`)
+- `label_v3.primary_horizon_bars`: integer (default: `12`)
+- `label_v3.fee_bps_est`: number (default: `10`)
+- `label_v3.safety_bps`: number (default: `5`)
+- `label_v3.top_quantile`: float in `(0, 0.5)` (default: `0.2`)
+- `label_v3.bottom_quantile`: float in `(0, 0.5)` (default: `0.2`)
+- `label_v3.neutral_policy`: `drop | keep_as_class` (default: `drop`)
+
 ### Feature Set v2
 - config file: `config/features_v2.yaml`
 - `features_v2.output_dataset`: string (default: `features_v2`)

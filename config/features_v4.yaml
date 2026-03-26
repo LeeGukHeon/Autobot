@@ -43,6 +43,15 @@ label_v2:
   bottom_quantile: 0.2
   neutral_policy: drop
 
+label_v3:
+  horizons_bars: [3, 6, 12, 24]
+  primary_horizon_bars: 12
+  fee_bps_est: 10
+  safety_bps: 5
+  top_quantile: 0.2
+  bottom_quantile: 0.2
+  neutral_policy: drop
+
 features_v4:
   output_dataset: features_v4
   tf: 5m
