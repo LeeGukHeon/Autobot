@@ -373,11 +373,25 @@ def _build_anchor_tensor(
     ws_one_m_frame = _read_parquet_rows(options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet")
     micro_frame = _read_parquet_rows(options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet")
     lob_frame = _read_parquet_rows(options.lob_root / f"market={market}" / "date=*" / "*.parquet")
+    context_end_ts_ms = _resolve_context_end_ts_ms(
+        anchor_ts_ms=anchor_ts_ms,
+        second_frame=second_frame,
+        lob_frame=lob_frame,
+    )
 
-    second_tensor, second_mask, second_ratio = _build_second_tensor(frame=second_frame, anchor_ts_ms=anchor_ts_ms, lookback_steps=options.second_lookback_steps)
+    second_tensor, second_mask, second_ratio = _build_second_tensor(
+        frame=second_frame,
+        anchor_ts_ms=context_end_ts_ms,
+        lookback_steps=options.second_lookback_steps,
+    )
     minute_tensor, minute_mask, minute_ratio = _build_minute_tensor(frame=ws_one_m_frame, anchor_ts_ms=anchor_ts_ms, lookback_steps=options.minute_lookback_steps)
     micro_tensor, micro_mask, micro_ratio = _build_micro_tensor(frame=micro_frame, anchor_ts_ms=anchor_ts_ms, lookback_steps=options.micro_lookback_steps)
-    lob_tensor, lob_global_tensor, lob_mask, lob_ratio = _build_lob_tensor(frame=lob_frame, micro_frame=micro_frame, anchor_ts_ms=anchor_ts_ms, lookback_steps=options.lob_lookback_steps)
+    lob_tensor, lob_global_tensor, lob_mask, lob_ratio = _build_lob_tensor(
+        frame=lob_frame,
+        micro_frame=micro_frame,
+        anchor_ts_ms=context_end_ts_ms,
+        lookback_steps=options.lob_lookback_steps,
+    )
 
     reasons: list[str] = []
     if second_ratio < 1.0:
@@ -412,6 +426,8 @@ def _build_anchor_tensor(
         "date": date_value,
         "anchor_ts_ms": anchor_ts_ms,
         "anchor_utc": _ts_ms_to_utc_text(anchor_ts_ms),
+        "context_end_ts_ms": context_end_ts_ms,
+        "context_end_utc": _ts_ms_to_utc_text(context_end_ts_ms),
         "cache_file": str(cache_file),
         "status": status,
         "reasons": reasons,
@@ -436,6 +452,21 @@ def _build_anchor_tensor(
         "built_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
     }
     return detail, manifest_row
+
+
+def _resolve_context_end_ts_ms(*, anchor_ts_ms: int, second_frame: pl.DataFrame, lob_frame: pl.DataFrame) -> int:
+    window_end_ts_ms = int(anchor_ts_ms + 59_000)
+    candidates: list[int] = [int(anchor_ts_ms)]
+    for frame in (second_frame, lob_frame):
+        if frame.height <= 0 or "ts_ms" not in frame.columns:
+            continue
+        selected = frame.filter((pl.col("ts_ms") >= int(anchor_ts_ms)) & (pl.col("ts_ms") <= int(window_end_ts_ms)))
+        if selected.height <= 0:
+            continue
+        max_ts = selected.get_column("ts_ms").max()
+        if max_ts is not None:
+            candidates.append(int(max_ts))
+    return max(candidates)
 
 
 def _build_second_tensor(*, frame: pl.DataFrame, anchor_ts_ms: int, lookback_steps: int) -> tuple[np.ndarray, np.ndarray, float]:
