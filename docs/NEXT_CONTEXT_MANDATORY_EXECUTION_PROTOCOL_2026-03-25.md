@@ -412,9 +412,12 @@ The next context must start from the first unchecked item.
 
 ### Phase 7: Fusion And Risk-Calibrated Entry
 
-- [ ] 27. Implement `v5_fusion`
+- [x] 27. Implement `v5_fusion`
   Required references:
   [TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+
+  Current implementation note:
+  implemented in `autobot/models/train_v5_fusion.py` and wired through `autobot/models/__init__.py` plus `autobot.cli model train --trainer v5_fusion`. The new fusion trainer consumes aligned panel/sequence/LOB expert prediction tables, collects them into a shared OOF-style fusion input matrix keyed by `(market, ts_ms, split)`, then fits the stage-1 fusion meta-model using the blueprint-aligned output contract `final_rank_score`, `final_expected_return`, `final_expected_es`, `final_tradability`, `final_uncertainty`, and `final_alpha_lcb`. The current implementation supports the practical first-stage fusion choice `linear` as well as `monotone_gbdt`, writes `fusion_model_contract.json` and `predictor_contract.json`, and follows the existing registry backbone by persisting `metrics.json`, `thresholds.json`, `leaderboard_row.json`, `selection_recommendations.json`, `selection_policy.json`, `runtime_recommendations.json`, `walk_forward_report.json`, `promotion_decision.json`, and `artifact_status.json`. Local validation covered `tests/test_train_v5_fusion.py`, `tests/test_train_v5_lob.py`, `tests/test_train_v5_sequence.py`, `tests/test_cli_alpha_shortcuts.py`, `tests/test_sequence_tensor_store.py`, and `tests/test_predictor_contract.py`; direct OCI validation confirmed the same suite passes on the server and an additional synthetic CLI smoke run under `train_v5_fusion_smoke` produced a real reflected run directory with `fusion_model_contract.json`, `predictor_contract.json`, `stacker_family=linear`, the expected final output fields, and the explicit expert inputs `panel`, `sequence`, and `lob`. Open limitation retained explicitly: the current fusion path uses the currently available tradability-like signals from the expert prediction tables, primarily the panel/LOB/sequence exported tradability proxies, because a separately materialized tradability expert family is not yet implemented in the current checklist slice. That is an explicit remaining architecture gap rather than a hidden scope reduction.
 
 - [ ] 28. Add risk-calibrated or conformal entry boundary
   Required references:
