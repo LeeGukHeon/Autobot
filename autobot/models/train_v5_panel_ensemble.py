@@ -70,19 +70,58 @@ class V5PanelEnsembleEstimator:
     classifier_bundle: dict[str, Any]
     ranker_bundle: dict[str, Any]
     regressor_bundles: dict[str, dict[str, Any]]
+    regression_member_bundles: dict[str, tuple[dict[str, Any], ...]]
     meta_model: _StackMetaModel
     meta_ensemble: tuple[_StackMetaModel, ...]
     regression_horizons: tuple[int, ...]
     uncertainty_temperature: float = 1.0
+
+    def _predict_regression_distribution(self, x: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
+        distributions: dict[str, dict[str, np.ndarray]] = {}
+        for horizon in self.regression_horizons:
+            horizon_key = f"h{int(horizon)}"
+            base_bundle = self.regressor_bundles[horizon_key]
+            member_bundles = self.regression_member_bundles.get(horizon_key) or ()
+            member_predictions: list[np.ndarray] = []
+            for member_bundle in member_bundles:
+                estimator = member_bundle.get("estimator") if isinstance(member_bundle, dict) else None
+                if estimator is None:
+                    continue
+                member_predictions.append(np.asarray(estimator.predict(x), dtype=np.float64))
+            if not member_predictions:
+                member_predictions.append(np.asarray(base_bundle["estimator"].predict(x), dtype=np.float64))
+            member_matrix = np.column_stack(member_predictions)
+            q10 = np.quantile(member_matrix, 0.10, axis=1)
+            q50 = np.quantile(member_matrix, 0.50, axis=1)
+            q90 = np.quantile(member_matrix, 0.90, axis=1)
+            sigma = np.std(member_matrix, axis=1, ddof=0)
+            es10 = np.array(
+                [
+                    float(np.mean(row[row <= quantile])) if np.any(row <= quantile) else float(quantile)
+                    for row, quantile in zip(member_matrix, q10, strict=False)
+                ],
+                dtype=np.float64,
+            )
+            distributions[horizon_key] = {
+                "member_matrix": member_matrix,
+                "mu": np.asarray(base_bundle["estimator"].predict(x), dtype=np.float64),
+                "q10": q10,
+                "q50": q50,
+                "q90": q90,
+                "sigma": sigma,
+                "expected_shortfall_proxy": es10,
+            }
+        return distributions
 
     def _component_payload(self, x: np.ndarray) -> dict[str, Any]:
         cls_score = _predict_scores(self.classifier_bundle, x)
         rank_score = _predict_scores(self.ranker_bundle, x)
         mu_by_horizon: dict[int, np.ndarray] = {}
         reg_prob_parts: list[np.ndarray] = []
+        regression_distribution = self._predict_regression_distribution(x)
         for horizon in self.regression_horizons:
-            bundle = self.regressor_bundles[f"h{int(horizon)}"]
-            raw = np.asarray(bundle["estimator"].predict(x), dtype=np.float64)
+            horizon_key = f"h{int(horizon)}"
+            raw = np.asarray(regression_distribution[horizon_key]["mu"], dtype=np.float64)
             mu_by_horizon[int(horizon)] = raw
             reg_prob_parts.append(_sigmoid(raw))
         component_matrix = np.column_stack([cls_score, rank_score, *reg_prob_parts])
@@ -91,6 +130,7 @@ class V5PanelEnsembleEstimator:
             "cls_score": cls_score,
             "rank_score": rank_score,
             "mu_by_horizon": mu_by_horizon,
+            "regression_distribution": regression_distribution,
             "component_matrix": component_matrix,
             "component_std": component_std,
         }
@@ -114,6 +154,32 @@ class V5PanelEnsembleEstimator:
     def predict_mu_horizons(self, x: np.ndarray) -> dict[str, np.ndarray]:
         payload = self._component_payload(x)
         return {f"h{horizon}": values for horizon, values in payload["mu_by_horizon"].items()}
+
+    def predict_distributional_contract(self, x: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
+        payload = self._component_payload(x)
+        quantiles_by_horizon: dict[str, np.ndarray] = {}
+        sigma_by_horizon: dict[str, np.ndarray] = {}
+        es_proxy_by_horizon: dict[str, np.ndarray] = {}
+        mu_by_horizon: dict[str, np.ndarray] = {}
+        for horizon in self.regression_horizons:
+            horizon_key = f"h{int(horizon)}"
+            distribution = payload["regression_distribution"][horizon_key]
+            quantiles_by_horizon[horizon_key] = np.column_stack(
+                [
+                    np.asarray(distribution["q10"], dtype=np.float64),
+                    np.asarray(distribution["q50"], dtype=np.float64),
+                    np.asarray(distribution["q90"], dtype=np.float64),
+                ]
+            )
+            sigma_by_horizon[horizon_key] = np.asarray(distribution["sigma"], dtype=np.float64)
+            es_proxy_by_horizon[horizon_key] = np.asarray(distribution["expected_shortfall_proxy"], dtype=np.float64)
+            mu_by_horizon[horizon_key] = np.asarray(distribution["mu"], dtype=np.float64)
+        return {
+            "mu_by_horizon": mu_by_horizon,
+            "return_quantiles_by_horizon": quantiles_by_horizon,
+            "sigma_by_horizon": sigma_by_horizon,
+            "expected_shortfall_proxy_by_horizon": es_proxy_by_horizon,
+        }
 
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
@@ -270,6 +336,9 @@ def _build_v5_oof_windows(
     meta_rows: list[dict[str, Any]] = []
     meta_weight_parts: list[np.ndarray] = []
     meta_models: list[_StackMetaModel] = []
+    regression_member_bundles: dict[str, list[dict[str, Any]]] = {
+        str(key): [] for key in regression_targets.keys()
+    }
     try:
         window_specs = compute_anchored_walk_forward_splits(
             dataset.ts_ms,
@@ -341,6 +410,9 @@ def _build_v5_oof_windows(
                 w_valid=dataset.sample_weight[valid_mask],
                 fold_index=int(info.window_index),
             )
+            member_bundle = reg_windows[horizon_key].get("bundle")
+            if isinstance(member_bundle, dict):
+                regression_member_bundles[horizon_key].append(member_bundle)
 
         meta_x, payload = _build_component_matrix(
             x=dataset.X[test_mask],
@@ -487,6 +559,7 @@ def _build_v5_oof_windows(
         "meta_rows": meta_rows,
         "sample_weight": np.concatenate(meta_weight_parts, axis=0) if meta_weight_parts else np.empty(0, dtype=np.float64),
         "meta_models": meta_models,
+        "regression_member_bundles": {key: tuple(value) for key, value in regression_member_bundles.items()},
     }
 
 
@@ -584,12 +657,22 @@ def _build_v5_metrics_doc(
         "uncertainty_mode": "walk_forward_meta_ensemble_std_v1",
         "uncertainty_member_count": int(meta_ensemble_count),
         "uncertainty_temperature": float(meta_fit.get("uncertainty_temperature", 1.0)),
+        "distributional_contract": {
+            "version": 1,
+            "quantile_levels": [0.10, 0.50, 0.90],
+            "return_quantiles_field_prefix": "return_quantiles",
+            "sigma_field_prefix": "return_sigma",
+            "expected_shortfall_proxy_field_prefix": "return_expected_shortfall_proxy",
+            "horizon_keys": [f"h{int(key.replace('h', ''))}" for key in sorted(regressor_results.keys(), key=lambda item: int(item.replace("h", "")))],
+            "member_ensemble_source": "walk_forward_regression_members",
+        },
         "final_output_contract": {
             "score_field": "final_rank_score",
             "score_mean_field": "score_mean",
             "score_std_field": "score_std",
             "score_lcb_field": "score_lcb",
             "uncertainty_field": "score_std",
+            "score_aliases": {"final_rank_score": "score_mean", "final_uncertainty": "score_std"},
         },
     }
     return metrics
@@ -661,7 +744,9 @@ def _build_v5_train_config(
         "score_lcb_field": "score_lcb",
         "final_rank_score_field": "final_rank_score",
         "final_uncertainty_field": "score_std",
+        "score_aliases": {"final_rank_score": "score_mean", "final_uncertainty": "score_std"},
         "score_lcb_formula": "score_lcb = clip(score_mean - score_std, 0, 1)",
+        "distributional_contract": dict((ensemble_contract or {}).get("distributional_contract") or {}),
     }
     return payload
 
@@ -830,6 +915,10 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         classifier_bundle=cls_bundle["bundle"],
         ranker_bundle=rank_bundle["bundle"],
         regressor_bundles={key: value["bundle"] for key, value in regressor_results.items()},
+        regression_member_bundles={
+            key: tuple(oof.get("regression_member_bundles", {}).get(key) or ())
+            for key in regressor_results.keys()
+        },
         meta_model=meta_fit["meta_model"],
         meta_ensemble=tuple(oof.get("meta_models", [])),
         regression_horizons=tuple(int(key.replace("h", "")) for key in sorted(regressor_results.keys(), key=lambda item: int(item.replace("h", "")))),
@@ -1009,7 +1098,9 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
             "score_lcb_field": "score_lcb",
             "final_rank_score_field": "final_rank_score",
             "final_uncertainty_field": "score_std",
+            "score_aliases": {"final_rank_score": "score_mean", "final_uncertainty": "score_std"},
             "score_lcb_formula": "score_lcb = clip(score_mean - score_std, 0, 1)",
+            "distributional_contract": dict((metrics.get("panel_ensemble", {}) or {}).get("distributional_contract") or {}),
         },
     )
     support_artifacts = v4_persistence.persist_v4_support_artifacts(

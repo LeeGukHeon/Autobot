@@ -404,6 +404,38 @@ def breaker_taxonomy_summary(reason_codes: Iterable[str | None]) -> dict[str, An
     }
 
 
+def select_reason_codes(
+    reason_codes: Iterable[str | None],
+    *,
+    breaker_types: Iterable[str] | None = None,
+    clear_policies: Iterable[str] | None = None,
+) -> list[str]:
+    allowed_types = {
+        str(value).strip().upper()
+        for value in (breaker_types or ())
+        if str(value).strip()
+    }
+    allowed_policies = {
+        str(value).strip().upper()
+        for value in (clear_policies or ())
+        if str(value).strip()
+    }
+    selected: list[str] = []
+    for payload in typed_reason_payloads(reason_codes):
+        reason_code = str(payload.get("reason_code") or "").strip().upper()
+        if not reason_code:
+            continue
+        payload_type = str(payload.get("breaker_type") or "").strip().upper()
+        payload_policy = str(payload.get("clear_policy") or "").strip().upper()
+        if allowed_types and payload_type not in allowed_types:
+            continue
+        if allowed_policies and payload_policy not in allowed_policies:
+            continue
+        if reason_code not in selected:
+            selected.append(reason_code)
+    return selected
+
+
 def annotate_reason_payload(
     payload: dict[str, Any] | None,
     *,

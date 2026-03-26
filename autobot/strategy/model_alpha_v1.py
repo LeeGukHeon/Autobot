@@ -334,6 +334,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         scored = frame_active.with_columns(
             pl.Series(name="model_prob", values=probs),
             pl.Series(name="model_prob_raw", values=raw_probs),
+            pl.Series(name="final_rank_score", values=np.asarray(score_contract["final_rank_score"], dtype=np.float64)),
+            pl.Series(name="final_uncertainty", values=_optional_float_list(score_contract["final_uncertainty"])),
             pl.Series(name="score_mean", values=np.asarray(score_contract["score_mean"], dtype=np.float64)),
             pl.Series(name="score_std", values=_optional_float_list(score_contract["score_std"])),
             pl.Series(name="score_lcb", values=np.asarray(score_contract["score_lcb"], dtype=np.float64)),

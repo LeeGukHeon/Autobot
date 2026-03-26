@@ -14,6 +14,16 @@ from typing import Any
 from autobot.upbit.ws import MyAssetEvent, MyOrderEvent, parse_private_event
 from autobot.upbit.exceptions import UpbitError
 
+from .breaker_taxonomy import (
+    BREAKER_TYPE_INFRA,
+    BREAKER_TYPE_OPERATIONAL_POLICY,
+    BREAKER_TYPE_STATE_INTEGRITY,
+    CLEAR_POLICY_AUTO_HEALTH_RECOVERY,
+    CLEAR_POLICY_ONLINE_BASELINE_CLEAR,
+    CLEAR_POLICY_ROLLOUT_RECOVERY,
+    CLEAR_POLICY_RUNTIME_CONTRACT_RECOVERY,
+    select_reason_codes,
+)
 from .breakers import (
     ACTION_FULL_KILL_SWITCH,
     ACTION_HALT_NEW_INTENTS,
@@ -298,16 +308,28 @@ def _clear_runtime_recovery_reasons(
     runtime_status: dict[str, Any],
     ts_ms: int,
 ) -> None:
+    current = store.breaker_state(breaker_key="live")
+    active_reason_codes = list((current or {}).get("reason_codes") or [])
     reasons_to_clear = ["MODEL_POINTER_UNRESOLVED"]
     if not bool(runtime_status.get("model_pointer_divergence")) or _allow_pointer_divergence_for_settings(
         settings=None,
         runtime_status=runtime_status,
     ):
-        reasons_to_clear.append("MODEL_POINTER_DIVERGENCE")
+        reasons_to_clear.extend(
+            select_reason_codes(
+                active_reason_codes,
+                breaker_types=(BREAKER_TYPE_STATE_INTEGRITY,),
+                clear_policies=(CLEAR_POLICY_RUNTIME_CONTRACT_RECOVERY,),
+            )
+        )
     if not bool(runtime_status.get("ws_public_stale")):
-        reasons_to_clear.append("WS_PUBLIC_STALE")
-        reasons_to_clear.append("LIVE_PUBLIC_WS_STREAM_FAILED")
-        reasons_to_clear.append("LIVE_RUNTIME_LOOP_FAILED")
+        reasons_to_clear.extend(
+            select_reason_codes(
+                active_reason_codes,
+                breaker_types=(BREAKER_TYPE_INFRA,),
+                clear_policies=(CLEAR_POLICY_AUTO_HEALTH_RECOVERY,),
+            )
+        )
     clear_breaker_reasons(
         store,
         reason_codes=reasons_to_clear,
@@ -338,16 +360,10 @@ def _clear_stale_online_run_breaker(
     stale_checkpoint_name = str(details.get("checkpoint_name") or "").strip()
     if not stale_checkpoint_name or stale_checkpoint_name.endswith(f":{current_run_id}"):
         return
-    online_reason_codes = {
-        "RISK_CONTROL_ONLINE_BREACH_STREAK",
-        "RISK_CONTROL_MARTINGALE_EVIDENCE",
-        "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE",
-    }
-    stale_reason_codes = [
-        str(item).strip()
-        for item in (current.get("reason_codes") or [])
-        if str(item).strip() in online_reason_codes
-    ]
+    stale_reason_codes = select_reason_codes(
+        current.get("reason_codes") or [],
+        clear_policies=(CLEAR_POLICY_ONLINE_BASELINE_CLEAR,),
+    )
     if not stale_reason_codes:
         return
     clear_breaker_reasons(
@@ -561,17 +577,14 @@ def _evaluate_rollout_gate(
         settings=settings,
         ts_ms=ts_ms,
     ) if client is not None else None
+    current = store.breaker_state(breaker_key="live")
     clear_breaker_reasons(
         store,
-        reason_codes=[
-            "LIVE_ROLLOUT_NOT_ARMED",
-            "LIVE_ROLLOUT_UNIT_MISMATCH",
-            "LIVE_ROLLOUT_MODE_MISMATCH",
-            "LIVE_TEST_ORDER_REQUIRED",
-            "LIVE_TEST_ORDER_STALE",
-            "LIVE_BREAKER_ACTIVE",
-            "LIVE_CANARY_REQUIRES_SINGLE_SLOT",
-        ],
+        reason_codes=select_reason_codes(
+            (current or {}).get("reason_codes") or [],
+            breaker_types=(BREAKER_TYPE_OPERATIONAL_POLICY,),
+            clear_policies=(CLEAR_POLICY_ROLLOUT_RECOVERY,),
+        ),
         source="live_rollout_recovery",
         ts_ms=ts_ms,
         details={"mode": str(settings.rollout_mode), "target_unit": str(settings.rollout_target_unit)},

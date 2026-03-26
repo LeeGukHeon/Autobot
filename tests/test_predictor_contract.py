@@ -15,6 +15,15 @@ class DummyEstimator:
     def predict_uncertainty(self, x: np.ndarray) -> np.ndarray:
         return np.full(np.asarray(x).shape[0], 0.05, dtype=np.float64)
 
+    def predict_distributional_contract(self, x: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
+        rows = np.asarray(x, dtype=np.float64).shape[0]
+        return {
+            "mu_by_horizon": {"h3": np.full(rows, 0.1, dtype=np.float64)},
+            "return_quantiles_by_horizon": {"h3": np.tile(np.asarray([[0.0, 0.1, 0.2]], dtype=np.float64), (rows, 1))},
+            "sigma_by_horizon": {"h3": np.full(rows, 0.02, dtype=np.float64)},
+            "expected_shortfall_proxy_by_horizon": {"h3": np.full(rows, -0.05, dtype=np.float64)},
+        }
+
 
 def test_model_predictor_exports_uncertainty_aware_score_contract() -> None:
     predictor = ModelPredictor(
@@ -30,6 +39,38 @@ def test_model_predictor_exports_uncertainty_aware_score_contract() -> None:
 
     payload = predictor.predict_score_contract(np.asarray([[0.0], [1.0]], dtype=np.float64))
 
-    assert set(payload.keys()) == {"score_mean", "score_std", "score_lcb", "uncertainty_available"}
+    assert set(payload.keys()) == {
+        "final_rank_score",
+        "final_uncertainty",
+        "score_mean",
+        "score_std",
+        "score_lcb",
+        "uncertainty_available",
+    }
+    assert np.allclose(payload["final_rank_score"], payload["score_mean"])
+    assert np.allclose(payload["final_uncertainty"], payload["score_std"])
     assert np.allclose(payload["score_std"], np.asarray([0.05, 0.05], dtype=np.float64))
     assert np.all(payload["score_lcb"] <= payload["score_mean"])
+
+
+def test_model_predictor_exposes_distributional_contract_when_estimator_supports_it() -> None:
+    predictor = ModelPredictor(
+        run_dir=Path("."),
+        model_bundle={"model_type": "v5_panel_ensemble", "scaler": None, "estimator": DummyEstimator()},
+        model_ref="run_a",
+        model_family="train_v5_panel_ensemble",
+        feature_columns=("f1",),
+        train_config={},
+        thresholds={},
+        selection_recommendations={},
+    )
+
+    payload = predictor.predict_distributional_contract(np.asarray([[0.0], [1.0]], dtype=np.float64))
+
+    assert set(payload.keys()) == {
+        "mu_by_horizon",
+        "return_quantiles_by_horizon",
+        "sigma_by_horizon",
+        "expected_shortfall_proxy_by_horizon",
+    }
+    assert payload["return_quantiles_by_horizon"]["h3"].shape == (2, 3)

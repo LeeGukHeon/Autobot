@@ -47,10 +47,11 @@ class ModelPredictor:
             or (self.selection_policy.get("score_source") if isinstance(self.selection_policy, dict) else "")
             or "score_mean"
         ).strip() or "score_mean"
+        score_contract = self.predict_score_contract(x)
         if resolved_source == "score_lcb":
-            base_scores = self.predict_score_contract(x)["score_lcb"]
+            base_scores = score_contract["score_lcb"]
         else:
-            base_scores = self.predict_scores(x)
+            base_scores = score_contract["final_rank_score"]
         return apply_selection_calibration(
             base_scores,
             self.selection_calibration if isinstance(self.selection_calibration, dict) else {},
@@ -66,6 +67,13 @@ class ModelPredictor:
             raise ValueError("predict_uncertainty must return a 1-D array")
         return values
 
+    def predict_distributional_contract(self, x: np.ndarray) -> dict[str, Any]:
+        estimator = self.model_bundle.get("estimator") if isinstance(self.model_bundle, dict) else None
+        if estimator is None or not hasattr(estimator, "predict_distributional_contract"):
+            return {}
+        payload = estimator.predict_distributional_contract(x)
+        return dict(payload) if isinstance(payload, dict) else {}
+
     def predict_score_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
         score_mean = self.predict_scores(x).astype(np.float64, copy=False)
         score_std = self.predict_uncertainty(x)
@@ -77,6 +85,8 @@ class ModelPredictor:
             score_lcb = np.clip(score_mean - score_std, 0.0, 1.0)
             uncertainty_available = True
         return {
+            "final_rank_score": score_mean,
+            "final_uncertainty": score_std if uncertainty_available else np.full(score_mean.shape[0], np.nan, dtype=np.float64),
             "score_mean": score_mean,
             "score_std": score_std if uncertainty_available else np.full(score_mean.shape[0], np.nan, dtype=np.float64),
             "score_lcb": score_lcb,

@@ -61,6 +61,7 @@ from .admissibility import (
     evaluate_live_limit_order,
     round_price_to_tick,
 )
+from .breaker_taxonomy import CLEAR_POLICY_ONLINE_BASELINE_CLEAR, select_reason_codes
 from .breakers import (
     ACTION_FULL_KILL_SWITCH,
     ACTION_HALT_AND_CANCEL_BOT_ORDERS,
@@ -771,13 +772,6 @@ def _startup_sync(
     return True
 
 
-_STARTUP_ONLINE_RISK_REASON_CODES = {
-    "RISK_CONTROL_ONLINE_BREACH_STREAK",
-    "RISK_CONTROL_MARTINGALE_EVIDENCE",
-    "RISK_CONTROL_MARTINGALE_CRITICAL_EVIDENCE",
-}
-
-
 def _startup_has_only_online_risk_halt(store: LiveStateStore) -> bool:
     decision = active_breaker_decision(store)
     if not bool(decision.active):
@@ -785,7 +779,13 @@ def _startup_has_only_online_risk_halt(store: LiveStateStore) -> bool:
     reason_codes = [str(item).strip().upper() for item in (decision.reason_codes or ()) if str(item).strip()]
     if not reason_codes:
         return False
-    return all(code in _STARTUP_ONLINE_RISK_REASON_CODES for code in reason_codes)
+    return all(
+        code in select_reason_codes(
+            reason_codes,
+            clear_policies=(CLEAR_POLICY_ONLINE_BASELINE_CLEAR,),
+        )
+        for code in reason_codes
+    )
 
 
 def _startup_online_risk_recovery(
@@ -796,7 +796,10 @@ def _startup_online_risk_recovery(
 ) -> dict[str, Any]:
     decision = active_breaker_decision(store)
     active_reason_codes = [str(item).strip().upper() for item in (decision.reason_codes or ()) if str(item).strip()]
-    active_online_reason_codes = [code for code in active_reason_codes if code in _STARTUP_ONLINE_RISK_REASON_CODES]
+    active_online_reason_codes = select_reason_codes(
+        active_reason_codes,
+        clear_policies=(CLEAR_POLICY_ONLINE_BASELINE_CLEAR,),
+    )
     if not active_online_reason_codes:
         return {
             "attempted": False,
