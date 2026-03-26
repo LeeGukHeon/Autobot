@@ -150,7 +150,7 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         if options.date:
             anchor_rows = [row for row in anchor_rows if _date_utc_from_ts_ms(int(row["anchor_ts_ms"])) == str(options.date)]
         if options.max_anchors_per_market > 0:
-            anchor_rows = anchor_rows[: max(int(options.max_anchors_per_market), 0)]
+            anchor_rows = anchor_rows[-max(int(options.max_anchors_per_market), 0) :]
         discovered_anchors += len(anchor_rows)
         for anchor_row in anchor_rows:
             try:
