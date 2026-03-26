@@ -6,6 +6,7 @@ import polars as pl
 
 
 EXPECTED_INTERVAL_MS: dict[str, int] = {
+    "1s": 1_000,
     "1m": 60_000,
     "5m": 300_000,
     "15m": 900_000,

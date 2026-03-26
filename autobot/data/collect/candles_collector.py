@@ -37,7 +37,7 @@ class CandleCollectOptions:
 
     @property
     def collect_report_path(self) -> Path:
-        return self.collect_meta_dir / "candle_collect_report.json"
+        return self.collect_meta_dir / _dataset_report_name(self.out_dataset, default_name="candle_collect_report.json", suffix="collect_report")
 
     @property
     def build_report_path(self) -> Path:
@@ -293,7 +293,8 @@ def _collect_one_target(
     need_to_ts_ms = int(detail["need_to_ts_ms"])
 
     try:
-        result = client.fetch_minutes_range(
+        result = _fetch_target_range(
+            client=client,
             market=market,
             tf=tf,
             start_ts_ms=need_from_ts_ms,
@@ -338,7 +339,7 @@ def _collect_one_target(
         detail["reasons"] = reasons
         manifest_row = {
             "dataset_name": options.out_dataset,
-            "source": "upbit_api",
+            "source": _source_name_for_tf(tf),
             "window_tag": window_tag,
             "market": market,
             "tf": tf,
@@ -363,7 +364,7 @@ def _collect_one_target(
             detail["backoff_count"] = int(detail.get("backoff_count", 0))
             manifest_row = {
                 "dataset_name": options.out_dataset,
-                "source": "upbit_api",
+                "source": _source_name_for_tf(tf),
                 "window_tag": window_tag,
                 "market": market,
                 "tf": tf,
@@ -387,7 +388,7 @@ def _collect_one_target(
         detail["backoff_count"] = int(detail.get("backoff_count", 0))
         manifest_row = {
             "dataset_name": options.out_dataset,
-            "source": "upbit_api",
+            "source": _source_name_for_tf(tf),
             "window_tag": window_tag,
             "market": market,
             "tf": tf,
@@ -410,7 +411,7 @@ def _is_terminal_market_unavailable(exc: Exception) -> bool:
     if int(getattr(exc, "status_code", 0) or 0) != 404:
         return False
     endpoint = str(getattr(exc, "endpoint", "") or "").strip().lower()
-    if "/v1/candles/minutes/" not in endpoint:
+    if "/v1/candles/minutes/" not in endpoint and "/v1/candles/seconds" not in endpoint:
         return False
     message = str(getattr(exc, "message", "") or exc).strip().lower()
     if "code not found" in message:
@@ -418,3 +419,44 @@ def _is_terminal_market_unavailable(exc: Exception) -> bool:
     if "market not found" in message:
         return True
     return False
+
+
+def _fetch_target_range(
+    *,
+    client: Any,
+    market: str,
+    tf: str,
+    start_ts_ms: int,
+    end_ts_ms: int,
+    max_requests: int | None,
+) -> Any:
+    if hasattr(client, "fetch_candles_range"):
+        return client.fetch_candles_range(
+            market=market,
+            tf=tf,
+            start_ts_ms=start_ts_ms,
+            end_ts_ms=end_ts_ms,
+            max_requests=max_requests,
+        )
+    return client.fetch_minutes_range(
+        market=market,
+        tf=tf,
+        start_ts_ms=start_ts_ms,
+        end_ts_ms=end_ts_ms,
+        max_requests=max_requests,
+    )
+
+
+def _source_name_for_tf(tf: str) -> str:
+    return "upbit_api_seconds" if str(tf).strip().lower() == "1s" else "upbit_api_minutes"
+
+
+def _dataset_report_name(dataset_name: str, *, default_name: str, suffix: str) -> str:
+    normalized = str(dataset_name).strip().lower()
+    if normalized == "candles_api_v1":
+        return default_name
+    if normalized == "candles_second_v1":
+        return f"candle_second_{suffix}.json"
+    safe = "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_")
+    safe = safe or "candles"
+    return f"{safe}_{suffix}.json"

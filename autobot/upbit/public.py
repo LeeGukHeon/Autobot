@@ -61,6 +61,29 @@ class UpbitPublicClient:
             rate_limit_group="candle",
         )
 
+    def candles_seconds(
+        self,
+        *,
+        market: str,
+        count: int = 10,
+        to: str | None = None,
+    ) -> JSONValue:
+        market_value = market.strip().upper()
+        if not market_value:
+            raise ValidationError("market is required")
+
+        params: list[tuple[str, str | int]] = [("market", market_value), ("count", max(min(int(count), 200), 1))]
+        if to:
+            params.append(("to", to))
+
+        return self._http.request_json(
+            "GET",
+            "/v1/candles/seconds",
+            params=params,
+            auth=False,
+            rate_limit_group="candle",
+        )
+
     def trades_ticks(
         self,
         *,

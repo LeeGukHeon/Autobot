@@ -1,4 +1,4 @@
-"""Upbit minute-candle top-up client with paging and retry guards."""
+"""Upbit candle top-up client with paging and retry guards."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from ...upbit import (
 )
 
 
-PageFetcher = Callable[[str, int, int, str | None], Sequence[dict[str, Any]]]
+PageFetcher = Callable[[str, str, int, str | None], Sequence[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class CandleFetchResult:
 
 
 class UpbitCandlesClient:
-    """Minute candle range fetcher using Upbit REST pagination."""
+    """Candle range fetcher using Upbit REST pagination."""
 
     def __init__(
         self,
@@ -71,7 +71,7 @@ class UpbitCandlesClient:
         self._sleep = sleep_fn or time.sleep
         self._rng = rng or random.Random()
 
-    def fetch_minutes_range(
+    def fetch_candles_range(
         self,
         *,
         market: str,
@@ -81,7 +81,7 @@ class UpbitCandlesClient:
         max_requests: int | None = None,
     ) -> CandleFetchResult:
         if self._page_fetcher is not None:
-            return self._fetch_minutes_range_with_page_fetcher(
+            return self._fetch_candles_range_with_page_fetcher(
                 page_fetcher=self._page_fetcher,
                 market=market,
                 tf=tf,
@@ -94,10 +94,11 @@ class UpbitCandlesClient:
         with UpbitHttpClient(self._settings) as http_client:
             rest_client = UpbitPublicClient(http_client)
 
-            def _rest_fetcher(market_name: str, tf_min: int, count: int, to: str | None) -> Sequence[dict[str, Any]]:
-                payload = rest_client.candles_minutes(
+            def _rest_fetcher(market_name: str, tf_code: str, count: int, to: str | None) -> Sequence[dict[str, Any]]:
+                payload = _fetch_rest_page(
+                    rest_client=rest_client,
                     market=market_name,
-                    tf_min=tf_min,
+                    tf=tf_code,
                     count=count,
                     to=to,
                 )
@@ -105,7 +106,7 @@ class UpbitCandlesClient:
                     return []
                 return [item for item in payload if isinstance(item, dict)]
 
-            return self._fetch_minutes_range_with_page_fetcher(
+            return self._fetch_candles_range_with_page_fetcher(
                 page_fetcher=_rest_fetcher,
                 market=market,
                 tf=tf,
@@ -114,7 +115,24 @@ class UpbitCandlesClient:
                 max_requests=max_requests,
             )
 
-    def _fetch_minutes_range_with_page_fetcher(
+    def fetch_minutes_range(
+        self,
+        *,
+        market: str,
+        tf: str,
+        start_ts_ms: int,
+        end_ts_ms: int,
+        max_requests: int | None = None,
+    ) -> CandleFetchResult:
+        return self.fetch_candles_range(
+            market=market,
+            tf=tf,
+            start_ts_ms=start_ts_ms,
+            end_ts_ms=end_ts_ms,
+            max_requests=max_requests,
+        )
+
+    def _fetch_candles_range_with_page_fetcher(
         self,
         *,
         page_fetcher: PageFetcher,
@@ -126,7 +144,7 @@ class UpbitCandlesClient:
     ) -> CandleFetchResult:
         market_value = str(market).strip().upper()
         tf_value = str(tf).strip().lower()
-        tf_min = _tf_to_minutes(tf_value)
+        _validate_candle_tf(tf_value)
         if end_ts_ms < start_ts_ms:
             raise ValueError("end_ts_ms must be >= start_ts_ms")
 
@@ -148,7 +166,7 @@ class UpbitCandlesClient:
             payload, page_calls, page_throttled, page_backoff = self._fetch_page_with_retry(
                 page_fetcher=page_fetcher,
                 market=market_value,
-                tf_min=tf_min,
+                tf=tf_value,
                 to_ts_ms=to_ts_ms,
                 count=200,
             )
@@ -205,7 +223,7 @@ class UpbitCandlesClient:
         *,
         page_fetcher: PageFetcher,
         market: str,
-        tf_min: int,
+        tf: str,
         to_ts_ms: int,
         count: int,
     ) -> tuple[list[dict[str, Any]], int, int, int]:
@@ -217,7 +235,7 @@ class UpbitCandlesClient:
             page_calls += 1
             to_param = _to_param_from_ts_ms(to_ts_ms)
             try:
-                payload = page_fetcher(market, tf_min, count, to_param)
+                payload = page_fetcher(market, tf, count, to_param)
                 normalized = [dict(item) for item in payload if isinstance(item, dict)]
                 return normalized, page_calls, throttled_count, backoff_count
             except RateLimitError as exc:
@@ -303,14 +321,47 @@ def _to_param_from_ts_ms(ts_ms: int) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def _fetch_rest_page(
+    *,
+    rest_client: UpbitPublicClient,
+    market: str,
+    tf: str,
+    count: int,
+    to: str | None,
+) -> Sequence[dict[str, Any]]:
+    if tf == "1s":
+        payload = rest_client.candles_seconds(
+            market=market,
+            count=count,
+            to=to,
+        )
+    else:
+        payload = rest_client.candles_minutes(
+            market=market,
+            tf_min=_tf_to_minutes(tf),
+            count=count,
+            to=to,
+        )
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _validate_candle_tf(tf: str) -> None:
+    text = str(tf).strip().lower()
+    if text == "1s":
+        return
+    _tf_to_minutes(text)
+
+
 def _tf_to_minutes(tf: str) -> int:
     text = str(tf).strip().lower()
     if not text.endswith("m"):
-        raise ValueError(f"Unsupported timeframe for minute candle endpoint: {tf}")
+        raise ValueError(f"Unsupported timeframe for candle endpoint: {tf}")
     try:
         return int(text[:-1])
     except ValueError as exc:
-        raise ValueError(f"Unsupported timeframe for minute candle endpoint: {tf}") from exc
+        raise ValueError(f"Unsupported timeframe for candle endpoint: {tf}") from exc
 
 
 def _as_float(value: Any) -> float | None:

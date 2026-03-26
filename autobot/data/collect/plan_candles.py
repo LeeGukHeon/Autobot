@@ -28,6 +28,7 @@ VALID_MARKET_MODES = {"fixed_list", "top_n_by_recent_value_est", "one_m_existing
 class CandlePlanOptions:
     parquet_root: Path = Path("data/parquet")
     base_dataset: str = "candles_v1"
+    market_source_dataset: str | None = None
     output_path: Path = Path("data/collect/_meta/candle_topup_plan.json")
     lookback_months: int = 24
     tf_set: tuple[str, ...] = DEFAULT_TFS
@@ -35,12 +36,18 @@ class CandlePlanOptions:
     market_mode: str = "top_n_by_recent_value_est"
     top_n: int = 50
     fixed_markets: tuple[str, ...] | None = None
+    max_backfill_days_1s: int = 90
     max_backfill_days_1m: int = 90
     end_ts_ms: int | None = None
 
     @property
     def base_dataset_root(self) -> Path:
         return self.parquet_root / self.base_dataset
+
+    @property
+    def market_source_dataset_root(self) -> Path:
+        dataset_name = str(self.market_source_dataset or self.base_dataset).strip() or self.base_dataset
+        return self.parquet_root / dataset_name
 
 
 def generate_candle_topup_plan(options: CandlePlanOptions) -> dict[str, Any]:
@@ -66,10 +73,18 @@ def generate_candle_topup_plan(options: CandlePlanOptions) -> dict[str, Any]:
     )
     inventory_entries = inventory.get("entries", [])
     entry_index = {(item["market"], item["tf"]): item for item in inventory_entries}
+    market_source_inventory = build_candle_inventory(
+        options.market_source_dataset_root,
+        quote=quote,
+        window_start_ts_ms=window_start_ts_ms,
+        window_end_ts_ms=window_end_ts_ms,
+    )
+    market_source_inventory_entries = market_source_inventory.get("entries", [])
 
     selected_markets, market_selection_meta = _select_markets(
         options=options,
         inventory_entries=inventory_entries,
+        market_source_inventory_entries=market_source_inventory_entries,
         quote=quote,
         window_end_ts_ms=window_end_ts_ms,
     )
@@ -100,14 +115,20 @@ def generate_candle_topup_plan(options: CandlePlanOptions) -> dict[str, Any]:
                     missing=missing,
                     window_start_ts_ms=window_start_ts_ms,
                     window_end_ts_ms=window_end_ts_ms,
+                    max_backfill_days_1s=options.max_backfill_days_1s,
                     max_backfill_days_1m=options.max_backfill_days_1m,
                 )
                 if planned is None:
+                    limit_reason = "OUTSIDE_RECENT_WINDOW_LIMIT"
+                    if tf == "1s":
+                        limit_reason = "OUTSIDE_1S_BACKFILL_LIMIT"
+                    elif tf == "1m":
+                        limit_reason = "OUTSIDE_1M_BACKFILL_LIMIT"
                     skipped_ranges.append(
                         {
                             "market": market,
                             "tf": tf,
-                            "reason": "OUTSIDE_1M_BACKFILL_LIMIT",
+                            "reason": limit_reason,
                             "missing": missing,
                         }
                     )
@@ -139,6 +160,8 @@ def generate_candle_topup_plan(options: CandlePlanOptions) -> dict[str, Any]:
             "market_mode": market_mode,
             "top_n": int(options.top_n),
             "fixed_markets": list(options.fixed_markets or ()),
+            "market_source_dataset": str(options.market_source_dataset or options.base_dataset),
+            "max_backfill_days_1s": int(options.max_backfill_days_1s),
             "max_backfill_days_1m": int(options.max_backfill_days_1m),
         },
         "market_selection": market_selection_meta,
@@ -149,6 +172,7 @@ def generate_candle_topup_plan(options: CandlePlanOptions) -> dict[str, Any]:
                 "count_per_request": 200,
             },
             "per_tf_limits": {
+                "1s_max_backfill_days": int(options.max_backfill_days_1s),
                 "1m_max_backfill_days": int(options.max_backfill_days_1m),
             },
         },
@@ -172,6 +196,7 @@ def plan_options_from_args(
     *,
     parquet_root: str,
     base_dataset: str,
+    market_source_dataset: str | None,
     output_path: str,
     lookback_months: int,
     tf_csv: str | None,
@@ -179,6 +204,7 @@ def plan_options_from_args(
     market_mode: str,
     top_n: int | None,
     markets_csv: str | None,
+    max_backfill_days_1s: int,
     max_backfill_days_1m: int,
     end: str | None = None,
 ) -> CandlePlanOptions:
@@ -189,6 +215,7 @@ def plan_options_from_args(
     return CandlePlanOptions(
         parquet_root=Path(parquet_root),
         base_dataset=str(base_dataset).strip() or "candles_v1",
+        market_source_dataset=(str(market_source_dataset).strip() if market_source_dataset else None) or None,
         output_path=Path(output_path),
         lookback_months=max(int(lookback_months), 1),
         tf_set=tf_set,
@@ -196,6 +223,7 @@ def plan_options_from_args(
         market_mode=str(market_mode).strip().lower(),
         top_n=max(int(top_n or 0), 0),
         fixed_markets=fixed,
+        max_backfill_days_1s=max(int(max_backfill_days_1s), 1),
         max_backfill_days_1m=max(int(max_backfill_days_1m), 1),
         end_ts_ms=parse_utc_ts_ms(end, end_of_day=True),
     )
@@ -219,6 +247,7 @@ def _select_markets(
     *,
     options: CandlePlanOptions,
     inventory_entries: list[dict[str, Any]],
+    market_source_inventory_entries: list[dict[str, Any]],
     quote: str,
     window_end_ts_ms: int,
 ) -> tuple[list[str], dict[str, Any]]:
@@ -231,6 +260,14 @@ def _select_markets(
             if str(item.get("market", "")).strip().upper().startswith(quote_prefix)
         }
     )
+    source_inventory_markets = sorted(
+        {
+            str(item.get("market", "")).strip().upper()
+            for item in market_source_inventory_entries
+            if str(item.get("market", "")).strip().upper().startswith(quote_prefix)
+        }
+    )
+    fallback_inventory_markets = sorted(set(inventory_markets) | set(source_inventory_markets))
 
     if market_mode == "fixed_list":
         fixed_markets = [
@@ -245,7 +282,7 @@ def _select_markets(
         selected = sorted(
             {
                 str(item.get("market", "")).strip().upper()
-                for item in inventory_entries
+                for item in market_source_inventory_entries
                 if str(item.get("tf", "")).strip().lower() == "1m"
                 and int(item.get("rows", 0)) > 0
                 and str(item.get("market", "")).strip().upper().startswith(quote_prefix)
@@ -254,7 +291,7 @@ def _select_markets(
         return selected, {"mode": market_mode, "count": len(selected)}
 
     estimates, tf_used = estimate_recent_value_by_market(
-        options.base_dataset_root,
+        options.market_source_dataset_root,
         end_ts_ms=window_end_ts_ms,
         lookback_days=30,
         quote=quote,
@@ -271,7 +308,7 @@ def _select_markets(
             "value_est_lookback_days": 30,
         }
 
-    fallback = inventory_markets[:top_n]
+    fallback = fallback_inventory_markets[:top_n]
     return fallback, {
         "mode": market_mode,
         "count": len(fallback),
@@ -288,6 +325,7 @@ def _build_target_range(
     missing: dict[str, Any],
     window_start_ts_ms: int,
     window_end_ts_ms: int,
+    max_backfill_days_1s: int,
     max_backfill_days_1m: int,
 ) -> dict[str, Any] | None:
     raw_from = max(int(missing.get("from_ts_ms", window_start_ts_ms)), window_start_ts_ms)
@@ -298,7 +336,14 @@ def _build_target_range(
     reason = str(missing.get("reason", "MISSING_RANGE")).strip().upper() or "MISSING_RANGE"
     need_from_ts_ms = raw_from
     need_to_ts_ms = raw_to
-    if tf == "1m":
+    if tf == "1s":
+        cap_from = int(window_end_ts_ms - (max(int(max_backfill_days_1s), 1) * DAY_MS))
+        if need_to_ts_ms < cap_from:
+            return None
+        if need_from_ts_ms < cap_from:
+            need_from_ts_ms = cap_from
+            reason = f"{reason}|1S_BACKFILL_LIMIT"
+    elif tf == "1m":
         cap_from = int(window_end_ts_ms - (max(int(max_backfill_days_1m), 1) * DAY_MS))
         if need_to_ts_ms < cap_from:
             return None

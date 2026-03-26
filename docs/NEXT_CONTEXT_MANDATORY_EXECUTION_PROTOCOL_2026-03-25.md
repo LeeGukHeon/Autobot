@@ -364,9 +364,12 @@ The next context must start from the first unchecked item.
 
 ### Phase 5: Advanced Data Shapes
 
-- [ ] 21. Add `candles_second_v1`
+- [x] 21. Add `candles_second_v1`
   Required references:
   [DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/DATA_AND_FEATURE_PLATFORM_BLUEPRINT_2026-03-25.md)
+
+  Current implementation note:
+  implemented by extending the existing candle collection stack rather than creating a disconnected side path. `autobot/upbit/public.py` now exposes the official second-candle REST endpoint, `autobot/data/collect/upbit_candles_client.py` now supports both `1s` and minute candle pagination through one range-fetch contract, `autobot/data/schema_contract.py` now recognizes `1s`, and `autobot/data/collect/plan_candles.py` now supports blueprint-aligned second-layer planning with a separate `market_source_dataset` plus explicit `1s` recent-window caps so `data/parquet/candles_second_v1` can be built in parallel without depending on preexisting second-candle inventory. `autobot/data/collect/candles_collector.py` and `autobot.cli collect candles` now preserve separate second-layer collect/validate artifact paths such as `candle_second_collect_report.json` and `candle_second_validate_report.json` instead of overwriting the minute-layer reports, while `autobot/data/ingest_csv_to_parquet.py` now treats `1s` candle gaps as sparse-by-construction rather than integrity failures because Upbit does not emit a second candle when no trade occurs in that second. Local validation covered the connected slice through `tests/test_candle_plan.py`, `tests/test_upbit_candles_client.py`, `tests/test_upbit_public_candles.py`, and `tests/test_candle_collect_validate.py`, including second-layer planning from a separate market-source dataset, endpoint dispatch, sparse-second validation, and dataset-specific artifact naming.
 
 - [ ] 22. Add `ws_candle_v1`
   Required references:

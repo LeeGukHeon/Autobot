@@ -869,6 +869,9 @@ def _ohlc_violation_expr() -> pl.Expr:
 def _count_gaps(ts_series: pl.Series, tf: str) -> int:
     if ts_series.len() <= 1:
         return 0
+    if str(tf).strip().lower() == "1s":
+        # Upbit second candles are sparse by construction when no trade occurs in a second.
+        return 0
     expected = expected_interval_ms(tf)
     sorted_diff = ts_series.sort().diff().drop_nulls()
     if sorted_diff.len() == 0:

@@ -309,6 +309,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     collect_plan_parser = collect_subparsers.add_parser("plan-candles", help="Generate candle top-up plan.")
     collect_plan_parser.add_argument("--base-dataset", help="Base dataset name, ex: candles_v1")
+    collect_plan_parser.add_argument(
+        "--market-source-dataset",
+        help="Dataset used for market selection/value estimates when base dataset coverage is sparse or empty",
+    )
     collect_plan_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
     collect_plan_parser.add_argument(
         "--out",
@@ -325,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_plan_parser.add_argument("--top-n", type=int, default=50)
     collect_plan_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_plan_parser.add_argument("--max-backfill-days-1s", type=int, default=90)
     collect_plan_parser.add_argument("--max-backfill-days-1m", type=int, default=90)
     collect_plan_parser.add_argument("--end", help="Window end date (YYYY-MM-DD)")
 
@@ -336,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_candles_parser.add_argument("--out-dataset", default="candles_api_v1")
     collect_candles_parser.add_argument("--parquet-root", help="Parquet root directory, ex: data/parquet")
+    collect_candles_parser.add_argument(
+        "--collect-meta-dir",
+        default="data/collect/_meta",
+        help="Directory for collection/validation reports",
+    )
+    collect_candles_parser.add_argument("--validate-report", help="Optional validate report output path")
     collect_candles_parser.add_argument("--workers", type=int, default=1)
     collect_candles_parser.add_argument("--dry-run", default="true", help="true|false")
     collect_candles_parser.add_argument("--max-requests", type=int)
@@ -1459,6 +1470,7 @@ def _handle_collect_plan_candles(args: argparse.Namespace, config: dict[str, Any
     plan_options = CandlePlanOptions(
         parquet_root=Path(parquet_root),
         base_dataset=base_dataset,
+        market_source_dataset=(str(args.market_source_dataset).strip() if args.market_source_dataset else None) or None,
         output_path=Path(args.out),
         lookback_months=max(int(args.lookback_months), 1),
         tf_set=_parse_csv_list(args.tf, normalize=str.lower) or ("1m", "5m", "15m", "60m", "240m"),
@@ -1466,6 +1478,7 @@ def _handle_collect_plan_candles(args: argparse.Namespace, config: dict[str, Any
         market_mode=str(args.market_mode).strip().lower(),
         top_n=max(int(args.top_n), 1),
         fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
+        max_backfill_days_1s=max(int(args.max_backfill_days_1s), 1),
         max_backfill_days_1m=max(int(args.max_backfill_days_1m), 1),
         end_ts_ms=parse_utc_ts_ms(args.end, end_of_day=True),
     )
@@ -1488,6 +1501,7 @@ def _handle_collect_candles(args: argparse.Namespace, config_dir: Path, base_con
         plan_path=Path(args.plan),
         parquet_root=parquet_root,
         out_dataset=str(args.out_dataset).strip() or "candles_api_v1",
+        collect_meta_dir=Path(args.collect_meta_dir),
         dry_run=_parse_bool_arg(args.dry_run, default=True),
         workers=max(int(args.workers), 1),
         max_requests=args.max_requests,
@@ -1514,7 +1528,7 @@ def _handle_collect_candles(args: argparse.Namespace, config_dir: Path, base_con
         parquet_root=parquet_root,
         dataset_name=collect_options.out_dataset,
         plan_path=collect_options.plan_path,
-        report_path=Path("data/collect/_meta/candle_validate_report.json"),
+        report_path=Path(args.validate_report) if args.validate_report else _default_candle_validate_report_path(collect_options),
         gap_severity=defaults["qa"]["gap_severity"],
         quote_est_severity=defaults["qa"]["quote_est_severity"],
         ohlc_violation_policy=defaults["qa"]["ohlc_violation_policy"],
@@ -1556,6 +1570,17 @@ def _handle_collect_plan_ticks(args: argparse.Namespace, config: dict[str, Any])
     )
     print(f"[collect][plan-ticks] out={plan_options.output_path}")
     return 0
+
+
+def _default_candle_validate_report_path(options: CandleCollectOptions) -> Path:
+    normalized = str(options.out_dataset).strip().lower()
+    if normalized == "candles_api_v1":
+        return options.collect_meta_dir / "candle_validate_report.json"
+    if normalized == "candles_second_v1":
+        return options.collect_meta_dir / "candle_second_validate_report.json"
+    safe = "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_")
+    safe = safe or "candles"
+    return options.collect_meta_dir / f"{safe}_validate_report.json"
 
 
 def _handle_collect_plan_ws_public(args: argparse.Namespace, config: dict[str, Any]) -> int:
