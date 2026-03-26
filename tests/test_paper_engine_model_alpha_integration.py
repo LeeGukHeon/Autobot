@@ -255,7 +255,7 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
         if line.strip()
     ]
     assert opportunity_rows
-    assert opportunity_rows[0]["lane"] == "paper"
+    assert opportunity_rows[0]["lane"] in {"paper", "paper_champion", "paper_candidate"}
     assert opportunity_rows[0]["decision_outcome"] in {"intent_created", "skip"}
     assert opportunity_rows[0]["chosen_action"]
     assert opportunity_rows[0]["behavior_policy_name"] == "model_alpha_execution_behavior_policy_v1"

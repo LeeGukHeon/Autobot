@@ -235,7 +235,7 @@ def _build_run_index(*, run_dir: Path) -> dict[str, Any]:
             "closed": bool(metrics.get("closed", False)),
             "total_fee_quote": float(metrics.get("total_fee_quote", 0.0)),
             "price_modes": dict(metrics.get("price_modes") or {}),
-            "has_trade": bool(intent_id),
+            "has_trade": bool(intent_id) or _is_trade_selected(row),
         }
     return {
         "summary": summary,
@@ -393,6 +393,13 @@ def _example_projection(item: dict[str, Any]) -> dict[str, Any]:
         "realized_pnl_quote": _safe_optional_float(item.get("realized_pnl_quote")),
         "closed": bool(item.get("closed", False)),
     }
+
+
+def _is_trade_selected(row: dict[str, Any]) -> bool:
+    chosen_action = str(row.get("chosen_action") or "").strip().upper()
+    if not chosen_action:
+        return False
+    return chosen_action not in {"NO_TRADE", "SKIP", "INTENT_CREATED"}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
