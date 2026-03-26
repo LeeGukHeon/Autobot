@@ -23,6 +23,7 @@ from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
 from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.models.dataset_loader import FeatureTsGroup
+from autobot.models.entry_boundary import evaluate_entry_boundary
 from autobot.models.execution_risk_control import (
     normalize_execution_risk_control_payload,
     resolve_execution_risk_control_decision,
@@ -187,6 +188,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             selection_policy=selection_policy,
             selection_policy_source=selection_policy_source,
         )
+        entry_boundary_contract = getattr(self._predictor, "entry_boundary_contract", {}) or {}
         min_candidates_used, min_candidates_source = _resolve_selection_min_candidates(
             predictor=self._predictor,
             settings=self._settings.selection,
@@ -353,6 +355,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             pl.Series(name="score_mean", values=np.asarray(score_contract["score_mean"], dtype=np.float64)),
             pl.Series(name="score_std", values=_optional_float_list(score_contract["score_std"])),
             pl.Series(name="score_lcb", values=np.asarray(score_contract["score_lcb"], dtype=np.float64)),
+            pl.Series(name="final_expected_return", values=_optional_float_list(score_contract["final_expected_return"])),
+            pl.Series(name="final_expected_es", values=_optional_float_list(score_contract["final_expected_es"])),
+            pl.Series(name="final_tradability", values=_optional_float_list(score_contract["final_tradability"])),
+            pl.Series(name="final_alpha_lcb", values=_optional_float_list(score_contract["final_alpha_lcb"])),
         )
         if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
             eligible = scored
@@ -528,6 +534,23 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     chosen_action="skip",
                     reason_code="MODEL_ALPHA_ENTRY_V1",
                     skip_reason_code="ENTRY_REF_PRICE_MISSING",
+                )
+                continue
+            entry_boundary_decision = evaluate_entry_boundary(
+                row=row,
+                contract=entry_boundary_contract if isinstance(entry_boundary_contract, dict) else {},
+            )
+            if bool(entry_boundary_decision.get("enabled")) and not bool(entry_boundary_decision.get("allowed")):
+                skip_reason_code = (
+                    str((entry_boundary_decision.get("reason_codes") or ["ENTRY_BOUNDARY_BLOCKED"])[0]).strip()
+                    or "ENTRY_BOUNDARY_BLOCKED"
+                )
+                _inc_reason(skipped_reasons, skip_reason_code)
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code=skip_reason_code,
                 )
                 continue
             base_notional_multiplier = _resolve_entry_notional_multiplier(
@@ -720,6 +743,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     "final_expected_es": _safe_optional_float(row.get("final_expected_es")),
                     "final_tradability": _safe_optional_float(row.get("final_tradability")),
                     "final_alpha_lcb": _safe_optional_float(row.get("final_alpha_lcb")),
+                    "entry_boundary": dict(entry_boundary_decision or {}),
                     "model_prob_raw": float(row.get("model_prob_raw", row.get("model_prob", 0.0))),
                     "uncertainty": _resolve_opportunity_uncertainty(row),
                     "selection_min_prob_used": float(min_prob_used),

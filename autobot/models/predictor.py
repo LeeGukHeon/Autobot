@@ -30,6 +30,7 @@ class ModelPredictor:
     selection_policy: dict[str, Any] = field(default_factory=dict)
     selection_calibration: dict[str, Any] = field(default_factory=dict)
     predictor_contract: dict[str, Any] = field(default_factory=dict)
+    entry_boundary_contract: dict[str, Any] = field(default_factory=dict)
 
     @property
     def dataset_root(self) -> Path | None:
@@ -189,6 +190,11 @@ def load_predictor_from_registry(
         raw_predictor_contract = train_config.get("predictor_contract")
         if isinstance(raw_predictor_contract, dict):
             predictor_contract = raw_predictor_contract
+    entry_boundary_contract = load_json(run_dir / "entry_boundary_contract.json")
+    if not entry_boundary_contract:
+        raw_entry_boundary_contract = train_config.get("entry_boundary_contract")
+        if isinstance(raw_entry_boundary_contract, dict):
+            entry_boundary_contract = raw_entry_boundary_contract
 
     feature_columns = tuple(str(item) for item in train_config.get("feature_columns", []))
     if not feature_columns:
@@ -213,4 +219,5 @@ def load_predictor_from_registry(
         selection_policy=selection_policy if isinstance(selection_policy, dict) else {},
         selection_calibration=selection_calibration if isinstance(selection_calibration, dict) else {},
         predictor_contract=predictor_contract if isinstance(predictor_contract, dict) else {},
+        entry_boundary_contract=entry_boundary_contract if isinstance(entry_boundary_contract, dict) else {},
     )

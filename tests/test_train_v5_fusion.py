@@ -94,6 +94,7 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert result.run_dir.exists()
     assert result.fusion_model_contract_path.exists()
     assert result.predictor_contract_path.exists()
+    assert result.entry_boundary_contract_path.exists()
     assert result.walk_forward_report_path.exists()
     assert result.promotion_path.exists()
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_fusion"

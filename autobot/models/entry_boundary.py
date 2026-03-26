@@ -1,0 +1,231 @@
+"""Risk-calibrated entry boundary builders and evaluators."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class _LinearRiskModel:
+    intercept: float
+    coefficients: tuple[float, ...]
+    feature_shift: tuple[float, ...]
+    feature_scale: tuple[float, ...]
+    constant_probability: float | None = None
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(x, dtype=np.float64)
+        if self.constant_probability is not None:
+            probs = np.full(matrix.shape[0], float(self.constant_probability), dtype=np.float64)
+            return np.column_stack([1.0 - probs, probs])
+        shift = np.asarray(self.feature_shift, dtype=np.float64)
+        scale = np.asarray(self.feature_scale, dtype=np.float64)
+        safe_scale = np.where(np.abs(scale) < 1e-12, 1.0, scale)
+        normalized = (matrix - shift) / safe_scale
+        coeff = np.asarray(self.coefficients, dtype=np.float64)
+        logits = normalized @ coeff + float(self.intercept)
+        probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -40.0, 40.0)))
+        return np.column_stack([1.0 - probs, probs])
+
+
+def build_risk_calibrated_entry_boundary(
+    *,
+    final_rank_score: np.ndarray,
+    final_expected_return: np.ndarray,
+    final_expected_es: np.ndarray,
+    final_tradability: np.ndarray,
+    final_uncertainty: np.ndarray,
+    final_alpha_lcb: np.ndarray,
+    realized_return: np.ndarray,
+    severe_loss_bps: float = 0.02,
+    target_max_severe_loss_rate: float = 0.10,
+) -> dict[str, Any]:
+    x = np.column_stack(
+        [
+            np.asarray(final_expected_return, dtype=np.float64),
+            np.asarray(final_expected_es, dtype=np.float64),
+            np.asarray(final_uncertainty, dtype=np.float64),
+            np.asarray(final_tradability, dtype=np.float64),
+            np.asarray(final_alpha_lcb, dtype=np.float64),
+            np.asarray(final_rank_score, dtype=np.float64),
+        ]
+    )
+    y = (np.asarray(realized_return, dtype=np.float64) <= -abs(float(severe_loss_bps))).astype(np.int64)
+    risk_model = _fit_logistic_risk_model(x, y)
+    risk_prob = risk_model.predict_proba(x)[:, 1]
+
+    alpha_lcb_floor = 0.0
+    tradability_candidates = sorted({0.0, *np.quantile(np.asarray(final_tradability, dtype=np.float64), [0.1, 0.25, 0.5]).tolist()})
+    risk_candidates = sorted({1.0, *np.quantile(risk_prob, [0.25, 0.5, 0.75, 0.9]).tolist()})
+
+    best: dict[str, Any] | None = None
+    realized = np.asarray(realized_return, dtype=np.float64)
+    for tradability_threshold in tradability_candidates:
+        for risk_threshold in risk_candidates:
+            allowed_mask = (
+                (np.asarray(final_alpha_lcb, dtype=np.float64) > float(alpha_lcb_floor))
+                & (np.asarray(final_tradability, dtype=np.float64) >= float(tradability_threshold))
+                & (risk_prob <= float(risk_threshold))
+            )
+            accepted = realized[allowed_mask]
+            if accepted.size <= 0:
+                continue
+            severe_rate = float(np.mean(accepted <= -abs(float(severe_loss_bps))))
+            nonpositive_rate = float(np.mean(accepted <= 0.0))
+            ev_mean = float(np.mean(accepted))
+            candidate = {
+                "alpha_lcb_floor": float(alpha_lcb_floor),
+                "tradability_threshold": float(tradability_threshold),
+                "severe_loss_risk_threshold": float(risk_threshold),
+                "accepted_rows": int(accepted.size),
+                "severe_loss_rate": severe_rate,
+                "nonpositive_rate": nonpositive_rate,
+                "ev_mean": ev_mean,
+            }
+            if severe_rate > float(target_max_severe_loss_rate):
+                continue
+            if best is None or (candidate["ev_mean"], -candidate["severe_loss_rate"], candidate["accepted_rows"]) > (
+                best["ev_mean"],
+                -best["severe_loss_rate"],
+                best["accepted_rows"],
+            ):
+                best = candidate
+
+    if best is None:
+        best = {
+            "alpha_lcb_floor": 0.0,
+            "tradability_threshold": 0.0,
+            "severe_loss_risk_threshold": float(np.quantile(risk_prob, 0.5)) if risk_prob.size > 0 else 1.0,
+            "accepted_rows": 0,
+            "severe_loss_rate": 1.0,
+            "nonpositive_rate": 1.0,
+            "ev_mean": 0.0,
+        }
+
+    return {
+        "version": 1,
+        "policy": "risk_calibrated_entry_boundary_v1",
+        "alpha_lcb_floor": float(best["alpha_lcb_floor"]),
+        "tradability_threshold": float(best["tradability_threshold"]),
+        "severe_loss_risk_threshold": float(best["severe_loss_risk_threshold"]),
+        "target_max_severe_loss_rate": float(target_max_severe_loss_rate),
+        "severe_loss_bps": float(abs(severe_loss_bps)),
+        "risk_model": {
+            "feature_names": [
+                "final_expected_return",
+                "final_expected_es",
+                "final_uncertainty",
+                "final_tradability",
+                "final_alpha_lcb",
+                "final_rank_score",
+            ],
+            "intercept": float(risk_model.intercept),
+            "coefficients": list(risk_model.coefficients),
+            "feature_shift": list(risk_model.feature_shift),
+            "feature_scale": list(risk_model.feature_scale),
+            "constant_probability": risk_model.constant_probability,
+        },
+        "calibration_metrics": {
+            "accepted_rows": int(best["accepted_rows"]),
+            "severe_loss_rate": float(best["severe_loss_rate"]),
+            "nonpositive_rate": float(best["nonpositive_rate"]),
+            "ev_mean": float(best["ev_mean"]),
+        },
+        "formula": {
+            "entry_allowed": "alpha_lcb > floor AND tradability >= threshold AND estimated_severe_loss_risk <= threshold",
+            "reason_codes": [
+                "ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE",
+                "ENTRY_BOUNDARY_TRADABILITY_BELOW_THRESHOLD",
+                "ENTRY_BOUNDARY_SEVERE_LOSS_RISK_HIGH",
+            ],
+        },
+    }
+
+
+def evaluate_entry_boundary(
+    *,
+    row: dict[str, Any],
+    contract: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(contract or {})
+    if not payload:
+        return {"enabled": False, "allowed": True, "reason_codes": [], "estimated_severe_loss_risk": None}
+
+    features = np.asarray(
+        [
+            _safe_optional_float(row.get("final_expected_return")) or 0.0,
+            _safe_optional_float(row.get("final_expected_es")) or 0.0,
+            _safe_optional_float(row.get("final_uncertainty")) or 0.0,
+            _safe_optional_float(row.get("final_tradability")) or 0.0,
+            _safe_optional_float(row.get("final_alpha_lcb")) or 0.0,
+            _safe_optional_float(row.get("final_rank_score")) or 0.0,
+        ],
+        dtype=np.float64,
+    ).reshape(1, -1)
+    risk_doc = dict(payload.get("risk_model") or {})
+    risk_model = _LinearRiskModel(
+        intercept=float(risk_doc.get("intercept") or 0.0),
+        coefficients=tuple(float(item) for item in (risk_doc.get("coefficients") or [])),
+        feature_shift=tuple(float(item) for item in (risk_doc.get("feature_shift") or [0.0] * features.shape[1])),
+        feature_scale=tuple(float(item) for item in (risk_doc.get("feature_scale") or [1.0] * features.shape[1])),
+        constant_probability=(
+            float(risk_doc.get("constant_probability")) if risk_doc.get("constant_probability") is not None else None
+        ),
+    )
+    severe_risk = float(risk_model.predict_proba(features)[0, 1])
+    reason_codes: list[str] = []
+    if (_safe_optional_float(row.get("final_alpha_lcb")) or 0.0) <= float(payload.get("alpha_lcb_floor") or 0.0):
+        reason_codes.append("ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE")
+    if (_safe_optional_float(row.get("final_tradability")) or 0.0) < float(payload.get("tradability_threshold") or 0.0):
+        reason_codes.append("ENTRY_BOUNDARY_TRADABILITY_BELOW_THRESHOLD")
+    if severe_risk > float(payload.get("severe_loss_risk_threshold") or 1.0):
+        reason_codes.append("ENTRY_BOUNDARY_SEVERE_LOSS_RISK_HIGH")
+    return {
+        "enabled": True,
+        "allowed": len(reason_codes) == 0,
+        "reason_codes": reason_codes,
+        "estimated_severe_loss_risk": severe_risk,
+        "alpha_lcb_floor": float(payload.get("alpha_lcb_floor") or 0.0),
+        "tradability_threshold": float(payload.get("tradability_threshold") or 0.0),
+        "severe_loss_risk_threshold": float(payload.get("severe_loss_risk_threshold") or 1.0),
+    }
+
+
+def _fit_logistic_risk_model(x: np.ndarray, y: np.ndarray) -> _LinearRiskModel:
+    x_values = np.asarray(x, dtype=np.float64)
+    y_values = np.asarray(y, dtype=np.int64)
+    if np.unique(y_values).size < 2:
+        probability = float(np.mean(y_values)) if y_values.size > 0 else 0.5
+        return _LinearRiskModel(
+            intercept=0.0,
+            coefficients=tuple([0.0] * x_values.shape[1]),
+            feature_shift=tuple([0.0] * x_values.shape[1]),
+            feature_scale=tuple([1.0] * x_values.shape[1]),
+            constant_probability=probability,
+        )
+    from sklearn.linear_model import LogisticRegression
+
+    shift = np.mean(x_values, axis=0)
+    scale = np.std(x_values, axis=0, ddof=0)
+    scale = np.where(np.abs(scale) < 1e-12, 1.0, scale)
+    normalized = (x_values - shift) / scale
+    estimator = LogisticRegression(max_iter=1000, solver="lbfgs")
+    estimator.fit(normalized, y_values)
+    return _LinearRiskModel(
+        intercept=float(np.asarray(estimator.intercept_, dtype=np.float64)[0]),
+        coefficients=tuple(np.asarray(estimator.coef_, dtype=np.float64)[0].tolist()),
+        feature_shift=tuple(shift.tolist()),
+        feature_scale=tuple(scale.tolist()),
+    )
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

@@ -13,6 +13,7 @@ import polars as pl
 
 from autobot import __version__ as autobot_version
 
+from .entry_boundary import build_risk_calibrated_entry_boundary
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
 from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
@@ -55,6 +56,7 @@ class TrainV5FusionResult:
     walk_forward_report_path: Path
     fusion_model_contract_path: Path
     predictor_contract_path: Path
+    entry_boundary_contract_path: Path
 
 
 @dataclass
@@ -167,6 +169,15 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     selection_recommendations = build_selection_recommendations(valid_scores=valid_contract["final_rank_score"], valid_ts_ms=ts_ms[valid_mask], thresholds=thresholds)
     selection_policy = build_selection_policy_from_recommendations(selection_recommendations=selection_recommendations, fallback_threshold_key="top_5pct", score_source="score_mean")
     selection_calibration = _identity_calibration(reason="FUSION_IDENTITY_CALIBRATION")
+    entry_boundary = build_risk_calibrated_entry_boundary(
+        final_rank_score=valid_contract["final_rank_score"],
+        final_expected_return=valid_contract["final_expected_return"],
+        final_expected_es=valid_contract["final_expected_es"],
+        final_tradability=valid_contract["final_tradability"],
+        final_uncertainty=valid_contract["final_uncertainty"],
+        final_alpha_lcb=valid_contract["final_alpha_lcb"],
+        realized_return=y_reg[valid_mask],
+    )
 
     metrics = {
         "rows": {
@@ -308,6 +319,8 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     walk_forward_report_path.write_text(json.dumps({"policy": "fusion_holdout_v1", "valid_metrics": valid_metrics, "test_metrics": test_metrics}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     promotion_path = run_dir / "promotion_decision.json"
     promotion_path.write_text(json.dumps({"run_id": run_id, "promote": False, "status": "candidate", "reasons": ["ENTRY_BOUNDARY_PENDING"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    entry_boundary_contract_path = run_dir / "entry_boundary_contract.json"
+    entry_boundary_contract_path.write_text(json.dumps(entry_boundary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (run_dir / "runtime_recommendations.json").write_text(json.dumps({"status": "fusion_ready_for_boundary", "reason": "ENTRY_BOUNDARY_PENDING"}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     train_report_path = options.logs_root / "train_v5_fusion_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,6 +340,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         walk_forward_report_path=walk_forward_report_path,
         fusion_model_contract_path=fusion_model_contract_path,
         predictor_contract_path=predictor_contract_path,
+        entry_boundary_contract_path=entry_boundary_contract_path,
     )
 
 
