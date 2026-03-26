@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
+from autobot.live.state_store import LiveStateStore
 from autobot.ops.data_contract_registry import build_data_contract_registry, write_data_contract_registry
 
 
@@ -100,6 +101,7 @@ def test_build_data_contract_registry_infers_lineage(tmp_path: Path) -> None:
     assert "parquet_dataset:candles_v1" in entries
     assert "micro_dataset:micro_v1" in entries
     assert "feature_dataset:features_v4" in entries
+    assert "live:features_v4_online" in entries
 
     assert entries["raw_ws_dataset:upbit_public"]["status"] == "active"
     assert entries["micro_dataset:micro_v1"]["status"] == "validated"
@@ -115,8 +117,9 @@ def test_build_data_contract_registry_infers_lineage(tmp_path: Path) -> None:
         "parquet_dataset:candles_v1",
     }
 
-    assert registry["summary"]["contract_count"] == 5
+    assert registry["summary"]["contract_count"] == 6
     assert registry["summary"]["layers"]["feature_dataset"] == 1
+    assert registry["summary"]["layers"]["live"] == 1
     assert registry["summary"]["layers"]["micro_dataset"] == 1
 
 
@@ -134,3 +137,63 @@ def test_write_data_contract_registry_uses_default_output_path(tmp_path: Path) -
     assert payload["version"] == 1
     assert payload["summary"]["contract_count"] >= 1
     assert any(entry["contract_id"] == "raw_ws_dataset:upbit_public" for entry in payload["entries"])
+
+
+def test_build_data_contract_registry_includes_live_and_runtime_layers(tmp_path: Path) -> None:
+    project_root = tmp_path
+
+    ws_public_root = project_root / "data" / "raw_ws" / "upbit" / "public"
+    ws_meta_dir = project_root / "data" / "raw_ws" / "upbit" / "_meta"
+    ws_public_root.mkdir(parents=True, exist_ok=True)
+    ws_meta_dir.mkdir(parents=True, exist_ok=True)
+    (ws_meta_dir / "ws_public_health.json").write_text(
+        json.dumps({"connected": True, "updated_at_ms": 10_000}),
+        encoding="utf-8",
+    )
+    (ws_meta_dir / "ws_validate_report.json").write_text(
+        json.dumps({"status": "PASS", "fail_files": 0}),
+        encoding="utf-8",
+    )
+
+    micro_root = project_root / "data" / "parquet" / "micro_v1" / "_meta"
+    micro_root.mkdir(parents=True, exist_ok=True)
+    (micro_root / "aggregate_report.json").write_text(json.dumps({"updated_at_ms": 11_000}), encoding="utf-8")
+
+    feature_root = project_root / "data" / "features" / "features_v4" / "_meta"
+    feature_root.mkdir(parents=True, exist_ok=True)
+    (feature_root / "build_report.json").write_text(json.dumps({"updated_at_ms": 12_000, "status": "PASS"}), encoding="utf-8")
+    (feature_root / "validate_report.json").write_text(json.dumps({"status": "PASS", "fail_files": 0}), encoding="utf-8")
+
+    live_db = project_root / "data" / "state" / "live" / "live_state.db"
+    live_db.parent.mkdir(parents=True, exist_ok=True)
+    with LiveStateStore(live_db) as store:
+        store.set_runtime_contract(payload={"live_runtime_model_run_id": "run-live"}, ts_ms=13_000)
+    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    candidate_db.parent.mkdir(parents=True, exist_ok=True)
+    with LiveStateStore(candidate_db) as store:
+        store.set_runtime_contract(payload={"live_runtime_model_run_id": "run-candidate"}, ts_ms=14_000)
+
+    registry = build_data_contract_registry(project_root=project_root)
+
+    entries = {entry["contract_id"]: entry for entry in registry["entries"]}
+    live_entry = entries["live:features_v4_online"]
+    runtime_entry = entries["runtime:live_main"]
+    candidate_entry = entries["runtime:live_candidate"]
+
+    assert live_entry["layer"] == "live"
+    assert live_entry["validation_status"] == "ready"
+    assert live_entry["retention_class"] == "hot"
+    assert live_entry["source_contract_ids"] == [
+        "raw_ws_dataset:upbit_public",
+        "micro_dataset:micro_v1",
+        "feature_dataset:features_v4",
+    ]
+    assert live_entry["coverage_window"]["start_ts_ms"] == 10_000
+    assert live_entry["coverage_window"]["end_ts_ms"] == 12_000
+
+    assert runtime_entry["layer"] == "runtime"
+    assert runtime_entry["validation_status"] == "runtime_contract_present"
+    assert runtime_entry["retention_class"] == "hot"
+    assert runtime_entry["runtime_state"]["live_runtime_model_run_id"] == "run-live"
+    assert "live:features_v4_online" in runtime_entry["source_contract_ids"]
+    assert candidate_entry["runtime_state"]["live_runtime_model_run_id"] == "run-candidate"

@@ -205,7 +205,7 @@ The next context must start from the first unchecked item.
   Done when:
   a repo-visible artifact exists for dataset lineage and contract identity.
   Current implementation note:
-  implemented in `autobot/ops/data_contract_registry.py`, tested locally and on the OCI server, wired into `scripts/candidate_acceptance.ps1`, committed, pushed, server-pulled, and reflected as `data/_meta/data_contract_registry.json` on the OCI server.
+  implemented in `autobot/ops/data_contract_registry.py`, tested locally and on the OCI server, wired into `scripts/candidate_acceptance.ps1`, committed, pushed, server-pulled, and reflected as `data/_meta/data_contract_registry.json` on the OCI server. The registry now goes beyond raw/micro/feature roots and carries blueprint-aligned `live` and `runtime` contract layers as well, including explicit `validation_status`, `retention_class`, and `coverage_window` metadata plus source linkage from raw WS and feature datasets into the live feature plane and runtime state DB entries.
 
 - [x] 02. Make `features_v4` validation artifact mandatory in the operational flow
   Required references:
@@ -221,7 +221,7 @@ The next context must start from the first unchecked item.
   Done when:
   current server lane/unit/pointer/runtime state can be summarized by one artifact without manual SSH forensics.
   Current implementation note:
-  implemented in `autobot/ops/runtime_topology_report.py`, tested locally and on the OCI server, and reflected as `logs/runtime_topology/latest.json` on the OCI server. Direct OCI validation confirmed the artifact now includes actual `systemd` service and timer snapshots, git HEAD and dirty worktree state, sibling replay-like path detection, paired-paper topology facts such as `autobot-paper-v4-paired.service`, and replay exclusion status, so current lane/unit/pointer/runtime state can be summarized without separate manual SSH forensics.
+  implemented in `autobot/ops/runtime_topology_report.py`, tested locally and on the OCI server, and reflected as `logs/runtime_topology/latest.json` on the OCI server. Direct OCI validation confirmed the artifact now includes actual `systemd` service and timer snapshots, git HEAD and dirty worktree state, sibling replay-like path detection, paired-paper topology facts such as `autobot-paper-v4-paired.service`, replay exclusion status, and an explicit `target_topology` plus `topology_health` contract so current lane/unit/pointer/runtime state can be summarized and compared against the intended two-lane architecture without separate manual SSH forensics.
 
 - [x] 04. Add a machine-readable `pointer consistency report`
   Required references:

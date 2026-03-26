@@ -54,6 +54,11 @@ def build_runtime_topology_report(
     ]
     live_db = _first_existing_file(live_db_candidates)
     candidate_db = _first_existing_file(candidate_db_candidates)
+    target_topology = _target_topology_contract(
+        project_root=root,
+        live_db_candidates=live_db_candidates,
+        candidate_db_candidates=candidate_db_candidates,
+    )
 
     live_state = _load_state_topology(db_path=live_db)
     candidate_state = _load_state_topology(db_path=candidate_db)
@@ -91,6 +96,14 @@ def build_runtime_topology_report(
     git_snapshot = _git_topology_snapshot(root=root)
     project_topology = _project_topology_snapshot(root=root)
     legacy_replay = _legacy_replay_snapshot(systemd_snapshot=systemd_snapshot, project_topology=project_topology)
+    topology_health = _topology_health_status(
+        systemd_snapshot=systemd_snapshot,
+        runtime_sync_status=runtime_sync_status,
+        ws_public_contract=ws_public_contract,
+        live_db=live_db,
+        candidate_db=candidate_db,
+        legacy_replay=legacy_replay,
+    )
 
     report = {
         "version": RUNTIME_TOPOLOGY_REPORT_VERSION,
@@ -115,6 +128,8 @@ def build_runtime_topology_report(
         "systemd": systemd_snapshot,
         "git": git_snapshot,
         "project_topology": project_topology,
+        "target_topology": target_topology,
+        "topology_health": topology_health,
         "legacy_replay": legacy_replay,
         "summary": {
             "champion_run_id": _run_id_from_pointer(pointers.get("champion")),
@@ -134,6 +149,8 @@ def build_runtime_topology_report(
             "legacy_replay_present": bool(legacy_replay.get("present", False)),
             "legacy_replay_active": bool(int(legacy_replay.get("active_unit_count", 0)) > 0),
             "target_topology_replay_excluded": bool(legacy_replay.get("target_topology_excluded", False)),
+            "topology_health_status": str(topology_health.get("status", "unknown")).strip().lower() or "unknown",
+            "topology_health_reason_codes": list(topology_health.get("reason_codes") or []),
         },
     }
     return report
@@ -360,6 +377,40 @@ def _project_topology_snapshot(*, root: Path) -> dict[str, Any]:
     }
 
 
+def _target_topology_contract(
+    *,
+    project_root: Path,
+    live_db_candidates: list[Path],
+    candidate_db_candidates: list[Path],
+) -> dict[str, Any]:
+    return {
+        "mode": "champion_candidate_two_lane_v1",
+        "lanes": {
+            "champion": {
+                "paper_unit": "autobot-paper-v4.service",
+                "live_unit": "autobot-live-alpha.service",
+                "model_ref_source": "champion_v4",
+            },
+            "candidate": {
+                "paper_unit": "autobot-paper-v4-challenger.service",
+                "paired_paper_unit": "autobot-paper-v4-paired.service",
+                "live_unit": "autobot-live-alpha-candidate.service",
+                "model_ref_source": "latest_candidate_v4",
+            },
+        },
+        "shared_units": [
+            "autobot-ws-public.service",
+            "autobot-dashboard.service",
+        ],
+        "excluded_legacy_units": list(LEGACY_REPLAY_UNITS),
+        "expected_state_db_paths": {
+            "live": [str(path) for path in live_db_candidates],
+            "candidate": [str(path) for path in candidate_db_candidates],
+        },
+        "project_root": str(project_root),
+    }
+
+
 def _legacy_replay_snapshot(*, systemd_snapshot: dict[str, Any], project_topology: dict[str, Any]) -> dict[str, Any]:
     services = systemd_snapshot.get("services") or []
     unit_files = systemd_snapshot.get("unit_files") or []
@@ -405,6 +456,40 @@ def _legacy_replay_snapshot(*, systemd_snapshot: dict[str, Any], project_topolog
             "stop_and_disable_replay_services",
             "archive_or_remove_replay_clone_after_review",
         ],
+    }
+
+
+def _topology_health_status(
+    *,
+    systemd_snapshot: dict[str, Any],
+    runtime_sync_status: dict[str, Any],
+    ws_public_contract: dict[str, Any],
+    live_db: Path | None,
+    candidate_db: Path | None,
+    legacy_replay: dict[str, Any],
+) -> dict[str, Any]:
+    reason_codes: list[str] = []
+    if not bool(systemd_snapshot.get("available", False)):
+        reason_codes.append("SYSTEMD_UNAVAILABLE")
+    if live_db is None:
+        reason_codes.append("LIVE_DB_MISSING")
+    if candidate_db is None:
+        reason_codes.append("CANDIDATE_DB_MISSING")
+    if bool(ws_public_contract.get("ws_public_stale", False)):
+        reason_codes.append("WS_PUBLIC_STALE")
+    if bool(runtime_sync_status.get("model_pointer_divergence", False)):
+        reason_codes.append("MODEL_POINTER_DIVERGENCE")
+    if bool(legacy_replay.get("active_unit_count", 0)):
+        reason_codes.append("LEGACY_REPLAY_ACTIVE")
+    if not reason_codes:
+        status = "healthy"
+    elif any(code in {"SYSTEMD_UNAVAILABLE", "LIVE_DB_MISSING", "CANDIDATE_DB_MISSING", "MODEL_POINTER_DIVERGENCE"} for code in reason_codes):
+        status = "violation"
+    else:
+        status = "degraded"
+    return {
+        "status": status,
+        "reason_codes": reason_codes,
     }
 
 

@@ -136,15 +136,21 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["systemd"]["services"][0]["unit"] == "autobot-paper-v4.service"
     assert report["git"]["dirty"] is True
     assert report["project_topology"]["replay_path_present"] is True
+    assert report["target_topology"]["lanes"]["candidate"]["paired_paper_unit"] == "autobot-paper-v4-paired.service"
+    assert report["target_topology"]["expected_state_db_paths"]["candidate"] == [str(candidate_db)]
     assert report["legacy_replay"]["classification"] == "legacy_excluded_from_target_topology"
     assert report["legacy_replay"]["present"] is True
     assert report["legacy_replay"]["active_unit_count"] == 1
+    assert report["topology_health"]["status"] == "violation"
+    assert "MODEL_POINTER_DIVERGENCE" in report["topology_health"]["reason_codes"]
+    assert "LEGACY_REPLAY_ACTIVE" in report["topology_health"]["reason_codes"]
     assert report["summary"]["systemd_available"] is True
     assert report["summary"]["git_dirty"] is True
     assert report["summary"]["replay_path_present"] is True
     assert report["summary"]["legacy_replay_present"] is True
     assert report["summary"]["legacy_replay_active"] is True
     assert report["summary"]["target_topology_replay_excluded"] is True
+    assert report["summary"]["topology_health_status"] == "violation"
     assert report["summary"]["target_service_active_count"] == 2
 
 
