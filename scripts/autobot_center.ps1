@@ -889,7 +889,7 @@ function Invoke-ModelTrainWizard {
         "v4_crypto_cs" {
             $featureSet = "v4"
             $family = "train_v4_crypto_cs"
-            $labelSet = "v2"
+            $labelSet = "v3"
             $task = "cls"
         }
         default {
@@ -932,7 +932,7 @@ function Invoke-ModelTrainWizard {
             "-m", "autobot.cli",
             "features", "build",
             "--feature-set", "v4",
-            "--label-set", "v2",
+            "--label-set", $labelSet,
             "--tf", $tf,
             "--quote", $quote,
             "--top-n", "$topN",
@@ -940,7 +940,7 @@ function Invoke-ModelTrainWizard {
             "--end", $endDate
         )
         $buildResult = Run-Command `
-            -Description "Features Build Wizard (v4, label_v2)" `
+            -Description ("Features Build Wizard (v4, label_" + $labelSet + ")") `
             -Exe $script:PythonExe `
             -Arguments $buildArgs `
             -Tag "menu6_features_build_v4"
