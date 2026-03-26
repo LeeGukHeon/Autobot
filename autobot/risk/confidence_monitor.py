@@ -15,6 +15,7 @@ DEFAULT_SEVERE_LOSS_RATE_REASON_CODE = "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH"
 DEFAULT_EXECUTION_MISS_RATE_REASON_CODE = "EXECUTION_MISS_RATE_CS_BREACH"
 DEFAULT_EDGE_GAP_RATE_REASON_CODE = "RISK_CONTROL_EDGE_GAP_CS_BREACH"
 DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE = "FEATURE_DIVERGENCE_CS_BREACH"
+SUPPRESSOR_RESET_CHECKPOINT = "live_suppressor_reset"
 
 
 def build_live_risk_confidence_sequence_report(
@@ -30,8 +31,9 @@ def build_live_risk_confidence_sequence_report(
 ) -> dict[str, Any]:
     config = dict(confidence_monitor_config or {})
     run_id_value = str(run_id).strip()
-    closed_trades = _load_closed_trade_rows(store=store, run_id=run_id_value)
-    execution_attempts = _load_final_execution_attempt_rows(store=store, run_id=run_id_value)
+    reset_baseline_ts_ms = _suppressor_reset_baseline_ts_ms(store=store, run_id=run_id_value)
+    closed_trades = _load_closed_trade_rows(store=store, run_id=run_id_value, reset_baseline_ts_ms=reset_baseline_ts_ms)
+    execution_attempts = _load_final_execution_attempt_rows(store=store, run_id=run_id_value, reset_baseline_ts_ms=reset_baseline_ts_ms)
     runtime_health_payload = dict(runtime_health or {})
 
     delta = max(float(_safe_optional_float(config.get("confidence_delta")) or 0.10), 1e-9)
@@ -167,6 +169,7 @@ def build_live_risk_confidence_sequence_report(
             "ws_public_stale": bool(runtime_health_payload.get("ws_public_stale", False)),
             "live_runtime_model_run_id": runtime_health_payload.get("live_runtime_model_run_id"),
         },
+        "reset_baseline_ts_ms": reset_baseline_ts_ms,
         "available_monitor_count": int(available_monitor_count),
         "triggered_monitor_count": int(triggered_monitor_count),
         "halt_triggered": bool(triggered_reason_codes),
@@ -288,7 +291,7 @@ def _time_uniform_rate_upper_bound(*, empirical_rate: float, sample_count: int, 
     return min(rate + bonus, 1.0)
 
 
-def _load_closed_trade_rows(*, store: Any, run_id: str) -> list[dict[str, Any]]:
+def _load_closed_trade_rows(*, store: Any, run_id: str, reset_baseline_ts_ms: int | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in store.list_trade_journal(statuses=("CLOSED",)):
         entry_meta = dict(row.get("entry_meta") or {})
@@ -301,12 +304,15 @@ def _load_closed_trade_rows(*, store: Any, run_id: str) -> list[dict[str, Any]]:
         realized_pnl_pct_points = _safe_optional_float(row.get("realized_pnl_pct"))
         if realized_pnl_pct_points is None:
             continue
+        exit_ts_ms = _safe_optional_int(row.get("exit_ts_ms")) or _safe_optional_int(row.get("updated_ts"))
+        if reset_baseline_ts_ms is not None and exit_ts_ms is not None and int(exit_ts_ms) <= int(reset_baseline_ts_ms):
+            continue
         realized_return_ratio = float(realized_pnl_pct_points) / 100.0
         realized_pnl_bps = realized_return_ratio * 10_000.0
         rows.append(
             {
                 "journal_id": row.get("journal_id"),
-                "exit_ts_ms": _safe_optional_int(row.get("exit_ts_ms")) or _safe_optional_int(row.get("updated_ts")),
+                "exit_ts_ms": exit_ts_ms,
                 "realized_return_ratio": float(realized_return_ratio),
                 "realized_pnl_bps": float(realized_pnl_bps),
                 "expected_net_edge_bps": _safe_optional_float(row.get("expected_net_edge_bps")),
@@ -315,7 +321,7 @@ def _load_closed_trade_rows(*, store: Any, run_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _load_final_execution_attempt_rows(*, store: Any, run_id: str) -> list[dict[str, Any]]:
+def _load_final_execution_attempt_rows(*, store: Any, run_id: str, reset_baseline_ts_ms: int | None = None) -> list[dict[str, Any]]:
     journal_run_map: dict[str, str] = {}
     for row in store.list_trade_journal():
         journal_id = str(row.get("journal_id") or "").strip()
@@ -339,8 +345,22 @@ def _load_final_execution_attempt_rows(*, store: Any, run_id: str) -> list[dict[
         resolved_run_id = journal_run_map.get(journal_id) or intent_run_map.get(intent_id) or ""
         if str(resolved_run_id).strip() != str(run_id).strip():
             continue
+        row_ts_ms = _safe_optional_int(row.get("final_ts_ms")) or _safe_optional_int(row.get("submitted_ts_ms"))
+        if reset_baseline_ts_ms is not None and row_ts_ms is not None and int(row_ts_ms) <= int(reset_baseline_ts_ms):
+            continue
         rows.append(dict(row))
     return rows
+
+
+def _suppressor_reset_baseline_ts_ms(*, store: Any, run_id: str) -> int | None:
+    if not hasattr(store, "get_checkpoint"):
+        return None
+    checkpoint = store.get_checkpoint(name=SUPPRESSOR_RESET_CHECKPOINT)
+    payload = dict((checkpoint or {}).get("payload") or {})
+    checkpoint_run_id = str(payload.get("run_id") or "").strip()
+    if checkpoint_run_id and str(run_id).strip() and checkpoint_run_id != str(run_id).strip():
+        return None
+    return _safe_optional_int(payload.get("history_reset_ts_ms"))
 
 
 def _safe_optional_float(value: Any) -> float | None:

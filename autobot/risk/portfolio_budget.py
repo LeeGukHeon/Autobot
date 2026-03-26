@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .confidence_monitor import SUPPRESSOR_RESET_CHECKPOINT
+
 
 def resolve_portfolio_risk_budget(
     *,
@@ -341,11 +343,21 @@ def _recent_loss_streak_haircut(
         rows = list(store.list_trade_journal(statuses=("CLOSED",), limit=8))
     except Exception:
         return 1.0, []
+    reset_baseline_ts_ms = None
+    if hasattr(store, "get_checkpoint"):
+        checkpoint = store.get_checkpoint(name=SUPPRESSOR_RESET_CHECKPOINT)
+        payload = dict((checkpoint or {}).get("payload") or {})
+        checkpoint_run_id = str(payload.get("run_id") or "").strip()
+        if not checkpoint_run_id or checkpoint_run_id == run_id:
+            reset_baseline_ts_ms = _safe_optional_float(payload.get("history_reset_ts_ms"))
     streak = 0
     for row in rows:
         entry_meta = dict((row or {}).get("entry_meta") or {})
         runtime = dict(entry_meta.get("runtime") or {}) if isinstance(entry_meta.get("runtime"), dict) else {}
         if str(runtime.get("live_runtime_model_run_id", "")).strip() != run_id:
+            continue
+        exit_ts_ms = _safe_optional_float((row or {}).get("exit_ts_ms")) or _safe_optional_float((row or {}).get("updated_ts"))
+        if reset_baseline_ts_ms is not None and exit_ts_ms is not None and float(exit_ts_ms) <= float(reset_baseline_ts_ms):
             continue
         pnl_quote = _safe_optional_float((row or {}).get("realized_pnl_quote"))
         if pnl_quote is None:

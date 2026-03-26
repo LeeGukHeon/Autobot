@@ -22,11 +22,17 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 from autobot.live.breaker_taxonomy import annotate_reason_payload
-from autobot.live.breakers import breaker_status, clear_breaker
+from autobot.live.breakers import breaker_status, clear_breaker, clear_breaker_reasons
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 from autobot.live.state_store import LiveStateStore
 from autobot.live.candidate_canary_report import build_candidate_canary_report
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
+from autobot.risk.confidence_monitor import (
+    SUPPRESSOR_RESET_CHECKPOINT,
+    build_live_risk_confidence_sequence_report,
+    live_risk_confidence_sequence_latest_path,
+    write_live_risk_confidence_sequence_report,
+)
 from autobot.upbit.config import load_upbit_settings, require_upbit_credentials
 from autobot.upbit.http_client import UpbitHttpClient
 from autobot.upbit.private import UpbitPrivateClient
@@ -659,6 +665,118 @@ def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
         _append("레거시 라이브 DB", legacy_main_db)
 
     return candidates
+
+
+def _live_target_unit_for_service_key(service_key: str | None) -> str:
+    key = str(service_key or "").strip().lower()
+    if key == "live_candidate":
+        return "autobot-live-alpha-candidate.service"
+    if key == "live_main":
+        return "autobot-live-alpha.service"
+    return ""
+
+
+def _risk_budget_latest_path(project_root: Path, *, service_key: str | None) -> Path | None:
+    unit_name = _live_target_unit_for_service_key(service_key)
+    if not unit_name:
+        return None
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in unit_name).strip("_")
+    slug = "_".join(part for part in slug.split("_") if part)
+    if not slug:
+        return None
+    return project_root / "logs" / "risk_budget_ledger" / slug / "latest.json"
+
+
+def _confidence_sequence_latest_path(project_root: Path, *, service_key: str | None) -> Path | None:
+    unit_name = _live_target_unit_for_service_key(service_key)
+    if not unit_name:
+        return None
+    return live_risk_confidence_sequence_latest_path(project_root=project_root, unit_name=unit_name)
+
+
+def _load_live_suppressor_state(
+    *,
+    project_root: Path,
+    service_key: str | None,
+    suppressor_reset: dict[str, Any] | None,
+) -> dict[str, Any]:
+    reset_payload = dict((suppressor_reset or {}).get("payload") or {})
+    reset_ts_ms = _coerce_int(reset_payload.get("history_reset_ts_ms"))
+    risk_budget_path = _risk_budget_latest_path(project_root, service_key=service_key)
+    confidence_path = _confidence_sequence_latest_path(project_root, service_key=service_key)
+    risk_budget_latest = _load_json(risk_budget_path)
+    confidence_latest = _load_json(confidence_path)
+
+    budget_last_entry = dict(risk_budget_latest.get("last_entry") or {})
+    budget_entry_ts_ms = _coerce_int(budget_last_entry.get("ts_ms"))
+    budget_fresh_after_reset = not (
+        reset_ts_ms is not None
+        and budget_entry_ts_ms is not None
+        and budget_entry_ts_ms <= reset_ts_ms
+    )
+    budget_reason_codes = [
+        str(item).strip()
+        for item in (
+            budget_last_entry.get("budget_reason_codes")
+            or ((budget_last_entry.get("portfolio_budget") or {}).get("risk_reason_codes") or [])
+        )
+        if str(item).strip()
+    ]
+    confidence_triggered = bool(confidence_latest.get("halt_triggered"))
+    confidence_ts_ms = _coerce_int(confidence_latest.get("ts_ms"))
+    confidence_fresh_after_reset = not (
+        reset_ts_ms is not None
+        and confidence_ts_ms is not None
+        and confidence_ts_ms <= reset_ts_ms
+    )
+    confidence_reason_codes = [
+        str(item).strip()
+        for item in (confidence_latest.get("triggered_reason_codes") or [])
+        if str(item).strip()
+    ]
+    recent_loss_active = budget_fresh_after_reset and any(code == "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" for code in budget_reason_codes)
+    spread_active = budget_fresh_after_reset and any(code == "PORTFOLIO_SPREAD_HAIRCUT" for code in budget_reason_codes)
+    portfolio_blocked = budget_fresh_after_reset and str(budget_last_entry.get("skip_reason") or "").strip() == "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL"
+    suppressor_active = (confidence_triggered and confidence_fresh_after_reset) or recent_loss_active or portfolio_blocked
+    current_reason_codes: list[str] = []
+    for code in confidence_reason_codes if confidence_fresh_after_reset else []:
+        if code not in current_reason_codes:
+            current_reason_codes.append(code)
+    for code in budget_reason_codes if budget_fresh_after_reset else []:
+        if code not in current_reason_codes:
+            current_reason_codes.append(code)
+    return {
+        "active": bool(suppressor_active),
+        "current_reason_codes": current_reason_codes,
+        "confidence_sequence": {
+            "available": bool(confidence_latest),
+            "path": str(confidence_path) if confidence_path is not None else None,
+            "halt_triggered": bool(confidence_triggered and confidence_fresh_after_reset),
+            "triggered_reason_codes": confidence_reason_codes if confidence_fresh_after_reset else [],
+            "monitor_families_triggered": list(confidence_latest.get("monitor_families_triggered") or []) if confidence_fresh_after_reset else [],
+            "ts_ms": confidence_ts_ms,
+            "stale_before_reset": bool(confidence_latest) and not bool(confidence_fresh_after_reset),
+        },
+        "portfolio_budget": {
+            "available": bool(risk_budget_latest),
+            "path": str(risk_budget_path) if risk_budget_path is not None else None,
+            "skip_reason": str(budget_last_entry.get("skip_reason") or "").strip() or None,
+            "budget_reason_codes": budget_reason_codes if budget_fresh_after_reset else [],
+            "recent_loss_streak_active": bool(recent_loss_active),
+            "spread_haircut_active": bool(spread_active),
+            "portfolio_blocked": bool(portfolio_blocked),
+            "ts_ms": budget_entry_ts_ms,
+            "stale_before_reset": bool(risk_budget_latest) and not bool(budget_fresh_after_reset),
+        },
+        "reset": {
+            "active": bool(reset_payload),
+            "ts_ms": reset_ts_ms,
+            "run_id": str(reset_payload.get("run_id") or "").strip() or None,
+            "source": str(reset_payload.get("source") or "").strip() or None,
+            "note": str(reset_payload.get("note") or "").strip() or None,
+            "waiting_for_fresh_post_reset_decision": bool(reset_payload) and bool(risk_budget_latest) and not bool(budget_fresh_after_reset),
+        },
+    }
 
 
 def _latest_paper_summaries(project_root: Path, limit: int = 4) -> list[dict[str, Any]]:
@@ -1549,6 +1667,7 @@ def _load_live_db_summary(
                 "live_runtime_health",
                 "live_rollout_status",
                 "live_rollout_contract",
+                "live_suppressor_reset",
                 "last_resume",
                 "daemon_last_run",
                 "live_model_alpha_last_run",
@@ -1557,6 +1676,14 @@ def _load_live_db_summary(
                 row = _query_one(conn, "SELECT * FROM checkpoints WHERE name = ?", (name,))
                 if row:
                     checkpoints[name] = _normalize_json_text(row.get("payload_json"))
+        suppressor_reset = None
+        if "checkpoints" in tables:
+            row = _query_one(conn, "SELECT * FROM checkpoints WHERE name = ?", (SUPPRESSOR_RESET_CHECKPOINT,))
+            if row:
+                suppressor_reset = {
+                    "ts_ms": _coerce_int(row.get("ts_ms")),
+                    "payload": _normalize_json_text(row.get("payload_json")) or {},
+                }
         open_order_rows: list[dict[str, Any]] = []
         for row in orders:
             local_state = str(row.get("local_state") or "").strip()
@@ -1648,6 +1775,11 @@ def _load_live_db_summary(
                 trade_analysis = build_candidate_canary_report(db_path)
             except Exception:
                 trade_analysis = {}
+        suppressor_state = _load_live_suppressor_state(
+            project_root=project_root,
+            service_key=service_key,
+            suppressor_reset=suppressor_reset,
+        )
         return {
             "label": label,
             "db_path": str(db_path),
@@ -1690,8 +1822,10 @@ def _load_live_db_summary(
             "daemon_last_run": daemon_last_run,
             "last_ws_event": last_ws_event,
             "trade_analysis": trade_analysis,
+            "suppressor_state": suppressor_state,
             "rollout_status": checkpoints.get("live_rollout_status") or {},
             "rollout_contract": checkpoints.get("live_rollout_contract") or {},
+            "suppressor_reset": suppressor_reset or {},
             "last_resume": checkpoints.get("last_resume") or {},
             "updated_at": _path_mtime_iso(db_path),
         }
@@ -2360,6 +2494,128 @@ def _run_clear_live_breaker(
         }
 
 
+def _run_reset_live_suppressors(
+    project_root: Path,
+    *,
+    db_rel_path: str,
+    source: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    started_at = _utc_now_iso()
+    db_path = (project_root / str(db_rel_path).strip()).resolve()
+    if not db_path.exists():
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 1,
+            "stdout_preview": "",
+            "stderr_preview": f"live state db not found: {db_path}",
+            "success": False,
+        }
+    try:
+        now_ts_ms = int(time.time() * 1000)
+        with LiveStateStore(db_path) as store:
+            runtime_health = store.live_runtime_health() or {}
+            runtime_contract = store.runtime_contract() or {}
+            run_id = str(
+                runtime_health.get("live_runtime_model_run_id")
+                or runtime_contract.get("live_runtime_model_run_id")
+                or ""
+            ).strip()
+            reset_payload = {
+                "history_reset_ts_ms": int(now_ts_ms),
+                "run_id": run_id or None,
+                "source": str(source).strip() or "dashboard_ops_reset_live_suppressors",
+                "note": note,
+                "cleared_components": [
+                    "confidence_sequence",
+                    "portfolio_recent_loss_streak",
+                ],
+            }
+            store.set_checkpoint(
+                name=SUPPRESSOR_RESET_CHECKPOINT,
+                payload=reset_payload,
+                ts_ms=now_ts_ms,
+            )
+
+            confidence_reason_codes = [
+                "RISK_CONTROL_NONPOSITIVE_RATE_CS_BREACH",
+                "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH",
+                "EXECUTION_MISS_RATE_CS_BREACH",
+                "RISK_CONTROL_EDGE_GAP_CS_BREACH",
+                "FEATURE_DIVERGENCE_CS_BREACH",
+            ]
+            clear_breaker_reasons(
+                store,
+                reason_codes=confidence_reason_codes,
+                source=str(source).strip() or "dashboard_ops_reset_live_suppressors",
+                ts_ms=now_ts_ms,
+                details={"note": note, "suppressor_reset": True},
+            )
+
+            risk_control_payload: dict[str, Any] = {}
+            if run_id:
+                run_dir = _resolve_model_run_dir(project_root, run_id)
+                if run_dir:
+                    runtime_recommendations = _load_json(Path(run_dir) / "runtime_recommendations.json")
+                    risk_control_payload = dict(runtime_recommendations.get("risk_control") or {})
+            confidence_report = build_live_risk_confidence_sequence_report(
+                store=store,
+                run_id=run_id,
+                confidence_monitor_config=dict(risk_control_payload.get("confidence_sequence_monitors") or {}),
+                runtime_health=runtime_health,
+                lane="live_candidate" if "live_candidate" in str(db_rel_path) else "live_champion",
+                unit_name=_live_target_unit_for_service_key("live_candidate" if "live_candidate" in str(db_rel_path) else "live_main"),
+                rollout_mode=str((store.live_rollout_status() or {}).get("mode") or "").strip().lower(),
+                ts_ms=now_ts_ms,
+            )
+            confidence_latest_path = _confidence_sequence_latest_path(
+                project_root,
+                service_key="live_candidate" if "live_candidate" in str(db_rel_path) else "live_main",
+            )
+            if confidence_latest_path is not None:
+                write_live_risk_confidence_sequence_report(
+                    latest_path=confidence_latest_path,
+                    payload=confidence_report,
+                )
+            store.set_checkpoint(
+                name="live_risk_confidence_sequence_latest",
+                payload=confidence_report,
+                ts_ms=now_ts_ms,
+            )
+            status_payload = breaker_status(store)
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 0,
+            "stdout_preview": _preview_text(
+                json.dumps(
+                    {
+                        "db_path": str(db_path),
+                        "run_id": run_id or None,
+                        "breaker_active": bool(status_payload.get("active")),
+                        "remaining_breaker_reason_codes": list(status_payload.get("reason_codes") or []),
+                        "suppressor_reset_ts_ms": int(now_ts_ms),
+                        "confidence_halt_triggered_after_reset": bool(confidence_report.get("halt_triggered")),
+                        "confidence_triggered_reason_codes_after_reset": list(confidence_report.get("triggered_reason_codes") or []),
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+            "stderr_preview": "",
+            "success": True,
+        }
+    except Exception as exc:
+        return {
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "exit_code": 1,
+            "stdout_preview": "",
+            "stderr_preview": _preview_text(str(exc)),
+            "success": False,
+        }
+
+
 def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
     latest_candidate_run_id = _latest_candidate_run_id(project_root)
     return {
@@ -2392,6 +2648,17 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "source": "dashboard_ops_clear_canary_breaker",
             "note": "dashboard ops clear canary breaker",
         },
+        "reset_canary_suppressors": {
+            "id": "reset_canary_suppressors",
+            "label": "카나리아 suppressor reset",
+            "description": "카나리아 confidence/버짓 suppressor baseline 리셋",
+            "category": "recovery",
+            "confirm": "카나리아 non-breaker suppressor 상태를 지금 리셋할까요?",
+            "kind": "reset_suppressors",
+            "db_rel_path": "data/state/live_candidate/live_state.db",
+            "source": "dashboard_ops_reset_canary_suppressors",
+            "note": "dashboard ops reset canary suppressors",
+        },
         "try_restart_live_main": {
             "id": "try_restart_live_main",
             "label": "메인 라이브 try-restart",
@@ -2411,6 +2678,17 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "db_rel_path": "data/state/live_state.db",
             "source": "dashboard_ops_clear_live_main_breaker",
             "note": "dashboard ops clear main live breaker",
+        },
+        "reset_live_main_suppressors": {
+            "id": "reset_live_main_suppressors",
+            "label": "메인 suppressor reset",
+            "description": "메인 라이브 confidence/버짓 suppressor baseline 리셋",
+            "category": "recovery",
+            "confirm": "메인 라이브 non-breaker suppressor 상태를 지금 리셋할까요?",
+            "kind": "reset_suppressors",
+            "db_rel_path": "data/state/live_state.db",
+            "source": "dashboard_ops_reset_live_main_suppressors",
+            "note": "dashboard ops reset main live suppressors",
         },
         "restart_ws_public": {
             "id": "restart_ws_public",
@@ -2487,6 +2765,13 @@ def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str
                 project_root,
                 db_rel_path=str(action.get("db_rel_path") or ""),
                 source=str(action.get("source") or "dashboard_ops_clear_breaker"),
+                note=str(action.get("note") or "").strip() or None,
+            )
+        elif action.get("kind") == "reset_suppressors":
+            result = _run_reset_live_suppressors(
+                project_root,
+                db_rel_path=str(action.get("db_rel_path") or ""),
+                source=str(action.get("source") or "dashboard_ops_reset_live_suppressors"),
                 note=str(action.get("note") or "").strip() or None,
             )
         else:

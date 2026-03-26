@@ -133,3 +133,46 @@ def test_resolve_portfolio_risk_budget_applies_recent_loss_streak_haircut(tmp_pa
 
     assert payload["recent_loss_streak_haircut"] == 0.75
     assert "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" in payload["risk_reason_codes"]
+
+
+def test_resolve_portfolio_risk_budget_ignores_pre_reset_loss_streak_history(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="j1",
+                market="KRW-ETH",
+                status="CLOSED",
+                entry_submitted_ts_ms=900,
+                entry_filled_ts_ms=901,
+                exit_ts_ms=1900,
+                entry_price=100.0,
+                exit_price=99.0,
+                qty=1.0,
+                entry_notional_quote=100.0,
+                exit_notional_quote=99.0,
+                realized_pnl_quote=-1.0,
+                realized_pnl_pct=-1.0,
+                entry_meta_json='{"runtime":{"live_runtime_model_run_id":"run-live"}}',
+                updated_ts=1900,
+            )
+        )
+        store.set_checkpoint(
+            name="live_suppressor_reset",
+            payload={"history_reset_ts_ms": 2000, "run_id": "run-live"},
+            ts_ms=2000,
+        )
+        payload = resolve_portfolio_risk_budget(
+            store=store,
+            market="KRW-XRP",
+            side="bid",
+            target_notional_quote=10_000.0,
+            base_budget_quote=10_000.0,
+            quote_free=20_000.0,
+            min_total_krw=5_000.0,
+            effective_max_positions=2,
+            rollout_mode="live",
+            runtime_model_run_id="run-live",
+        )
+
+    assert payload["recent_loss_streak_haircut"] == 1.0
+    assert "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" not in payload["risk_reason_codes"]

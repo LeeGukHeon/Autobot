@@ -108,8 +108,10 @@
     restart_paired_paper: { label: "페어드 페이퍼 재시작" },
     restart_canary: { label: "라이브 카나리아 재시작" },
     clear_canary_breaker: { label: "카나리아 브레이커 해제" },
+    reset_canary_suppressors: { label: "카나리아 suppressor reset" },
     try_restart_live_main: { label: "메인 라이브 try-restart" },
     clear_live_main_breaker: { label: "메인 라이브 브레이커 해제" },
+    reset_live_main_suppressors: { label: "메인 suppressor reset" },
     restart_ws_public: { label: "WS 수집기 재시작" },
     start_spawn_only: { label: "스폰만 지금 실행" },
     start_promote_only: { label: "승급만 지금 실행" },
@@ -1435,10 +1437,12 @@
       return bTs - aTs;
     });
     const tradeAnalysis = selected.trade_analysis || {};
+    const suppressor = selected.suppressor_state || {};
     const activeBreakers = unique((selected.active_breakers || []).flatMap((item) => {
       const codes = Array.isArray(item.reason_codes) ? item.reason_codes : [];
       return codes.length ? codes : [item.reason || item.code || item.name || item.breaker_key];
     })).map(translate);
+    const suppressorReasons = unique((suppressor.current_reason_codes || []).map(translate));
     const primaryPosition = positions[0];
     const primaryPlan = riskPlans.find((item) => item.market === (primaryPosition || {}).market) || riskPlans[0];
     const primaryOrder = openOrders.find((item) => item.market === (primaryPosition || {}).market && item.side === "ask") || openOrders[0];
@@ -1513,12 +1517,15 @@
       statusChip("공용 WS", runtime.ws_public_stale ? "지연" : "정상", runtime.ws_public_stale ? "warn" : "good"),
       statusChip("개인 WS", privateWsFreshness, privateWsLastTs == null ? "warn" : "good"),
       statusChip("브레이커", activeBreakers.length ? `${activeBreakers.length}건` : "없음", activeBreakers.length ? "bad" : "neutral"),
+      statusChip("suppressor", suppressor.active ? `${suppressorReasons.length || 1}건` : "없음", suppressor.active ? "warn" : "neutral"),
     ].join("");
 
     const issueRail = [
       selected.error ? `<article class="live-inline-banner bad"><strong>상태 DB 오류</strong><span>${esc(selected.error)}</span></article>` : "",
       !selectedServiceActive ? `<article class="live-inline-banner neutral"><strong>비활성 상태 기록</strong><span>${esc(`${selected.label} 서비스는 현재 중지돼 있습니다. 혼동을 줄이기 위해 최근 활동이 없는 비활성 레인은 기본적으로 숨기고 있습니다.`)}</span></article>` : "",
       activeBreakers.length ? `<article class="live-inline-banner warn"><strong>즉시 확인할 브레이커</strong><span>${esc(activeBreakers.join(" / "))}</span></article>` : "",
+      suppressor.active ? `<article class="live-inline-banner warn"><strong>실측 억제 suppressor</strong><span>${esc(suppressorReasons.join(" / "))}</span></article>` : "",
+      ((suppressor.reset || {}).waiting_for_fresh_post_reset_decision) ? `<article class="live-inline-banner neutral"><strong>reset 이후 새 판단 대기</strong><span>${esc("이전 suppressor 증거는 리셋됐고, 새 post-reset 결정이 아직 없습니다.")}</span></article>` : "",
     ].filter(Boolean).join("");
 
     const unlinkedPlans = riskPlans.filter((plan) => !positions.some((position) => position.market === plan.market));

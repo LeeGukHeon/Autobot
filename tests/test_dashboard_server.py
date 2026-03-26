@@ -11,6 +11,7 @@ from autobot.dashboard_server import (
     _json_response,
     _load_dashboard_asset,
     _run_clear_live_breaker,
+    _run_reset_live_suppressors,
     _unit_snapshot,
     build_dashboard_snapshot,
 )
@@ -177,6 +178,26 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
         project_root / "data" / "state" / "live" / "live_breaker_report.json",
         {"active": False},
     )
+    _write_json(
+        project_root / "logs" / "risk_budget_ledger" / "autobot_live_alpha_service" / "latest.json",
+        {
+            "last_entry": {
+                "ts_ms": int(time.time() * 1000),
+                "skip_reason": "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL",
+                "budget_reason_codes": ["PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT", "PORTFOLIO_SPREAD_HAIRCUT"],
+            }
+        },
+    )
+    _write_json(
+        project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_service" / "latest.json",
+        {
+            "artifact_version": 1,
+            "ts_ms": int(time.time() * 1000),
+            "halt_triggered": True,
+            "triggered_reason_codes": ["EXECUTION_MISS_RATE_CS_BREACH"],
+            "monitor_families_triggered": ["execution_quality_halt"],
+        },
+    )
     db_path = project_root / "data" / "state" / "live" / "live_state.db"
     conn = sqlite3.connect(db_path)
     with conn:
@@ -339,6 +360,7 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     exit_compare = runtime_recommendations["exit_mode_compare"]
     recent_intent = snapshot["live"]["states"][0]["recent_intents"][0]
     today_summary = snapshot["live"]["states"][0]["today_trade_summary"]
+    suppressor = snapshot["live"]["states"][0]["suppressor_state"]
 
     assert snapshot["training"]["acceptance"]["candidate_run_id"] == "run-abc"
     assert snapshot["training"]["rank_shadow"]["status"] == "shadow_pass"
@@ -389,6 +411,9 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     assert snapshot["live"]["states"][0]["recent_trades"][0]["exit_recommendation_chosen_family"] == "hold"
     assert recent_intent["expected_net_edge_bps"] == 98.7
     assert recent_intent["skip_reason"] == "EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
+    assert suppressor["active"] is True
+    assert "EXECUTION_MISS_RATE_CS_BREACH" in suppressor["current_reason_codes"]
+    assert suppressor["portfolio_budget"]["recent_loss_streak_active"] is True
 
 
 def test_build_dashboard_snapshot_includes_paired_paper_latest_and_history(tmp_path: Path) -> None:
@@ -1139,8 +1164,12 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     assert "restart_paper_challenger" not in actions
     assert "clear_canary_breaker" in actions
     assert actions["clear_canary_breaker"]["category"] == "recovery"
+    assert "reset_canary_suppressors" in actions
+    assert actions["reset_canary_suppressors"]["category"] == "recovery"
     assert "clear_live_main_breaker" in actions
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
+    assert "reset_live_main_suppressors" in actions
+    assert actions["reset_live_main_suppressors"]["category"] == "recovery"
     assert actions["start_spawn_only"]["description"].startswith("00:20 challenger spawn")
     assert actions["start_promote_only"]["description"].startswith("00:10 challenger promote")
     assert "paired paper lane" in actions["adopt_latest_candidate"]["description"]
@@ -1255,6 +1284,79 @@ def test_run_clear_live_breaker_resolves_breaker_state_and_cleans_online_buffer(
     assert json.loads(row[1]) == []
     assert row[2] == "dashboard_ops_clear_canary_breaker"
     assert checkpoint is None
+
+
+def test_run_reset_live_suppressors_sets_reset_checkpoint_and_refreshes_confidence_artifact(tmp_path: Path) -> None:
+    project_root = tmp_path
+    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "run-123" / "runtime_recommendations.json",
+        {
+            "risk_control": {
+                "confidence_sequence_monitors": {
+                    "enabled": True,
+                    "mode": "time_uniform_chernoff_rate_v1",
+                    "confidence_delta": 0.10,
+                    "min_closed_trade_count": 8,
+                    "min_execution_attempt_count": 12,
+                    "nonpositive_rate_threshold": 0.45,
+                    "severe_loss_rate_threshold": 0.20,
+                    "execution_miss_rate_threshold": 0.55,
+                    "edge_gap_breach_rate_threshold": 0.60,
+                    "edge_gap_tolerance_bps": 5.0,
+                    "severe_loss_return_threshold": 0.01,
+                    "nonpositive_rate_reason_code": "RISK_CONTROL_NONPOSITIVE_RATE_CS_BREACH",
+                    "severe_loss_rate_reason_code": "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH",
+                    "execution_miss_rate_reason_code": "EXECUTION_MISS_RATE_CS_BREACH",
+                    "edge_gap_rate_reason_code": "RISK_CONTROL_EDGE_GAP_CS_BREACH",
+                    "feature_divergence_rate_threshold": 0.10,
+                    "feature_divergence_rate_reason_code": "FEATURE_DIVERGENCE_CS_BREACH",
+                }
+            }
+        },
+    )
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO breaker_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "live",
+                1,
+                "HALT_NEW_INTENTS",
+                "execution_risk_control_online_halt",
+                json.dumps(["EXECUTION_MISS_RATE_CS_BREACH"]),
+                json.dumps({}),
+                int(time.time() * 1000),
+                int(time.time() * 1000),
+            ),
+        )
+    conn.close()
+
+    result = _run_reset_live_suppressors(
+        project_root,
+        db_rel_path="data/state/live_candidate/live_state.db",
+        source="dashboard_ops_reset_canary_suppressors",
+        note="unit-test",
+    )
+
+    assert result["success"] is True
+    conn = sqlite3.connect(db_path)
+    with conn:
+        reset_row = conn.execute("SELECT payload_json FROM checkpoints WHERE name = 'live_suppressor_reset'").fetchone()
+        breaker_row = conn.execute("SELECT active, reason_codes_json FROM breaker_state WHERE breaker_key = 'live'").fetchone()
+    conn.close()
+
+    assert reset_row is not None
+    reset_payload = json.loads(reset_row[0])
+    assert reset_payload["source"] == "dashboard_ops_reset_canary_suppressors"
+    assert breaker_row is not None
+    assert int(breaker_row[0]) == 0
+    assert json.loads(breaker_row[1]) == []
+    confidence_path = project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_candidate_service" / "latest.json"
+    assert confidence_path.exists()
+    confidence_payload = json.loads(confidence_path.read_text(encoding="utf-8"))
+    assert confidence_payload["halt_triggered"] is False
 
 
 def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_service_is_inactive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
