@@ -50,6 +50,7 @@
     PORTFOLIO_BUDGET_BELOW_MIN_TOTAL: "포트폴리오 버짓상 최소 주문 금액 미달",
     PORTFOLIO_SPREAD_HAIRCUT: "스프레드 악화로 보수 감액",
     PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT: "최근 손실 연속으로 보수 감액",
+    CANARY_SPREAD_MIN_TOTAL_SKIP: "카나리아 소액 lane이라 최소 주문 금액 미달 스킵",
     RISK_CONTROL_NONPOSITIVE_RATE_CS_BREACH: "비수익 비율 신뢰수열 한계 초과",
     RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH: "큰 손실 비율 신뢰수열 한계 초과",
     EXECUTION_MISS_RATE_CS_BREACH: "미체결 비율 신뢰수열 한계 초과",
@@ -1474,6 +1475,7 @@
       return codes.length ? codes : [item.reason || item.code || item.name || item.breaker_key];
     })).map(translate);
     const suppressorReasons = unique((suppressor.current_reason_codes || []).map(translate));
+    const suppressorWarnings = unique((suppressor.warning_reason_codes || []).map(translate));
     const primaryPosition = positions[0];
     const primaryPlan = riskPlans.find((item) => item.market === (primaryPosition || {}).market) || riskPlans[0];
     const primaryOrder = openOrders.find((item) => item.market === (primaryPosition || {}).market && item.side === "ask") || openOrders[0];
@@ -1556,6 +1558,7 @@
       !selectedServiceActive ? `<article class="live-inline-banner neutral"><strong>비활성 상태 기록</strong><span>${esc(`${selected.label} 서비스는 현재 중지돼 있습니다. 혼동을 줄이기 위해 최근 활동이 없는 비활성 레인은 기본적으로 숨기고 있습니다.`)}</span></article>` : "",
       activeBreakers.length ? `<article class="live-inline-banner warn"><strong>즉시 확인할 브레이커</strong><span>${esc(activeBreakers.join(" / "))}</span></article>` : "",
       suppressor.active ? `<article class="live-inline-banner warn"><strong>실측 억제 suppressor</strong><span>${esc(suppressorReasons.join(" / "))}</span></article>` : "",
+      suppressor.warning_active ? `<article class="live-inline-banner neutral"><strong>카나리아 경고 스킵</strong><span>${esc(suppressorWarnings.join(" / "))}</span></article>` : "",
       ((suppressor.reset || {}).waiting_for_fresh_post_reset_decision) ? `<article class="live-inline-banner neutral"><strong>reset 이후 새 판단 대기</strong><span>${esc("이전 suppressor 증거는 리셋됐고, 새 post-reset 결정이 아직 없습니다.")}</span></article>` : "",
     ].filter(Boolean).join("");
 

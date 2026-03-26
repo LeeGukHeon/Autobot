@@ -734,20 +734,44 @@ def _load_live_suppressor_state(
         for item in (confidence_latest.get("triggered_reason_codes") or [])
         if str(item).strip()
     ]
+    is_canary_service = str(service_key or "").strip().lower() == "live_candidate"
     recent_loss_active = budget_fresh_after_reset and any(code == "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" for code in budget_reason_codes)
     spread_active = budget_fresh_after_reset and any(code == "PORTFOLIO_SPREAD_HAIRCUT" for code in budget_reason_codes)
     portfolio_blocked = budget_fresh_after_reset and str(budget_last_entry.get("skip_reason") or "").strip() == "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL"
-    suppressor_active = (confidence_triggered and confidence_fresh_after_reset) or recent_loss_active or portfolio_blocked
+    canary_warning_only = bool(
+        is_canary_service
+        and portfolio_blocked
+        and spread_active
+        and not recent_loss_active
+        and not (confidence_triggered and confidence_fresh_after_reset)
+        and all(
+            code in {"PORTFOLIO_BUDGET_BELOW_MIN_TOTAL", "PORTFOLIO_SPREAD_HAIRCUT"}
+            for code in budget_reason_codes
+        )
+    )
+    warning_reason_codes: list[str] = []
+    if canary_warning_only:
+        warning_reason_codes.append("CANARY_SPREAD_MIN_TOTAL_SKIP")
+        for code in budget_reason_codes:
+            if code not in warning_reason_codes:
+                warning_reason_codes.append(code)
+    suppressor_active = (
+        (confidence_triggered and confidence_fresh_after_reset)
+        or recent_loss_active
+        or (portfolio_blocked and not canary_warning_only)
+    )
     current_reason_codes: list[str] = []
     for code in confidence_reason_codes if confidence_fresh_after_reset else []:
         if code not in current_reason_codes:
             current_reason_codes.append(code)
-    for code in budget_reason_codes if budget_fresh_after_reset else []:
+    for code in budget_reason_codes if (budget_fresh_after_reset and not canary_warning_only) else []:
         if code not in current_reason_codes:
             current_reason_codes.append(code)
     return {
         "active": bool(suppressor_active),
         "current_reason_codes": current_reason_codes,
+        "warning_active": bool(canary_warning_only),
+        "warning_reason_codes": warning_reason_codes,
         "confidence_sequence": {
             "available": bool(confidence_latest),
             "path": str(confidence_path) if confidence_path is not None else None,
@@ -765,6 +789,7 @@ def _load_live_suppressor_state(
             "recent_loss_streak_active": bool(recent_loss_active),
             "spread_haircut_active": bool(spread_active),
             "portfolio_blocked": bool(portfolio_blocked),
+            "canary_warning_only": bool(canary_warning_only),
             "ts_ms": budget_entry_ts_ms,
             "stale_before_reset": bool(risk_budget_latest) and not bool(budget_fresh_after_reset),
         },

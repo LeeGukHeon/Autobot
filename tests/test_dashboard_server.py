@@ -1359,6 +1359,43 @@ def test_run_reset_live_suppressors_sets_reset_checkpoint_and_refreshes_confiden
     assert confidence_payload["halt_triggered"] is False
 
 
+def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_suppressor(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
+    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    _init_live_db(db_path)
+    _write_json(
+        project_root / "logs" / "risk_budget_ledger" / "autobot_live_alpha_candidate_service" / "latest.json",
+        {
+            "last_entry": {
+                "ts_ms": int(time.time() * 1000),
+                "skip_reason": "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL",
+                "budget_reason_codes": ["PORTFOLIO_BUDGET_BELOW_MIN_TOTAL", "PORTFOLIO_SPREAD_HAIRCUT"],
+            }
+        },
+    )
+    _write_json(
+        project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_candidate_service" / "latest.json",
+        {
+            "artifact_version": 1,
+            "ts_ms": int(time.time() * 1000),
+            "halt_triggered": False,
+            "triggered_reason_codes": [],
+            "monitor_families_triggered": [],
+        },
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+    candidate_state = next(item for item in snapshot["live"]["states"] if item.get("service_key") == "live_candidate")
+    suppressor = candidate_state["suppressor_state"]
+
+    assert suppressor["active"] is False
+    assert suppressor["current_reason_codes"] == []
+    assert suppressor["warning_active"] is True
+    assert "CANARY_SPREAD_MIN_TOTAL_SKIP" in suppressor["warning_reason_codes"]
+    assert suppressor["portfolio_budget"]["canary_warning_only"] is True
+
+
 def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_service_is_inactive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-21T01:00:00Z"})
