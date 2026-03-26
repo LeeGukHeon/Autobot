@@ -389,6 +389,29 @@ def test_build_parser_supports_v5_lob_trainer_choice() -> None:
     assert args.lob_backbone == "deeplob"
 
 
+def test_build_parser_supports_v5_fusion_trainer_choice() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "model",
+            "train",
+            "--trainer",
+            "v5_fusion",
+            "--fusion-panel-input",
+            "panel.parquet",
+            "--fusion-sequence-input",
+            "sequence.parquet",
+            "--fusion-lob-input",
+            "lob.parquet",
+        ]
+    )
+
+    assert args.command == "model"
+    assert args.model_command == "train"
+    assert args.trainer == "v5_fusion"
+    assert args.fusion_panel_input == "panel.parquet"
+
+
 def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> None:
     args = argparse.Namespace(
         backtest_command="alpha",

@@ -42,6 +42,11 @@ from .train_v5_lob import (
     TrainV5LobResult,
     train_and_register_v5_lob,
 )
+from .train_v5_fusion import (
+    TrainV5FusionOptions,
+    TrainV5FusionResult,
+    train_and_register_v5_fusion,
+)
 from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
 from .metric_audit import MetricAuditOptions, MetricAuditResult, audit_predictions, audit_registered_model
 from .ablation import AblationOptions, AblationResult, run_ablation, select_ablation_feature_columns
@@ -75,6 +80,9 @@ __all__ = [
     "TrainV5LobOptions",
     "TrainV5LobResult",
     "train_and_register_v5_lob",
+    "TrainV5FusionOptions",
+    "TrainV5FusionResult",
+    "train_and_register_v5_fusion",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",
     "run_modelbt_proxy",
