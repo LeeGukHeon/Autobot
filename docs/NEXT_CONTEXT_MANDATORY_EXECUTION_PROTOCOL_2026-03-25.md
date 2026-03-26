@@ -395,9 +395,12 @@ The next context must start from the first unchecked item.
 
 ### Phase 6: Sequence And LOB Experts
 
-- [ ] 25. Implement `v5_sequence`
+- [x] 25. Implement `v5_sequence`
   Required references:
   [TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md](/d:/MyApps/Autobot/docs/TRAINING_MODEL_STRENGTHENING_BLUEPRINT_2026-03-25.md)
+
+  Current implementation note:
+  implemented in `autobot/models/train_v5_sequence.py` and wired through `autobot/models/__init__.py` plus `autobot.cli model train --trainer v5_sequence`. The new trainer consumes `sequence_v1` tensor caches rather than row-wise tabular features, supports blueprint-aligned backbone families `patchtst`, `timemixer`, and `tft`, and exposes pretraining-mode choices `ts2vec_like`, `timemae_like`, or `none` before supervised fine-tuning. The current supervised head emits multi-horizon return quantiles for horizons `3/6/12/24` minutes, primary directional probability, uncertainty derived from quantile spread, and a learned regime embedding, while the registry bundle now persists `sequence_model_contract.json` plus `predictor_contract.json` so the sequence expert writes machine-readable output contracts rather than only opaque weights. The trainer also writes the usual registry backbone artifacts such as `metrics.json`, `thresholds.json`, `leaderboard_row.json`, `selection_recommendations.json`, `selection_policy.json`, `runtime_recommendations.json`, `walk_forward_report.json`, `promotion_decision.json`, and `artifact_status.json`, so the new family fits the existing registry/pointer layout instead of bypassing it. Local validation covered `tests/test_train_v5_sequence.py`, `tests/test_cli_alpha_shortcuts.py`, `tests/test_sequence_tensor_store.py`, `tests/test_predictor_contract.py`, and `tests/test_train_v5_panel_ensemble.py`; direct OCI validation confirmed the same server-side suite passes under the current `.venv` after adding `torch`, so the trainer path is reflected on the real server environment as code, dependency, and artifact-contract behavior. Open note retained explicitly: the current OCI `sequence_v1` dataset still contains only sparse smoke-built anchors and therefore is not yet rich enough to justify a meaningful server-origin production training run, so current server validation is test-level and contract-level rather than evidence from an already materialized scheduled `train_v5_sequence` family run.
 
 - [ ] 26. Implement `v5_lob`
   Required references:
