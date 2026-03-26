@@ -138,9 +138,11 @@ function Resolve-PreflightPythonExe {
     if (-not [string]::IsNullOrWhiteSpace($defaultPythonExe) -and (Test-Path $defaultPythonExe)) {
         return $defaultPythonExe
     }
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -ne $pythonCmd -and -not [string]::IsNullOrWhiteSpace($pythonCmd.Source)) {
-        return [string]$pythonCmd.Source
+    foreach ($commandName in @("python", "python3")) {
+        $pythonCmd = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($null -ne $pythonCmd -and -not [string]::IsNullOrWhiteSpace($pythonCmd.Source)) {
+            return [string]$pythonCmd.Source
+        }
     }
     return ""
 }
