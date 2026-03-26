@@ -31,6 +31,11 @@ from autobot.risk.confidence_monitor import (
     live_risk_confidence_sequence_latest_path,
     write_live_risk_confidence_sequence_report,
 )
+from autobot.live.canary_confidence_sequence import (
+    build_canary_confidence_sequence_report,
+    canary_confidence_sequence_latest_path,
+    write_canary_confidence_sequence_report,
+)
 from autobot.risk.portfolio_budget import resolve_portfolio_risk_budget
 
 CANARY_ENTRY_TIMEOUT_CAP_MS = 180_000
@@ -622,6 +627,43 @@ def write_live_confidence_sequence_artifact(
     if hasattr(store, "set_checkpoint"):
         store.set_checkpoint(
             name="live_risk_confidence_sequence_latest",
+            payload=report,
+            ts_ms=int(ts_ms),
+        )
+    return report
+
+
+def write_live_canary_confidence_sequence_artifact(
+    *,
+    store: Any,
+    settings: Any,
+    run_id: str,
+    risk_control_payload: dict[str, Any] | None,
+    ts_ms: int,
+) -> dict[str, Any] | None:
+    if str(settings.daemon.rollout_mode).strip().lower() != "canary":
+        return None
+    runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
+    lane = "live_candidate" if "candidate" in str(settings.daemon.rollout_target_unit).strip().lower() else "live_champion"
+    report = build_canary_confidence_sequence_report(
+        store=store,
+        run_id=str(run_id).strip(),
+        confidence_monitor_config=dict((risk_control_payload or {}).get("confidence_sequence_monitors") or {}),
+        runtime_health=runtime_health if isinstance(runtime_health, dict) else {},
+        lane=lane,
+        unit_name=str(settings.daemon.rollout_target_unit),
+        rollout_mode=str(settings.daemon.rollout_mode),
+        ts_ms=int(ts_ms),
+    )
+    registry_root = getattr(settings.daemon, "registry_root", "models/registry")
+    latest_path = canary_confidence_sequence_latest_path(
+        project_root=Path(str(registry_root)).resolve().parent.parent,
+        unit_name=str(settings.daemon.rollout_target_unit),
+    )
+    write_canary_confidence_sequence_report(latest_path=latest_path, payload=report)
+    if hasattr(store, "set_checkpoint"):
+        store.set_checkpoint(
+            name="live_canary_confidence_sequence_latest",
             payload=report,
             ts_ms=int(ts_ms),
         )

@@ -26,6 +26,7 @@ from autobot.live.breakers import breaker_status, clear_breaker, clear_breaker_r
 from autobot.live.order_state import is_open_local_state, normalize_order_state
 from autobot.live.state_store import LiveStateStore
 from autobot.live.candidate_canary_report import build_candidate_canary_report
+from autobot.live.canary_confidence_sequence import canary_confidence_sequence_latest_path
 from autobot.models.runtime_recommendation_contract import normalize_runtime_recommendations_payload
 from autobot.risk.confidence_monitor import (
     SUPPRESSOR_RESET_CHECKPOINT,
@@ -1784,12 +1785,23 @@ def _load_live_db_summary(
         runtime_run_dir = _resolve_model_run_dir(project_root, runtime_health.get("live_runtime_model_run_id"))
         runtime_artifacts = _collect_recent_model_artifacts(project_root, str(runtime_run_dir)) if runtime_run_dir else {}
         trade_analysis: dict[str, Any] = {}
+        canary_confidence_sequence: dict[str, Any] = {}
         is_candidate_state = str(service_key or "").strip() == "live_candidate" or "후보" in str(label)
         if "trade_journal" in tables and is_candidate_state:
             try:
                 trade_analysis = build_candidate_canary_report(db_path)
             except Exception:
                 trade_analysis = {}
+        if is_candidate_state:
+            try:
+                canary_confidence_sequence = _load_json(
+                    canary_confidence_sequence_latest_path(
+                        project_root=project_root,
+                        unit_name=_live_target_unit_for_service_key(service_key),
+                    )
+                )
+            except Exception:
+                canary_confidence_sequence = {}
         suppressor_state = _load_live_suppressor_state(
             project_root=project_root,
             service_key=service_key,
@@ -1816,6 +1828,7 @@ def _load_live_db_summary(
             "today_trade_summary": today_trade_summary,
             "capital_summary": capital_summary,
             "account_summary": dict(account_summary or {}),
+            "canary_confidence_sequence": canary_confidence_sequence,
             "active_risk_plans": active_risk_plan_payloads,
             "active_breakers": [
                 annotate_reason_payload(

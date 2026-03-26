@@ -239,6 +239,7 @@ async def run_live_model_alpha_runtime(
     live_risk_budget_ledger_path = _resolve_live_risk_budget_ledger_path(settings=settings)
     live_risk_budget_latest_path = _resolve_live_risk_budget_latest_path(settings=settings)
     live_risk_confidence_sequence_path = _resolve_live_risk_confidence_sequence_path(settings=settings)
+    live_canary_confidence_sequence_path = _resolve_live_canary_confidence_sequence_path(settings=settings)
     reset_opportunity_log(live_opportunity_log_path)
     reset_counterfactual_action_log(live_counterfactual_log_path)
     initialize_live_risk_budget_ledger(
@@ -253,8 +254,16 @@ async def run_live_model_alpha_runtime(
     summary["risk_budget_ledger_path"] = str(live_risk_budget_ledger_path)
     summary["risk_budget_latest_path"] = str(live_risk_budget_latest_path)
     summary["risk_confidence_sequence_path"] = str(live_risk_confidence_sequence_path)
+    summary["canary_confidence_sequence_path"] = str(live_canary_confidence_sequence_path)
     summary["order_execution_backfill"] = backfill_order_execution_details(store=store, client=client)
     _runtime_execute.write_live_confidence_sequence_artifact(
+        store=store,
+        settings=settings,
+        run_id=str(predictor.run_dir.name),
+        risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
+        ts_ms=int(time.time() * 1000),
+    )
+    _runtime_execute.write_live_canary_confidence_sequence_artifact(
         store=store,
         settings=settings,
         run_id=str(predictor.run_dir.name),
@@ -528,6 +537,13 @@ async def run_live_model_alpha_runtime(
                         risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
                         ts_ms=int(decision_ts_ms),
                     )
+                    _runtime_execute.write_live_canary_confidence_sequence_artifact(
+                        store=store,
+                        settings=settings,
+                        run_id=str(predictor.run_dir.name),
+                        risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
+                        ts_ms=int(decision_ts_ms),
+                    )
                     last_model_decision_ts_ms = decision_ts_ms
                 next_decision_at = now_monotonic + max(float(settings.decision_interval_sec), 0.2)
 
@@ -579,6 +595,13 @@ async def run_live_model_alpha_runtime(
                     ts_ms=int(time.time() * 1000),
                 )
                 _runtime_execute.write_live_confidence_sequence_artifact(
+                    store=store,
+                    settings=settings,
+                    run_id=str(predictor.run_dir.name),
+                    risk_control_payload=(getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control", {}),
+                    ts_ms=int(time.time() * 1000),
+                )
+                _runtime_execute.write_live_canary_confidence_sequence_artifact(
                     store=store,
                     settings=settings,
                     run_id=str(predictor.run_dir.name),
@@ -754,6 +777,13 @@ def _resolve_live_risk_budget_latest_path(*, settings: LiveModelAlphaRuntimeSett
 
 def _resolve_live_risk_confidence_sequence_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
     return _runtime_execute.live_risk_confidence_sequence_latest_path(
+        project_root=Path(str(settings.daemon.registry_root)).resolve().parent.parent,
+        unit_name=str(settings.daemon.rollout_target_unit),
+    )
+
+
+def _resolve_live_canary_confidence_sequence_path(*, settings: LiveModelAlphaRuntimeSettings) -> Path:
+    return _runtime_execute.canary_confidence_sequence_latest_path(
         project_root=Path(str(settings.daemon.registry_root)).resolve().parent.parent,
         unit_name=str(settings.daemon.rollout_target_unit),
     )
