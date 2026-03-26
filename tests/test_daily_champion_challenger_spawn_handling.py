@@ -1477,7 +1477,6 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
             "-CandidateTargetUnits",
             "autobot-live-alpha-candidate.service",
         ],
-        active_units=["autobot-live-alpha-candidate.service"],
     )
 
     assert spawn_completed.returncode == 0, spawn_completed.stdout + "\n" + spawn_completed.stderr
