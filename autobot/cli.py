@@ -144,6 +144,7 @@ from .models import (
     TrainV2MicroOptions,
     TrainV3MtfMicroOptions,
     TrainV5SequenceOptions,
+    TrainV5LobOptions,
     audit_registered_model,
     compare_registered_models,
     evaluate_registered_model_window,
@@ -156,6 +157,7 @@ from .models import (
     train_and_register_v2_micro,
     train_and_register_v3_mtf_micro,
     train_and_register_v4_crypto_cs,
+    train_and_register_v5_lob,
     train_and_register_v5_panel_ensemble,
     train_and_register_v5_sequence,
 )
@@ -783,7 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
-    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble", "v5_sequence"))
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble", "v5_sequence", "v5_lob"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
@@ -871,6 +873,10 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--sequence-batch-size", type=int)
     model_train_parser.add_argument("--sequence-pretrain-epochs", type=int)
     model_train_parser.add_argument("--sequence-finetune-epochs", type=int)
+    model_train_parser.add_argument("--lob-backbone", choices=("deeplob", "bdlob", "hlob"))
+    model_train_parser.add_argument("--lob-dataset-root", help="Override sequence_v1 dataset root for trainer=v5_lob.")
+    model_train_parser.add_argument("--lob-batch-size", type=int)
+    model_train_parser.add_argument("--lob-epochs", type=int)
 
     model_daily_v4_parser = model_subparsers.add_parser(
         "daily-v4",
@@ -2733,6 +2739,39 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer == "v5_lob":
+                lob_dataset_root = (
+                    Path(str(args.lob_dataset_root))
+                    if getattr(args, "lob_dataset_root", None)
+                    else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                )
+                options_v5_lob = TrainV5LobOptions(
+                    dataset_root=lob_dataset_root,
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=str(getattr(args, "model_family", None) or "train_v5_lob").strip() or "train_v5_lob",
+                    quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
+                    top_n=top_n,
+                    start=str(args.start or defaults["start"]).strip(),
+                    end=str(args.end or defaults["end"]).strip(),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    backbone_family=str(getattr(args, "lob_backbone", None) or "deeplob").strip().lower(),
+                    batch_size=int(getattr(args, "lob_batch_size", None) or 16),
+                    epochs=int(getattr(args, "lob_epochs", None) or 5),
+                )
+                summary_v5_lob = train_and_register_v5_lob(options_v5_lob)
+                print(
+                    "[model][train][v5_lob] "
+                    f"run_id={summary_v5_lob.run_id} status={summary_v5_lob.status} "
+                    f"test_precision_top5={summary_v5_lob.leaderboard_row.get('test_precision_top5', 0.0):.6f} "
+                    f"test_pr_auc={summary_v5_lob.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+                )
+                print(f"[model][train][v5_lob] run_dir={summary_v5_lob.run_dir}")
+                print(f"[model][train][v5_lob] train_report={summary_v5_lob.train_report_path}")
+                print(f"[model][train][v5_lob] walk_forward={summary_v5_lob.walk_forward_report_path}")
+                print(f"[model][train][v5_lob] lob_contract={summary_v5_lob.lob_model_contract_path}")
+                print(f"[model][train][v5_lob] predictor_contract={summary_v5_lob.predictor_contract_path}")
+                return 0
             if trainer == "v5_sequence":
                 sequence_dataset_root = (
                     Path(str(args.sequence_dataset_root))

@@ -37,6 +37,11 @@ from .train_v5_sequence import (
     TrainV5SequenceResult,
     train_and_register_v5_sequence,
 )
+from .train_v5_lob import (
+    TrainV5LobOptions,
+    TrainV5LobResult,
+    train_and_register_v5_lob,
+)
 from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
 from .metric_audit import MetricAuditOptions, MetricAuditResult, audit_predictions, audit_registered_model
 from .ablation import AblationOptions, AblationResult, run_ablation, select_ablation_feature_columns
@@ -67,6 +72,9 @@ __all__ = [
     "TrainV5SequenceOptions",
     "TrainV5SequenceResult",
     "train_and_register_v5_sequence",
+    "TrainV5LobOptions",
+    "TrainV5LobResult",
+    "train_and_register_v5_lob",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",
     "run_modelbt_proxy",
