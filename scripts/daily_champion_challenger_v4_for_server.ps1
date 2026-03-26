@@ -253,6 +253,22 @@ function Resolve-PairedPaperLatestPath {
     return (Join-Path (Join-Path $Root "logs/paired_paper") "latest.json")
 }
 
+function Resolve-CanaryConfidenceSequenceLatestPath {
+    param(
+        [string]$Root,
+        [string]$UnitName
+    )
+    $trimmedUnit = [string]$UnitName
+    if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
+        $trimmedUnit = "autobot-live-alpha-candidate.service"
+    }
+    $slug = (($trimmedUnit.Trim().ToLowerInvariant()) -replace '[^a-z0-9]+', '_').Trim('_')
+    if ([string]::IsNullOrWhiteSpace($slug)) {
+        $slug = "canary"
+    }
+    return (Join-Path (Join-Path (Join-Path $Root "logs/canary_confidence_sequence") $slug) "latest.json")
+}
+
 function Load-JsonOrEmpty {
     param([string]$PathValue)
     if ([string]::IsNullOrWhiteSpace($PathValue) -or (-not (Test-Path $PathValue))) {
@@ -377,6 +393,142 @@ function Resolve-PromotionTargetPolicy {
         allowed = $true
         reason = "LIVE_ROLLOUT_ARMED"
         contract = $contract
+    }
+}
+
+function Test-PairedPaperContinueOnlyReason {
+    param([string]$ReasonCode)
+    $trimmed = [string]$ReasonCode
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $false
+    }
+    return @(
+        "PAIRED_PAPER_NOT_READY",
+        "PAIRED_PAPER_EXECUTION_FAILED",
+        "PAIRED_PAPER_ARTIFACT_STATE_MISMATCH",
+        "PAIRED_PAPER_GATE_NOT_EVALUATED",
+        "PAIRED_PAPER_MISSING"
+    ) -contains $trimmed.Trim()
+}
+
+function Resolve-PromoteAbortContinueState {
+    param(
+        [string]$CandidateRunId,
+        [string]$ChampionRunIdAtStart,
+        [Parameter(Mandatory = $false)]$PairedPromotionDecision,
+        [Parameter(Mandatory = $false)]$PairedGate,
+        [bool]$PairedArtifactMatchesState,
+        [Parameter(Mandatory = $false)]$CanaryArtifact,
+        [bool]$CanaryArtifactMatchesState
+    )
+    $pairedDecision = Get-PropValue -ObjectValue $PairedPromotionDecision -Name "decision" -DefaultValue @{}
+    $pairedGateReason = [string](Get-PropValue -ObjectValue $PairedGate -Name "reason" -DefaultValue "")
+    $pairedGatePass = [bool](Get-PropValue -ObjectValue $PairedGate -Name "pass" -DefaultValue $false)
+    $pairedPromote = [bool](Get-PropValue -ObjectValue $pairedDecision -Name "promote" -DefaultValue $false)
+    $pairedDecisionName = [string](Get-PropValue -ObjectValue $pairedDecision -Name "decision" -DefaultValue "")
+    $pairedHardFailures = @(Get-StringArray -Value (Get-PropValue -ObjectValue $pairedDecision -Name "hard_failures" -DefaultValue @()))
+
+    $paperState = "continue"
+    $paperReason = ""
+    if ((-not (Test-ObjectHasValues -ObjectValue $PairedPromotionDecision)) -or (-not $PairedArtifactMatchesState)) {
+        $paperState = "continue"
+        $paperReason = if ($PairedArtifactMatchesState) { "PAIRED_PAPER_MISSING" } else { "PAIRED_PAPER_ARTIFACT_STATE_MISMATCH" }
+    } elseif ($pairedPromote) {
+        $paperState = "promote"
+        $paperReason = "PAPER_PROMOTE_ELIGIBLE"
+    } elseif ((Test-PairedPaperContinueOnlyReason -ReasonCode $pairedGateReason) -or ((-not $pairedGatePass) -and ($pairedHardFailures.Count -le 0))) {
+        $paperState = "continue"
+        $paperReason = if ([string]::IsNullOrWhiteSpace($pairedGateReason)) { "PAIRED_PAPER_NOT_READY" } else { $pairedGateReason }
+    } else {
+        $paperState = "abort"
+        if ($pairedHardFailures.Count -gt 0) {
+            $paperReason = [string]$pairedHardFailures[0]
+        } elseif (-not [string]::IsNullOrWhiteSpace($pairedDecisionName)) {
+            $paperReason = $pairedDecisionName
+        } else {
+            $paperReason = "PAIRED_PAPER_REJECTED"
+        }
+    }
+
+    $canaryDecision = Get-PropValue -ObjectValue $CanaryArtifact -Name "decision" -DefaultValue @{}
+    $canaryStatus = [string](Get-PropValue -ObjectValue $canaryDecision -Name "status" -DefaultValue "")
+    $canaryReasonCodes = @(Get-StringArray -Value (Get-PropValue -ObjectValue $canaryDecision -Name "reason_codes" -DefaultValue @()))
+    $canaryRunId = [string](Get-PropValue -ObjectValue $CanaryArtifact -Name "run_id" -DefaultValue "")
+    $canarySampleCount = [int](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $CanaryArtifact -Name "reward_stream" -DefaultValue @{}) -Name "sample_count" -DefaultValue 0)
+
+    $canaryState = "continue"
+    $canaryReason = ""
+    if (-not (Test-ObjectHasValues -ObjectValue $CanaryArtifact)) {
+        $canaryState = "continue"
+        $canaryReason = "CANARY_ARTIFACT_MISSING"
+    } elseif (-not $CanaryArtifactMatchesState) {
+        $canaryState = "continue"
+        $canaryReason = "CANARY_ARTIFACT_RUN_MISMATCH"
+    } elseif ($canaryStatus -eq "promote_eligible") {
+        $canaryState = "promote"
+        $canaryReason = "CANARY_PROMOTE_ELIGIBLE"
+    } elseif ($canaryStatus -eq "abort") {
+        $canaryState = "abort"
+        $canaryReason = if ($canaryReasonCodes.Count -gt 0) { [string]$canaryReasonCodes[0] } else { "CANARY_ABORT" }
+    } else {
+        $canaryState = "continue"
+        $canaryReason = if ([string]::IsNullOrWhiteSpace($canaryStatus)) { "CANARY_DECISION_MISSING" } else { "CANARY_CONTINUE" }
+    }
+
+    $state = "continue"
+    $reason = ""
+    if ($paperState -eq "abort") {
+        $state = "abort"
+        $reason = $paperReason
+    } elseif ($canaryState -eq "abort") {
+        $state = "abort"
+        $reason = $canaryReason
+    } elseif (($paperState -eq "promote") -and ($canaryState -eq "promote")) {
+        $state = "promote"
+        $reason = "PAPER_AND_CANARY_PROMOTE_ELIGIBLE"
+    } elseif ($paperState -eq "promote") {
+        $state = "continue"
+        $reason = $canaryReason
+    } else {
+        $state = "continue"
+        $reason = $paperReason
+    }
+
+    return [ordered]@{
+        policy = "promote_abort_continue_state_machine_v1"
+        candidate_run_id = $CandidateRunId
+        champion_run_id_at_start = $ChampionRunIdAtStart
+        state = $state
+        reason = $reason
+        next_action = if ($state -eq "promote") { "promote_champion" } elseif ($state -eq "abort") { "reject_candidate" } else { "keep_collecting_evidence" }
+        paired_paper = [ordered]@{
+            artifact_matches_state = $PairedArtifactMatchesState
+            gate_pass = $pairedGatePass
+            gate_reason = $pairedGateReason
+            decision_promote = $pairedPromote
+            decision_name = $pairedDecisionName
+            hard_failures = @($pairedHardFailures)
+            resolved_state = $paperState
+            resolved_reason = $paperReason
+        }
+        canary = [ordered]@{
+            artifact_matches_state = $CanaryArtifactMatchesState
+            run_id = $canaryRunId
+            sample_count = $canarySampleCount
+            decision_status = $canaryStatus
+            reason_codes = @($canaryReasonCodes)
+            resolved_state = $canaryState
+            resolved_reason = $canaryReason
+        }
+        actions = [ordered]@{
+            promote = ($state -eq "promote")
+            abort = ($state -eq "abort")
+            continue = ($state -eq "continue")
+            clear_latest_candidate = @("promote", "abort") -contains $state
+            clear_current_state = @("promote", "abort") -contains $state
+            stop_candidate_targets = @("promote", "abort") -contains $state
+            resume_candidate_evidence_units = ($state -eq "continue")
+        }
     }
 }
 
@@ -786,6 +938,7 @@ $reportPath = Join-Path $stateRoot ("daily_loop_" + (Get-Date -Format "yyyyMMdd-
 $latestReportPath = Join-Path $stateRoot "latest.json"
 $promoteCutoverLatestPath = Join-Path $stateRoot "latest_promote_cutover.json"
 $promoteCutoverArchiveRoot = Join-Path $stateRoot "promote_cutover_archive"
+$promoteStateMachineLatestPath = Join-Path $stateRoot "step_06_promote.json"
 $psExe = Resolve-PwshExe
 $runPromotionPhase = $Mode -ne "spawn_only"
 $runSpawnPhase = $Mode -ne "promote_only"
@@ -936,6 +1089,7 @@ $report.steps.stop_units = [ordered]@{
 
 $promotionPerformed = $false
 $promotionDecision = @{}
+$preservePreviousState = $false
 if ($runPromotionPhase) {
     if ($hasPreviousState) {
         $candidateRunId = [string](Get-PropValue -ObjectValue $previousState -Name "candidate_run_id" -DefaultValue "")
@@ -1017,6 +1171,9 @@ if ($runPromotionPhase) {
                     decision = [ordered]@{
                         promote = $false
                         decision = "keep_champion"
+                        hard_failures = @(
+                            if ($pairedArtifactMatchesState) { "PAIRED_PAPER_EXECUTION_FAILED" } else { "PAIRED_PAPER_ARTIFACT_STATE_MISMATCH" }
+                        )
                     }
                     paired_paper = [ordered]@{
                         evaluated = $false
@@ -1025,150 +1182,219 @@ if ($runPromotionPhase) {
                         report_path = [string]$pairedPaperLatestPath
                     }
                 }
-                $report.challenger_previous = $promotionDecision
-                $report.steps.stop_candidate_targets_after_promote = [ordered]@{
-                    attempted = $false
-                    reason = "PAIRED_PAPER_EXECUTION_FAILED"
-                    candidate_run_id = $candidateRunId
-                }
-                $report.steps.clear_latest_candidate = [ordered]@{
-                    attempted = $false
-                    reason = "PAIRED_PAPER_EXECUTION_FAILED"
-                    candidate_run_id = $candidateRunId
-                }
-                $report.steps.promote_previous_challenger = [ordered]@{
-                    attempted = $false
-                    promoted = $false
-                    candidate_run_id = $candidateRunId
-                    reason = "PAIRED_PAPER_EXECUTION_FAILED"
-                }
             } else {
-            $promotionDecision = $pairedPromotionDecision
-            $report.challenger_previous = $promotionDecision
-            if (-not $DryRun) {
-                New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
-                $archivePath = Join-Path $archiveRoot ("challenger_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
-                Write-JsonFile -PathValue $archivePath -Payload ([ordered]@{
-                    state = $previousState
-                    paired_paper = $pairedPaperArtifact
-                    comparison = $promotionDecision
-                })
+                $promotionDecision = $pairedPromotionDecision
             }
-            $shouldPromote = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}) -Name "promote" -DefaultValue $false)
-            if ($shouldPromote -and (-not $DryRun)) {
-                $promotedAtTsMs = [int64](Get-Date -UFormat %s) * 1000
-                $promoteExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList @(
-                    "-m", "autobot.cli",
-                    "model", "promote",
-                    "--model-ref", $candidateRunId,
-                    "--model-family", "train_v4_crypto_cs"
-                )
-                $promotionPerformed = $true
-                $script:rollbackPromotionPerformed = $true
-                $restartedUnits = New-Object System.Collections.Generic.List[string]
-                $startedFromInactiveUnits = New-Object System.Collections.Generic.List[string]
-                $skippedUnits = New-Object System.Collections.Generic.List[object]
-                foreach ($unit in $resolvedPromotionTargetUnits) {
-                    $trimmedUnit = [string]$unit
-                    if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
-                        continue
-                    }
-                    if (($trimmedUnit -eq $ChampionUnitName) -or ($trimmedUnit -eq $PairedPaperUnitName)) {
-                        continue
-                    }
-                    $targetPolicy = Resolve-PromotionTargetPolicy -Root $resolvedProjectRoot -UnitName $trimmedUnit
-                    if (-not [bool](Get-PropValue -ObjectValue $targetPolicy -Name "allowed" -DefaultValue $false)) {
-                        $skippedUnits.Add([ordered]@{
-                            unit = $trimmedUnit
-                            reason = [string](Get-PropValue -ObjectValue $targetPolicy -Name "reason" -DefaultValue "SKIPPED")
-                            is_live_target = [bool](Get-PropValue -ObjectValue $targetPolicy -Name "is_live_target" -DefaultValue $false)
-                        }) | Out-Null
-                        continue
-                    }
-                    $targetWasActive = Test-SystemdUnitActive -UnitName $trimmedUnit
-                    Restart-Unit -UnitName $trimmedUnit
-                    $restartedUnits.Add($trimmedUnit) | Out-Null
-                    if ($targetWasActive) {
-                        $script:rollbackPreviouslyActivePromotionUnits.Add($trimmedUnit) | Out-Null
-                    } else {
-                        $startedFromInactiveUnits.Add($trimmedUnit) | Out-Null
-                        $script:rollbackStartedInactivePromotionUnits.Add($trimmedUnit) | Out-Null
-                    }
-                }
-                $primaryLiveTargetUnit = [string](
-                    $resolvedPromotionTargetUnits |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Trim().StartsWith("autobot-live") } |
-                        Select-Object -First 1
-                )
-                $restartedUnitsArray = @($restartedUnits.ToArray())
-                $startedFromInactiveUnitsArray = @($startedFromInactiveUnits.ToArray())
-                $configuredTargetUnitsArray = @($resolvedPromotionTargetUnits)
-                $skippedUnitsArray = @($skippedUnits.ToArray())
-                $promoteCutover = [ordered]@{
-                    batch_date = $resolvedBatchDate
-                    previous_champion_run_id = $championRunIdAtStart
-                    new_champion_run_id = $candidateRunId
-                    promoted_at_ts_ms = $promotedAtTsMs
-                    promoted_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-                    champion_unit = $ChampionUnitName
-                    target_units = $restartedUnitsArray
-                    started_from_inactive_units = $startedFromInactiveUnitsArray
-                    configured_target_units = $configuredTargetUnitsArray
-                    skipped_target_units = $skippedUnitsArray
-                    live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot -UnitName $primaryLiveTargetUnit)) -Name "contract" -DefaultValue @{})
-                }
-                New-Item -ItemType Directory -Force -Path $promoteCutoverArchiveRoot | Out-Null
-                $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
-                Write-JsonFile -PathValue $promoteCutoverLatestPath -Payload $promoteCutover
-                Write-JsonFile -PathValue $promoteCutoverArchivePath -Payload $promoteCutover
-                $script:rollbackPromoteCutoverArchivePath = $promoteCutoverArchivePath
-                $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
-                $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
-                $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
-                $report.steps.clear_latest_candidate = $clearCandidatePointerStep
-                $report.steps.promote_previous_challenger = [ordered]@{
-                    attempted = $true
-                    command = $promoteExec.Command
-                    output_preview = $promoteExec.Output
-                    promoted = $true
-                    candidate_run_id = $candidateRunId
-                    restarted_units = $restartedUnitsArray
-                    started_from_inactive_units = $startedFromInactiveUnitsArray
-                    skipped_units = $skippedUnitsArray
-                    cutover_artifact = $promoteCutoverLatestPath
-                }
-            } else {
+            $report.challenger_previous = $promotionDecision
+
+            $canaryUnitName = [string](
+                $resolvedCandidateTargetUnits |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Trim().StartsWith("autobot-live") } |
+                    Select-Object -First 1
+            )
+            if ([string]::IsNullOrWhiteSpace($canaryUnitName)) {
+                $canaryUnitName = "autobot-live-alpha-candidate.service"
+            }
+            $canaryLatestPath = Resolve-CanaryConfidenceSequenceLatestPath -Root $resolvedProjectRoot -UnitName $canaryUnitName
+            $canaryArtifact = Load-JsonOrEmpty -PathValue $canaryLatestPath
+            $canaryArtifactMatchesState = ([string](Get-PropValue -ObjectValue $canaryArtifact -Name "run_id" -DefaultValue "") -eq $candidateRunId)
+            $promotionStateMachine = Resolve-PromoteAbortContinueState `
+                -CandidateRunId $candidateRunId `
+                -ChampionRunIdAtStart $championRunIdAtStart `
+                -PairedPromotionDecision $promotionDecision `
+                -PairedGate $pairedPaperGate `
+                -PairedArtifactMatchesState $pairedArtifactMatchesState `
+                -CanaryArtifact $canaryArtifact `
+                -CanaryArtifactMatchesState $canaryArtifactMatchesState
+            $report.steps.canary_previous_challenger = [ordered]@{
+                attempted = $true
+                unit_name = $canaryUnitName
+                artifact_path = [string]$canaryLatestPath
+                artifact_matches_state = $canaryArtifactMatchesState
+                decision = Get-PropValue -ObjectValue $canaryArtifact -Name "decision" -DefaultValue @{}
+            }
+            $report.steps.promotion_state_machine = $promotionStateMachine
+            if (-not $DryRun) {
+                Write-JsonFile -PathValue $promoteStateMachineLatestPath -Payload $promotionStateMachine
+            }
+
+            $resolvedPromotionState = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "state" -DefaultValue "continue")
+            if ($resolvedPromotionState -eq "promote") {
                 if (-not $DryRun) {
+                    New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
+                    $archivePath = Join-Path $archiveRoot ("challenger_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
+                    Write-JsonFile -PathValue $archivePath -Payload ([ordered]@{
+                        state = $previousState
+                        paired_paper = $pairedPaperArtifact
+                        comparison = $promotionDecision
+                        state_machine = $promotionStateMachine
+                    })
+                }
+                if (-not $DryRun) {
+                    $promotedAtTsMs = [int64](Get-Date -UFormat %s) * 1000
+                    $promoteExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList @(
+                        "-m", "autobot.cli",
+                        "model", "promote",
+                        "--model-ref", $candidateRunId,
+                        "--model-family", "train_v4_crypto_cs"
+                    )
+                    $promotionPerformed = $true
+                    $script:rollbackPromotionPerformed = $true
+                    $restartedUnits = New-Object System.Collections.Generic.List[string]
+                    $startedFromInactiveUnits = New-Object System.Collections.Generic.List[string]
+                    $skippedUnits = New-Object System.Collections.Generic.List[object]
+                    foreach ($unit in $resolvedPromotionTargetUnits) {
+                        $trimmedUnit = [string]$unit
+                        if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
+                            continue
+                        }
+                        if (($trimmedUnit -eq $ChampionUnitName) -or ($trimmedUnit -eq $PairedPaperUnitName)) {
+                            continue
+                        }
+                        $targetPolicy = Resolve-PromotionTargetPolicy -Root $resolvedProjectRoot -UnitName $trimmedUnit
+                        if (-not [bool](Get-PropValue -ObjectValue $targetPolicy -Name "allowed" -DefaultValue $false)) {
+                            $skippedUnits.Add([ordered]@{
+                                unit = $trimmedUnit
+                                reason = [string](Get-PropValue -ObjectValue $targetPolicy -Name "reason" -DefaultValue "SKIPPED")
+                                is_live_target = [bool](Get-PropValue -ObjectValue $targetPolicy -Name "is_live_target" -DefaultValue $false)
+                            }) | Out-Null
+                            continue
+                        }
+                        $targetWasActive = Test-SystemdUnitActive -UnitName $trimmedUnit
+                        Restart-Unit -UnitName $trimmedUnit
+                        $restartedUnits.Add($trimmedUnit) | Out-Null
+                        if ($targetWasActive) {
+                            $script:rollbackPreviouslyActivePromotionUnits.Add($trimmedUnit) | Out-Null
+                        } else {
+                            $startedFromInactiveUnits.Add($trimmedUnit) | Out-Null
+                            $script:rollbackStartedInactivePromotionUnits.Add($trimmedUnit) | Out-Null
+                        }
+                    }
+                    $primaryLiveTargetUnit = [string](
+                        $resolvedPromotionTargetUnits |
+                            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Trim().StartsWith("autobot-live") } |
+                            Select-Object -First 1
+                    )
+                    $restartedUnitsArray = @($restartedUnits.ToArray())
+                    $startedFromInactiveUnitsArray = @($startedFromInactiveUnits.ToArray())
+                    $configuredTargetUnitsArray = @($resolvedPromotionTargetUnits)
+                    $skippedUnitsArray = @($skippedUnits.ToArray())
+                    $promoteCutover = [ordered]@{
+                        batch_date = $resolvedBatchDate
+                        previous_champion_run_id = $championRunIdAtStart
+                        new_champion_run_id = $candidateRunId
+                        promoted_at_ts_ms = $promotedAtTsMs
+                        promoted_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+                        champion_unit = $ChampionUnitName
+                        target_units = $restartedUnitsArray
+                        started_from_inactive_units = $startedFromInactiveUnitsArray
+                        configured_target_units = $configuredTargetUnitsArray
+                        skipped_target_units = $skippedUnitsArray
+                        live_rollout_contract = (Get-PropValue -ObjectValue (Load-JsonOrEmpty -PathValue (Resolve-LiveRolloutLatestPath -Root $resolvedProjectRoot -UnitName $primaryLiveTargetUnit)) -Name "contract" -DefaultValue @{})
+                    }
+                    New-Item -ItemType Directory -Force -Path $promoteCutoverArchiveRoot | Out-Null
+                    $promoteCutoverArchivePath = Join-Path $promoteCutoverArchiveRoot ("cutover_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
+                    Write-JsonFile -PathValue $promoteCutoverLatestPath -Payload $promoteCutover
+                    Write-JsonFile -PathValue $promoteCutoverArchivePath -Payload $promoteCutover
+                    $script:rollbackPromoteCutoverArchivePath = $promoteCutoverArchivePath
+                    $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
                     $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
+                    $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
+                    $report.steps.clear_latest_candidate = $clearCandidatePointerStep
+                    $report.steps.promote_previous_challenger = [ordered]@{
+                        attempted = $true
+                        command = $promoteExec.Command
+                        output_preview = $promoteExec.Output
+                        promoted = $true
+                        candidate_run_id = $candidateRunId
+                        state_machine = $resolvedPromotionState
+                        restarted_units = $restartedUnitsArray
+                        started_from_inactive_units = $startedFromInactiveUnitsArray
+                        skipped_units = $skippedUnitsArray
+                        cutover_artifact = $promoteCutoverLatestPath
+                    }
+                } else {
+                    $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                        attempted = $false
+                        reason = "DRY_RUN"
+                    }
+                    $report.steps.clear_latest_candidate = [ordered]@{
+                        attempted = $false
+                        reason = "DRY_RUN"
+                        candidate_run_id = $candidateRunId
+                    }
+                    $report.steps.promote_previous_challenger = [ordered]@{
+                        attempted = $false
+                        promoted = $false
+                        candidate_run_id = $candidateRunId
+                        reason = "DRY_RUN"
+                        state_machine = $resolvedPromotionState
+                    }
+                }
+            } elseif ($resolvedPromotionState -eq "abort") {
+                if (-not $DryRun) {
+                    $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
+                    $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
+                    $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
                     $report.steps.clear_latest_candidate = $clearCandidatePointerStep
                 } else {
+                    $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                        attempted = $false
+                        reason = "DRY_RUN"
+                    }
                     $report.steps.clear_latest_candidate = [ordered]@{
                         attempted = $false
                         reason = "DRY_RUN"
                         candidate_run_id = $candidateRunId
                     }
                 }
+                $report.steps.promote_previous_challenger = [ordered]@{
+                    attempted = $false
+                    promoted = $false
+                    candidate_run_id = $candidateRunId
+                    reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_ABORT")
+                    state_machine = $resolvedPromotionState
+                }
+            } else {
+                $preservePreviousState = $true
+                if (-not $DryRun) {
+                    if ($challengerWasActive) {
+                        Restart-Unit -UnitName $ChallengerUnitName
+                    }
+                    if ($pairedPaperWasActive) {
+                        Restart-Unit -UnitName $PairedPaperUnitName
+                    }
+                    $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
+                        attempted = $true
+                        challenger_resumed = $challengerWasActive
+                        paired_paper_resumed = $pairedPaperWasActive
+                        reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_CONTINUE")
+                    }
+                } else {
+                    $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
+                        attempted = $false
+                        challenger_resumed = $false
+                        paired_paper_resumed = $false
+                        reason = "DRY_RUN"
+                    }
+                }
                 $report.steps.stop_candidate_targets_after_promote = [ordered]@{
                     attempted = $false
-                    reason = if ($shouldPromote) { "DRY_RUN" } else { "PROMOTION_NOT_PERFORMED" }
+                    reason = "STATE_MACHINE_CONTINUE"
+                    candidate_run_id = $candidateRunId
+                }
+                $report.steps.clear_latest_candidate = [ordered]@{
+                    attempted = $false
+                    reason = "STATE_MACHINE_CONTINUE"
+                    candidate_run_id = $candidateRunId
                 }
                 $report.steps.promote_previous_challenger = [ordered]@{
                     attempted = $false
                     promoted = $false
                     candidate_run_id = $candidateRunId
-                    reason = if ($shouldPromote) {
-                        "DRY_RUN"
-                    } else {
-                        $decisionDoc = Get-PropValue -ObjectValue $promotionDecision -Name "decision" -DefaultValue @{}
-                        $hardFailures = @((Get-PropValue -ObjectValue $decisionDoc -Name "hard_failures" -DefaultValue @()))
-                        if ($hardFailures.Count -gt 0) {
-                            [string]$hardFailures[0]
-                        } else {
-                            [string](Get-PropValue -ObjectValue $decisionDoc -Name "decision" -DefaultValue "keep_champion")
-                        }
-                    }
+                    reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_CONTINUE")
+                    state_machine = $resolvedPromotionState
                 }
-            }
             }
         } elseif ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and ((-not $previousPromotionEligible) -or ($previousLaneMode -eq "bootstrap_latest_inclusive"))) {
             $report.steps.stop_candidate_targets_after_promote = [ordered]@{
@@ -1207,7 +1433,7 @@ if ($runPromotionPhase) {
                 reason = "PREVIOUS_STATE_INCOMPLETE"
             }
         }
-        if (-not $DryRun) {
+        if ((-not $DryRun) -and (-not $preservePreviousState)) {
             Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
         }
     } else {

@@ -414,6 +414,37 @@ def _make_fake_paired_paper_script(
     return script_path
 
 
+def _write_canary_confidence_sequence_artifact(
+    project_root: Path,
+    *,
+    run_id: str,
+    status: str,
+    reason_codes: list[str] | None = None,
+    sample_count: int = 12,
+    unit_name: str = "autobot-live-alpha-candidate.service",
+) -> Path:
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in unit_name.strip().lower()).strip("_")
+    slug = "_".join(part for part in slug.split("_") if part)
+    path = project_root / "logs" / "canary_confidence_sequence" / slug / "latest.json"
+    _write_json(
+        path,
+        {
+            "policy": "canary_confidence_sequence_v1",
+            "run_id": run_id,
+            "decision": {
+                "status": status,
+                "reason_codes": list(reason_codes or []),
+            },
+            "reward_stream": {
+                "sample_count": sample_count,
+                "risk_adjusted_return_lcb": 0.1 if status == "promote_eligible" else (-0.1 if status == "abort" else 0.0),
+                "return_ucb": -0.1 if status == "abort" else 0.1,
+            },
+        },
+    )
+    return path
+
+
 def _run_spawn_only(
     project_root: Path,
     acceptance_script: Path,
@@ -1074,6 +1105,11 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
     _make_fake_systemctl(sudo_dir)
     fake_python = _make_fake_python(tmp_path)
     fake_paired = _make_fake_paired_paper_script(tmp_path)
+    _write_canary_confidence_sequence_artifact(
+        project_root,
+        run_id="candidate-run-promote",
+        status="promote_eligible",
+    )
 
     state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1153,6 +1189,83 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
     assert "restart autobot-live-alpha.service" in systemctl_calls
 
 
+def test_promote_only_aborts_and_clears_candidate_when_canary_aborts(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-canary-abort")
+    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(tmp_path)
+    _write_canary_confidence_sequence_artifact(
+        project_root,
+        run_id="candidate-run-canary-abort",
+        status="abort",
+        reason_codes=["RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH"],
+    )
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-15",
+                "candidate_run_id": "candidate-run-canary-abort",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-PairedPaperScript",
+            str(fake_paired),
+            "-Mode",
+            "promote_only",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_ACTIVE_UNITS": "autobot-live-alpha-candidate.service",
+        },
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+
+    assert latest["steps"]["promotion_state_machine"]["state"] == "abort"
+    assert latest["steps"]["promote_previous_challenger"]["promoted"] is False
+    assert latest["steps"]["promote_previous_challenger"]["reason"] == "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH"
+    assert latest["steps"]["clear_latest_candidate"]["attempted"] is True
+    assert not family_pointer.exists()
+    assert not global_pointer.exists()
+    assert not state_path.exists()
+
+
 def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targets(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -1167,6 +1280,11 @@ def test_promote_only_clears_latest_candidate_pointers_and_stops_candidate_targe
     fake_paired = _make_fake_paired_paper_script(tmp_path)
     fake_paired = _make_fake_paired_paper_script(tmp_path)
     fake_paired = _make_fake_paired_paper_script(tmp_path)
+    _write_canary_confidence_sequence_artifact(
+        project_root,
+        run_id="candidate-run-promote-clear",
+        status="promote_eligible",
+    )
 
     state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1296,16 +1414,13 @@ def test_promote_only_holds_when_paired_paper_gate_fails(tmp_path: Path) -> None
     latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
 
     assert latest["steps"]["paired_paper_previous_challenger"]["gate"]["pass"] is False
+    assert latest["steps"]["promotion_state_machine"]["state"] == "continue"
     assert latest["steps"]["promote_previous_challenger"]["promoted"] is False
-    assert latest["steps"]["promote_previous_challenger"]["reason"] == "PAIRED_PAPER_NOT_READY"
-    assert latest["steps"]["clear_latest_candidate"]["attempted"] is True
-    assert latest["steps"]["clear_latest_candidate"]["removed_paths"] == [
-        str(family_pointer),
-        str(global_pointer),
-    ]
-    assert not family_pointer.exists()
-    assert not global_pointer.exists()
-    assert not state_path.exists()
+    assert latest["steps"]["promote_previous_challenger"]["state_machine"] == "continue"
+    assert latest["steps"]["clear_latest_candidate"]["attempted"] is False
+    assert family_pointer.exists()
+    assert global_pointer.exists()
+    assert state_path.exists()
 
 
 def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tmp_path: Path) -> None:
@@ -1369,6 +1484,11 @@ def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tm
     _make_fake_systemctl(sudo_dir)
     fake_python = _make_fake_python(tmp_path)
     fake_paired = _make_fake_paired_paper_script(tmp_path)
+    _write_canary_confidence_sequence_artifact(
+        project_root,
+        run_id="candidate-run-e2e",
+        status="promote_eligible",
+    )
     systemctl_log = tmp_path / "systemctl.log"
     promote_completed = subprocess.run(
         [
