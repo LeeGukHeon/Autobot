@@ -358,8 +358,18 @@ def _build_anchor_tensor(
     anchor_ts_ms: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     second_frame = _read_parquet_rows(options.second_root / "tf=1s" / f"market={market}" / "*.parquet")
-    if second_frame.height <= 0:
-        second_frame = _read_parquet_rows(options.ws_candle_root / "tf=1s" / f"market={market}" / "*.parquet")
+    ws_one_s_frame = _read_parquet_rows(options.ws_candle_root / "tf=1s" / f"market={market}" / "*.parquet")
+    if second_frame.height > 0 and ws_one_s_frame.height > 0:
+        second_frame = (
+            pl.concat([second_frame, ws_one_s_frame], how="vertical")
+            .with_row_index("__row_id")
+            .sort(["ts_ms", "__row_id"])
+            .unique(subset=["ts_ms"], keep="last")
+            .sort("ts_ms")
+            .drop("__row_id")
+        )
+    elif second_frame.height <= 0:
+        second_frame = ws_one_s_frame
     ws_one_m_frame = _read_parquet_rows(options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet")
     micro_frame = _read_parquet_rows(options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet")
     lob_frame = _read_parquet_rows(options.lob_root / f"market={market}" / "date=*" / "*.parquet")
