@@ -138,6 +138,13 @@ function Resolve-PreflightPythonExe {
     if (-not [string]::IsNullOrWhiteSpace($defaultPythonExe) -and (Test-Path $defaultPythonExe)) {
         return $defaultPythonExe
     }
+    $repoDefaultRoot = Resolve-DefaultProjectRoot
+    if (-not [string]::IsNullOrWhiteSpace($repoDefaultRoot)) {
+        $repoPythonExe = Resolve-DefaultPythonExe -Root $repoDefaultRoot
+        if (-not [string]::IsNullOrWhiteSpace($repoPythonExe) -and (Test-Path $repoPythonExe)) {
+            return $repoPythonExe
+        }
+    }
     foreach ($commandName in @("python", "python3")) {
         $pythonCmd = Get-Command $commandName -ErrorAction SilentlyContinue
         if ($null -ne $pythonCmd -and -not [string]::IsNullOrWhiteSpace($pythonCmd.Source)) {
