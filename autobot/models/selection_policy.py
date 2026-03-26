@@ -18,6 +18,7 @@ def build_selection_policy_from_recommendations(
     selection_recommendations: dict[str, Any] | None,
     fallback_threshold_key: str = _DEFAULT_THRESHOLD_KEY,
     forced_threshold_key: str | None = None,
+    score_source: str = "score_mean",
 ) -> dict[str, Any]:
     recommendations = dict(selection_recommendations or {})
     by_key = recommendations.get("by_threshold_key")
@@ -79,6 +80,7 @@ def build_selection_policy_from_recommendations(
         "selected_rows_mean": _safe_optional_float(entry.get("selected_rows_mean")),
         "fallback_used": bool(entry.get("fallback_used", False)),
         "forced_threshold_key": forced_key if forced_key and threshold_key == forced_key else "",
+        "score_source": str(score_source).strip() or "score_mean",
     }
 
 
@@ -105,6 +107,7 @@ def normalize_selection_policy(
             default=payload["selection_fraction"],
         )
         payload["constraint_reasons"] = list(payload.get("constraint_reasons") or [])
+        payload["score_source"] = str(payload.get("score_source", "score_mean")).strip() or "score_mean"
         return payload
     return _fallback_policy(threshold_key=fallback_threshold_key, source="manual_fallback")
 
@@ -130,6 +133,7 @@ def _fallback_policy(*, threshold_key: str, source: str) -> dict[str, Any]:
         "window_count": 0,
         "selected_rows_mean": None,
         "fallback_used": True,
+        "score_source": "score_mean",
     }
 
 

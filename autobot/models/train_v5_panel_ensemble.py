@@ -31,7 +31,7 @@ from .model_card import render_model_card
 from .registry import RegistrySavePayload, save_run, update_artifact_status, update_latest_pointer
 from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
 from .search_budget import resolve_v4_search_budget
-from .selection_calibration import build_selection_calibration_from_oos_rows
+from .selection_calibration import build_selection_calibration_by_score_source, build_selection_calibration_from_oos_rows
 from .selection_optimizer import SelectionGridConfig, build_selection_recommendations_from_walk_forward, build_window_selection_objectives
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import SPLIT_DROP, SPLIT_TEST, SPLIT_TRAIN, SPLIT_VALID, compute_anchored_walk_forward_splits, compute_time_splits, split_masks
@@ -383,6 +383,7 @@ def _build_v5_oof_windows(
         meta_fit = _fit_meta_logistic(meta_x_train, meta_y_train, sample_weight=meta_w_train)
         meta_models.append(meta_fit["meta_model"])
         final_scores = meta_fit["meta_model"].predict_proba(window["meta_x"])[:, 1]
+        lcb_scores = np.clip(final_scores - np.std(window["meta_x"], axis=1, ddof=0), 0.0, 1.0)
         metrics = v4._attach_ranking_metrics(
             metrics=_evaluate_split(
                 y_cls=window["y_cls"],
@@ -430,6 +431,26 @@ def _build_v5_oof_windows(
                     safety_bps=options.safety_bps,
                     config=SelectionGridConfig(),
                 ),
+                "selection_optimization_by_score_source": {
+                    "score_mean": build_window_selection_objectives(
+                        scores=final_scores,
+                        y_reg=window["y_reg"],
+                        ts_ms=window["ts_ms"],
+                        thresholds={},
+                        fee_bps_est=options.fee_bps_est,
+                        safety_bps=options.safety_bps,
+                        config=SelectionGridConfig(),
+                    ),
+                    "score_lcb": build_window_selection_objectives(
+                        scores=lcb_scores,
+                        y_reg=window["y_reg"],
+                        ts_ms=window["ts_ms"],
+                        thresholds={},
+                        fee_bps_est=options.fee_bps_est,
+                        safety_bps=options.safety_bps,
+                        config=SelectionGridConfig(),
+                    ),
+                },
                 "trial_records": [],
             }
         )
@@ -437,6 +458,7 @@ def _build_v5_oof_windows(
             {
                 "window_index": int(window["window_index"]),
                 "scores": np.asarray(final_scores, dtype=np.float64).tolist(),
+                "score_lcb": np.asarray(lcb_scores, dtype=np.float64).tolist(),
                 "y_cls": np.asarray(window["y_cls"], dtype=np.int64).tolist(),
             }
         )
@@ -644,6 +666,31 @@ def _build_v5_train_config(
     return payload
 
 
+def _score_source_objective(selection_recommendations: dict[str, Any]) -> float:
+    if not isinstance(selection_recommendations, dict):
+        return float("-inf")
+    threshold_key = str(selection_recommendations.get("recommended_threshold_key", "")).strip()
+    by_key = selection_recommendations.get("by_threshold_key") if isinstance(selection_recommendations.get("by_threshold_key"), dict) else {}
+    if threshold_key and isinstance(by_key.get(threshold_key), dict):
+        value = by_key[threshold_key].get("objective_score")
+        try:
+            return float(value)
+        except Exception:
+            return float("-inf")
+    return float("-inf")
+
+
+def _apply_score_source_to_windows(windows: list[dict[str, Any]], *, score_source: str) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for window in windows:
+        payload = dict(window or {})
+        by_source = payload.get("selection_optimization_by_score_source") if isinstance(payload.get("selection_optimization_by_score_source"), dict) else {}
+        selected_opt = by_source.get(score_source) or payload.get("selection_optimization")
+        payload["selection_optimization"] = dict(selected_opt or {})
+        selected.append(payload)
+    return selected
+
+
 def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -> TrainV5PanelEnsembleResult:
     if options.feature_set != "v4":
         raise ValueError("trainer v5_panel_ensemble requires --feature-set v4")
@@ -758,7 +805,23 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         regressor_best_params={key: dict(value.get("best_params", {})) for key, value in regressor_results.items()},
         action_aux_arrays=action_aux_arrays,
     )
-    selection_calibration = build_selection_calibration_from_oos_rows(oos_rows=oof.get("_selection_calibration_rows", []))
+    selection_calibration_rows = list(oof.get("_selection_calibration_rows", []))
+    selection_calibration = build_selection_calibration_by_score_source(
+        by_score_source={
+            "score_mean": build_selection_calibration_from_oos_rows(oos_rows=selection_calibration_rows),
+            "score_lcb": build_selection_calibration_from_oos_rows(
+                oos_rows=[
+                    {
+                        "window_index": row.get("window_index"),
+                        "scores": row.get("score_lcb") or [],
+                        "y_cls": row.get("y_cls") or [],
+                    }
+                    for row in selection_calibration_rows
+                ]
+            ),
+        },
+        default_score_source="score_mean",
+    )
     meta_x_all = np.concatenate([row["x"] for row in oof["meta_rows"]], axis=0) if oof["meta_rows"] else np.empty((0, len(_STACK_COMPONENT_ORDER)), dtype=np.float64)
     meta_y_all = np.concatenate([row["y"] for row in oof["meta_rows"]], axis=0) if oof["meta_rows"] else np.empty(0, dtype=np.int64)
     meta_fit = _fit_meta_logistic(meta_x_all, meta_y_all, sample_weight=oof.get("sample_weight"))
@@ -817,7 +880,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
     walk_forward = _build_walk_forward_report_v5(
         windows=oof.get("windows", []),
         skipped=oof.get("skipped_windows", []),
-        selection_calibration_rows=oof.get("_selection_calibration_rows", []),
+        selection_calibration_rows=selection_calibration_rows,
         trade_action_rows=oof.get("_trade_action_oos_rows", []),
     )
     fallback_selection_recommendations = build_selection_recommendations(
@@ -825,14 +888,34 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         valid_ts_ms=dataset.ts_ms[valid_mask],
         thresholds=thresholds,
     )
-    selection_recommendations = build_selection_recommendations_from_walk_forward(
-        windows=walk_forward.get("windows", []),
+    walk_forward_windows = list(walk_forward.get("windows", []))
+    selection_recommendations_mean = build_selection_recommendations_from_walk_forward(
+        windows=_apply_score_source_to_windows(walk_forward_windows, score_source="score_mean"),
         fallback_recommendations=fallback_selection_recommendations,
     )
+    selection_recommendations_lcb = build_selection_recommendations_from_walk_forward(
+        windows=_apply_score_source_to_windows(walk_forward_windows, score_source="score_lcb"),
+        fallback_recommendations=fallback_recommendations_mean if (fallback_recommendations_mean := selection_recommendations_mean) else fallback_selection_recommendations,
+    )
+    chosen_score_source = (
+        "score_lcb"
+        if _score_source_objective(selection_recommendations_lcb) >= _score_source_objective(selection_recommendations_mean)
+        else "score_mean"
+    )
+    selection_recommendations = selection_recommendations_lcb if chosen_score_source == "score_lcb" else selection_recommendations_mean
+    walk_forward["windows"] = _apply_score_source_to_windows(walk_forward_windows, score_source=chosen_score_source)
+    walk_forward["selection_policy_compare"] = {
+        "version": 1,
+        "policy": "score_source_compare_v1",
+        "score_mean_objective_score": _score_source_objective(selection_recommendations_mean),
+        "score_lcb_objective_score": _score_source_objective(selection_recommendations_lcb),
+        "chosen_score_source": chosen_score_source,
+    }
     selection_policy = build_selection_policy_from_recommendations(
         selection_recommendations=selection_recommendations,
         fallback_threshold_key="top_5pct",
         forced_threshold_key=getattr(options, "selection_threshold_key_override", None),
+        score_source=chosen_score_source,
     )
     cpcv_lite = _build_disabled_cpcv_lite(trigger=str((cpcv_lite_runtime or {}).get("trigger", "disabled")).strip() or "disabled")
     research_support_lane = v4._build_research_support_lane_v4(walk_forward=walk_forward, cpcv_lite=cpcv_lite)
@@ -1055,6 +1138,47 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
     update_artifact_status(run_dir, status=status)
+    experiment_ledger_record = v4.build_experiment_ledger_record(
+        run_id=run_id,
+        task="cls",
+        status=status,
+        duration_sec=round(time.time() - started_at, 3),
+        run_dir=run_dir,
+        search_budget_decision=search_budget_decision,
+        walk_forward=walk_forward,
+        cpcv_lite=cpcv_lite,
+        factor_block_selection=factor_block_selection,
+        factor_block_policy={},
+        factor_block_selection_context=factor_block_selection_context,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+        duplicate_candidate=duplicate_candidate,
+        economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_path = v4.append_experiment_ledger_record(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        record=experiment_ledger_record,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_history = v4.load_experiment_ledger(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_summary = v4.build_recent_experiment_ledger_summary(
+        history_records=experiment_ledger_history,
+    )
+    experiment_ledger_summary_path = v4.write_latest_experiment_ledger_summary(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_id=run_id,
+        summary=experiment_ledger_summary,
+        run_scope=options.run_scope,
+    )
     duration_sec = round(time.time() - started_at, 3)
     train_report_path = _write_json(
         options.logs_root / "train_v5_panel_ensemble_report.json",
@@ -1088,7 +1212,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         economic_objective_profile_path=runtime_artifacts.get("economic_objective_profile_path"),
         lane_governance_path=runtime_artifacts.get("lane_governance_path"),
         decision_surface_path=runtime_artifacts.get("decision_surface_path"),
-        experiment_ledger_path=None,
-        experiment_ledger_summary_path=None,
+        experiment_ledger_path=experiment_ledger_path,
+        experiment_ledger_summary_path=experiment_ledger_summary_path,
         live_domain_reweighting_path=None,
     )

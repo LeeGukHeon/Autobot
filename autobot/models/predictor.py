@@ -41,10 +41,20 @@ class ModelPredictor:
     def predict_scores(self, x: np.ndarray) -> np.ndarray:
         return _predict_scores(self.model_bundle, x)
 
-    def predict_selection_scores(self, x: np.ndarray) -> np.ndarray:
+    def predict_selection_scores(self, x: np.ndarray, *, score_source: str | None = None) -> np.ndarray:
+        resolved_source = str(
+            score_source
+            or (self.selection_policy.get("score_source") if isinstance(self.selection_policy, dict) else "")
+            or "score_mean"
+        ).strip() or "score_mean"
+        if resolved_source == "score_lcb":
+            base_scores = self.predict_score_contract(x)["score_lcb"]
+        else:
+            base_scores = self.predict_scores(x)
         return apply_selection_calibration(
-            self.predict_scores(x),
+            base_scores,
             self.selection_calibration if isinstance(self.selection_calibration, dict) else {},
+            score_source=resolved_source,
         )
 
     def predict_uncertainty(self, x: np.ndarray) -> np.ndarray | None:
