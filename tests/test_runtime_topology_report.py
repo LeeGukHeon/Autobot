@@ -126,7 +126,14 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["runtime_sync_status"]["live_runtime_model_run_id"] == "run-3"
     assert report["runtime_sync_status"]["current_resolved_model_run_id"] == "run-3"
     assert report["runtime_sync_status"]["champion_pointer_run_id"] == "run-1"
-    assert report["runtime_sync_status"]["model_pointer_divergence"] is True
+    assert report["runtime_sync_status"]["expected_pointer_run_id"] == "run-3"
+    assert report["runtime_sync_status"]["model_pointer_divergence"] is False
+    assert report["live_runtime_sync_status"]["live_runtime_model_run_id"] == "run-1"
+    assert report["live_runtime_sync_status"]["current_resolved_model_run_id"] == "run-1"
+    assert report["live_runtime_sync_status"]["model_pointer_divergence"] is False
+    assert report["candidate_runtime_sync_status"]["live_runtime_model_run_id"] == "run-3"
+    assert report["candidate_runtime_sync_status"]["expected_pointer_run_id"] == "run-3"
+    assert report["candidate_runtime_sync_status"]["model_pointer_divergence"] is False
     assert report["current_runtime_contract"]["model_ref_source_requested"] == "latest_candidate_v4"
     assert report["candidate_lane"]["breaker_state"]["primary_reason_type"] == "STATE_INTEGRITY"
     assert report["candidate_lane"]["breaker_state"]["typed_reason_codes"][0]["reason_code"] == "MODEL_POINTER_UNRESOLVED"
@@ -141,8 +148,8 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["legacy_replay"]["classification"] == "legacy_excluded_from_target_topology"
     assert report["legacy_replay"]["present"] is True
     assert report["legacy_replay"]["active_unit_count"] == 1
-    assert report["topology_health"]["status"] == "violation"
-    assert "MODEL_POINTER_DIVERGENCE" in report["topology_health"]["reason_codes"]
+    assert report["topology_health"]["status"] == "degraded"
+    assert "MODEL_POINTER_DIVERGENCE" not in report["topology_health"]["reason_codes"]
     assert "LEGACY_REPLAY_ACTIVE" in report["topology_health"]["reason_codes"]
     assert report["summary"]["systemd_available"] is True
     assert report["summary"]["git_dirty"] is True
@@ -150,7 +157,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["summary"]["legacy_replay_present"] is True
     assert report["summary"]["legacy_replay_active"] is True
     assert report["summary"]["target_topology_replay_excluded"] is True
-    assert report["summary"]["topology_health_status"] == "violation"
+    assert report["summary"]["topology_health_status"] == "degraded"
     assert report["summary"]["target_service_active_count"] == 2
 
 

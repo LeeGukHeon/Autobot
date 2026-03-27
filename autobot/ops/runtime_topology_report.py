@@ -65,7 +65,8 @@ def build_runtime_topology_report(
 
     rollout_latest = load_rollout_latest(root, target_unit=target_unit)
 
-    daemon_defaults = _load_live_defaults(root, target_unit=target_unit)
+    effective_target_unit = str(target_unit or "").strip() or None
+    daemon_defaults = _load_live_defaults(root, target_unit=effective_target_unit)
     ws_public_contract = load_ws_public_runtime_contract(
         meta_dir=Path(str(daemon_defaults["ws_public_meta_dir"])),
         raw_root=Path(str(daemon_defaults["ws_public_raw_root"])),
@@ -74,23 +75,56 @@ def build_runtime_topology_report(
         ts_ms=effective_ts_ms,
     )
 
-    current_contract = {}
-    runtime_contract_error = ""
+    live_current_contract: dict[str, Any] = {}
+    live_runtime_contract_error = ""
     try:
-        current_contract = resolve_live_runtime_model_contract(
+        live_current_contract = resolve_live_runtime_model_contract(
             registry_root=registry_root,
-            model_ref=str(daemon_defaults["runtime_model_ref_source"]),
-            model_family=str(daemon_defaults["runtime_model_family"]),
+            model_ref="champion_v4",
+            model_family="train_v4_crypto_cs",
             ts_ms=effective_ts_ms,
         )
     except Exception as exc:  # pragma: no cover - defensive path
-        runtime_contract_error = str(exc)
+        live_runtime_contract_error = str(exc)
 
-    persisted_runtime_contract = dict((candidate_state.get("runtime_contract") or {}))
-    runtime_sync_status = build_live_runtime_sync_status(
-        pinned_contract=persisted_runtime_contract,
-        current_contract=current_contract,
+    candidate_current_contract: dict[str, Any] = {}
+    candidate_runtime_contract_error = ""
+    try:
+        candidate_current_contract = resolve_live_runtime_model_contract(
+            registry_root=registry_root,
+            model_ref="latest_candidate_v4",
+            model_family="train_v4_crypto_cs",
+            ts_ms=effective_ts_ms,
+        )
+    except Exception as exc:  # pragma: no cover - defensive path
+        candidate_runtime_contract_error = str(exc)
+
+    live_runtime_sync_status = build_live_runtime_sync_status(
+        pinned_contract=dict((live_state.get("runtime_contract") or {})),
+        current_contract=live_current_contract,
         ws_public_contract=ws_public_contract,
+    )
+
+    candidate_runtime_sync_status = build_live_runtime_sync_status(
+        pinned_contract=dict((candidate_state.get("runtime_contract") or {})),
+        current_contract=candidate_current_contract,
+        ws_public_contract=ws_public_contract,
+    )
+    is_candidate_target = effective_target_unit in {
+        "autobot-live-alpha-candidate.service",
+        "autobot-paper-v4-challenger.service",
+    }
+    current_contract = candidate_current_contract if is_candidate_target else live_current_contract
+    persisted_runtime_contract = (
+        dict((candidate_state.get("runtime_contract") or {}))
+        if is_candidate_target
+        else dict((live_state.get("runtime_contract") or {}))
+    )
+    runtime_sync_status = candidate_runtime_sync_status if is_candidate_target else live_runtime_sync_status
+    runtime_contract_error = (
+        candidate_runtime_contract_error
+        if is_candidate_target
+        else live_runtime_contract_error
     )
     systemd_snapshot = _systemd_topology_snapshot()
     git_snapshot = _git_topology_snapshot(root=root)
@@ -98,7 +132,7 @@ def build_runtime_topology_report(
     legacy_replay = _legacy_replay_snapshot(systemd_snapshot=systemd_snapshot, project_topology=project_topology)
     topology_health = _topology_health_status(
         systemd_snapshot=systemd_snapshot,
-        runtime_sync_status=runtime_sync_status,
+        runtime_sync_status=live_runtime_sync_status,
         ws_public_contract=ws_public_contract,
         live_db=live_db,
         candidate_db=candidate_db,
@@ -122,8 +156,16 @@ def build_runtime_topology_report(
         "ws_public_contract": ws_public_contract,
         "current_runtime_contract": current_contract,
         "persisted_runtime_contract": persisted_runtime_contract,
+        "live_runtime_contract": live_current_contract,
+        "candidate_runtime_contract": candidate_current_contract,
         "runtime_sync_status": runtime_sync_status,
+        "live_runtime_sync_status": live_runtime_sync_status,
+        "candidate_runtime_sync_status": candidate_runtime_sync_status,
         "runtime_contract_error": runtime_contract_error or None,
+        "runtime_contract_errors": {
+            "live": live_runtime_contract_error or None,
+            "candidate": candidate_runtime_contract_error or None,
+        },
         "rollout_latest": rollout_latest,
         "systemd": systemd_snapshot,
         "git": git_snapshot,

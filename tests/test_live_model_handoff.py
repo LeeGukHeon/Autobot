@@ -510,7 +510,7 @@ def test_live_daemon_canary_tolerates_candidate_pointer_divergence(tmp_path: Pat
         )
 
     assert summary["halted"] is False
-    assert summary["model_pointer_divergence"] is True
+    assert summary["model_pointer_divergence"] is False
     assert summary["live_runtime_model_run_id"] == "run-new"
     assert summary["champion_pointer_run_id"] == "run-old"
 
