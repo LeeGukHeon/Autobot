@@ -34,7 +34,7 @@ function Resolve-DefaultWrapperScript {
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_governed_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v5_governed_candidate_acceptance.ps1")
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }

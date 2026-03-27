@@ -243,7 +243,7 @@ def test_adopt_v4_candidate_for_server_updates_pointers_state_and_artifact_statu
         "autobot-live-alpha-candidate.service"
     ]
     assert runtime_install["paper_unit_name"] == "autobot-paper-v4-paired.service"
-    assert runtime_install["paper_preset"] == "paired_v4"
+    assert runtime_install["paper_preset"] == "paired_v5"
     assert runtime_install["paper_runtime_role"] == "paired"
     assert runtime_install["paper_model_family_override"] == "train_v4_crypto_cs"
     assert runtime_install["paper_champion_model_family_override"] == "train_v4_crypto_cs"

@@ -8,7 +8,7 @@ param(
     [string]$ExecutionPolicyRefreshScript = "",
     [string]$FeatureContractRefreshScript = "",
     [string]$BatchDate = "",
-    [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ModelFamily = "train_v5_panel_ensemble",
     [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -30,7 +30,7 @@ param(
     [string]$PairedPaperQuote = "KRW",
     [int]$PairedPaperTopN = 20,
     [string]$PairedPaperTf = "5m",
-    [string]$PairedPaperPreset = "live_v4",
+    [string]$PairedPaperPreset = "live_v5",
     [string]$PairedPaperModelFamily = "",
     [string]$PairedPaperFeatureSet = "v4",
     [string]$PairedPaperFeatureProvider = "live_v4",
@@ -54,7 +54,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_governed_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v5_governed_candidate_acceptance.ps1")
 }
 
 function Resolve-DefaultPairedPaperScript {
@@ -773,9 +773,9 @@ function Start-OrUpdate-ChallengerUnit {
         "-ProjectRoot", $Root,
         "-PythonExe", $PyExe,
         "-PaperUnitName", $UnitName,
-        "-PaperPreset", "live_v4",
+        "-PaperPreset", "live_v5",
         "-PaperRuntimeRole", "challenger",
-        "-PaperLaneName", "v4",
+        "-PaperLaneName", "v5",
         "-PaperModelFamilyOverride", $ModelFamilyName,
         "-PaperModelRefPinned", $CandidateRunId,
         "-NoBootstrapChampion",
@@ -803,9 +803,9 @@ function Start-OrUpdate-PairedPaperUnit {
         "-ProjectRoot", $Root,
         "-PythonExe", $PyExe,
         "-PaperUnitName", $UnitName,
-        "-PaperPreset", "paired_v4",
+        "-PaperPreset", "paired_v5",
         "-PaperRuntimeRole", "paired",
-        "-PaperLaneName", "v4",
+        "-PaperLaneName", "v5",
         "-PaperModelFamilyOverride", $ChallengerModelFamilyName,
         "-PaperChampionModelFamilyOverride", $ChampionModelFamilyName,
         "-PaperChallengerModelFamilyOverride", $ChallengerModelFamilyName,
@@ -944,8 +944,8 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedModelFamily = [string]$ModelFamily
 $resolvedModelFamily = $resolvedModelFamily.Trim()
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
-    $resolvedModelFamily = "train_v4_crypto_cs"
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
 }
 $resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
 $resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()

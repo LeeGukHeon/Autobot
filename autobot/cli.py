@@ -164,7 +164,7 @@ from .models import (
     train_and_register_v5_sequence,
 )
 from .models.offpolicy_evaluation import write_execution_dr_ope_report
-from .models.registry import promote_run_to_champion
+from .models.registry import load_json, promote_run_to_champion
 from .strategy import TopTradeValueScanner
 from .strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
@@ -200,11 +200,21 @@ from .upbit.ws import UpbitWebSocketPublicClient
 from .upbit.ws import UpbitWebSocketPrivateClient
 
 
-DEFAULT_MODEL_ALPHA_RUNTIME_REF = "champion_v4"
+DEFAULT_MODEL_ALPHA_RUNTIME_REF = _cli_model_helpers.DEFAULT_PRIMARY_RUNTIME_REF
 DEFAULT_V3_CANDIDATE_REF = "latest_candidate_v3"
 DEFAULT_V4_RUNTIME_REF = "champion_v4"
 DEFAULT_V4_CANDIDATE_REF = "latest_candidate_v4"
-DEFAULT_PAPER_ALPHA_PRESET = "live_v4"
+DEFAULT_PAPER_ALPHA_PRESET = _cli_model_helpers.DEFAULT_PAPER_ALPHA_PRESET
+
+
+def _resolve_latest_expert_prediction_table(registry_root: Path, model_family: str) -> Path | None:
+    family_dir = Path(registry_root) / str(model_family).strip()
+    latest_payload = load_json(family_dir / "latest.json")
+    run_id = str(latest_payload.get("run_id") or "").strip()
+    if not run_id:
+        return None
+    candidate = family_dir / run_id / "expert_prediction_table.parquet"
+    return candidate if candidate.exists() else None
 
 
 def _paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
@@ -1107,9 +1117,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_alpha_parser.add_argument(
         "--preset",
-        choices=("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline", "offline_v4", "default"),
+        choices=("live_v3", "live_v4", "live_v4_native", "live_v5", "candidate_v4", "candidate_v5", "offline", "offline_v4", "offline_v5", "default"),
         default=DEFAULT_PAPER_ALPHA_PRESET,
-        help="Shortcut preset. default=config-driven, live_v3/live_v4/live_v4_native use live providers, offline variants use parquet providers. Current default rollout is live_v4.",
+        help="Shortcut preset. default=config-driven, live_v3/live_v4/live_v4_native/live_v5 use live providers, offline variants use parquet providers. Current default rollout is live_v5.",
     )
     paper_alpha_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
     paper_alpha_parser.add_argument("--quote", help="Quote currency, ex: KRW")
@@ -2746,12 +2756,24 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
             if trainer == "v5_fusion":
-                if not getattr(args, "fusion_panel_input", None) or not getattr(args, "fusion_sequence_input", None) or not getattr(args, "fusion_lob_input", None):
-                    raise ValueError("v5_fusion requires --fusion-panel-input, --fusion-sequence-input, and --fusion-lob-input")
+                panel_input = getattr(args, "fusion_panel_input", None)
+                sequence_input = getattr(args, "fusion_sequence_input", None)
+                lob_input = getattr(args, "fusion_lob_input", None)
+                if not panel_input:
+                    panel_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_panel_ensemble")
+                if not sequence_input:
+                    sequence_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_sequence")
+                if not lob_input:
+                    lob_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_lob")
+                if not panel_input or not sequence_input or not lob_input:
+                    raise ValueError(
+                        "v5_fusion requires expert prediction tables. Pass --fusion-panel-input/--fusion-sequence-input/--fusion-lob-input "
+                        "or materialize latest expert_prediction_table.parquet artifacts for train_v5_panel_ensemble/train_v5_sequence/train_v5_lob."
+                    )
                 options_v5_fusion = TrainV5FusionOptions(
-                    panel_input_path=Path(str(args.fusion_panel_input)),
-                    sequence_input_path=Path(str(args.fusion_sequence_input)),
-                    lob_input_path=Path(str(args.fusion_lob_input)),
+                    panel_input_path=Path(str(panel_input)),
+                    sequence_input_path=Path(str(sequence_input)),
+                    lob_input_path=Path(str(lob_input)),
                     registry_root=registry_root,
                     logs_root=logs_root,
                     model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
@@ -5875,7 +5897,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             1,
         ),
         "model_ref_source": env_model_ref_source or str(model_cfg.get("ref", "champion_v4")).strip() or "champion_v4",
-        "model_family": env_model_family or str(model_cfg.get("family", "train_v4_crypto_cs")).strip() or "train_v4_crypto_cs",
+        "model_family": env_model_family or str(model_cfg.get("family", _cli_model_helpers.DEFAULT_PRIMARY_MODEL_FAMILY)).strip() or _cli_model_helpers.DEFAULT_PRIMARY_MODEL_FAMILY,
         "model_registry_root": env_model_registry_root or str(model_cfg.get("registry_root", "models/registry")).strip() or "models/registry",
         "ws_public_raw_root": str(ws_public_cfg.get("raw_root", "data/raw_ws/upbit/public")).strip()
         or "data/raw_ws/upbit/public",

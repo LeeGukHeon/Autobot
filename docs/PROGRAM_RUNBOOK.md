@@ -25,12 +25,12 @@ Autobot is a single-repo Upbit KRW spot trading platform with one shared archite
 
 Current primary family:
 
-- trainer: `train_v4_crypto_cs`
+- trainer: `train_v5_panel_ensemble`
 - runtime strategy: `ModelAlphaStrategyV1`
 - main aliases:
-  - `champion_v4`
-  - `latest_v4`
-  - `latest_candidate_v4`
+  - `champion`
+  - `latest`
+  - `latest_candidate`
 
 This is not a notebook-only research repo.
 It already behaves like a production-style beta trading platform with persistent state, restart-safe recovery, candidate/champion separation, rollout controls, breakers, and operator-facing diagnostics.

@@ -115,8 +115,8 @@
 - `strategy.micro_order_policy.safety.max_replaces_per_min_per_market`: integer (default: `10`)
 - `strategy.micro_order_policy.safety.forbid_post_only_with_cross`: bool (default: `true`)
 - precedence note: when `strategy=model_alpha_v1` and `strategy.micro_order_policy.enabled=true`, policy acts as a conservative overlay on `strategy.model_alpha_v1.execution`; it may make orders more conservative or block/escalate them, but it does not make initial orders more aggressive than the strategy base profile.
-- `strategy.model_alpha_v1.model_ref`: string (default: `champion_v4`)
-- `strategy.model_alpha_v1.model_family`: string (default: `train_v4_crypto_cs`)
+- `strategy.model_alpha_v1.model_ref`: string (default: `champion`)
+- `strategy.model_alpha_v1.model_family`: string (default: `train_v5_panel_ensemble`)
   - `strategy.model_alpha_v1.feature_set`: string (default: `v4`)
   - `strategy.model_alpha_v1.selection.top_pct`: number (default: `0.50`)
 - `strategy.model_alpha_v1.selection.min_prob`: number nullable (default: `null`, uses registry threshold when null)
@@ -227,8 +227,8 @@
 - `backtest.duration_days`: integer nullable
 - `backtest.seed`: integer (default: `0`)
 - `backtest.strategy.name`: `candidates_v1 | model_alpha_v1` (default: `model_alpha_v1`)
-- `backtest.strategy.model_ref`: string (default: `champion_v4`)
-- `backtest.strategy.model_family`: string (default: `train_v4_crypto_cs`)
+- `backtest.strategy.model_ref`: string (default: `champion`)
+- `backtest.strategy.model_family`: string (default: `train_v5_panel_ensemble`)
   - `backtest.strategy.feature_set`: string (default: `v4`)
 - `backtest.strategy.model_registry_root`: path (default: `models/registry`)
 - `backtest.strategy.model_feature_dataset_root`: path nullable (default: `null`)
@@ -578,14 +578,15 @@
 - `python -m autobot.cli modelbt run --model-ref latest_v3 --tf 5m --quote KRW --top-n 50 --start 2026-02-24 --end 2026-03-05 --select top_pct --top-pct 0.05 --hold-bars 6 --fee-bps 5`
 
 ## Runtime Presets And Acceptance Scripts
-- `paper alpha --preset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
-- current primary default rollout is `live_v4`
+- `paper alpha --preset`: `live_v3 | live_v4 | live_v5 | candidate_v4 | candidate_v5 | offline_v4 | offline_v5`
+- current primary default rollout is `live_v5`
 - runtime presets keep `min_prob` unset so runtime uses the learned registry threshold, and their lane-specific breadth knobs are fallback values only:
   - `live_v3/offline_v3`: fallback `top_pct=0.10`, fallback `min_candidates_per_ts=3`, `min_prob=null -> registry threshold`
-  - `live_v4/candidate_v4/offline_v4`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
+  - `live_v5/candidate_v5/offline_v5`: fallback `top_pct=0.50`, fallback `min_candidates_per_ts=1`, `min_prob=null -> registry threshold`
+  - legacy `live_v4/candidate_v4/offline_v4`: preserved for compatibility and explicit rollback only
   - when the loaded model run contains `selection_recommendations.json`, runtime uses the learned recommendation entry for the active `registry_threshold_key` instead of these fallback breadth values
-- `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | candidate_v4 | offline_v4`
-  - current default install target is `autobot-paper-v4.service` + `live_v4`
+- `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | live_v5 | candidate_v4 | candidate_v5 | offline_v4 | offline_v5 | paired_v4 | paired_v5`
+  - current default install target is the existing paper unit with the `live_v5` preset and `train_v5_panel_ensemble` family
   - `live_v3/live_v4/offline_v4` preset installs no longer auto-bootstrap the corresponding `champion` pointer
   - if the family has no `champion` pointer, promote explicitly first or rerun the installer with `-BootstrapChampion`
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`
@@ -597,7 +598,8 @@
     - `paper_min_orders_filled=2`
     - `paper_min_realized_pnl_quote=0.0`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
-- `scripts/v4_candidate_acceptance.ps1`: thin wrapper for `train_v4_crypto_cs`
+- `scripts/v5_governed_candidate_acceptance.ps1`: primary wrapper for `train_v5_panel_ensemble`
+- `scripts/v4_candidate_acceptance.ps1`: legacy thin wrapper for `train_v4_crypto_cs`
   - v3/v4 acceptance now shares one fixed compare profile for backtest/paper soak:
     - `top_pct=0.50`
     - `min_prob=0.00`

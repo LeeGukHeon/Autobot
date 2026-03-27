@@ -261,6 +261,42 @@ def _supervised_loss(outputs: dict[str, torch.Tensor], batch: dict[str, torch.Te
     return alpha_loss + (0.5 * aux_loss) + (0.25 * adverse_loss) + (0.25 * cls_loss) + (0.1 * uncertainty_loss)
 
 
+def _build_lob_batch(samples: _LobSamples) -> dict[str, np.ndarray]:
+    return {
+        "lob": np.asarray(samples.lob, dtype=np.float32),
+        "lob_global": np.asarray(samples.lob_global, dtype=np.float32),
+        "micro": np.asarray(samples.micro, dtype=np.float32),
+    }
+
+
+def _write_lob_expert_prediction_table(
+    *,
+    run_dir: Path,
+    samples: _LobSamples,
+    split_labels: np.ndarray,
+    estimator: V5LobEstimator,
+) -> Path:
+    payload = estimator.predict_lob_contract(_build_lob_batch(samples))
+    frame = pl.DataFrame(
+        {
+            "market": np.asarray(samples.markets, dtype=object),
+            "ts_ms": np.asarray(samples.ts_ms, dtype=np.int64),
+            "split": np.asarray(split_labels, dtype=object),
+            "y_cls": np.asarray(samples.y_cls, dtype=np.int64),
+            "y_reg": np.asarray(samples.y_rank, dtype=np.float64),
+            "micro_alpha_1s": np.asarray(payload["micro_alpha_1s"], dtype=np.float64),
+            "micro_alpha_5s": np.asarray(payload["micro_alpha_5s"], dtype=np.float64),
+            "micro_alpha_30s": np.asarray(payload["micro_alpha_30s"], dtype=np.float64),
+            "micro_alpha_60s": np.asarray(payload["micro_alpha_60s"], dtype=np.float64),
+            "micro_uncertainty": np.asarray(payload["micro_uncertainty"], dtype=np.float64),
+            "adverse_excursion_30s": np.asarray(payload["adverse_excursion_30s"], dtype=np.float64),
+        }
+    ).sort(["ts_ms", "market"])
+    output_path = run_dir / "expert_prediction_table.parquet"
+    frame.write_parquet(output_path)
+    return output_path
+
+
 def _evaluate_loss(model: _V5LobModel, loader: DataLoader, device: torch.device) -> float:
     values: list[float] = []
     model.eval()
@@ -756,6 +792,12 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
     promotion_path = run_dir / "promotion_decision.json"
     promotion_path.write_text(json.dumps({"run_id": run_id, "promote": False, "status": "candidate", "reasons": ["LOB_EXPERT_READY_FUSION_PENDING"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (run_dir / "runtime_recommendations.json").write_text(json.dumps({"status": "not_runtime_wired", "reason": "FUSION_PENDING"}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    expert_prediction_table_path = _write_lob_expert_prediction_table(
+        run_dir=run_dir,
+        samples=samples,
+        split_labels=np.asarray(labels, dtype=object),
+        estimator=estimator,
+    )
     train_report_path = options.logs_root / "train_v5_lob_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
     train_report_path.write_text(
@@ -770,6 +812,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
                 "valid_metrics": valid_metrics,
                 "test_metrics": test_metrics,
                 "lob_model_contract_path": str(lob_model_contract_path),
+                "expert_prediction_table_path": str(expert_prediction_table_path),
             },
             ensure_ascii=False,
             indent=2,
@@ -779,7 +822,6 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         encoding="utf-8",
     )
     update_latest_pointer(options.registry_root, options.model_family, run_id)
-    update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
     update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
 
     return TrainV5LobResult(

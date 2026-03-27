@@ -189,6 +189,48 @@ def _sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _build_sequence_batch(samples: _SequenceSamples) -> dict[str, np.ndarray]:
+    return {
+        "second": np.asarray(samples.second, dtype=np.float32),
+        "minute": np.asarray(samples.minute, dtype=np.float32),
+        "micro": np.asarray(samples.micro, dtype=np.float32),
+        "lob": np.asarray(samples.lob, dtype=np.float32),
+        "lob_global": np.asarray(samples.lob_global, dtype=np.float32),
+        "known_covariates": np.asarray(samples.known_covariates, dtype=np.float32),
+    }
+
+
+def _write_sequence_expert_prediction_table(
+    *,
+    run_dir: Path,
+    samples: _SequenceSamples,
+    split_labels: np.ndarray,
+    estimator: V5SequenceEstimator,
+) -> Path:
+    payload = estimator.predict_cache_batch(_build_sequence_batch(samples))
+    quantiles = np.asarray(payload["return_quantiles_by_horizon"], dtype=np.float64)
+    regime = np.asarray(payload["regime_embedding"], dtype=np.float64)
+    frame_payload: dict[str, Any] = {
+        "market": np.asarray(samples.markets, dtype=object),
+        "ts_ms": np.asarray(samples.ts_ms, dtype=np.int64),
+        "split": np.asarray(split_labels, dtype=object),
+        "y_cls": np.asarray(samples.y_cls, dtype=np.int64),
+        "y_reg": np.asarray(samples.y_reg_primary, dtype=np.float64),
+        "directional_probability_primary": np.asarray(payload["directional_probability_primary"], dtype=np.float64),
+        "sequence_uncertainty_primary": np.asarray(payload["sequence_uncertainty_primary"], dtype=np.float64),
+    }
+    for horizon_idx, horizon in enumerate(samples.horizons_minutes):
+        for quantile_idx, quantile in enumerate(samples.quantile_levels):
+            frame_payload[f"return_quantile_h{int(horizon)}_q{int(round(float(quantile) * 100))}"] = quantiles[:, horizon_idx, quantile_idx]
+    if regime.ndim == 2:
+        for emb_idx in range(regime.shape[1]):
+            frame_payload[f"regime_embedding_{int(emb_idx)}"] = regime[:, emb_idx]
+    frame = pl.DataFrame(frame_payload).sort(["ts_ms", "market"])
+    output_path = run_dir / "expert_prediction_table.parquet"
+    frame.write_parquet(output_path)
+    return output_path
+
+
 class _PatchTSTEncoder(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, *, patch_len: int, patch_stride: int) -> None:
         super().__init__()
@@ -1026,6 +1068,12 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
     promotion_path.write_text(json.dumps({"run_id": run_id, "promote": False, "status": "candidate", "reasons": ["SEQUENCE_EXPERT_READY_FUSION_PENDING"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     runtime_recommendations_path = run_dir / "runtime_recommendations.json"
     runtime_recommendations_path.write_text(json.dumps({"status": "not_runtime_wired", "reason": "FUSION_PENDING"}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    expert_prediction_table_path = _write_sequence_expert_prediction_table(
+        run_dir=run_dir,
+        samples=samples,
+        split_labels=np.asarray(labels, dtype=object),
+        estimator=estimator,
+    )
     train_report_path = options.logs_root / "train_v5_sequence_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
     train_report_path.write_text(
@@ -1040,6 +1088,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
                 "valid_metrics": valid_metrics,
                 "test_metrics": test_metrics,
                 "sequence_model_contract_path": str(sequence_model_contract_path),
+                "expert_prediction_table_path": str(expert_prediction_table_path),
             },
             ensure_ascii=False,
             indent=2,
@@ -1049,7 +1098,6 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         encoding="utf-8",
     )
     update_latest_pointer(options.registry_root, options.model_family, run_id)
-    update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
     update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
 
     return TrainV5SequenceResult(

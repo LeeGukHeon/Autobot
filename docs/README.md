@@ -23,6 +23,8 @@ OCI server access reference:
 
 - [PROGRAM_RUNBOOK.md](/d:/MyApps/Autobot/docs/PROGRAM_RUNBOOK.md)
   - current operational SSOT for lifecycle, runtime topology, services, timers, recovery, and deployment pattern
+- [V5_PRIMARY_RUNTIME_MIGRATION_CONTRACT_2026-03-27.md](/d:/MyApps/Autobot/docs/V5_PRIMARY_RUNTIME_MIGRATION_CONTRACT_2026-03-27.md)
+  - current primary-family migration contract for replacing the old v4 runtime slot with `train_v5_panel_ensemble`
 - [CONFIG_SCHEMA.md](/d:/MyApps/Autobot/docs/CONFIG_SCHEMA.md)
   - current config and runtime contract reference
 - [CHANGE_POLICY.md](/d:/MyApps/Autobot/docs/CHANGE_POLICY.md)

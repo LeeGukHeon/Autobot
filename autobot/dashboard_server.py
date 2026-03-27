@@ -49,6 +49,7 @@ _DASHBOARD_OPS_TOKEN_ENV = "AUTOBOT_DASHBOARD_OPS_TOKEN"
 _DASHBOARD_OPS_HISTORY_DIRNAME = "dashboard_ops"
 _DASHBOARD_OPS_HISTORY_FILENAME = "ops_history.jsonl"
 _DASHBOARD_OPS_LOCK = threading.Lock()
+_PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_panel_ensemble"
 
 
 def _utc_now_iso() -> str:
@@ -2164,7 +2165,7 @@ def _load_model_provenance(project_root: Path, run_id: str | None) -> dict[str, 
     }
 
 
-def _load_training_pointer_summary(project_root: Path, model_family: str = "train_v4_crypto_cs") -> dict[str, Any]:
+def _load_training_pointer_summary(project_root: Path, model_family: str = _PRIMARY_RUNTIME_MODEL_FAMILY) -> dict[str, Any]:
     family_root = project_root / "models" / "registry" / model_family
     if not family_root.exists():
         return {"model_family": model_family, "exists": False}
@@ -2201,13 +2202,25 @@ def _load_training_pointer_summary(project_root: Path, model_family: str = "trai
 
 
 def _acceptance_latest_path(project_root: Path) -> Path:
-    return project_root / "logs" / "model_v4_acceptance" / "latest.json"
+    for candidate in (
+        project_root / "logs" / "model_v5_acceptance" / "latest.json",
+        project_root / "logs" / "model_v4_acceptance" / "latest.json",
+    ):
+        if candidate.exists():
+            return candidate
+    return project_root / "logs" / "model_v5_acceptance" / "latest.json"
 
 
 def _resolve_dashboard_training_family(project_root: Path) -> str:
     payload = _load_json(_acceptance_latest_path(project_root))
     model_family = str(payload.get("model_family") or "").strip()
-    return model_family or "train_v4_crypto_cs"
+    if model_family:
+        return model_family
+    if (project_root / "models" / "registry" / _PRIMARY_RUNTIME_MODEL_FAMILY).exists():
+        return _PRIMARY_RUNTIME_MODEL_FAMILY
+    if (project_root / "models" / "registry" / "train_v4_crypto_cs").exists():
+        return "train_v4_crypto_cs"
+    return _PRIMARY_RUNTIME_MODEL_FAMILY
 
 
 def _resolve_dashboard_champion_compare_family(project_root: Path) -> str | None:
@@ -2352,6 +2365,7 @@ def _summarize_data_platform(project_root: Path) -> dict[str, Any]:
 def _summarize_v5_readiness(project_root: Path, *, data_platform: dict[str, Any]) -> dict[str, Any]:
     dataset_rows = dict(data_platform.get("datasets") or {})
     families = {
+        "train_v5_panel_ensemble": _load_model_family_latest_summary(project_root, "train_v5_panel_ensemble"),
         "train_v5_sequence": _load_model_family_latest_summary(project_root, "train_v5_sequence"),
         "train_v5_lob": _load_model_family_latest_summary(project_root, "train_v5_lob"),
         "train_v5_fusion": _load_model_family_latest_summary(project_root, "train_v5_fusion"),
@@ -2475,19 +2489,13 @@ def _project_python_exe(project_root: Path) -> str:
 
 def _latest_candidate_pointer(project_root: Path) -> dict[str, Any]:
     primary_family = _resolve_dashboard_training_family(project_root)
-    fallback_families = [primary_family]
-    if primary_family != "train_v4_crypto_cs":
-        fallback_families.append("train_v4_crypto_cs")
-    for family in fallback_families:
-        payload = _load_json(project_root / "models" / "registry" / family / "latest_candidate.json")
-        run_id = str(payload.get("run_id") or "").strip()
-        if run_id:
-            return {
-                "run_id": run_id,
-                "model_family": family,
-                "updated_at_utc": payload.get("updated_at_utc"),
-            }
-    return {"run_id": "", "model_family": primary_family, "updated_at_utc": None}
+    payload = _load_json(project_root / "models" / "registry" / primary_family / "latest_candidate.json")
+    run_id = str(payload.get("run_id") or "").strip()
+    return {
+        "run_id": run_id,
+        "model_family": primary_family,
+        "updated_at_utc": payload.get("updated_at_utc"),
+    }
 
 
 def _latest_candidate_run_id(project_root: Path) -> str:
@@ -3066,7 +3074,7 @@ def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str
 
 def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     project_root = project_root.resolve()
-    acceptance_latest = project_root / "logs" / "model_v4_acceptance" / "latest.json"
+    acceptance_latest = _acceptance_latest_path(project_root)
     challenger_latest = project_root / "logs" / "model_v4_challenger" / "latest.json"
     challenger_state = project_root / "logs" / "model_v4_challenger" / "current_state.json"
     rank_shadow_latest = project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json"

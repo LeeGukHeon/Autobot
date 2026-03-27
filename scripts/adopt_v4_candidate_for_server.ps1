@@ -4,7 +4,7 @@ param(
     [string]$RuntimeInstallScript = "",
     [string]$BatchDate = "",
     [string]$CandidateRunId = "",
-    [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ModelFamily = "train_v5_panel_ensemble",
     [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -214,8 +214,8 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
 $resolvedModelFamily = [string]$ModelFamily
 $resolvedModelFamily = $resolvedModelFamily.Trim()
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
-    $resolvedModelFamily = "train_v4_crypto_cs"
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
 }
 $resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
 $resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()
@@ -298,7 +298,7 @@ try {
         "-ProjectRoot", $resolvedProjectRoot,
         "-PythonExe", $resolvedPythonExe,
         "-PaperUnitName", $PairedPaperUnitName,
-        "-PaperPreset", "paired_v4",
+        "-PaperPreset", "paired_v5",
         "-PaperRuntimeRole", "paired",
         "-PaperLaneName", "v4",
         "-PaperModelFamilyOverride", $resolvedPairedPaperModelFamily,

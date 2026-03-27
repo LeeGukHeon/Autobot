@@ -25,7 +25,8 @@ def test_v5_governed_candidate_acceptance_targets_v5_panel_contract() -> None:
     assert '-LabelSet "v3"' in source
     assert '-CandidateModelRef "latest_candidate"' in source
     assert '-ChampionModelRef "champion"' in source
-    assert '-ChampionModelFamily "train_v4_crypto_cs"' in source
+    assert '-ChampionModelFamily "train_v4_crypto_cs"' not in source
+    assert '-OutDir "logs/model_v5_acceptance"' in source
 
 
 def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_path: Path) -> None:
@@ -73,4 +74,4 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     assert "[fake-v5] trainer=v5_panel_ensemble" in completed.stdout
     assert "[fake-v5] feature=v4" in completed.stdout
     assert "[fake-v5] label=v3" in completed.stdout
-    assert "[fake-v5] champion_family=train_v4_crypto_cs" in completed.stdout
+    assert "[fake-v5] champion_family=" in completed.stdout

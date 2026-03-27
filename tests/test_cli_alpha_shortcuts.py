@@ -27,13 +27,13 @@ def test_build_parser_supports_paper_alpha_shortcut() -> None:
     assert args.paper_command == "alpha"
     assert args.duration_sec == 900
     assert args.model_ref == "champion_v3"
-    assert args.preset == "live_v4"
+    assert args.preset == "live_v5"
 
 
-def test_normalize_paper_alpha_args_defaults_to_live_v4() -> None:
+def test_normalize_paper_alpha_args_defaults_to_live_v5() -> None:
     args = argparse.Namespace(
         paper_command="alpha",
-        preset="live_v4",
+        preset="live_v5",
         duration_sec=600,
         quote=None,
         top_n=None,
@@ -64,8 +64,8 @@ def test_normalize_paper_alpha_args_defaults_to_live_v4() -> None:
         paper_feature_provider=None,
     )
     normalized = _normalize_paper_alpha_args(args)
-    assert normalized.model_ref == "champion_v4"
-    assert normalized.model_family == "train_v4_crypto_cs"
+    assert normalized.model_ref == "champion"
+    assert normalized.model_family == "train_v5_panel_ensemble"
     assert normalized.feature_set == "v4"
 
 

@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PAPER_ALPHA_PRESET = "live_v4"
+DEFAULT_PRIMARY_MODEL_FAMILY = "train_v5_panel_ensemble"
+DEFAULT_PRIMARY_RUNTIME_REF = "champion"
+DEFAULT_PRIMARY_CANDIDATE_REF = "latest_candidate"
+DEFAULT_PAPER_ALPHA_PRESET = "live_v5"
 DEFAULT_V4_RUNTIME_REF = "champion_v4"
 DEFAULT_V4_CANDIDATE_REF = "latest_candidate_v4"
 
@@ -31,6 +34,24 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "min_cands_per_ts": 3,
                 "use_learned_selection_recommendations": True,
                 "paper_feature_provider": "live_v3",
+                "paper_micro_provider": "live_ws",
+                "micro_gate": "off",
+                "micro_order_policy": "on",
+                "micro_order_policy_mode": "trade_only",
+                "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
+    if name in {"live_v5", "v5"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_PRIMARY_RUNTIME_REF,
+                "model_family": DEFAULT_PRIMARY_MODEL_FAMILY,
+                "top_pct": 0.50,
+                "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
+                "paper_feature_provider": "live_v4",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
                 "micro_order_policy": "on",
@@ -75,6 +96,24 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
             }
         )
         return overrides
+    if name in {"candidate_v5", "live_candidate_v5"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_PRIMARY_CANDIDATE_REF,
+                "model_family": DEFAULT_PRIMARY_MODEL_FAMILY,
+                "top_pct": 0.50,
+                "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
+                "paper_feature_provider": "live_v4",
+                "paper_micro_provider": "live_ws",
+                "micro_gate": "off",
+                "micro_order_policy": "on",
+                "micro_order_policy_mode": "trade_only",
+                "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
     if name in {"candidate_v4", "live_candidate_v4"}:
         overrides.update(
             {
@@ -90,6 +129,20 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "micro_order_policy": "on",
                 "micro_order_policy_mode": "trade_only",
                 "micro_order_policy_on_missing": "static_fallback",
+            }
+        )
+        return overrides
+    if name in {"offline_v5"}:
+        overrides.update(
+            {
+                "feature_set": "v4",
+                "model_ref": DEFAULT_PRIMARY_RUNTIME_REF,
+                "model_family": DEFAULT_PRIMARY_MODEL_FAMILY,
+                "top_pct": 0.50,
+                "min_cands_per_ts": 1,
+                "use_learned_selection_recommendations": True,
+                "paper_feature_provider": "offline_parquet",
+                "paper_micro_provider": "offline_parquet",
             }
         )
         return overrides
@@ -371,6 +424,10 @@ def resolve_model_ref_alias(model_ref: str, model_family: str | None = None) -> 
         "champion_v4": ("champion", "train_v4_crypto_cs"),
         "latest_candidate_v4": ("latest_candidate", "train_v4_crypto_cs"),
         "candidate_v4": ("latest_candidate", "train_v4_crypto_cs"),
+        "latest_v5": ("latest", DEFAULT_PRIMARY_MODEL_FAMILY),
+        "champion_v5": ("champion", DEFAULT_PRIMARY_MODEL_FAMILY),
+        "latest_candidate_v5": ("latest_candidate", DEFAULT_PRIMARY_MODEL_FAMILY),
+        "candidate_v5": ("latest_candidate", DEFAULT_PRIMARY_MODEL_FAMILY),
     }
     if ref in aliases:
         resolved_ref, resolved_family = aliases[ref]

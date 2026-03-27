@@ -23,8 +23,8 @@ backtest:
 
   strategy:
     name: "model_alpha_v1"   # candidates_v1 | model_alpha_v1
-    model_ref: "champion_v4"
-    model_family: "train_v4_crypto_cs"
+    model_ref: "champion"
+    model_family: "train_v5_panel_ensemble"
     feature_set: "v4"
     model_registry_root: "models/registry"
     model_feature_dataset_root: null

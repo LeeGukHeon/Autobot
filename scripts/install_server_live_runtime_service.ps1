@@ -35,12 +35,12 @@ $trimmedUnitName = [string]$UnitName
 $trimmedUnitName = $trimmedUnitName.Trim()
 $isCandidateUnit = $trimmedUnitName.ToLowerInvariant().Contains("candidate")
 $effectiveModelRefSource = if ([string]::IsNullOrWhiteSpace($ModelRefSource)) {
-    if ($isCandidateUnit) { "latest_candidate_v4" } else { "champion_v4" }
+    if ($isCandidateUnit) { "latest_candidate" } else { "champion" }
 } else {
     $ModelRefSource
 }
 $effectiveModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) {
-    "train_v4_crypto_cs"
+    "train_v5_panel_ensemble"
 } else {
     $ModelFamily
 }

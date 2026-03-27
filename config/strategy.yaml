@@ -72,8 +72,8 @@
       max_replaces_per_min_per_market: 10
       forbid_post_only_with_cross: true
   model_alpha_v1:
-    model_ref: champion_v4
-    model_family: train_v4_crypto_cs
+    model_ref: champion
+    model_family: train_v5_panel_ensemble
     feature_set: v4
     selection:
       top_pct: 0.50

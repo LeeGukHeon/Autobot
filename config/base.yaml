@@ -18,8 +18,8 @@ live:
     use_private_ws: false
     use_executor_ws: false
   model:
-    ref: "champion_v4"
-    family: "train_v4_crypto_cs"
+    ref: "champion"
+    family: "train_v5_panel_ensemble"
     registry_root: "models/registry"
   data_plane:
     ws_public:

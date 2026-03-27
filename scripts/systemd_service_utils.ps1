@@ -98,6 +98,33 @@ function Join-DelimitedStringArray {
     return [string]::Join(",", $normalized)
 }
 
+function Resolve-PreferredModelFamily {
+    param(
+        [string]$Root,
+        [string]$PreferredFamily,
+        [string]$LegacyFamily = "train_v4_crypto_cs"
+    )
+    $preferred = [string]$PreferredFamily
+    $preferred = $preferred.Trim()
+    if ([string]::IsNullOrWhiteSpace($preferred)) {
+        return $preferred
+    }
+    $preferredDir = Join-Path $Root ("models/registry/" + $preferred)
+    if (Test-Path $preferredDir) {
+        return $preferred
+    }
+    $legacy = [string]$LegacyFamily
+    $legacy = $legacy.Trim()
+    if ([string]::IsNullOrWhiteSpace($legacy)) {
+        return $preferred
+    }
+    $legacyDir = Join-Path $Root ("models/registry/" + $legacy)
+    if (Test-Path $legacyDir) {
+        return $legacy
+    }
+    return $preferred
+}
+
 function Install-UnitFile {
     param(
         [string]$UnitName,

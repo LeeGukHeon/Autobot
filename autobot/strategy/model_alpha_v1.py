@@ -1363,14 +1363,6 @@ def _resolve_runtime_execution_profile(
     return order_exec_profile_to_dict(profile), decision
 
 
-def _resolve_trade_action_expected_edge_bps(*, trade_action: dict[str, Any] | None) -> float | None:
-    payload = dict(trade_action or {})
-    expected_edge = _safe_optional_float(payload.get("expected_edge"))
-    if expected_edge is None:
-        return None
-    return float(expected_edge) * 10_000.0
-
-
 def _clamp01(value: float) -> float:
     return max(min(float(value), 1.0), 0.0)
 

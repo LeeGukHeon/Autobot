@@ -13,7 +13,7 @@ from .runtime_topology_report import _systemd_topology_snapshot
 
 POINTER_CONSISTENCY_REPORT_VERSION = 1
 DEFAULT_REPORT_REL_PATH = Path("logs") / "ops" / "pointer_consistency" / "latest.json"
-DEFAULT_MODEL_FAMILY = "train_v4_crypto_cs"
+DEFAULT_MODEL_FAMILY = "train_v5_panel_ensemble"
 
 
 def build_pointer_consistency_report(

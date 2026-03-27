@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultAcceptanceScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/v4_governed_candidate_acceptance.ps1")
+    return (Join-Path $Root "scripts/v5_governed_candidate_acceptance.ps1")
 }
 
 function Resolve-ReportedJsonPath {
@@ -160,7 +160,7 @@ function Invoke-PreflightCapture {
         "-File", $PreflightScriptPath,
         "-ProjectRoot", $Root,
         "-PythonExe", $PythonPath,
-        "-ModelFamily", "train_v4_crypto_cs",
+        "-ModelFamily", "train_v5_panel_ensemble",
         "-RequiredPointers", "champion",
         "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"

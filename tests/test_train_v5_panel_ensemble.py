@@ -210,6 +210,7 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     assert result.run_dir.exists()
     assert (result.run_dir / "panel_ensemble_contract.json").exists()
     assert (result.run_dir / "predictor_contract.json").exists()
+    assert (result.run_dir / "expert_prediction_table.parquet").exists()
     assert result.promotion_path.exists()
     assert result.experiment_ledger_path is not None
     assert result.experiment_ledger_summary_path is not None

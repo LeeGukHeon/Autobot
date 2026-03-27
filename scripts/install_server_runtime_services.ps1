@@ -3,8 +3,8 @@ param(
     [string]$PythonExe = "",
     [string]$PaperUnitName = "autobot-paper-v4.service",
     [int]$PaperDurationSec = 0,
-    [ValidateSet("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline_v4", "paired_v4")]
-    [string]$PaperPreset = "live_v4",
+    [ValidateSet("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline_v4", "paired_v4", "live_v5", "candidate_v5", "offline_v5", "paired_v5")]
+    [string]$PaperPreset = "live_v5",
     [string[]]$PaperCliArgs = @(),
     [string]$PaperRuntimeRole = "",
     [string]$PaperLaneName = "v4",
@@ -48,6 +48,16 @@ function Get-PaperRuntimeSpec {
                 RuntimeRole = "champion"
             }
         }
+        "live_v5" {
+            return [PSCustomObject]@{
+                Description = "Autobot Paper Runtime (v5 live)"
+                SyslogIdentifier = "autobot-paper-v5"
+                RuntimeModelRef = "champion"
+                BootstrapRefs = @("latest_candidate", "latest")
+                ModelFamily = "train_v5_panel_ensemble"
+                RuntimeRole = "champion"
+            }
+        }
         "live_v4_native" {
             return [PSCustomObject]@{
                 Description = "Autobot Paper Runtime (v4 live native)"
@@ -55,6 +65,16 @@ function Get-PaperRuntimeSpec {
                 RuntimeModelRef = "champion_v4"
                 BootstrapRefs = @("latest_candidate_v4", "latest_v4")
                 ModelFamily = "train_v4_crypto_cs"
+                RuntimeRole = "champion"
+            }
+        }
+        "offline_v5" {
+            return [PSCustomObject]@{
+                Description = "Autobot Paper Runtime (v5 offline)"
+                SyslogIdentifier = "autobot-paper-v5-offline"
+                RuntimeModelRef = "champion"
+                BootstrapRefs = @("latest_candidate", "latest")
+                ModelFamily = "train_v5_panel_ensemble"
                 RuntimeRole = "champion"
             }
         }
@@ -68,6 +88,16 @@ function Get-PaperRuntimeSpec {
                 RuntimeRole = "champion"
             }
         }
+        "candidate_v5" {
+            return [PSCustomObject]@{
+                Description = "Autobot Paper Runtime (v5 candidate)"
+                SyslogIdentifier = "autobot-paper-v5-candidate"
+                RuntimeModelRef = "latest_candidate"
+                BootstrapRefs = @()
+                ModelFamily = "train_v5_panel_ensemble"
+                RuntimeRole = "challenger"
+            }
+        }
         "candidate_v4" {
             return [PSCustomObject]@{
                 Description = "Autobot Paper Runtime (v4 candidate)"
@@ -76,6 +106,16 @@ function Get-PaperRuntimeSpec {
                 BootstrapRefs = @()
                 ModelFamily = "train_v4_crypto_cs"
                 RuntimeRole = "challenger"
+            }
+        }
+        "paired_v5" {
+            return [PSCustomObject]@{
+                Description = "Autobot Paired Paper Runtime (v5)"
+                SyslogIdentifier = "autobot-paper-v5-paired"
+                RuntimeModelRef = ""
+                BootstrapRefs = @()
+                ModelFamily = "train_v5_panel_ensemble"
+                RuntimeRole = "paired"
             }
         }
         "paired_v4" {
@@ -173,7 +213,7 @@ $requiresPinnedCandidateModel = (
 )
 if ($requiresPinnedCandidateModel) {
     throw (
-        "runtime role '{0}' cannot default to champion source '{1}'; pass -PaperModelRefPinned or use candidate_v4 preset" -f
+        "runtime role '{0}' cannot default to champion source '{1}'; pass -PaperModelRefPinned or use candidate_v4/candidate_v5 preset" -f
         $effectiveRuntimeRole,
         $runtimeSpec.RuntimeModelRef
     )
@@ -245,7 +285,7 @@ if (
 }
 
 $paperArgList = @()
-if ($PaperPreset -eq "paired_v4") {
+if ($PaperPreset -in @("paired_v4", "paired_v5")) {
     $paperArgList = @(
         "-m", "autobot.paper.paired_runtime",
         "run-service",
@@ -258,7 +298,7 @@ if ($PaperPreset -eq "paired_v4") {
         "--champion-model-family", $effectivePairedChampionModelFamily,
         "--challenger-model-family", $effectivePairedChallengerModelFamily,
         "--feature-set", "v4",
-        "--preset", "live_v4",
+        "--preset", (if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }),
         "--paper-feature-provider", "live_v4",
         "--paper-micro-provider", "live_ws",
         "--paper-micro-warmup-sec", "60",
@@ -277,7 +317,7 @@ if ($PaperPreset -eq "paired_v4") {
 $paperCommand = ($paperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "
 $activatePath = Join-Path $resolvedProjectRoot ".venv/bin/activate"
 $execStart = "/bin/bash -lc " + (Quote-ShellArg ("source " + $activatePath + " && " + $resolvedPythonExe + " " + $paperCommand))
-$conditionPathExistsLine = if ($PaperPreset -eq "paired_v4") {
+$conditionPathExistsLine = if ($PaperPreset -in @("paired_v4", "paired_v5")) {
     "ConditionPathExists=" + (Join-Path $resolvedProjectRoot "logs/model_v4_challenger/current_state.json")
 } else {
     ""
@@ -319,7 +359,7 @@ WantedBy=multi-user.target
 if ($DryRun) {
     Write-Host ("[paper-install][dry-run] unit={0}" -f $PaperUnitName)
     Write-Host ("[paper-install][dry-run] bootstrap_champion={0}" -f ([bool]$BootstrapChampion))
-    if ($PaperPreset -eq "paired_v4") {
+    if ($PaperPreset -in @("paired_v4", "paired_v5")) {
         Write-Host ("[paper-install][dry-run] paired_champion_model_family={0}" -f $effectivePairedChampionModelFamily)
         Write-Host ("[paper-install][dry-run] paired_challenger_model_family={0}" -f $effectivePairedChallengerModelFamily)
     }
@@ -345,7 +385,7 @@ if (-not $NoStart) {
     }
 }
 
-if ($PaperPreset -eq "paired_v4") {
+if ($PaperPreset -in @("paired_v4", "paired_v5")) {
     foreach ($legacyUnit in @("autobot-paper-v4.service", "autobot-paper-v4-challenger.service")) {
         if ($legacyUnit -eq $PaperUnitName) {
             continue

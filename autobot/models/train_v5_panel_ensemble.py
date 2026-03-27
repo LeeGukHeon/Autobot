@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 import numpy as np
+import polars as pl
 
 from autobot import __version__ as autobot_version
 
@@ -216,6 +217,46 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _build_split_labels(*, train_mask: np.ndarray, valid_mask: np.ndarray, test_mask: np.ndarray, size: int) -> np.ndarray:
+    labels = np.full(int(size), "drop", dtype=object)
+    labels[np.asarray(train_mask, dtype=bool)] = "train"
+    labels[np.asarray(valid_mask, dtype=bool)] = "valid"
+    labels[np.asarray(test_mask, dtype=bool)] = "test"
+    return labels
+
+
+def _write_expert_prediction_table(
+    *,
+    run_dir: Path,
+    dataset: Any,
+    estimator: Any,
+    primary_y_reg: np.ndarray,
+    split_labels: np.ndarray,
+) -> Path:
+    payload = estimator.predict_panel_contract(dataset.X)
+    frame = pl.DataFrame(
+        {
+            "market": np.asarray(dataset.markets, dtype=object),
+            "ts_ms": np.asarray(dataset.ts_ms, dtype=np.int64),
+            "split": np.asarray(split_labels, dtype=object),
+            "y_cls": np.asarray(dataset.y_cls, dtype=np.int64),
+            "y_reg": np.asarray(primary_y_reg, dtype=np.float64),
+            "final_rank_score": np.asarray(payload["final_rank_score"], dtype=np.float64),
+            "final_uncertainty": np.asarray(payload["final_uncertainty"], dtype=np.float64),
+            "score_mean": np.asarray(payload["score_mean"], dtype=np.float64),
+            "score_std": np.asarray(payload["score_std"], dtype=np.float64),
+            "score_lcb": np.asarray(payload["score_lcb"], dtype=np.float64),
+            "final_expected_return": np.asarray(payload["final_expected_return"], dtype=np.float64),
+            "final_expected_es": np.asarray(payload["final_expected_es"], dtype=np.float64),
+            "final_tradability": np.asarray(payload["final_tradability"], dtype=np.float64),
+            "final_alpha_lcb": np.asarray(payload["final_alpha_lcb"], dtype=np.float64),
+        }
+    ).sort(["ts_ms", "market"])
+    output_path = run_dir / "expert_prediction_table.parquet"
+    frame.write_parquet(output_path)
+    return output_path
 
 
 def _load_v5_regression_targets(
@@ -1269,6 +1310,18 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         runtime_recommendations_complete=True,
         governance_artifacts_complete=True,
     )
+    expert_prediction_table_path = _write_expert_prediction_table(
+        run_dir=run_dir,
+        dataset=dataset,
+        estimator=estimator,
+        primary_y_reg=primary_y_reg,
+        split_labels=_build_split_labels(
+            train_mask=train_mask,
+            valid_mask=valid_mask,
+            test_mask=test_mask,
+            size=dataset.rows,
+        ),
+    )
     if v4.normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
         update_latest_pointer(options.registry_root, options.model_family, run_id)
         update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
@@ -1325,6 +1378,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
             "duration_sec": duration_sec,
             "walk_forward_summary": walk_forward.get("summary", {}),
             "panel_ensemble": metrics.get("panel_ensemble", {}),
+            "expert_prediction_table_path": str(expert_prediction_table_path),
         },
     )
     return TrainV5PanelEnsembleResult(

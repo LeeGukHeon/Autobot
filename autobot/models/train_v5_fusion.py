@@ -326,7 +326,6 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
     train_report_path.write_text(json.dumps({"run_id": run_id, "status": "candidate", "leaderboard_row": leaderboard_row, "valid_metrics": valid_metrics, "test_metrics": test_metrics}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     update_latest_pointer(options.registry_root, options.model_family, run_id)
-    update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
     update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
     return TrainV5FusionResult(
         run_id=run_id,

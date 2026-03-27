@@ -58,12 +58,12 @@ def build_runtime_topology_report(
     live_lane_defaults = _load_unit_runtime_defaults(
         root,
         unit_name="autobot-live-alpha.service",
-        fallback_model_ref_source="champion_v4",
+        fallback_model_ref_source="champion",
     )
     candidate_lane_defaults = _load_unit_runtime_defaults(
         root,
         unit_name="autobot-live-alpha-candidate.service",
-        fallback_model_ref_source="latest_candidate_v4",
+        fallback_model_ref_source="latest_candidate",
     )
     family = _resolve_report_model_family(
         target_unit=target_unit,
@@ -203,9 +203,11 @@ def build_runtime_topology_report(
         "topology_health": topology_health,
         "legacy_replay": legacy_replay,
         "summary": {
-            "champion_run_id": _run_id_from_pointer(pointers.get("champion")),
-            "latest_run_id": _run_id_from_pointer(pointers.get("latest")),
-            "latest_candidate_run_id": _run_id_from_pointer(pointers.get("latest_candidate")),
+            "champion_run_id": _run_id_from_pointer(_dig_pointer(lane_pointers, "live_main", "champion")),
+            "latest_run_id": _run_id_from_pointer(_dig_pointer(lane_pointers, "live_main", "latest")),
+            "latest_candidate_run_id": _run_id_from_pointer(_dig_pointer(lane_pointers, "live_candidate", "latest_candidate")),
+            "champion_pointer_family": str(live_lane_defaults.get("runtime_model_family") or family).strip() or None,
+            "latest_candidate_pointer_family": str(candidate_lane_defaults.get("runtime_model_family") or family).strip() or None,
             "all_primary_pointers_equal": _all_primary_pointers_equal(pointers),
             "candidate_db_present": bool(candidate_db),
             "live_db_present": bool(live_db),
@@ -245,19 +247,27 @@ def write_runtime_topology_report(
 def _load_live_defaults(project_root: Path, *, target_unit: str | None = None) -> dict[str, Any]:
     target_unit_text = str(target_unit or "").strip().lower()
     runtime_model_ref_source = (
-        "latest_candidate_v4"
+        "latest_candidate"
         if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}
-        else "champion_v4"
+        else "champion"
     )
     return {
         "registry_root": str(project_root / "models" / "registry"),
         "runtime_model_ref_source": runtime_model_ref_source,
-        "runtime_model_family": "train_v4_crypto_cs",
+        "runtime_model_family": "train_v5_panel_ensemble",
         "ws_public_raw_root": str(project_root / "data" / "raw_ws" / "upbit" / "public"),
         "ws_public_meta_dir": str(project_root / "data" / "raw_ws" / "upbit" / "_meta"),
         "ws_public_stale_threshold_sec": 180,
         "micro_aggregate_report_path": str(project_root / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
     }
+
+
+def _dig_pointer(payload: dict[str, Any], lane_name: str, pointer_name: str) -> dict[str, Any]:
+    lane = payload.get(lane_name) if isinstance(payload, dict) else None
+    if not isinstance(lane, dict):
+        return {}
+    pointer = lane.get(pointer_name)
+    return dict(pointer) if isinstance(pointer, dict) else {}
 
 
 def _load_unit_runtime_defaults(
@@ -288,7 +298,7 @@ def _load_pointer(path: Path) -> dict[str, Any]:
 
 
 def _build_family_pointers(*, registry_root: Path, family: str) -> dict[str, Any]:
-    effective_family = str(family or "").strip() or "train_v4_crypto_cs"
+    effective_family = str(family or "").strip() or "train_v5_panel_ensemble"
     family_dir = registry_root / effective_family
     return {
         "champion": _load_pointer(family_dir / "champion.json"),
@@ -307,7 +317,7 @@ def _resolve_report_model_family(
 ) -> str:
     target_unit_text = str(target_unit or "").strip().lower()
     if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}:
-        return str(candidate_lane_defaults.get("runtime_model_family") or "train_v4_crypto_cs").strip() or "train_v4_crypto_cs"
+        return str(candidate_lane_defaults.get("runtime_model_family") or "train_v5_panel_ensemble").strip() or "train_v5_panel_ensemble"
     live_family = str(live_lane_defaults.get("runtime_model_family") or "").strip()
     candidate_family = str(candidate_lane_defaults.get("runtime_model_family") or "").strip()
     if live_family and live_family == candidate_family:
@@ -316,7 +326,7 @@ def _resolve_report_model_family(
         return live_family
     if candidate_family:
         return candidate_family
-    return "train_v4_crypto_cs"
+    return "train_v5_panel_ensemble"
 
 
 def _load_state_topology(*, db_path: Path | None) -> dict[str, Any]:
@@ -540,13 +550,13 @@ def _target_topology_contract(
             "champion": {
                 "paper_unit": "autobot-paper-v4.service",
                 "live_unit": "autobot-live-alpha.service",
-                "model_ref_source": "champion_v4",
+                "model_ref_source": "champion",
             },
             "candidate": {
                 "paper_unit": "autobot-paper-v4-challenger.service",
                 "paired_paper_unit": "autobot-paper-v4-paired.service",
                 "live_unit": "autobot-live-alpha-candidate.service",
-                "model_ref_source": "latest_candidate_v4",
+                "model_ref_source": "latest_candidate",
             },
         },
         "shared_units": [
