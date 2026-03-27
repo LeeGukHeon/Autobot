@@ -329,8 +329,8 @@ def _compare_rows(
             mismatched_columns.append(str(column))
             continue
         compared_column_count += 1
-        left = offline_payload[column]
-        right = live_payload[column]
+        left = _normalize_column_value(str(column), offline_payload[column])
+        right = _normalize_column_value(str(column), live_payload[column])
         if isinstance(left, float) and isinstance(right, float):
             if not math.isclose(left, right, rel_tol=0.0, abs_tol=float(tolerance)):
                 mismatched_columns.append(str(column))
@@ -362,6 +362,21 @@ def _normalize_value(value: Any) -> Any:
     if isinstance(value, (int, str, bool)):
         return value
     return str(value)
+
+
+def _normalize_column_value(column: str, value: Any) -> Any:
+    name = str(column).strip()
+    if name == "m_trade_source":
+        text = str(value or "").strip().lower()
+        if not text:
+            return 0.0
+        if text == "ws":
+            return 2.0
+        if text == "rest":
+            return 1.0
+        if text == "none":
+            return 0.0
+    return value
 
 
 def _date_start_ts_ms(value: str) -> int | None:

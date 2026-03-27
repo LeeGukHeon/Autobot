@@ -193,22 +193,41 @@ class _OnlineMinuteRuntimeCore:
 
         trade_events = max(int(snapshot.trade_events), 0)
         book_events = max(int(snapshot.book_events), 0)
-        trade_volume_total = 0.0
-        if close_value > 0 and snapshot.trade_notional_krw > 0:
+        trade_count = max(int(getattr(snapshot, "trade_count", trade_events) or trade_events), 0)
+        buy_count = max(int(getattr(snapshot, "buy_count", 0) or 0), 0)
+        sell_count = max(int(getattr(snapshot, "sell_count", 0) or 0), 0)
+        trade_volume_total = max(float(getattr(snapshot, "trade_volume_total", 0.0) or 0.0), 0.0)
+        if trade_volume_total <= 0.0 and close_value > 0 and snapshot.trade_notional_krw > 0:
             trade_volume_total = float(snapshot.trade_notional_krw) / max(float(close_value), 1e-12)
         trade_imbalance = float(snapshot.trade_imbalance) if snapshot.trade_imbalance is not None else 0.0
-        buy_ratio = min(max((trade_imbalance + 1.0) / 2.0, 0.0), 1.0)
-        buy_volume = trade_volume_total * buy_ratio
-        sell_volume = max(trade_volume_total - buy_volume, 0.0)
+        buy_volume = max(float(getattr(snapshot, "buy_volume", 0.0) or 0.0), 0.0)
+        sell_volume = max(float(getattr(snapshot, "sell_volume", 0.0) or 0.0), 0.0)
+        if trade_volume_total > 0.0 and buy_volume <= 0.0 and sell_volume <= 0.0:
+            buy_ratio = min(max((trade_imbalance + 1.0) / 2.0, 0.0), 1.0)
+            buy_volume = trade_volume_total * buy_ratio
+            sell_volume = max(trade_volume_total - buy_volume, 0.0)
+        elif trade_volume_total <= 0.0:
+            trade_volume_total = max(buy_volume + sell_volume, 0.0)
+        vwap = _safe_float(getattr(snapshot, "vwap", None))
+        avg_trade_size = _safe_float(getattr(snapshot, "avg_trade_size", None))
+        max_trade_size = _safe_float(getattr(snapshot, "max_trade_size", None))
+        last_trade_price = _safe_float(getattr(snapshot, "last_trade_price", None))
+        mid_mean = _safe_float(getattr(snapshot, "mid_mean", None))
 
         source = str(snapshot.trade_source).strip().lower()
         source_value = 2.0 if source == "ws" else 1.0 if source == "rest" else 0.0
         source_ws = 1.0 if source == "ws" else 0.0
         source_rest = 1.0 if source == "rest" else 0.0
 
-        depth_total = float(snapshot.depth_top5_notional_krw) if snapshot.depth_top5_notional_krw is not None else 0.0
-        depth_bid = depth_total / 2.0
-        depth_ask = depth_total / 2.0
+        depth_bid = _safe_float(getattr(snapshot, "depth_bid_top5_notional_krw", None))
+        depth_ask = _safe_float(getattr(snapshot, "depth_ask_top5_notional_krw", None))
+        depth_total = _safe_float(getattr(snapshot, "depth_top5_notional_krw", None))
+        if depth_total is None:
+            depth_values = [value for value in (depth_bid, depth_ask) if value is not None]
+            depth_total = sum(depth_values) if depth_values else 0.0
+        if depth_bid is None and depth_ask is None and depth_total:
+            depth_bid = depth_total / 2.0
+            depth_ask = depth_total / 2.0
         trade_available = 1.0 if trade_events > 0 else 0.0
         book_available = 1.0 if bool(snapshot.book_available) else 0.0
         micro_available = 1.0 if (trade_available > 0 or book_available > 0) else 0.0
@@ -228,27 +247,27 @@ class _OnlineMinuteRuntimeCore:
                 "m_micro_trade_available": trade_available,
                 "m_micro_book_available": book_available,
                 "m_micro_available": micro_available,
-                "m_trade_count": float(trade_events),
-                "m_buy_count": float(round(trade_events * buy_ratio)),
-                "m_sell_count": float(max(trade_events - round(trade_events * buy_ratio), 0)),
+                "m_trade_count": float(trade_count),
+                "m_buy_count": float(buy_count),
+                "m_sell_count": float(sell_count),
                 "m_trade_volume_total": float(trade_volume_total),
                 "m_buy_volume": float(buy_volume),
                 "m_sell_volume": float(sell_volume),
                 "m_trade_imbalance": float(trade_imbalance),
-                "m_vwap": float(close_value),
-                "m_avg_trade_size": float(trade_volume_total / trade_events) if trade_events > 0 else 0.0,
-                "m_max_trade_size": float(trade_volume_total / trade_events) if trade_events > 0 else 0.0,
-                "m_last_trade_price": float(close_value),
-                "m_mid_mean": float(close_value),
+                "m_vwap": float(vwap if vwap is not None else close_value),
+                "m_avg_trade_size": float(avg_trade_size if avg_trade_size is not None else (trade_volume_total / trade_count if trade_count > 0 else 0.0)),
+                "m_max_trade_size": float(max_trade_size if max_trade_size is not None else (trade_volume_total / trade_count if trade_count > 0 else 0.0)),
+                "m_last_trade_price": float(last_trade_price if last_trade_price is not None else close_value),
+                "m_mid_mean": float(mid_mean if mid_mean is not None else close_value),
                 "m_spread_bps_mean": float(snapshot.spread_bps_mean) if snapshot.spread_bps_mean is not None else 0.0,
-                "m_depth_bid_top5_mean": float(depth_bid),
-                "m_depth_ask_top5_mean": float(depth_ask),
-                "m_imbalance_top5_mean": 0.0,
-                "m_microprice_bias_bps_mean": 0.0,
+                "m_depth_bid_top5_mean": float(depth_bid or 0.0),
+                "m_depth_ask_top5_mean": float(depth_ask or 0.0),
+                "m_imbalance_top5_mean": float(getattr(snapshot, "imbalance_top5_mean", 0.0) or 0.0),
+                "m_microprice_bias_bps_mean": float(getattr(snapshot, "microprice_bias_bps_mean", 0.0) or 0.0),
                 "m_book_update_count": float(book_events),
                 "m_spread_proxy": float(snapshot.spread_bps_mean) if snapshot.spread_bps_mean is not None else 0.0,
                 "m_trade_volume_base": float(trade_volume_total),
-                "m_trade_buy_ratio": float(buy_ratio) if trade_volume_total > 0 else 0.0,
+                "m_trade_buy_ratio": float(buy_volume / trade_volume_total) if trade_volume_total > 0 else 0.0,
                 "m_signed_volume": float(buy_volume - sell_volume),
                 "m_source_ws": float(source_ws),
                 "m_source_rest": float(source_rest),

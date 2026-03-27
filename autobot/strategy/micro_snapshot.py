@@ -25,10 +25,23 @@ class MicroSnapshot:
     trade_notional_krw: float = 0.0
     trade_imbalance: float | None = None
     trade_source: str = "none"
+    trade_count: int = 0
+    buy_count: int = 0
+    sell_count: int = 0
+    trade_volume_total: float = 0.0
+    buy_volume: float = 0.0
+    sell_volume: float = 0.0
+    vwap: float | None = None
+    avg_trade_size: float | None = None
+    max_trade_size: float | None = None
+    last_trade_price: float | None = None
+    mid_mean: float | None = None
     spread_bps_mean: float | None = None
     depth_top5_notional_krw: float | None = None
     depth_bid_top5_notional_krw: float | None = None
     depth_ask_top5_notional_krw: float | None = None
+    imbalance_top5_mean: float | None = None
+    microprice_bias_bps_mean: float | None = None
     best_bid_price: float | None = None
     best_ask_price: float | None = None
     best_bid_notional_krw: float | None = None
@@ -555,6 +568,11 @@ class LiveWsMicroSnapshotProvider:
         ask_depth_mean = (sum(ask_depth_values) / float(len(ask_depth_values))) if ask_depth_values else None
         depth_values = [value for value in (bid_depth_mean, ask_depth_mean) if value is not None]
         depth_mean = (sum(depth_values) / float(len(depth_values))) if depth_values else None
+        imbalance_top5_mean = None
+        if bid_depth_mean is not None and ask_depth_mean is not None:
+            depth_total = float(bid_depth_mean) + float(ask_depth_mean)
+            if depth_total > 0.0:
+                imbalance_top5_mean = (float(bid_depth_mean) - float(ask_depth_mean)) / depth_total
         latest_book = books[-1] if books else None
         best_bid_price = _to_float(latest_book.get("bid1_price")) if isinstance(latest_book, dict) else None
         best_ask_price = _to_float(latest_book.get("ask1_price")) if isinstance(latest_book, dict) else None
@@ -570,6 +588,13 @@ class LiveWsMicroSnapshotProvider:
             if best_ask_price is not None and best_ask_size is not None
             else None
         )
+        mid_mean = ((float(best_bid_price) + float(best_ask_price)) / 2.0) if best_bid_price is not None and best_ask_price is not None else None
+        microprice_bias_bps_mean = None
+        if mid_mean is not None and mid_mean > 0.0 and best_bid_price is not None and best_ask_price is not None and best_bid_size is not None and best_ask_size is not None:
+            total_top = float(best_bid_size) + float(best_ask_size)
+            if total_top > 0.0:
+                microprice = ((float(best_ask_price) * float(best_bid_size)) + (float(best_bid_price) * float(best_ask_size))) / total_top
+                microprice_bias_bps_mean = ((microprice - float(mid_mean)) / float(mid_mean)) * 10_000.0
         bid_levels = _extract_levels_from_book(latest_book, side="bid", topk=self._orderbook_topk)
         ask_levels = _extract_levels_from_book(latest_book, side="ask", topk=self._orderbook_topk)
         recent_orderbook_events = tuple(
@@ -590,6 +615,17 @@ class LiveWsMicroSnapshotProvider:
             snapshot_ts_ms=ts_value,
             last_event_ts_ms=int(last_event_ts_ms),
             trade_events=int(trade_events),
+            trade_count=int(trade_events),
+            buy_count=int(round(trade_events * buy_ratio)),
+            sell_count=int(max(trade_events - round(trade_events * buy_ratio), 0)),
+            trade_volume_total=float(total_volume),
+            buy_volume=float(bid_volume),
+            sell_volume=float(ask_volume),
+            vwap=((float(trade_notional_krw) / float(total_volume)) if total_volume > 0.0 else None),
+            avg_trade_size=((float(total_volume) / float(trade_events)) if trade_events > 0 else None),
+            max_trade_size=max((float(event["volume"]) for event in trades), default=None),
+            last_trade_price=_to_float(trades[-1]["price"]) if trades else None,
+            mid_mean=mid_mean,
             trade_coverage_ms=int(trade_coverage_ms),
             trade_notional_krw=float(trade_notional_krw),
             trade_imbalance=trade_imbalance,
@@ -598,6 +634,8 @@ class LiveWsMicroSnapshotProvider:
             depth_top5_notional_krw=depth_mean,
             depth_bid_top5_notional_krw=bid_depth_mean,
             depth_ask_top5_notional_krw=ask_depth_mean,
+            imbalance_top5_mean=imbalance_top5_mean,
+            microprice_bias_bps_mean=microprice_bias_bps_mean,
             best_bid_price=best_bid_price,
             best_ask_price=best_ask_price,
             best_bid_notional_krw=best_bid_notional,
@@ -690,10 +728,23 @@ def _snapshot_from_row(*, market: str, row: dict[str, Any]) -> MicroSnapshot:
         trade_notional_krw=float(trade_notional_krw),
         trade_imbalance=_to_float(row.get("trade_imbalance")),
         trade_source=str(row.get("trade_source") or "none").strip().lower() or "none",
+        trade_count=_to_int(row.get("trade_count")) or int(trade_events),
+        buy_count=_to_int(row.get("buy_count")) or 0,
+        sell_count=_to_int(row.get("sell_count")) or 0,
+        trade_volume_total=_to_float(row.get("trade_volume_total")) or 0.0,
+        buy_volume=_to_float(row.get("buy_volume")) or 0.0,
+        sell_volume=_to_float(row.get("sell_volume")) or 0.0,
+        vwap=_to_float(row.get("vwap")),
+        avg_trade_size=_to_float(row.get("avg_trade_size")),
+        max_trade_size=_to_float(row.get("max_trade_size")),
+        last_trade_price=_to_float(row.get("last_trade_price")),
+        mid_mean=_to_float(row.get("mid_mean")),
         spread_bps_mean=_to_float(row.get("spread_bps_mean")),
         depth_top5_notional_krw=depth_top5_notional_krw,
         depth_bid_top5_notional_krw=depth_bid,
         depth_ask_top5_notional_krw=depth_ask,
+        imbalance_top5_mean=_to_float(row.get("imbalance_top5_mean")),
+        microprice_bias_bps_mean=_to_float(row.get("microprice_bias_bps_mean")),
         book_events=int(book_events),
         book_coverage_ms=int(book_coverage_ms),
         book_available=bool(book_available),

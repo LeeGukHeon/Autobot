@@ -8,12 +8,14 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from autobot.models.registry import RegistrySavePayload, save_run
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.live_features_v4 import LiveFeatureProviderV4
 from autobot.paper.live_features_v4_native import LiveFeatureProviderV4Native
 from autobot.paper.sim_exchange import MarketRules
+from autobot.strategy.micro_snapshot import MicroSnapshot
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaPositionSettings,
     ModelAlphaSelectionSettings,
@@ -60,6 +62,15 @@ class _StaticRulesProvider:
             min_total=5_000.0,
             tick_size=1.0,
         )
+
+
+class _StaticMicroSnapshotProvider:
+    def __init__(self, snapshot: MicroSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def get(self, market: str, ts_ms: int) -> MicroSnapshot | None:
+        _ = (market, ts_ms)
+        return self._snapshot
 
 
 def test_live_feature_provider_v4_builds_v4_columns_from_native_base(tmp_path: Path) -> None:
@@ -554,6 +565,89 @@ def test_paper_engine_model_alpha_live_v4_hard_gates_old_ctrend_models(tmp_path:
     missing_columns = list(built_payload.get("missing_feature_columns") or [])
     assert "ctrend_v1_rsi_14" in missing_columns
     assert "ctrend_v1_cci_20" in missing_columns
+
+
+def test_live_feature_provider_v4_uses_rich_micro_snapshot_fields_without_approximation(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=300_000,
+        last_event_ts_ms=359_000,
+        trade_events=6,
+        trade_count=6,
+        buy_count=4,
+        sell_count=2,
+        trade_coverage_ms=247_000,
+        trade_notional_krw=4_191_192.0,
+        trade_imbalance=0.14,
+        trade_source="ws",
+        trade_volume_total=40_079.39,
+        buy_volume=22_936.19,
+        sell_volume=17_143.20,
+        vwap=104.57,
+        avg_trade_size=6_679.89,
+        max_trade_size=14_471.79,
+        last_trade_price=104.0,
+        mid_mean=104.5,
+        spread_bps_mean=95.69,
+        depth_top5_notional_krw=4_974_606.08,
+        depth_bid_top5_notional_krw=2_732_748.80,
+        depth_ask_top5_notional_krw=2_241_857.28,
+        imbalance_top5_mean=0.0986,
+        microprice_bias_bps_mean=22.60,
+        book_events=71,
+        book_coverage_ms=290_800,
+        book_available=True,
+    )
+
+    provider = LiveFeatureProviderV4(
+        feature_columns=(
+            "m_trade_source",
+            "m_trade_count",
+            "m_buy_count",
+            "m_sell_count",
+            "m_trade_volume_total",
+            "m_buy_volume",
+            "m_sell_volume",
+            "m_vwap",
+            "m_avg_trade_size",
+            "m_max_trade_size",
+            "m_last_trade_price",
+            "m_mid_mean",
+            "m_depth_bid_top5_mean",
+            "m_depth_ask_top5_mean",
+            "m_imbalance_top5_mean",
+            "m_microprice_bias_bps_mean",
+            "m_trade_volume_base",
+            "m_signed_volume",
+        ),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        micro_snapshot_provider=_StaticMicroSnapshotProvider(snapshot),
+    )
+
+    frame = provider.build_frame(ts_ms=300_000, markets=["KRW-BTC"])
+    row = frame.row(0, named=True)
+
+    assert float(row["m_trade_source"]) == 2.0
+    assert float(row["m_trade_count"]) == 6.0
+    assert float(row["m_buy_count"]) == 4.0
+    assert float(row["m_sell_count"]) == 2.0
+    assert float(row["m_trade_volume_total"]) == pytest.approx(40_079.39, rel=0, abs=1e-4)
+    assert float(row["m_buy_volume"]) == pytest.approx(22_936.19, rel=0, abs=1e-4)
+    assert float(row["m_sell_volume"]) == pytest.approx(17_143.20, rel=0, abs=1e-4)
+    assert float(row["m_vwap"]) == pytest.approx(104.57, rel=0, abs=1e-4)
+    assert float(row["m_mid_mean"]) == pytest.approx(104.5, rel=0, abs=1e-6)
+    assert float(row["m_depth_bid_top5_mean"]) == pytest.approx(2_732_748.80, rel=0, abs=1e-2)
+    assert float(row["m_depth_ask_top5_mean"]) == pytest.approx(2_241_857.28, rel=0, abs=1e-2)
+    assert float(row["m_imbalance_top5_mean"]) == pytest.approx(0.0986, rel=0, abs=1e-6)
+    assert float(row["m_microprice_bias_bps_mean"]) == pytest.approx(22.60, rel=0, abs=1e-6)
+    assert float(row["m_trade_volume_base"]) == pytest.approx(40_079.39, rel=0, abs=1e-4)
+    assert float(row["m_signed_volume"]) == pytest.approx(5_792.99, rel=0, abs=1e-2)
 
 
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
