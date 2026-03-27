@@ -474,6 +474,7 @@ def _run_spawn_only(
     sudo_dir = acceptance_script.parent
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
+    resolved_python_exe = str(python_exe or _make_fake_python(sudo_dir))
     args = [
         _powershell_exe(),
         "-NoProfile",
@@ -484,7 +485,7 @@ def _run_spawn_only(
         "-ProjectRoot",
         str(project_root),
         "-PythonExe",
-        str(python_exe or sys.executable),
+        resolved_python_exe,
         "-AcceptanceScript",
         str(acceptance_script),
         "-Mode",
