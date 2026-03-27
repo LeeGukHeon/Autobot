@@ -663,6 +663,41 @@ def test_runtime_installer_dry_run_exposes_model_contract_envs() -> None:
     assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v4_crypto_cs" in stdout
 
 
+def test_runtime_installer_dry_run_accepts_model_family_override() -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer dry-run test")
+    script = REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-PaperPreset",
+            "paired_v4",
+            "-PaperModelFamilyOverride",
+            "train_v5_panel_ensemble",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v5_panel_ensemble" in stdout
+    assert "--model-family" in stdout
+    assert "train_v5_panel_ensemble" in stdout
+
+
 def test_runtime_installer_rejects_challenger_role_without_pinned_candidate_ref() -> None:
     pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
     if not pwsh:

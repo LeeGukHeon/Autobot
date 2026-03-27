@@ -96,6 +96,7 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
                 [string]$PaperPreset = "",
                 [string]$PaperRuntimeRole = "",
                 [string]$PaperModelRefPinned = "",
+                [string]$PaperModelFamilyOverride = "",
                 [string]$PaperCliArgs = ""
             )
 
@@ -106,6 +107,7 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
                 paper_preset = $PaperPreset
                 paper_runtime_role = $PaperRuntimeRole
                 paper_model_ref_pinned = $PaperModelRefPinned
+                paper_model_family_override = $PaperModelFamilyOverride
                 paper_cli_args = $PaperCliArgs
             } | ConvertTo-Json -Depth 4 | Set-Content -Path $logPath -Encoding UTF8
             Write-Host "[fake-runtime-install] ok"
@@ -239,9 +241,71 @@ def test_adopt_v4_candidate_for_server_updates_pointers_state_and_artifact_statu
     assert runtime_install["paper_unit_name"] == "autobot-paper-v4-paired.service"
     assert runtime_install["paper_preset"] == "paired_v4"
     assert runtime_install["paper_runtime_role"] == "paired"
+    assert runtime_install["paper_model_family_override"] == "train_v4_crypto_cs"
     assert artifact_status["status"] == "candidate_adopted"
     assert artifact_status["candidate_adopted"] is True
     assert "restart autobot-live-alpha-candidate.service" in systemctl_log
+
+
+def test_adopt_v4_candidate_for_server_supports_non_v4_model_family(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runtime_install_script = _make_fake_runtime_install_script(tmp_path)
+    run_dir = project_root / "models" / "registry" / "train_v5_panel_ensemble" / "run-v5-001"
+    _write_json(
+        run_dir / "artifact_status.json",
+        {
+            "run_id": "run-v5-001",
+            "status": "acceptance_completed",
+            "core_saved": True,
+            "support_artifacts_written": True,
+            "execution_acceptance_complete": True,
+            "runtime_recommendations_complete": True,
+            "governance_artifacts_complete": True,
+            "acceptance_completed": True,
+            "candidate_adoptable": True,
+            "candidate_adopted": False,
+            "promoted": False,
+            "updated_at_utc": "2026-03-24T00:00:00Z",
+        },
+    )
+    _write_json(
+        project_root / "models" / "registry" / "train_v5_panel_ensemble" / "champion.json",
+        {"run_id": "champion-v5-001"},
+    )
+
+    completed = _run_adopt(
+        project_root,
+        runtime_install_script=runtime_install_script,
+        candidate_run_id="run-v5-001",
+        candidate_target_units=["autobot-live-alpha-candidate.service"],
+        active_units=[],
+        extra_args=["-ModelFamily", "train_v5_panel_ensemble", "-PairedPaperModelFamily", "train_v5_panel_ensemble"],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+
+    family_pointer = json.loads(
+        (project_root / "models" / "registry" / "train_v5_panel_ensemble" / "latest_candidate.json").read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    global_pointer = json.loads(
+        (project_root / "models" / "registry" / "latest_candidate.json").read_text(encoding="utf-8-sig")
+    )
+    state = json.loads(
+        (project_root / "logs" / "model_v4_challenger" / "current_state.json").read_text(encoding="utf-8-sig")
+    )
+    runtime_install = json.loads(
+        (project_root / "logs" / "fake_runtime_install" / "report.json").read_text(encoding="utf-8-sig")
+    )
+
+    assert family_pointer["run_id"] == "run-v5-001"
+    assert global_pointer["run_id"] == "run-v5-001"
+    assert global_pointer["model_family"] == "train_v5_panel_ensemble"
+    assert state["model_family"] == "train_v5_panel_ensemble"
+    assert state["champion_run_id_at_start"] == "champion-v5-001"
+    assert runtime_install["paper_model_family_override"] == "train_v5_panel_ensemble"
 
 
 def test_adopt_v4_candidate_for_server_fails_closed_when_artifact_status_is_incomplete(tmp_path: Path) -> None:

@@ -4,9 +4,11 @@ param(
     [string]$RuntimeInstallScript = "",
     [string]$BatchDate = "",
     [string]$CandidateRunId = "",
+    [string]$ModelFamily = "train_v4_crypto_cs",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
+    [string]$PairedPaperModelFamily = "",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
     [string]$LaneMode = "",
@@ -155,7 +157,9 @@ function Update-LatestCandidatePointers {
 
 function Resolve-ChampionRunId {
     param([string]$Root)
-    return (Resolve-V4ChampionRunId -Root $Root)
+    $pointerPath = Join-Path (Join-Path (Join-Path $Root "models/registry") $resolvedModelFamily) "champion.json"
+    $pointer = Load-JsonOrEmpty -PathValue $pointerPath
+    return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
 }
 
 function Test-SystemdUnitActive {
@@ -204,6 +208,16 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
+$resolvedModelFamily = [string]$ModelFamily
+$resolvedModelFamily = $resolvedModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
+    $resolvedModelFamily = "train_v4_crypto_cs"
+}
+$resolvedPairedPaperModelFamily = [string]$PairedPaperModelFamily
+$resolvedPairedPaperModelFamily = $resolvedPairedPaperModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedPairedPaperModelFamily)) {
+    $resolvedPairedPaperModelFamily = $resolvedModelFamily
+}
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedCandidateRunId = [string]$CandidateRunId
 $resolvedCandidateRunId = $resolvedCandidateRunId.Trim()
@@ -214,12 +228,14 @@ $stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $statePath = Join-Path $stateRoot "current_state.json"
 $reportPath = Join-Path $stateRoot ("candidate_adoption_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $resolvedCandidateRunId + ".json")
 $latestReportPath = Join-Path $stateRoot "latest_candidate_adoption.json"
-$candidateRunDir = if ([string]::IsNullOrWhiteSpace($resolvedCandidateRunId)) { "" } else { Join-Path (Join-Path $registryRoot "train_v4_crypto_cs") $resolvedCandidateRunId }
+$candidateRunDir = if ([string]::IsNullOrWhiteSpace($resolvedCandidateRunId)) { "" } else { Join-Path (Join-Path $registryRoot $resolvedModelFamily) $resolvedCandidateRunId }
 $report = [ordered]@{
     batch_date = $resolvedBatchDate
     candidate_run_id = $resolvedCandidateRunId
     candidate_run_dir = $candidateRunDir
+    model_family = $resolvedModelFamily
     paired_paper_unit = $PairedPaperUnitName
+    paired_paper_model_family = $resolvedPairedPaperModelFamily
     candidate_target_units = @($resolvedCandidateTargetUnits)
     promotion_target_units = @($resolvedPromotionTargetUnits)
     lane_mode = if ([string]::IsNullOrWhiteSpace($LaneMode)) { "promotion_strict" } else { $LaneMode }
@@ -254,10 +270,11 @@ try {
         }
     }
 
-    $pointerUpdate = Update-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs" -RunId $resolvedCandidateRunId
+    $pointerUpdate = Update-LatestCandidatePointers -RegistryRoot $registryRoot -Family $resolvedModelFamily -RunId $resolvedCandidateRunId
     $report.steps.update_latest_candidate = [ordered]@{
         attempted = $true
         candidate_run_id = $resolvedCandidateRunId
+        model_family = $resolvedModelFamily
         family_path = [string](Get-PropValue -ObjectValue $pointerUpdate -Name "family_path" -DefaultValue "")
         global_path = [string](Get-PropValue -ObjectValue $pointerUpdate -Name "global_path" -DefaultValue "")
         updated_at_utc = [string](Get-PropValue -ObjectValue $pointerUpdate -Name "updated_at_utc" -DefaultValue "")
@@ -274,6 +291,7 @@ try {
         "-PaperPreset", "paired_v4",
         "-PaperRuntimeRole", "paired",
         "-PaperLaneName", "v4",
+        "-PaperModelFamilyOverride", $resolvedPairedPaperModelFamily,
         "-NoBootstrapChampion"
     )
     if ($DryRun) {
@@ -286,6 +304,7 @@ try {
         output_preview = $installExec.Output
         unit_name = $PairedPaperUnitName
         candidate_run_id = $resolvedCandidateRunId
+        model_family = $resolvedPairedPaperModelFamily
         lane_mode = $report.lane_mode
         promotion_eligible = [bool]$report.promotion_eligible
         bootstrap_only = [bool]$report.bootstrap_only
@@ -295,10 +314,11 @@ try {
     $nextState = [ordered]@{
         batch_date = $resolvedBatchDate
         candidate_run_id = $resolvedCandidateRunId
-        champion_ref_at_start = "champion_v4"
+        champion_ref_at_start = "champion"
         champion_run_id_at_start = $championRunIdAtStart
         started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
         started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        model_family = $resolvedModelFamily
         paired_paper_unit = $PairedPaperUnitName
         promotion_target_units = @($resolvedPromotionTargetUnits)
         lane_mode = $report.lane_mode

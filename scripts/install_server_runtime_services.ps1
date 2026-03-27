@@ -9,6 +9,7 @@ param(
     [string]$PaperRuntimeRole = "",
     [string]$PaperLaneName = "v4",
     [string]$PaperModelRefPinned = "",
+    [string]$PaperModelFamilyOverride = "",
     [switch]$BootstrapChampion,
     [switch]$NoBootstrapChampion,
     [switch]$NoStart,
@@ -138,6 +139,11 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $runtimeSpec = Get-PaperRuntimeSpec -Preset $PaperPreset -UnitName $PaperUnitName
 $effectiveRuntimeRole = if ([string]::IsNullOrWhiteSpace($PaperRuntimeRole)) { [string]$runtimeSpec.RuntimeRole } else { [string]$PaperRuntimeRole }
 $normalizedRuntimeRole = ([string]$effectiveRuntimeRole).Trim().ToLowerInvariant()
+$effectiveRuntimeModelFamily = if ([string]::IsNullOrWhiteSpace($PaperModelFamilyOverride)) {
+    [string]$runtimeSpec.ModelFamily
+} else {
+    [string]$PaperModelFamilyOverride
+}
 $defaultsToChampionSource = (
     -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
     -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
@@ -178,7 +184,7 @@ $requiresChampionPointer = (
 )
 $championPointerMissing = (
     $requiresChampionPointer `
-    -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $runtimeSpec.ModelFamily -PointerName "champion")
+    -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $effectiveRuntimeModelFamily -PointerName "champion")
 )
 if ($BootstrapChampion -and $NoBootstrapChampion) {
     throw "BootstrapChampion and NoBootstrapChampion cannot both be set"
@@ -202,7 +208,7 @@ if (
                 "-m", "autobot.cli",
                 "model", "promote",
                 "--model-ref", $bootstrapRef,
-                "--model-family", $runtimeSpec.ModelFamily
+                "--model-family", $effectiveRuntimeModelFamily
             ) -ErrorLabel ("model promote " + $bootstrapRef)
             $bootstrapCompleted = $true
             break
@@ -210,8 +216,8 @@ if (
             Write-Warning ("[paper-install][bootstrap] failed ref={0}: {1}" -f $bootstrapRef, $_.Exception.Message)
         }
     }
-    if (-not $bootstrapCompleted -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $runtimeSpec.ModelFamily -PointerName "champion")) {
-        throw ("runtime preset '{0}' requires champion pointer for family '{1}', but bootstrap failed" -f $PaperPreset, $runtimeSpec.ModelFamily)
+    if (-not $bootstrapCompleted -and -not (Test-RegistryPointerExists -Root $resolvedProjectRoot -ModelFamily $effectiveRuntimeModelFamily -PointerName "champion")) {
+        throw ("runtime preset '{0}' requires champion pointer for family '{1}', but bootstrap failed" -f $PaperPreset, $effectiveRuntimeModelFamily)
     }
 }
 if (
@@ -223,7 +229,7 @@ if (
     -and `
     (-not $BootstrapChampion)
 ) {
-    throw ("runtime preset '{0}' requires champion pointer for family '{1}', but install no longer auto-bootstraps. Promote explicitly or rerun with -BootstrapChampion." -f $PaperPreset, $runtimeSpec.ModelFamily)
+    throw ("runtime preset '{0}' requires champion pointer for family '{1}', but install no longer auto-bootstraps. Promote explicitly or rerun with -BootstrapChampion." -f $PaperPreset, $effectiveRuntimeModelFamily)
 }
 
 $paperArgList = @()
@@ -236,7 +242,7 @@ if ($PaperPreset -eq "paired_v4") {
         "--quote", "KRW",
         "--top-n", "20",
         "--tf", "5m",
-        "--model-family", "train_v4_crypto_cs",
+        "--model-family", $effectiveRuntimeModelFamily,
         "--feature-set", "v4",
         "--preset", "live_v4",
         "--paper-feature-provider", "live_v4",
@@ -281,7 +287,7 @@ Environment=AUTOBOT_PAPER_RUNTIME_ROLE=$effectiveRuntimeRole
 Environment=AUTOBOT_PAPER_LANE=$PaperLaneName
 Environment=AUTOBOT_PAPER_MODEL_REF_PINNED=$PaperModelRefPinned
 Environment=AUTOBOT_RUNTIME_MODEL_REF_SOURCE=$($runtimeSpec.RuntimeModelRef)
-Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=$($runtimeSpec.ModelFamily)
+Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=$effectiveRuntimeModelFamily
 SyslogIdentifier=$($runtimeSpec.SyslogIdentifier)
 ExecStart=$execStart
 Restart=always

@@ -7,6 +7,7 @@ param(
     [string]$CandidateAdoptionScript = "",
     [string]$ExecutionPolicyRefreshScript = "",
     [string]$BatchDate = "",
+    [string]$ModelFamily = "train_v4_crypto_cs",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
@@ -28,7 +29,7 @@ param(
     [int]$PairedPaperTopN = 20,
     [string]$PairedPaperTf = "5m",
     [string]$PairedPaperPreset = "live_v4",
-    [string]$PairedPaperModelFamily = "train_v4_crypto_cs",
+    [string]$PairedPaperModelFamily = "",
     [string]$PairedPaperFeatureSet = "v4",
     [string]$PairedPaperFeatureProvider = "live_v4",
     [string]$PairedPaperMicroProvider = "live_ws",
@@ -75,7 +76,9 @@ function Resolve-DefaultExecutionPolicyRefreshScript {
 
 function Resolve-ChampionRunId {
     param([string]$Root)
-    return (Resolve-V4ChampionRunId -Root $Root)
+    $pointerPath = Join-Path (Join-Path (Join-Path $Root "models/registry") $resolvedModelFamily) "champion.json"
+    $pointer = Load-JsonOrEmpty -PathValue $pointerPath
+    return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
 }
 
 function Clear-LatestCandidatePointers {
@@ -147,7 +150,7 @@ function Invoke-PreflightCapture {
         "-File", $PreflightScriptPath,
         "-ProjectRoot", $Root,
         "-PythonExe", $PythonPath,
-        "-ModelFamily", "train_v4_crypto_cs",
+        "-ModelFamily", $resolvedModelFamily,
         "-RequiredPointers", "champion",
         "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"
@@ -746,7 +749,8 @@ function Start-OrUpdate-ChallengerUnit {
         [string]$Root,
         [string]$PyExe,
         [string]$UnitName,
-        [string]$CandidateRunId
+        [string]$CandidateRunId,
+        [string]$ModelFamilyName
     )
     $psExe = Resolve-PwshExe
     $args = @(
@@ -759,11 +763,12 @@ function Start-OrUpdate-ChallengerUnit {
         "-PaperPreset", "live_v4",
         "-PaperRuntimeRole", "challenger",
         "-PaperLaneName", "v4",
+        "-PaperModelFamilyOverride", $ModelFamilyName,
         "-PaperModelRefPinned", $CandidateRunId,
         "-NoBootstrapChampion",
         "-NoEnable",
         "-PaperCliArgs",
-        (Join-DelimitedStringArray -Values @("--model-ref", $CandidateRunId))
+        (Join-DelimitedStringArray -Values @("--model-ref", $CandidateRunId, "--model-family", $ModelFamilyName))
     )
     return Invoke-CommandCapture -Exe $psExe -ArgList $args
 }
@@ -773,7 +778,8 @@ function Start-OrUpdate-PairedPaperUnit {
         [string]$RuntimeInstallScriptPath,
         [string]$Root,
         [string]$PyExe,
-        [string]$UnitName
+        [string]$UnitName,
+        [string]$ModelFamilyName
     )
     $psExe = Resolve-PwshExe
     $args = @(
@@ -786,6 +792,7 @@ function Start-OrUpdate-PairedPaperUnit {
         "-PaperPreset", "paired_v4",
         "-PaperRuntimeRole", "paired",
         "-PaperLaneName", "v4",
+        "-PaperModelFamilyOverride", $ModelFamilyName,
         "-NoBootstrapChampion"
     )
     return Invoke-CommandCapture -Exe $psExe -ArgList $args
@@ -886,7 +893,7 @@ function Invoke-RollbackOnFailure {
                     "-m", "autobot.cli",
                     "model", "promote",
                     "--model-ref", $script:rollbackPreviousChampionRunId,
-                    "--model-family", "train_v4_crypto_cs"
+                    "--model-family", $resolvedModelFamily
                 ) | Out-Null
                 $rollback.repromoted_previous_champion = $true
             } catch {
@@ -919,6 +926,16 @@ function Invoke-RollbackOnFailure {
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
+$resolvedModelFamily = [string]$ModelFamily
+$resolvedModelFamily = $resolvedModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
+    $resolvedModelFamily = "train_v4_crypto_cs"
+}
+$resolvedPairedPaperModelFamily = [string]$PairedPaperModelFamily
+$resolvedPairedPaperModelFamily = $resolvedPairedPaperModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedPairedPaperModelFamily)) {
+    $resolvedPairedPaperModelFamily = $resolvedModelFamily
+}
 $resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { Resolve-DefaultAcceptanceScript -Root $resolvedProjectRoot } else { $AcceptanceScript }
 $resolvedPairedPaperScript = if ([string]::IsNullOrWhiteSpace($PairedPaperScript)) { Resolve-DefaultPairedPaperScript -Root $resolvedProjectRoot } else { $PairedPaperScript }
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
@@ -1123,7 +1140,7 @@ if ($runPromotionPhase) {
                     "-Tf", $PairedPaperTf,
                     "-ChampionModelRef", $championRunIdAtStart,
                     "-ChallengerModelRef", $candidateRunId,
-                    "-ModelFamily", $PairedPaperModelFamily,
+                    "-ModelFamily", $resolvedPairedPaperModelFamily,
                     "-FeatureSet", $PairedPaperFeatureSet,
                     "-Preset", $PairedPaperPreset,
                     "-PaperMicroProvider", $PairedPaperMicroProvider,
@@ -1236,7 +1253,7 @@ if ($runPromotionPhase) {
                         "-m", "autobot.cli",
                         "model", "promote",
                         "--model-ref", $candidateRunId,
-                        "--model-family", "train_v4_crypto_cs"
+                        "--model-family", $resolvedModelFamily
                     )
                     $promotionPerformed = $true
                     $script:rollbackPromotionPerformed = $true
@@ -1298,7 +1315,7 @@ if ($runPromotionPhase) {
                     Write-JsonFile -PathValue $promoteCutoverArchivePath -Payload $promoteCutover
                     $script:rollbackPromoteCutoverArchivePath = $promoteCutoverArchivePath
                     $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
-                    $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
+                    $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family $resolvedModelFamily
                     $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
                     $report.steps.clear_latest_candidate = $clearCandidatePointerStep
                     $report.steps.promote_previous_challenger = [ordered]@{
@@ -1334,7 +1351,7 @@ if ($runPromotionPhase) {
             } elseif ($resolvedPromotionState -eq "abort") {
                 if (-not $DryRun) {
                     $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
-                    $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family "train_v4_crypto_cs"
+                    $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family $resolvedModelFamily
                     $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
                     $report.steps.clear_latest_candidate = $clearCandidatePointerStep
                 } else {
@@ -1589,8 +1606,10 @@ if ($runSpawnPhase) {
                 "-RuntimeInstallScript", $resolvedRuntimeInstallScript,
                 "-BatchDate", $resolvedBatchDate,
                 "-CandidateRunId", $candidateRunId,
+                "-ModelFamily", $resolvedModelFamily,
                 "-ChampionUnitName", $ChampionUnitName,
                 "-ChallengerUnitName", $ChallengerUnitName,
+                "-PairedPaperModelFamily", $resolvedPairedPaperModelFamily,
                 "-LaneMode", $acceptLaneMode
             )
             if ($resolvedPromotionTargetUnits.Count -gt 0) {
@@ -1648,7 +1667,8 @@ if ($runSpawnPhase) {
                 -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
                 -Root $resolvedProjectRoot `
                 -PyExe $resolvedPythonExe `
-                -UnitName $PairedPaperUnitName
+                -UnitName $PairedPaperUnitName `
+                -ModelFamilyName $resolvedPairedPaperModelFamily
             $report.steps.start_challenger = [ordered]@{
                 attempted = $false
                 reason = "REPLACED_BY_PAIRED_PAPER"
@@ -1658,10 +1678,11 @@ if ($runSpawnPhase) {
             $nextState = [ordered]@{
                 batch_date = $resolvedBatchDate
                 candidate_run_id = $candidateRunId
-                champion_ref_at_start = "champion_v4"
+                champion_ref_at_start = "champion"
                 champion_run_id_at_start = $championRunIdAtStart
                 started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
                 started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+                model_family = $resolvedModelFamily
                 paired_paper_unit = $PairedPaperUnitName
                 promotion_target_units = @($resolvedPromotionTargetUnits)
                 lane_mode = $acceptLaneMode

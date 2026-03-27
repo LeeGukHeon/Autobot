@@ -2,7 +2,12 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$WrapperScript = "",
+    [string]$AcceptanceScript = "",
+    [string]$RuntimeInstallScript = "",
+    [string]$CandidateAdoptionScript = "",
     [string]$ServiceUser = "ubuntu",
+    [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$PairedPaperModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
@@ -85,6 +90,11 @@ function Build-ExecStart {
         [string]$Root,
         [string]$PyExe,
         [string]$ModeName,
+        [string]$AcceptanceScriptPath,
+        [string]$RuntimeInstallScriptPath,
+        [string]$CandidateAdoptionScriptPath,
+        [string]$ModelFamilyName,
+        [string]$PairedPaperModelFamilyName,
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
         [string[]]$ExtraPromotionUnits,
@@ -97,9 +107,22 @@ function Build-ExecStart {
         "-ProjectRoot", $Root,
         "-PythonExe", $PyExe,
         "-Mode", $ModeName,
+        "-ModelFamily", $ModelFamilyName,
         "-ChampionUnitName", $ChampionUnit,
         "-ChallengerUnitName", $ChallengerUnit
     )
+    if (-not [string]::IsNullOrWhiteSpace($AcceptanceScriptPath)) {
+        $argList += @("-AcceptanceScript", $AcceptanceScriptPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeInstallScriptPath)) {
+        $argList += @("-RuntimeInstallScript", $RuntimeInstallScriptPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CandidateAdoptionScriptPath)) {
+        $argList += @("-CandidateAdoptionScript", $CandidateAdoptionScriptPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PairedPaperModelFamilyName)) {
+        $argList += @("-PairedPaperModelFamily", $PairedPaperModelFamilyName)
+    }
     if (@($ExtraPromotionUnits).Count -gt 0) {
         $argList += "-PromotionTargetUnits"
         $argList += @($ExtraPromotionUnits)
@@ -116,6 +139,19 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedWrapperScript = if ([string]::IsNullOrWhiteSpace($WrapperScript)) { Resolve-DefaultWrapperScript -Root $resolvedProjectRoot } else { $WrapperScript }
+$resolvedAcceptanceScript = if ([string]::IsNullOrWhiteSpace($AcceptanceScript)) { "" } else { $AcceptanceScript }
+$resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { "" } else { $RuntimeInstallScript }
+$resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) { "" } else { $CandidateAdoptionScript }
+$resolvedModelFamily = [string]$ModelFamily
+$resolvedModelFamily = $resolvedModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
+    $resolvedModelFamily = "train_v4_crypto_cs"
+}
+$resolvedPairedPaperModelFamily = [string]$PairedPaperModelFamily
+$resolvedPairedPaperModelFamily = $resolvedPairedPaperModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedPairedPaperModelFamily)) {
+    $resolvedPairedPaperModelFamily = $resolvedModelFamily
+}
 $resolvedPwshExe = Resolve-PwshExe
 
 $promoteExecStart = Build-ExecStart `
@@ -124,6 +160,11 @@ $promoteExecStart = Build-ExecStart `
     -Root $resolvedProjectRoot `
     -PyExe $resolvedPythonExe `
     -ModeName "promote_only" `
+    -AcceptanceScriptPath $resolvedAcceptanceScript `
+    -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
+    -CandidateAdoptionScriptPath $resolvedCandidateAdoptionScript `
+    -ModelFamilyName $resolvedModelFamily `
+    -PairedPaperModelFamilyName $resolvedPairedPaperModelFamily `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -ExtraPromotionUnits $PromotionTargetUnits `
@@ -134,6 +175,11 @@ $spawnExecStart = Build-ExecStart `
     -Root $resolvedProjectRoot `
     -PyExe $resolvedPythonExe `
     -ModeName "spawn_only" `
+    -AcceptanceScriptPath $resolvedAcceptanceScript `
+    -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
+    -CandidateAdoptionScriptPath $resolvedCandidateAdoptionScript `
+    -ModelFamilyName $resolvedModelFamily `
+    -PairedPaperModelFamilyName $resolvedPairedPaperModelFamily `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -ExtraPromotionUnits $PromotionTargetUnits `
@@ -161,6 +207,11 @@ $spawnTimerContent = New-TimerContent `
 if ($DryRun) {
     Write-Host ("[daily-split-install][dry-run] service_user={0}" -f $ServiceUser)
     Write-Host ("[daily-split-install][dry-run] pwsh={0}" -f $resolvedPwshExe)
+    Write-Host ("[daily-split-install][dry-run] model_family={0}" -f $resolvedModelFamily)
+    Write-Host ("[daily-split-install][dry-run] paired_paper_model_family={0}" -f $resolvedPairedPaperModelFamily)
+    if (-not [string]::IsNullOrWhiteSpace($resolvedAcceptanceScript)) {
+        Write-Host ("[daily-split-install][dry-run] acceptance_script={0}" -f $resolvedAcceptanceScript)
+    }
     Write-Host ("[daily-split-install][dry-run] promote_service={0}" -f $PromoteServiceUnitName)
     Write-Host $promoteServiceContent
     Write-Host ("[daily-split-install][dry-run] promote_timer={0}" -f $PromoteTimerUnitName)

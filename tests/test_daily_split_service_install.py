@@ -76,3 +76,39 @@ def test_split_installer_can_pass_candidate_target_units_to_spawn_service() -> N
     stdout = completed.stdout
     assert "autobot-live-alpha-candidate.service" in stdout
     assert "-CandidateTargetUnits" in stdout
+
+
+def test_split_installer_can_pass_v5_acceptance_script_and_model_family() -> None:
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(INSTALL_SCRIPT),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-AcceptanceScript",
+            str(REPO_ROOT / "scripts" / "v5_governed_candidate_acceptance.ps1"),
+            "-ModelFamily",
+            "train_v5_panel_ensemble",
+            "-PairedPaperModelFamily",
+            "train_v5_panel_ensemble",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "acceptance_script=" in stdout
+    assert "v5_governed_candidate_acceptance.ps1" in stdout
+    assert "model_family=train_v5_panel_ensemble" in stdout
+    assert "paired_paper_model_family=train_v5_panel_ensemble" in stdout
+    assert "-ModelFamily" in stdout
+    assert "-PairedPaperModelFamily" in stdout
