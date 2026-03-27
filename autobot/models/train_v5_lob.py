@@ -21,6 +21,7 @@ from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
 from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
+from .runtime_feature_dataset import write_runtime_feature_dataset
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
@@ -76,6 +77,7 @@ class _LobSamples:
     lob: np.ndarray
     lob_global: np.ndarray
     micro: np.ndarray
+    close_price: np.ndarray
     y_micro_alpha: np.ndarray
     y_adverse_excursion: np.ndarray
     y_five_min_alpha: np.ndarray
@@ -427,6 +429,28 @@ def _build_pooled_lob_features(*, lob: np.ndarray, lob_global: np.ndarray, micro
     return np.column_stack([lob_features, lob_global_features, micro_features]).astype(np.float32, copy=False)
 
 
+def _build_lob_runtime_extra_columns(samples: _LobSamples) -> dict[str, np.ndarray]:
+    rows = int(samples.rows)
+    micro_last = np.asarray(samples.micro[:, -1, :], dtype=np.float64)
+    ones = np.ones(rows, dtype=np.float64)
+    ts_values = np.asarray(samples.ts_ms, dtype=np.int64)
+    return {
+        "close": np.asarray(samples.close_price, dtype=np.float64),
+        "m_trade_events": micro_last[:, 0],
+        "m_book_events": ones,
+        "m_trade_coverage_ms": np.full(rows, 60_000, dtype=np.int64),
+        "m_book_coverage_ms": np.full(rows, 60_000, dtype=np.int64),
+        "m_trade_max_ts_ms": ts_values,
+        "m_book_max_ts_ms": ts_values,
+        "m_trade_imbalance": micro_last[:, 1],
+        "m_spread_proxy": micro_last[:, 2],
+        "m_depth_bid_top5_mean": micro_last[:, 3],
+        "m_depth_ask_top5_mean": micro_last[:, 4],
+        "m_micro_available": ones,
+        "m_micro_book_available": ones,
+    }
+
+
 def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
     manifest = pl.read_parquet(options.dataset_root / "_meta" / "manifest.parquet")
     if manifest.height <= 0:
@@ -464,6 +488,7 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
     y_five_min_parts: list[float] = []
     y_cls_parts: list[int] = []
     y_rank_parts: list[float] = []
+    close_parts: list[float] = []
     weight_parts: list[float] = []
     ts_parts: list[int] = []
     market_parts: list[str] = []
@@ -477,6 +502,9 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
         context_end_ts_ms = _resolve_context_end_ts_ms(anchor_ts_ms=anchor_ts_ms, second_ts=second_ts)
         micro_targets = _compute_micro_horizon_returns(second_ts=second_ts, second_close=second_close, context_end_ts_ms=context_end_ts_ms)
         if micro_targets is None:
+            continue
+        current_close = minute_close_map.get(int(anchor_ts_ms))
+        if current_close is None or float(current_close) <= 0.0:
             continue
         five_min_alpha = _compute_five_min_alpha(minute_close_map=minute_close_map, anchor_ts_ms=anchor_ts_ms)
         if five_min_alpha is None:
@@ -492,6 +520,7 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
         y_five_min_parts.append(float(five_min_alpha))
         y_cls_parts.append(1 if float(micro_targets[2]) > 0.0 else 0)
         y_rank_parts.append(float(micro_targets[2]))
+        close_parts.append(float(current_close))
         weight = float(
             np.mean(
                 [
@@ -516,6 +545,7 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
         lob=lob_array,
         lob_global=lob_global_array,
         micro=micro_array,
+        close_price=np.asarray(close_parts, dtype=np.float64),
         y_micro_alpha=np.asarray(y_micro_alpha_parts, dtype=np.float64),
         y_adverse_excursion=np.asarray(y_adverse_parts, dtype=np.float64),
         y_five_min_alpha=np.asarray(y_five_min_parts, dtype=np.float64),
@@ -773,10 +803,11 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "rows_valid": int(valid_idx.size),
         "rows_test": int(test_idx.size),
     }
+    runtime_dataset_root = options.registry_root / options.model_family / run_id / "runtime_feature_dataset"
     feature_spec = {
         "feature_columns": list(samples.feature_names),
         "input_modalities": ["lob_tensor", "lob_global_tensor", "micro_tensor"],
-        "dataset_root": str(options.dataset_root),
+        "dataset_root": str(runtime_dataset_root),
     }
     label_spec = {
         "policy": "v5_lob_label_contract_v1",
@@ -786,7 +817,8 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
     }
     train_config = {
         **asdict(options),
-        "dataset_root": str(options.dataset_root),
+        "dataset_root": str(runtime_dataset_root),
+        "source_dataset_root": str(options.dataset_root),
         "registry_root": str(options.registry_root),
         "logs_root": str(options.logs_root),
         "trainer": "v5_lob",
@@ -913,6 +945,19 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         split_labels=np.asarray(labels, dtype=object),
         estimator=estimator,
     )
+    runtime_dataset_written_root = write_runtime_feature_dataset(
+        output_root=runtime_dataset_root,
+        tf="5m",
+        feature_columns=samples.feature_names,
+        markets=samples.markets,
+        ts_ms=samples.ts_ms,
+        x=samples.pooled_features,
+        y_cls=samples.y_cls,
+        y_reg=samples.y_rank,
+        y_rank=samples.y_rank,
+        sample_weight=samples.sample_weight,
+        extra_columns=_build_lob_runtime_extra_columns(samples),
+    )
     train_report_path = options.logs_root / "train_v5_lob_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
     train_report_path.write_text(
@@ -928,6 +973,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
                 "test_metrics": test_metrics,
                 "lob_model_contract_path": str(lob_model_contract_path),
                 "expert_prediction_table_path": str(expert_prediction_table_path),
+                "runtime_dataset_root": str(runtime_dataset_written_root),
             },
             ensure_ascii=False,
             indent=2,

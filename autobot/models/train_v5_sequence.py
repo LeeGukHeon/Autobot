@@ -23,6 +23,7 @@ from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
 from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
+from .runtime_feature_dataset import write_runtime_feature_dataset
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
@@ -888,6 +889,29 @@ def _build_pooled_sequence_features(
     ).astype(np.float32, copy=False)
 
 
+def _build_sequence_runtime_extra_columns(samples: _SequenceSamples) -> dict[str, np.ndarray]:
+    rows = int(samples.rows)
+    minute_close = np.asarray(samples.minute[:, -1, 0], dtype=np.float64)
+    micro_last = np.asarray(samples.micro[:, -1, :], dtype=np.float64)
+    ones = np.ones(rows, dtype=np.float64)
+    ts_values = np.asarray(samples.ts_ms, dtype=np.int64)
+    return {
+        "close": minute_close,
+        "m_trade_events": micro_last[:, 0],
+        "m_book_events": ones,
+        "m_trade_coverage_ms": np.full(rows, 60_000, dtype=np.int64),
+        "m_book_coverage_ms": np.full(rows, 60_000, dtype=np.int64),
+        "m_trade_max_ts_ms": ts_values,
+        "m_book_max_ts_ms": ts_values,
+        "m_trade_imbalance": micro_last[:, 1],
+        "m_spread_proxy": micro_last[:, 2],
+        "m_depth_bid_top5_mean": micro_last[:, 3],
+        "m_depth_ask_top5_mean": micro_last[:, 4],
+        "m_micro_available": ones,
+        "m_micro_book_available": ones,
+    }
+
+
 def _build_sequence_data_fingerprint(*, options: TrainV5SequenceOptions, sample_count: int) -> dict[str, Any]:
     return {
         "dataset_root": str(options.dataset_root),
@@ -1088,10 +1112,11 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "rows_valid": int(valid_idx.size),
         "rows_test": int(test_idx.size),
     }
+    runtime_dataset_root = options.registry_root / options.model_family / run_id / "runtime_feature_dataset"
     feature_spec = {
         "feature_columns": list(samples.feature_names),
         "input_modalities": ["second_tensor", "minute_tensor", "micro_tensor", "lob_tensor", "known_covariates"],
-        "dataset_root": str(options.dataset_root),
+        "dataset_root": str(runtime_dataset_root),
     }
     label_spec = {
         "policy": "v5_sequence_label_contract_v1",
@@ -1102,7 +1127,8 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
     }
     train_config = {
         **asdict(options),
-        "dataset_root": str(options.dataset_root),
+        "dataset_root": str(runtime_dataset_root),
+        "source_dataset_root": str(options.dataset_root),
         "registry_root": str(options.registry_root),
         "logs_root": str(options.logs_root),
         "trainer": "v5_sequence",
@@ -1224,6 +1250,19 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         split_labels=np.asarray(labels, dtype=object),
         estimator=estimator,
     )
+    runtime_dataset_written_root = write_runtime_feature_dataset(
+        output_root=runtime_dataset_root,
+        tf="5m",
+        feature_columns=samples.feature_names,
+        markets=samples.markets,
+        ts_ms=samples.ts_ms,
+        x=samples.pooled_features,
+        y_cls=samples.y_cls,
+        y_reg=samples.y_reg_primary,
+        y_rank=samples.y_rank,
+        sample_weight=samples.sample_weight,
+        extra_columns=_build_sequence_runtime_extra_columns(samples),
+    )
     train_report_path = options.logs_root / "train_v5_sequence_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
     train_report_path.write_text(
@@ -1239,6 +1278,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
                 "test_metrics": test_metrics,
                 "sequence_model_contract_path": str(sequence_model_contract_path),
                 "expert_prediction_table_path": str(expert_prediction_table_path),
+                "runtime_dataset_root": str(runtime_dataset_written_root),
             },
             ensure_ascii=False,
             indent=2,

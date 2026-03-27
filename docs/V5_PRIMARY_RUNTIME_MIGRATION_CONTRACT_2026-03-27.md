@@ -60,7 +60,9 @@ Reason:
 Current implemented support for those expert families:
 
 - `train_v5_sequence` writes `expert_prediction_table.parquet` and now exposes a predictor-valid tabular bridge on top of the pooled sequence feature surface
+- `train_v5_sequence` also writes a runtime-loadable pooled feature dataset under the run directory so the family no longer points only to the raw tensor cache root
 - `train_v5_lob` writes `expert_prediction_table.parquet` and now exposes a predictor-valid tabular bridge on top of the pooled LOB feature surface
+- `train_v5_lob` also writes a runtime-loadable pooled feature dataset under the run directory so the family no longer points only to the tensor cache root
 - `train_v5_fusion` can now auto-resolve the latest panel / sequence / LOB expert prediction tables through the CLI when explicit paths are not passed
 
 ## 3. Required Defaults After Migration
