@@ -9,11 +9,19 @@ from autobot.ops.live_feature_parity_report import build_live_feature_parity_rep
 from autobot.paper.live_features_v4 import LiveFeatureProviderV4
 
 
-def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
+def _write_one_m_candles(
+    *,
+    dataset_root: Path,
+    market: str,
+    start_ts_ms: int = 60_000,
+    count: int = 599,
+    base_close: float = 100.0,
+    slope: float = 0.05,
+) -> None:
     part_dir = dataset_root / "tf=1m" / f"market={market}" / "date=2026-01-01"
     part_dir.mkdir(parents=True, exist_ok=True)
     ts_values = [int(start_ts_ms) + (i * 60_000) for i in range(int(count))]
-    close_values = [100.0 + (i * 0.05) for i in range(len(ts_values))]
+    close_values = [float(base_close) + (i * float(slope)) for i in range(len(ts_values))]
     frame = pl.DataFrame(
         {
             "ts_ms": ts_values,
@@ -253,4 +261,66 @@ def test_build_live_feature_parity_report_normalizes_trade_source_like_runtime_l
     report = build_live_feature_parity_report(project_root=project_root, top_n=1, samples_per_market=1)
 
     assert report["status"] == "PASS"
+    assert report["passing_pairs"] == 1
+
+
+def test_live_feature_parity_report_builds_live_context_from_full_manifest_universe(tmp_path: Path) -> None:
+    project_root = tmp_path
+    parquet_root = project_root / "data" / "parquet"
+    candles_root = parquet_root / "candles_api_v1"
+    _write_one_m_candles(dataset_root=candles_root, market="KRW-BTC", base_close=100.0, slope=0.08)
+    _write_one_m_candles(dataset_root=candles_root, market="KRW-ETH", base_close=200.0, slope=-0.06)
+
+    feature_columns = ("market_breadth_pos_12",)
+    target_ts_ms = 3_900_000
+    provider = LiveFeatureProviderV4(
+        feature_columns=feature_columns,
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=target_ts_ms,
+    )
+    offline_frame = provider.build_frame(ts_ms=target_ts_ms, markets=["KRW-BTC", "KRW-ETH"])
+    offline_btc = offline_frame.filter(pl.col("market") == "KRW-BTC")
+
+    dataset_root = project_root / "data" / "features" / "features_v4"
+    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=1970-01-01"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    offline_btc.write_parquet(part_dir / "part-000.parquet")
+    meta_root = dataset_root / "_meta"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "tf": ["5m", "5m"],
+            "market": ["KRW-BTC", "KRW-ETH"],
+            "status": ["OK", "OK"],
+            "rows_final": [1, 1],
+        }
+    ).write_parquet(meta_root / "manifest.parquet")
+    (meta_root / "feature_spec.json").write_text(
+        json.dumps(
+            {
+                "feature_columns": ["market_breadth_pos_12"],
+                "base_candles_root": str(candles_root),
+                "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (meta_root / "build_report.json").write_text(
+        json.dumps(
+            {
+                "effective_start": "1970-01-01",
+                "effective_end": "1970-01-01",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_live_feature_parity_report(project_root=project_root, top_n=1, samples_per_market=1)
+
+    assert report["status"] == "PASS"
+    assert report["sampled_pairs"] == 1
     assert report["passing_pairs"] == 1

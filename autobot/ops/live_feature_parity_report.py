@@ -44,6 +44,12 @@ def build_live_feature_parity_report(
     tf_value = str(tf).strip().lower() or "5m"
     quote_value = str(quote).strip().upper() or "KRW"
     sampling_window = _resolve_sampling_window(meta_root)
+    context_markets = _select_markets(
+        manifest=manifest,
+        tf=tf_value,
+        quote=quote_value,
+        top_n=None,
+    )
     selected_markets = _select_markets(
         manifest=manifest,
         tf=tf_value,
@@ -92,7 +98,7 @@ def build_live_feature_parity_report(
             quote=quote_value,
             bootstrap_end_ts_ms=ts_value,
         )
-        live_frame = provider.build_frame(ts_ms=ts_value, markets=selected_markets)
+        live_frame = provider.build_frame(ts_ms=ts_value, markets=context_markets)
         live_stats = dict(provider.last_build_stats())
         missing_columns = list(live_stats.get("missing_feature_columns") or [])
         hard_gate_triggered = bool(live_stats.get("hard_gate_triggered", False))
@@ -237,7 +243,7 @@ def _select_markets(
     manifest: pl.DataFrame,
     tf: str,
     quote: str,
-    top_n: int,
+    top_n: int | None,
 ) -> list[str]:
     if manifest.height <= 0 or "market" not in manifest.columns:
         return []
@@ -249,6 +255,8 @@ def _select_markets(
         for value in working.get_column("market").drop_nulls().unique(maintain_order=True).to_list()
         if str(value).strip().upper().startswith(f"{quote}-")
     ]
+    if top_n is None:
+        return markets
     return markets[: max(int(top_n), 1)]
 
 
