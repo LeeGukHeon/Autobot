@@ -458,6 +458,8 @@ async def run_live_paired_paper(
     champion_model_ref: str,
     challenger_model_ref: str,
     model_family: str,
+    champion_model_family: str | None = None,
+    challenger_model_family: str | None = None,
     feature_set: str,
     preset: str,
     paper_feature_provider: str,
@@ -487,9 +489,11 @@ async def run_live_paired_paper(
     markets = _load_quote_markets(upbit_settings, quote=str(quote).strip().upper())
     if not markets:
         raise RuntimeError(f"no quote markets available for quote={quote}")
+    resolved_champion_model_family = str(champion_model_family or model_family).strip() or str(model_family).strip()
+    resolved_challenger_model_family = str(challenger_model_family or model_family).strip() or str(model_family).strip()
     champion_settings = _build_paper_run_settings(
         model_ref=champion_model_ref,
-        model_family=model_family,
+        model_family=resolved_champion_model_family,
         feature_set=feature_set,
         preset=preset,
         quote=quote,
@@ -503,7 +507,7 @@ async def run_live_paired_paper(
     )
     challenger_settings = _build_paper_run_settings(
         model_ref=challenger_model_ref,
-        model_family=model_family,
+        model_family=resolved_challenger_model_family,
         feature_set=feature_set,
         preset=preset,
         quote=quote,
@@ -579,6 +583,8 @@ async def run_live_paired_paper(
         "report_path": str(paired_report_path),
         "champion_run_dir": str(champion_summary.run_dir),
         "challenger_run_dir": str(challenger_summary.run_dir),
+        "champion_model_family": resolved_champion_model_family,
+        "challenger_model_family": resolved_challenger_model_family,
         "capture": {
             "duration_sec_requested": int(duration_sec),
             "markets_subscribed": int(len(markets)),
@@ -607,6 +613,8 @@ async def run_service_paired_paper(
     top_n: int,
     tf: str,
     model_family: str,
+    champion_model_family: str | None = None,
+    challenger_model_family: str | None = None,
     feature_set: str,
     preset: str,
     paper_feature_provider: str,
@@ -630,10 +638,25 @@ async def run_service_paired_paper(
     state = _load_json(state_path)
     candidate_run_id = str(state.get("candidate_run_id") or "").strip()
     champion_run_id = str(state.get("champion_run_id_at_start") or "").strip()
+    state_candidate_model_family = str(state.get("candidate_model_family") or state.get("model_family") or "").strip()
+    state_champion_model_family = str(
+        state.get("champion_model_family_at_start")
+        or state.get("champion_compare_model_family")
+        or state.get("model_family")
+        or ""
+    ).strip()
     if not candidate_run_id:
         raise RuntimeError(f"paired paper service requires candidate_run_id in {state_path}")
     if not champion_run_id:
         raise RuntimeError(f"paired paper service requires champion_run_id_at_start in {state_path}")
+    resolved_champion_model_family = (
+        str(champion_model_family or state_champion_model_family or model_family).strip()
+        or str(model_family).strip()
+    )
+    resolved_challenger_model_family = (
+        str(challenger_model_family or state_candidate_model_family or model_family).strip()
+        or str(model_family).strip()
+    )
 
     upbit_settings = load_upbit_settings(config_dir)
     markets = _load_quote_markets(upbit_settings, quote=str(quote).strip().upper())
@@ -642,7 +665,7 @@ async def run_service_paired_paper(
 
     champion_settings = _build_paper_run_settings(
         model_ref=champion_run_id,
-        model_family=model_family,
+        model_family=resolved_champion_model_family,
         feature_set=feature_set,
         preset=preset,
         quote=quote,
@@ -657,7 +680,7 @@ async def run_service_paired_paper(
     )
     challenger_settings = _build_paper_run_settings(
         model_ref=candidate_run_id,
-        model_family=model_family,
+        model_family=resolved_challenger_model_family,
         feature_set=feature_set,
         preset=preset,
         quote=quote,
@@ -755,6 +778,8 @@ async def run_service_paired_paper(
         "report_path": str(paired_report_path),
         "champion_run_dir": str(champion_summary.run_dir),
         "challenger_run_dir": str(challenger_summary.run_dir),
+        "champion_model_family": resolved_champion_model_family,
+        "challenger_model_family": resolved_challenger_model_family,
         "capture": {
             "duration_sec_requested": 0,
             "markets_subscribed": int(len(markets)),
@@ -1001,6 +1026,8 @@ def _build_parser() -> argparse.ArgumentParser:
     live_parser.add_argument("--champion-model-ref", required=True)
     live_parser.add_argument("--challenger-model-ref", required=True)
     live_parser.add_argument("--model-family", default="train_v4_crypto_cs")
+    live_parser.add_argument("--champion-model-family", default="")
+    live_parser.add_argument("--challenger-model-family", default="")
     live_parser.add_argument("--feature-set", default="v4")
     live_parser.add_argument("--preset", default=DEFAULT_PAIRED_PRESET)
     live_parser.add_argument("--paper-feature-provider", default="live_v4")
@@ -1028,6 +1055,8 @@ def _build_parser() -> argparse.ArgumentParser:
     service_parser.add_argument("--top-n", type=int, default=20)
     service_parser.add_argument("--tf", default="5m")
     service_parser.add_argument("--model-family", default="train_v4_crypto_cs")
+    service_parser.add_argument("--champion-model-family", default="")
+    service_parser.add_argument("--challenger-model-family", default="")
     service_parser.add_argument("--feature-set", default="v4")
     service_parser.add_argument("--preset", default=DEFAULT_PAIRED_PRESET)
     service_parser.add_argument("--paper-feature-provider", default="live_v4")
@@ -1071,6 +1100,8 @@ def main() -> int:
                 top_n=int(args.top_n),
                 tf=str(args.tf).strip().lower(),
                 model_family=str(args.model_family).strip(),
+                champion_model_family=str(args.champion_model_family).strip() or None,
+                challenger_model_family=str(args.challenger_model_family).strip() or None,
                 feature_set=str(args.feature_set).strip().lower(),
                 preset=str(args.preset).strip().lower(),
                 paper_feature_provider=str(args.paper_feature_provider).strip().lower(),
@@ -1103,6 +1134,8 @@ def main() -> int:
             champion_model_ref=str(args.champion_model_ref).strip(),
             challenger_model_ref=str(args.challenger_model_ref).strip(),
             model_family=str(args.model_family).strip(),
+            champion_model_family=str(args.champion_model_family).strip() or None,
+            challenger_model_family=str(args.challenger_model_family).strip() or None,
             feature_set=str(args.feature_set).strip().lower(),
             preset=str(args.preset).strip().lower(),
             paper_feature_provider=str(args.paper_feature_provider).strip().lower(),

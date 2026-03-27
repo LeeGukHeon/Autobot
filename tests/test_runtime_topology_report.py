@@ -283,5 +283,9 @@ def test_build_runtime_topology_report_uses_live_service_env_model_family(tmp_pa
 
     assert report["lane_runtime_defaults"]["live_main"]["runtime_model_family"] == "train_v5_panel_ensemble"
     assert report["lane_runtime_defaults"]["live_candidate"]["runtime_model_family"] == "train_v5_panel_ensemble"
+    assert report["model_family"] == "train_v5_panel_ensemble"
+    assert report["pointers"]["champion"]["run_id"] == "v5-run-1"
+    assert report["lane_pointer_families"]["live_candidate"] == "train_v5_panel_ensemble"
+    assert report["lane_pointers"]["live_candidate"]["latest_candidate"]["run_id"] == "v5-run-2"
     assert report["current_runtime_contract"]["model_family_resolved"] == "train_v5_panel_ensemble"
     assert report["candidate_runtime_sync_status"]["model_pointer_divergence"] is False

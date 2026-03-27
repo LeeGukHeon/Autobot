@@ -58,6 +58,49 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(json.dumps({"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}))
                 sys.exit(0)
 
+            if tuple(args[:2]) == ("-m", "autobot.ops.data_contract_registry"):
+                registry_path = ROOT / "data" / "_meta" / "data_contract_registry.json"
+                write_json(
+                    registry_path,
+                    {
+                        "registry_path_default": str(registry_path),
+                        "summary": {"contract_count": 3},
+                    },
+                )
+                print(str(registry_path))
+                sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "features", "validate"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "validate_report.json"
+                write_json(
+                    report_path,
+                    {
+                        "checked_files": 4,
+                        "ok_files": 4,
+                        "warn_files": 0,
+                        "fail_files": 0,
+                        "schema_ok": True,
+                        "leakage_smoke": "PASS",
+                    },
+                )
+                print(str(report_path))
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.ops.live_feature_parity_report"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "live_feature_parity_report.json"
+                write_json(
+                    report_path,
+                    {
+                        "sampled_pairs": 4,
+                        "compared_pairs": 4,
+                        "passing_pairs": 4,
+                        "acceptable": True,
+                        "status": "PASS",
+                    },
+                )
+                print(str(report_path))
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
                 runs_dir = ROOT / "data" / "backtest" / "runs"
@@ -372,3 +415,70 @@ def test_candidate_acceptance_can_skip_champion_compare_for_new_baseline(tmp_pat
     assert report["gates"]["backtest"]["decision_basis"] in {"SKIPPED_CHAMPION_COMPARE", "SANITY_ONLY_BACKTEST"}
     assert report["steps"]["backtest_champion"]["reason"] == "SKIPPED_BY_FLAG"
     assert report["steps"]["backtest_runtime_parity_champion"]["reason"] == "SKIPPED_BY_FLAG"
+
+
+def test_candidate_acceptance_can_compare_v5_candidate_against_v4_champion_family(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(tmp_path)
+    paper_smoke_script = _make_fake_paper_smoke_script(tmp_path)
+    powershell_exe = _powershell_exe()
+
+    command = [
+        powershell_exe,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ACCEPTANCE_SCRIPT),
+        "-ProjectRoot",
+        str(project_root),
+        "-PythonExe",
+        str(python_exe),
+        "-PaperSmokeScript",
+        str(paper_smoke_script),
+        "-OutDir",
+        "logs/test_acceptance_v5",
+        "-BatchDate",
+        "2026-03-07",
+        "-TrainLookbackDays",
+        "2",
+        "-BacktestLookbackDays",
+        "2",
+        "-ModelFamily",
+        "train_v5_panel_ensemble",
+        "-Trainer",
+        "v5_panel_ensemble",
+        "-LabelSet",
+        "v3",
+        "-CandidateModelRef",
+        "latest_candidate",
+        "-ChampionModelRef",
+        "champion",
+        "-ChampionModelFamily",
+        "train_v4_crypto_cs",
+        "-SkipDailyPipeline",
+        "-SkipReportRefresh",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    report_path = project_root / "logs" / "test_acceptance_v5" / "latest.json"
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+
+    candidate = report["candidate"]
+    backtest_candidate = report["steps"]["backtest_candidate"]
+    backtest_champion = report["steps"]["backtest_champion"]
+
+    assert candidate["run_dir"].replace("\\", "/").endswith("/train_v5_panel_ensemble/candidate-run-001")
+    assert candidate["champion_model_family_used_for_backtest"] == "train_v4_crypto_cs"
+    assert backtest_candidate["command"].count("--model-family") == 1
+    assert "--model-family train_v5_panel_ensemble" in backtest_candidate["command"]
+    assert "--model-family train_v4_crypto_cs" in backtest_champion["command"]

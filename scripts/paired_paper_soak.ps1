@@ -8,6 +8,8 @@ param(
     [string]$ChampionModelRef = "",
     [string]$ChallengerModelRef = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ChampionModelFamily = "",
+    [string]$ChallengerModelFamily = "",
     [string]$FeatureSet = "v4",
     [string]$Preset = "live_v4",
     [string]$PaperMicroProvider = "live_ws",
@@ -54,6 +56,9 @@ function Invoke-CommandCapture {
     }
 }
 
+$resolvedChampionModelFamily = if ([string]::IsNullOrWhiteSpace($ChampionModelFamily)) { $ModelFamily } else { $ChampionModelFamily }
+$resolvedChallengerModelFamily = if ([string]::IsNullOrWhiteSpace($ChallengerModelFamily)) { $ModelFamily } else { $ChallengerModelFamily }
+
 $args = @(
     "-m", "autobot.paper.paired_runtime",
     "run-live",
@@ -65,6 +70,8 @@ $args = @(
     "--champion-model-ref", $ChampionModelRef,
     "--challenger-model-ref", $ChallengerModelRef,
     "--model-family", $ModelFamily,
+    "--champion-model-family", $resolvedChampionModelFamily,
+    "--challenger-model-family", $resolvedChallengerModelFamily,
     "--feature-set", $FeatureSet,
     "--preset", $Preset,
     "--paper-micro-provider", $PaperMicroProvider,

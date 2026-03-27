@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ChampionPointerFamily = "",
     [string[]]$RequiredUnitFiles = @(),
     [string[]]$BlockOnFailedUnits = @(),
     [string[]]$ExpectedUnitStates = @(),
@@ -362,6 +363,7 @@ function Summarize-Checks {
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) { "train_v4_crypto_cs" } else { $ModelFamily.Trim() }
+$resolvedChampionPointerFamily = if ([string]::IsNullOrWhiteSpace($ChampionPointerFamily)) { $resolvedModelFamily } else { $ChampionPointerFamily.Trim() }
 $resolvedRequiredUnitFiles = @(Get-StringArray -Value $RequiredUnitFiles)
 $resolvedBlockOnFailedUnits = @(Get-StringArray -Value $BlockOnFailedUnits)
 $resolvedExpectedUnitStates = @(Get-StringArray -Value $ExpectedUnitStates)
@@ -506,6 +508,9 @@ foreach ($reasonCode in @($pointerConsistencyReasons)) {
     if ($code.StartsWith("LATEST_") -and (-not $code.StartsWith("LATEST_CANDIDATE_")) -and (-not (@($resolvedRequiredPointers) -contains "latest"))) {
         continue
     }
+    if ($code.StartsWith("CHAMPION_") -and ($resolvedChampionPointerFamily -ne $resolvedModelFamily)) {
+        continue
+    }
     if ($code.StartsWith("CHAMPION_") -and (-not (@($resolvedRequiredPointers) -contains "champion")) -and (-not $CheckCandidateStateConsistency)) {
         continue
     }
@@ -636,20 +641,26 @@ $pointerSnapshots = [ordered]@{
     global_latest_candidate = (Load-PointerSnapshot -RegistryRoot $registryRoot -ModelFamily $resolvedModelFamily -PointerName "global_latest_candidate")
 }
 foreach ($pointerName in $resolvedRequiredPointers) {
-    $snapshot = Get-PropValue -ObjectValue $pointerSnapshots -Name $pointerName -DefaultValue @{}
+    $pointerFamily = if ([string]$pointerName -eq "champion") { $resolvedChampionPointerFamily } else { $resolvedModelFamily }
+    $snapshot = Load-PointerSnapshot -RegistryRoot $registryRoot -ModelFamily $pointerFamily -PointerName $pointerName
     $runId = [string](Get-PropValue -ObjectValue $snapshot -Name "run_id" -DefaultValue "")
     $runDirExists = [bool](Get-PropValue -ObjectValue $snapshot -Name "run_dir_exists" -DefaultValue $false)
     if ([string]::IsNullOrWhiteSpace($runId)) {
-        Add-Check -Checks $checks -Code "REQUIRED_POINTER_MISSING" -Status "violation" -Message ("required pointer missing run_id: " + $pointerName) -Evidence ([ordered]@{ pointer = $pointerName })
+        Add-Check -Checks $checks -Code "REQUIRED_POINTER_MISSING" -Status "violation" -Message ("required pointer missing run_id: " + $pointerName) -Evidence ([ordered]@{
+            pointer = $pointerName
+            model_family = $pointerFamily
+        })
     } elseif (-not $runDirExists) {
         Add-Check -Checks $checks -Code "REQUIRED_POINTER_RUN_DIR_MISSING" -Status "violation" -Message ("required pointer run_dir missing: " + $pointerName) -Evidence ([ordered]@{
             pointer = $pointerName
+            model_family = $pointerFamily
             run_id = $runId
             run_dir = [string](Get-PropValue -ObjectValue $snapshot -Name "run_dir" -DefaultValue "")
         })
     } else {
         Add-Check -Checks $checks -Code "REQUIRED_POINTER_RESOLVED" -Status "pass" -Message ("required pointer resolved: " + $pointerName) -Evidence ([ordered]@{
             pointer = $pointerName
+            model_family = $pointerFamily
             run_id = $runId
         })
     }
@@ -687,6 +698,7 @@ $report = [ordered]@{
     policy = "server_preflight_v1"
     project_root = $resolvedProjectRoot
     model_family = $resolvedModelFamily
+    champion_pointer_family = $resolvedChampionPointerFamily
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     required_unit_files = @($resolvedRequiredUnitFiles)
     block_on_failed_units = @($resolvedBlockOnFailedUnits)

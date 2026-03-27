@@ -5,6 +5,7 @@ param(
     [string]$BatchDate = "",
     [string]$CandidateRunId = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
@@ -156,8 +157,11 @@ function Update-LatestCandidatePointers {
 }
 
 function Resolve-ChampionRunId {
-    param([string]$Root)
-    $pointerPath = Join-Path (Join-Path (Join-Path $Root "models/registry") $resolvedModelFamily) "champion.json"
+    param(
+        [string]$Root,
+        [string]$ModelFamilyName
+    )
+    $pointerPath = Join-Path (Join-Path (Join-Path $Root "models/registry") $ModelFamilyName) "champion.json"
     $pointer = Load-JsonOrEmpty -PathValue $pointerPath
     return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
 }
@@ -213,6 +217,11 @@ $resolvedModelFamily = $resolvedModelFamily.Trim()
 if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
     $resolvedModelFamily = "train_v4_crypto_cs"
 }
+$resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
+$resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedChampionCompareModelFamily)) {
+    $resolvedChampionCompareModelFamily = $resolvedModelFamily
+}
 $resolvedPairedPaperModelFamily = [string]$PairedPaperModelFamily
 $resolvedPairedPaperModelFamily = $resolvedPairedPaperModelFamily.Trim()
 if ([string]::IsNullOrWhiteSpace($resolvedPairedPaperModelFamily)) {
@@ -234,6 +243,7 @@ $report = [ordered]@{
     candidate_run_id = $resolvedCandidateRunId
     candidate_run_dir = $candidateRunDir
     model_family = $resolvedModelFamily
+    champion_compare_model_family = $resolvedChampionCompareModelFamily
     paired_paper_unit = $PairedPaperUnitName
     paired_paper_model_family = $resolvedPairedPaperModelFamily
     candidate_target_units = @($resolvedCandidateTargetUnits)
@@ -292,6 +302,8 @@ try {
         "-PaperRuntimeRole", "paired",
         "-PaperLaneName", "v4",
         "-PaperModelFamilyOverride", $resolvedPairedPaperModelFamily,
+        "-PaperChampionModelFamilyOverride", $resolvedChampionCompareModelFamily,
+        "-PaperChallengerModelFamilyOverride", $resolvedPairedPaperModelFamily,
         "-NoBootstrapChampion"
     )
     if ($DryRun) {
@@ -305,12 +317,14 @@ try {
         unit_name = $PairedPaperUnitName
         candidate_run_id = $resolvedCandidateRunId
         model_family = $resolvedPairedPaperModelFamily
+        champion_model_family = $resolvedChampionCompareModelFamily
+        challenger_model_family = $resolvedPairedPaperModelFamily
         lane_mode = $report.lane_mode
         promotion_eligible = [bool]$report.promotion_eligible
         bootstrap_only = [bool]$report.bootstrap_only
     }
 
-    $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
+    $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot -ModelFamilyName $resolvedChampionCompareModelFamily
     $nextState = [ordered]@{
         batch_date = $resolvedBatchDate
         candidate_run_id = $resolvedCandidateRunId
@@ -319,6 +333,9 @@ try {
         started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
         started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
         model_family = $resolvedModelFamily
+        candidate_model_family = $resolvedModelFamily
+        champion_model_family_at_start = $resolvedChampionCompareModelFamily
+        champion_compare_model_family = $resolvedChampionCompareModelFamily
         paired_paper_unit = $PairedPaperUnitName
         promotion_target_units = @($resolvedPromotionTargetUnits)
         lane_mode = $report.lane_mode

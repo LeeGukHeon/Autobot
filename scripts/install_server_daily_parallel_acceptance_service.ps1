@@ -6,6 +6,7 @@ param(
     [string]$TargetTimerName = "autobot-daily-micro.timer",
     [string]$DisableTimerName = "autobot-daily-v4-accept.timer",
     [string]$ServiceUser = "ubuntu",
+    [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
@@ -39,6 +40,9 @@ $wrapperArgList = @(
     "-ChampionUnitName", $ChampionUnitName,
     "-ChallengerUnitName", $ChallengerUnitName
 )
+if (-not [string]::IsNullOrWhiteSpace($ChampionCompareModelFamily)) {
+    $wrapperArgList += @("-ChampionCompareModelFamily", $ChampionCompareModelFamily)
+}
 if (@($PromotionTargetUnits).Count -gt 0) {
     $wrapperArgList += "-PromotionTargetUnits"
     $wrapperArgList += (Join-DelimitedStringArray -Values $PromotionTargetUnits)

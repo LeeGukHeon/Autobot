@@ -7,6 +7,7 @@ param(
     [string]$CandidateAdoptionScript = "",
     [string]$ServiceUser = "ubuntu",
     [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ChampionCompareModelFamily = "",
     [string]$PairedPaperModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -94,6 +95,7 @@ function Build-ExecStart {
         [string]$RuntimeInstallScriptPath,
         [string]$CandidateAdoptionScriptPath,
         [string]$ModelFamilyName,
+        [string]$ChampionCompareModelFamilyName,
         [string]$PairedPaperModelFamilyName,
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
@@ -111,6 +113,9 @@ function Build-ExecStart {
         "-ChampionUnitName", $ChampionUnit,
         "-ChallengerUnitName", $ChallengerUnit
     )
+    if (-not [string]::IsNullOrWhiteSpace($ChampionCompareModelFamilyName)) {
+        $argList += @("-ChampionCompareModelFamily", $ChampionCompareModelFamilyName)
+    }
     if (-not [string]::IsNullOrWhiteSpace($AcceptanceScriptPath)) {
         $argList += @("-AcceptanceScript", $AcceptanceScriptPath)
     }
@@ -147,6 +152,11 @@ $resolvedModelFamily = $resolvedModelFamily.Trim()
 if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
     $resolvedModelFamily = "train_v4_crypto_cs"
 }
+$resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
+$resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedChampionCompareModelFamily)) {
+    $resolvedChampionCompareModelFamily = $resolvedModelFamily
+}
 $resolvedPairedPaperModelFamily = [string]$PairedPaperModelFamily
 $resolvedPairedPaperModelFamily = $resolvedPairedPaperModelFamily.Trim()
 if ([string]::IsNullOrWhiteSpace($resolvedPairedPaperModelFamily)) {
@@ -164,6 +174,7 @@ $promoteExecStart = Build-ExecStart `
     -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
     -CandidateAdoptionScriptPath $resolvedCandidateAdoptionScript `
     -ModelFamilyName $resolvedModelFamily `
+    -ChampionCompareModelFamilyName $resolvedChampionCompareModelFamily `
     -PairedPaperModelFamilyName $resolvedPairedPaperModelFamily `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
@@ -179,6 +190,7 @@ $spawnExecStart = Build-ExecStart `
     -RuntimeInstallScriptPath $resolvedRuntimeInstallScript `
     -CandidateAdoptionScriptPath $resolvedCandidateAdoptionScript `
     -ModelFamilyName $resolvedModelFamily `
+    -ChampionCompareModelFamilyName $resolvedChampionCompareModelFamily `
     -PairedPaperModelFamilyName $resolvedPairedPaperModelFamily `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
@@ -208,6 +220,7 @@ if ($DryRun) {
     Write-Host ("[daily-split-install][dry-run] service_user={0}" -f $ServiceUser)
     Write-Host ("[daily-split-install][dry-run] pwsh={0}" -f $resolvedPwshExe)
     Write-Host ("[daily-split-install][dry-run] model_family={0}" -f $resolvedModelFamily)
+    Write-Host ("[daily-split-install][dry-run] champion_compare_model_family={0}" -f $resolvedChampionCompareModelFamily)
     Write-Host ("[daily-split-install][dry-run] paired_paper_model_family={0}" -f $resolvedPairedPaperModelFamily)
     if (-not [string]::IsNullOrWhiteSpace($resolvedAcceptanceScript)) {
         Write-Host ("[daily-split-install][dry-run] acceptance_script={0}" -f $resolvedAcceptanceScript)

@@ -10,6 +10,8 @@ param(
     [string]$PaperLaneName = "v4",
     [string]$PaperModelRefPinned = "",
     [string]$PaperModelFamilyOverride = "",
+    [string]$PaperChampionModelFamilyOverride = "",
+    [string]$PaperChallengerModelFamilyOverride = "",
     [switch]$BootstrapChampion,
     [switch]$NoBootstrapChampion,
     [switch]$NoStart,
@@ -144,6 +146,16 @@ $effectiveRuntimeModelFamily = if ([string]::IsNullOrWhiteSpace($PaperModelFamil
 } else {
     [string]$PaperModelFamilyOverride
 }
+$effectivePairedChampionModelFamily = if ([string]::IsNullOrWhiteSpace($PaperChampionModelFamilyOverride)) {
+    $effectiveRuntimeModelFamily
+} else {
+    [string]$PaperChampionModelFamilyOverride
+}
+$effectivePairedChallengerModelFamily = if ([string]::IsNullOrWhiteSpace($PaperChallengerModelFamilyOverride)) {
+    $effectiveRuntimeModelFamily
+} else {
+    [string]$PaperChallengerModelFamilyOverride
+}
 $defaultsToChampionSource = (
     -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
     -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
@@ -243,6 +255,8 @@ if ($PaperPreset -eq "paired_v4") {
         "--top-n", "20",
         "--tf", "5m",
         "--model-family", $effectiveRuntimeModelFamily,
+        "--champion-model-family", $effectivePairedChampionModelFamily,
+        "--challenger-model-family", $effectivePairedChallengerModelFamily,
         "--feature-set", "v4",
         "--preset", "live_v4",
         "--paper-feature-provider", "live_v4",
@@ -288,6 +302,8 @@ Environment=AUTOBOT_PAPER_LANE=$PaperLaneName
 Environment=AUTOBOT_PAPER_MODEL_REF_PINNED=$PaperModelRefPinned
 Environment=AUTOBOT_RUNTIME_MODEL_REF_SOURCE=$($runtimeSpec.RuntimeModelRef)
 Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=$effectiveRuntimeModelFamily
+Environment=AUTOBOT_PAIRED_CHAMPION_MODEL_FAMILY=$effectivePairedChampionModelFamily
+Environment=AUTOBOT_PAIRED_CHALLENGER_MODEL_FAMILY=$effectivePairedChallengerModelFamily
 SyslogIdentifier=$($runtimeSpec.SyslogIdentifier)
 ExecStart=$execStart
 Restart=always
@@ -303,6 +319,10 @@ WantedBy=multi-user.target
 if ($DryRun) {
     Write-Host ("[paper-install][dry-run] unit={0}" -f $PaperUnitName)
     Write-Host ("[paper-install][dry-run] bootstrap_champion={0}" -f ([bool]$BootstrapChampion))
+    if ($PaperPreset -eq "paired_v4") {
+        Write-Host ("[paper-install][dry-run] paired_champion_model_family={0}" -f $effectivePairedChampionModelFamily)
+        Write-Host ("[paper-install][dry-run] paired_challenger_model_family={0}" -f $effectivePairedChallengerModelFamily)
+    }
     Write-Host $paperUnitContent
     exit 0
 }

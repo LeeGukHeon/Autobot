@@ -30,6 +30,7 @@ param(
     [string]$RunScope = "scheduled_daily",
     [string]$CandidateModelRef = "latest_candidate_v4",
     [string]$ChampionModelRef = "champion_v4",
+    [string]$ChampionModelFamily = "",
     [string]$StrategyName = "model_alpha_v1",
     [string]$ReportPrefix = "candidate_acceptance",
     [string]$ReportTitle = "Candidate Acceptance",
@@ -1303,6 +1304,7 @@ function Invoke-SplitPolicyHistoricalAnchorEvaluation {
             -PythonPath $PythonPath `
             -Root $Root `
             -ModelRef $historyRunId `
+            -ModelFamilyName $ModelFamily `
             -StartDate $certificationStartDate `
             -EndDate $certificationEndDate
         $backtestRunDir = $backtest.RunDir
@@ -2630,6 +2632,7 @@ function Invoke-BacktestAndLoadSummary {
         [string]$PythonPath,
         [string]$Root,
         [string]$ModelRef,
+        [string]$ModelFamilyName,
         [string]$StartDate,
         [string]$EndDate,
         [ValidateSet("acceptance", "runtime_parity")]
@@ -2640,7 +2643,7 @@ function Invoke-BacktestAndLoadSummary {
         "backtest", "alpha",
         "--preset", $Preset,
         "--model-ref", $ModelRef,
-        "--model-family", $ModelFamily,
+        "--model-family", $ModelFamilyName,
         "--feature-set", $FeatureSet,
         "--tf", $Tf,
         "--quote", $Quote,
@@ -2931,6 +2934,7 @@ $resolvedPaperSmokeScript = if ([string]::IsNullOrWhiteSpace($PaperSmokeScript))
 $resolvedOutDir = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $resolvedProjectRoot $OutDir }
 $resolvedPaperSmokeOutDir = Join-Path $resolvedOutDir "paper_smoke"
 $resolvedRegistryRoot = Join-Path $resolvedProjectRoot "models/registry"
+$resolvedChampionModelFamily = if ([string]::IsNullOrWhiteSpace($ChampionModelFamily)) { $ModelFamily } else { $ChampionModelFamily.Trim() }
 $psExe = Get-PowerShellExe
 
 Set-Location $resolvedProjectRoot
@@ -2967,7 +2971,7 @@ $promotionPolicyConfig = Resolve-PromotionPolicyConfig -PolicyName $PromotionPol
 
 $latestPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest"
 $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest_candidate"
-$championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "champion"
+$championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $resolvedChampionModelFamily -PointerName "champion"
 $championBefore = Load-JsonOrEmpty -PathValue $championPointerPath
 
 $report = [ordered]@{
@@ -3006,6 +3010,7 @@ $report = [ordered]@{
         strategy = $StrategyName
         candidate_model_ref = $CandidateModelRef
         champion_model_ref = $ChampionModelRef
+        champion_model_family = $resolvedChampionModelFamily
         trainer_evidence_mode = $TrainerEvidenceMode
         train_top_n = [int]$TrainTopN
         backtest_top_n = [int]$BacktestTopN
@@ -4237,7 +4242,7 @@ try {
     $candidatePaperModelRef = $candidateBacktestModelRef
     $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
     $championBacktestModelRef = if ([string]::IsNullOrWhiteSpace($championRunId)) { $ChampionModelRef } else { $championRunId }
-    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $championRunId }
+    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $resolvedChampionModelFamily) $championRunId }
     $duplicateCandidateArtifacts = Resolve-DuplicateCandidateArtifacts -CandidateRunDir $candidateRunDir -ChampionRunDir $championModelRunDir
     $report.split_policy.candidate_run_id = $candidateRunId
     $report.split_policy.candidate_run_dir = $candidateRunDir
@@ -4273,6 +4278,7 @@ try {
         candidate_run_id_used_for_backtest = $candidateBacktestModelRef
         candidate_run_id_used_for_paper = $candidatePaperModelRef
         champion_model_ref_requested = $ChampionModelRef
+        champion_model_family_used_for_backtest = $resolvedChampionModelFamily
         champion_run_id_used_for_backtest = $championBacktestModelRef
         champion_before_run_id = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
         duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
@@ -4448,7 +4454,7 @@ try {
         exit 2
     }
 
-    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -StartDate $certificationStartDate -EndDate $effectiveBatchDate
+    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -ModelFamilyName $ModelFamily -StartDate $certificationStartDate -EndDate $effectiveBatchDate
     $candidateSummary = $candidateBacktest.Summary
     $candidateOrdersSubmitted = [int64](To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_submitted" -DefaultValue 0) 0)
     $candidateOrdersFilled = To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_filled" -DefaultValue 0) 0
@@ -4488,7 +4494,7 @@ try {
     $championProbabilisticSharpeRatio = $null
     $compareRequired = [bool]$promotionPolicyConfig.backtest_compare_required -and (-not $SkipChampionCompare)
     if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
-        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -StartDate $certificationStartDate -EndDate $effectiveBatchDate
+        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -ModelFamilyName $resolvedChampionModelFamily -StartDate $certificationStartDate -EndDate $effectiveBatchDate
         $championSummary = $championBacktest.Summary
         $championRealizedPnl = To-Double (Get-PropValue -ObjectValue $championSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
         $championFillRate = To-Double (Get-PropValue -ObjectValue $championSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
@@ -4948,6 +4954,7 @@ try {
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
             -ModelRef $candidateBacktestModelRef `
+            -ModelFamilyName $ModelFamily `
             -StartDate $certificationStartDate `
             -EndDate $effectiveBatchDate `
             -Preset "runtime_parity"
@@ -5010,6 +5017,7 @@ try {
                 -PythonPath $resolvedPythonExe `
                 -Root $resolvedProjectRoot `
                 -ModelRef $championBacktestModelRef `
+                -ModelFamilyName $resolvedChampionModelFamily `
                 -StartDate $certificationStartDate `
                 -EndDate $effectiveBatchDate `
                 -Preset "runtime_parity"

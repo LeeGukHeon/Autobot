@@ -121,6 +121,46 @@ def test_server_preflight_passes_for_clean_candidate_state(tmp_path: Path) -> No
     assert (project_root / "logs" / "ops" / "pointer_consistency" / "latest.json").exists()
 
 
+def test_server_preflight_can_require_champion_pointer_from_external_family(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    baseline_family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    baseline_family_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(baseline_family_dir / "champion.json", {"run_id": "v4-champion-001"})
+    (baseline_family_dir / "v4-champion-001").mkdir(parents=True, exist_ok=True)
+    candidate_family_dir = project_root / "models" / "registry" / "train_v5_panel_ensemble"
+    candidate_family_dir.mkdir(parents=True, exist_ok=True)
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT_PATH),
+            "-ProjectRoot",
+            str(project_root),
+            "-ModelFamily",
+            "train_v5_panel_ensemble",
+            "-ChampionPointerFamily",
+            "train_v4_crypto_cs",
+            "-RequiredPointers",
+            "champion",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    report = json.loads((project_root / "logs" / "ops" / "server_preflight" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert report["model_family"] == "train_v5_panel_ensemble"
+    assert report["champion_pointer_family"] == "train_v4_crypto_cs"
+    required_pointer_checks = [item for item in report["checks"] if item["code"] == "REQUIRED_POINTER_RESOLVED"]
+    assert any(item["evidence"]["model_family"] == "train_v4_crypto_cs" for item in required_pointer_checks)
+
+
 def test_server_preflight_fails_on_dirty_worktree_and_candidate_state_mismatch(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"

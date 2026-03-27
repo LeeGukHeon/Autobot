@@ -25,6 +25,7 @@ def test_v5_governed_candidate_acceptance_targets_v5_panel_contract() -> None:
     assert '-LabelSet "v3"' in source
     assert '-CandidateModelRef "latest_candidate"' in source
     assert '-ChampionModelRef "champion"' in source
+    assert '-ChampionModelFamily "train_v4_crypto_cs"' in source
 
 
 def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_path: Path) -> None:
@@ -37,11 +38,12 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     )
     fake_candidate_acceptance = scripts_dir / "candidate_acceptance.ps1"
     fake_candidate_acceptance.write_text(
-        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '')\n"
+        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '')\n"
         "Write-Host ('[fake-v5] family=' + $ModelFamily)\n"
         "Write-Host ('[fake-v5] trainer=' + $Trainer)\n"
         "Write-Host ('[fake-v5] feature=' + $FeatureSet)\n"
         "Write-Host ('[fake-v5] label=' + $LabelSet)\n"
+        "Write-Host ('[fake-v5] champion_family=' + $ChampionModelFamily)\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -71,3 +73,4 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     assert "[fake-v5] trainer=v5_panel_ensemble" in completed.stdout
     assert "[fake-v5] feature=v4" in completed.stdout
     assert "[fake-v5] label=v3" in completed.stdout
+    assert "[fake-v5] champion_family=train_v4_crypto_cs" in completed.stdout

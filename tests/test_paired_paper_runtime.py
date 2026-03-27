@@ -353,6 +353,96 @@ def test_run_live_paired_paper_uses_single_feed_fanout_runtime(tmp_path: Path, m
     assert latest["promotion_decision"]["decision"]["promote"] is True
 
 
+def test_run_live_paired_paper_supports_distinct_champion_and_challenger_families(tmp_path: Path, monkeypatch) -> None:
+    events = [
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=1_000,
+            trade_price=100.0,
+            acc_trade_price_24h=1_000_000_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=301_000,
+            trade_price=101.0,
+            acc_trade_price_24h=1_000_500_000_000.0,
+        ),
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=302_000,
+            trade_price=99.0,
+            acc_trade_price_24h=1_001_000_000_000.0,
+        ),
+    ]
+    settings = UpbitSettings(
+        base_url="https://api.upbit.com",
+        timeout=UpbitTimeoutSettings(),
+        auth=UpbitAuthSettings(),
+        ratelimit=UpbitRateLimitSettings(),
+        retry=UpbitRetrySettings(),
+        websocket=UpbitWebSocketSettings(),
+    )
+    fake_client = _FakeFanoutWsClient(events)
+    seen_families: dict[str, str] = {}
+
+    def _engine_factory(*, upbit_settings, run_settings, ws_client, market_loader, rules_provider):
+        seen_families[str(run_settings.model_ref)] = str(run_settings.model_family)
+        action = "PASSIVE_MAKER" if str(run_settings.model_ref) == "champion-run" else "CROSS_1T"
+        return _PaperEngineWithDummyModel(
+            upbit_settings=upbit_settings,
+            run_settings=run_settings,
+            ws_client=ws_client,
+            market_loader=market_loader,
+            rules_provider=rules_provider,
+            dummy_strategy=_PairedDummyStrategy(chosen_action=action),
+        )
+
+    monkeypatch.setattr(paired_runtime_module, "load_upbit_settings", lambda config_dir: settings)
+    monkeypatch.setattr(paired_runtime_module, "_load_quote_markets", lambda upbit_settings, quote: ["KRW-BTC"])
+
+    payload = asyncio.run(
+        run_live_paired_paper(
+            config_dir=Path("config"),
+            duration_sec=2,
+            quote="KRW",
+            top_n=1,
+            tf="5m",
+            champion_model_ref="champion-run",
+            challenger_model_ref="candidate-run",
+            model_family="train_v5_panel_ensemble",
+            champion_model_family="train_v4_crypto_cs",
+            challenger_model_family="train_v5_panel_ensemble",
+            feature_set="v4",
+            preset="live_v4",
+            paper_feature_provider="offline_parquet",
+            paper_micro_provider="offline_parquet",
+            paper_micro_warmup_sec=0,
+            paper_micro_warmup_min_trade_events_per_market=1,
+            out_dir=tmp_path / "paired-live-cross-family",
+            min_matched_opportunities=1,
+            min_challenger_hours=0.0,
+            min_orders_filled=0,
+            min_realized_pnl_quote=0.0,
+            min_micro_quality_score=0.0,
+            min_nonnegative_ratio=0.0,
+            max_drawdown_deterioration_factor=1.10,
+            micro_quality_tolerance=0.02,
+            nonnegative_ratio_tolerance=0.05,
+            max_time_to_fill_deterioration_factor=1.25,
+            replay_time_scale=0.001,
+            replay_max_sleep_sec=0.25,
+            source_ws_client=fake_client,
+            engine_factory=_engine_factory,
+            rules_provider=_StaticRulesProvider(),
+        )
+    )
+
+    assert payload["champion_model_family"] == "train_v4_crypto_cs"
+    assert payload["challenger_model_family"] == "train_v5_panel_ensemble"
+    assert seen_families["champion-run"] == "train_v4_crypto_cs"
+    assert seen_families["candidate-run"] == "train_v5_panel_ensemble"
+
+
 def test_build_paper_run_settings_allows_unbounded_duration_for_service_mode() -> None:
     settings = paired_runtime_module._build_paper_run_settings(
         model_ref="candidate-run",

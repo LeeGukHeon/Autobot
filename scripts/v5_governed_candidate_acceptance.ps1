@@ -17,6 +17,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -RunScope "scheduled_daily" `
     -CandidateModelRef "latest_candidate" `
     -ChampionModelRef "champion" `
+    -ChampionModelFamily "train_v4_crypto_cs" `
     -PaperFeatureProvider "live_v4" `
     -PromotionPolicy "paper_final_balanced" `
     -TrainerEvidenceMode "required" `

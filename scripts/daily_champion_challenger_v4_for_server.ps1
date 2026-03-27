@@ -8,6 +8,7 @@ param(
     [string]$ExecutionPolicyRefreshScript = "",
     [string]$BatchDate = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
@@ -75,8 +76,11 @@ function Resolve-DefaultExecutionPolicyRefreshScript {
 }
 
 function Resolve-ChampionRunId {
-    param([string]$Root)
-    $pointerPath = Join-Path (Join-Path (Join-Path $Root "models/registry") $resolvedModelFamily) "champion.json"
+    param(
+        [string]$Root,
+        [string]$ModelFamilyName
+    )
+    $pointerPath = Join-Path (Join-Path (Join-Path $Root "models/registry") $ModelFamilyName) "champion.json"
     $pointer = Load-JsonOrEmpty -PathValue $pointerPath
     return [string](Get-PropValue -ObjectValue $pointer -Name "run_id" -DefaultValue "")
 }
@@ -139,6 +143,7 @@ function Invoke-PreflightCapture {
         [string]$PreflightScriptPath,
         [string]$Root,
         [string]$PythonPath,
+        [string]$ChampionPointerFamily,
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
         [string[]]$PromotionUnits,
@@ -151,6 +156,7 @@ function Invoke-PreflightCapture {
         "-ProjectRoot", $Root,
         "-PythonExe", $PythonPath,
         "-ModelFamily", $resolvedModelFamily,
+        "-ChampionPointerFamily", $ChampionPointerFamily,
         "-RequiredPointers", "champion",
         "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"
@@ -779,7 +785,8 @@ function Start-OrUpdate-PairedPaperUnit {
         [string]$Root,
         [string]$PyExe,
         [string]$UnitName,
-        [string]$ModelFamilyName
+        [string]$ChampionModelFamilyName,
+        [string]$ChallengerModelFamilyName
     )
     $psExe = Resolve-PwshExe
     $args = @(
@@ -792,7 +799,9 @@ function Start-OrUpdate-PairedPaperUnit {
         "-PaperPreset", "paired_v4",
         "-PaperRuntimeRole", "paired",
         "-PaperLaneName", "v4",
-        "-PaperModelFamilyOverride", $ModelFamilyName,
+        "-PaperModelFamilyOverride", $ChallengerModelFamilyName,
+        "-PaperChampionModelFamilyOverride", $ChampionModelFamilyName,
+        "-PaperChallengerModelFamilyOverride", $ChallengerModelFamilyName,
         "-NoBootstrapChampion"
     )
     return Invoke-CommandCapture -Exe $psExe -ArgList $args
@@ -931,6 +940,11 @@ $resolvedModelFamily = $resolvedModelFamily.Trim()
 if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
     $resolvedModelFamily = "train_v4_crypto_cs"
 }
+$resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
+$resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()
+if ([string]::IsNullOrWhiteSpace($resolvedChampionCompareModelFamily)) {
+    $resolvedChampionCompareModelFamily = $resolvedModelFamily
+}
 $resolvedPairedPaperModelFamily = [string]$PairedPaperModelFamily
 $resolvedPairedPaperModelFamily = $resolvedPairedPaperModelFamily.Trim()
 if ([string]::IsNullOrWhiteSpace($resolvedPairedPaperModelFamily)) {
@@ -967,6 +981,9 @@ $report = [ordered]@{
     champion_unit = $ChampionUnitName
     challenger_unit = $ChallengerUnitName
     paired_paper_unit = $PairedPaperUnitName
+    model_family = $resolvedModelFamily
+    champion_compare_model_family = $resolvedChampionCompareModelFamily
+    paired_paper_model_family = $resolvedPairedPaperModelFamily
     promotion_target_units = @($resolvedPromotionTargetUnits)
     candidate_target_units = @($resolvedCandidateTargetUnits)
     steps = [ordered]@{}
@@ -1009,6 +1026,7 @@ $preflightExec = Invoke-PreflightCapture `
     -PreflightScriptPath $preflightScriptPath `
     -Root $resolvedProjectRoot `
     -PythonPath $resolvedPythonExe `
+    -ChampionPointerFamily $resolvedChampionCompareModelFamily `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -PromotionUnits $resolvedPromotionTargetUnits `
@@ -1607,6 +1625,7 @@ if ($runSpawnPhase) {
                 "-BatchDate", $resolvedBatchDate,
                 "-CandidateRunId", $candidateRunId,
                 "-ModelFamily", $resolvedModelFamily,
+                "-ChampionCompareModelFamily", $resolvedChampionCompareModelFamily,
                 "-ChampionUnitName", $ChampionUnitName,
                 "-ChallengerUnitName", $ChallengerUnitName,
                 "-PairedPaperModelFamily", $resolvedPairedPaperModelFamily,
@@ -1668,13 +1687,14 @@ if ($runSpawnPhase) {
                 -Root $resolvedProjectRoot `
                 -PyExe $resolvedPythonExe `
                 -UnitName $PairedPaperUnitName `
-                -ModelFamilyName $resolvedPairedPaperModelFamily
+                -ChampionModelFamilyName $resolvedChampionCompareModelFamily `
+                -ChallengerModelFamilyName $resolvedPairedPaperModelFamily
             $report.steps.start_challenger = [ordered]@{
                 attempted = $false
                 reason = "REPLACED_BY_PAIRED_PAPER"
                 candidate_run_id = $candidateRunId
             }
-            $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot
+            $championRunIdAtStart = Resolve-ChampionRunId -Root $resolvedProjectRoot -ModelFamilyName $resolvedChampionCompareModelFamily
             $nextState = [ordered]@{
                 batch_date = $resolvedBatchDate
                 candidate_run_id = $candidateRunId
@@ -1683,6 +1703,9 @@ if ($runSpawnPhase) {
                 started_ts_ms = [int64](Get-Date -UFormat %s) * 1000
                 started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
                 model_family = $resolvedModelFamily
+                candidate_model_family = $resolvedModelFamily
+                champion_model_family_at_start = $resolvedChampionCompareModelFamily
+                champion_compare_model_family = $resolvedChampionCompareModelFamily
                 paired_paper_unit = $PairedPaperUnitName
                 promotion_target_units = @($resolvedPromotionTargetUnits)
                 lane_mode = $acceptLaneMode
@@ -1701,6 +1724,8 @@ if ($runSpawnPhase) {
                 output_preview = $challengerInstallExec.Output
                 unit_name = $PairedPaperUnitName
                 candidate_run_id = $candidateRunId
+                champion_model_family = $resolvedChampionCompareModelFamily
+                challenger_model_family = $resolvedPairedPaperModelFamily
             }
             if ($resolvedCandidateTargetUnits.Count -gt 0) {
                 $report.steps.restart_candidate_targets = [ordered]@{

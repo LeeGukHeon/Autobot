@@ -95,6 +95,8 @@ def test_split_installer_can_pass_v5_acceptance_script_and_model_family() -> Non
             str(REPO_ROOT / "scripts" / "v5_governed_candidate_acceptance.ps1"),
             "-ModelFamily",
             "train_v5_panel_ensemble",
+            "-ChampionCompareModelFamily",
+            "train_v4_crypto_cs",
             "-PairedPaperModelFamily",
             "train_v5_panel_ensemble",
             "-DryRun",
@@ -109,6 +111,8 @@ def test_split_installer_can_pass_v5_acceptance_script_and_model_family() -> Non
     assert "acceptance_script=" in stdout
     assert "v5_governed_candidate_acceptance.ps1" in stdout
     assert "model_family=train_v5_panel_ensemble" in stdout
+    assert "champion_compare_model_family=train_v4_crypto_cs" in stdout
     assert "paired_paper_model_family=train_v5_panel_ensemble" in stdout
     assert "-ModelFamily" in stdout
+    assert "-ChampionCompareModelFamily" in stdout
     assert "-PairedPaperModelFamily" in stdout

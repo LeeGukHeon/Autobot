@@ -287,6 +287,9 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
                 [string]$ProjectRoot = "",
                 [string]$PythonExe = "",
                 [string]$PaperUnitName = "",
+                [string]$PaperModelFamilyOverride = "",
+                [string]$PaperChampionModelFamilyOverride = "",
+                [string]$PaperChallengerModelFamilyOverride = "",
                 [string]$PaperModelRefPinned = "",
                 [string]$PaperCliArgs = ""
             )
@@ -295,6 +298,9 @@ def _make_fake_runtime_install_script(tmp_path: Path) -> Path:
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
             @{
                 paper_unit_name = $PaperUnitName
+                paper_model_family_override = $PaperModelFamilyOverride
+                paper_champion_model_family_override = $PaperChampionModelFamilyOverride
+                paper_challenger_model_family_override = $PaperChallengerModelFamilyOverride
                 paper_model_ref_pinned = $PaperModelRefPinned
                 paper_cli_args = $PaperCliArgs
             } | ConvertTo-Json -Depth 4 | Set-Content -Path $logPath -Encoding UTF8
@@ -316,6 +322,9 @@ def _make_failing_runtime_install_script(tmp_path: Path) -> Path:
                 [string]$ProjectRoot = "",
                 [string]$PythonExe = "",
                 [string]$PaperUnitName = "",
+                [string]$PaperModelFamilyOverride = "",
+                [string]$PaperChampionModelFamilyOverride = "",
+                [string]$PaperChallengerModelFamilyOverride = "",
                 [string]$PaperModelRefPinned = "",
                 [string]$PaperCliArgs = ""
             )

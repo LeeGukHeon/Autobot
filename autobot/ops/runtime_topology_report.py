@@ -35,16 +35,6 @@ def build_runtime_topology_report(
     registry_root = root / "models" / "registry"
     data_contract_registry = build_data_contract_registry(project_root=root)
 
-    family = "train_v4_crypto_cs"
-    family_dir = registry_root / family
-    pointers = {
-        "champion": _load_pointer(family_dir / "champion.json"),
-        "latest": _load_pointer(family_dir / "latest.json"),
-        "latest_candidate": _load_pointer(family_dir / "latest_candidate.json"),
-        "global_latest": _load_pointer(registry_root / "latest.json"),
-        "global_latest_candidate": _load_pointer(registry_root / "latest_candidate.json"),
-    }
-
     live_db_candidates = [
         root / "data" / "state" / "live" / "live_state.db",
         root / "data" / "state" / "live_state.db",
@@ -75,6 +65,22 @@ def build_runtime_topology_report(
         unit_name="autobot-live-alpha-candidate.service",
         fallback_model_ref_source="latest_candidate_v4",
     )
+    family = _resolve_report_model_family(
+        target_unit=target_unit,
+        live_lane_defaults=live_lane_defaults,
+        candidate_lane_defaults=candidate_lane_defaults,
+    )
+    pointers = _build_family_pointers(registry_root=registry_root, family=family)
+    lane_pointers = {
+        "live_main": _build_family_pointers(
+            registry_root=registry_root,
+            family=str(live_lane_defaults.get("runtime_model_family") or family),
+        ),
+        "live_candidate": _build_family_pointers(
+            registry_root=registry_root,
+            family=str(candidate_lane_defaults.get("runtime_model_family") or family),
+        ),
+    }
     effective_target_unit = str(target_unit or "").strip() or None
     daemon_defaults = (
         candidate_lane_defaults
@@ -160,6 +166,11 @@ def build_runtime_topology_report(
         "registry_root": str(registry_root),
         "model_family": family,
         "pointers": pointers,
+        "lane_pointer_families": {
+            "live_main": str(live_lane_defaults.get("runtime_model_family") or family),
+            "live_candidate": str(candidate_lane_defaults.get("runtime_model_family") or family),
+        },
+        "lane_pointers": lane_pointers,
         "data_contract_registry_excerpt": {
             "path_default": data_contract_registry.get("registry_path_default"),
             "summary": dict(data_contract_registry.get("summary") or {}),
@@ -274,6 +285,38 @@ def _load_pointer(path: Path) -> dict[str, Any]:
     result["path"] = str(path)
     result["exists"] = path.exists()
     return result
+
+
+def _build_family_pointers(*, registry_root: Path, family: str) -> dict[str, Any]:
+    effective_family = str(family or "").strip() or "train_v4_crypto_cs"
+    family_dir = registry_root / effective_family
+    return {
+        "champion": _load_pointer(family_dir / "champion.json"),
+        "latest": _load_pointer(family_dir / "latest.json"),
+        "latest_candidate": _load_pointer(family_dir / "latest_candidate.json"),
+        "global_latest": _load_pointer(registry_root / "latest.json"),
+        "global_latest_candidate": _load_pointer(registry_root / "latest_candidate.json"),
+    }
+
+
+def _resolve_report_model_family(
+    *,
+    target_unit: str | None,
+    live_lane_defaults: dict[str, Any],
+    candidate_lane_defaults: dict[str, Any],
+) -> str:
+    target_unit_text = str(target_unit or "").strip().lower()
+    if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}:
+        return str(candidate_lane_defaults.get("runtime_model_family") or "train_v4_crypto_cs").strip() or "train_v4_crypto_cs"
+    live_family = str(live_lane_defaults.get("runtime_model_family") or "").strip()
+    candidate_family = str(candidate_lane_defaults.get("runtime_model_family") or "").strip()
+    if live_family and live_family == candidate_family:
+        return live_family
+    if live_family:
+        return live_family
+    if candidate_family:
+        return candidate_family
+    return "train_v4_crypto_cs"
 
 
 def _load_state_topology(*, db_path: Path | None) -> dict[str, Any]:
