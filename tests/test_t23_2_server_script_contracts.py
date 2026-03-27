@@ -88,6 +88,35 @@ def test_t23_2_live_execution_policy_installer_dry_run_keeps_timer_contract() ->
     assert "data/state/live_state.db,data/state/live_candidate/live_state.db" in stdout
 
 
+def test_t23_2_data_platform_refresh_installer_dry_run_keeps_new_dataset_contracts() -> None:
+    stdout = _run_script_dry_run("install_server_data_platform_refresh_service.ps1")
+
+    assert "[data-platform-install][dry-run] service=autobot-data-platform-refresh.service" in stdout
+    assert "[data-platform-install][dry-run] timer=autobot-data-platform-refresh.timer" in stdout
+    assert "refresh_data_platform_layers.ps1" in stdout
+    assert "candles_second_v1" in stdout
+    assert "ws_candle_v1" in stdout
+    assert "lob30_v1" in stdout
+    assert "sequence_v1" in stdout
+
+
+def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -> None:
+    stdout = _run_script_dry_run("refresh_data_platform_layers.ps1")
+
+    assert "[data-platform-refresh] step=plan_candles_second" in stdout
+    assert "[data-platform-refresh] step=collect_candles_second" in stdout
+    assert "[data-platform-refresh] step=plan_ws_candles" in stdout
+    assert "[data-platform-refresh] step=collect_ws_candles" in stdout
+    assert "[data-platform-refresh] step=plan_lob30" in stdout
+    assert "[data-platform-refresh] step=collect_lob30" in stdout
+    assert "[data-platform-refresh] step=collect_sequence_tensors" in stdout
+    assert "[data-platform-refresh] step=refresh_data_contract_registry" in stdout
+    assert "candles_second_v1" in stdout
+    assert "ws_candle_v1" in stdout
+    assert "lob30_v1" in stdout
+    assert "sequence_v1" in stdout
+
+
 def test_t23_2_daily_acceptance_installer_serializes_nested_array_args_safely() -> None:
     completed = subprocess.run(
         [
