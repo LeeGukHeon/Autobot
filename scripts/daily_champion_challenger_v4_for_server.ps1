@@ -8,7 +8,7 @@ param(
     [string]$ExecutionPolicyRefreshScript = "",
     [string]$FeatureContractRefreshScript = "",
     [string]$BatchDate = "",
-    [string]$ModelFamily = "train_v5_panel_ensemble",
+    [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -944,8 +944,8 @@ $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedModelFamily = [string]$ModelFamily
 $resolvedModelFamily = $resolvedModelFamily.Trim()
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
-    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_fusion", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 }
 $resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
 $resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()

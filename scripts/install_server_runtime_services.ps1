@@ -54,7 +54,7 @@ function Get-PaperRuntimeSpec {
                 SyslogIdentifier = "autobot-paper-v5"
                 RuntimeModelRef = "champion"
                 BootstrapRefs = @("latest_candidate", "latest")
-                ModelFamily = "train_v5_panel_ensemble"
+                ModelFamily = "train_v5_fusion"
                 RuntimeRole = "champion"
             }
         }
@@ -74,7 +74,7 @@ function Get-PaperRuntimeSpec {
                 SyslogIdentifier = "autobot-paper-v5-offline"
                 RuntimeModelRef = "champion"
                 BootstrapRefs = @("latest_candidate", "latest")
-                ModelFamily = "train_v5_panel_ensemble"
+                ModelFamily = "train_v5_fusion"
                 RuntimeRole = "champion"
             }
         }
@@ -94,7 +94,7 @@ function Get-PaperRuntimeSpec {
                 SyslogIdentifier = "autobot-paper-v5-candidate"
                 RuntimeModelRef = "latest_candidate"
                 BootstrapRefs = @()
-                ModelFamily = "train_v5_panel_ensemble"
+                ModelFamily = "train_v5_fusion"
                 RuntimeRole = "challenger"
             }
         }
@@ -114,7 +114,7 @@ function Get-PaperRuntimeSpec {
                 SyslogIdentifier = "autobot-paper-v5-paired"
                 RuntimeModelRef = ""
                 BootstrapRefs = @()
-                ModelFamily = "train_v5_panel_ensemble"
+                ModelFamily = "train_v5_fusion"
                 RuntimeRole = "paired"
             }
         }
@@ -299,7 +299,7 @@ if ($PaperPreset -in @("paired_v4", "paired_v5")) {
         "--challenger-model-family", $effectivePairedChallengerModelFamily,
         "--feature-set", "v4",
         "--preset", (if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }),
-        "--paper-feature-provider", "live_v4",
+        "--paper-feature-provider", (if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }),
         "--paper-micro-provider", "live_ws",
         "--paper-micro-warmup-sec", "60",
         "--paper-micro-warmup-min-trade-events-per-market", "1",

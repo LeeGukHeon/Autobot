@@ -31,7 +31,7 @@ from autobot.upbit.ws.models import OrderbookEvent, TickerEvent, TradeEvent
 
 
 PAIRED_RUNTIME_ARTIFACT_VERSION = 1
-DEFAULT_PAIRED_PRESET = "live_v4"
+DEFAULT_PAIRED_PRESET = "live_v5"
 
 
 _STREAM_SENTINEL = object()

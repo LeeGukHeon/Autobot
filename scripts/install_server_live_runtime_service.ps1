@@ -40,7 +40,7 @@ $effectiveModelRefSource = if ([string]::IsNullOrWhiteSpace($ModelRefSource)) {
     $ModelRefSource
 }
 $effectiveModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) {
-    "train_v5_panel_ensemble"
+    "train_v5_fusion"
 } else {
     $ModelFamily
 }

@@ -65,7 +65,7 @@ def test_normalize_paper_alpha_args_defaults_to_live_v5() -> None:
     )
     normalized = _normalize_paper_alpha_args(args)
     assert normalized.model_ref == "champion"
-    assert normalized.model_family == "train_v5_panel_ensemble"
+    assert normalized.model_family == "train_v5_fusion"
     assert normalized.feature_set == "v4"
 
 

@@ -254,7 +254,7 @@ def _load_live_defaults(project_root: Path, *, target_unit: str | None = None) -
     return {
         "registry_root": str(project_root / "models" / "registry"),
         "runtime_model_ref_source": runtime_model_ref_source,
-        "runtime_model_family": "train_v5_panel_ensemble",
+        "runtime_model_family": "train_v5_fusion",
         "ws_public_raw_root": str(project_root / "data" / "raw_ws" / "upbit" / "public"),
         "ws_public_meta_dir": str(project_root / "data" / "raw_ws" / "upbit" / "_meta"),
         "ws_public_stale_threshold_sec": 180,
@@ -281,6 +281,12 @@ def _load_unit_runtime_defaults(
     environment = _parse_systemd_environment(str(payload.get("Environment", "")))
     model_ref_source = str(environment.get("AUTOBOT_LIVE_MODEL_REF_SOURCE") or defaults["runtime_model_ref_source"]).strip() or defaults["runtime_model_ref_source"]
     model_family = str(environment.get("AUTOBOT_LIVE_MODEL_FAMILY") or defaults["runtime_model_family"]).strip() or defaults["runtime_model_family"]
+    registry_root = Path(str(defaults["registry_root"]))
+    if not (registry_root / model_family).exists():
+        for candidate in ("train_v5_fusion", "train_v5_panel_ensemble", "train_v4_crypto_cs"):
+            if (registry_root / candidate).exists():
+                model_family = candidate
+                break
     defaults["runtime_model_ref_source"] = model_ref_source or fallback_model_ref_source
     defaults["runtime_model_family"] = model_family
     defaults["source_unit"] = unit_name
@@ -298,7 +304,13 @@ def _load_pointer(path: Path) -> dict[str, Any]:
 
 
 def _build_family_pointers(*, registry_root: Path, family: str) -> dict[str, Any]:
-    effective_family = str(family or "").strip() or "train_v5_panel_ensemble"
+    requested_family = str(family or "").strip() or "train_v5_fusion"
+    effective_family = requested_family
+    if not (registry_root / effective_family).exists():
+        for candidate in ("train_v5_fusion", "train_v5_panel_ensemble", "train_v4_crypto_cs"):
+            if (registry_root / candidate).exists():
+                effective_family = candidate
+                break
     family_dir = registry_root / effective_family
     return {
         "champion": _load_pointer(family_dir / "champion.json"),
@@ -317,7 +329,7 @@ def _resolve_report_model_family(
 ) -> str:
     target_unit_text = str(target_unit or "").strip().lower()
     if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}:
-        return str(candidate_lane_defaults.get("runtime_model_family") or "train_v5_panel_ensemble").strip() or "train_v5_panel_ensemble"
+        return str(candidate_lane_defaults.get("runtime_model_family") or "train_v5_fusion").strip() or "train_v5_fusion"
     live_family = str(live_lane_defaults.get("runtime_model_family") or "").strip()
     candidate_family = str(candidate_lane_defaults.get("runtime_model_family") or "").strip()
     if live_family and live_family == candidate_family:
@@ -326,7 +338,7 @@ def _resolve_report_model_family(
         return live_family
     if candidate_family:
         return candidate_family
-    return "train_v5_panel_ensemble"
+    return "train_v5_fusion"
 
 
 def _load_state_topology(*, db_path: Path | None) -> dict[str, Any]:

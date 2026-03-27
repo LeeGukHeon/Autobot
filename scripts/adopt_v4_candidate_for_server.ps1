@@ -4,7 +4,7 @@ param(
     [string]$RuntimeInstallScript = "",
     [string]$BatchDate = "",
     [string]$CandidateRunId = "",
-    [string]$ModelFamily = "train_v5_panel_ensemble",
+    [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -214,8 +214,8 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
 $resolvedModelFamily = [string]$ModelFamily
 $resolvedModelFamily = $resolvedModelFamily.Trim()
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
-    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_fusion", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 }
 $resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
 $resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()

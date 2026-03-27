@@ -1,7 +1,7 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
-    [string]$ModelFamily = "train_v5_panel_ensemble",
+    [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionPointerFamily = "",
     [string[]]$RequiredUnitFiles = @(),
     [string[]]$BlockOnFailedUnits = @(),
@@ -363,12 +363,12 @@ function Summarize-Checks {
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedModelFamily = if ([string]::IsNullOrWhiteSpace($ModelFamily)) {
-    Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
+    Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 } else {
     $ModelFamily.Trim()
 }
-if ([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily))))) {
-    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
+if ([string]::Equals($resolvedModelFamily, "train_v5_fusion", [System.StringComparison]::OrdinalIgnoreCase) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 }
 $resolvedChampionPointerFamily = if ([string]::IsNullOrWhiteSpace($ChampionPointerFamily)) { $resolvedModelFamily } else { $ChampionPointerFamily.Trim() }
 $resolvedRequiredUnitFiles = @(Get-StringArray -Value $RequiredUnitFiles)

@@ -160,7 +160,7 @@ function Invoke-PreflightCapture {
         "-File", $PreflightScriptPath,
         "-ProjectRoot", $Root,
         "-PythonExe", $PythonPath,
-        "-ModelFamily", "train_v5_panel_ensemble",
+        "-ModelFamily", "train_v5_fusion",
         "-RequiredPointers", "champion",
         "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"

@@ -16,12 +16,14 @@ from autobot import __version__ as autobot_version
 from .entry_boundary import build_risk_calibrated_entry_boundary
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
-from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
+from .registry import RegistrySavePayload, load_json, make_run_id, save_run, update_artifact_status, update_latest_pointer
+from .runtime_feature_dataset import write_runtime_feature_dataset
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
+from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
 
 
 VALID_FUSION_STACKERS = ("linear", "monotone_gbdt")
@@ -233,17 +235,21 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         thresholds=thresholds,
         data_fingerprint=data_fingerprint,
     )
+    runtime_dataset_root = options.registry_root / options.model_family / run_id / "runtime_feature_dataset"
     train_config = {
         **asdict(options),
         "panel_input_path": str(options.panel_input_path),
         "sequence_input_path": str(options.sequence_input_path),
         "lob_input_path": str(options.lob_input_path),
+        "dataset_root": str(runtime_dataset_root),
+        "source_dataset_root": "fusion_oof_tables",
         "registry_root": str(options.registry_root),
         "logs_root": str(options.logs_root),
         "trainer": "v5_fusion",
         "feature_columns": list(feature_names),
         "autobot_version": autobot_version,
     }
+    runtime_recommendations = _load_inherited_runtime_recommendations(options.panel_input_path)
     run_dir = save_run(
         RegistrySavePayload(
             registry_root=options.registry_root,
@@ -252,7 +258,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
             model_bundle={"model_type": "v5_fusion", "estimator": estimator},
             metrics=metrics,
             thresholds=thresholds,
-            feature_spec={"feature_columns": list(feature_names), "dataset_root": "fusion_oof_tables"},
+            feature_spec={"feature_columns": list(feature_names), "dataset_root": str(runtime_dataset_root)},
             label_spec={"policy": "v5_fusion_label_contract_v1", "primary_target": "y_reg", "auxiliary_targets": ["y_es_proxy", "y_tradability_target"]},
             train_config=train_config,
             data_fingerprint=data_fingerprint,
@@ -261,7 +267,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
             selection_recommendations=selection_recommendations,
             selection_policy=selection_policy,
             selection_calibration=selection_calibration,
-            runtime_recommendations={"status": "fusion_runtime_candidate", "reason": "ENTRY_BOUNDARY_PENDING"},
+            runtime_recommendations=runtime_recommendations,
         ),
         publish_pointers=False,
     )
@@ -317,15 +323,80 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     )
     walk_forward_report_path = run_dir / "walk_forward_report.json"
     walk_forward_report_path.write_text(json.dumps({"policy": "fusion_holdout_v1", "valid_metrics": valid_metrics, "test_metrics": test_metrics}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    promotion_path = run_dir / "promotion_decision.json"
-    promotion_path.write_text(json.dumps({"run_id": run_id, "promote": False, "status": "candidate", "reasons": ["ENTRY_BOUNDARY_PENDING"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    promotion_payload = {
+        "run_id": run_id,
+        "promote": False,
+        "status": "candidate",
+        "reasons": ["CANDIDATE_ACCEPTANCE_REQUIRED"],
+        "checks": {
+            "existing_champion_present": False,
+            "walk_forward_present": True,
+            "walk_forward_windows_run": 1,
+            "execution_acceptance_enabled": False,
+            "execution_acceptance_present": False,
+            "risk_control_required": False,
+        },
+        "research_acceptance": {
+            "walk_forward_summary": {
+                "valid_metrics": valid_metrics,
+                "test_metrics": test_metrics,
+            }
+        },
+    }
     entry_boundary_contract_path = run_dir / "entry_boundary_contract.json"
     entry_boundary_contract_path.write_text(json.dumps(entry_boundary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (run_dir / "runtime_recommendations.json").write_text(json.dumps({"status": "fusion_ready_for_boundary", "reason": "ENTRY_BOUNDARY_PENDING"}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    runtime_dataset_written_root = write_runtime_feature_dataset(
+        output_root=runtime_dataset_root,
+        tf="5m",
+        feature_columns=feature_names,
+        markets=markets,
+        ts_ms=ts_ms,
+        x=x,
+        y_cls=y_cls,
+        y_reg=y_reg,
+        y_rank=y_reg,
+        sample_weight=np.ones(merged.height, dtype=np.float64),
+    )
+    runtime_artifacts = persist_v5_runtime_governance_artifacts(
+        run_dir=run_dir,
+        trainer_name="v5_fusion",
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+        metrics=metrics,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion_payload,
+        trainer_research_reasons=["FUSION_RUNTIME_CONTRACT_READY"],
+    )
+    update_artifact_status(
+        run_dir,
+        status="trainer_artifacts_complete",
+        execution_acceptance_complete=True,
+        runtime_recommendations_complete=True,
+        governance_artifacts_complete=True,
+    )
     train_report_path = options.logs_root / "train_v5_fusion_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
-    train_report_path.write_text(json.dumps({"run_id": run_id, "status": "candidate", "leaderboard_row": leaderboard_row, "valid_metrics": valid_metrics, "test_metrics": test_metrics}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    train_report_path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "status": "candidate",
+                "leaderboard_row": leaderboard_row,
+                "valid_metrics": valid_metrics,
+                "test_metrics": test_metrics,
+                "runtime_dataset_root": str(runtime_dataset_written_root),
+                "entry_boundary_contract_path": str(entry_boundary_contract_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     update_latest_pointer(options.registry_root, options.model_family, run_id)
+    if str(options.run_scope).strip().lower() == "scheduled_daily":
+        update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
     update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
     return TrainV5FusionResult(
         run_id=run_id,
@@ -335,7 +406,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         metrics=metrics,
         thresholds=thresholds,
         train_report_path=train_report_path,
-        promotion_path=promotion_path,
+        promotion_path=runtime_artifacts["promotion_path"],
         walk_forward_report_path=walk_forward_report_path,
         fusion_model_contract_path=fusion_model_contract_path,
         predictor_contract_path=predictor_contract_path,
@@ -374,6 +445,17 @@ def _load_expert_table(path: Path, *, prefix: str) -> pl.DataFrame:
         else:
             renamed.append(pl.col(column).alias(f"{prefix}_{column}"))
     return frame.select(renamed)
+
+
+def _load_inherited_runtime_recommendations(panel_input_path: Path) -> dict[str, Any]:
+    panel_run_dir = Path(panel_input_path).parent
+    inherited = load_json(panel_run_dir / "runtime_recommendations.json")
+    payload = dict(inherited) if isinstance(inherited, dict) else {}
+    payload["status"] = "fusion_runtime_ready"
+    payload["source_family"] = "train_v5_fusion"
+    payload["inherited_from_panel_run_id"] = panel_run_dir.name
+    payload["entry_boundary_enabled"] = True
+    return payload
 
 
 def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int) -> Any:

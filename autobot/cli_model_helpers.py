@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PRIMARY_MODEL_FAMILY = "train_v5_panel_ensemble"
+DEFAULT_PRIMARY_MODEL_FAMILY = "train_v5_fusion"
 DEFAULT_PRIMARY_RUNTIME_REF = "champion"
 DEFAULT_PRIMARY_CANDIDATE_REF = "latest_candidate"
 DEFAULT_PAPER_ALPHA_PRESET = "live_v5"
@@ -51,7 +51,7 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "top_pct": 0.50,
                 "min_cands_per_ts": 1,
                 "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "live_v4",
+                "paper_feature_provider": "live_v5",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
                 "micro_order_policy": "on",
@@ -105,7 +105,7 @@ def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
                 "top_pct": 0.50,
                 "min_cands_per_ts": 1,
                 "use_learned_selection_recommendations": True,
-                "paper_feature_provider": "live_v4",
+                "paper_feature_provider": "live_v5",
                 "paper_micro_provider": "live_ws",
                 "micro_gate": "off",
                 "micro_order_policy": "on",

@@ -137,7 +137,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["candidate_runtime_sync_status"]["live_runtime_model_run_id"] == "run-3"
     assert report["candidate_runtime_sync_status"]["expected_pointer_run_id"] == "run-3"
     assert report["candidate_runtime_sync_status"]["model_pointer_divergence"] is False
-    assert report["current_runtime_contract"]["model_ref_source_requested"] == "latest_candidate_v4"
+    assert report["current_runtime_contract"]["model_ref_source_requested"] == "latest_candidate"
     assert report["candidate_lane"]["breaker_state"]["primary_reason_type"] == "STATE_INTEGRITY"
     assert report["candidate_lane"]["breaker_state"]["typed_reason_codes"][0]["reason_code"] == "MODEL_POINTER_UNRESOLVED"
     assert report["rollout_latest"]["target_unit"] == "autobot-live-alpha-candidate.service"

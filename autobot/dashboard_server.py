@@ -49,7 +49,7 @@ _DASHBOARD_OPS_TOKEN_ENV = "AUTOBOT_DASHBOARD_OPS_TOKEN"
 _DASHBOARD_OPS_HISTORY_DIRNAME = "dashboard_ops"
 _DASHBOARD_OPS_HISTORY_FILENAME = "ops_history.jsonl"
 _DASHBOARD_OPS_LOCK = threading.Lock()
-_PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_panel_ensemble"
+_PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_fusion"
 
 
 def _utc_now_iso() -> str:

@@ -27,6 +27,7 @@ from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
+from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
 
 
 LOB_HORIZONS_SECONDS: tuple[int, ...] = (1, 5, 30, 60)
@@ -826,6 +827,11 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "selected_markets": list(samples.selected_markets),
         "autobot_version": autobot_version,
     }
+    runtime_recommendations = {
+        "status": "lob_runtime_ready",
+        "source_family": options.model_family,
+        "runtime_feature_dataset_root": str(runtime_dataset_root),
+    }
     data_fingerprint = {
         "dataset_root": str(options.dataset_root),
         "tf": "lob_short_horizon",
@@ -862,7 +868,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
             selection_recommendations=selection_recommendations,
             selection_policy=selection_policy,
             selection_calibration=selection_calibration,
-            runtime_recommendations={"status": "lob_training_only", "reason": "FUSION_PENDING"},
+            runtime_recommendations=runtime_recommendations,
         ),
         publish_pointers=False,
     )
@@ -936,9 +942,21 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         + "\n",
         encoding="utf-8",
     )
-    promotion_path = run_dir / "promotion_decision.json"
-    promotion_path.write_text(json.dumps({"run_id": run_id, "promote": False, "status": "candidate", "reasons": ["LOB_EXPERT_READY_FUSION_PENDING"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (run_dir / "runtime_recommendations.json").write_text(json.dumps({"status": "not_runtime_wired", "reason": "FUSION_PENDING"}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    promotion_payload = {
+        "run_id": run_id,
+        "promote": False,
+        "status": "candidate",
+        "reasons": ["EXPERT_FAMILY_REQUIRES_EXPLICIT_PROMOTION_PATH"],
+        "checks": {
+            "existing_champion_present": False,
+            "walk_forward_present": True,
+            "walk_forward_windows_run": 1,
+            "execution_acceptance_enabled": False,
+            "execution_acceptance_present": False,
+            "risk_control_required": False,
+        },
+        "research_acceptance": {"walk_forward_summary": {"valid_metrics": valid_metrics, "test_metrics": test_metrics}},
+    }
     expert_prediction_table_path = _write_lob_expert_prediction_table(
         run_dir=run_dir,
         samples=samples,
@@ -957,6 +975,23 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         y_rank=samples.y_rank,
         sample_weight=samples.sample_weight,
         extra_columns=_build_lob_runtime_extra_columns(samples),
+    )
+    runtime_artifacts = persist_v5_runtime_governance_artifacts(
+        run_dir=run_dir,
+        trainer_name="v5_lob",
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+        metrics=metrics,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion_payload,
+        trainer_research_reasons=["LOB_EXPERT_RUNTIME_READY"],
+    )
+    update_artifact_status(
+        run_dir,
+        status="trainer_artifacts_complete",
+        execution_acceptance_complete=True,
+        runtime_recommendations_complete=True,
+        governance_artifacts_complete=True,
     )
     train_report_path = options.logs_root / "train_v5_lob_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -993,7 +1028,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         metrics=metrics,
         thresholds=thresholds,
         train_report_path=train_report_path,
-        promotion_path=promotion_path,
+        promotion_path=runtime_artifacts["promotion_path"],
         walk_forward_report_path=walk_forward_report_path,
         lob_model_contract_path=lob_model_contract_path,
         predictor_contract_path=predictor_contract_path,

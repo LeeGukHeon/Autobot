@@ -895,7 +895,7 @@ function Invoke-ModelTrainWizard {
         }
         "v5_panel_ensemble" {
             $featureSet = "v4"
-            $family = "train_v5_panel_ensemble"
+            $family = "train_v5_fusion"
             $labelSet = "v3"
             $task = "cls"
         }

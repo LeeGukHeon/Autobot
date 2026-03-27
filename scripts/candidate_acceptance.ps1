@@ -23,8 +23,9 @@ param(
     [int]$TrainTopN = 50,
     [int]$FeatureParityTopN = 20,
     [int]$BacktestTopN = 20,
-    [string]$ModelFamily = "train_v5_panel_ensemble",
+    [string]$ModelFamily = "train_v5_fusion",
     [string]$Trainer = "v5_panel_ensemble",
+    [string[]]$DependencyTrainers = @(),
     [string]$FeatureSet = "v4",
     [string]$LabelSet = "v3",
     [string]$Task = "cls",
@@ -154,6 +155,86 @@ function Resolve-PathFromProjectRoot {
         return [System.IO.Path]::GetFullPath($PathValue)
     }
     return [System.IO.Path]::GetFullPath((Join-Path $Root $PathValue))
+}
+
+function Resolve-DependencyTrainerModelFamily {
+    param([string]$TrainerName)
+    $normalized = [string]$TrainerName
+    $normalized = $normalized.Trim().ToLowerInvariant()
+    switch ($normalized) {
+        "v5_panel_ensemble" { return "train_v5_panel_ensemble" }
+        "v5_sequence" { return "train_v5_sequence" }
+        "v5_lob" { return "train_v5_lob" }
+        "v5_fusion" { return "train_v5_fusion" }
+        default { return "" }
+    }
+}
+
+function Invoke-DependencyTrainerChain {
+    param(
+        [string]$PythonPath,
+        [string]$TrainStartDate,
+        [string]$TrainEndDate,
+        [string]$ExecutionEvalStartDate,
+        [string]$ExecutionEvalEndDate
+    )
+    $results = @()
+    foreach ($trainerNameRaw in @($DependencyTrainers)) {
+        $trainerName = [string]$trainerNameRaw
+        $trainerName = $trainerName.Trim()
+        if ([string]::IsNullOrWhiteSpace($trainerName)) {
+            continue
+        }
+        $dependencyModelFamily = Resolve-DependencyTrainerModelFamily -TrainerName $trainerName
+        if ([string]::IsNullOrWhiteSpace($dependencyModelFamily)) {
+            throw ("unsupported dependency trainer: " + $trainerName)
+        }
+        $dependencyRunScope = ([string]$RunScope).Trim() + "_dependency_" + $trainerName
+        $trainArgs = @(
+            "-m", "autobot.cli",
+            "model", "train",
+            "--trainer", $trainerName,
+            "--model-family", $dependencyModelFamily,
+            "--feature-set", $FeatureSet,
+            "--label-set", $LabelSet,
+            "--task", $Task,
+            "--run-scope", $dependencyRunScope,
+            "--tf", $Tf,
+            "--quote", $Quote,
+            "--top-n", $TrainTopN,
+            "--start", $TrainStartDate,
+            "--end", $TrainEndDate,
+            "--booster-sweep-trials", $BoosterSweepTrials,
+            "--seed", $Seed,
+            "--nthread", $NThread
+        )
+        if ((-not [string]::IsNullOrWhiteSpace($ExecutionEvalStartDate)) -and (-not [string]::IsNullOrWhiteSpace($ExecutionEvalEndDate))) {
+            $trainArgs += @(
+                "--execution-eval-start", $ExecutionEvalStartDate,
+                "--execution-eval-end", $ExecutionEvalEndDate
+            )
+        }
+        $trainExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $trainArgs
+        $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
+        $runId = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Split-Path -Leaf $runDir }
+        if ((-not $DryRun) -and ([int]$trainExec.ExitCode -ne 0)) {
+            throw ("dependency trainer failed: " + $trainerName)
+        }
+        if ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($runId)) {
+            throw ("dependency trainer did not emit run_id: " + $trainerName)
+        }
+        $results += [ordered]@{
+            trainer = $trainerName
+            model_family = $dependencyModelFamily
+            run_scope = $dependencyRunScope
+            exit_code = [int]$trainExec.ExitCode
+            command = $trainExec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$trainExec.Output))
+            run_dir = $runDir
+            run_id = $runId
+        }
+    }
+    return @($results)
 }
 
 function Get-MicroDateCoverageCounts {
@@ -4060,6 +4141,25 @@ try {
         $report.steps.features_live_parity = [ordered]@{
             attempted = $false
             reason = "NOT_REQUIRED_FOR_FEATURE_SET"
+        }
+    }
+
+    if (@($DependencyTrainers).Count -gt 0) {
+        $dependencyTrainerResults = Invoke-DependencyTrainerChain `
+            -PythonPath $resolvedPythonExe `
+            -TrainStartDate $trainStartDate `
+            -TrainEndDate $trainEndDate `
+            -ExecutionEvalStartDate $certificationStartDate `
+            -ExecutionEvalEndDate $effectiveBatchDate
+        $report.steps.dependency_trainers = [ordered]@{
+            attempted = $true
+            count = @($dependencyTrainerResults).Count
+            results = @($dependencyTrainerResults)
+        }
+    } else {
+        $report.steps.dependency_trainers = [ordered]@{
+            attempted = $false
+            reason = "NO_DEPENDENCY_TRAINERS"
         }
     }
 

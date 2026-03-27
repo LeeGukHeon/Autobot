@@ -92,6 +92,7 @@ from autobot.upbit.ws import UpbitWebSocketPublicClient
 from autobot.upbit.ws.models import OrderbookEvent, TickerEvent, TradeEvent
 
 from .live_features_v3 import LiveFeatureProviderV3
+from .live_features_v5 import LiveFeatureProviderV5
 from .live_features_v4 import LiveFeatureProviderV4
 from .live_features_v4_native import LiveFeatureProviderV4Native
 from .rolling_evidence import compute_rolling_paper_evidence
@@ -1830,6 +1831,37 @@ class PaperRunEngine:
         self._runtime_state["resolved_model_alpha_settings"] = resolved_model_alpha
         self._runtime_state["model_alpha_runtime_recommendation_state"] = runtime_recommendation_state
         feature_provider_mode = _normalize_paper_feature_provider(settings.paper_feature_provider)
+        resolved_family_lower = str(model_family or "").strip().lower()
+        if resolved_family_lower in {"train_v5_sequence", "train_v5_lob", "train_v5_fusion"}:
+            feature_provider_mode = "LIVE_V5"
+        if feature_provider_mode == "LIVE_V5":
+            live_feature_provider = LiveFeatureProviderV5(
+                predictor=predictor,
+                registry_root=Path(settings.model_registry_root),
+                feature_columns=predictor.feature_columns,
+                extra_columns=resolve_model_alpha_runtime_row_columns(predictor=predictor),
+                tf=str(settings.tf).strip().lower(),
+                quote=str(settings.quote).strip().upper(),
+                micro_snapshot_provider=self._runtime_state.get("micro_snapshot_provider_for_features"),
+                micro_max_age_ms=max(int(settings.paper_live_micro_max_age_ms), 0),
+                parquet_root=str(settings.paper_live_parquet_root),
+                candles_dataset_name=str(settings.paper_live_candles_dataset),
+                bootstrap_1m_bars=max(int(settings.paper_live_bootstrap_1m_bars), 256),
+            )
+            self._runtime_state["live_feature_provider"] = live_feature_provider
+            interval_ms = _interval_ms_from_tf(settings.tf)
+            return ModelAlphaStrategyV1(
+                predictor=predictor,
+                feature_groups=(),
+                settings=resolved_model_alpha,
+                interval_ms=interval_ms,
+                enable_operational_overlay=True,
+                live_frame_provider=lambda ts_ms, markets: live_feature_provider.build_frame(
+                    ts_ms=int(ts_ms),
+                    markets=markets,
+                ),
+            )
+
         if feature_provider_mode == "LIVE_V3":
             if feature_set != "v3":
                 raise ValueError("paper LIVE_V3 provider requires --feature-set v3")
@@ -3408,6 +3440,8 @@ def _normalize_paper_micro_provider(value: Any) -> str:
 
 def _normalize_paper_feature_provider(value: Any) -> str:
     text = str(value or "").strip().upper()
+    if text in {"LIVE_V5", "V5"}:
+        return "LIVE_V5"
     if text in {"LIVE_V4_NATIVE", "V4_NATIVE", "NATIVE_V4"}:
         return "LIVE_V4_NATIVE"
     if text in {"LIVE_V4", "V4"}:
@@ -3420,7 +3454,7 @@ def _normalize_paper_feature_provider(value: Any) -> str:
 
 
 def _is_live_feature_provider(provider: Any) -> bool:
-    return isinstance(provider, (LiveFeatureProviderV3, LiveFeatureProviderV4, LiveFeatureProviderV4Native))
+    return isinstance(provider, (LiveFeatureProviderV3, LiveFeatureProviderV4, LiveFeatureProviderV4Native, LiveFeatureProviderV5))
 
 
 def _is_ws_public_daemon_running(*, health_path: Path, stale_sec: int) -> bool:

@@ -67,7 +67,7 @@ class MicroSnapshotProvider(Protocol):
 class LiveWsProviderSettings:
     enabled: bool = False
     window_sec: int = 60
-    orderbook_topk: int = 5
+    orderbook_topk: int = 30
     orderbook_level: int | str | None = 0
     subscribe_format: str = "DEFAULT"
     max_markets: int = 30

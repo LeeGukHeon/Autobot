@@ -87,7 +87,7 @@ class LiveDaemonSettings:
     small_account_max_open_orders_per_market: int = 1
     registry_root: str = "models/registry"
     runtime_model_ref_source: str = "champion"
-    runtime_model_family: str = "train_v5_panel_ensemble"
+    runtime_model_family: str = "train_v5_fusion"
     ws_public_raw_root: str = "data/raw_ws/upbit/public"
     ws_public_meta_dir: str = "data/raw_ws/upbit/_meta"
     ws_public_stale_threshold_sec: int = 180

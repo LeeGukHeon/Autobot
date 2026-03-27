@@ -1,7 +1,7 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
-    [string]$ModelFamily = "train_v5_panel_ensemble",
+    [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionPointerFamily = "",
     [switch]$FailOnWarning
 )
@@ -15,8 +15,8 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedModelFamily = [string]$ModelFamily
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
-    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_fusion", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 }
 $resolvedChampionPointerFamily = [string]$ChampionPointerFamily
 if ([string]::IsNullOrWhiteSpace($resolvedChampionPointerFamily)) {

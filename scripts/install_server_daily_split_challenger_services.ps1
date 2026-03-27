@@ -6,7 +6,7 @@ param(
     [string]$RuntimeInstallScript = "",
     [string]$CandidateAdoptionScript = "",
     [string]$ServiceUser = "ubuntu",
-    [string]$ModelFamily = "train_v5_panel_ensemble",
+    [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionCompareModelFamily = "",
     [string]$PairedPaperModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
@@ -149,8 +149,8 @@ $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstall
 $resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) { "" } else { $CandidateAdoptionScript }
 $resolvedModelFamily = [string]$ModelFamily
 $resolvedModelFamily = $resolvedModelFamily.Trim()
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
-    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_panel_ensemble"
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_fusion", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+    $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 }
 $resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily
 $resolvedChampionCompareModelFamily = $resolvedChampionCompareModelFamily.Trim()
