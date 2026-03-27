@@ -14,7 +14,7 @@ def test_build_and_evaluate_entry_boundary_contract() -> None:
         final_uncertainty=np.asarray([0.03, 0.04, 0.08, 0.10], dtype=np.float64),
         final_alpha_lcb=np.asarray([0.05, 0.01, -0.16, -0.23], dtype=np.float64),
         realized_return=np.asarray([0.08, 0.02, -0.09, -0.12], dtype=np.float64),
-        severe_loss_bps=0.05,
+        severe_loss_ratio=0.05,
         target_max_severe_loss_rate=0.5,
     )
 
@@ -42,6 +42,8 @@ def test_build_and_evaluate_entry_boundary_contract() -> None:
     )
 
     assert contract["policy"] == "risk_calibrated_entry_boundary_v1"
+    assert contract["severe_loss_ratio"] == 0.05
+    assert contract["severe_loss_bps"] == 0.05
     assert allowed["enabled"] is True
     assert allowed["allowed"] is True
     assert blocked["allowed"] is False

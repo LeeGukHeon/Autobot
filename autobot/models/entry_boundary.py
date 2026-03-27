@@ -40,7 +40,7 @@ def build_risk_calibrated_entry_boundary(
     final_uncertainty: np.ndarray,
     final_alpha_lcb: np.ndarray,
     realized_return: np.ndarray,
-    severe_loss_bps: float = 0.02,
+    severe_loss_ratio: float = 0.02,
     target_max_severe_loss_rate: float = 0.10,
 ) -> dict[str, Any]:
     x = np.column_stack(
@@ -53,7 +53,8 @@ def build_risk_calibrated_entry_boundary(
             np.asarray(final_rank_score, dtype=np.float64),
         ]
     )
-    y = (np.asarray(realized_return, dtype=np.float64) <= -abs(float(severe_loss_bps))).astype(np.int64)
+    severe_loss_ratio_value = abs(float(severe_loss_ratio))
+    y = (np.asarray(realized_return, dtype=np.float64) <= -severe_loss_ratio_value).astype(np.int64)
     risk_model = _fit_logistic_risk_model(x, y)
     risk_prob = risk_model.predict_proba(x)[:, 1]
 
@@ -73,7 +74,7 @@ def build_risk_calibrated_entry_boundary(
             accepted = realized[allowed_mask]
             if accepted.size <= 0:
                 continue
-            severe_rate = float(np.mean(accepted <= -abs(float(severe_loss_bps))))
+            severe_rate = float(np.mean(accepted <= -severe_loss_ratio_value))
             nonpositive_rate = float(np.mean(accepted <= 0.0))
             ev_mean = float(np.mean(accepted))
             candidate = {
@@ -112,7 +113,8 @@ def build_risk_calibrated_entry_boundary(
         "tradability_threshold": float(best["tradability_threshold"]),
         "severe_loss_risk_threshold": float(best["severe_loss_risk_threshold"]),
         "target_max_severe_loss_rate": float(target_max_severe_loss_rate),
-        "severe_loss_bps": float(abs(severe_loss_bps)),
+        "severe_loss_ratio": float(severe_loss_ratio_value),
+        "severe_loss_bps": float(severe_loss_ratio_value),
         "risk_model": {
             "feature_names": [
                 "final_expected_return",

@@ -165,7 +165,7 @@ def test_resolve_portfolio_risk_budget_uses_alpha_es_and_tradability_inputs(tmp_
     assert "PORTFOLIO_TRADABILITY_HAIRCUT" in payload["risk_reason_codes"]
 
 
-def test_resolve_portfolio_risk_budget_canary_bypasses_soft_haircuts_but_keeps_warning(tmp_path) -> None:
+def test_resolve_portfolio_risk_budget_canary_enforces_soft_haircuts(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         payload = resolve_portfolio_risk_budget(
             store=store,
@@ -181,12 +181,12 @@ def test_resolve_portfolio_risk_budget_canary_bypasses_soft_haircuts_but_keeps_w
             runtime_model_run_id="run-live",
         )
 
-    assert payload["allowed"] is True
-    assert payload["warning_only"] is True
-    assert payload["enforcement_mode"] == "warning_only"
-    assert "CANARY_PORTFOLIO_BUDGET_NOT_APPLIED" in payload["warning_reason_codes"]
-    assert "PORTFOLIO_SPREAD_HAIRCUT" in payload["warning_reason_codes"]
-    assert payload["resolved_notional_quote"] == 5_600.0
+    assert payload["allowed"] is False
+    assert payload["warning_only"] is False
+    assert payload["enforcement_mode"] == "enforced"
+    assert payload["warning_reason_codes"] == []
+    assert "PORTFOLIO_SPREAD_HAIRCUT" in payload["risk_reason_codes"]
+    assert payload["resolved_notional_quote"] == 4_200.0
     assert payload["diagnostic_resolved_notional_quote"] == 4_200.0
     assert payload["soft_budget_clamped"] is True
 

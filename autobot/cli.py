@@ -5896,7 +5896,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
             int(env_small_account_max_open_orders or small_account_cfg.get("max_open_orders_per_market", 1)),
             1,
         ),
-        "model_ref_source": env_model_ref_source or str(model_cfg.get("ref", "champion_v4")).strip() or "champion_v4",
+        "model_ref_source": env_model_ref_source or str(model_cfg.get("ref", _cli_model_helpers.DEFAULT_PRIMARY_RUNTIME_REF)).strip() or _cli_model_helpers.DEFAULT_PRIMARY_RUNTIME_REF,
         "model_family": env_model_family or str(model_cfg.get("family", _cli_model_helpers.DEFAULT_PRIMARY_MODEL_FAMILY)).strip() or _cli_model_helpers.DEFAULT_PRIMARY_MODEL_FAMILY,
         "model_registry_root": env_model_registry_root or str(model_cfg.get("registry_root", "models/registry")).strip() or "models/registry",
         "ws_public_raw_root": str(ws_public_cfg.get("raw_root", "data/raw_ws/upbit/public")).strip()

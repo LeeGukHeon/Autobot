@@ -1443,8 +1443,8 @@ def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_
                 "skip_reason": None,
                 "budget_reason_codes": ["PORTFOLIO_BUDGET_BELOW_MIN_TOTAL", "PORTFOLIO_SPREAD_HAIRCUT"],
                 "portfolio_budget_control": {
-                    "warning_only": True,
-                    "warning_reason_codes": ["CANARY_PORTFOLIO_BUDGET_NOT_APPLIED", "PORTFOLIO_SPREAD_HAIRCUT"],
+                    "warning_only": False,
+                    "warning_reason_codes": [],
                 },
             }
         },
@@ -1465,10 +1465,10 @@ def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_
     suppressor = candidate_state["suppressor_state"]
 
     assert suppressor["active"] is False
-    assert suppressor["current_reason_codes"] == []
-    assert suppressor["warning_active"] is True
-    assert "CANARY_PORTFOLIO_BUDGET_NOT_APPLIED" in suppressor["warning_reason_codes"]
-    assert suppressor["portfolio_budget"]["canary_warning_only"] is True
+    assert "PORTFOLIO_BUDGET_BELOW_MIN_TOTAL" in suppressor["current_reason_codes"]
+    assert suppressor["warning_active"] is False
+    assert suppressor["warning_reason_codes"] == []
+    assert suppressor["portfolio_budget"]["canary_warning_only"] is False
 
 
 def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_service_is_inactive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

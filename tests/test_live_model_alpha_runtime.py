@@ -1823,14 +1823,8 @@ def test_live_model_alpha_runtime_canary_does_not_apply_spread_budget_haircut(tm
             )
         )
 
-    assert summary["submitted_intents_total"] == 1
-    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
-    budget_payload = dict(meta_payload.get("portfolio_budget") or {})
-    assert budget_payload["warning_only"] is True
-    assert budget_payload["enforcement_mode"] == "warning_only"
-    assert "CANARY_PORTFOLIO_BUDGET_NOT_APPLIED" in list(budget_payload.get("warning_reason_codes") or [])
-    assert float(budget_payload["resolved_notional_quote"]) == pytest.approx(5600.0)
-    assert float(budget_payload["diagnostic_resolved_notional_quote"]) == pytest.approx(4200.0)
+    assert summary["submitted_intents_total"] == 0
+    assert executor.calls == []
 
 
 def test_live_model_alpha_runtime_steps_up_threshold_from_recent_losses(tmp_path: Path, monkeypatch) -> None:

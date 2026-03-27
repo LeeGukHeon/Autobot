@@ -120,22 +120,6 @@ def resolve_portfolio_risk_budget(
     warning_only = False
     warning_reason_codes: list[str] = []
     resolved_notional_quote = float(diagnostic_resolved_notional_quote)
-    min_effective_total = max(min_total_value, 1.0)
-    soft_reduction_present = bool(diagnostic_resolved_notional_quote + 1e-12 < structural_resolved_notional_quote)
-    if rollout_mode_value == "canary" and structural_resolved_notional_quote >= min_effective_total and soft_reduction_present:
-        enforcement_mode = "warning_only"
-        warning_only = True
-        warning_reason_codes.append("CANARY_PORTFOLIO_BUDGET_NOT_APPLIED")
-        for code in reason_codes:
-            if code in {
-                "PORTFOLIO_SPREAD_HAIRCUT",
-                "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT",
-                "PORTFOLIO_CONFIDENCE_HAIRCUT",
-                "PORTFOLIO_LIQUIDITY_HAIRCUT",
-                "PORTFOLIO_VOLATILITY_HAIRCUT",
-            } and code not in warning_reason_codes:
-                warning_reason_codes.append(code)
-        resolved_notional_quote = float(structural_resolved_notional_quote)
 
     allowed = bool(resolved_notional_quote >= max(min_total_value, 1.0))
     primary_reason_code = ""
