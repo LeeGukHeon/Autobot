@@ -83,6 +83,45 @@ def test_build_sequence_tensor_store_writes_cache_and_contracts(tmp_path: Path) 
     assert validate_summary.ok_files == 1
 
 
+def test_validate_sequence_tensor_store_treats_blank_cache_path_as_missing(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    out_root = parquet_root / "sequence_v1"
+    meta_root = out_root / "_meta"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    manifest = pl.DataFrame(
+        [
+            {
+                "market": "KRW-BTC",
+                "date": "2026-03-27",
+                "anchor_ts_ms": 1_774_569_660_000,
+                "anchor_utc": "2026-03-27T00:01:00+00:00",
+                "status": "FAIL",
+                "reasons_json": json.dumps(["BUILD_EXCEPTION"], ensure_ascii=False),
+                "error_message": "boom",
+                "cache_file": "",
+                "second_coverage_ratio": 0.0,
+                "minute_coverage_ratio": 0.0,
+                "micro_coverage_ratio": 0.0,
+                "lob_coverage_ratio": 0.0,
+                "built_at_ms": 1_774_569_660_000,
+            }
+        ]
+    )
+    manifest.write_parquet(meta_root / "manifest.parquet")
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=("KRW-BTC",),
+        date="2026-03-27",
+    )
+
+    validate_summary = validate_sequence_tensor_store(options=options)
+
+    assert validate_summary.fail_files == 1
+    assert validate_summary.details[0]["reasons"] == ["CACHE_FILE_MISSING"]
+
+
 def _write_second_candles(path: Path, *, start_ts_ms: int, count: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame = pl.DataFrame(

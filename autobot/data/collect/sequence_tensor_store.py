@@ -237,10 +237,11 @@ def validate_sequence_tensor_store(*, options: SequenceTensorBuildOptions) -> Se
 
     manifest = _load_manifest_rows(options.manifest_path)
     for row in manifest:
-        cache_file = Path(str(row.get("cache_file") or ""))
+        cache_file_text = str(row.get("cache_file") or "").strip()
+        cache_file = Path(cache_file_text) if cache_file_text else None
         status = "OK"
         reasons: list[str] = []
-        if not cache_file.exists():
+        if cache_file is None or not cache_file.exists() or cache_file.is_dir():
             status = "FAIL"
             reasons.append("CACHE_FILE_MISSING")
         else:
@@ -275,7 +276,7 @@ def validate_sequence_tensor_store(*, options: SequenceTensorBuildOptions) -> Se
         detail = {
             "market": row.get("market"),
             "anchor_ts_ms": row.get("anchor_ts_ms"),
-            "cache_file": str(cache_file),
+            "cache_file": str(cache_file) if cache_file is not None else "",
             "status": status,
             "reasons": reasons,
         }
