@@ -1443,3 +1443,41 @@ def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_ser
     assert activity["active"] is True
     assert activity["stage_key"] == "scheduled_daily_train"
     assert activity["process_pid"] == 9992
+
+
+def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_machine(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(
+        project_root / "data" / "collect" / "_meta" / "data_platform_refresh_latest.json",
+        {
+            "policy": "data_platform_refresh_v1",
+            "generated_at_utc": "2026-03-27T00:30:00Z",
+            "steps": [{"step": "collect_sequence_tensors"}, {"step": "refresh_data_contract_registry"}],
+        },
+    )
+    _write_json(project_root / "data" / "_meta" / "data_contract_registry.json", {"summary": {"contract_count": 23, "dataset_names": ["candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1"]}})
+    for dataset_name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1"):
+        meta_root = project_root / "data" / "parquet" / dataset_name / "_meta"
+        _write_json(meta_root / "build_report.json", {"generated_at": "2026-03-27T00:30:00Z", "summary": {"ok_targets": 1}})
+    _write_json(project_root / "data" / "collect" / "_meta" / "candle_second_validate_report.json", {"checked_files": 1, "warn_files": 0, "fail_files": 0})
+    _write_json(project_root / "data" / "collect" / "_meta" / "ws_candle_validate_report.json", {"checked_files": 1, "warn_files": 0, "fail_files": 0})
+    _write_json(project_root / "data" / "collect" / "_meta" / "lob30_validate_report.json", {"checked_files": 1, "warn_files": 0, "fail_files": 0})
+    _write_json(project_root / "data" / "parquet" / "sequence_v1" / "_meta" / "validate_report.json", {"checked_files": 1, "warn_files": 1, "fail_files": 0})
+    _write_json(project_root / "logs" / "model_v4_challenger" / "step_06_promote.json", {"policy": "promote_abort_continue_state_machine_v1", "state": "continue", "reason": "CANARY_CONTINUE", "next_action": "keep_collecting_evidence"})
+    family_root = project_root / "models" / "registry" / "train_v5_sequence"
+    _write_json(family_root / "latest.json", {"run_id": "v5-seq-001", "updated_at_utc": "2026-03-27T00:31:00Z"})
+    _write_json(family_root / "v5-seq-001" / "train_config.yaml", {"trainer": "v5_sequence", "run_scope": "scheduled_daily", "task": "multitask"})
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    assert snapshot["data_platform"]["refresh"]["exists"] is True
+    assert snapshot["data_platform"]["datasets"]["sequence_v1"]["registry_present"] is True
+    assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["run_id"] == "v5-seq-001"
+    assert snapshot["challenger"]["promotion_state_machine"]["state"] == "continue"
+    assert "start_data_platform_refresh" in [item["id"] for item in snapshot["operations"]["actions"]]
+
+
+def test_dashboard_asset_mentions_data_platform_refresh_surface() -> None:
+    js = str(_load_dashboard_asset("dashboard.js"))
+    assert "data_platform_refresh_service" in js
+    assert "start_data_platform_refresh" in js

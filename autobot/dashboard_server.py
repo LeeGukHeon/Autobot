@@ -2200,6 +2200,174 @@ def _load_training_pointer_summary(project_root: Path, model_family: str = "trai
     }
 
 
+def _load_model_family_latest_summary(project_root: Path, model_family: str) -> dict[str, Any]:
+    family_root = project_root / "models" / "registry" / model_family
+    latest_payload = _load_json(family_root / "latest.json")
+    run_id = str(latest_payload.get("run_id") or "").strip()
+    run_dir = family_root / run_id if run_id else None
+    train_config = _load_json(run_dir / "train_config.yaml") if run_dir and run_dir.exists() else {}
+    return {
+        "model_family": model_family,
+        "exists": bool(run_id and run_dir and run_dir.exists()),
+        "run_id": run_id or None,
+        "updated_at_utc": latest_payload.get("updated_at_utc") or _path_mtime_iso(family_root / "latest.json"),
+        "run_dir": str(run_dir) if run_dir and run_dir.exists() else None,
+        "trainer": train_config.get("trainer"),
+        "task": train_config.get("task"),
+        "run_scope": train_config.get("run_scope"),
+        "start": train_config.get("start"),
+        "end": train_config.get("end"),
+    }
+
+
+def _summarize_data_platform_dataset(
+    project_root: Path,
+    *,
+    dataset_name: str,
+    validate_report_path: Path | None = None,
+    registry_dataset_names: set[str] | None = None,
+) -> dict[str, Any]:
+    dataset_root = project_root / "data" / "parquet" / dataset_name
+    meta_root = dataset_root / "_meta"
+    build_report_path = meta_root / "build_report.json"
+    validate_path = validate_report_path or (meta_root / "validate_report.json")
+    build_report = _load_json(build_report_path)
+    validate_report = _load_json(validate_path)
+    validate_fail = _coerce_int(validate_report.get("fail_files")) or 0
+    validate_warn = _coerce_int(validate_report.get("warn_files")) or 0
+    status = "missing"
+    if dataset_root.exists():
+        status = "present"
+    if validate_report:
+        status = "ready" if validate_fail <= 0 and validate_warn <= 0 else ("warn" if validate_fail <= 0 else "invalid")
+    elif build_report:
+        status = "built"
+    build_summary = dict(build_report.get("summary") or {})
+    validate_summary = {
+        "checked_files": _coerce_int(validate_report.get("checked_files")),
+        "ok_files": _coerce_int(validate_report.get("ok_files")),
+        "warn_files": _coerce_int(validate_report.get("warn_files")),
+        "fail_files": _coerce_int(validate_report.get("fail_files")),
+    }
+    cache_file_count = len(list((dataset_root / "cache").rglob("*.npz"))) if (dataset_root / "cache").exists() else 0
+    return {
+        "dataset_name": dataset_name,
+        "dataset_root": str(dataset_root),
+        "exists": dataset_root.exists(),
+        "registry_present": bool(registry_dataset_names and dataset_name in registry_dataset_names),
+        "status": status,
+        "build_generated_at": build_report.get("generated_at") or _path_mtime_iso(build_report_path),
+        "validate_generated_at": validate_report.get("generated_at") or _path_mtime_iso(validate_path),
+        "build_summary": build_summary,
+        "validate_summary": validate_summary,
+        "manifest_exists": (meta_root / "manifest.parquet").exists(),
+        "cache_file_count": cache_file_count,
+        "artifact_paths": {
+            "build_report": str(build_report_path),
+            "validate_report": str(validate_path),
+        },
+    }
+
+
+def _summarize_data_platform(project_root: Path) -> dict[str, Any]:
+    registry_path = project_root / "data" / "_meta" / "data_contract_registry.json"
+    registry_payload = _load_json(registry_path)
+    registry_dataset_names = {
+        str(item).strip()
+        for item in (((registry_payload.get("summary") or {}).get("dataset_names")) or [])
+        if str(item).strip()
+    }
+    refresh_path = project_root / "data" / "collect" / "_meta" / "data_platform_refresh_latest.json"
+    refresh_payload = _load_json(refresh_path)
+    refresh_steps = list(refresh_payload.get("steps") or []) if isinstance(refresh_payload.get("steps"), list) else []
+    datasets = {
+        "candles_second_v1": _summarize_data_platform_dataset(
+            project_root,
+            dataset_name="candles_second_v1",
+            validate_report_path=project_root / "data" / "collect" / "_meta" / "candle_second_validate_report.json",
+            registry_dataset_names=registry_dataset_names,
+        ),
+        "ws_candle_v1": _summarize_data_platform_dataset(
+            project_root,
+            dataset_name="ws_candle_v1",
+            validate_report_path=project_root / "data" / "collect" / "_meta" / "ws_candle_validate_report.json",
+            registry_dataset_names=registry_dataset_names,
+        ),
+        "lob30_v1": _summarize_data_platform_dataset(
+            project_root,
+            dataset_name="lob30_v1",
+            validate_report_path=project_root / "data" / "collect" / "_meta" / "lob30_validate_report.json",
+            registry_dataset_names=registry_dataset_names,
+        ),
+        "sequence_v1": _summarize_data_platform_dataset(
+            project_root,
+            dataset_name="sequence_v1",
+            registry_dataset_names=registry_dataset_names,
+        ),
+    }
+    return {
+        "refresh": {
+            "exists": bool(refresh_payload),
+            "policy": refresh_payload.get("policy"),
+            "generated_at_utc": refresh_payload.get("generated_at_utc") or _path_mtime_iso(refresh_path),
+            "artifact_path": str(refresh_path),
+            "step_count": len(refresh_steps),
+            "steps": refresh_steps,
+        },
+        "registry": {
+            "exists": bool(registry_payload),
+            "artifact_path": str(registry_path),
+            "contract_count": _coerce_int(_dig(registry_payload, "summary", "contract_count")),
+            "dataset_names": sorted(registry_dataset_names),
+        },
+        "datasets": datasets,
+    }
+
+
+def _summarize_v5_readiness(project_root: Path, *, data_platform: dict[str, Any]) -> dict[str, Any]:
+    dataset_rows = dict(data_platform.get("datasets") or {})
+    families = {
+        "train_v5_sequence": _load_model_family_latest_summary(project_root, "train_v5_sequence"),
+        "train_v5_lob": _load_model_family_latest_summary(project_root, "train_v5_lob"),
+        "train_v5_fusion": _load_model_family_latest_summary(project_root, "train_v5_fusion"),
+    }
+    global_latest = _load_json(project_root / "models" / "registry" / "latest.json")
+    return {
+        "families": families,
+        "data_requirements": {
+            key: {
+                "exists": bool((dataset_rows.get(key) or {}).get("exists", False)),
+                "registry_present": bool((dataset_rows.get(key) or {}).get("registry_present", False)),
+                "status": (dataset_rows.get(key) or {}).get("status"),
+            }
+            for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1")
+        },
+        "core_data_ready": all(bool((dataset_rows.get(key) or {}).get("exists", False)) for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1")),
+        "core_registry_ready": all(bool((dataset_rows.get(key) or {}).get("registry_present", False)) for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1")),
+        "latest_global_pointer_family": str(global_latest.get("model_family") or "").strip() or None,
+        "latest_global_pointer_run_id": str(global_latest.get("run_id") or "").strip() or None,
+    }
+
+
+def _summarize_promotion_state_machine(project_root: Path) -> dict[str, Any]:
+    path = project_root / "logs" / "model_v4_challenger" / "step_06_promote.json"
+    payload = _load_json(path)
+    return {
+        "exists": bool(payload),
+        "artifact_path": str(path),
+        "policy": payload.get("policy"),
+        "state": payload.get("state"),
+        "reason": payload.get("reason"),
+        "next_action": payload.get("next_action"),
+        "candidate_run_id": payload.get("candidate_run_id"),
+        "champion_run_id_at_start": payload.get("champion_run_id_at_start"),
+        "paired_paper": dict(payload.get("paired_paper") or {}),
+        "canary": dict(payload.get("canary") or {}),
+        "actions": dict(payload.get("actions") or {}),
+        "updated_at": _path_mtime_iso(path),
+    }
+
+
 def _dashboard_ops_config() -> dict[str, Any]:
     requested = _env_flag(_DASHBOARD_OPS_ENABLED_ENV)
     token = str(os.getenv(_DASHBOARD_OPS_TOKEN_ENV, "")).strip()
@@ -2727,6 +2895,15 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "restart", "autobot-ws-public.service"],
         },
+        "start_data_platform_refresh": {
+            "id": "start_data_platform_refresh",
+            "label": "데이터 플랫폼 refresh",
+            "description": "second/ws/lob/sequence refresh 수동 실행",
+            "category": "pipeline",
+            "confirm": "새 데이터 레이어 refresh를 지금 수동 실행할까요?",
+            "kind": "command",
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-data-platform-refresh.service"],
+        },
         "start_spawn_only": {
             "id": "start_spawn_only",
             "label": "스폰만 지금 실행",
@@ -2830,8 +3007,11 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         raw_root=project_root / "data" / "raw_ws" / "upbit" / "public",
     )
     acceptance = _summarize_acceptance(acceptance_latest)
+    data_platform = _summarize_data_platform(project_root)
     live_db_candidates = [item for item in _resolve_live_db_candidates(project_root) if item.get("service_key")]
     live_account_summary = _load_live_account_summary(project_root)
+    challenger_summary = _summarize_challenger(challenger_latest, challenger_state)
+    challenger_summary["promotion_state_machine"] = _summarize_promotion_state_machine(project_root)
     return {
         "generated_at": _utc_now_iso(),
         "project_root": str(project_root),
@@ -2843,9 +3023,11 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             "ws_public": _unit_snapshot("autobot-ws-public.service"),
             "live_main": _unit_snapshot("autobot-live-alpha.service"),
             "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
+            "data_platform_refresh_service": _unit_snapshot("autobot-data-platform-refresh.service"),
             "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
             "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
             "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
+            "data_platform_refresh_timer": _unit_snapshot("autobot-data-platform-refresh.timer", timer=True),
             "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
             "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
             "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
@@ -2854,6 +3036,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             "acceptance": acceptance,
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
             "pointers": _load_training_pointer_summary(project_root),
+            "v5_readiness": _summarize_v5_readiness(project_root, data_platform=data_platform),
             "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
             "current_activity": _summarize_training_activity(
                 project_root,
@@ -2863,7 +3046,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
                 acceptance=acceptance,
             ),
         },
-        "challenger": _summarize_challenger(challenger_latest, challenger_state),
+        "challenger": challenger_summary,
         "paper": {
             "paired_latest": _load_paired_paper_latest(project_root),
             "paired_history": _latest_paired_paper_history(project_root),
@@ -2883,6 +3066,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             ],
         },
         "ws_public": ws_status,
+        "data_platform": data_platform,
         "operations": _build_dashboard_ops_snapshot(project_root),
     }
 

@@ -129,9 +129,11 @@
     ws_public: "WS 수집기",
     live_main: "메인 라이브",
     live_candidate: "후보 카나리아",
+    data_platform_refresh_service: "데이터 refresh 서비스",
     spawn_service: "챌린저 생성 서비스",
     promote_service: "챌린저 승급 서비스",
     rank_shadow_service: "랭크 그림자 서비스",
+    data_platform_refresh_timer: "데이터 refresh 타이머",
     spawn_timer: "챌린저 생성 타이머",
     promote_timer: "챌린저 승급 타이머",
     rank_shadow_timer: "랭크 그림자 타이머"
@@ -146,6 +148,7 @@
     clear_live_main_breaker: { label: "메인 라이브 브레이커 해제" },
     reset_live_main_suppressors: { label: "메인 억제 상태 리셋" },
     restart_ws_public: { label: "WS 수집기 재시작" },
+    start_data_platform_refresh: { label: "데이터 플랫폼 refresh" },
     start_spawn_only: { label: "스폰만 지금 실행" },
     start_promote_only: { label: "승급만 지금 실행" },
     start_rank_shadow: { label: "랭크 섀도우 실행" },
@@ -922,6 +925,7 @@
     const pointers = training.pointers || {};
     const challenger = snapshot.challenger || {};
     const rankShadow = training.rank_shadow || {};
+    const v5Readiness = training.v5_readiness || {};
     const summary = joinTranslated([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]);
     const progressPct = clampProgress(activity.progress_pct);
 
@@ -958,9 +962,17 @@
     const challengerNarrative = challenger.started
       ? "챌린저 서비스가 실제로 올라가 다음 단계 관찰이 시작됐습니다."
       : `${translate(challenger.reason)} 때문에 챌린저가 아직 올라가지 않았습니다.`;
+    const promotionStateMachine = challenger.promotion_state_machine || {};
+    const promotionNarrative = promotionStateMachine.exists
+      ? `최근 승급 상태머신은 ${translate(promotionStateMachine.state)} 상태로 ${translate(promotionStateMachine.reason)}를 기록했습니다.`
+      : "최근 승급 상태머신 artifact가 아직 없습니다.";
     const rankNarrative = rankShadow.status
       ? `랭크 그림자 레인은 현재 ${maybe(rankShadow.status)} 상태이며 다음 액션은 ${maybe(rankShadow.next_action)}입니다.`
       : "랭크 그림자 레인 최신 판단이 아직 없습니다.";
+    const v5Families = v5Readiness.families || {};
+    const v5Narrative = v5Readiness.core_data_ready
+      ? "v5용 핵심 데이터 레이어가 존재합니다."
+      : "v5용 핵심 데이터 레이어가 아직 완전히 준비되진 않았습니다.";
     const activityCard = activity.active ? `
       <article class="list-row training-progress-row">
         <div class="list-row-head">
@@ -1017,6 +1029,18 @@
           ],
         }),
         compactRow({
+          title: "승급 상태머신",
+          summary: promotionNarrative,
+          items: [
+            compactStat("상태", translate(promotionStateMachine.state)),
+            compactStat("사유", translate(promotionStateMachine.reason)),
+            compactStat("다음 액션", translate(promotionStateMachine.next_action)),
+            compactStat("후보 run", shortRun(promotionStateMachine.candidate_run_id)),
+            compactStat("기준 챔피언", shortRun(promotionStateMachine.champion_run_id_at_start)),
+            compactStat("artifact", shortPath(promotionStateMachine.artifact_path)),
+          ],
+        }),
+        compactRow({
           title: "랭크 그림자 레인",
           summary: rankNarrative,
           items: [
@@ -1026,6 +1050,18 @@
             compactStat("선택 스크립트", maybe((rankShadow.governance_action || {}).selected_acceptance_script)),
             compactStat("후보 run", shortRun(rankShadow.candidate_run_id)),
             compactStat("사이클 보고서", shortPath(rankShadow.artifact_path)),
+          ],
+        }),
+        compactRow({
+          title: "V5 준비도",
+          summary: v5Narrative,
+          items: [
+            compactStat("core data", boolLabel(v5Readiness.core_data_ready)),
+            compactStat("registry 반영", boolLabel(v5Readiness.core_registry_ready)),
+            compactStat("v5 sequence", shortRun((v5Families.train_v5_sequence || {}).run_id)),
+            compactStat("v5 lob", shortRun((v5Families.train_v5_lob || {}).run_id)),
+            compactStat("v5 fusion", shortRun((v5Families.train_v5_fusion || {}).run_id)),
+            compactStat("global latest family", maybe(v5Readiness.latest_global_pointer_family)),
           ],
         }),
       ].filter(Boolean).join("")
@@ -1791,6 +1827,12 @@
 
   function renderWs(snapshot) {
     const ws = snapshot.ws_public || {};
+    const dataPlatform = snapshot.data_platform || {};
+    const refresh = dataPlatform.refresh || {};
+    const datasets = dataPlatform.datasets || {};
+    const services = snapshot.services || {};
+    const dataRefreshService = services.data_platform_refresh_service || {};
+    const dataRefreshTimer = services.data_platform_refresh_timer || {};
     const health = ws.health_snapshot || {};
     const latestRun = ws.runs_summary_latest || {};
     const lastRxTs = Math.max(
@@ -1826,6 +1868,31 @@
             compactStat("trade 행", fmtNumber((health.written_rows || {}).trade, 0)),
             compactStat("orderbook 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
             compactStat("총 drop 행", fmtNumber((health.dropped_rows || {}).total, 0)),
+          ],
+        }),
+        compactRow({
+          title: "데이터 refresh 주기",
+          summary: refresh.exists
+            ? `최근 refresh가 ${fmtDateTime(refresh.generated_at_utc)}에 ${maybe(refresh.step_count, "0")}개 step으로 완료됐습니다.`
+            : "data platform refresh artifact가 아직 없습니다.",
+          items: [
+            compactStat("서비스", translate(dataRefreshService.active_state)),
+            compactStat("타이머", translate(dataRefreshTimer.active_state)),
+            compactStat("최근 refresh", fmtDateTime(refresh.generated_at_utc)),
+            compactStat("step 수", maybe(refresh.step_count)),
+            compactStat("artifact", shortPath(refresh.artifact_path)),
+          ],
+        }),
+        compactRow({
+          title: "파생 데이터 레이어",
+          summary: "second / ws candle / lob30 / sequence 상태를 한 곳에 모아 보여줍니다.",
+          items: [
+            compactStat("second", maybe((datasets.candles_second_v1 || {}).status)),
+            compactStat("ws candle", maybe((datasets.ws_candle_v1 || {}).status)),
+            compactStat("lob30", maybe((datasets.lob30_v1 || {}).status)),
+            compactStat("sequence", maybe((datasets.sequence_v1 || {}).status)),
+            compactStat("registry", boolLabel(Boolean((dataPlatform.registry || {}).exists))),
+            compactStat("contract 수", maybe((dataPlatform.registry || {}).contract_count)),
           ],
         }),
       ].join("")
