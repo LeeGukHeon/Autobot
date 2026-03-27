@@ -546,10 +546,18 @@ class LiveWsMicroSnapshotProvider:
         trade_max_ts = max((int(event["ts_ms"]) for event in trades), default=0)
         trade_coverage_ms = max(trade_max_ts - trade_min_ts, 0) if trade_events > 0 else 0
         trade_notional_krw = sum(float(event["price"]) * float(event["volume"]) for event in trades)
+        total_volume = sum(float(event["volume"]) for event in trades)
         bid_volume = sum(float(event["volume"]) for event in trades if str(event.get("ask_bid")) == "BID")
         ask_volume = sum(float(event["volume"]) for event in trades if str(event.get("ask_bid")) == "ASK")
-        total_volume = bid_volume + ask_volume
-        trade_imbalance = ((bid_volume - ask_volume) / total_volume) if total_volume > 0 else None
+        signed_volume_total = bid_volume + ask_volume
+        trade_imbalance = ((bid_volume - ask_volume) / signed_volume_total) if signed_volume_total > 0 else None
+        buy_count_known = sum(1 for event in trades if str(event.get("ask_bid")) == "BID")
+        sell_count_known = sum(1 for event in trades if str(event.get("ask_bid")) == "ASK")
+        unknown_count = max(int(trade_events) - int(buy_count_known) - int(sell_count_known), 0)
+        buy_ratio = (float(bid_volume) / float(signed_volume_total)) if signed_volume_total > 0.0 else 0.5
+        buy_count = int(buy_count_known) + int(round(float(unknown_count) * buy_ratio))
+        buy_count = min(max(buy_count, 0), int(trade_events))
+        sell_count = max(int(trade_events) - int(buy_count), 0)
 
         book_events = len(books)
         book_min_ts = min((int(event["ts_ms"]) for event in books), default=0)
@@ -616,8 +624,8 @@ class LiveWsMicroSnapshotProvider:
             last_event_ts_ms=int(last_event_ts_ms),
             trade_events=int(trade_events),
             trade_count=int(trade_events),
-            buy_count=int(round(trade_events * buy_ratio)),
-            sell_count=int(max(trade_events - round(trade_events * buy_ratio), 0)),
+            buy_count=int(buy_count),
+            sell_count=int(sell_count),
             trade_volume_total=float(total_volume),
             buy_volume=float(bid_volume),
             sell_volume=float(ask_volume),

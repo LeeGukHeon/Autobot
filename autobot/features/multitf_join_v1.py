@@ -105,6 +105,26 @@ def high_tf_prefix(tf: str) -> str:
     return f"tf{str(tf).strip().lower()}"
 
 
+def bucket_end_timestamp_expr(ts_expr: pl.Expr, *, interval_ms: int) -> pl.Expr:
+    """Map end-labeled lower-tf bars onto an end-labeled higher-tf bucket.
+
+    Upbit candle datasets label bars by interval end. A 1m candle stamped
+    exactly at ``00:05`` belongs to the 5m bar ending at ``00:05``, not the
+    next bar ending at ``00:10``.
+    """
+
+    interval = max(int(interval_ms), 1)
+    ts_value = ts_expr.cast(pl.Int64)
+    return (
+        pl.when(ts_value <= 0)
+        .then(ts_value)
+        .when((ts_value % interval) == 0)
+        .then(ts_value)
+        .otherwise(((ts_value // interval) * interval) + interval)
+        .cast(pl.Int64)
+    )
+
+
 def compute_high_tf_features(
     candles_frame: pl.DataFrame,
     *,
@@ -305,9 +325,7 @@ def aggregate_1m_for_base(
         [
             (pl.col("close").log() - pl.col("close").shift(1).log()).alias("__ret_1m"),
             (pl.col("high") / pl.col("low") - 1.0).alias("__range_1m"),
-            (((pl.col("ts_ms") // int(base_interval_ms)) * int(base_interval_ms)) + int(base_interval_ms))
-            .cast(pl.Int64)
-            .alias("__base_ts"),
+            bucket_end_timestamp_expr(pl.col("ts_ms"), interval_ms=base_interval_ms).alias("__base_ts"),
         ]
     )
     grouped = frame.group_by("__base_ts").agg(

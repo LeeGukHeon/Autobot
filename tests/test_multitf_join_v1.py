@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from autobot.features.multitf_join_v1 import densify_1m_candles, join_1m_aggregate, join_high_tf_asof
+from autobot.features.multitf_join_v1 import aggregate_1m_for_base, densify_1m_candles, join_1m_aggregate, join_high_tf_asof
 
 
 def test_high_tf_asof_join_does_not_use_future_rows() -> None:
@@ -73,6 +73,27 @@ def test_densify_1m_fills_gaps_with_prev_close() -> None:
     assert dense.get_column("is_synth_1m").to_list() == [False, True, False]
     assert dense.get_column("close").to_list() == [100.0, 100.0, 103.0]
     assert dense.get_column("volume_base").to_list() == [5.0, 0.0, 7.0]
+
+
+def test_aggregate_1m_for_base_keeps_boundary_minute_in_current_bar() -> None:
+    one_m = pl.DataFrame(
+        {
+            "ts_ms": [60_000, 120_000, 180_000, 240_000, 300_000, 360_000],
+            "open": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "high": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "low": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "close": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "volume_base": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+            "is_synth_1m": [False, False, False, False, False, False],
+        }
+    )
+
+    grouped = aggregate_1m_for_base(one_m, base_tf="5m", float_dtype="float64")
+
+    assert grouped.get_column("ts_ms").to_list() == [300_000, 600_000]
+    assert grouped.get_column("one_m_count").to_list() == [5, 1]
+    assert grouped.get_column("one_m_last_ts").to_list() == [300_000, 360_000]
+    assert grouped.get_column("one_m_volume_sum").to_list() == [150.0, 60.0]
 
 
 def test_1m_join_can_drop_windows_with_no_real_1m() -> None:

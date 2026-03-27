@@ -19,6 +19,7 @@ import polars as pl
 
 from autobot.data import expected_interval_ms
 from autobot.features.micro_join import prefixed_micro_columns
+from autobot.features.multitf_join_v1 import bucket_end_timestamp_expr
 from autobot.strategy.micro_snapshot import MicroSnapshotProvider
 from autobot.upbit.ws.models import TickerEvent
 
@@ -493,9 +494,7 @@ def _rollup_from_1m(*, one_m: pl.DataFrame, tf: str) -> pl.DataFrame:
     interval_ms = int(expected_interval_ms(tf))
     grouped = (
         one_m.sort("ts_ms")
-        .with_columns(
-            (((pl.col("ts_ms") // interval_ms) * interval_ms) + interval_ms).cast(pl.Int64).alias("__ts_tf")
-        )
+        .with_columns(bucket_end_timestamp_expr(pl.col("ts_ms"), interval_ms=interval_ms).alias("__ts_tf"))
         .group_by("__ts_tf")
         .agg(
             [
