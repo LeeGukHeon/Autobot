@@ -549,7 +549,7 @@ def _summarize_training_activity(
             "detail_builder": lambda command: "캔들, 틱, micro 데이터를 순서대로 준비하며 학습 입력을 만드는 초기 단계입니다.",
         },
         {
-            "match": ("v4_governed_candidate_acceptance.ps1",),
+            "match": ("governed_candidate_acceptance.ps1",),
             "stage_key": "acceptance_wrapper",
             "stage_label_ko": "수락 루프 시작",
             "progress_pct": 2,
@@ -3171,6 +3171,7 @@ def _summarize_training_activity(
             "daily_champion_challenger_v4_for_server.ps1",
             "candidate_acceptance.ps1",
             "v4_governed_candidate_acceptance.ps1",
+            "v5_governed_candidate_acceptance.ps1",
             "autobot.cli model train",
             "autobot.cli backtest alpha",
             "paper_micro_smoke.ps1",

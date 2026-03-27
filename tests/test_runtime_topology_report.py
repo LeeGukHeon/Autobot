@@ -222,3 +222,66 @@ def test_build_runtime_topology_report_ignores_inactive_live_main_pointer_drift(
     assert report["live_runtime_sync_status"]["model_pointer_divergence"] is True
     assert report["topology_health"]["status"] == "healthy"
     assert "MODEL_POINTER_DIVERGENCE" not in report["topology_health"]["reason_codes"]
+
+
+def test_build_runtime_topology_report_uses_live_service_env_model_family(tmp_path: Path) -> None:
+    project_root = tmp_path
+    registry_root = project_root / "models" / "registry" / "train_v5_panel_ensemble"
+    registry_root.mkdir(parents=True, exist_ok=True)
+    _write_json(registry_root / "champion.json", {"run_id": "v5-run-1"})
+    _write_json(registry_root / "latest_candidate.json", {"run_id": "v5-run-2"})
+    (registry_root / "v5-run-1").mkdir(parents=True, exist_ok=True)
+    (registry_root / "v5-run-2").mkdir(parents=True, exist_ok=True)
+
+    ws_meta_dir = project_root / "data" / "raw_ws" / "upbit" / "_meta"
+    ws_meta_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(ws_meta_dir / "ws_public_health.json", {"run_id": "ws-run-1", "updated_at_ms": 9_900, "last_rx_ts_ms": {"trade": 9_900, "orderbook": 9_900}})
+    (project_root / "data" / "raw_ws" / "upbit" / "public").mkdir(parents=True, exist_ok=True)
+    micro_meta = project_root / "data" / "parquet" / "micro_v1" / "_meta"
+    micro_meta.mkdir(parents=True, exist_ok=True)
+    _write_json(micro_meta / "aggregate_report.json", {"run_id": "micro-run-1"})
+
+    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    candidate_db.parent.mkdir(parents=True, exist_ok=True)
+    with LiveStateStore(candidate_db) as store:
+        store.set_runtime_contract(payload={"live_runtime_model_run_id": "v5-run-2"}, ts_ms=10_000)
+    live_db = project_root / "data" / "state" / "live" / "live_state.db"
+    live_db.parent.mkdir(parents=True, exist_ok=True)
+    with LiveStateStore(live_db) as store:
+        store.set_runtime_contract(payload={"live_runtime_model_run_id": "v5-run-1"}, ts_ms=10_000)
+
+    original_systemd = topology_module._systemd_topology_snapshot
+    original_show = topology_module._systemd_show_properties
+    original_git = topology_module._git_topology_snapshot
+    original_project = topology_module._project_topology_snapshot
+    topology_module._systemd_topology_snapshot = lambda: {
+        "available": True,
+        "services": [
+            {"unit": "autobot-live-alpha.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion live"},
+            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+        ],
+        "timers": [],
+        "unit_files": [],
+        "errors": {},
+    }
+    topology_module._systemd_show_properties = lambda unit_name, *properties: {
+        "Environment": (
+            "AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate AUTOBOT_LIVE_MODEL_FAMILY=train_v5_panel_ensemble"
+            if unit_name == "autobot-live-alpha-candidate.service"
+            else "AUTOBOT_LIVE_MODEL_REF_SOURCE=champion AUTOBOT_LIVE_MODEL_FAMILY=train_v5_panel_ensemble"
+        )
+    }
+    topology_module._git_topology_snapshot = lambda *, root: {"available": True, "head": "abc123", "branch": "main", "remote_origin": "", "status_short": [], "dirty": False, "errors": {}}
+    topology_module._project_topology_snapshot = lambda *, root: {"project_root_parent": str(root.parent), "sibling_directories": [], "replay_like_paths": [], "replay_path_present": False}
+    try:
+        report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-candidate.service", ts_ms=10_000)
+    finally:
+        topology_module._systemd_topology_snapshot = original_systemd
+        topology_module._systemd_show_properties = original_show
+        topology_module._git_topology_snapshot = original_git
+        topology_module._project_topology_snapshot = original_project
+
+    assert report["lane_runtime_defaults"]["live_main"]["runtime_model_family"] == "train_v5_panel_ensemble"
+    assert report["lane_runtime_defaults"]["live_candidate"]["runtime_model_family"] == "train_v5_panel_ensemble"
+    assert report["current_runtime_contract"]["model_family_resolved"] == "train_v5_panel_ensemble"
+    assert report["candidate_runtime_sync_status"]["model_pointer_divergence"] is False

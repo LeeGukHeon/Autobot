@@ -65,8 +65,22 @@ def build_runtime_topology_report(
 
     rollout_latest = load_rollout_latest(root, target_unit=target_unit)
 
+    live_lane_defaults = _load_unit_runtime_defaults(
+        root,
+        unit_name="autobot-live-alpha.service",
+        fallback_model_ref_source="champion_v4",
+    )
+    candidate_lane_defaults = _load_unit_runtime_defaults(
+        root,
+        unit_name="autobot-live-alpha-candidate.service",
+        fallback_model_ref_source="latest_candidate_v4",
+    )
     effective_target_unit = str(target_unit or "").strip() or None
-    daemon_defaults = _load_live_defaults(root, target_unit=effective_target_unit)
+    daemon_defaults = (
+        candidate_lane_defaults
+        if effective_target_unit in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}
+        else live_lane_defaults
+    )
     ws_public_contract = load_ws_public_runtime_contract(
         meta_dir=Path(str(daemon_defaults["ws_public_meta_dir"])),
         raw_root=Path(str(daemon_defaults["ws_public_raw_root"])),
@@ -80,8 +94,8 @@ def build_runtime_topology_report(
     try:
         live_current_contract = resolve_live_runtime_model_contract(
             registry_root=registry_root,
-            model_ref="champion_v4",
-            model_family="train_v4_crypto_cs",
+            model_ref=str(live_lane_defaults["runtime_model_ref_source"]),
+            model_family=str(live_lane_defaults["runtime_model_family"]),
             ts_ms=effective_ts_ms,
         )
     except Exception as exc:  # pragma: no cover - defensive path
@@ -92,8 +106,8 @@ def build_runtime_topology_report(
     try:
         candidate_current_contract = resolve_live_runtime_model_contract(
             registry_root=registry_root,
-            model_ref="latest_candidate_v4",
-            model_family="train_v4_crypto_cs",
+            model_ref=str(candidate_lane_defaults["runtime_model_ref_source"]),
+            model_family=str(candidate_lane_defaults["runtime_model_family"]),
             ts_ms=effective_ts_ms,
         )
     except Exception as exc:  # pragma: no cover - defensive path
@@ -151,6 +165,10 @@ def build_runtime_topology_report(
             "summary": dict(data_contract_registry.get("summary") or {}),
         },
         "server_intended_defaults": daemon_defaults,
+        "lane_runtime_defaults": {
+            "live_main": live_lane_defaults,
+            "live_candidate": candidate_lane_defaults,
+        },
         "live_lane": live_state,
         "candidate_lane": candidate_state,
         "ws_public_contract": ws_public_contract,
@@ -229,6 +247,23 @@ def _load_live_defaults(project_root: Path, *, target_unit: str | None = None) -
         "ws_public_stale_threshold_sec": 180,
         "micro_aggregate_report_path": str(project_root / "data" / "parquet" / "micro_v1" / "_meta" / "aggregate_report.json"),
     }
+
+
+def _load_unit_runtime_defaults(
+    project_root: Path,
+    *,
+    unit_name: str,
+    fallback_model_ref_source: str,
+) -> dict[str, Any]:
+    defaults = _load_live_defaults(project_root, target_unit=unit_name)
+    payload = _systemd_show_properties(unit_name, "Environment")
+    environment = _parse_systemd_environment(str(payload.get("Environment", "")))
+    model_ref_source = str(environment.get("AUTOBOT_LIVE_MODEL_REF_SOURCE") or defaults["runtime_model_ref_source"]).strip() or defaults["runtime_model_ref_source"]
+    model_family = str(environment.get("AUTOBOT_LIVE_MODEL_FAMILY") or defaults["runtime_model_family"]).strip() or defaults["runtime_model_family"]
+    defaults["runtime_model_ref_source"] = model_ref_source or fallback_model_ref_source
+    defaults["runtime_model_family"] = model_family
+    defaults["source_unit"] = unit_name
+    return defaults
 
 
 def _load_pointer(path: Path) -> dict[str, Any]:
@@ -383,6 +418,37 @@ def _systemd_topology_snapshot() -> dict[str, Any]:
             "unit_files": unit_file_result["stderr"] if not unit_file_result["ok"] else "",
         },
     }
+
+
+def _systemd_show_properties(unit_name: str, *properties: str) -> dict[str, str]:
+    command = ["systemctl", "show", str(unit_name)]
+    if properties:
+        command.extend(["--property", ",".join(str(item) for item in properties if str(item).strip())])
+    command.extend(["--no-pager"])
+    result = _run_command(command)
+    if not result["ok"]:
+        return {}
+    payload: dict[str, str] = {}
+    for line in str(result["stdout"]).splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        payload[str(key).strip()] = str(value).strip()
+    return payload
+
+
+def _parse_systemd_environment(text: str) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for token in str(text or "").split(" "):
+        item = str(token).strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = str(key).strip()
+        if not key:
+            continue
+        payload[key] = str(value).strip().strip('"')
+    return payload
 
 
 def _git_topology_snapshot(*, root: Path) -> dict[str, Any]:

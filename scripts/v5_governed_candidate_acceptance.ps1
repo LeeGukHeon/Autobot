@@ -35,7 +35,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
     -SplitPolicyHistoricalSelectorEnabled:$false `
     -KnownRuntimeUnits $knownRuntimeUnits `
-    -OutDir "logs/model_v5_acceptance" `
+    -OutDir "logs/model_v4_acceptance" `
     -ReportPrefix "v5_candidate_acceptance" `
     -ReportTitle "V5 Candidate Acceptance" `
     -LogTag "v5-accept" `
