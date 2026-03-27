@@ -161,6 +161,16 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
                 "base": base,
                 "working": working,
                 "base_with_aux": base_with_aux,
+                "working_rows_by_ts": {
+                    int(row["ts_ms"]): row
+                    for row in working.iter_rows(named=True)
+                    if row.get("ts_ms") is not None
+                },
+                "aux_rows_by_ts": {
+                    int(row["ts_ms"]): row
+                    for row in base_with_aux.iter_rows(named=True)
+                    if row.get("ts_ms") is not None
+                },
             },
             "OK",
         )
@@ -176,15 +186,12 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         missing_feature_skip_ratio: float | None = None,
     ) -> tuple[dict[str, Any] | None, str, int, tuple[str, ...]]:
         state = context["state"]
-        working = context["working"]
-        base_with_aux = context["base_with_aux"]
-        target = working.filter(pl.col("ts_ms") == int(ts_ms)).tail(1)
-        if target.height <= 0:
+        working_rows_by_ts = context["working_rows_by_ts"]
+        aux_rows_by_ts = context["aux_rows_by_ts"]
+        base_row = working_rows_by_ts.get(int(ts_ms))
+        if base_row is None:
             return None, "NO_FEATURE_ROW_AT_TS", 0, ()
-
-        base_row = target.row(0, named=True)
-        aux_target = base_with_aux.filter(pl.col("ts_ms") == int(ts_ms)).tail(1)
-        aux_row = aux_target.row(0, named=True) if aux_target.height > 0 else {}
+        aux_row = aux_rows_by_ts.get(int(ts_ms), {})
         close_value = _safe_float(base_row.get("close")) or _safe_float(state.last_price)
         if close_value is None or close_value <= 0:
             close_value = 0.0

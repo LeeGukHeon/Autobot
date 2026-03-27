@@ -103,6 +103,7 @@ class _OnlineMinuteRuntimeCore:
         self._lookback_1m_bars = max(min(self._max_1m_history, 5000), 2400)
         self._fallback_synth_1m_bars = 120
         self._market_state: dict[str, _MarketState] = {}
+        self._micro_snapshot_cache: dict[tuple[str, int], Any] = {}
         self._latest_feature_ts_ms: int | None = None
         self._last_requested_ts_ms: int | None = None
         self._last_built_ts_ms: int | None = None
@@ -181,11 +182,22 @@ class _OnlineMinuteRuntimeCore:
     def last_build_stats(self) -> dict[str, Any]:
         return dict(self._last_build_stats)
 
+    def _get_cached_micro_snapshot(self, *, market: str, ts_ms: int) -> Any:
+        key = (str(market).strip().upper(), int(ts_ms))
+        if key in self._micro_snapshot_cache:
+            return self._micro_snapshot_cache[key]
+        if self._micro_snapshot_provider is None:
+            self._micro_snapshot_cache[key] = None
+            return None
+        snapshot = self._micro_snapshot_provider.get(key[0], key[1])
+        self._micro_snapshot_cache[key] = snapshot
+        return snapshot
+
     def _micro_feature_values(self, *, market: str, ts_ms: int, close_value: float) -> tuple[dict[str, float], str]:
         default_values = _default_micro_feature_values()
         if self._micro_snapshot_provider is None:
             return default_values, "MISSING_MICRO"
-        snapshot = self._micro_snapshot_provider.get(market, int(ts_ms))
+        snapshot = self._get_cached_micro_snapshot(market=market, ts_ms=int(ts_ms))
         if snapshot is None:
             return default_values, "MISSING_MICRO"
 
