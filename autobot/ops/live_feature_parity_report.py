@@ -56,14 +56,6 @@ def build_live_feature_parity_report(
         quote=quote_value,
         top_n=top_n,
     )
-    provider = _build_live_provider(
-        root=root,
-        feature_spec=feature_spec,
-        feature_columns=feature_columns,
-        tf=tf_value,
-        quote=quote_value,
-    )
-    offline_market_frames: dict[str, pl.DataFrame] = {}
     sampled_rows_by_ts: dict[int, list[dict[str, Any]]] = {}
     rows: list[dict[str, Any]] = []
     mismatch_counts: dict[str, int] = {}
@@ -83,21 +75,25 @@ def build_live_feature_parity_report(
         )
         if offline_frame.height <= 0:
             continue
-        offline_market_frames[market] = offline_frame
         sample_rows = offline_frame.tail(max(int(samples_per_market), 1)).to_dicts()
         for offline_row in sample_rows:
             ts_value = int(offline_row.get("ts_ms") or 0)
             sampled_rows_by_ts.setdefault(ts_value, []).append(dict(offline_row))
 
-    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
+    provider: LiveFeatureProviderV4 | None = None
+    if sampled_rows_by_ts:
         provider = _build_live_provider(
             root=root,
             feature_spec=feature_spec,
             feature_columns=feature_columns,
             tf=tf_value,
             quote=quote_value,
-            bootstrap_end_ts_ms=ts_value,
+            bootstrap_end_ts_ms=max(sampled_rows_by_ts.keys()),
         )
+
+    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
+        if provider is None:
+            break
         live_frame = provider.build_frame(ts_ms=ts_value, markets=context_markets)
         live_stats = dict(provider.last_build_stats())
         missing_columns = list(live_stats.get("missing_feature_columns") or [])
