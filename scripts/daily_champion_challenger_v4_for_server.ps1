@@ -6,6 +6,7 @@ param(
     [string]$RuntimeInstallScript = "",
     [string]$CandidateAdoptionScript = "",
     [string]$ExecutionPolicyRefreshScript = "",
+    [string]$FeatureContractRefreshScript = "",
     [string]$BatchDate = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
     [string]$ChampionCompareModelFamily = "",
@@ -40,6 +41,7 @@ param(
     [ValidateSet("combined", "promote_only", "spawn_only")]
     [string]$Mode = "combined",
     [switch]$SkipDailyPipeline,
+    [switch]$SkipFeatureContractRefresh,
     [switch]$SkipReportRefresh,
     [switch]$DryRun
 )
@@ -73,6 +75,11 @@ function Resolve-DefaultCandidateAdoptionScript {
 function Resolve-DefaultExecutionPolicyRefreshScript {
     param([string]$Root)
     return (Join-Path $Root "scripts/refresh_live_execution_policy.ps1")
+}
+
+function Resolve-DefaultFeatureContractRefreshScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/refresh_current_features_v4_contract_artifacts.ps1")
 }
 
 function Resolve-ChampionRunId {
@@ -955,6 +962,7 @@ $resolvedPairedPaperScript = if ([string]::IsNullOrWhiteSpace($PairedPaperScript
 $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstallScript)) { Resolve-DefaultRuntimeInstallScript -Root $resolvedProjectRoot } else { $RuntimeInstallScript }
 $resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) { Resolve-DefaultCandidateAdoptionScript -Root $resolvedProjectRoot } else { $CandidateAdoptionScript }
 $resolvedExecutionPolicyRefreshScript = if ([string]::IsNullOrWhiteSpace($ExecutionPolicyRefreshScript)) { Resolve-DefaultExecutionPolicyRefreshScript -Root $resolvedProjectRoot } else { $ExecutionPolicyRefreshScript }
+$resolvedFeatureContractRefreshScript = if ([string]::IsNullOrWhiteSpace($FeatureContractRefreshScript)) { Resolve-DefaultFeatureContractRefreshScript -Root $resolvedProjectRoot } else { $FeatureContractRefreshScript }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
 $resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
@@ -1544,6 +1552,48 @@ if ($runSpawnPhase) {
             reason = "SCRIPT_MISSING_SKIP_NONFATAL"
             script_path = $resolvedExecutionPolicyRefreshScript
             rows_total = 0
+        }
+    }
+    if (-not $SkipFeatureContractRefresh) {
+        if (Test-Path $resolvedFeatureContractRefreshScript) {
+            $featureRefreshArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", $resolvedFeatureContractRefreshScript,
+                "-ProjectRoot", $resolvedProjectRoot,
+                "-PythonExe", $resolvedPythonExe
+            )
+            if ($DryRun) {
+                $featureRefreshArgs += "-DryRun"
+            }
+            $featureRefreshExec = Invoke-CommandCapture -Exe $psExe -ArgList $featureRefreshArgs -AllowFailure
+            $featureRefreshReportPath = Resolve-ReportedJsonPath -OutputText $featureRefreshExec.Output
+            $featureRefreshReport = Load-JsonOrEmpty -PathValue $featureRefreshReportPath
+            $report.steps.refresh_feature_contract_artifacts = [ordered]@{
+                attempted = $true
+                exit_code = [int]$featureRefreshExec.ExitCode
+                command = [string]$featureRefreshExec.Command
+                output_preview = [string]$featureRefreshExec.Output
+                report_path = [string]$featureRefreshReportPath
+                features_build_report = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $featureRefreshReport -Name "artifacts" -DefaultValue @{}) -Name "features_build_report" -DefaultValue "")
+                features_validate_report = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $featureRefreshReport -Name "artifacts" -DefaultValue @{}) -Name "features_validate_report" -DefaultValue "")
+                features_live_parity_report = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $featureRefreshReport -Name "artifacts" -DefaultValue @{}) -Name "features_live_parity_report" -DefaultValue "")
+            }
+            if ([int]$featureRefreshExec.ExitCode -ne 0) {
+                throw ("feature contract refresh failed unexpectedly (exit_code={0}, report={1})" -f $featureRefreshExec.ExitCode, $featureRefreshReportPath)
+            }
+        } else {
+            $report.steps.refresh_feature_contract_artifacts = [ordered]@{
+                attempted = $false
+                reason = "SCRIPT_MISSING_SKIP_NONFATAL"
+                script_path = $resolvedFeatureContractRefreshScript
+            }
+        }
+    } else {
+        $report.steps.refresh_feature_contract_artifacts = [ordered]@{
+            attempted = $false
+            reason = "SKIPPED_BY_FLAG"
+            script_path = $resolvedFeatureContractRefreshScript
         }
     }
     $acceptArgs = @(

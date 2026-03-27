@@ -119,6 +119,34 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "--max-requests' '120" in stdout or '--max-requests" "120' in stdout or "--max-requests 120" in stdout
 
 
+def test_t23_2_feature_contract_refresh_wrapper_dry_run_emits_contract_steps() -> None:
+    stdout = _run_script_dry_run(
+        "refresh_current_features_v4_contract_artifacts.ps1",
+        "-StartDate",
+        "2026-03-04",
+        "-EndDate",
+        "2026-03-18",
+        "-Quote",
+        "KRW",
+        "-TopN",
+        "50",
+        "-LabelSet",
+        "v3",
+        "-Markets",
+        "KRW-BTC,KRW-ETH",
+    )
+
+    assert "[feature-contract-refresh] step=micro_aggregate_contract_window" in stdout
+    assert "[feature-contract-refresh] step=micro_validate_contract_window" in stdout
+    assert "[feature-contract-refresh] step=features_v4_build_contract_window" in stdout
+    assert "[feature-contract-refresh] step=features_v4_validate_contract_window" in stdout
+    assert "[feature-contract-refresh] step=features_v4_live_parity_contract_window" in stdout
+    assert "[feature-contract-refresh] step=refresh_data_contract_registry" in stdout
+    assert "autobot.cli' 'micro' 'aggregate" in stdout or 'autobot.cli" "micro" "aggregate' in stdout or "autobot.cli micro aggregate" in stdout
+    assert "autobot.cli' 'features' 'build" in stdout or 'autobot.cli" "features" "build' in stdout or "autobot.cli features build" in stdout
+    assert "autobot.ops.live_feature_parity_report" in stdout
+
+
 def test_t23_2_daily_acceptance_installer_serializes_nested_array_args_safely() -> None:
     completed = subprocess.run(
         [
@@ -157,6 +185,7 @@ def test_t23_2_daily_orchestrator_param_surface_keeps_protected_names() -> None:
     for snippet in (
         '[string]$AcceptanceScript = ""',
         '[string]$RuntimeInstallScript = ""',
+        '[string]$FeatureContractRefreshScript = ""',
         '[string]$BatchDate = ""',
         '[string]$ChampionUnitName = "autobot-paper-v4.service"',
         '[string]$ChallengerUnitName = "autobot-paper-v4-challenger.service"',
@@ -167,6 +196,7 @@ def test_t23_2_daily_orchestrator_param_surface_keeps_protected_names() -> None:
         '[ValidateSet("combined", "promote_only", "spawn_only")]',
         '[string]$Mode = "combined"',
         '[switch]$SkipDailyPipeline',
+        '[switch]$SkipFeatureContractRefresh',
         '[switch]$SkipReportRefresh',
         '[switch]$DryRun',
     ):
