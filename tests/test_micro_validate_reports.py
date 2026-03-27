@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
+from autobot.data.micro.merge_micro_v1 import merge_trade_and_orderbook_bars
 from autobot.data.micro.validate_micro_v1 import validate_micro_dataset_v1
 
 
@@ -74,3 +75,52 @@ def test_validate_micro_generates_report(tmp_path: Path) -> None:
     assert summary.fail_files == 0
     assert summary.checked_files == 1
     assert summary.validate_report_file.exists()
+
+
+def test_merge_trade_and_orderbook_bars_keeps_schema_when_early_rows_are_null() -> None:
+    trade_frame = pl.DataFrame(
+        {
+            "market": ["KRW-BTC", "KRW-ETH"],
+            "ts_ms": [60_000, 120_000],
+            "trade_source": ["none", "ws"],
+            "trade_count": [0, 1],
+            "buy_count": [0, 1],
+            "sell_count": [0, 0],
+            "trade_volume_total": [0.0, 1.0],
+            "buy_volume": [0.0, 1.0],
+            "sell_volume": [0.0, 0.0],
+            "trade_imbalance": [0.0, 1.0],
+            "vwap": [None, 100.0],
+            "avg_trade_size": [None, 1.0],
+            "max_trade_size": [None, 1.0],
+            "last_trade_price": [None, 100.0],
+            "trade_events": [0, 1],
+            "trade_min_ts_ms": [None, 120_010],
+            "trade_max_ts_ms": [None, 120_020],
+        }
+    )
+    orderbook_frame = pl.DataFrame(
+        {
+            "market": ["KRW-BTC", "KRW-ETH"],
+            "ts_ms": [60_000, 120_000],
+            "mid_mean": [100.0, 101.0],
+            "spread_bps_mean": [2.0, 2.5],
+            "depth_bid_top5_mean": [10.0, 11.0],
+            "depth_ask_top5_mean": [9.0, 10.5],
+            "imbalance_top5_mean": [0.05, 0.02],
+            "microprice_bias_bps_mean": [0.1, -0.1],
+            "book_update_count": [1, 1],
+            "book_events": [1, 1],
+            "book_min_ts_ms": [60_005, 120_005],
+            "book_max_ts_ms": [60_025, 120_025],
+        }
+    )
+
+    frame = merge_trade_and_orderbook_bars(trade_frame=trade_frame, orderbook_frame=orderbook_frame, tf="1m")
+
+    assert frame.height == 2
+    assert frame.schema["trade_min_ts_ms"] == pl.Int64
+    assert frame.schema["book_min_ts_ms"] == pl.Int64
+    second = frame.filter(pl.col("market") == "KRW-ETH").row(0, named=True)
+    assert second["trade_min_ts_ms"] == 120_010
+    assert second["book_min_ts_ms"] == 120_005

@@ -303,7 +303,7 @@ def merge_trade_and_orderbook_bars(
     if not rows:
         return pl.DataFrame([], schema=_micro_schema(), orient="row")
 
-    return pl.DataFrame(rows).sort(["market", "ts_ms"])
+    return pl.DataFrame(rows, schema=_micro_schema(), orient="row").sort(["market", "ts_ms"])
 
 
 def apply_alignment_mode(frame: pl.DataFrame, *, mode: str, interval_ms: int) -> pl.DataFrame:
