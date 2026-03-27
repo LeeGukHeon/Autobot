@@ -39,6 +39,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
         parquet_root: str | Path = "data/parquet",
         candles_dataset_name: str = "candles_api_v1",
         bootstrap_1m_bars: int = 2000,
+        bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
     ) -> None:
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
@@ -55,6 +56,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
             parquet_root=str(parquet_root),
             candles_dataset_name=str(candles_dataset_name),
             bootstrap_1m_bars=bootstrap_1m_bars,
+            bootstrap_end_ts_ms=bootstrap_end_ts_ms,
             max_1m_history=max_1m_history,
             missing_feature_warn_ratio=1.0,
             missing_feature_skip_ratio=1.0,

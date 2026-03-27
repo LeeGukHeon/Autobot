@@ -43,6 +43,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         parquet_root: str,
         candles_dataset_name: str,
         bootstrap_1m_bars: int,
+        bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
         missing_feature_warn_ratio: float = 0.05,
         missing_feature_skip_ratio: float = 0.20,
@@ -54,6 +55,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             parquet_root=parquet_root,
             candles_dataset_name=candles_dataset_name,
             bootstrap_1m_bars=bootstrap_1m_bars,
+            bootstrap_end_ts_ms=bootstrap_end_ts_ms,
             max_1m_history=max_1m_history,
         )
         self._high_tfs = tuple(str(item).strip().lower() for item in high_tfs if str(item).strip())

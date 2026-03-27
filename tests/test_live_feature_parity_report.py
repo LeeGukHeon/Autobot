@@ -7,7 +7,6 @@ import polars as pl
 
 from autobot.ops.live_feature_parity_report import build_live_feature_parity_report
 from autobot.paper.live_features_v4 import LiveFeatureProviderV4
-from autobot.upbit.ws.models import TickerEvent
 
 
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
@@ -42,14 +41,7 @@ def test_build_live_feature_parity_report_passes_for_matching_offline_and_live_r
         parquet_root=parquet_root,
         candles_dataset_name="candles_api_v1",
         bootstrap_1m_bars=2000,
-    )
-    provider.ingest_ticker(
-        TickerEvent(
-            market="KRW-BTC",
-            ts_ms=301_000,
-            trade_price=121.0,
-            acc_trade_price_24h=1_000_100_000.0,
-        )
+        bootstrap_end_ts_ms=300_000,
     )
     offline_frame = provider.build_frame(ts_ms=300_000, markets=["KRW-BTC"])
 

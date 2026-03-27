@@ -14,7 +14,6 @@ import polars as pl
 from autobot.features.pipeline_v4 import _load_feature_market
 from autobot.paper.live_features_v4 import LiveFeatureProviderV4
 from autobot.strategy.micro_snapshot import OfflineMicroSnapshotProvider
-from autobot.upbit.ws.models import TickerEvent
 
 
 LIVE_FEATURE_PARITY_REPORT_VERSION = 1
@@ -56,6 +55,8 @@ def build_live_feature_parity_report(
         tf=tf_value,
         quote=quote_value,
     )
+    offline_market_frames: dict[str, pl.DataFrame] = {}
+    sampled_rows_by_ts: dict[int, list[dict[str, Any]]] = {}
     rows: list[dict[str, Any]] = []
     mismatch_counts: dict[str, int] = {}
     missing_column_total = 0
@@ -73,27 +74,38 @@ def build_live_feature_parity_report(
         )
         if offline_frame.height <= 0:
             continue
+        offline_market_frames[market] = offline_frame
         sample_rows = offline_frame.tail(max(int(samples_per_market), 1)).to_dicts()
         for offline_row in sample_rows:
-            sampled_pairs += 1
-            provider.ingest_ticker(
-                TickerEvent(
-                    market=market,
-                    ts_ms=int(offline_row.get("ts_ms") or 0) + 1_000,
-                    trade_price=float(offline_row.get("close") or 0.0),
-                    acc_trade_price_24h=max(float(offline_row.get("close") or 0.0) * 1_000.0, 1.0),
-                )
-            )
-            live_frame = provider.build_frame(ts_ms=int(offline_row.get("ts_ms") or 0), markets=[market])
-            live_stats = dict(provider.last_build_stats())
-            missing_columns = list(live_stats.get("missing_feature_columns") or [])
-            hard_gate_triggered = bool(live_stats.get("hard_gate_triggered", False))
-            if hard_gate_triggered:
-                hard_gate_fail_count += 1
-            missing_column_total += len(missing_columns)
+            ts_value = int(offline_row.get("ts_ms") or 0)
+            sampled_rows_by_ts.setdefault(ts_value, []).append(dict(offline_row))
 
-            compare_columns = ("ts_ms", "market", "close", *feature_columns)
-            live_row = live_frame.row(0, named=True) if live_frame.height > 0 else {}
+    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
+        provider = _build_live_provider(
+            root=root,
+            feature_spec=feature_spec,
+            feature_columns=feature_columns,
+            tf=tf_value,
+            quote=quote_value,
+            bootstrap_end_ts_ms=ts_value,
+        )
+        live_frame = provider.build_frame(ts_ms=ts_value, markets=selected_markets)
+        live_stats = dict(provider.last_build_stats())
+        missing_columns = list(live_stats.get("missing_feature_columns") or [])
+        hard_gate_triggered = bool(live_stats.get("hard_gate_triggered", False))
+        if hard_gate_triggered:
+            hard_gate_fail_count += len(offline_rows)
+        missing_column_total += len(missing_columns) * len(offline_rows)
+        live_rows_by_market = {
+            str(row.get("market") or "").strip().upper(): row
+            for row in live_frame.to_dicts()
+            if str(row.get("market") or "").strip()
+        }
+        compare_columns = ("ts_ms", "market", "close", *feature_columns)
+        for offline_row in offline_rows:
+            sampled_pairs += 1
+            market = str(offline_row.get("market") or "").strip().upper()
+            live_row = live_rows_by_market.get(market, {})
             comparison = _compare_rows(
                 offline_row=offline_row,
                 live_row=live_row,
@@ -109,7 +121,7 @@ def build_live_feature_parity_report(
             rows.append(
                 {
                     "market": market,
-                    "ts_ms": int(offline_row.get("ts_ms") or 0),
+                    "ts_ms": ts_value,
                     "offline_row_hash": comparison["offline_row_hash"],
                     "live_row_hash": comparison["live_row_hash"],
                     "missing_feature_columns": missing_columns,
@@ -118,6 +130,9 @@ def build_live_feature_parity_report(
                     "mismatched_columns": comparison["mismatched_columns"],
                     "max_abs_diff": comparison["max_abs_diff"],
                     "pass": bool(comparison["pass"] and not hard_gate_triggered),
+                    "built_market_count": int(live_frame.height),
+                    "built_market_samples": list(live_stats.get("built_market_samples") or []),
+                    "skipped_market_samples": list(live_stats.get("skipped_market_samples") or []),
                 }
             )
 
@@ -183,6 +198,7 @@ def _build_live_provider(
     feature_columns: tuple[str, ...],
     tf: str,
     quote: str,
+    bootstrap_end_ts_ms: int | None = None,
 ) -> LiveFeatureProviderV4:
     base_candles_root = _resolve_root(
         root=root,
@@ -208,6 +224,7 @@ def _build_live_provider(
         candles_dataset_name=base_candles_root.name,
         micro_snapshot_provider=micro_snapshot_provider,
         bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=bootstrap_end_ts_ms,
     )
 
 

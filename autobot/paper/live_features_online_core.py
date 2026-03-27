@@ -83,6 +83,7 @@ class _OnlineMinuteRuntimeCore:
         parquet_root: str | Path,
         candles_dataset_name: str,
         bootstrap_1m_bars: int,
+        bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
     ) -> None:
         self._tf = str(tf).strip().lower() or "5m"
@@ -95,6 +96,7 @@ class _OnlineMinuteRuntimeCore:
             dataset_name=self._candles_dataset_name,
         )
         self._bootstrap_1m_bars = max(int(bootstrap_1m_bars), 256)
+        self._bootstrap_end_ts_ms = int(bootstrap_end_ts_ms) if bootstrap_end_ts_ms is not None else None
         self._max_1m_history = max(int(max_1m_history), self._bootstrap_1m_bars)
         self._lookback_1m_bars = max(min(self._max_1m_history, 5000), 2400)
         self._fallback_synth_1m_bars = 120
@@ -278,8 +280,10 @@ class _OnlineMinuteRuntimeCore:
                 )
                 .sort("ts_ms")
                 .unique(subset=["ts_ms"], keep="last", maintain_order=True)
-                .tail(self._bootstrap_1m_bars)
             )
+            if self._bootstrap_end_ts_ms is not None:
+                lazy = lazy.filter(pl.col("ts_ms") <= int(self._bootstrap_end_ts_ms))
+            lazy = lazy.tail(self._bootstrap_1m_bars)
             frame = _collect_lazy(lazy)
         except Exception:
             frame = pl.DataFrame()
