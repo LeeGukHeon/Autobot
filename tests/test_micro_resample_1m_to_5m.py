@@ -60,3 +60,50 @@ def test_resample_micro_1m_to_5m() -> None:
     assert row["book_events"] == 2
     assert isclose(float(row["trade_volume_total"]), 4.0, rel_tol=1e-8)
     assert isclose(float(row["vwap"]), 100.5, rel_tol=1e-8)
+
+
+def test_resample_micro_1m_to_5m_keeps_schema_when_first_rows_are_null() -> None:
+    frame_1m = pl.DataFrame(
+        {
+            "market": ["KRW-BTC", "KRW-BTC"],
+            "tf": ["1m", "1m"],
+            "ts_ms": [0, 60_000],
+            "trade_source": ["none", "ws"],
+            "trade_events": [0, 1],
+            "book_events": [1, 1],
+            "trade_min_ts_ms": [None, 60_010],
+            "trade_max_ts_ms": [None, 60_020],
+            "book_min_ts_ms": [5, 60_005],
+            "book_max_ts_ms": [25, 60_025],
+            "trade_coverage_ms": [0, 10],
+            "book_coverage_ms": [20, 20],
+            "micro_trade_available": [False, True],
+            "micro_book_available": [True, True],
+            "micro_available": [True, True],
+            "trade_count": [0, 1],
+            "buy_count": [0, 1],
+            "sell_count": [0, 0],
+            "trade_volume_total": [0.0, 1.0],
+            "buy_volume": [0.0, 1.0],
+            "sell_volume": [0.0, 0.0],
+            "trade_imbalance": [0.0, 1.0],
+            "vwap": [None, 100.0],
+            "avg_trade_size": [None, 1.0],
+            "max_trade_size": [None, 1.0],
+            "last_trade_price": [None, 100.0],
+            "mid_mean": [100.0, 101.0],
+            "spread_bps_mean": [10.0, 11.0],
+            "depth_bid_top5_mean": [5.0, 6.0],
+            "depth_ask_top5_mean": [4.0, 5.0],
+            "imbalance_top5_mean": [0.1, 0.09],
+            "microprice_bias_bps_mean": [0.2, 0.1],
+            "book_update_count": [1, 1],
+        }
+    )
+
+    frame_5m = resample_micro_1m_to_5m(frame_1m)
+
+    assert frame_5m.height == 1
+    assert frame_5m.schema["trade_min_ts_ms"] == pl.Int64
+    row = frame_5m.row(0, named=True)
+    assert row["trade_min_ts_ms"] == 60_010

@@ -231,7 +231,7 @@ def resample_micro_1m_to_5m(frame_1m: pl.DataFrame) -> pl.DataFrame:
 
     if not rows:
         return pl.DataFrame([], schema=frame_1m.schema, orient="row")
-    return pl.DataFrame(rows).sort(["market", "ts_ms"])
+    return pl.DataFrame(rows, schema=frame_1m.schema, orient="row").sort(["market", "ts_ms"])
 
 
 def _coverage_ms(min_ts: int | None, max_ts: int | None) -> int:
