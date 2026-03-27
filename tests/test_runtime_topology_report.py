@@ -77,6 +77,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         store.set_live_runtime_health(payload={"model_pointer_divergence": False}, ts_ms=10_000)
 
     original_systemd = topology_module._systemd_topology_snapshot
+    original_show = topology_module._systemd_show_properties
     original_git = topology_module._git_topology_snapshot
     original_project = topology_module._project_topology_snapshot
     topology_module._systemd_topology_snapshot = lambda: {
@@ -95,6 +96,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         ],
         "errors": {},
     }
+    topology_module._systemd_show_properties = lambda unit_name, *properties: {}
     topology_module._git_topology_snapshot = lambda *, root: {
         "available": True,
         "head": "abc123",
@@ -114,6 +116,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-candidate.service", ts_ms=10_000)
     finally:
         topology_module._systemd_topology_snapshot = original_systemd
+        topology_module._systemd_show_properties = original_show
         topology_module._git_topology_snapshot = original_git
         topology_module._project_topology_snapshot = original_project
 
@@ -165,8 +168,12 @@ def test_write_runtime_topology_report_uses_default_output_path(tmp_path: Path) 
     project_root = tmp_path
     (project_root / "models" / "registry" / "train_v4_crypto_cs").mkdir(parents=True, exist_ok=True)
     _write_json(project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json", {"run_id": "run-1"})
-
-    output_path = write_runtime_topology_report(project_root=project_root, ts_ms=10_000)
+    original_show = topology_module._systemd_show_properties
+    topology_module._systemd_show_properties = lambda unit_name, *properties: {}
+    try:
+        output_path = write_runtime_topology_report(project_root=project_root, ts_ms=10_000)
+    finally:
+        topology_module._systemd_show_properties = original_show
 
     assert output_path == project_root / "logs" / "runtime_topology" / "latest.json"
     payload = json.loads(output_path.read_text(encoding="utf-8"))
@@ -199,6 +206,7 @@ def test_build_runtime_topology_report_ignores_inactive_live_main_pointer_drift(
         store.set_runtime_contract(payload={"live_runtime_model_run_id": "run-stale"}, ts_ms=10_000)
 
     original_systemd = topology_module._systemd_topology_snapshot
+    original_show = topology_module._systemd_show_properties
     original_git = topology_module._git_topology_snapshot
     original_project = topology_module._project_topology_snapshot
     topology_module._systemd_topology_snapshot = lambda: {
@@ -210,12 +218,14 @@ def test_build_runtime_topology_report_ignores_inactive_live_main_pointer_drift(
         "unit_files": [],
         "errors": {},
     }
+    topology_module._systemd_show_properties = lambda unit_name, *properties: {}
     topology_module._git_topology_snapshot = lambda *, root: {"available": True, "head": "abc123", "branch": "main", "remote_origin": "", "status_short": [], "dirty": False, "errors": {}}
     topology_module._project_topology_snapshot = lambda *, root: {"project_root_parent": str(root.parent), "sibling_directories": [], "replay_like_paths": [], "replay_path_present": False}
     try:
         report = build_runtime_topology_report(project_root=project_root, ts_ms=10_000)
     finally:
         topology_module._systemd_topology_snapshot = original_systemd
+        topology_module._systemd_show_properties = original_show
         topology_module._git_topology_snapshot = original_git
         topology_module._project_topology_snapshot = original_project
 
