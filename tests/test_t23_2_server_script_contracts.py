@@ -115,6 +115,8 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "ws_candle_v1" in stdout
     assert "lob30_v1" in stdout
     assert "sequence_v1" in stdout
+    assert "--market-source-dataset' 'candles_api_v1" in stdout or '--market-source-dataset" "candles_api_v1' in stdout or "--market-source-dataset candles_api_v1" in stdout
+    assert "--max-requests' '120" in stdout or '--max-requests" "120' in stdout or "--max-requests 120" in stdout
 
 
 def test_t23_2_daily_acceptance_installer_serializes_nested_array_args_safely() -> None:

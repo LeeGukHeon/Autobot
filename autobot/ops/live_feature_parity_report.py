@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -42,6 +43,7 @@ def build_live_feature_parity_report(
     )
     tf_value = str(tf).strip().lower() or "5m"
     quote_value = str(quote).strip().upper() or "KRW"
+    sampling_window = _resolve_sampling_window(meta_root)
     selected_markets = _select_markets(
         manifest=manifest,
         tf=tf_value,
@@ -67,10 +69,11 @@ def build_live_feature_parity_report(
     sampled_pairs = 0
 
     for market in selected_markets:
-        offline_frame = _load_feature_market(
+        offline_frame = _load_feature_market_window(
             dataset_root=dataset_root,
             tf=tf_value,
             market=market,
+            sampling_window=sampling_window,
         )
         if offline_frame.height <= 0:
             continue
@@ -151,6 +154,7 @@ def build_live_feature_parity_report(
         "quote": quote_value,
         "dataset_root": str(dataset_root),
         "report_path_default": str((root / DEFAULT_REPORT_REL_PATH).resolve()),
+        "sampling_window": sampling_window,
         "sampled_pairs": sampled_pairs,
         "compared_pairs": compared_pairs,
         "passing_pairs": passing_pairs,
@@ -248,6 +252,66 @@ def _select_markets(
     return markets[: max(int(top_n), 1)]
 
 
+def _load_feature_market_window(
+    *,
+    dataset_root: Path,
+    tf: str,
+    market: str,
+    sampling_window: dict[str, Any],
+) -> pl.DataFrame:
+    start_date = str(sampling_window.get("effective_start") or "").strip()
+    end_date = str(sampling_window.get("effective_end") or "").strip()
+    market_dir = dataset_root / f"tf={str(tf).strip().lower()}" / f"market={str(market).strip().upper()}"
+    files: list[Path] = []
+    if market_dir.exists():
+        for date_dir in sorted(market_dir.glob("date=*")):
+            if not date_dir.is_dir():
+                continue
+            date_value = str(date_dir.name).split("=", 1)[-1].strip()
+            if start_date and date_value < start_date:
+                continue
+            if end_date and date_value > end_date:
+                continue
+            files.extend(sorted(path for path in date_dir.glob("*.parquet") if path.is_file()))
+        if not files:
+            files = sorted(path for path in market_dir.rglob("*.parquet") if path.is_file())
+    if not files:
+        return pl.DataFrame()
+    try:
+        lazy = pl.scan_parquet([str(path) for path in files], extra_columns="ignore")
+    except TypeError:
+        lazy = pl.scan_parquet([str(path) for path in files])
+    frame = lazy.collect()
+    if "ts_ms" not in frame.columns:
+        return pl.DataFrame()
+    if start_date or end_date:
+        start_ts_ms = _date_start_ts_ms(start_date) if start_date else None
+        end_ts_ms = _date_end_ts_ms(end_date) if end_date else None
+        if start_ts_ms is not None:
+            frame = frame.filter(pl.col("ts_ms") >= pl.lit(start_ts_ms))
+        if end_ts_ms is not None:
+            frame = frame.filter(pl.col("ts_ms") <= pl.lit(end_ts_ms))
+    return frame.sort("ts_ms").unique(subset=["ts_ms"], keep="last", maintain_order=True)
+
+
+def _resolve_sampling_window(meta_root: Path) -> dict[str, Any]:
+    build_report = _load_json(meta_root / "build_report.json")
+    effective_start = str(
+        build_report.get("effective_start")
+        or build_report.get("requested_start")
+        or ""
+    ).strip()
+    effective_end = str(
+        build_report.get("effective_end")
+        or build_report.get("requested_end")
+        or ""
+    ).strip()
+    return {
+        "effective_start": effective_start or None,
+        "effective_end": effective_end or None,
+    }
+
+
 def _compare_rows(
     *,
     offline_row: dict[str, Any],
@@ -298,6 +362,23 @@ def _normalize_value(value: Any) -> Any:
     if isinstance(value, (int, str, bool)):
         return value
     return str(value)
+
+
+def _date_start_ts_ms(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _date_end_ts_ms(value: str) -> int | None:
+    start = _date_start_ts_ms(value)
+    if start is None:
+        return None
+    return int(start + 86_400_000 - 1)
 
 
 def _row_hash(payload: dict[str, Any]) -> str:
