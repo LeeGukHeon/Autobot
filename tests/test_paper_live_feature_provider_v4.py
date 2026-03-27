@@ -902,6 +902,97 @@ def test_live_feature_provider_v4_can_use_history_context_for_rolling_order_flow
     assert int(stats["context_history_bars"]) == 12
 
 
+def test_live_feature_provider_v4_history_context_matches_repeated_row_builds(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC", start_ts_ms=60_000, count=700)
+    snapshot_map: dict[tuple[str, int], MicroSnapshot | None] = {}
+    bar_ts_values = [300_000 + (i * 300_000) for i in range(6)]
+    for index, ts_value in enumerate(bar_ts_values):
+        is_buy = index % 2 == 0
+        snapshot_map[("KRW-BTC", ts_value)] = MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=ts_value,
+            last_event_ts_ms=ts_value,
+            trade_events=1,
+            trade_count=1,
+            buy_count=1 if is_buy else 0,
+            sell_count=0 if is_buy else 1,
+            trade_coverage_ms=60_000,
+            trade_notional_krw=100.0,
+            trade_imbalance=1.0 if is_buy else -1.0,
+            trade_source="ws",
+            trade_volume_total=1.0,
+            buy_volume=1.0 if is_buy else 0.0,
+            sell_volume=0.0 if is_buy else 1.0,
+            vwap=100.0,
+            avg_trade_size=1.0,
+            max_trade_size=1.0,
+            last_trade_price=100.0,
+            mid_mean=100.0,
+            spread_bps_mean=1.0,
+            depth_top5_notional_krw=1_000.0,
+            depth_bid_top5_notional_krw=500.0,
+            depth_ask_top5_notional_krw=500.0,
+            imbalance_top5_mean=0.0,
+            microprice_bias_bps_mean=0.0,
+            book_events=1,
+            book_coverage_ms=60_000,
+            book_available=True,
+        )
+
+    request_ts_ms = bar_ts_values[-1]
+    provider_context = LiveFeatureProviderV4(
+        feature_columns=("logret_1", "one_m_count", "m_trade_count"),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=request_ts_ms,
+        micro_snapshot_provider=_TimeKeyedMicroSnapshotProvider(snapshot_map),
+        context_micro_required=True,
+        context_history_bars=6,
+    )
+    frame_context, _ = provider_context._build_runtime_context_frame(
+        ts_ms=request_ts_ms,
+        markets=["KRW-BTC"],
+        feature_columns=("logret_1", "one_m_count", "m_trade_count"),
+        provider_name="DBG",
+        missing_feature_warn_ratio=1.0,
+        missing_feature_skip_ratio=1.0,
+        history_bars=6,
+    )
+    frame_context = frame_context.sort("ts_ms")
+
+    provider_manual = LiveFeatureProviderV4(
+        feature_columns=("logret_1", "one_m_count", "m_trade_count"),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=request_ts_ms,
+        micro_snapshot_provider=_TimeKeyedMicroSnapshotProvider(snapshot_map),
+        context_micro_required=True,
+        context_history_bars=6,
+    )
+    rows = []
+    for ts_value in bar_ts_values:
+        row, reason, missing_cells, missing_features = provider_manual._build_runtime_market_row(
+            market="KRW-BTC",
+            ts_ms=ts_value,
+            feature_columns=("logret_1", "one_m_count", "m_trade_count"),
+        )
+        assert reason in {"OK", "MISSING_MICRO"}
+        assert row is not None
+        rows.append(row)
+    frame_manual = pl.DataFrame(rows).sort("ts_ms")
+
+    assert frame_context.select(["ts_ms", "market", "close", "logret_1", "one_m_count", "m_trade_count"]).to_dicts() == frame_manual.select(
+        ["ts_ms", "market", "close", "logret_1", "one_m_count", "m_trade_count"]
+    ).to_dicts()
+
+
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
     part_dir = dataset_root / "tf=1m" / f"market={market}" / "date=2026-01-01"
     part_dir.mkdir(parents=True, exist_ok=True)

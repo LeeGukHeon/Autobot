@@ -75,6 +75,24 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         extra_columns: Sequence[str] = (),
         missing_feature_skip_ratio: float | None = None,
     ) -> tuple[dict[str, Any] | None, str, int, tuple[str, ...]]:
+        context, reason = self._prepare_runtime_market_context(market=market, ts_ms=ts_ms)
+        if context is None:
+            return None, reason, 0, ()
+        return self._build_runtime_market_row_from_context(
+            market=market,
+            ts_ms=ts_ms,
+            context=context,
+            feature_columns=feature_columns,
+            extra_columns=extra_columns,
+            missing_feature_skip_ratio=missing_feature_skip_ratio,
+        )
+
+    def _prepare_runtime_market_context(
+        self,
+        *,
+        market: str,
+        ts_ms: int,
+    ) -> tuple[dict[str, Any] | None, str]:
         state = self._market_state.setdefault(market, _MarketState())
         if state.candles_1m is None:
             from collections import deque
@@ -87,7 +105,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         self._flush_active_until_ts(state=state, ts_ms=ts_ms)
         one_m = self._build_one_m_frame(state=state, ts_ms=ts_ms)
         if one_m.height <= 0:
-            return None, "NO_1M_HISTORY", 0, ()
+            return None, "NO_1M_HISTORY"
 
         base = self._resolve_runtime_tf_frame(
             market=market,
@@ -97,11 +115,11 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             one_m=one_m,
         )
         if base.height <= 0:
-            return None, "NO_BASE_CANDLE", 0, ()
+            return None, "NO_BASE_CANDLE"
 
         base_featured = compute_base_features_v4_live_base(base, tf=self._tf, float_dtype="float32").sort("ts_ms")
         if base_featured.height <= 0:
-            return None, "NO_BASE_FEATURES", 0, ()
+            return None, "NO_BASE_FEATURES"
 
         dense_start = int(base_featured.get_column("ts_ms").min())
         dense_end = int(base_featured.get_column("ts_ms").max())
@@ -137,6 +155,29 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             )
 
         base_with_aux = _attach_runtime_aux_columns(base)
+        return (
+            {
+                "state": state,
+                "base": base,
+                "working": working,
+                "base_with_aux": base_with_aux,
+            },
+            "OK",
+        )
+
+    def _build_runtime_market_row_from_context(
+        self,
+        *,
+        market: str,
+        ts_ms: int,
+        context: dict[str, Any],
+        feature_columns: Sequence[str],
+        extra_columns: Sequence[str] = (),
+        missing_feature_skip_ratio: float | None = None,
+    ) -> tuple[dict[str, Any] | None, str, int, tuple[str, ...]]:
+        state = context["state"]
+        working = context["working"]
+        base_with_aux = context["base_with_aux"]
         target = working.filter(pl.col("ts_ms") == int(ts_ms)).tail(1)
         if target.height <= 0:
             return None, "NO_FEATURE_ROW_AT_TS", 0, ()
@@ -291,31 +332,12 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         )
 
         for market in requested:
-            state = self._market_state.setdefault(market, _MarketState())
-            if state.candles_1m is None:
-                from collections import deque
-
-                state.candles_1m = deque(maxlen=self._max_1m_history)
-            if not state.bootstrap_loaded:
-                self._bootstrap_market(market=market, state=state)
-                state.bootstrap_loaded = True
-            self._flush_active_until_ts(state=state, ts_ms=ts_value)
-            one_m = self._build_one_m_frame(state=state, ts_ms=ts_value)
-            if one_m.height <= 0:
+            context, reason = self._prepare_runtime_market_context(market=market, ts_ms=ts_value)
+            if context is None:
                 skipped_markets.append(market)
-                skip_reasons["NO_1M_HISTORY"] = int(skip_reasons.get("NO_1M_HISTORY", 0)) + 1
+                skip_reasons[reason] = int(skip_reasons.get(reason, 0)) + 1
                 continue
-            base = self._resolve_runtime_tf_frame(
-                market=market,
-                state=state,
-                tf=self._tf,
-                ts_ms=ts_value,
-                one_m=one_m,
-            )
-            if base.height <= 0:
-                skipped_markets.append(market)
-                skip_reasons["NO_BASE_CANDLE"] = int(skip_reasons.get("NO_BASE_CANDLE", 0)) + 1
-                continue
+            base = context["base"]
             ts_candidates = [
                 int(value)
                 for value in base.get_column("ts_ms").drop_nulls().to_list()
@@ -328,9 +350,10 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
                 continue
             built_current = False
             for history_ts in history_ts_values:
-                row, reason, missing_feature_cells, missing_features = self._build_runtime_market_row(
+                row, reason, missing_feature_cells, missing_features = self._build_runtime_market_row_from_context(
                     market=market,
                     ts_ms=int(history_ts),
+                    context=context,
                     feature_columns=feature_columns,
                     extra_columns=extra_columns,
                     missing_feature_skip_ratio=skip_ratio,
