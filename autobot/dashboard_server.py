@@ -2200,6 +2200,31 @@ def _load_training_pointer_summary(project_root: Path, model_family: str = "trai
     }
 
 
+def _acceptance_latest_path(project_root: Path) -> Path:
+    return project_root / "logs" / "model_v4_acceptance" / "latest.json"
+
+
+def _resolve_dashboard_training_family(project_root: Path) -> str:
+    payload = _load_json(_acceptance_latest_path(project_root))
+    model_family = str(payload.get("model_family") or "").strip()
+    return model_family or "train_v4_crypto_cs"
+
+
+def _resolve_dashboard_champion_compare_family(project_root: Path) -> str | None:
+    payload = _load_json(_acceptance_latest_path(project_root))
+    candidate = dict(payload.get("candidate") or {})
+    config = dict(payload.get("config") or {})
+    for value in (
+        candidate.get("champion_model_family_used_for_backtest"),
+        candidate.get("champion_compare_model_family"),
+        config.get("champion_model_family"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
 def _load_model_family_latest_summary(project_root: Path, model_family: str) -> dict[str, Any]:
     family_root = project_root / "models" / "registry" / model_family
     latest_payload = _load_json(family_root / "latest.json")
@@ -2448,9 +2473,25 @@ def _project_python_exe(project_root: Path) -> str:
     return str(candidate) if candidate.exists() else "python3"
 
 
+def _latest_candidate_pointer(project_root: Path) -> dict[str, Any]:
+    primary_family = _resolve_dashboard_training_family(project_root)
+    fallback_families = [primary_family]
+    if primary_family != "train_v4_crypto_cs":
+        fallback_families.append("train_v4_crypto_cs")
+    for family in fallback_families:
+        payload = _load_json(project_root / "models" / "registry" / family / "latest_candidate.json")
+        run_id = str(payload.get("run_id") or "").strip()
+        if run_id:
+            return {
+                "run_id": run_id,
+                "model_family": family,
+                "updated_at_utc": payload.get("updated_at_utc"),
+            }
+    return {"run_id": "", "model_family": primary_family, "updated_at_utc": None}
+
+
 def _latest_candidate_run_id(project_root: Path) -> str:
-    payload = _load_json(project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json")
-    return str(payload.get("run_id") or "").strip()
+    return str(_latest_candidate_pointer(project_root).get("run_id") or "").strip()
 
 
 def _run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, Any]:
@@ -2482,7 +2523,13 @@ def _run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict
         }
 
 
-def _run_adopt_latest_candidate(project_root: Path, run_id: str) -> dict[str, Any]:
+def _run_adopt_latest_candidate(
+    project_root: Path,
+    run_id: str,
+    *,
+    model_family: str | None = None,
+    champion_compare_family: str | None = None,
+) -> dict[str, Any]:
     run_id_value = str(run_id or "").strip()
     if not run_id_value:
         return {
@@ -2510,20 +2557,32 @@ def _run_adopt_latest_candidate(project_root: Path, run_id: str) -> dict[str, An
             python_exe,
             "-CandidateRunId",
             run_id_value,
+            "-ModelFamily",
+            str(model_family or _resolve_dashboard_training_family(project_root)),
             "-CandidateTargetUnits",
             "autobot-live-alpha-candidate.service",
-        ],
+        ]
+        + (
+            [
+                "-ChampionCompareModelFamily",
+                str(champion_compare_family),
+            ]
+            if str(champion_compare_family or "").strip()
+            else []
+        ),
         timeout_sec=120,
     )
     return {
         **adoption_result,
         "run_id": run_id_value,
+        "model_family": str(model_family or _resolve_dashboard_training_family(project_root)).strip() or None,
     }
 
 
 def _build_dashboard_ops_snapshot(project_root: Path) -> dict[str, Any]:
     config = _dashboard_ops_config()
     catalog = _dashboard_ops_catalog(project_root)
+    latest_candidate = _latest_candidate_pointer(project_root)
     actions = [
         {
             "id": item["id"],
@@ -2540,7 +2599,8 @@ def _build_dashboard_ops_snapshot(project_root: Path) -> dict[str, Any]:
         "requested": bool(config["requested"]),
         "token_required": bool(config["token_required"]),
         "reason": str(config["reason"] or ""),
-        "latest_candidate_run_id": _latest_candidate_run_id(project_root) or None,
+        "latest_candidate_run_id": str(latest_candidate.get("run_id") or "").strip() or None,
+        "latest_candidate_model_family": str(latest_candidate.get("model_family") or "").strip() or None,
         "actions": actions,
         "history": _load_dashboard_ops_history(project_root),
     }
@@ -2813,7 +2873,10 @@ def _run_reset_live_suppressors(
 
 
 def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
-    latest_candidate_run_id = _latest_candidate_run_id(project_root)
+    latest_candidate = _latest_candidate_pointer(project_root)
+    latest_candidate_run_id = str(latest_candidate.get("run_id") or "").strip()
+    latest_candidate_model_family = str(latest_candidate.get("model_family") or "").strip()
+    champion_compare_family = _resolve_dashboard_champion_compare_family(project_root)
     return {
         "restart_paired_paper": {
             "id": "restart_paired_paper",
@@ -2935,7 +2998,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "id": "adopt_latest_candidate",
             "label": "최신 후보 즉시 반영",
             "description": (
-                f"latest_candidate {latest_candidate_run_id}를 paired paper lane과 canary에 반영"
+                f"latest_candidate {latest_candidate_run_id} ({latest_candidate_model_family})를 paired paper lane과 canary에 반영"
                 if latest_candidate_run_id
                 else "latest_candidate를 paired paper lane과 canary에 반영"
             ),
@@ -2943,6 +3006,8 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "confirm": "현재 latest_candidate를 paired paper lane과 canary에 바로 반영할까요?",
             "kind": "adopt_latest_candidate",
             "run_id": latest_candidate_run_id,
+            "model_family": latest_candidate_model_family or None,
+            "champion_compare_family": champion_compare_family,
         },
     }
 
@@ -2964,7 +3029,12 @@ def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str
         }
     try:
         if action.get("kind") == "adopt_latest_candidate":
-            result = _run_adopt_latest_candidate(project_root, str(action.get("run_id") or ""))
+            result = _run_adopt_latest_candidate(
+                project_root,
+                str(action.get("run_id") or ""),
+                model_family=str(action.get("model_family") or "").strip() or None,
+                champion_compare_family=str(action.get("champion_compare_family") or "").strip() or None,
+            )
         elif action.get("kind") == "clear_breaker":
             result = _run_clear_live_breaker(
                 project_root,
@@ -3035,7 +3105,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "training": {
             "acceptance": acceptance,
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
-            "pointers": _load_training_pointer_summary(project_root),
+            "pointers": _load_training_pointer_summary(project_root, model_family=_resolve_dashboard_training_family(project_root)),
             "v5_readiness": _summarize_v5_readiness(project_root, data_platform=data_platform),
             "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
             "current_activity": _summarize_training_activity(

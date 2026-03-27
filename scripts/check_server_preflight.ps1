@@ -469,7 +469,7 @@ $pointerConsistencyCapture = Invoke-ArtifactReportCapture `
     -PythonPath $resolvedPythonExe `
     -Root $resolvedProjectRoot `
     -ModuleName "autobot.ops.pointer_consistency_report" `
-    -ExtraArgs @("--model-family", $resolvedModelFamily) `
+    -ExtraArgs @("--model-family", $resolvedModelFamily, "--champion-pointer-family", $resolvedChampionPointerFamily) `
     -ExpectedReportPath (Join-Path $resolvedProjectRoot "logs/ops/pointer_consistency/latest.json")
 $pointerConsistencySummary = Get-PropValue -ObjectValue $pointerConsistencyCapture.Report -Name "summary" -DefaultValue @{}
 if (($pointerConsistencyCapture.ExitCode -ne 0) -or (-not (Test-Path $pointerConsistencyCapture.ReportPath)) -or (-not (Test-ObjectHasValues -ObjectValue $pointerConsistencyCapture.Report))) {

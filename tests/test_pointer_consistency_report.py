@@ -115,6 +115,58 @@ def test_build_pointer_consistency_report_is_healthy_for_aligned_candidate_state
     assert report["summary"]["warning_count"] == 0
 
 
+def test_build_pointer_consistency_report_supports_external_champion_pointer_family(tmp_path: Path) -> None:
+    project_root = tmp_path
+    v4_family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    v4_family_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(v4_family_dir / "champion.json", {"run_id": "v4-run-1"})
+    (v4_family_dir / "v4-run-1").mkdir(parents=True, exist_ok=True)
+
+    v5_family_dir = project_root / "models" / "registry" / "train_v5_panel_ensemble"
+    v5_family_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(v5_family_dir / "latest.json", {"run_id": "v5-run-2"})
+    _write_json(v5_family_dir / "latest_candidate.json", {"run_id": "v5-run-3"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "v5-run-3", "model_family": "train_v5_panel_ensemble"})
+    (v5_family_dir / "v5-run-2").mkdir(parents=True, exist_ok=True)
+    (v5_family_dir / "v5-run-3").mkdir(parents=True, exist_ok=True)
+    _write_json(
+        project_root / "logs" / "model_v4_challenger" / "current_state.json",
+        {
+            "candidate_run_id": "v5-run-3",
+            "champion_run_id_at_start": "v4-run-1",
+            "champion_model_family_at_start": "train_v4_crypto_cs",
+            "started_ts_ms": 10_000,
+            "started_at_utc": "2026-03-25T00:00:00Z",
+            "lane_mode": "promotion_strict",
+            "promotion_eligible": True,
+        },
+    )
+
+    original_systemd = pointer_module._systemd_topology_snapshot
+    pointer_module._systemd_topology_snapshot = lambda: {
+        "available": True,
+        "services": [
+            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+        ],
+        "timers": [],
+        "unit_files": [],
+        "errors": {},
+    }
+    try:
+        report = build_pointer_consistency_report(
+            project_root=project_root,
+            model_family="train_v5_panel_ensemble",
+            champion_pointer_family="train_v4_crypto_cs",
+            ts_ms=10_000,
+        )
+    finally:
+        pointer_module._systemd_topology_snapshot = original_systemd
+
+    assert report["champion_pointer_family"] == "train_v4_crypto_cs"
+    assert report["pointers"]["champion"]["run_id"] == "v4-run-1"
+    assert report["summary"]["status"] == "healthy"
+
+
 def test_build_pointer_consistency_report_flags_missing_current_state_contract_fields(tmp_path: Path) -> None:
     project_root = tmp_path
     family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"

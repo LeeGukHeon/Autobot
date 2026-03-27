@@ -1219,11 +1219,82 @@ def test_execute_dashboard_operation_adopt_latest_candidate_uses_shared_adoption
     assert command[0] == "pwsh"
     assert str(project_root / "scripts" / "adopt_v4_candidate_for_server.ps1") in command
     assert command[command.index("-CandidateRunId") + 1] == "run-001"
+    assert command[command.index("-ModelFamily") + 1] == "train_v4_crypto_cs"
     assert command[command.index("-CandidateTargetUnits") + 1] == "autobot-live-alpha-candidate.service"
     assert int(captured["timeout_sec"]) == 120
     history_path = project_root / "logs" / "dashboard_ops" / "ops_history.jsonl"
     assert history_path.exists()
     assert '"action_id": "adopt_latest_candidate"' in history_path.read_text(encoding="utf-8")
+
+
+def test_execute_dashboard_operation_adopt_latest_candidate_uses_v5_family_and_v4_champion_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path
+    _write_json(
+        project_root / "logs" / "model_v4_acceptance" / "latest.json",
+        {
+            "model_family": "train_v5_panel_ensemble",
+            "config": {"champion_model_family": "train_v4_crypto_cs"},
+            "candidate": {"champion_model_family_used_for_backtest": "train_v4_crypto_cs"},
+        },
+    )
+    _write_json(
+        project_root / "models" / "registry" / "train_v5_panel_ensemble" / "latest_candidate.json",
+        {"run_id": "v5-run-001"},
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, object]:
+        captured["command"] = list(command)
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "started_at": "2026-03-24T00:00:00Z",
+            "completed_at": "2026-03-24T00:00:01Z",
+            "exit_code": 0,
+            "stdout_preview": "ok",
+            "stderr_preview": "",
+            "success": True,
+        }
+
+    monkeypatch.setattr("autobot.dashboard_server._run_dashboard_command", _fake_run_dashboard_command)
+    monkeypatch.setattr("autobot.dashboard_server._resolve_pwsh_exe", lambda: "pwsh")
+    monkeypatch.setattr("autobot.dashboard_server._project_python_exe", lambda root: "/venv/bin/python")
+
+    result = _execute_dashboard_operation(project_root, "adopt_latest_candidate")
+
+    assert result["success"] is True
+    assert result["run_id"] == "v5-run-001"
+    assert result["model_family"] == "train_v5_panel_ensemble"
+    command = list(captured["command"] or [])
+    assert command[command.index("-CandidateRunId") + 1] == "v5-run-001"
+    assert command[command.index("-ModelFamily") + 1] == "train_v5_panel_ensemble"
+    assert command[command.index("-ChampionCompareModelFamily") + 1] == "train_v4_crypto_cs"
+
+
+def test_build_dashboard_snapshot_uses_acceptance_model_family_for_training_pointers_and_ops(tmp_path: Path) -> None:
+    project_root = tmp_path
+    _write_json(
+        project_root / "logs" / "model_v4_acceptance" / "latest.json",
+        {
+            "model_family": "train_v5_panel_ensemble",
+            "candidate_run_id": "v5-run-001",
+            "candidate": {"champion_model_family_used_for_backtest": "train_v4_crypto_cs"},
+            "config": {"champion_model_family": "train_v4_crypto_cs"},
+        },
+    )
+    family_root = project_root / "models" / "registry" / "train_v5_panel_ensemble"
+    _write_json(family_root / "latest.json", {"run_id": "v5-run-001"})
+    _write_json(family_root / "latest_candidate.json", {"run_id": "v5-run-001"})
+    _write_json(family_root / "v5-run-001" / "train_config.yaml", {"run_scope": "scheduled_daily", "task": "cls"})
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    assert snapshot["training"]["pointers"]["model_family"] == "train_v5_panel_ensemble"
+    assert snapshot["training"]["pointers"]["latest_candidate"]["run_id"] == "v5-run-001"
+    assert snapshot["operations"]["latest_candidate_run_id"] == "v5-run-001"
+    assert snapshot["operations"]["latest_candidate_model_family"] == "train_v5_panel_ensemble"
 
 
 def test_run_clear_live_breaker_resolves_breaker_state_and_cleans_online_buffer(tmp_path: Path) -> None:

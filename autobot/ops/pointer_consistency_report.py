@@ -20,18 +20,31 @@ def build_pointer_consistency_report(
     *,
     project_root: str | Path,
     model_family: str = DEFAULT_MODEL_FAMILY,
+    champion_pointer_family: str | None = None,
     ts_ms: int | None = None,
 ) -> dict[str, Any]:
     root = Path(project_root).resolve()
     registry_root = root / "models" / "registry"
-    family_dir = registry_root / model_family
     effective_ts_ms = int(ts_ms or 0)
+    current_state_path = root / "logs" / "model_v4_challenger" / "current_state.json"
+    current_state = _load_json_file(current_state_path)
+    effective_champion_pointer_family = (
+        str(
+            champion_pointer_family
+            or current_state.get("champion_model_family_at_start")
+            or current_state.get("champion_compare_model_family")
+            or model_family
+        ).strip()
+        or model_family
+    )
+    family_dir = registry_root / model_family
+    champion_family_dir = registry_root / effective_champion_pointer_family
 
     pointers = {
         "champion": _load_pointer_snapshot(
-            path=family_dir / "champion.json",
+            path=champion_family_dir / "champion.json",
             registry_root=registry_root,
-            default_family=model_family,
+            default_family=effective_champion_pointer_family,
         ),
         "latest": _load_pointer_snapshot(
             path=family_dir / "latest.json",
@@ -54,9 +67,6 @@ def build_pointer_consistency_report(
             default_family=None,
         ),
     }
-
-    current_state_path = root / "logs" / "model_v4_challenger" / "current_state.json"
-    current_state = _load_json_file(current_state_path)
     latest_challenger_report_path = root / "logs" / "model_v4_challenger" / "latest.json"
     latest_challenger_report = _load_json_file(latest_challenger_report_path)
 
@@ -76,6 +86,7 @@ def build_pointer_consistency_report(
         global_pointer=pointers["global_latest"],
         pointer_name="latest",
         model_family=model_family,
+        require_global_alignment=(model_family == DEFAULT_MODEL_FAMILY),
         required=True,
     )
     _check_pointer_pair(
@@ -84,6 +95,7 @@ def build_pointer_consistency_report(
         global_pointer=pointers["global_latest_candidate"],
         pointer_name="latest_candidate",
         model_family=model_family,
+        require_global_alignment=(model_family == DEFAULT_MODEL_FAMILY),
         required=False,
     )
     _check_run_dir_exists(checks=checks, pointer_name="champion", pointer=pointers["champion"], required=True)
@@ -120,6 +132,7 @@ def build_pointer_consistency_report(
         "project_root": str(root),
         "registry_root": str(registry_root),
         "model_family": model_family,
+        "champion_pointer_family": effective_champion_pointer_family,
         "generated_at_ts_ms": effective_ts_ms if effective_ts_ms > 0 else None,
         "pointers": pointers,
         "challenger_state": {
@@ -161,6 +174,7 @@ def write_pointer_consistency_report(
     project_root: str | Path,
     output_path: str | Path | None = None,
     model_family: str = DEFAULT_MODEL_FAMILY,
+    champion_pointer_family: str | None = None,
     ts_ms: int | None = None,
 ) -> Path:
     root = Path(project_root).resolve()
@@ -168,6 +182,7 @@ def write_pointer_consistency_report(
     payload = build_pointer_consistency_report(
         project_root=root,
         model_family=model_family,
+        champion_pointer_family=champion_pointer_family,
         ts_ms=ts_ms,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,11 +244,37 @@ def _check_pointer_pair(
     global_pointer: dict[str, Any],
     pointer_name: str,
     model_family: str,
+    require_global_alignment: bool,
     required: bool,
 ) -> None:
     family_run_id = str(family_pointer.get("run_id") or "").strip()
     global_run_id = str(global_pointer.get("run_id") or "").strip()
     global_family = str(global_pointer.get("resolved_family") or "").strip()
+    if not require_global_alignment:
+        if not family_run_id:
+            if required:
+                _append_check(
+                    checks,
+                    code=f"{pointer_name.upper()}_POINTER_MISSING",
+                    status="violation",
+                    message=f"{pointer_name} pointer is missing in family scope.",
+                )
+            else:
+                _append_check(
+                    checks,
+                    code=f"{pointer_name.upper()}_POINTER_ABSENT",
+                    status="pass",
+                    message=f"{pointer_name} pointer is absent in family scope.",
+                )
+            return
+        _append_check(
+            checks,
+            code=f"{pointer_name.upper()}_FAMILY_PRESENT_GLOBAL_NOT_ENFORCED",
+            status="pass",
+            message=f"{pointer_name} pointer is present in family scope and global alignment is not enforced for {model_family}.",
+            evidence={"run_id": family_run_id or None},
+        )
+        return
     if not family_run_id and not global_run_id:
         if required:
             _append_check(
@@ -600,6 +641,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build machine-readable pointer consistency report.")
     parser.add_argument("--project-root", default=".", help="Project root directory")
     parser.add_argument("--model-family", default=DEFAULT_MODEL_FAMILY, help="Model family to inspect")
+    parser.add_argument("--champion-pointer-family", default="", help="Optional family to use when resolving the champion pointer")
     parser.add_argument("--out", default="", help="Optional output path override")
     parser.add_argument("--ts-ms", type=int, default=0, help="Override timestamp in milliseconds")
     return parser
@@ -613,6 +655,7 @@ def main() -> int:
         project_root=Path(str(args.project_root)),
         output_path=output_path,
         model_family=str(args.model_family).strip() or DEFAULT_MODEL_FAMILY,
+        champion_pointer_family=(str(args.champion_pointer_family).strip() or None),
         ts_ms=(int(args.ts_ms) if int(args.ts_ms) > 0 else None),
     )
     print(f"[ops][pointer-consistency] path={path}")

@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$ModelFamily = "train_v4_crypto_cs",
+    [string]$ChampionPointerFamily = "",
     [switch]$FailOnWarning
 )
 
@@ -17,8 +18,12 @@ $resolvedModelFamily = [string]$ModelFamily
 if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
     $resolvedModelFamily = "train_v4_crypto_cs"
 }
+$resolvedChampionPointerFamily = [string]$ChampionPointerFamily
+if ([string]::IsNullOrWhiteSpace($resolvedChampionPointerFamily)) {
+    $resolvedChampionPointerFamily = $resolvedModelFamily
+}
 
-$output = & $resolvedPythonExe -m autobot.ops.pointer_consistency_report --project-root $resolvedProjectRoot --model-family $resolvedModelFamily 2>&1
+$output = & $resolvedPythonExe -m autobot.ops.pointer_consistency_report --project-root $resolvedProjectRoot --model-family $resolvedModelFamily --champion-pointer-family $resolvedChampionPointerFamily 2>&1
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     throw ("pointer consistency report command failed (exit_code={0})" -f $exitCode)
