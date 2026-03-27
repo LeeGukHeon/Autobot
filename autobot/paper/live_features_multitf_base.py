@@ -46,6 +46,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
         context_micro_required: bool = False,
+        context_history_bars: int = 1,
         missing_feature_warn_ratio: float = 0.05,
         missing_feature_skip_ratio: float = 0.20,
     ) -> None:
@@ -61,6 +62,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         )
         self._high_tfs = tuple(str(item).strip().lower() for item in high_tfs if str(item).strip())
         self._context_micro_required = bool(context_micro_required)
+        self._context_history_bars = max(int(context_history_bars), 1)
         self._missing_feature_warn_ratio = min(max(float(missing_feature_warn_ratio), 0.0), 1.0)
         self._missing_feature_skip_ratio = min(max(float(missing_feature_skip_ratio), 0.0), 1.0)
 
@@ -252,6 +254,159 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             "context_rows_after_micro_filter": int(filtered.height),
             "context_rows_dropped_no_micro": int(max(frame.height - filtered.height, 0)),
         }
+
+    def _build_runtime_context_frame(
+        self,
+        *,
+        ts_ms: int,
+        markets: Sequence[str],
+        feature_columns: Sequence[str],
+        extra_columns: Sequence[str] = (),
+        provider_name: str,
+        missing_feature_warn_ratio: float | None = None,
+        missing_feature_skip_ratio: float | None = None,
+        history_bars: int | None = None,
+    ) -> tuple[pl.DataFrame, dict[str, Any]]:
+        ts_value = int(ts_ms)
+        requested = _normalize_markets(markets)
+        self._last_requested_ts_ms = ts_value
+        history_window = max(int(history_bars or self._context_history_bars), 1)
+        rows: list[dict[str, Any]] = []
+        built_markets: list[str] = []
+        skipped_markets: list[str] = []
+        skip_reasons: dict[str, int] = {}
+        built_reasons: dict[str, int] = {}
+        missing_feature_counter: Counter[str] = Counter()
+        warn_missing_feature_market_count = 0
+        missing_feature_cells_total = 0
+        warn_ratio = (
+            self._missing_feature_warn_ratio
+            if missing_feature_warn_ratio is None
+            else min(max(float(missing_feature_warn_ratio), 0.0), 1.0)
+        )
+        skip_ratio = (
+            self._missing_feature_skip_ratio
+            if missing_feature_skip_ratio is None
+            else min(max(float(missing_feature_skip_ratio), 0.0), 1.0)
+        )
+
+        for market in requested:
+            state = self._market_state.setdefault(market, _MarketState())
+            if state.candles_1m is None:
+                from collections import deque
+
+                state.candles_1m = deque(maxlen=self._max_1m_history)
+            if not state.bootstrap_loaded:
+                self._bootstrap_market(market=market, state=state)
+                state.bootstrap_loaded = True
+            self._flush_active_until_ts(state=state, ts_ms=ts_value)
+            one_m = self._build_one_m_frame(state=state, ts_ms=ts_value)
+            if one_m.height <= 0:
+                skipped_markets.append(market)
+                skip_reasons["NO_1M_HISTORY"] = int(skip_reasons.get("NO_1M_HISTORY", 0)) + 1
+                continue
+            base = self._resolve_runtime_tf_frame(
+                market=market,
+                state=state,
+                tf=self._tf,
+                ts_ms=ts_value,
+                one_m=one_m,
+            )
+            if base.height <= 0:
+                skipped_markets.append(market)
+                skip_reasons["NO_BASE_CANDLE"] = int(skip_reasons.get("NO_BASE_CANDLE", 0)) + 1
+                continue
+            ts_candidates = [
+                int(value)
+                for value in base.get_column("ts_ms").drop_nulls().to_list()
+                if int(value) <= ts_value
+            ]
+            history_ts_values = ts_candidates[-history_window:]
+            if not history_ts_values:
+                skipped_markets.append(market)
+                skip_reasons["NO_FEATURE_ROW_AT_TS"] = int(skip_reasons.get("NO_FEATURE_ROW_AT_TS", 0)) + 1
+                continue
+            built_current = False
+            for history_ts in history_ts_values:
+                row, reason, missing_feature_cells, missing_features = self._build_runtime_market_row(
+                    market=market,
+                    ts_ms=int(history_ts),
+                    feature_columns=feature_columns,
+                    extra_columns=extra_columns,
+                    missing_feature_skip_ratio=skip_ratio,
+                )
+                missing_feature_cells_total += int(missing_feature_cells)
+                for name in missing_features:
+                    missing_feature_counter[str(name)] += 1
+                feature_count = max(len(tuple(feature_columns)), 1)
+                missing_ratio = float(missing_feature_cells) / float(feature_count)
+                if missing_ratio > float(warn_ratio):
+                    warn_missing_feature_market_count += 1
+                if row is None:
+                    if int(history_ts) == ts_value:
+                        skipped_markets.append(market)
+                        skip_reasons[reason] = int(skip_reasons.get(reason, 0)) + 1
+                    continue
+                if int(history_ts) == ts_value:
+                    built_current = True
+                if reason != "OK":
+                    built_reasons[reason] = int(built_reasons.get(reason, 0)) + 1
+                rows.append(row)
+            if built_current:
+                built_markets.append(market)
+            elif market not in skipped_markets:
+                skipped_markets.append(market)
+                skip_reasons["NO_FEATURE_ROW_AT_TS"] = int(skip_reasons.get("NO_FEATURE_ROW_AT_TS", 0)) + 1
+
+        total_feature_cells = max(len(tuple(feature_columns)), 1) * max(len(requested), 1)
+        missing_feature_ratio = float(missing_feature_cells_total) / float(total_feature_cells)
+        missing_feature_topk = [
+            {"feature": name, "count": int(count)}
+            for name, count in sorted(
+                missing_feature_counter.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[:10]
+        ]
+        bootstrap_missing = 0
+        bootstrap_partial = 0
+        for market in requested:
+            state = self._market_state.get(market)
+            status = str(getattr(state, "bootstrap_status", "UNSET")).strip().upper() if state is not None else "UNSET"
+            if status in {"MISSING", "EMPTY"}:
+                bootstrap_missing += 1
+            elif status in {"PARTIAL"}:
+                bootstrap_partial += 1
+
+        frame = _rows_to_frame(rows=rows, feature_columns=feature_columns, extra_columns=extra_columns)
+        if frame.height > 0 and int(frame.get_column("ts_ms").max()) == ts_value:
+            self._latest_feature_ts_ms = ts_value
+            self._last_built_ts_ms = ts_value
+        else:
+            self._last_built_ts_ms = None
+        stats = {
+            "provider": str(provider_name),
+            "requested_ts_ms": ts_value,
+            "built_ts_ms": int(self._last_built_ts_ms) if self._last_built_ts_ms is not None else None,
+            "requested_markets": int(len(requested)),
+            "built_markets": int(len(built_markets)),
+            "skipped_markets": int(len(skipped_markets)),
+            "built_rows": int(frame.filter(pl.col("ts_ms") == ts_value).height if frame.height > 0 and "ts_ms" in frame.columns else 0),
+            "context_history_bars": int(history_window),
+            "context_panel_rows": int(frame.height),
+            "built_market_samples": list(built_markets[:20]),
+            "skipped_market_samples": list(skipped_markets[:20]),
+            "skip_reasons": dict(sorted(skip_reasons.items(), key=lambda item: str(item[0]))),
+            "built_reasons": dict(sorted(built_reasons.items(), key=lambda item: str(item[0]))),
+            "missing_feature_cells_total": int(missing_feature_cells_total),
+            "missing_feature_ratio": float(missing_feature_ratio),
+            "missing_feature_warn_market_count": int(warn_missing_feature_market_count),
+            "missing_feature_topk": missing_feature_topk,
+            "missing_feature_warn_ratio_threshold": float(warn_ratio),
+            "missing_feature_skip_ratio_threshold": float(skip_ratio),
+            "bootstrap_missing_markets_count": int(bootstrap_missing),
+            "bootstrap_partial_markets_count": int(bootstrap_partial),
+        }
+        return frame, stats
 
     def _build_runtime_frame(
         self,

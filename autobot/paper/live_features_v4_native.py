@@ -42,6 +42,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
         bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
         context_micro_required: bool = False,
+        context_history_bars: int = 1,
     ) -> None:
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
         self._extra_columns = tuple(str(col).strip() for col in extra_columns if str(col).strip())
@@ -60,20 +61,33 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
             bootstrap_end_ts_ms=bootstrap_end_ts_ms,
             max_1m_history=max_1m_history,
             context_micro_required=context_micro_required,
+            context_history_bars=context_history_bars,
             missing_feature_warn_ratio=1.0,
             missing_feature_skip_ratio=1.0,
         )
 
     def build_frame(self, *, ts_ms: int, markets: Sequence[str]) -> pl.DataFrame:
-        base_frame, base_stats = self._build_runtime_frame(
-            ts_ms=ts_ms,
-            markets=markets,
-            feature_columns=self._base_feature_columns,
-            extra_columns=self._extra_columns,
-            provider_name="LIVE_V4_NATIVE_BASE",
-            missing_feature_warn_ratio=1.0,
-            missing_feature_skip_ratio=1.0,
-        )
+        if self._context_history_bars > 1:
+            base_frame, base_stats = self._build_runtime_context_frame(
+                ts_ms=ts_ms,
+                markets=markets,
+                feature_columns=self._base_feature_columns,
+                extra_columns=self._extra_columns,
+                provider_name="LIVE_V4_NATIVE_BASE",
+                missing_feature_warn_ratio=1.0,
+                missing_feature_skip_ratio=1.0,
+                history_bars=self._context_history_bars,
+            )
+        else:
+            base_frame, base_stats = self._build_runtime_frame(
+                ts_ms=ts_ms,
+                markets=markets,
+                feature_columns=self._base_feature_columns,
+                extra_columns=self._extra_columns,
+                provider_name="LIVE_V4_NATIVE_BASE",
+                missing_feature_warn_ratio=1.0,
+                missing_feature_skip_ratio=1.0,
+            )
         if base_frame.height <= 0:
             self._last_build_stats = {
                 "provider": "LIVE_V4_NATIVE",
@@ -82,6 +96,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
                 "built_rows": 0,
                 "requested_feature_count": int(len(self._feature_columns)),
                 "base_provider_stats": dict(base_stats),
+                "context_history_bars": int(self._context_history_bars),
             }
             return base_frame
 
@@ -102,6 +117,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
                 "context_rows_before_micro_filter": int(context_stats.get("context_rows_before_micro_filter", 0)),
                 "context_rows_after_micro_filter": int(context_stats.get("context_rows_after_micro_filter", 0)),
                 "context_rows_dropped_no_micro": int(context_stats.get("context_rows_dropped_no_micro", 0)),
+                "context_history_bars": int(self._context_history_bars),
             }
             return base_frame
 
@@ -119,6 +135,8 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
             feature_columns=self._feature_columns,
             extra_columns=self._extra_columns,
         )
+        if final_frame.height > 0 and "ts_ms" in final_frame.columns:
+            final_frame = final_frame.filter(pl.col("ts_ms") == int(ts_ms)).sort("market")
         hard_gate_triggered = len(missing_columns) > 0
         if hard_gate_triggered:
             final_frame = final_frame.head(0)
@@ -136,6 +154,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
             "context_rows_before_micro_filter": int(context_stats.get("context_rows_before_micro_filter", 0)),
             "context_rows_after_micro_filter": int(context_stats.get("context_rows_after_micro_filter", 0)),
             "context_rows_dropped_no_micro": int(context_stats.get("context_rows_dropped_no_micro", 0)),
+            "context_history_bars": int(self._context_history_bars),
         }
         return final_frame
 

@@ -82,6 +82,17 @@ class _MappingMicroSnapshotProvider:
         return self._snapshots.get(str(market).strip().upper())
 
 
+class _TimeKeyedMicroSnapshotProvider:
+    def __init__(self, snapshots: dict[tuple[str, int], MicroSnapshot | None]) -> None:
+        self._snapshots = {
+            (str(market).strip().upper(), int(ts_ms)): value
+            for (market, ts_ms), value in snapshots.items()
+        }
+
+    def get(self, market: str, ts_ms: int) -> MicroSnapshot | None:
+        return self._snapshots.get((str(market).strip().upper(), int(ts_ms)))
+
+
 def test_live_feature_provider_v4_builds_v4_columns_from_native_base(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
@@ -816,6 +827,67 @@ def test_live_feature_provider_v4_can_require_micro_for_cross_sectional_context(
     assert int(stats["context_rows_before_micro_filter"]) == 2
     assert int(stats["context_rows_after_micro_filter"]) == 1
     assert int(stats["context_rows_dropped_no_micro"]) == 1
+
+
+def test_live_feature_provider_v4_can_use_history_context_for_rolling_order_flow_features(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC", start_ts_ms=60_000, count=700)
+    snapshot_map: dict[tuple[str, int], MicroSnapshot | None] = {}
+    bar_ts_values = [300_000 + (i * 300_000) for i in range(14)]
+    for index, ts_value in enumerate(bar_ts_values):
+        is_buy = index % 2 == 0
+        snapshot_map[("KRW-BTC", ts_value)] = MicroSnapshot(
+            market="KRW-BTC",
+            snapshot_ts_ms=ts_value,
+            last_event_ts_ms=ts_value,
+            trade_events=1,
+            trade_count=1,
+            buy_count=1 if is_buy else 0,
+            sell_count=0 if is_buy else 1,
+            trade_coverage_ms=60_000,
+            trade_notional_krw=100.0,
+            trade_imbalance=1.0 if is_buy else -1.0,
+            trade_source="ws",
+            trade_volume_total=1.0,
+            buy_volume=1.0 if is_buy else 0.0,
+            sell_volume=0.0 if is_buy else 1.0,
+            vwap=100.0,
+            avg_trade_size=1.0,
+            max_trade_size=1.0,
+            last_trade_price=100.0,
+            mid_mean=100.0,
+            spread_bps_mean=1.0,
+            depth_top5_notional_krw=1_000.0,
+            depth_bid_top5_notional_krw=500.0,
+            depth_ask_top5_notional_krw=500.0,
+            imbalance_top5_mean=0.0,
+            microprice_bias_bps_mean=0.0,
+            book_events=1,
+            book_coverage_ms=60_000,
+            book_available=True,
+        )
+
+    request_ts_ms = bar_ts_values[-1]
+    provider = LiveFeatureProviderV4(
+        feature_columns=("oflow_v1_flow_sign_persistence_12",),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=request_ts_ms,
+        micro_snapshot_provider=_TimeKeyedMicroSnapshotProvider(snapshot_map),
+        context_micro_required=True,
+        context_history_bars=12,
+    )
+
+    frame = provider.build_frame(ts_ms=request_ts_ms, markets=["KRW-BTC"])
+
+    assert frame.height == 1
+    row = frame.row(0, named=True)
+    assert float(row["oflow_v1_flow_sign_persistence_12"]) == pytest.approx(0.0, rel=0, abs=1e-6)
+    stats = provider.last_build_stats()
+    assert int(stats["context_history_bars"]) == 12
 
 
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:

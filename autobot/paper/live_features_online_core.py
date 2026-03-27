@@ -592,7 +592,10 @@ def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str]
         "close",
     ]
     present = [name for name in ordered if name in frame.columns]
-    return frame.select(present).sort("market")
+    sort_columns = [name for name in ("market", "ts_ms") if name in frame.columns]
+    if sort_columns:
+        return frame.select(present).sort(sort_columns)
+    return frame.select(present)
 
 
 def _resolve_extra_row_value(*, column: str, base_row: dict[str, Any], aux_row: dict[str, Any], close_value: float) -> float | None:
