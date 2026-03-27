@@ -52,6 +52,7 @@ class _MarketState:
     bootstrap_status: str = "UNSET"
     bootstrap_rows: int = 0
     candles_1m: deque[_MinuteCandle] | None = None
+    canonical_tf_frames: dict[str, pl.DataFrame] | None = None
     active: _ActiveMinute | None = None
     last_price: float | None = None
     last_closed_price: float | None = None
@@ -477,6 +478,63 @@ class _OnlineMinuteRuntimeCore:
                 }
             )
         return pl.DataFrame(synth_rows).sort("ts_ms")
+
+    def _load_canonical_tf_frame(
+        self,
+        *,
+        market: str,
+        state: _MarketState,
+        tf: str,
+        tail_bars: int,
+    ) -> pl.DataFrame:
+        tf_value = str(tf).strip().lower()
+        if not tf_value:
+            return pl.DataFrame()
+        if state.canonical_tf_frames is None:
+            state.canonical_tf_frames = {}
+        cached = state.canonical_tf_frames.get(tf_value)
+        if cached is not None:
+            return cached
+
+        market_files = _market_files(dataset_root=self._candles_root, tf=tf_value, market=market)
+        if not market_files:
+            frame = pl.DataFrame(
+                schema={
+                    "ts_ms": pl.Int64,
+                    "open": pl.Float64,
+                    "high": pl.Float64,
+                    "low": pl.Float64,
+                    "close": pl.Float64,
+                    "volume_base": pl.Float64,
+                }
+            )
+            state.canonical_tf_frames[tf_value] = frame
+            return frame
+
+        try:
+            lazy = (
+                pl.scan_parquet([str(path) for path in market_files])
+                .select(
+                    [
+                        pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+                        pl.col("open").cast(pl.Float64).alias("open"),
+                        pl.col("high").cast(pl.Float64).alias("high"),
+                        pl.col("low").cast(pl.Float64).alias("low"),
+                        pl.col("close").cast(pl.Float64).alias("close"),
+                        pl.col("volume_base").cast(pl.Float64).alias("volume_base"),
+                    ]
+                )
+                .sort("ts_ms")
+                .unique(subset=["ts_ms"], keep="last", maintain_order=True)
+            )
+            if self._bootstrap_end_ts_ms is not None:
+                lazy = lazy.filter(pl.col("ts_ms") <= int(self._bootstrap_end_ts_ms))
+            lazy = lazy.tail(max(int(tail_bars), 1))
+            frame = _collect_lazy(lazy)
+        except Exception:
+            frame = pl.DataFrame()
+        state.canonical_tf_frames[tf_value] = frame
+        return frame
 
 
 def _rollup_from_1m(*, one_m: pl.DataFrame, tf: str) -> pl.DataFrame:

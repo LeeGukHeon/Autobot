@@ -684,6 +684,52 @@ def test_live_feature_provider_v4_keeps_boundary_minute_in_current_base_bar(tmp_
     assert float(row["one_m_volume_sum"]) == pytest.approx(400.0, rel=0, abs=1e-9)
 
 
+def test_live_feature_provider_v4_prefers_canonical_base_tf_over_conflicting_1m_rollup(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    one_m_dir = parquet_root / "candles_api_v1" / "tf=1m" / "market=KRW-BTC" / "date=2026-01-01"
+    one_m_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "ts_ms": [60_000, 120_000, 180_000, 240_000, 300_000, 360_000, 420_000, 480_000, 540_000, 600_000],
+            "open": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+            "high": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+            "low": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+            "close": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+            "volume_base": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0],
+        }
+    ).write_parquet(one_m_dir / "part-000.parquet")
+    base_dir = parquet_root / "candles_api_v1" / "tf=5m" / "market=KRW-BTC" / "date=2026-01-01"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "ts_ms": [300_000, 600_000],
+            "open": [111.0, 222.0],
+            "high": [115.0, 230.0],
+            "low": [110.0, 221.0],
+            "close": [114.0, 229.0],
+            "volume_base": [15.0, 25.0],
+        }
+    ).write_parquet(base_dir / "part-000.parquet")
+
+    provider = LiveFeatureProviderV4(
+        feature_columns=("one_m_count", "one_m_volume_sum"),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=256,
+        bootstrap_end_ts_ms=600_000,
+    )
+
+    frame = provider.build_frame(ts_ms=600_000, markets=["KRW-BTC"])
+
+    assert frame.height == 1
+    row = frame.row(0, named=True)
+    assert float(row["close"]) == pytest.approx(229.0, rel=0, abs=1e-9)
+    assert float(row["one_m_count"]) == pytest.approx(5.0, rel=0, abs=1e-9)
+    assert float(row["one_m_volume_sum"]) == pytest.approx(400.0, rel=0, abs=1e-9)
+
+
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
     part_dir = dataset_root / "tf=1m" / f"market={market}" / "date=2026-01-01"
     part_dir.mkdir(parents=True, exist_ok=True)

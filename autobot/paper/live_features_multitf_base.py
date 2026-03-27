@@ -85,7 +85,13 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         if one_m.height <= 0:
             return None, "NO_1M_HISTORY", 0, ()
 
-        base = _rollup_from_1m(one_m=one_m, tf=self._tf).filter(pl.col("ts_ms") <= int(ts_ms))
+        base = self._resolve_runtime_tf_frame(
+            market=market,
+            state=state,
+            tf=self._tf,
+            ts_ms=ts_ms,
+            one_m=one_m,
+        )
         if base.height <= 0:
             return None, "NO_BASE_CANDLE", 0, ()
 
@@ -110,7 +116,13 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         )
 
         for high_tf in self._high_tfs:
-            high_candles = _rollup_from_1m(one_m=one_m, tf=high_tf).filter(pl.col("ts_ms") <= int(ts_ms))
+            high_candles = self._resolve_runtime_tf_frame(
+                market=market,
+                state=state,
+                tf=high_tf,
+                ts_ms=ts_ms,
+                one_m=one_m,
+            )
             high_features = compute_high_tf_features(high_candles, tf=high_tf, float_dtype="float32")
             staleness = int(round(expected_interval_ms(high_tf) * 2.0))
             working, _ = join_high_tf_asof(
@@ -178,6 +190,50 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         if missing_ratio > float(limit):
             return None, "MISSING_FEATURE_RATIO_HIGH", missing_features, tuple(sorted(set(missing_columns)))
         return out, micro_reason, missing_features, tuple(sorted(set(missing_columns)))
+
+    def _resolve_runtime_tf_frame(
+        self,
+        *,
+        market: str,
+        state: _MarketState,
+        tf: str,
+        ts_ms: int,
+        one_m: pl.DataFrame,
+    ) -> pl.DataFrame:
+        tf_value = str(tf).strip().lower()
+        ts_value = int(ts_ms)
+        interval_ms = max(int(expected_interval_ms(tf_value)), 1)
+        tail_bars = max(256, int(self._bootstrap_1m_bars // interval_ms) + 8)
+
+        canonical = (
+            self._load_canonical_tf_frame(
+                market=market,
+                state=state,
+                tf=tf_value,
+                tail_bars=tail_bars,
+            )
+            .filter(pl.col("ts_ms") <= ts_value)
+            .sort("ts_ms")
+        )
+        rolled = _rollup_from_1m(one_m=one_m, tf=tf_value).filter(pl.col("ts_ms") <= ts_value).sort("ts_ms")
+
+        if canonical.height <= 0:
+            return rolled
+        if rolled.height <= 0:
+            return canonical
+
+        latest_canonical_ts = int(canonical.get_column("ts_ms").max())
+        if latest_canonical_ts >= ts_value:
+            return canonical
+
+        rolled = rolled.filter(pl.col("ts_ms") > latest_canonical_ts)
+        if rolled.height <= 0:
+            return canonical
+        return (
+            pl.concat([canonical, rolled], how="vertical_relaxed")
+            .sort("ts_ms")
+            .unique(subset=["ts_ms"], keep="last", maintain_order=True)
+        )
 
     def _build_runtime_frame(
         self,
