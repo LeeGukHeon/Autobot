@@ -197,22 +197,22 @@ def build_feature_set_v4_live_base_from_candles(
     rows_after_multitf = int(filtered.height)
     one_m_synth_ratio_mean, one_m_synth_ratio_p50, one_m_synth_ratio_p90 = _one_m_synth_ratio_stats(filtered)
 
-    labeled = apply_labeling_v1(frame=filtered, config=label_config)
-    labeled, tail_dropped = apply_label_tail_guard(labeled, horizon_bars=label_config.horizon_bars)
-    labeled = drop_neutral_rows(frame=labeled, config=label_config)
+    micro_join = join_micro_required(base_frame=filtered, micro_frame=micro_frame, micro_tf_used=micro_tf_used)
+    output = micro_join.frame
+    rows_after_micro = int(output.height)
+
+    bootstrap_labeled = apply_labeling_v1(frame=output, config=label_config)
+    bootstrap_labeled, tail_dropped = apply_label_tail_guard(bootstrap_labeled, horizon_bars=label_config.horizon_bars)
+    bootstrap_labeled = drop_neutral_rows(frame=bootstrap_labeled, config=label_config)
     required_non_null = [
         name
         for name in required_feature_columns_v4_live_base(high_tfs=high_tfs)
-        if name in labeled.columns and name != "m_trade_source"
+        if name in bootstrap_labeled.columns and name != "m_trade_source"
     ]
-    required_non_null.extend([name for name in ("y_reg", "y_cls") if name in labeled.columns])
+    required_non_null.extend([name for name in ("y_reg", "y_cls") if name in bootstrap_labeled.columns])
     if required_non_null:
-        labeled = labeled.filter(pl.all_horizontal([pl.col(name).is_not_null() for name in required_non_null]))
-    rows_after_label = int(labeled.height)
-
-    micro_join = join_micro_required(base_frame=labeled, micro_frame=micro_frame, micro_tf_used=micro_tf_used)
-    output = micro_join.frame
-    rows_after_micro = int(output.height)
+        bootstrap_labeled = bootstrap_labeled.filter(pl.all_horizontal([pl.col(name).is_not_null() for name in required_non_null]))
+    rows_after_label = int(bootstrap_labeled.height)
 
     output = attach_sample_weight_v4_live_base(
         output,
