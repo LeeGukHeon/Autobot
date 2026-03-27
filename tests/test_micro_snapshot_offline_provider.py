@@ -21,18 +21,30 @@ def _write_micro_part(root: Path) -> None:
             "trade_source": ["ws"],
             "trade_events": [3],
             "trade_coverage_ms": [30_000],
+            "trade_min_ts_ms": [ts_ms - 30_000],
+            "trade_count": [3],
+            "buy_count": [2],
+            "sell_count": [1],
             "trade_volume_total": [2.0],
+            "buy_volume": [1.2],
+            "sell_volume": [0.8],
             "trade_imbalance": [0.2],
             "vwap": [100.0],
+            "avg_trade_size": [2.0 / 3.0],
+            "max_trade_size": [1.25],
             "last_trade_price": [101.0],
             "trade_max_ts_ms": [ts_ms],
             "book_events": [2],
             "book_coverage_ms": [20_000],
+            "book_min_ts_ms": [ts_ms - 20_000],
             "book_max_ts_ms": [ts_ms],
             "micro_book_available": [True],
+            "mid_mean": [100.5],
             "spread_bps_mean": [4.5],
             "depth_bid_top5_mean": [500_000.0],
             "depth_ask_top5_mean": [550_000.0],
+            "imbalance_top5_mean": [-0.0476190476],
+            "microprice_bias_bps_mean": [3.25],
         }
     ).write_parquet(target / "part-000.parquet")
 
@@ -71,9 +83,17 @@ def test_offline_provider_reads_snapshot_and_computes_notional(tmp_path: Path) -
     assert snapshot.trade_events == 3
     assert snapshot.trade_source == "ws"
     assert snapshot.trade_notional_krw == 200.0
+    assert snapshot.buy_count == 2
+    assert snapshot.sell_count == 1
+    assert snapshot.buy_volume == 1.2
+    assert snapshot.sell_volume == 0.8
+    assert snapshot.max_trade_size == 1.25
+    assert snapshot.mid_mean == 100.5
     assert snapshot.depth_bid_top5_notional_krw == 500_000.0
     assert snapshot.depth_ask_top5_notional_krw == 550_000.0
     assert snapshot.depth_top5_notional_krw == 1_050_000.0
+    assert snapshot.imbalance_top5_mean == -0.0476190476
+    assert snapshot.microprice_bias_bps_mean == 3.25
 
 
 def test_offline_provider_allows_small_timestamp_fallback(tmp_path: Path) -> None:
