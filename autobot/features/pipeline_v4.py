@@ -870,11 +870,13 @@ def validate_features_dataset_v4(config: FeaturesV4Config, options: FeatureValid
     dropped_no_micro = int(sum(int(item.get("rows_dropped_no_micro") or 0) for item in selected))
 
     for market in selected_markets:
-        frame = _load_feature_market(dataset_root=dataset_root, tf=tf, market=market)
-        if start_ts_ms is not None:
-            frame = frame.filter(pl.col("ts_ms") >= int(start_ts_ms))
-        if end_ts_ms is not None:
-            frame = frame.filter(pl.col("ts_ms") <= int(end_ts_ms))
+        frame = _load_feature_market(
+            dataset_root=dataset_root,
+            tf=tf,
+            market=market,
+            from_ts_ms=start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
         rows_count = int(frame.height)
         missing_columns = [name for name in required if name not in frame.columns]
         non_monotonic = _is_non_monotonic(frame.get_column("ts_ms")) if rows_count > 1 and "ts_ms" in frame.columns else False

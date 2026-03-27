@@ -727,11 +727,13 @@ def validate_features_dataset_v3(config: FeaturesV3Config, options: FeatureValid
     dropped_no_micro = int(sum(int(item.get("rows_dropped_no_micro") or 0) for item in selected))
 
     for market in selected_markets:
-        frame = _load_feature_market(dataset_root=dataset_root, tf=tf, market=market)
-        if start_ts_ms is not None:
-            frame = frame.filter(pl.col("ts_ms") >= int(start_ts_ms))
-        if end_ts_ms is not None:
-            frame = frame.filter(pl.col("ts_ms") <= int(end_ts_ms))
+        frame = _load_feature_market(
+            dataset_root=dataset_root,
+            tf=tf,
+            market=market,
+            from_ts_ms=start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
         rows = int(frame.height)
         missing_columns = [name for name in required if name not in frame.columns]
         non_monotonic = _is_non_monotonic(frame.get_column("ts_ms")) if rows > 1 and "ts_ms" in frame.columns else False
@@ -1348,20 +1350,56 @@ def _candle_part_files(*, dataset_root: Path, tf: str, market: str) -> list[Path
     return nested
 
 
-def _load_feature_market(*, dataset_root: Path, tf: str, market: str) -> pl.DataFrame:
-    files = _feature_part_files(dataset_root=dataset_root, tf=tf, market=market)
+def _load_feature_market(
+    *,
+    dataset_root: Path,
+    tf: str,
+    market: str,
+    from_ts_ms: int | None = None,
+    to_ts_ms: int | None = None,
+) -> pl.DataFrame:
+    files = _feature_part_files(
+        dataset_root=dataset_root,
+        tf=tf,
+        market=market,
+        from_ts_ms=from_ts_ms,
+        to_ts_ms=to_ts_ms,
+    )
     if not files:
         return pl.DataFrame(schema={"ts_ms": pl.Int64}, orient="row")
-    return _collect_lazy(pl.scan_parquet([str(path) for path in files])).sort("ts_ms")
+    try:
+        lazy = pl.scan_parquet([str(path) for path in files], extra_columns="ignore")
+    except TypeError:
+        lazy = pl.scan_parquet([str(path) for path in files])
+    frame = _collect_lazy(lazy).sort("ts_ms")
+    if from_ts_ms is not None:
+        frame = frame.filter(pl.col("ts_ms") >= int(from_ts_ms))
+    if to_ts_ms is not None:
+        frame = frame.filter(pl.col("ts_ms") <= int(to_ts_ms))
+    return frame
 
 
-def _feature_part_files(*, dataset_root: Path, tf: str, market: str) -> list[Path]:
+def _feature_part_files(
+    *,
+    dataset_root: Path,
+    tf: str,
+    market: str,
+    from_ts_ms: int | None = None,
+    to_ts_ms: int | None = None,
+) -> list[Path]:
     market_dir = dataset_root / f"tf={tf}" / f"market={market}"
     if not market_dir.exists():
         return []
+    start_date = _ts_to_date(from_ts_ms) if from_ts_ms is not None else ""
+    end_date = _ts_to_date(to_ts_ms) if to_ts_ms is not None else ""
     nested: list[Path] = []
     for date_dir in sorted(market_dir.glob("date=*")):
         if not date_dir.is_dir():
+            continue
+        date_value = str(date_dir.name).split("=", 1)[-1].strip()
+        if start_date and date_value < start_date:
+            continue
+        if end_date and date_value > end_date:
             continue
         nested.extend(path for path in sorted(date_dir.glob("*.parquet")) if path.is_file())
     if nested:

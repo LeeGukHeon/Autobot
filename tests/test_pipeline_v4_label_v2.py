@@ -257,6 +257,103 @@ def test_pipeline_v4_builds_cross_sectional_labels(tmp_path: Path) -> None:
     assert frame.get_column("volume_z_x_trend").null_count() == 0
 
 
+def test_validate_features_v4_ignores_stale_partitions_outside_requested_window(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    features_root = tmp_path / "features"
+    _write_candles(parquet_root / "candles_api_v1")
+    _write_candles_history(parquet_root / "candles_v1")
+    _write_micro(parquet_root / "micro_v1")
+
+    config = FeaturesV4Config(
+        build=FeaturesV4BuildConfig(
+            output_dataset="features_v4_test",
+            tf="5m",
+            base_candles_dataset="candles_api_v1",
+            micro_dataset="micro_v1",
+            high_tfs=("15m", "60m", "240m"),
+            high_tf_staleness_multiplier=2.0,
+            one_m_required_bars=5,
+            one_m_max_missing_ratio=0.2,
+            sample_weight_half_life_days=60.0,
+            min_rows_for_train=1,
+            require_micro_validate_pass=True,
+        ),
+        parquet_root=parquet_root,
+        features_root=features_root,
+        universe=UniverseConfig(quote="KRW", mode="static_start", top_n=2, lookback_days=7, fixed_list=()),
+        time_range=TimeRangeConfig(start="2026-01-01", end="2026-01-03"),
+        feature_set_v1=FeatureSetV1Config(
+            windows=FeatureWindows(ret=(1, 3, 6, 12), rv=(12, 36), ema=(12, 36), rsi=14, atr=14, vol_z=36),
+            enable_factor_features=False,
+            factor_markets=(),
+            enable_liquidity_rank=False,
+        ),
+        label_v2=LabelV2CryptoCsConfig(
+            horizon_bars=12,
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
+        label_v3=LabelV3CryptoCsConfig(
+            horizons_bars=(3, 6, 12, 24),
+            primary_horizon_bars=12,
+            fee_bps_est=10.0,
+            safety_bps=5.0,
+            top_quantile=0.49,
+            bottom_quantile=0.49,
+            neutral_policy="drop",
+        ),
+        validation=FeaturesV4ValidateConfig(leakage_fail_on_future_ts=True),
+        float_dtype="float32",
+    )
+
+    build_features_dataset_v4(
+        config,
+        FeatureBuildV4Options(
+            tf="5m",
+            quote="KRW",
+            top_n=2,
+            start="2026-01-01",
+            end="2026-01-03",
+            feature_set="v4",
+            label_set="v3",
+            dry_run=False,
+        ),
+    )
+
+    stale_dir = features_root / "features_v4_test" / "tf=5m" / "market=KRW-BTC" / "date=2026-01-04"
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "ts_ms": [1_704_326_400_000],
+            "market": ["KRW-BTC"],
+            "sample_weight": [1.0],
+            "close": [9999.0],
+            "y_reg_net_12": [1.0],
+            "y_cls_topq_12": [1],
+            "legacy_only_extra": [123.0],
+        }
+    ).write_parquet(stale_dir / "part-000.parquet")
+
+    validate_summary = validate_features_dataset_v4(
+        config,
+        FeatureValidateV4Options(
+            tf="5m",
+            quote="KRW",
+            top_n=2,
+            start="2026-01-01",
+            end="2026-01-03",
+        ),
+    )
+
+    assert validate_summary.fail_files == 0
+    assert validate_summary.leakage_smoke == "PASS"
+
+
 def test_pipeline_v4_requires_micro_validate_report_overlap(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     features_root = tmp_path / "features"
