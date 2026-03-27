@@ -519,7 +519,17 @@ def _topology_health_status(
         reason_codes.append("CANDIDATE_DB_MISSING")
     if bool(ws_public_contract.get("ws_public_stale", False)):
         reason_codes.append("WS_PUBLIC_STALE")
-    if bool(runtime_sync_status.get("model_pointer_divergence", False)):
+    runtime_current_contract = dict(runtime_sync_status.get("current_contract") or {})
+    pointer_name = str(runtime_current_contract.get("resolved_pointer_name") or "").strip().lower()
+    monitored_unit = (
+        "autobot-live-alpha-candidate.service"
+        if pointer_name == "latest_candidate"
+        else "autobot-live-alpha.service"
+    )
+    if bool(runtime_sync_status.get("model_pointer_divergence", False)) and _systemd_unit_active_like(
+        systemd_snapshot=systemd_snapshot,
+        unit_name=monitored_unit,
+    ):
         reason_codes.append("MODEL_POINTER_DIVERGENCE")
     if bool(legacy_replay.get("active_unit_count", 0)):
         reason_codes.append("LEGACY_REPLAY_ACTIVE")
@@ -533,6 +543,17 @@ def _topology_health_status(
         "status": status,
         "reason_codes": reason_codes,
     }
+
+
+def _systemd_unit_active_like(*, systemd_snapshot: dict[str, Any], unit_name: str) -> bool:
+    target = str(unit_name).strip()
+    for item in systemd_snapshot.get("services") or []:
+        if str(item.get("unit", "")).strip() != target:
+            continue
+        active = str(item.get("active", "")).strip().lower()
+        sub = str(item.get("sub", "")).strip().lower()
+        return active == "active" and sub in {"running", "waiting", "listening", "exited"}
+    return False
 
 
 def _is_target_topology_service(item: dict[str, Any]) -> bool:
