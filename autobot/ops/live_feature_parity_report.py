@@ -218,13 +218,12 @@ def _build_live_provider(
         root=root,
         value=str(feature_spec.get("micro_root") or "data/parquet/micro_v1"),
     )
-    raw_ws_root = root / "data" / "raw_ws" / "upbit" / "public"
     micro_snapshot_provider = None
     if micro_root.exists():
         micro_snapshot_provider = OfflineMicroSnapshotProvider(
             micro_root=micro_root,
             tf=tf,
-            raw_ws_root=(raw_ws_root if raw_ws_root.exists() else None),
+            raw_ws_root=None,
         )
     return LiveFeatureProviderV4(
         feature_columns=feature_columns,
