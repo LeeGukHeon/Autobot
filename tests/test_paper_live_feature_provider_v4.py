@@ -599,6 +599,8 @@ def test_live_feature_provider_v4_uses_rich_micro_snapshot_fields_without_approx
         buy_count=4,
         sell_count=2,
         trade_coverage_ms=247_000,
+        trade_min_ts_ms=112_000,
+        trade_max_ts_ms=359_000,
         trade_notional_krw=4_191_192.0,
         trade_imbalance=0.14,
         trade_source="ws",
@@ -618,6 +620,8 @@ def test_live_feature_provider_v4_uses_rich_micro_snapshot_fields_without_approx
         microprice_bias_bps_mean=22.60,
         book_events=71,
         book_coverage_ms=290_800,
+        book_min_ts_ms=68_200,
+        book_max_ts_ms=359_000,
         book_available=True,
     )
 
@@ -630,10 +634,14 @@ def test_live_feature_provider_v4_uses_rich_micro_snapshot_fields_without_approx
             "m_trade_volume_total",
             "m_buy_volume",
             "m_sell_volume",
+            "m_trade_min_ts_ms",
+            "m_trade_max_ts_ms",
             "m_vwap",
             "m_avg_trade_size",
             "m_max_trade_size",
             "m_last_trade_price",
+            "m_book_min_ts_ms",
+            "m_book_max_ts_ms",
             "m_mid_mean",
             "m_depth_bid_top5_mean",
             "m_depth_ask_top5_mean",
@@ -660,7 +668,11 @@ def test_live_feature_provider_v4_uses_rich_micro_snapshot_fields_without_approx
     assert float(row["m_trade_volume_total"]) == pytest.approx(40_079.39, rel=0, abs=1e-4)
     assert float(row["m_buy_volume"]) == pytest.approx(22_936.19, rel=0, abs=1e-4)
     assert float(row["m_sell_volume"]) == pytest.approx(17_143.20, rel=0, abs=1e-4)
+    assert float(row["m_trade_min_ts_ms"]) == pytest.approx(112_000.0, rel=0, abs=1e-6)
+    assert float(row["m_trade_max_ts_ms"]) == pytest.approx(359_000.0, rel=0, abs=1e-6)
     assert float(row["m_vwap"]) == pytest.approx(104.57, rel=0, abs=1e-4)
+    assert float(row["m_book_min_ts_ms"]) == pytest.approx(68_200.0, rel=0, abs=1e-6)
+    assert float(row["m_book_max_ts_ms"]) == pytest.approx(359_000.0, rel=0, abs=1e-6)
     assert float(row["m_mid_mean"]) == pytest.approx(104.5, rel=0, abs=1e-6)
     assert float(row["m_depth_bid_top5_mean"]) == pytest.approx(2_732_748.80, rel=0, abs=1e-2)
     assert float(row["m_depth_ask_top5_mean"]) == pytest.approx(2_241_857.28, rel=0, abs=1e-2)

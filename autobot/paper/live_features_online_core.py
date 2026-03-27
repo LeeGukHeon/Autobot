@@ -195,6 +195,10 @@ class _OnlineMinuteRuntimeCore:
 
         trade_events = max(int(snapshot.trade_events), 0)
         book_events = max(int(snapshot.book_events), 0)
+        trade_min_ts_ms = max(int(getattr(snapshot, "trade_min_ts_ms", 0) or 0), 0)
+        trade_max_ts_ms = max(int(getattr(snapshot, "trade_max_ts_ms", 0) or 0), 0)
+        book_min_ts_ms = max(int(getattr(snapshot, "book_min_ts_ms", 0) or 0), 0)
+        book_max_ts_ms = max(int(getattr(snapshot, "book_max_ts_ms", 0) or 0), 0)
         trade_count = max(int(getattr(snapshot, "trade_count", trade_events) or trade_events), 0)
         buy_count = max(int(getattr(snapshot, "buy_count", 0) or 0), 0)
         sell_count = max(int(getattr(snapshot, "sell_count", 0) or 0), 0)
@@ -240,10 +244,14 @@ class _OnlineMinuteRuntimeCore:
                 "m_trade_source": source_value,
                 "m_trade_events": float(trade_events),
                 "m_book_events": float(book_events),
-                "m_trade_min_ts_ms": float(max(int(snapshot.last_event_ts_ms) - int(snapshot.trade_coverage_ms), 0)),
-                "m_trade_max_ts_ms": float(int(snapshot.last_event_ts_ms)),
-                "m_book_min_ts_ms": float(max(int(snapshot.last_event_ts_ms) - int(snapshot.book_coverage_ms), 0)),
-                "m_book_max_ts_ms": float(int(snapshot.last_event_ts_ms)),
+                "m_trade_min_ts_ms": float(
+                    trade_min_ts_ms if trade_min_ts_ms > 0 else max(int(snapshot.last_event_ts_ms) - int(snapshot.trade_coverage_ms), 0)
+                ),
+                "m_trade_max_ts_ms": float(trade_max_ts_ms if trade_max_ts_ms > 0 else int(snapshot.last_event_ts_ms)),
+                "m_book_min_ts_ms": float(
+                    book_min_ts_ms if book_min_ts_ms > 0 else max(int(snapshot.last_event_ts_ms) - int(snapshot.book_coverage_ms), 0)
+                ),
+                "m_book_max_ts_ms": float(book_max_ts_ms if book_max_ts_ms > 0 else int(snapshot.last_event_ts_ms)),
                 "m_trade_coverage_ms": float(max(int(snapshot.trade_coverage_ms), 0)),
                 "m_book_coverage_ms": float(max(int(snapshot.book_coverage_ms), 0)),
                 "m_micro_trade_available": trade_available,

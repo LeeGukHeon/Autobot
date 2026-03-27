@@ -22,6 +22,8 @@ class MicroSnapshot:
     last_event_ts_ms: int
     trade_events: int = 0
     trade_coverage_ms: int = 0
+    trade_min_ts_ms: int = 0
+    trade_max_ts_ms: int = 0
     trade_notional_krw: float = 0.0
     trade_imbalance: float | None = None
     trade_source: str = "none"
@@ -52,6 +54,8 @@ class MicroSnapshot:
     recent_orderbook_events: tuple[tuple[int, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...], float | None, float | None], ...] = ()
     book_events: int = 0
     book_coverage_ms: int = 0
+    book_min_ts_ms: int = 0
+    book_max_ts_ms: int = 0
     book_available: bool = False
 
 
@@ -626,6 +630,8 @@ class LiveWsMicroSnapshotProvider:
             trade_count=int(trade_events),
             buy_count=int(buy_count),
             sell_count=int(sell_count),
+            trade_min_ts_ms=int(trade_min_ts),
+            trade_max_ts_ms=int(trade_max_ts),
             trade_volume_total=float(total_volume),
             buy_volume=float(bid_volume),
             sell_volume=float(ask_volume),
@@ -663,6 +669,8 @@ class LiveWsMicroSnapshotProvider:
             recent_orderbook_events=recent_orderbook_events,
             book_events=int(book_events),
             book_coverage_ms=int(book_coverage_ms),
+            book_min_ts_ms=int(book_min_ts),
+            book_max_ts_ms=int(book_max_ts),
             book_available=bool(book_events > 0),
         )
 
@@ -744,6 +752,8 @@ def _snapshot_from_row(*, market: str, row: dict[str, Any]) -> MicroSnapshot:
         last_event_ts_ms=int(last_event_ts),
         trade_events=int(trade_events),
         trade_coverage_ms=int(trade_coverage_ms),
+        trade_min_ts_ms=int(_to_int(row.get("trade_min_ts_ms")) or 0),
+        trade_max_ts_ms=int(trade_max_ts),
         trade_notional_krw=float(trade_notional_krw),
         trade_imbalance=_to_float(row.get("trade_imbalance")),
         trade_source=str(row.get("trade_source") or "none").strip().lower() or "none",
@@ -766,6 +776,8 @@ def _snapshot_from_row(*, market: str, row: dict[str, Any]) -> MicroSnapshot:
         microprice_bias_bps_mean=_to_float(row.get("microprice_bias_bps_mean")),
         book_events=int(book_events),
         book_coverage_ms=int(book_coverage_ms),
+        book_min_ts_ms=int(_to_int(row.get("book_min_ts_ms")) or 0),
+        book_max_ts_ms=int(book_max_ts),
         book_available=bool(book_available),
     )
 
