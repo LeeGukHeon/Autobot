@@ -57,6 +57,12 @@ Reason:
 - the audited runtime path is fully ready only for `train_v5_panel_ensemble`
 - sequence / LOB / fusion still require additional runtime-input wiring or expert-table orchestration before they can replace the primary slot cleanly
 
+Current implemented support for those expert families:
+
+- `train_v5_sequence` writes `expert_prediction_table.parquet` and now exposes a predictor-valid tabular bridge on top of the pooled sequence feature surface
+- `train_v5_lob` writes `expert_prediction_table.parquet` and now exposes a predictor-valid tabular bridge on top of the pooled LOB feature surface
+- `train_v5_fusion` can now auto-resolve the latest panel / sequence / LOB expert prediction tables through the CLI when explicit paths are not passed
+
 ## 3. Required Defaults After Migration
 
 Config / runtime defaults must now point to:

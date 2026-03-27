@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
 
+from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
 from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
@@ -83,6 +84,8 @@ class _LobSamples:
     sample_weight: np.ndarray
     ts_ms: np.ndarray
     markets: np.ndarray
+    pooled_features: np.ndarray
+    feature_names: tuple[str, ...]
     selected_markets: tuple[str, ...]
     rows_by_market: dict[str, int]
 
@@ -209,6 +212,11 @@ class _V5LobModel(nn.Module):
 class V5LobEstimator:
     model: _V5LobModel
     backbone_family: str
+    bridge_feature_names: tuple[str, ...]
+    bridge_score_model: Any
+    bridge_alpha_models: dict[str, Any]
+    bridge_uncertainty_model: Any
+    bridge_adverse_model: Any
 
     def predict_lob_contract(self, batch: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         self.model.eval()
@@ -227,13 +235,32 @@ class V5LobEstimator:
             "adverse_excursion_30s": adverse,
         }
 
-    def predict_panel_contract(self, batch: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        payload = self.predict_lob_contract(batch)
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        score_mean = np.clip(np.asarray(self.bridge_score_model.predict(np.asarray(x, dtype=np.float64)), dtype=np.float64), 0.0, 1.0)
+        return np.column_stack([1.0 - score_mean, score_mean])
+
+    def predict_panel_contract(self, batch: dict[str, np.ndarray] | np.ndarray) -> dict[str, np.ndarray]:
+        if isinstance(batch, dict):
+            payload = self.predict_lob_contract(batch)
+        else:
+            matrix = np.asarray(batch, dtype=np.float64)
+            payload = {
+                "micro_alpha_1s": np.asarray(self.bridge_alpha_models["h1"].predict(matrix), dtype=np.float64),
+                "micro_alpha_5s": np.asarray(self.bridge_alpha_models["h5"].predict(matrix), dtype=np.float64),
+                "micro_alpha_30s": np.asarray(self.bridge_alpha_models["h30"].predict(matrix), dtype=np.float64),
+                "micro_alpha_60s": np.asarray(self.bridge_alpha_models["h60"].predict(matrix), dtype=np.float64),
+                "micro_uncertainty": np.maximum(np.asarray(self.bridge_uncertainty_model.predict(matrix), dtype=np.float64), 1e-6),
+                "adverse_excursion_30s": np.asarray(self.bridge_adverse_model.predict(matrix), dtype=np.float64),
+            }
         primary_alpha = payload["micro_alpha_30s"]
         uncertainty = payload["micro_uncertainty"]
         adverse = np.abs(payload["adverse_excursion_30s"])
         tradability = np.clip(1.0 / (1.0 + uncertainty), 0.0, 1.0)
-        score_mean = 1.0 / (1.0 + np.exp(-np.clip(primary_alpha / np.maximum(uncertainty, 1e-6), -40.0, 40.0)))
+        score_mean = (
+            np.clip(np.asarray(self.bridge_score_model.predict(np.asarray(batch, dtype=np.float64)), dtype=np.float64), 0.0, 1.0)
+            if not isinstance(batch, dict)
+            else 1.0 / (1.0 + np.exp(-np.clip(primary_alpha / np.maximum(uncertainty, 1e-6), -40.0, 40.0)))
+        )
         score_lcb = np.clip(score_mean - uncertainty, 0.0, 1.0)
         return {
             "final_rank_score": score_mean,
@@ -351,6 +378,55 @@ def _build_lob_score(alpha_30s: np.ndarray, uncertainty: np.ndarray) -> np.ndarr
     return 1.0 / (1.0 + np.exp(-np.clip(logits, -40.0, 40.0)))
 
 
+def _pooled_lob_feature_names() -> tuple[str, ...]:
+    names: list[str] = []
+    for feature in ("relative_price", "bid_size", "ask_size", "depth_share", "event_delta"):
+        names.extend([f"lob_{feature}_last_mean", f"lob_{feature}_time_mean", f"lob_{feature}_last_std"])
+    for feature in ("spread_bps", "total_depth", "trade_imbalance", "tick_size", "relative_tick_bps"):
+        names.extend([f"lob_global_{feature}_last", f"lob_global_{feature}_mean"])
+    for feature in ("trade_events", "trade_imbalance", "spread_bps", "depth_bid_top5", "depth_ask_top5", "imbalance_top5", "microprice_bias"):
+        names.extend([f"micro_{feature}_last", f"micro_{feature}_mean", f"micro_{feature}_std"])
+    return tuple(names)
+
+
+def _build_temporal_pool_features(block: np.ndarray) -> np.ndarray:
+    payload = np.asarray(block, dtype=np.float64)
+    feature_parts: list[np.ndarray] = []
+    for feature_idx in range(payload.shape[2]):
+        feature_values = payload[:, :, feature_idx]
+        feature_parts.extend(
+            [
+                feature_values[:, -1],
+                np.mean(feature_values, axis=1),
+                np.std(feature_values, axis=1, ddof=0),
+            ]
+        )
+    return np.column_stack(feature_parts)
+
+
+def _build_pooled_lob_features(*, lob: np.ndarray, lob_global: np.ndarray, micro: np.ndarray) -> np.ndarray:
+    lob_parts: list[np.ndarray] = []
+    lob_payload = np.asarray(lob, dtype=np.float64)
+    for channel_idx in range(lob_payload.shape[3]):
+        channel = lob_payload[:, :, :, channel_idx]
+        lob_parts.extend(
+            [
+                np.mean(channel[:, -1, :], axis=1),
+                np.mean(channel, axis=(1, 2)),
+                np.std(channel[:, -1, :], axis=1, ddof=0),
+            ]
+        )
+    lob_features = np.column_stack(lob_parts)
+    lob_global_parts: list[np.ndarray] = []
+    lob_global_payload = np.asarray(lob_global, dtype=np.float64)
+    for channel_idx in range(lob_global_payload.shape[2]):
+        channel = lob_global_payload[:, :, channel_idx]
+        lob_global_parts.extend([channel[:, -1], np.mean(channel, axis=1)])
+    lob_global_features = np.column_stack(lob_global_parts)
+    micro_features = _build_temporal_pool_features(micro)
+    return np.column_stack([lob_features, lob_global_features, micro_features]).astype(np.float32, copy=False)
+
+
 def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
     manifest = pl.read_parquet(options.dataset_root / "_meta" / "manifest.parquet")
     if manifest.height <= 0:
@@ -432,10 +508,14 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
     if not lob_parts:
         raise ValueError("sequence_v1 has no lob-trainable anchors with short-horizon label coverage")
 
+    lob_array = np.stack(lob_parts, axis=0)
+    lob_global_array = np.stack(lob_global_parts, axis=0)
+    micro_array = np.stack(micro_parts, axis=0)
+
     return _LobSamples(
-        lob=np.stack(lob_parts, axis=0),
-        lob_global=np.stack(lob_global_parts, axis=0),
-        micro=np.stack(micro_parts, axis=0),
+        lob=lob_array,
+        lob_global=lob_global_array,
+        micro=micro_array,
         y_micro_alpha=np.asarray(y_micro_alpha_parts, dtype=np.float64),
         y_adverse_excursion=np.asarray(y_adverse_parts, dtype=np.float64),
         y_five_min_alpha=np.asarray(y_five_min_parts, dtype=np.float64),
@@ -444,6 +524,8 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
         sample_weight=np.asarray(weight_parts, dtype=np.float64),
         ts_ms=np.asarray(ts_parts, dtype=np.int64),
         markets=np.asarray(market_parts, dtype=object),
+        pooled_features=_build_pooled_lob_features(lob=lob_array, lob_global=lob_global_array, micro=micro_array),
+        feature_names=_pooled_lob_feature_names(),
         selected_markets=tuple(sorted(rows_by_market.keys())),
         rows_by_market=rows_by_market,
     )
@@ -589,6 +671,8 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
 
     valid_outputs = _predict_split(model=model, samples=samples, indices=valid_idx, device=device)
     test_outputs = _predict_split(model=model, samples=samples, indices=test_idx, device=device)
+    all_idx = np.arange(samples.rows, dtype=np.int64)
+    all_outputs = _predict_split(model=model, samples=samples, indices=all_idx, device=device)
     valid_scores = _build_lob_score(valid_outputs["micro_alpha"][:, 2], valid_outputs["micro_uncertainty"])
     test_scores = _build_lob_score(test_outputs["micro_alpha"][:, 2], test_outputs["micro_uncertainty"])
     valid_metrics = _evaluate_lob_split(
@@ -625,7 +709,37 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         score_source="score_mean",
     )
     selection_calibration = _identity_calibration(reason="LOB_IDENTITY_CALIBRATION")
-    estimator = V5LobEstimator(model=model.cpu(), backbone_family=backbone_family)
+    bridge_fit_mask = np.asarray(labels != "test", dtype=bool)
+    bridge_score_model = fit_ridge_bridge(
+        samples.pooled_features[bridge_fit_mask],
+        _build_lob_score(all_outputs["micro_alpha"][:, 2], all_outputs["micro_uncertainty"])[bridge_fit_mask],
+        clip_min=0.0,
+        clip_max=1.0,
+    )
+    bridge_alpha_models = {
+        "h1": fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["micro_alpha"][bridge_fit_mask, 0]),
+        "h5": fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["micro_alpha"][bridge_fit_mask, 1]),
+        "h30": fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["micro_alpha"][bridge_fit_mask, 2]),
+        "h60": fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["micro_alpha"][bridge_fit_mask, 3]),
+    }
+    bridge_uncertainty_model = fit_ridge_bridge(
+        samples.pooled_features[bridge_fit_mask],
+        np.maximum(all_outputs["micro_uncertainty"][bridge_fit_mask], 1e-6),
+        clip_min=1e-6,
+    )
+    bridge_adverse_model = fit_ridge_bridge(
+        samples.pooled_features[bridge_fit_mask],
+        all_outputs["adverse_excursion"][bridge_fit_mask],
+    )
+    estimator = V5LobEstimator(
+        model=model.cpu(),
+        backbone_family=backbone_family,
+        bridge_feature_names=samples.feature_names,
+        bridge_score_model=bridge_score_model,
+        bridge_alpha_models=bridge_alpha_models,
+        bridge_uncertainty_model=bridge_uncertainty_model,
+        bridge_adverse_model=bridge_adverse_model,
+    )
 
     metrics = {
         "rows": {
@@ -660,7 +774,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "rows_test": int(test_idx.size),
     }
     feature_spec = {
-        "feature_columns": ["lob_tensor", "lob_global_tensor", "micro_tensor"],
+        "feature_columns": list(samples.feature_names),
         "input_modalities": ["lob_tensor", "lob_global_tensor", "micro_tensor"],
         "dataset_root": str(options.dataset_root),
     }
@@ -676,6 +790,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "registry_root": str(options.registry_root),
         "logs_root": str(options.logs_root),
         "trainer": "v5_lob",
+        "feature_columns": list(samples.feature_names),
         "selected_markets": list(samples.selected_markets),
         "autobot_version": autobot_version,
     }

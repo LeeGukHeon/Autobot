@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
 
+from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
 from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
@@ -94,6 +95,7 @@ class _SequenceSamples:
     sample_weight: np.ndarray
     ts_ms: np.ndarray
     markets: np.ndarray
+    pooled_features: np.ndarray
     feature_names: tuple[str, ...]
     selected_markets: tuple[str, ...]
     rows_by_market: dict[str, int]
@@ -399,6 +401,9 @@ class V5SequenceEstimator:
     residual_sigma_by_horizon: dict[str, float]
     primary_horizon_minutes: int
     regime_embedding_dim: int
+    bridge_feature_names: tuple[str, ...]
+    bridge_probability_model: Any
+    bridge_quantile_models: dict[str, tuple[Any, Any, Any]]
 
     def predict_cache_batch(self, batch: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         self.model.eval()
@@ -418,6 +423,59 @@ class V5SequenceEstimator:
             "return_quantiles_by_horizon": quantiles,
             "sequence_uncertainty_primary": uncertainty,
             "regime_embedding": regime,
+        }
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        probs = np.clip(np.asarray(self.bridge_probability_model.predict(x), dtype=np.float64), 0.0, 1.0)
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict_distributional_contract(self, x: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
+        matrix = np.asarray(x, dtype=np.float64)
+        quantiles_by_horizon: dict[str, np.ndarray] = {}
+        sigma_by_horizon: dict[str, np.ndarray] = {}
+        es_proxy_by_horizon: dict[str, np.ndarray] = {}
+        mu_by_horizon: dict[str, np.ndarray] = {}
+        for horizon in self.horizons_minutes:
+            horizon_key = f"h{int(horizon)}"
+            q10_model, q50_model, q90_model = self.bridge_quantile_models[horizon_key]
+            q10 = np.asarray(q10_model.predict(matrix), dtype=np.float64)
+            q50 = np.asarray(q50_model.predict(matrix), dtype=np.float64)
+            q90 = np.maximum(np.asarray(q90_model.predict(matrix), dtype=np.float64), q10)
+            quantiles_by_horizon[horizon_key] = np.column_stack([q10, q50, q90])
+            sigma_by_horizon[horizon_key] = np.maximum((q90 - q10) / 2.5631, 1e-6)
+            es_proxy_by_horizon[horizon_key] = q10
+            mu_by_horizon[horizon_key] = q50
+        return {
+            "mu_by_horizon": mu_by_horizon,
+            "return_quantiles_by_horizon": quantiles_by_horizon,
+            "sigma_by_horizon": sigma_by_horizon,
+            "expected_shortfall_proxy_by_horizon": es_proxy_by_horizon,
+        }
+
+    def predict_uncertainty(self, x: np.ndarray) -> np.ndarray:
+        payload = self.predict_distributional_contract(x)
+        primary_key = f"h{int(self.primary_horizon_minutes)}"
+        return np.asarray(payload["sigma_by_horizon"][primary_key], dtype=np.float64)
+
+    def predict_panel_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+        probs = np.clip(np.asarray(self.bridge_probability_model.predict(x), dtype=np.float64), 0.0, 1.0)
+        distribution = self.predict_distributional_contract(x)
+        primary_key = f"h{int(self.primary_horizon_minutes)}"
+        mu = np.asarray(distribution["mu_by_horizon"][primary_key], dtype=np.float64)
+        es = np.abs(np.asarray(distribution["expected_shortfall_proxy_by_horizon"][primary_key], dtype=np.float64))
+        uncertainty = np.asarray(distribution["sigma_by_horizon"][primary_key], dtype=np.float64)
+        score_lcb = np.clip(probs - uncertainty, 0.0, 1.0)
+        tradability = np.clip(1.0 / (1.0 + es + uncertainty), 0.0, 1.0)
+        return {
+            "final_rank_score": probs,
+            "final_uncertainty": uncertainty,
+            "score_mean": probs,
+            "score_std": uncertainty,
+            "score_lcb": score_lcb,
+            "final_expected_return": mu,
+            "final_expected_es": es,
+            "final_tradability": tradability,
+            "final_alpha_lcb": mu - es - uncertainty,
         }
 
 
@@ -648,13 +706,20 @@ def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
     if not second_parts:
         raise ValueError("sequence_v1 has no trainable anchors with future horizon coverage")
 
+    second_array = np.stack(second_parts, axis=0)
+    minute_array = np.stack(minute_parts, axis=0)
+    micro_array = np.stack(micro_parts, axis=0)
+    lob_array = np.stack(lob_parts, axis=0)
+    lob_global_array = np.stack(lob_global_parts, axis=0)
+    known_covariates_array = np.stack(covariate_parts, axis=0)
+
     return _SequenceSamples(
-        second=np.stack(second_parts, axis=0),
-        minute=np.stack(minute_parts, axis=0),
-        micro=np.stack(micro_parts, axis=0),
-        lob=np.stack(lob_parts, axis=0),
-        lob_global=np.stack(lob_global_parts, axis=0),
-        known_covariates=np.stack(covariate_parts, axis=0),
+        second=second_array,
+        minute=minute_array,
+        micro=micro_array,
+        lob=lob_array,
+        lob_global=lob_global_array,
+        known_covariates=known_covariates_array,
         y_cls=np.asarray(y_cls_parts, dtype=np.int64),
         y_reg_primary=np.asarray(y_reg_primary_parts, dtype=np.float64),
         y_rank=np.asarray(y_rank_parts, dtype=np.float64),
@@ -662,6 +727,14 @@ def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
         sample_weight=np.asarray(weight_parts, dtype=np.float64),
         ts_ms=np.asarray(ts_parts, dtype=np.int64),
         markets=np.asarray(market_parts, dtype=object),
+        pooled_features=_build_pooled_sequence_features(
+            second=second_array,
+            minute=minute_array,
+            micro=micro_array,
+            lob=lob_array,
+            lob_global=lob_global_array,
+            known_covariates=known_covariates_array,
+        ),
         feature_names=pooled_feature_names,
         selected_markets=tuple(sorted(rows_by_market.keys())),
         rows_by_market=rows_by_market,
@@ -756,6 +829,63 @@ def _pooled_feature_names() -> tuple[str, ...]:
         ]
     )
     return tuple(names)
+
+
+def _build_temporal_pool_features(block: np.ndarray) -> np.ndarray:
+    payload = np.asarray(block, dtype=np.float64)
+    feature_parts: list[np.ndarray] = []
+    for feature_idx in range(payload.shape[2]):
+        feature_values = payload[:, :, feature_idx]
+        feature_parts.extend(
+            [
+                feature_values[:, -1],
+                np.mean(feature_values, axis=1),
+                np.std(feature_values, axis=1, ddof=0),
+            ]
+        )
+    return np.column_stack(feature_parts)
+
+
+def _build_pooled_sequence_features(
+    *,
+    second: np.ndarray,
+    minute: np.ndarray,
+    micro: np.ndarray,
+    lob: np.ndarray,
+    lob_global: np.ndarray,
+    known_covariates: np.ndarray,
+) -> np.ndarray:
+    second_features = _build_temporal_pool_features(second)
+    minute_features = _build_temporal_pool_features(minute)
+    micro_features = _build_temporal_pool_features(micro)
+    lob_parts: list[np.ndarray] = []
+    lob_payload = np.asarray(lob, dtype=np.float64)
+    for channel_idx in range(lob_payload.shape[3]):
+        channel = lob_payload[:, :, :, channel_idx]
+        lob_parts.extend(
+            [
+                np.mean(channel[:, -1, :], axis=1),
+                np.mean(channel, axis=(1, 2)),
+                np.std(channel[:, -1, :], axis=1, ddof=0),
+            ]
+        )
+    lob_features = np.column_stack(lob_parts)
+    lob_global_parts: list[np.ndarray] = []
+    lob_global_payload = np.asarray(lob_global, dtype=np.float64)
+    for channel_idx in range(lob_global_payload.shape[2]):
+        channel = lob_global_payload[:, :, channel_idx]
+        lob_global_parts.extend([channel[:, -1], np.mean(channel, axis=1)])
+    lob_global_features = np.column_stack(lob_global_parts)
+    return np.column_stack(
+        [
+            second_features,
+            minute_features,
+            micro_features,
+            lob_features,
+            np.asarray(lob_global_features, dtype=np.float64),
+            np.asarray(known_covariates, dtype=np.float64),
+        ]
+    ).astype(np.float32, copy=False)
 
 
 def _build_sequence_data_fingerprint(*, options: TrainV5SequenceOptions, sample_count: int) -> dict[str, Any]:
@@ -853,6 +983,8 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
 
     valid_outputs = _predict_split(model=model, samples=samples, indices=valid_idx, device=device)
     test_outputs = _predict_split(model=model, samples=samples, indices=test_idx, device=device)
+    all_idx = np.arange(samples.rows, dtype=np.int64)
+    all_outputs = _predict_split(model=model, samples=samples, indices=all_idx, device=device)
     valid_metrics = _evaluate_sequence_split(
         y_cls=samples.y_cls[valid_idx],
         y_reg=samples.y_reg_primary[valid_idx],
@@ -893,6 +1025,21 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         horizons=samples.horizons_minutes,
         q_levels=samples.quantile_levels,
     )
+    bridge_fit_mask = np.asarray(labels != "test", dtype=bool)
+    bridge_probability_model = fit_ridge_bridge(
+        samples.pooled_features[bridge_fit_mask],
+        all_outputs["directional_probability"][bridge_fit_mask],
+        clip_min=0.0,
+        clip_max=1.0,
+    )
+    bridge_quantile_models: dict[str, tuple[Any, Any, Any]] = {}
+    for horizon_idx, horizon in enumerate(samples.horizons_minutes):
+        horizon_key = f"h{int(horizon)}"
+        bridge_quantile_models[horizon_key] = (
+            fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["quantiles"][bridge_fit_mask, horizon_idx, 0]),
+            fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["quantiles"][bridge_fit_mask, horizon_idx, 1]),
+            fit_ridge_bridge(samples.pooled_features[bridge_fit_mask], all_outputs["quantiles"][bridge_fit_mask, horizon_idx, 2]),
+        )
     estimator = V5SequenceEstimator(
         model=model.cpu(),
         backbone_family=backbone_family,
@@ -902,6 +1049,9 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         residual_sigma_by_horizon=residual_sigma_by_horizon,
         primary_horizon_minutes=samples.horizons_minutes[0],
         regime_embedding_dim=max(int(options.regime_embedding_dim), 2),
+        bridge_feature_names=samples.feature_names,
+        bridge_probability_model=bridge_probability_model,
+        bridge_quantile_models=bridge_quantile_models,
     )
 
     metrics = {

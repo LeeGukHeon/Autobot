@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from autobot.models.predictor import load_predictor_from_registry
 from autobot.models.registry import load_json
 from autobot.models.train_v5_lob import TrainV5LobOptions, train_and_register_v5_lob
 
@@ -120,3 +121,10 @@ def test_train_v5_lob_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_lob"
     assert load_json(result.lob_model_contract_path)["policy"] == "v5_lob_v1"
     assert load_json(result.predictor_contract_path)["micro_alpha_30s_field"] == "micro_alpha_30s"
+    predictor = load_predictor_from_registry(
+        registry_root=tmp_path / "registry",
+        model_ref=result.run_id,
+        model_family="train_v5_lob",
+    )
+    payload = predictor.predict_score_contract(np.zeros((2, len(predictor.feature_columns)), dtype=np.float64))
+    assert payload["final_rank_score"].shape == (2,)
