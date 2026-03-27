@@ -145,6 +145,7 @@ def test_t23_2_feature_contract_refresh_wrapper_dry_run_emits_contract_steps() -
     assert "autobot.cli' 'micro' 'aggregate" in stdout or 'autobot.cli" "micro" "aggregate' in stdout or "autobot.cli micro aggregate" in stdout
     assert "autobot.cli' 'features' 'build" in stdout or 'autobot.cli" "features" "build' in stdout or "autobot.cli features build" in stdout
     assert "autobot.ops.live_feature_parity_report" in stdout
+    assert "--top-n' '20" in stdout or '--top-n" "20' in stdout or "--top-n 20" in stdout
 
 
 def test_t23_2_daily_acceptance_installer_serializes_nested_array_args_safely() -> None:

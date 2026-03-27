@@ -8,6 +8,7 @@ param(
     [string]$StartDate = "",
     [string]$EndDate = "",
     [int]$TopN = 0,
+    [int]$ParityTopN = 20,
     [string[]]$Markets = @(),
     [string]$BaseCandlesDataset = "candles_api_v1",
     [string]$RawTicksRoot = "data/raw_ticks/upbit/trades",
@@ -299,7 +300,7 @@ if (-not $SkipParity) {
             "--feature-set", $FeatureSet,
             "--tf", $resolvedTf,
             "--quote", $resolvedQuote,
-            "--top-n", ([string][Math]::Max($resolvedTopN, 1)),
+            "--top-n", ([string][Math]::Max([int]$ParityTopN, 1)),
             "--samples-per-market", "1"
         )
     })
@@ -336,6 +337,7 @@ $summary = [ordered]@{
     start = $resolvedStartDate
     end = $resolvedEndDate
     top_n = [int]$resolvedTopN
+    parity_top_n = [int]([Math]::Max([int]$ParityTopN, 1))
     markets = @($resolvedMarkets)
     base_candles_dataset = $BaseCandlesDataset
     raw_ticks_root = $resolvedRawTicksRoot

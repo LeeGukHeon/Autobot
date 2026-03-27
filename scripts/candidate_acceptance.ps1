@@ -21,6 +21,7 @@ param(
     [string]$Tf = "5m",
     [string]$Quote = "KRW",
     [int]$TrainTopN = 50,
+    [int]$FeatureParityTopN = 20,
     [int]$BacktestTopN = 20,
     [string]$ModelFamily = "train_v4_crypto_cs",
     [string]$Trainer = "v4_crypto_cs",
@@ -3525,7 +3526,7 @@ function Invoke-LiveFeatureParityAndLoadReport {
         "--feature-set", $FeatureSet,
         "--tf", $Tf,
         "--quote", $Quote,
-        "--top-n", $TrainTopN
+        "--top-n", ([string]([Math]::Max([int]$FeatureParityTopN, 1)))
     )
     $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
     $exec = $null
