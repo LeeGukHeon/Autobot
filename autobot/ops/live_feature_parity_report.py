@@ -235,6 +235,7 @@ def _build_live_provider(
         micro_snapshot_provider=micro_snapshot_provider,
         bootstrap_1m_bars=2000,
         bootstrap_end_ts_ms=bootstrap_end_ts_ms,
+        context_micro_required=True,
     )
 
 

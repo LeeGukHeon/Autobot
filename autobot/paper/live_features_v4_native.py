@@ -41,6 +41,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
         bootstrap_1m_bars: int = 2000,
         bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
+        context_micro_required: bool = False,
     ) -> None:
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
         self._extra_columns = tuple(str(col).strip() for col in extra_columns if str(col).strip())
@@ -58,6 +59,7 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
             bootstrap_1m_bars=bootstrap_1m_bars,
             bootstrap_end_ts_ms=bootstrap_end_ts_ms,
             max_1m_history=max_1m_history,
+            context_micro_required=context_micro_required,
             missing_feature_warn_ratio=1.0,
             missing_feature_skip_ratio=1.0,
         )
@@ -80,6 +82,26 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
                 "built_rows": 0,
                 "requested_feature_count": int(len(self._feature_columns)),
                 "base_provider_stats": dict(base_stats),
+            }
+            return base_frame
+
+        base_frame, context_stats = self._filter_context_for_micro_contract(base_frame)
+        if context_stats:
+            merged_base_stats = dict(base_stats)
+            merged_base_stats.update(context_stats)
+            base_stats = merged_base_stats
+        if base_frame.height <= 0:
+            self._last_build_stats = {
+                "provider": "LIVE_V4_NATIVE",
+                "base_provider": "LIVE_V4_NATIVE_BASE",
+                "requested_ts_ms": int(ts_ms),
+                "built_rows": 0,
+                "requested_feature_count": int(len(self._feature_columns)),
+                "base_provider_stats": dict(base_stats),
+                "context_micro_required": bool(context_stats.get("context_micro_required", False)),
+                "context_rows_before_micro_filter": int(context_stats.get("context_rows_before_micro_filter", 0)),
+                "context_rows_after_micro_filter": int(context_stats.get("context_rows_after_micro_filter", 0)),
+                "context_rows_dropped_no_micro": int(context_stats.get("context_rows_dropped_no_micro", 0)),
             }
             return base_frame
 
@@ -110,6 +132,10 @@ class LiveFeatureProviderV4Native(_LiveMultiTfRuntimeBase):
             "hard_gate_triggered": hard_gate_triggered,
             "skip_reason": "MISSING_V4_FEATURE_COLUMNS" if hard_gate_triggered else "",
             "base_provider_stats": dict(base_stats),
+            "context_micro_required": bool(context_stats.get("context_micro_required", False)),
+            "context_rows_before_micro_filter": int(context_stats.get("context_rows_before_micro_filter", 0)),
+            "context_rows_after_micro_filter": int(context_stats.get("context_rows_after_micro_filter", 0)),
+            "context_rows_dropped_no_micro": int(context_stats.get("context_rows_dropped_no_micro", 0)),
         }
         return final_frame
 

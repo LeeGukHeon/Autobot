@@ -45,6 +45,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         bootstrap_1m_bars: int,
         bootstrap_end_ts_ms: int | None = None,
         max_1m_history: int = 5000,
+        context_micro_required: bool = False,
         missing_feature_warn_ratio: float = 0.05,
         missing_feature_skip_ratio: float = 0.20,
     ) -> None:
@@ -59,6 +60,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             max_1m_history=max_1m_history,
         )
         self._high_tfs = tuple(str(item).strip().lower() for item in high_tfs if str(item).strip())
+        self._context_micro_required = bool(context_micro_required)
         self._missing_feature_warn_ratio = min(max(float(missing_feature_warn_ratio), 0.0), 1.0)
         self._missing_feature_skip_ratio = min(max(float(missing_feature_skip_ratio), 0.0), 1.0)
 
@@ -234,6 +236,22 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             .sort("ts_ms")
             .unique(subset=["ts_ms"], keep="last", maintain_order=True)
         )
+
+    def _filter_context_for_micro_contract(self, frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, Any]]:
+        if not self._context_micro_required or frame.height <= 0 or "m_micro_available" not in frame.columns:
+            return frame, {
+                "context_micro_required": bool(self._context_micro_required),
+                "context_rows_before_micro_filter": int(frame.height),
+                "context_rows_after_micro_filter": int(frame.height),
+                "context_rows_dropped_no_micro": 0,
+            }
+        filtered = frame.filter(pl.col("m_micro_available").cast(pl.Float64) > 0.0)
+        return filtered, {
+            "context_micro_required": True,
+            "context_rows_before_micro_filter": int(frame.height),
+            "context_rows_after_micro_filter": int(filtered.height),
+            "context_rows_dropped_no_micro": int(max(frame.height - filtered.height, 0)),
+        }
 
     def _build_runtime_frame(
         self,

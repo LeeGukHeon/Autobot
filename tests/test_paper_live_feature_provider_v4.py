@@ -73,6 +73,15 @@ class _StaticMicroSnapshotProvider:
         return self._snapshot
 
 
+class _MappingMicroSnapshotProvider:
+    def __init__(self, snapshots: dict[str, MicroSnapshot | None]) -> None:
+        self._snapshots = {str(key).strip().upper(): value for key, value in snapshots.items()}
+
+    def get(self, market: str, ts_ms: int) -> MicroSnapshot | None:
+        _ = ts_ms
+        return self._snapshots.get(str(market).strip().upper())
+
+
 def test_live_feature_provider_v4_builds_v4_columns_from_native_base(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
@@ -728,6 +737,85 @@ def test_live_feature_provider_v4_prefers_canonical_base_tf_over_conflicting_1m_
     assert float(row["close"]) == pytest.approx(229.0, rel=0, abs=1e-9)
     assert float(row["one_m_count"]) == pytest.approx(5.0, rel=0, abs=1e-9)
     assert float(row["one_m_volume_sum"]) == pytest.approx(400.0, rel=0, abs=1e-9)
+
+
+def test_live_feature_provider_v4_can_require_micro_for_cross_sectional_context(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC", start_ts_ms=60_000, count=599)
+    part_dir = parquet_root / "candles_api_v1" / "tf=1m" / "market=KRW-ETH" / "date=2026-01-01"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    ts_values = [60_000 + (i * 60_000) for i in range(599)]
+    close_values = [200.0 - (i * 0.05) for i in range(len(ts_values))]
+    pl.DataFrame(
+        {
+            "ts_ms": ts_values,
+            "open": [value + 0.02 for value in close_values],
+            "high": [value + 0.05 for value in close_values],
+            "low": [value - 0.05 for value in close_values],
+            "close": close_values,
+            "volume_base": [10.0 + (i % 5) for i in range(len(ts_values))],
+        }
+    ).write_parquet(part_dir / "part-000.parquet")
+    request_ts_ms = 35_700_000
+
+    btc_snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=request_ts_ms,
+        last_event_ts_ms=request_ts_ms,
+        trade_events=1,
+        trade_count=1,
+        buy_count=1,
+        sell_count=0,
+        trade_coverage_ms=60_000,
+        trade_notional_krw=100.0,
+        trade_imbalance=1.0,
+        trade_source="ws",
+        trade_volume_total=1.0,
+        buy_volume=1.0,
+        sell_volume=0.0,
+        vwap=100.0,
+        avg_trade_size=1.0,
+        max_trade_size=1.0,
+        last_trade_price=100.0,
+        mid_mean=100.0,
+        spread_bps_mean=1.0,
+        depth_top5_notional_krw=1_000.0,
+        depth_bid_top5_notional_krw=500.0,
+        depth_ask_top5_notional_krw=500.0,
+        imbalance_top5_mean=0.0,
+        microprice_bias_bps_mean=0.0,
+        book_events=1,
+        book_coverage_ms=60_000,
+        book_available=True,
+    )
+    provider = LiveFeatureProviderV4(
+        feature_columns=("market_breadth_pos_12",),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=request_ts_ms,
+        micro_snapshot_provider=_MappingMicroSnapshotProvider(
+            {
+                "KRW-BTC": btc_snapshot,
+                "KRW-ETH": None,
+            }
+        ),
+        context_micro_required=True,
+    )
+
+    frame = provider.build_frame(ts_ms=request_ts_ms, markets=["KRW-BTC", "KRW-ETH"])
+
+    assert frame.height == 1
+    row = frame.row(0, named=True)
+    assert str(row["market"]) == "KRW-BTC"
+    assert float(row["market_breadth_pos_12"]) == pytest.approx(1.0, rel=0, abs=1e-6)
+    stats = provider.last_build_stats()
+    assert stats["context_micro_required"] is True
+    assert int(stats["context_rows_before_micro_filter"]) == 2
+    assert int(stats["context_rows_after_micro_filter"]) == 1
+    assert int(stats["context_rows_dropped_no_micro"]) == 1
 
 
 def _write_one_m_candles(*, dataset_root: Path, market: str, start_ts_ms: int = 60_000, count: int = 599) -> None:
