@@ -1109,6 +1109,24 @@ def _build_feature_spec_payload_v4(
             "quality_oversample_factor": int(config.build.universe_quality_oversample_factor),
             "score_formula": "value_est * clip((1-one_m_synth_ratio_lookback), q_floor, 1)^beta",
         },
+        "cross_sectional_context_policy": {
+            "policy_id": "final_dataset_present_markets_at_ts_v1",
+            "description": (
+                "For cross-sectional features that depend on peer markets, the canonical context "
+                "is the set of markets that actually survive into the final persisted dataset at the same ts_ms."
+            ),
+            "applies_to": [
+                "btc_ret_*",
+                "eth_ret_*",
+                "leader_basket_ret_*",
+                "market_breadth_pos_*",
+                "market_dispersion_12",
+                "turnover_concentration_hhi",
+                "rel_strength_vs_btc_12",
+                "trend_vs_market",
+                "rel_strength_x_btc_regime",
+            ],
+        },
         "selected_markets": selected_markets,
         "base_candles_root": str(base_candles_root),
         "micro_root": str(micro_root),

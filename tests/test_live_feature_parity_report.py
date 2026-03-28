@@ -550,12 +550,11 @@ def test_live_feature_parity_report_builds_live_context_from_full_manifest_unive
         context_micro_required=True,
     )
     offline_frame = provider.build_frame(ts_ms=target_ts_ms, markets=["KRW-BTC", "KRW-ETH"])
-    offline_btc = offline_frame.filter(pl.col("market") == "KRW-BTC")
-
     dataset_root = project_root / "data" / "features" / "features_v4"
-    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=1970-01-01"
-    part_dir.mkdir(parents=True, exist_ok=True)
-    offline_btc.write_parquet(part_dir / "part-000.parquet")
+    for market in ("KRW-BTC", "KRW-ETH"):
+        part_dir = dataset_root / "tf=5m" / f"market={market}" / "date=1970-01-01"
+        part_dir.mkdir(parents=True, exist_ok=True)
+        offline_frame.filter(pl.col("market") == market).write_parquet(part_dir / "part-000.parquet")
     meta_root = dataset_root / "_meta"
     meta_root.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(

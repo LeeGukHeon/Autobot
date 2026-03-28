@@ -53,12 +53,6 @@ def build_live_feature_parity_report(
     tf_value = str(tf).strip().lower() or "5m"
     quote_value = str(quote).strip().upper() or "KRW"
     sampling_window = _resolve_sampling_window(meta_root)
-    context_markets = _select_markets(
-        manifest=manifest,
-        tf=tf_value,
-        quote=quote_value,
-        top_n=None,
-    )
     selected_markets = _select_markets(
         manifest=manifest,
         tf=tf_value,
@@ -94,6 +88,20 @@ def build_live_feature_parity_report(
     live_stats_by_ts: dict[int, dict[str, Any]] = {}
     if sampled_rows_by_ts:
         sampled_ts_values = sorted(sampled_rows_by_ts.keys())
+        context_markets_by_ts = _resolve_context_markets_by_ts(
+            dataset_root=dataset_root,
+            tf=tf_value,
+            quote=quote_value,
+            sampling_window=sampling_window,
+            feature_spec=feature_spec,
+            requested_ts_values=sampled_ts_values,
+            fallback_markets=_select_markets(
+                manifest=manifest,
+                tf=tf_value,
+                quote=quote_value,
+                top_n=None,
+            ),
+        )
         provider = _build_live_provider(
             root=root,
             feature_spec=feature_spec,
@@ -106,7 +114,7 @@ def build_live_feature_parity_report(
         live_frames_by_ts, live_stats_by_ts = _build_live_frames_for_sampled_ts(
             provider=provider,
             sampled_ts_values=sampled_ts_values,
-            markets=context_markets,
+            markets_by_ts=context_markets_by_ts,
         )
     for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
         if provider is None:
@@ -259,12 +267,19 @@ def _build_live_frames_for_sampled_ts(
     *,
     provider: LiveFeatureProviderV4,
     sampled_ts_values: list[int],
-    markets: list[str],
+    markets_by_ts: dict[int, list[str]],
 ) -> tuple[dict[int, pl.DataFrame], dict[int, dict[str, Any]]]:
     if not sampled_ts_values:
         return {}, {}
 
-    resolved_markets = [str(item).strip().upper() for item in markets if str(item).strip()]
+    resolved_markets = sorted(
+        {
+            str(item).strip().upper()
+            for items in markets_by_ts.values()
+            for item in items
+            if str(item).strip()
+        }
+    )
     if not resolved_markets:
         return {}, {}
 
@@ -318,8 +333,17 @@ def _build_live_frames_for_sampled_ts(
     frames_by_ts: dict[int, pl.DataFrame] = {}
     stats_by_ts: dict[int, dict[str, Any]] = {}
     for ts_value in sampled_ts_unique:
+        context_markets = [
+            str(item).strip().upper()
+            for item in markets_by_ts.get(int(ts_value), [])
+            if str(item).strip()
+        ]
+        if not context_markets:
+            context_markets = list(resolved_markets)
         if final_frame.height > 0 and "ts_ms" in final_frame.columns:
-            ts_frame = final_frame.filter(pl.col("ts_ms") == int(ts_value)).sort("market")
+            ts_frame = final_frame.filter(
+                (pl.col("ts_ms") == int(ts_value)) & (pl.col("market").is_in(context_markets))
+            ).sort("market")
         else:
             ts_frame = final_frame
         built_markets = [
@@ -328,7 +352,7 @@ def _build_live_frames_for_sampled_ts(
             if str(item).strip()
         ]
         built_market_set = set(built_markets)
-        skipped_markets = [market for market in resolved_markets if market not in built_market_set]
+        skipped_markets = [market for market in context_markets if market not in built_market_set]
         frames_by_ts[int(ts_value)] = ts_frame
         stats_by_ts[int(ts_value)] = {
             "provider": "LIVE_V4",
@@ -350,6 +374,107 @@ def _build_live_frames_for_sampled_ts(
             "skipped_market_samples": skipped_markets[:20],
         }
     return frames_by_ts, stats_by_ts
+
+
+def _resolve_context_markets_by_ts(
+    *,
+    dataset_root: Path,
+    tf: str,
+    quote: str,
+    sampling_window: dict[str, Any],
+    feature_spec: dict[str, Any],
+    requested_ts_values: list[int],
+    fallback_markets: list[str],
+) -> dict[int, list[str]]:
+    requested = sorted({int(value) for value in requested_ts_values})
+    if not requested:
+        return {}
+    policy = str(
+        ((feature_spec.get("cross_sectional_context_policy") or {}).get("policy_id"))
+        or "final_dataset_present_markets_at_ts_v1"
+    ).strip()
+    if policy != "final_dataset_present_markets_at_ts_v1":
+        return {int(ts_value): list(fallback_markets) for ts_value in requested}
+
+    membership = _load_context_market_membership_by_ts(
+        dataset_root=dataset_root,
+        tf=tf,
+        quote=quote,
+        sampling_window=sampling_window,
+        requested_ts_values=requested,
+    )
+    resolved: dict[int, list[str]] = {}
+    for ts_value in requested:
+        markets = membership.get(int(ts_value), [])
+        resolved[int(ts_value)] = markets if markets else list(fallback_markets)
+    return resolved
+
+
+def _load_context_market_membership_by_ts(
+    *,
+    dataset_root: Path,
+    tf: str,
+    quote: str,
+    sampling_window: dict[str, Any],
+    requested_ts_values: list[int],
+) -> dict[int, list[str]]:
+    tf_root = dataset_root / f"tf={str(tf).strip().lower()}"
+    if not tf_root.exists():
+        return {}
+    start_date = str(sampling_window.get("effective_start") or "").strip()
+    end_date = str(sampling_window.get("effective_end") or "").strip()
+    files: list[Path] = []
+    for market_dir in sorted(path for path in tf_root.glob("market=*") if path.is_dir()):
+        market_value = market_dir.name.split("=", 1)[-1].strip().upper()
+        if not market_value.startswith(f"{quote}-"):
+            continue
+        for date_dir in sorted(path for path in market_dir.glob("date=*") if path.is_dir()):
+            date_value = date_dir.name.split("=", 1)[-1].strip()
+            if start_date and date_value < start_date:
+                continue
+            if end_date and date_value > end_date:
+                continue
+            files.extend(sorted(path for path in date_dir.glob("*.parquet") if path.is_file()))
+    if not files:
+        return {}
+    ts_set = {int(value) for value in requested_ts_values}
+    try:
+        lazy = pl.scan_parquet([str(path) for path in files], extra_columns="ignore")
+        frame = lazy.select(["ts_ms", "market"]).filter(pl.col("ts_ms").is_in(sorted(ts_set))).collect()
+    except Exception:
+        parts: list[pl.DataFrame] = []
+        for path in files:
+            try:
+                part = pl.read_parquet(path).select(["ts_ms", "market"])
+            except Exception:
+                continue
+            sliced = part.filter(pl.col("ts_ms").is_in(sorted(ts_set)))
+            if sliced.height > 0:
+                parts.append(sliced)
+        if not parts:
+            return {}
+        frame = pl.concat(parts, how="vertical_relaxed")
+    membership: dict[int, list[str]] = {}
+    if frame.height <= 0:
+        return membership
+    grouped = (
+        frame.with_columns(
+            pl.col("market").cast(pl.Utf8).str.to_uppercase().alias("market")
+        )
+        .unique(subset=["ts_ms", "market"], keep="first", maintain_order=True)
+        .sort(["ts_ms", "market"])
+        .group_by("ts_ms")
+        .agg(pl.col("market"))
+        .sort("ts_ms")
+    )
+    for row in grouped.iter_rows(named=True):
+        ts_value = int(row.get("ts_ms") or 0)
+        membership[ts_value] = [
+            str(item).strip().upper()
+            for item in (row.get("market") or [])
+            if str(item).strip()
+        ]
+    return membership
 
 
 def _resolve_bootstrap_1m_bars(ts_values: list[int]) -> int:

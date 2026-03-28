@@ -127,7 +127,7 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
     bulk_frames, stats_by_ts = _build_live_frames_for_sampled_ts(
         provider=provider_bulk,
         sampled_ts_values=sampled_ts_values,
-        markets=markets,
+        markets_by_ts={int(ts_value): list(markets) for ts_value in sampled_ts_values},
     )
 
     for ts_value in sampled_ts_values:
