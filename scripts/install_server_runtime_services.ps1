@@ -388,7 +388,7 @@ if (-not $NoStart) {
 }
 
 if ($PaperPreset -in @("paired_v4", "paired_v5")) {
-    foreach ($legacyUnit in @("autobot-paper-v4.service", "autobot-paper-v4-challenger.service")) {
+    foreach ($legacyUnit in @("autobot-paper-v4-challenger.service")) {
         if ($legacyUnit -eq $PaperUnitName) {
             continue
         }
