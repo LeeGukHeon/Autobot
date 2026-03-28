@@ -295,7 +295,7 @@ def _build_live_frames_for_sampled_ts(
         ts_ms=max_ts,
         markets=resolved_markets,
         feature_columns=provider._base_feature_columns,  # noqa: SLF001
-        extra_columns=provider._extra_columns,  # noqa: SLF001
+        extra_columns=tuple(provider._extra_columns) + ("volume_base",),  # noqa: SLF001
         provider_name="LIVE_V4_PARITY_BASE",
         missing_feature_warn_ratio=1.0,
         missing_feature_skip_ratio=1.0,
