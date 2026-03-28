@@ -654,13 +654,16 @@ def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
         raise ValueError("sequence_v1 manifest has no rows after top_n filtering")
 
     ws_root = options.dataset_root.parent / "ws_candle_v1" / "tf=1m"
+    candles_api_root = options.dataset_root.parent / "candles_api_v1" / "tf=1m"
+    candles_v1_root = options.dataset_root.parent / "candles_v1" / "tf=1m"
     ws_by_market: dict[str, dict[int, float]] = {}
     for market in selected_markets:
-        files = sorted((ws_root / f"market={market}").glob("*.parquet"))
-        if not files:
-            continue
-        frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical").sort("ts_ms")
-        ws_by_market[market] = {int(row["ts_ms"]): float(row["close"]) for row in frame.iter_rows(named=True)}
+        close_map = _load_minute_close_map_sources(
+            market=market,
+            roots=(candles_api_root, candles_v1_root, ws_root),
+        )
+        if close_map:
+            ws_by_market[market] = close_map
 
     second_parts: list[np.ndarray] = []
     minute_parts: list[np.ndarray] = []
@@ -808,6 +811,26 @@ def _leader_return(close_map: dict[int, float], anchor_ts_ms: int) -> float:
     if current is None or previous is None or previous <= 0.0:
         return 0.0
     return float((current / previous) - 1.0)
+
+
+def _load_minute_close_map_sources(*, market: str, roots: tuple[Path, ...]) -> dict[int, float]:
+    frames: list[pl.DataFrame] = []
+    for root in roots:
+        files = sorted((root / f"market={market}").glob("*.parquet"))
+        if not files:
+            continue
+        frames.append(pl.concat([pl.read_parquet(path) for path in files], how="vertical"))
+    if not frames:
+        return {}
+    frame = (
+        pl.concat(frames, how="vertical")
+        .with_row_index("__row_id")
+        .sort(["ts_ms", "__row_id"])
+        .unique(subset=["ts_ms"], keep="last")
+        .sort("ts_ms")
+        .drop("__row_id")
+    )
+    return {int(row["ts_ms"]): float(row["close"]) for row in frame.iter_rows(named=True)}
 
 
 def _pooled_feature_names() -> tuple[str, ...]:
@@ -1130,7 +1153,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "primary_horizon_minutes": int(samples.horizons_minutes[0]),
         "horizons_minutes": list(samples.horizons_minutes),
         "quantile_levels": list(samples.quantile_levels),
-        "target_definition": "future 1m close return by horizon from ws_candle_v1",
+        "target_definition": "future 1m close return by horizon from ws_candle_v1 with canonical 1m candle fallback",
     }
     train_config = {
         **asdict(options),

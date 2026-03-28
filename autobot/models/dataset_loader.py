@@ -394,6 +394,12 @@ def _scan_market_frame(
     market_files = _market_files(request.dataset_root, request.tf, market)
     if not market_files:
         return pl.DataFrame()
+    market_files = _filter_market_files_by_required_columns(
+        files=market_files,
+        required_columns=("ts_ms", y_cls_column, *feature_columns),
+    )
+    if not market_files:
+        return pl.DataFrame()
 
     lazy = pl.scan_parquet([str(path) for path in market_files])
     schema = lazy.collect_schema()
@@ -439,6 +445,12 @@ def _scan_market_rows(
     extra_columns: tuple[str, ...],
 ) -> pl.DataFrame:
     market_files = _market_files(request.dataset_root, request.tf, market)
+    if not market_files:
+        return pl.DataFrame()
+    market_files = _filter_market_files_by_required_columns(
+        files=market_files,
+        required_columns=("ts_ms", *feature_columns),
+    )
     if not market_files:
         return pl.DataFrame()
 
@@ -487,6 +499,12 @@ def _scan_market_aux_frame(
     y_rank_column: str,
 ) -> pl.DataFrame:
     market_files = _market_files(request.dataset_root, request.tf, market)
+    if not market_files:
+        return pl.DataFrame()
+    market_files = _filter_market_files_by_required_columns(
+        files=market_files,
+        required_columns=("ts_ms", y_cls_column, *columns),
+    )
     if not market_files:
         return pl.DataFrame()
 
@@ -565,6 +583,22 @@ def _market_files(dataset_root: Path, tf: str, market: str) -> list[Path]:
     if nested:
         return nested
     return []
+
+
+def _filter_market_files_by_required_columns(*, files: list[Path], required_columns: tuple[str, ...]) -> list[Path]:
+    required = tuple(str(name).strip() for name in required_columns if str(name).strip())
+    if not required:
+        return files
+    compatible: list[Path] = []
+    for path in files:
+        try:
+            schema = pl.read_parquet_schema(path)
+        except Exception:
+            continue
+        names = set(schema.names())
+        if all(name in names for name in required):
+            compatible.append(path)
+    return compatible
 
 
 def _feature_to_float_expr(column: str, *, schema: Any) -> pl.Expr:
