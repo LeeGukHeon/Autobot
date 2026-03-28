@@ -116,6 +116,7 @@ def build_live_feature_parity_report(
             provider=provider,
             sampled_ts_values=sampled_ts_values,
             markets_by_ts=context_markets_by_ts,
+            history_start_ts_ms=_date_start_ts_ms(str(sampling_window.get("effective_start") or "")),
         )
     for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
         if provider is None:
@@ -269,12 +270,14 @@ def _build_live_frames_for_sampled_ts(
     provider: LiveFeatureProviderV4,
     sampled_ts_values: list[int],
     markets_by_ts: dict[int, list[str]],
+    history_start_ts_ms: int | None = None,
 ) -> tuple[dict[int, pl.DataFrame], dict[int, dict[str, Any]]]:
     if not sampled_ts_values:
         return {}, {}
     sampled_ts_unique = sorted({int(value) for value in sampled_ts_values})
     frames_by_ts: dict[int, pl.DataFrame] = {}
     stats_by_ts: dict[int, dict[str, Any]] = {}
+    interval_ms = max(int(expected_interval_ms(str(provider._tf).strip().lower() or "5m")), 1)  # noqa: SLF001
 
     for ts_value in sampled_ts_unique:
         context_markets = [
@@ -305,6 +308,11 @@ def _build_live_frames_for_sampled_ts(
             }
             continue
 
+        history_bars = int(provider._context_history_bars)  # noqa: SLF001
+        if history_start_ts_ms is not None and int(ts_value) >= int(history_start_ts_ms):
+            history_span_bars = int(math.ceil((float(int(ts_value) - int(history_start_ts_ms)) / float(interval_ms)))) + 1
+            history_bars = max(history_bars, history_span_bars)
+
         base_frame, base_stats = provider._build_runtime_context_frame(  # noqa: SLF001
             ts_ms=int(ts_value),
             markets=context_markets,
@@ -313,7 +321,7 @@ def _build_live_frames_for_sampled_ts(
             provider_name="LIVE_V4_PARITY_BASE",
             missing_feature_warn_ratio=1.0,
             missing_feature_skip_ratio=1.0,
-            history_bars=provider._context_history_bars,  # noqa: SLF001
+            history_bars=history_bars,
         )
         base_frame, context_stats = provider._filter_context_for_micro_contract(base_frame)  # noqa: SLF001
         merged_base_stats = dict(base_stats)
@@ -369,7 +377,7 @@ def _build_live_frames_for_sampled_ts(
             "context_rows_before_micro_filter": int(context_stats.get("context_rows_before_micro_filter", 0)),
             "context_rows_after_micro_filter": int(context_stats.get("context_rows_after_micro_filter", 0)),
             "context_rows_dropped_no_micro": int(context_stats.get("context_rows_dropped_no_micro", 0)),
-            "context_history_bars": int(provider._context_history_bars),  # noqa: SLF001
+            "context_history_bars": int(history_bars),
             "built_market_samples": built_markets[:20],
             "skipped_market_samples": skipped_markets[:20],
         }
