@@ -593,7 +593,7 @@ def test_live_feature_parity_report_builds_live_context_from_full_manifest_unive
     assert report["passing_pairs"] == 1
 
 
-def test_build_live_feature_parity_report_reuses_live_provider_across_sampled_timestamps(
+def test_build_live_feature_parity_report_rebuilds_provider_for_each_sampled_timestamp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -605,7 +605,22 @@ def test_build_live_feature_parity_report_reuses_live_provider_across_sampled_ti
     _write_micro_5m_snapshot(micro_root=project_root / "data" / "parquet" / "micro_v1", market="KRW-BTC", ts_ms=1_200_000)
 
     feature_columns = ("logret_1", "m_mid_mean")
-    provider = LiveFeatureProviderV4(
+    micro_snapshot_provider = OfflineMicroSnapshotProvider(
+        micro_root=project_root / "data" / "parquet" / "micro_v1",
+        tf="5m",
+    )
+    first_provider = LiveFeatureProviderV4(
+        feature_columns=feature_columns,
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        bootstrap_end_ts_ms=900_000,
+        micro_snapshot_provider=micro_snapshot_provider,
+        context_micro_required=True,
+    )
+    second_provider = LiveFeatureProviderV4(
         feature_columns=feature_columns,
         tf="5m",
         quote="KRW",
@@ -613,14 +628,11 @@ def test_build_live_feature_parity_report_reuses_live_provider_across_sampled_ti
         candles_dataset_name="candles_api_v1",
         bootstrap_1m_bars=2000,
         bootstrap_end_ts_ms=1_200_000,
-        micro_snapshot_provider=OfflineMicroSnapshotProvider(
-            micro_root=project_root / "data" / "parquet" / "micro_v1",
-            tf="5m",
-        ),
+        micro_snapshot_provider=micro_snapshot_provider,
         context_micro_required=True,
     )
-    first = provider.build_frame(ts_ms=900_000, markets=["KRW-BTC"]).select(["ts_ms", "market", "close", *feature_columns])
-    second = provider.build_frame(ts_ms=1_200_000, markets=["KRW-BTC"]).select(["ts_ms", "market", "close", *feature_columns])
+    first = first_provider.build_frame(ts_ms=900_000, markets=["KRW-BTC"]).select(["ts_ms", "market", "close", *feature_columns])
+    second = second_provider.build_frame(ts_ms=1_200_000, markets=["KRW-BTC"]).select(["ts_ms", "market", "close", *feature_columns])
     offline_frame = pl.concat([first, second], how="vertical_relaxed")
 
     dataset_root = project_root / "data" / "features" / "features_v4"
@@ -671,4 +683,4 @@ def test_build_live_feature_parity_report_reuses_live_provider_across_sampled_ti
     assert report["status"] == "PASS"
     assert report["sampled_pairs"] >= 1
     assert report["passing_pairs"] == report["sampled_pairs"]
-    assert call_count["value"] == 1
+    assert call_count["value"] == len({int(item["ts_ms"]) for item in report["details"]})

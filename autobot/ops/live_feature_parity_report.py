@@ -80,20 +80,15 @@ def build_live_feature_parity_report(
             ts_value = int(offline_row.get("ts_ms") or 0)
             sampled_rows_by_ts.setdefault(ts_value, []).append(dict(offline_row))
 
-    provider: LiveFeatureProviderV4 | None = None
-    if sampled_rows_by_ts:
+    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
         provider = _build_live_provider(
             root=root,
             feature_spec=feature_spec,
             feature_columns=feature_columns,
             tf=tf_value,
             quote=quote_value,
-            bootstrap_end_ts_ms=max(sampled_rows_by_ts.keys()),
+            bootstrap_end_ts_ms=ts_value,
         )
-
-    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
-        if provider is None:
-            break
         live_frame = provider.build_frame(ts_ms=ts_value, markets=context_markets)
         live_stats = dict(provider.last_build_stats())
         missing_columns = list(live_stats.get("missing_feature_columns") or [])
