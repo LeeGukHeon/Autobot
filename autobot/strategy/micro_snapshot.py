@@ -141,6 +141,7 @@ class OfflineMicroSnapshotProvider:
         raw_ws_root: str | Path | None = None,
         orderbook_topk: int = 5,
         allow_previous_fallback: bool = True,
+        enable_raw_ws_overlay: bool = True,
     ) -> None:
         self._micro_root = Path(micro_root)
         self._tf = str(tf).strip().lower()
@@ -155,6 +156,7 @@ class OfflineMicroSnapshotProvider:
             else _resolve_raw_ws_root_from_micro_root(self._micro_root)
         )
         self._allow_previous_fallback = bool(allow_previous_fallback)
+        self._enable_raw_ws_overlay = bool(enable_raw_ws_overlay)
         self._cache: OrderedDict[tuple[str, str], _OfflineDayCacheEntry] = OrderedDict()
         self._orderbook_cache: OrderedDict[tuple[str, str, str], _OfflineOrderbookHourCacheEntry] = OrderedDict()
         self._trade_cache: OrderedDict[tuple[str, str, str], _OfflineTradeHourCacheEntry] = OrderedDict()
@@ -245,6 +247,8 @@ class OfflineMicroSnapshotProvider:
         market: str,
         ts_ms: int,
     ) -> MicroSnapshot:
+        if not self._enable_raw_ws_overlay:
+            return snapshot
         raw_rows = self._get_raw_orderbook_rows(
             market=market,
             start_ts_ms=max(int(ts_ms) - self._raw_orderbook_tolerance_ms, 0),

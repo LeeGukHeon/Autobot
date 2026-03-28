@@ -456,8 +456,8 @@ def test_build_live_feature_parity_report_uses_micro_contract_not_raw_orderbook_
         raw_ws_root=project_root / "data" / "raw_ws" / "upbit" / "public",
         market="KRW-BTC",
         ts_ms=300_000,
-        bid1_price=90.0,
-        ask1_price=110.0,
+        bid1_price=80.0,
+        ask1_price=120.0,
     )
 
     provider = LiveFeatureProviderV4(

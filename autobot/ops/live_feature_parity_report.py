@@ -239,6 +239,7 @@ def _build_live_provider(
             tf=tf,
             raw_ws_root=None,
             allow_previous_fallback=False,
+            enable_raw_ws_overlay=False,
         )
     return LiveFeatureProviderV4(
         feature_columns=feature_columns,

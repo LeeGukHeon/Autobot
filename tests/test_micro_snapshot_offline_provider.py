@@ -147,3 +147,21 @@ def test_offline_provider_overlays_historical_raw_orderbook_levels_when_availabl
     assert near_snapshot is not None
     assert near_snapshot.snapshot_ts_ms == 1_700_000_000_000
     assert near_snapshot.bid_levels == ((99.0, 1.5), (98.0, 2.5))
+
+
+def test_offline_provider_can_disable_raw_ws_overlay(tmp_path: Path) -> None:
+    micro_root = tmp_path / "data" / "parquet" / "micro_v1"
+    _write_micro_part(micro_root)
+    _write_orderbook_part(tmp_path / "data" / "raw_ws" / "upbit" / "public", ts_ms=1_700_000_000_000)
+    provider = OfflineMicroSnapshotProvider(
+        micro_root=micro_root,
+        tf="5m",
+        enable_raw_ws_overlay=False,
+    )
+
+    snapshot = provider.get("KRW-BTC", 1_700_000_000_000)
+    assert snapshot is not None
+    assert snapshot.best_bid_price is None
+    assert snapshot.best_ask_price is None
+    assert snapshot.bid_levels == ()
+    assert snapshot.ask_levels == ()
