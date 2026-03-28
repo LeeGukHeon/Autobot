@@ -312,6 +312,9 @@ class LiveFeatureProviderV5:
         payload["primary_model_family"] = str(self._predictor.model_family or "")
         return payload
 
+    def last_build_stats(self) -> dict[str, Any]:
+        return dict(self._last_build_stats)
+
     def _resolve_prev_acc_trade_price_24h(self, *, market: str) -> float | None:
         state = self._base_provider._market_state.get(market)  # noqa: SLF001
         if state is None:
