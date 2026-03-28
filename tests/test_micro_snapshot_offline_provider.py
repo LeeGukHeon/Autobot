@@ -115,6 +115,18 @@ def test_offline_provider_allows_small_timestamp_fallback(tmp_path: Path) -> Non
     assert far_snapshot is None
 
 
+def test_offline_provider_can_disable_previous_snapshot_fallback(tmp_path: Path) -> None:
+    micro_root = tmp_path / "micro_v1"
+    _write_micro_part(micro_root)
+    provider = OfflineMicroSnapshotProvider(
+        micro_root=micro_root,
+        tf="5m",
+        allow_previous_fallback=False,
+    )
+
+    assert provider.get("KRW-BTC", 1_700_000_060_000) is None
+
+
 def test_offline_provider_overlays_historical_raw_orderbook_levels_when_available(tmp_path: Path) -> None:
     micro_root = tmp_path / "data" / "parquet" / "micro_v1"
     _write_micro_part(micro_root)

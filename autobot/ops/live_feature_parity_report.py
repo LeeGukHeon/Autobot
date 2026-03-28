@@ -222,6 +222,7 @@ def _build_live_provider(
             micro_root=micro_root,
             tf=tf,
             raw_ws_root=None,
+            allow_previous_fallback=False,
         )
     return LiveFeatureProviderV4(
         feature_columns=feature_columns,

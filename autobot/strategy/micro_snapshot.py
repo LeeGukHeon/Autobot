@@ -140,6 +140,7 @@ class OfflineMicroSnapshotProvider:
         cache_entries: int = 64,
         raw_ws_root: str | Path | None = None,
         orderbook_topk: int = 5,
+        allow_previous_fallback: bool = True,
     ) -> None:
         self._micro_root = Path(micro_root)
         self._tf = str(tf).strip().lower()
@@ -153,6 +154,7 @@ class OfflineMicroSnapshotProvider:
             if raw_ws_root is not None
             else _resolve_raw_ws_root_from_micro_root(self._micro_root)
         )
+        self._allow_previous_fallback = bool(allow_previous_fallback)
         self._cache: OrderedDict[tuple[str, str], _OfflineDayCacheEntry] = OrderedDict()
         self._orderbook_cache: OrderedDict[tuple[str, str, str], _OfflineOrderbookHourCacheEntry] = OrderedDict()
         self._trade_cache: OrderedDict[tuple[str, str, str], _OfflineTradeHourCacheEntry] = OrderedDict()
@@ -183,6 +185,8 @@ class OfflineMicroSnapshotProvider:
                 market=market_value,
                 ts_ms=ts_value,
             )
+        if not self._allow_previous_fallback:
+            return None
 
         idx = bisect_right(day_entry.ts_values, ts_value) - 1
         if idx < 0:
