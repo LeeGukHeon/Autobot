@@ -418,8 +418,25 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> pl.DataFrame
     panel = _load_expert_table(options.panel_input_path, prefix="panel")
     sequence = _load_expert_table(options.sequence_input_path, prefix="sequence")
     lob = _load_expert_table(options.lob_input_path, prefix="lob")
-    merged = panel.join(sequence, on=["market", "ts_ms", "split", "y_cls", "y_reg"], how="inner")
-    merged = merged.join(lob, on=["market", "ts_ms", "split", "y_cls", "y_reg"], how="inner")
+    merged = panel.join(sequence, on=["market", "ts_ms"], how="full", coalesce=True)
+    merged = merged.join(lob, on=["market", "ts_ms"], how="full", coalesce=True)
+    merged = merged.with_columns(
+        pl.coalesce(["split", "split_sequence", "split_lob"]).alias("split"),
+        pl.coalesce(["y_cls", "y_cls_sequence", "y_cls_lob"]).cast(pl.Int64).alias("y_cls"),
+        pl.coalesce(["y_reg", "y_reg_sequence", "y_reg_lob"]).cast(pl.Float64).alias("y_reg"),
+        pl.col("panel_final_rank_score").is_not_null().cast(pl.Int64).alias("panel_present"),
+        pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Int64).alias("sequence_present"),
+        pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Int64).alias("lob_present"),
+    )
+    expert_value_columns = [
+        name
+        for name in merged.columns
+        if name.startswith("panel_") or name.startswith("sequence_") or name.startswith("lob_")
+    ]
+    if expert_value_columns:
+        merged = merged.with_columns([pl.col(name).fill_null(0.0) for name in expert_value_columns])
+    merged = merged.drop([name for name in ("split_sequence", "split_lob", "y_cls_sequence", "y_cls_lob", "y_reg_sequence", "y_reg_lob") if name in merged.columns])
+    merged = merged.filter(pl.col("split").is_not_null() & pl.col("y_cls").is_not_null() & pl.col("y_reg").is_not_null())
     merged = merged.with_columns(
         pl.when(pl.col("y_reg") < 0.0).then(pl.col("y_reg").abs()).otherwise(0.0).alias("y_es_proxy"),
         (
@@ -437,11 +454,17 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> pl.DataFrame
 
 def _load_expert_table(path: Path, *, prefix: str) -> pl.DataFrame:
     frame = pl.read_parquet(path)
-    keep_base = ["market", "ts_ms", "split", "y_cls", "y_reg"]
+    keep_base = ["market", "ts_ms"]
     renamed = []
     for column in frame.columns:
         if column in keep_base:
             renamed.append(pl.col(column))
+        elif column == "split":
+            renamed.append(pl.col(column).alias("split" if prefix == "panel" else f"split_{prefix}"))
+        elif column == "y_cls":
+            renamed.append(pl.col(column).alias("y_cls" if prefix == "panel" else f"y_cls_{prefix}"))
+        elif column == "y_reg":
+            renamed.append(pl.col(column).alias("y_reg" if prefix == "panel" else f"y_reg_{prefix}"))
         else:
             renamed.append(pl.col(column).alias(f"{prefix}_{column}"))
     return frame.select(renamed)

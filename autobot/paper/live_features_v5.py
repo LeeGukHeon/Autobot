@@ -683,6 +683,9 @@ class LiveFeatureProviderV5:
         )
         for key, values in lob_payload.items():
             fusion_values[f"lob_{key}"] = float(np.asarray(values, dtype=np.float64)[0])
+        fusion_values["panel_present"] = 1.0
+        fusion_values["sequence_present"] = 1.0
+        fusion_values["lob_present"] = 1.0
         return {name: float(fusion_values[name]) for name in self._feature_columns if name in fusion_values}
 
     def _build_ws_close_maps(self, *, ts_ms: int) -> dict[str, dict[int, float]]:
