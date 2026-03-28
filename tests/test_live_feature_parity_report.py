@@ -713,24 +713,27 @@ def test_live_feature_parity_report_expands_bootstrap_window_for_wide_sample_spa
     captured_bootstrap_bars: list[int] = []
 
     class _DummyProvider:
-        def build_frame(self, *, ts_ms: int, markets: list[str]):
-            return pl.DataFrame(
-                {
-                    "ts_ms": [ts_ms],
-                    "market": [markets[0]],
-                    "close": [100.0 if ts_ms == 900_000 else 101.0],
-                    "logret_1": [0.1 if ts_ms == 900_000 else 0.2],
-                }
-            )
-
-        def last_build_stats(self) -> dict[str, object]:
-            return {}
+        pass
 
     def _fake_builder(*args, **kwargs):
         captured_bootstrap_bars.append(int(kwargs.get("bootstrap_1m_bars", 0)))
         return _DummyProvider()
 
     monkeypatch.setattr(parity_module, "_build_live_provider", _fake_builder)
+    monkeypatch.setattr(
+        parity_module,
+        "_build_live_frames_for_sampled_ts",
+        lambda **_: (
+            {
+                900_000: pl.DataFrame({"ts_ms": [900_000], "market": ["KRW-BTC"], "close": [100.0], "logret_1": [0.1]}),
+                2000 * 60_000 + 900_000: pl.DataFrame({"ts_ms": [2000 * 60_000 + 900_000], "market": ["KRW-BTC"], "close": [101.0], "logret_1": [0.2]}),
+            },
+            {
+                900_000: {"missing_feature_columns": [], "hard_gate_triggered": False},
+                2000 * 60_000 + 900_000: {"missing_feature_columns": [], "hard_gate_triggered": False},
+            },
+        ),
+    )
 
     report = build_live_feature_parity_report(project_root=project_root, top_n=1, samples_per_market=2)
 
