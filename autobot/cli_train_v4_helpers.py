@@ -132,7 +132,12 @@ def build_v4_train_options(
         train_ratio=float(defaults["train_ratio"]),
         valid_ratio=float(defaults["valid_ratio"]),
         test_ratio=float(defaults["test_ratio"]),
-        embargo_bars=max(int(defaults["embargo_bars"]), 0),
+        embargo_bars=max(
+            int(getattr(args, "embargo_bars", None))
+            if getattr(args, "embargo_bars", None) is not None
+            else int(defaults["embargo_bars"]),
+            0,
+        ),
         fee_bps_est=float(defaults["fee_bps_est"]),
         safety_bps=float(defaults["safety_bps"]),
         ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),

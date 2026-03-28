@@ -813,6 +813,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--seed", type=int)
     model_train_parser.add_argument("--nthread", type=int)
     model_train_parser.add_argument("--min-rows-for-train", type=int)
+    model_train_parser.add_argument("--embargo-bars", type=int)
     model_train_parser.add_argument(
         "--execution-acceptance-top-n",
         type=int,
