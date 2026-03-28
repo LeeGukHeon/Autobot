@@ -6,7 +6,8 @@ from pathlib import Path
 import polars as pl
 
 import autobot.ops.live_feature_parity_report as parity_module
-from autobot.ops.live_feature_parity_report import _build_live_frames_for_sampled_ts
+from autobot.ops.live_feature_parity_report import _build_live_frames_for_sampled_ts, _resolve_bootstrap_1m_bars
+from autobot.paper.live_features_multitf_base import _tail_bars_from_bootstrap_1m_bars
 
 
 def _write_one_m_candles(
@@ -85,7 +86,13 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
         ("KRW-BTC", 100.0, 0.05),
         ("KRW-ETH", 200.0, -0.03),
     ):
-        _write_one_m_candles(dataset_root=candles_root, market=market, base_close=base_close, slope=slope)
+        _write_one_m_candles(
+            dataset_root=candles_root,
+            market=market,
+            count=900,
+            base_close=base_close,
+            slope=slope,
+        )
         _write_micro_5m_snapshot(micro_root=micro_root, market=market, ts_ms=900_000)
         _write_micro_5m_snapshot(micro_root=micro_root, market=market, ts_ms=1_200_000)
 
@@ -95,6 +102,8 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
         "base_candles_root": str(candles_root),
         "micro_root": str(micro_root),
     }
+    sampled_ts_values = [900_000, 1_200_000]
+    bootstrap_1m_bars = _resolve_bootstrap_1m_bars(sampled_ts_values)
     provider_bulk = parity_module._build_live_provider(
         root=project_root,
         feature_spec=feature_spec,
@@ -102,7 +111,7 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
         tf="5m",
         quote="KRW",
         bootstrap_end_ts_ms=1_200_000,
-        bootstrap_1m_bars=2000,
+        bootstrap_1m_bars=bootstrap_1m_bars,
     )
     provider_iter = parity_module._build_live_provider(
         root=project_root,
@@ -111,10 +120,9 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
         tf="5m",
         quote="KRW",
         bootstrap_end_ts_ms=1_200_000,
-        bootstrap_1m_bars=2000,
+        bootstrap_1m_bars=bootstrap_1m_bars,
     )
 
-    sampled_ts_values = [900_000, 1_200_000]
     markets = ["KRW-BTC", "KRW-ETH"]
     bulk_frames, stats_by_ts = _build_live_frames_for_sampled_ts(
         provider=provider_bulk,
@@ -127,3 +135,8 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
         actual = bulk_frames[int(ts_value)].sort(["market", "ts_ms"])
         assert actual.to_dicts() == expected.to_dicts()
         assert stats_by_ts[int(ts_value)]["built_rows"] == expected.height
+
+
+def test_tail_bars_from_bootstrap_1m_bars_scales_minutes_to_target_interval() -> None:
+    assert _tail_bars_from_bootstrap_1m_bars(bootstrap_1m_bars=2_512, interval_ms=300_000) == 511
+    assert _tail_bars_from_bootstrap_1m_bars(bootstrap_1m_bars=2_512, interval_ms=60_000) == 2520

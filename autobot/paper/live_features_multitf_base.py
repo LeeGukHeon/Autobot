@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 from typing import Any, Sequence
 
 import polars as pl
@@ -255,7 +256,10 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         tf_value = str(tf).strip().lower()
         ts_value = int(ts_ms)
         interval_ms = max(int(expected_interval_ms(tf_value)), 1)
-        tail_bars = max(256, int(self._bootstrap_1m_bars // interval_ms) + 8)
+        tail_bars = _tail_bars_from_bootstrap_1m_bars(
+            bootstrap_1m_bars=int(self._bootstrap_1m_bars),
+            interval_ms=interval_ms,
+        )
 
         canonical = (
             self._load_canonical_tf_frame(
@@ -542,3 +546,12 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             "bootstrap_partial_markets_count": int(bootstrap_partial),
         }
         return frame, stats
+
+
+def _tail_bars_from_bootstrap_1m_bars(*, bootstrap_1m_bars: int, interval_ms: int) -> int:
+    interval_value = max(int(interval_ms), 1)
+    bootstrap_bars = max(int(bootstrap_1m_bars), 1)
+    return max(
+        256,
+        int(math.ceil((float(bootstrap_bars) * 60_000.0) / float(interval_value))) + 8,
+    )
