@@ -318,6 +318,10 @@ def _resolve_markets(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
     if explicit:
         return explicit
 
+    preferred = _load_preferred_markets_from_plans(options)
+    if preferred:
+        return preferred[: max(int(options.max_markets), 1)]
+
     ws_markets = sorted(
         path.name.replace("market=", "", 1).upper()
         for path in (options.ws_candle_root / "tf=1m").glob("market=*")
@@ -332,6 +336,35 @@ def _resolve_markets(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
         if path.is_dir()
     )
     return tuple(lob_markets[: max(int(options.max_markets), 1)])
+
+
+def _load_preferred_markets_from_plans(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
+    meta_root = options.parquet_root.parent / "collect" / "_meta"
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for path in (meta_root / "ws_candle_plan.json", meta_root / "lob30_plan.json"):
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        candidates = payload.get("selected_markets") or payload.get("request_codes") or []
+        if not isinstance(candidates, list):
+            continue
+        for item in candidates:
+            market = str(item).strip().upper()
+            if not market or market in seen:
+                continue
+            if not (
+                (options.ws_candle_root / "tf=1m" / f"market={market}").exists()
+                or (options.lob_root / f"market={market}").exists()
+                or (options.second_root / "tf=1s" / f"market={market}").exists()
+            ):
+                continue
+            seen.add(market)
+            ordered.append(market)
+    return tuple(ordered)
 
 
 def _load_anchor_rows(*, options: SequenceTensorBuildOptions, market: str) -> list[dict[str, Any]]:

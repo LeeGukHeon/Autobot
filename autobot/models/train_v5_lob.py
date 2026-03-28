@@ -490,11 +490,16 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
     second_root = options.dataset_root.parent / "candles_second_v1" / "tf=1s"
     ws_second_root = options.dataset_root.parent / "ws_candle_v1" / "tf=1s"
     ws_minute_root = options.dataset_root.parent / "ws_candle_v1" / "tf=1m"
+    candles_api_minute_root = options.dataset_root.parent / "candles_api_v1" / "tf=1m"
+    candles_v1_minute_root = options.dataset_root.parent / "candles_v1" / "tf=1m"
     second_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     minute_maps: dict[str, dict[int, float]] = {}
     for market in selected_markets:
         second_maps[market] = _load_second_close_series(second_root=second_root, ws_second_root=ws_second_root, market=market)
-        minute_maps[market] = _load_minute_close_map(ws_minute_root=ws_minute_root, market=market)
+        minute_maps[market] = _load_minute_close_map_sources(
+            market=market,
+            roots=(candles_api_minute_root, candles_v1_minute_root, ws_minute_root),
+        )
 
     lob_parts: list[np.ndarray] = []
     lob_global_parts: list[np.ndarray] = []
@@ -599,11 +604,23 @@ def _load_second_close_series(*, second_root: Path, ws_second_root: Path, market
     )
 
 
-def _load_minute_close_map(*, ws_minute_root: Path, market: str) -> dict[int, float]:
-    files = sorted((ws_minute_root / f"market={market}").glob("*.parquet"))
-    if not files:
+def _load_minute_close_map_sources(*, market: str, roots: tuple[Path, ...]) -> dict[int, float]:
+    frames: list[pl.DataFrame] = []
+    for root in roots:
+        files = sorted((root / f"market={market}").glob("*.parquet"))
+        if not files:
+            continue
+        frames.append(pl.concat([pl.read_parquet(path) for path in files], how="vertical"))
+    if not frames:
         return {}
-    frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical").sort("ts_ms")
+    frame = (
+        pl.concat(frames, how="vertical")
+        .with_row_index("__row_id")
+        .sort(["ts_ms", "__row_id"])
+        .unique(subset=["ts_ms"], keep="last")
+        .sort("ts_ms")
+        .drop("__row_id")
+    )
     return {int(row["ts_ms"]): float(row["close"]) for row in frame.iter_rows(named=True)}
 
 
