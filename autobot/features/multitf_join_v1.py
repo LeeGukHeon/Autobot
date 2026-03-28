@@ -53,13 +53,18 @@ def densify_1m_candles(
         raise ValueError(f"1m frame missing columns: {missing}")
 
     interval_ms = expected_interval_ms("1m")
+    select_columns = ["ts_ms", "open", "high", "low", "close", "volume_base"]
+    if "is_synth_1m" in one_m_candles.columns:
+        select_columns.append("is_synth_1m")
     frame = (
-        one_m_candles.select(["ts_ms", "open", "high", "low", "close", "volume_base"])
+        one_m_candles.select(select_columns)
         .with_columns((((pl.col("ts_ms") // interval_ms) * interval_ms).cast(pl.Int64)).alias("ts_ms"))
         .sort("ts_ms")
         .unique(subset=["ts_ms"], keep="last", maintain_order=True)
         .filter((pl.col("ts_ms") >= int(start_ts_ms)) & (pl.col("ts_ms") <= int(end_ts_ms)))
     )
+    if "is_synth_1m" not in frame.columns:
+        frame = frame.with_columns(pl.lit(False, dtype=pl.Boolean).alias("is_synth_1m"))
 
     ts_grid = list(range(int(start_ts_ms), int(end_ts_ms) + int(interval_ms), int(interval_ms)))
     if not ts_grid:
@@ -71,12 +76,13 @@ def densify_1m_candles(
         [
             pl.col("close").is_null().alias("__is_missing"),
             pl.col("close").fill_null(strategy="forward").alias("__prev_close"),
+            pl.col("is_synth_1m").fill_null(False).cast(pl.Boolean).alias("__existing_synth_1m"),
         ]
     )
     synth_mask = pl.col("__is_missing") & pl.col("__prev_close").is_not_null()
     joined = joined.with_columns(
         [
-            synth_mask.alias("is_synth_1m"),
+            (pl.col("__existing_synth_1m") | synth_mask).alias("is_synth_1m"),
             pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("open")).alias("open"),
             pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("high")).alias("high"),
             pl.when(synth_mask).then(pl.col("__prev_close")).otherwise(pl.col("low")).alias("low"),

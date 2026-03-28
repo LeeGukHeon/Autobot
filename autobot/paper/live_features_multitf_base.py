@@ -125,7 +125,7 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
         dense_start = int(base_featured.get_column("ts_ms").min())
         dense_end = int(base_featured.get_column("ts_ms").max())
         one_m_dense = densify_1m_candles(
-            one_m.select(["ts_ms", "open", "high", "low", "close", "volume_base"]),
+            one_m.select([name for name in ("ts_ms", "open", "high", "low", "close", "volume_base", "is_synth_1m") if name in one_m.columns]),
             start_ts_ms=dense_start,
             end_ts_ms=dense_end,
         )
