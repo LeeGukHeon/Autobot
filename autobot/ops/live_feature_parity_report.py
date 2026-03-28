@@ -272,100 +272,9 @@ def _build_live_frames_for_sampled_ts(
 ) -> tuple[dict[int, pl.DataFrame], dict[int, dict[str, Any]]]:
     if not sampled_ts_values:
         return {}, {}
-
-    resolved_markets = sorted(
-        {
-            str(item).strip().upper()
-            for items in markets_by_ts.values()
-            for item in items
-            if str(item).strip()
-        }
-    )
-    if not resolved_markets:
-        return {}, {}
-
     sampled_ts_unique = sorted({int(value) for value in sampled_ts_values})
-    max_ts = sampled_ts_unique[-1]
-    min_ts = sampled_ts_unique[0]
-    interval_ms = max(int(expected_interval_ms(str(provider._tf).strip().lower() or "5m")), 1)  # noqa: SLF001
-    span_bars = int(math.ceil(float(max_ts - min_ts) / float(interval_ms))) if max_ts > min_ts else 0
-    history_bars = max(int(provider._context_history_bars) + span_bars, int(provider._context_history_bars), 1)  # noqa: SLF001
-
-    base_frame, base_stats = provider._build_runtime_context_frame(  # noqa: SLF001
-        ts_ms=max_ts,
-        markets=resolved_markets,
-        feature_columns=provider._base_feature_columns,  # noqa: SLF001
-        extra_columns=tuple(provider._extra_columns) + ("volume_base",),  # noqa: SLF001
-        provider_name="LIVE_V4_PARITY_BASE",
-        missing_feature_warn_ratio=1.0,
-        missing_feature_skip_ratio=1.0,
-        history_bars=history_bars,
-    )
-    base_frame, context_stats = provider._filter_context_for_micro_contract(base_frame)  # noqa: SLF001
-
-    merged_base_stats = dict(base_stats)
-    merged_base_stats.update(context_stats)
-
     frames_by_ts: dict[int, pl.DataFrame] = {}
     stats_by_ts: dict[int, dict[str, Any]] = {}
-    missing_columns: tuple[str, ...] = ()
-    hard_gate_triggered = False
-    allowed_pairs_rows = [
-        {"ts_ms": int(ts_value), "market": market}
-        for ts_value, items in markets_by_ts.items()
-        for market in items
-    ]
-    allowed_pairs = (
-        pl.DataFrame(allowed_pairs_rows)
-        .with_columns(
-            [
-                pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
-                pl.col("market").cast(pl.Utf8).str.to_uppercase().alias("market"),
-            ]
-        )
-        .unique(subset=["ts_ms", "market"], keep="first", maintain_order=True)
-        if allowed_pairs_rows
-        else pl.DataFrame(schema={"ts_ms": pl.Int64, "market": pl.Utf8})
-    )
-    sampled_ts_frame = pl.DataFrame({"ts_ms": sampled_ts_unique}, schema={"ts_ms": pl.Int64})
-    history_frame = (
-        base_frame.filter(~pl.col("ts_ms").is_in(sampled_ts_unique))
-        if base_frame.height > 0 and "ts_ms" in base_frame.columns
-        else base_frame
-    )
-    sampled_frame = (
-        base_frame.filter(pl.col("ts_ms").is_in(sampled_ts_unique)).join(allowed_pairs, on=["ts_ms", "market"], how="inner")
-        if base_frame.height > 0 and "ts_ms" in base_frame.columns
-        else base_frame
-    )
-    parity_source_frame = (
-        pl.concat([history_frame, sampled_frame], how="vertical_relaxed").sort(["ts_ms", "market"])
-        if base_frame.height > 0
-        else base_frame
-    )
-
-    if parity_source_frame.height > 0:
-        enriched = attach_spillover_breadth_features_v4(
-            parity_source_frame,
-            quote=str(provider._quote),  # noqa: SLF001
-            float_dtype="float32",
-        )
-        enriched = attach_periodicity_features_v4(enriched, float_dtype="float32")
-        enriched = attach_trend_volume_features_v4(enriched, float_dtype="float32")
-        enriched = attach_order_flow_panel_v1(enriched, float_dtype="float32")
-        enriched = attach_interaction_features_v4(enriched, float_dtype="float32")
-        final_frame, missing_columns = project_requested_v4_columns(
-            frame=enriched,
-            feature_columns=provider._feature_columns,  # noqa: SLF001
-            extra_columns=provider._extra_columns,  # noqa: SLF001
-        )
-        hard_gate_triggered = len(missing_columns) > 0
-        if hard_gate_triggered:
-            final_frame = final_frame.head(0)
-        if final_frame.height > 0 and "ts_ms" in final_frame.columns:
-            final_frame = final_frame.filter(pl.col("ts_ms").is_in(sampled_ts_unique)).sort(["ts_ms", "market"])
-    else:
-        final_frame = pl.DataFrame()
 
     for ts_value in sampled_ts_unique:
         context_markets = [
@@ -374,20 +283,76 @@ def _build_live_frames_for_sampled_ts(
             if str(item).strip()
         ]
         if not context_markets:
-            context_markets = list(resolved_markets)
-        if final_frame.height > 0 and "ts_ms" in final_frame.columns:
-            ts_frame = final_frame.filter(
-                (pl.col("ts_ms") == int(ts_value)) & (pl.col("market").is_in(context_markets))
-            ).sort("market")
+            frames_by_ts[int(ts_value)] = pl.DataFrame()
+            stats_by_ts[int(ts_value)] = {
+                "provider": "LIVE_V4",
+                "base_provider": "LIVE_V4_BASE",
+                "requested_ts_ms": int(ts_value),
+                "built_ts_ms": None,
+                "built_rows": 0,
+                "requested_feature_count": int(len(provider._feature_columns)),  # noqa: SLF001
+                "missing_feature_columns": [],
+                "hard_gate_triggered": False,
+                "skip_reason": "NO_CONTEXT_MARKETS",
+                "base_provider_stats": {},
+                "context_micro_required": True,
+                "context_rows_before_micro_filter": 0,
+                "context_rows_after_micro_filter": 0,
+                "context_rows_dropped_no_micro": 0,
+                "context_history_bars": int(provider._context_history_bars),  # noqa: SLF001
+                "built_market_samples": [],
+                "skipped_market_samples": [],
+            }
+            continue
+
+        base_frame, base_stats = provider._build_runtime_context_frame(  # noqa: SLF001
+            ts_ms=int(ts_value),
+            markets=context_markets,
+            feature_columns=provider._base_feature_columns,  # noqa: SLF001
+            extra_columns=tuple(provider._extra_columns) + ("volume_base",),  # noqa: SLF001
+            provider_name="LIVE_V4_PARITY_BASE",
+            missing_feature_warn_ratio=1.0,
+            missing_feature_skip_ratio=1.0,
+            history_bars=provider._context_history_bars,  # noqa: SLF001
+        )
+        base_frame, context_stats = provider._filter_context_for_micro_contract(base_frame)  # noqa: SLF001
+        merged_base_stats = dict(base_stats)
+        merged_base_stats.update(context_stats)
+
+        if base_frame.height > 0:
+            enriched = attach_spillover_breadth_features_v4(
+                base_frame.sort(["ts_ms", "market"]),
+                quote=str(provider._quote),  # noqa: SLF001
+                float_dtype="float32",
+            )
+            enriched = attach_periodicity_features_v4(enriched, float_dtype="float32")
+            enriched = attach_trend_volume_features_v4(enriched, float_dtype="float32")
+            enriched = attach_order_flow_panel_v1(enriched, float_dtype="float32")
+            enriched = attach_interaction_features_v4(enriched, float_dtype="float32")
+            final_frame, missing_columns = project_requested_v4_columns(
+                frame=enriched,
+                feature_columns=provider._feature_columns,  # noqa: SLF001
+                extra_columns=provider._extra_columns,  # noqa: SLF001
+            )
+            hard_gate_triggered = len(missing_columns) > 0
+            if hard_gate_triggered:
+                final_frame = final_frame.head(0)
+            ts_frame = (
+                final_frame.filter(pl.col("ts_ms") == int(ts_value)).sort("market")
+                if final_frame.height > 0 and "ts_ms" in final_frame.columns
+                else final_frame
+            )
         else:
-            ts_frame = final_frame
+            ts_frame = pl.DataFrame()
+            missing_columns = ()
+            hard_gate_triggered = False
+
         built_markets = [
             str(item).strip().upper()
             for item in (ts_frame.get_column("market").to_list() if ts_frame.height > 0 and "market" in ts_frame.columns else [])
             if str(item).strip()
         ]
-        built_market_set = set(built_markets)
-        skipped_markets = [market for market in context_markets if market not in built_market_set]
+        skipped_markets = [market for market in context_markets if market not in built_markets]
         frames_by_ts[int(ts_value)] = ts_frame
         stats_by_ts[int(ts_value)] = {
             "provider": "LIVE_V4",
@@ -404,7 +369,7 @@ def _build_live_frames_for_sampled_ts(
             "context_rows_before_micro_filter": int(context_stats.get("context_rows_before_micro_filter", 0)),
             "context_rows_after_micro_filter": int(context_stats.get("context_rows_after_micro_filter", 0)),
             "context_rows_dropped_no_micro": int(context_stats.get("context_rows_dropped_no_micro", 0)),
-            "context_history_bars": int(history_bars),
+            "context_history_bars": int(provider._context_history_bars),  # noqa: SLF001
             "built_market_samples": built_markets[:20],
             "skipped_market_samples": skipped_markets[:20],
         }

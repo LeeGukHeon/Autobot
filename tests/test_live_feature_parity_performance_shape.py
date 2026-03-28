@@ -132,8 +132,11 @@ def test_bulk_live_parity_frame_builder_matches_iterative_provider(tmp_path: Pat
 
     for ts_value in sampled_ts_values:
         expected = provider_iter.build_frame(ts_ms=ts_value, markets=markets).sort(["market", "ts_ms"])
-        actual = bulk_frames[int(ts_value)].sort(["market", "ts_ms"])
-        assert actual.to_dicts() == expected.to_dicts()
+        actual = bulk_frames[int(ts_value)]
+        if actual.height > 0 or expected.height > 0:
+            assert actual.sort(["market", "ts_ms"]).to_dicts() == expected.to_dicts()
+        else:
+            assert actual.height == expected.height == 0
         assert stats_by_ts[int(ts_value)]["built_rows"] == expected.height
 
 
