@@ -682,6 +682,68 @@ def test_live_feature_provider_v4_uses_rich_micro_snapshot_fields_without_approx
     assert float(row["m_signed_volume"]) == pytest.approx(5_792.99, rel=0, abs=1e-2)
 
 
+def test_live_feature_provider_v4_preserves_large_micro_timestamp_fields_exactly(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")
+    snapshot = MicroSnapshot(
+        market="KRW-BTC",
+        snapshot_ts_ms=1_773_583_200_000,
+        last_event_ts_ms=1_773_583_495_817,
+        trade_events=42,
+        trade_count=42,
+        buy_count=22,
+        sell_count=20,
+        trade_coverage_ms=282_618,
+        trade_min_ts_ms=1_773_583_200_142,
+        trade_max_ts_ms=1_773_583_482_760,
+        trade_notional_krw=6_401_000.0,
+        trade_imbalance=-0.39,
+        trade_source="ws",
+        trade_volume_total=103_420.60214258,
+        buy_volume=31_484.11982634,
+        sell_volume=71_936.48231624,
+        vwap=61.897656442289986,
+        avg_trade_size=2462.3952891090476,
+        max_trade_size=18439.03369561,
+        last_trade_price=62.0,
+        mid_mean=61.945535714285725,
+        spread_bps_mean=17.297870954190152,
+        depth_top5_notional_krw=1_675_789.443417635,
+        depth_bid_top5_notional_krw=700_867.8151356087,
+        depth_ask_top5_notional_krw=974_921.6282820263,
+        imbalance_top5_mean=-0.16260930743846866,
+        microprice_bias_bps_mean=-3.420283795576534,
+        book_events=112,
+        book_coverage_ms=295_600,
+        book_min_ts_ms=1_773_583_200_217,
+        book_max_ts_ms=1_773_583_495_817,
+        book_available=True,
+    )
+
+    provider = LiveFeatureProviderV4(
+        feature_columns=(
+            "m_trade_min_ts_ms",
+            "m_trade_max_ts_ms",
+            "m_book_min_ts_ms",
+            "m_book_max_ts_ms",
+        ),
+        tf="5m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=2000,
+        micro_snapshot_provider=_StaticMicroSnapshotProvider(snapshot),
+    )
+
+    frame = provider.build_frame(ts_ms=1_773_583_200_000, markets=["KRW-BTC"])
+    row = frame.row(0, named=True)
+
+    assert row["m_trade_min_ts_ms"] == 1_773_583_200_142
+    assert row["m_trade_max_ts_ms"] == 1_773_583_482_760
+    assert row["m_book_min_ts_ms"] == 1_773_583_200_217
+    assert row["m_book_max_ts_ms"] == 1_773_583_495_817
+
+
 def test_live_feature_provider_v4_keeps_boundary_minute_in_current_base_bar(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     part_dir = parquet_root / "candles_api_v1" / "tf=1m" / "market=KRW-BTC" / "date=2026-01-01"
