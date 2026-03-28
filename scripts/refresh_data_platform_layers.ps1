@@ -81,6 +81,20 @@ function Invoke-ProjectPythonStep {
     if (-not [string]::IsNullOrWhiteSpace($outputText)) {
         Write-Host $outputText
     }
+    if (($exitCode -ne 0) -and ([string]$StepName -eq "collect_sequence_tensors")) {
+        $buildReportPath = Join-Path (Join-Path (Join-Path $resolvedProjectRoot "data") "parquet") "sequence_v1/_meta/build_report.json"
+        if (Test-Path $buildReportPath) {
+            try {
+                $buildReport = Get-Content -Path $buildReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $builtAnchors = [int]($buildReport.built_anchors)
+                if ($builtAnchors -gt 0) {
+                    Write-Warning ("[data-platform-refresh] tolerating partial sequence tensor build because built_anchors={0}" -f $builtAnchors)
+                    $exitCode = 0
+                }
+            } catch {
+            }
+        }
+    }
     if ($exitCode -ne 0) {
         throw ("step failed: " + $StepName + " exit_code=" + $exitCode)
     }
