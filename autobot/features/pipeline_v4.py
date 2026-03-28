@@ -329,6 +329,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
     meta_root.mkdir(parents=True, exist_ok=True)
     build_report_file = meta_root / "build_report.json"
     manifest_file = meta_root / "manifest.parquet"
+    cross_sectional_context_membership_file = meta_root / "cross_sectional_context_membership.parquet"
     universe_quality_report_file = meta_root / "universe_quality_report.json"
 
     micro_root = resolve_micro_dataset_root(
@@ -594,6 +595,10 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             enriched,
             float_dtype=config.float_dtype,
         )
+        _write_cross_sectional_context_membership(
+            frame=enriched,
+            output_path=cross_sectional_context_membership_file,
+        )
         order_flow_diagnostics = order_flow_panel_v1_diagnostics(enriched)
         labeled = apply_labeling_fn(
             enriched,
@@ -617,6 +622,10 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
     else:
         labeled = pl.DataFrame()
         label_dist_before_drop = {"pos": 0, "neg": 0, "neutral": 0, "total": 0}
+        _write_cross_sectional_context_membership(
+            frame=pl.DataFrame(schema={"ts_ms": pl.Int64, "market": pl.Utf8}),
+            output_path=cross_sectional_context_membership_file,
+        )
 
     rows_final = 0
     min_ts_total: int | None = None
@@ -734,6 +743,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
             start_ts_ms=start_ts_ms,
             end_ts_ms=end_ts_ms,
             order_flow_diagnostics=order_flow_diagnostics,
+            cross_sectional_context_membership_file=cross_sectional_context_membership_file,
         ),
     )
     write_json(
@@ -1069,6 +1079,7 @@ def _build_feature_spec_payload_v4(
     start_ts_ms: int,
     end_ts_ms: int,
     order_flow_diagnostics: dict[str, Any] | None,
+    cross_sectional_context_membership_file: Path,
 ) -> dict[str, Any]:
     return {
         "dataset_name": config.dataset_name,
@@ -1110,11 +1121,12 @@ def _build_feature_spec_payload_v4(
             "score_formula": "value_est * clip((1-one_m_synth_ratio_lookback), q_floor, 1)^beta",
         },
         "cross_sectional_context_policy": {
-            "policy_id": "final_dataset_present_markets_at_ts_v1",
+            "policy_id": "pre_label_feature_context_membership_v1",
             "description": (
                 "For cross-sectional features that depend on peer markets, the canonical context "
-                "is the set of markets that actually survive into the final persisted dataset at the same ts_ms."
+                "is the pre-label enriched panel membership at each ts_ms, before later label/drop filtering."
             ),
+            "artifact_path": str(cross_sectional_context_membership_file),
             "applies_to": [
                 "btc_ret_*",
                 "eth_ret_*",
@@ -1136,6 +1148,25 @@ def _build_feature_spec_payload_v4(
             "config_sha256": sha256_json(_config_snapshot_v4(config)),
         },
     }
+
+
+def _write_cross_sectional_context_membership(*, frame: pl.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if frame.height <= 0 or "ts_ms" not in frame.columns or "market" not in frame.columns:
+        pl.DataFrame(schema={"ts_ms": pl.Int64, "market": pl.Utf8}).write_parquet(output_path, compression="zstd")
+        return
+    membership = (
+        frame.select(["ts_ms", "market"])
+        .with_columns(
+            [
+                pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+                pl.col("market").cast(pl.Utf8).str.to_uppercase().alias("market"),
+            ]
+        )
+        .unique(subset=["ts_ms", "market"], keep="first", maintain_order=True)
+        .sort(["ts_ms", "market"])
+    )
+    membership.write_parquet(output_path, compression="zstd")
 
 def _build_label_spec_payload_v4(
     *,

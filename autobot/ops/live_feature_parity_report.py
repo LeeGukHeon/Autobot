@@ -428,6 +428,20 @@ def _resolve_context_markets_by_ts(
         ((feature_spec.get("cross_sectional_context_policy") or {}).get("policy_id"))
         or "final_dataset_present_markets_at_ts_v1"
     ).strip()
+    if policy == "pre_label_feature_context_membership_v1":
+        artifact_path = str(
+            ((feature_spec.get("cross_sectional_context_policy") or {}).get("artifact_path"))
+            or ""
+        ).strip()
+        membership = _load_context_market_membership_artifact(
+            artifact_path=Path(artifact_path) if artifact_path else None,
+            requested_ts_values=requested,
+        )
+        if membership:
+            return {
+                int(ts_value): (membership.get(int(ts_value)) or list(fallback_markets))
+                for ts_value in requested
+            }
     if policy != "final_dataset_present_markets_at_ts_v1":
         return {int(ts_value): list(fallback_markets) for ts_value in requested}
 
@@ -505,6 +519,44 @@ def _load_context_market_membership_by_ts(
     for row in grouped.iter_rows(named=True):
         ts_value = int(row.get("ts_ms") or 0)
         membership[ts_value] = [
+            str(item).strip().upper()
+            for item in (row.get("market") or [])
+            if str(item).strip()
+        ]
+    return membership
+
+
+def _load_context_market_membership_artifact(
+    *,
+    artifact_path: Path | None,
+    requested_ts_values: list[int],
+) -> dict[int, list[str]]:
+    if artifact_path is None or not artifact_path.exists():
+        return {}
+    ts_set = {int(value) for value in requested_ts_values}
+    try:
+        frame = pl.read_parquet(artifact_path).select(["ts_ms", "market"])
+    except Exception:
+        return {}
+    frame = frame.filter(pl.col("ts_ms").is_in(sorted(ts_set)))
+    if frame.height <= 0:
+        return {}
+    grouped = (
+        frame.with_columns(
+            [
+                pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+                pl.col("market").cast(pl.Utf8).str.to_uppercase().alias("market"),
+            ]
+        )
+        .unique(subset=["ts_ms", "market"], keep="first", maintain_order=True)
+        .sort(["ts_ms", "market"])
+        .group_by("ts_ms")
+        .agg(pl.col("market"))
+        .sort("ts_ms")
+    )
+    membership: dict[int, list[str]] = {}
+    for row in grouped.iter_rows(named=True):
+        membership[int(row.get("ts_ms") or 0)] = [
             str(item).strip().upper()
             for item in (row.get("market") or [])
             if str(item).strip()

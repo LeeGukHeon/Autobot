@@ -551,10 +551,9 @@ def test_live_feature_parity_report_builds_live_context_from_full_manifest_unive
     )
     offline_frame = provider.build_frame(ts_ms=target_ts_ms, markets=["KRW-BTC", "KRW-ETH"])
     dataset_root = project_root / "data" / "features" / "features_v4"
-    for market in ("KRW-BTC", "KRW-ETH"):
-        part_dir = dataset_root / "tf=5m" / f"market={market}" / "date=1970-01-01"
-        part_dir.mkdir(parents=True, exist_ok=True)
-        offline_frame.filter(pl.col("market") == market).write_parquet(part_dir / "part-000.parquet")
+    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=1970-01-01"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    offline_frame.filter(pl.col("market") == "KRW-BTC").write_parquet(part_dir / "part-000.parquet")
     meta_root = dataset_root / "_meta"
     meta_root.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
@@ -565,12 +564,23 @@ def test_live_feature_parity_report_builds_live_context_from_full_manifest_unive
             "rows_final": [1, 1],
         }
     ).write_parquet(meta_root / "manifest.parquet")
+    membership_path = meta_root / "cross_sectional_context_membership.parquet"
+    pl.DataFrame(
+        {
+            "ts_ms": [target_ts_ms, target_ts_ms],
+            "market": ["KRW-BTC", "KRW-ETH"],
+        }
+    ).write_parquet(membership_path)
     (meta_root / "feature_spec.json").write_text(
         json.dumps(
             {
                 "feature_columns": ["market_breadth_pos_12"],
                 "base_candles_root": str(candles_root),
                 "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+                "cross_sectional_context_policy": {
+                    "policy_id": "pre_label_feature_context_membership_v1",
+                    "artifact_path": str(membership_path),
+                },
             }
         ),
         encoding="utf-8",
