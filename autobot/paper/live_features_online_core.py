@@ -60,6 +60,40 @@ class _MarketState:
     prev_acc_trade_price_24h: float | None = None
 
 
+_RUNTIME_INT_FEATURE_COLUMNS: set[str] = {
+    "one_m_count",
+    "one_m_last_ts",
+    "one_m_synth_count",
+    "one_m_real_count",
+    "src_ts_micro",
+    "m_trade_events",
+    "m_trade_min_ts_ms",
+    "m_trade_max_ts_ms",
+    "m_book_events",
+    "m_book_min_ts_ms",
+    "m_book_max_ts_ms",
+    "m_trade_coverage_ms",
+    "m_book_coverage_ms",
+    "m_trade_count",
+    "m_buy_count",
+    "m_sell_count",
+    "m_book_update_count",
+    "m_source_ws",
+    "m_source_rest",
+}
+
+_RUNTIME_BOOL_FEATURE_COLUMNS: set[str] = {
+    "is_gap",
+    "candle_ok",
+    "one_m_missing",
+    "one_m_no_real",
+    "one_m_fail",
+    "m_micro_trade_available",
+    "m_micro_book_available",
+    "m_micro_available",
+}
+
+
 class _OnlineMinuteRuntimeCore:
     """Shared stateful online candle + micro runtime core.
 
@@ -593,7 +627,13 @@ def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str]
     schema: dict[str, pl.DataType] = {"ts_ms": pl.Int64, "market": pl.Utf8}
     feature_col_set = {str(col) for col in feature_columns}
     for col in feature_columns:
-        schema[str(col)] = pl.Float32
+        name = str(col)
+        if name in _RUNTIME_INT_FEATURE_COLUMNS:
+            schema[name] = pl.Int64
+        elif name in _RUNTIME_BOOL_FEATURE_COLUMNS:
+            schema[name] = pl.Boolean
+        else:
+            schema[name] = pl.Float64
     for col in extra_columns:
         name = str(col)
         if name == "close" or name in feature_col_set:
@@ -604,6 +644,16 @@ def _rows_to_frame(*, rows: list[dict[str, Any]], feature_columns: Sequence[str]
     if not rows:
         return pl.DataFrame(schema=schema)
     frame = pl.DataFrame(rows)
+    cast_exprs: list[pl.Expr] = []
+    for name, dtype in schema.items():
+        if name in {"ts_ms", "market"} and name in frame.columns:
+            cast_exprs.append(pl.col(name).cast(dtype).alias(name))
+        elif name in _RUNTIME_INT_FEATURE_COLUMNS and name in frame.columns:
+            cast_exprs.append(pl.col(name).cast(pl.Int64).alias(name))
+        elif name in _RUNTIME_BOOL_FEATURE_COLUMNS and name in frame.columns:
+            cast_exprs.append(pl.col(name).cast(pl.Boolean).alias(name))
+    if cast_exprs:
+        frame = frame.with_columns(cast_exprs)
     ordered = [
         "ts_ms",
         "market",

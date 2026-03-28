@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from autobot.data import expected_interval_ms
@@ -305,9 +306,47 @@ def _build_live_frames_for_sampled_ts(
     merged_base_stats = dict(base_stats)
     merged_base_stats.update(context_stats)
 
-    if base_frame.height > 0:
+    frames_by_ts: dict[int, pl.DataFrame] = {}
+    stats_by_ts: dict[int, dict[str, Any]] = {}
+    missing_columns: tuple[str, ...] = ()
+    hard_gate_triggered = False
+    allowed_pairs_rows = [
+        {"ts_ms": int(ts_value), "market": market}
+        for ts_value, items in markets_by_ts.items()
+        for market in items
+    ]
+    allowed_pairs = (
+        pl.DataFrame(allowed_pairs_rows)
+        .with_columns(
+            [
+                pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+                pl.col("market").cast(pl.Utf8).str.to_uppercase().alias("market"),
+            ]
+        )
+        .unique(subset=["ts_ms", "market"], keep="first", maintain_order=True)
+        if allowed_pairs_rows
+        else pl.DataFrame(schema={"ts_ms": pl.Int64, "market": pl.Utf8})
+    )
+    sampled_ts_frame = pl.DataFrame({"ts_ms": sampled_ts_unique}, schema={"ts_ms": pl.Int64})
+    history_frame = (
+        base_frame.filter(~pl.col("ts_ms").is_in(sampled_ts_unique))
+        if base_frame.height > 0 and "ts_ms" in base_frame.columns
+        else base_frame
+    )
+    sampled_frame = (
+        base_frame.filter(pl.col("ts_ms").is_in(sampled_ts_unique)).join(allowed_pairs, on=["ts_ms", "market"], how="inner")
+        if base_frame.height > 0 and "ts_ms" in base_frame.columns
+        else base_frame
+    )
+    parity_source_frame = (
+        pl.concat([history_frame, sampled_frame], how="vertical_relaxed").sort(["ts_ms", "market"])
+        if base_frame.height > 0
+        else base_frame
+    )
+
+    if parity_source_frame.height > 0:
         enriched = attach_spillover_breadth_features_v4(
-            base_frame.sort(["ts_ms", "market"]),
+            parity_source_frame,
             quote=str(provider._quote),  # noqa: SLF001
             float_dtype="float32",
         )
@@ -327,11 +366,7 @@ def _build_live_frames_for_sampled_ts(
             final_frame = final_frame.filter(pl.col("ts_ms").is_in(sampled_ts_unique)).sort(["ts_ms", "market"])
     else:
         final_frame = pl.DataFrame()
-        missing_columns = ()
-        hard_gate_triggered = False
 
-    frames_by_ts: dict[int, pl.DataFrame] = {}
-    stats_by_ts: dict[int, dict[str, Any]] = {}
     for ts_value in sampled_ts_unique:
         context_markets = [
             str(item).strip().upper()
@@ -613,7 +648,7 @@ def _normalize_value(value: Any) -> Any:
     if isinstance(value, float):
         if not math.isfinite(value):
             return None
-        return round(float(value), 8)
+        return round(float(np.float32(value)), 8)
     if isinstance(value, (int, str, bool)):
         return value
     return str(value)
