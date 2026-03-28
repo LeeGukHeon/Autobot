@@ -639,6 +639,12 @@ def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
         manifest = manifest.filter(pl.col("anchor_ts_ms") <= int(end_ts_ms))
     if manifest.height <= 0:
         raise ValueError("sequence_v1 manifest has no rows in the requested range")
+    if "status" in manifest.columns:
+        manifest = manifest.filter(pl.col("status") != "FAIL")
+    if "cache_file" in manifest.columns:
+        manifest = manifest.filter(pl.col("cache_file").cast(pl.Utf8).str.len_chars() > 0)
+    if manifest.height <= 0:
+        raise ValueError("sequence_v1 manifest has no readable cache rows in the requested range")
 
     selected_markets = sorted(str(item).strip().upper() for item in manifest.get_column("market").unique().to_list())
     if int(options.top_n) > 0:
