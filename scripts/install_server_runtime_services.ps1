@@ -286,6 +286,8 @@ if (
 
 $paperArgList = @()
 if ($PaperPreset -in @("paired_v4", "paired_v5")) {
+    $pairedPresetValue = if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }
+    $pairedFeatureProviderValue = if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }
     $paperArgList = @(
         "-m", "autobot.paper.paired_runtime",
         "run-service",
@@ -298,8 +300,8 @@ if ($PaperPreset -in @("paired_v4", "paired_v5")) {
         "--champion-model-family", $effectivePairedChampionModelFamily,
         "--challenger-model-family", $effectivePairedChallengerModelFamily,
         "--feature-set", "v4",
-        "--preset", (if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }),
-        "--paper-feature-provider", (if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }),
+        "--preset", $pairedPresetValue,
+        "--paper-feature-provider", $pairedFeatureProviderValue,
         "--paper-micro-provider", "live_ws",
         "--paper-micro-warmup-sec", "60",
         "--paper-micro-warmup-min-trade-events-per-market", "1",
