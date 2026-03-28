@@ -137,7 +137,14 @@ def build_v4_train_options(
         safety_bps=float(defaults["safety_bps"]),
         ev_scan_steps=max(int(defaults["ev_scan_steps"]), 10),
         ev_min_selected=max(int(defaults["ev_min_selected"]), 1),
-        min_rows_for_train=max(int(features_v4_config.build.min_rows_for_train), 1),
+        min_rows_for_train=max(
+            int(
+                getattr(args, "min_rows_for_train", None)
+                if getattr(args, "min_rows_for_train", None) is not None
+                else features_v4_config.build.min_rows_for_train
+            ),
+            1,
+        ),
         cpcv_lite_enabled=bool(getattr(args, "cpcv_lite", False)),
         cpcv_lite_group_count=max(int(getattr(args, "cpcv_lite_group_count", None) or 6), 3),
         cpcv_lite_test_group_count=max(int(getattr(args, "cpcv_lite_test_groups", None) or 2), 1),
