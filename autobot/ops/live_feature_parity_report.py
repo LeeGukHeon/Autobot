@@ -237,7 +237,7 @@ def _build_live_provider(
         micro_snapshot_provider = OfflineMicroSnapshotProvider(
             micro_root=micro_root,
             tf=tf,
-            raw_ws_root=None,
+            raw_ws_root=root / ".parity_no_raw_ws_overlay",
             allow_previous_fallback=False,
             enable_raw_ws_overlay=False,
         )
