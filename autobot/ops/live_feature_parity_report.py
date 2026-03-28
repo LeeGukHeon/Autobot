@@ -80,15 +80,21 @@ def build_live_feature_parity_report(
             ts_value = int(offline_row.get("ts_ms") or 0)
             sampled_rows_by_ts.setdefault(ts_value, []).append(dict(offline_row))
 
-    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
+    provider: LiveFeatureProviderV4 | None = None
+    if sampled_rows_by_ts:
+        sampled_ts_values = sorted(sampled_rows_by_ts.keys())
         provider = _build_live_provider(
             root=root,
             feature_spec=feature_spec,
             feature_columns=feature_columns,
             tf=tf_value,
             quote=quote_value,
-            bootstrap_end_ts_ms=ts_value,
+            bootstrap_end_ts_ms=sampled_ts_values[-1],
+            bootstrap_1m_bars=_resolve_bootstrap_1m_bars(sampled_ts_values),
         )
+    for ts_value, offline_rows in sorted(sampled_rows_by_ts.items()):
+        if provider is None:
+            break
         live_frame = provider.build_frame(ts_ms=ts_value, markets=context_markets)
         live_stats = dict(provider.last_build_stats())
         missing_columns = list(live_stats.get("missing_feature_columns") or [])
@@ -200,6 +206,7 @@ def _build_live_provider(
     tf: str,
     quote: str,
     bootstrap_end_ts_ms: int | None = None,
+    bootstrap_1m_bars: int = 2000,
 ) -> LiveFeatureProviderV4:
     base_candles_root = _resolve_root(
         root=root,
@@ -223,11 +230,19 @@ def _build_live_provider(
         parquet_root=base_candles_root.parent,
         candles_dataset_name=base_candles_root.name,
         micro_snapshot_provider=micro_snapshot_provider,
-        bootstrap_1m_bars=2000,
+        bootstrap_1m_bars=max(int(bootstrap_1m_bars), 256),
         bootstrap_end_ts_ms=bootstrap_end_ts_ms,
         context_micro_required=True,
         context_history_bars=256,
     )
+
+
+def _resolve_bootstrap_1m_bars(ts_values: list[int]) -> int:
+    if not ts_values:
+        return 2000
+    span_ms = max(int(ts_values[-1]) - int(ts_values[0]), 0)
+    span_bars = int(math.ceil(float(span_ms) / 60_000.0)) + 512
+    return max(span_bars, 2000)
 
 
 def _select_markets(
