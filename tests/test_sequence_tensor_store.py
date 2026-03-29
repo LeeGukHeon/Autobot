@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+import autobot.data.collect.sequence_tensor_store as sequence_module
 from autobot.data.collect.sequence_tensor_store import (
     LOB_GLOBAL_CHANNELS,
     LOB_PER_LEVEL_CHANNELS,
@@ -231,6 +232,58 @@ def test_build_sequence_tensor_store_skips_existing_ready_anchors(tmp_path: Path
     assert second_summary.built_anchors == 0
     manifest = pl.read_parquet(parquet_root / "sequence_v1" / "_meta" / "manifest.parquet")
     assert manifest.height == 1
+
+
+def test_build_sequence_tensor_store_reuses_previous_validate_details_for_unchanged_anchors(tmp_path: Path, monkeypatch) -> None:
+    parquet_root = tmp_path / "parquet"
+    market = "KRW-BTC"
+    date_value = "2026-03-27"
+    anchor_ts_ms = 1_774_569_660_000
+
+    _write_second_candles(
+        parquet_root / "candles_second_v1" / "tf=1s" / f"market={market}" / "part-000.parquet",
+        start_ts_ms=anchor_ts_ms - 3_000,
+        count=4,
+    )
+    _write_minute_candles(
+        parquet_root / "ws_candle_v1" / "tf=1m" / f"market={market}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_micro_rows(
+        parquet_root / "micro_v1" / "tf=1m" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_lob_rows(
+        parquet_root / "lob30_v1" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms - 2_000, anchor_ts_ms - 1_000, anchor_ts_ms],
+    )
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=(market,),
+        date=date_value,
+        max_anchors_per_market=1,
+        second_lookback_steps=4,
+        minute_lookback_steps=1,
+        micro_lookback_steps=1,
+        lob_lookback_steps=3,
+    )
+
+    build_sequence_tensor_store(options)
+
+    original_np_load = sequence_module.np.load
+    load_calls = {"count": 0}
+
+    def _counting_load(*args, **kwargs):
+        load_calls["count"] += 1
+        return original_np_load(*args, **kwargs)
+
+    monkeypatch.setattr(sequence_module.np, "load", _counting_load)
+
+    build_sequence_tensor_store(options)
+
+    assert load_calls["count"] == 0
 
 
 def test_filter_markets_for_label_source_coverage_skips_stale_markets(tmp_path: Path) -> None:

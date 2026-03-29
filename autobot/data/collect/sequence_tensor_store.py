@@ -251,7 +251,11 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
     }
     options.build_report_path.write_text(json.dumps(build_report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
-    validate_summary = validate_sequence_tensor_store(options=options)
+    validate_summary = _validate_sequence_tensor_store_incremental(
+        options=options,
+        changed_rows=manifest_rows,
+        merged_rows=merged_manifest_rows,
+    )
     return SequenceTensorBuildSummary(
         selected_markets=len(selected_markets),
         discovered_anchors=discovered_anchors,
@@ -269,13 +273,91 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
 
 
 def validate_sequence_tensor_store(*, options: SequenceTensorBuildOptions) -> SequenceTensorValidateSummary:
-    details: list[dict[str, Any]] = []
-    ok_files = 0
-    warn_files = 0
-    fail_files = 0
-
     manifest = _load_manifest_rows(options.manifest_path)
-    for row in manifest:
+    details = _validate_manifest_rows(rows=manifest, options=options)
+    return _write_validate_report(options=options, details=details, mode="full")
+
+
+def _validate_sequence_tensor_store_incremental(
+    *,
+    options: SequenceTensorBuildOptions,
+    changed_rows: list[dict[str, Any]],
+    merged_rows: list[dict[str, Any]],
+) -> SequenceTensorValidateSummary:
+    changed_keys = {
+        (
+            str(row.get("market") or "").strip().upper(),
+            int(row.get("anchor_ts_ms") or 0),
+        )
+        for row in changed_rows
+    }
+    previous_details = _load_previous_validate_details(path=options.validate_report_path)
+    if not changed_keys:
+        if previous_details is not None:
+            return _write_validate_report(options=options, details=previous_details, mode="incremental_reuse")
+        return validate_sequence_tensor_store(options=options)
+
+    changed_only = [
+        row
+        for row in merged_rows
+        if (
+            str(row.get("market") or "").strip().upper(),
+            int(row.get("anchor_ts_ms") or 0),
+        ) in changed_keys
+    ]
+    changed_details = _validate_manifest_rows(rows=changed_only, options=options)
+    if previous_details is None:
+        return _write_validate_report(options=options, details=changed_details, mode="incremental_seed")
+
+    changed_detail_map = {
+        (
+            str(item.get("market") or "").strip().upper(),
+            int(item.get("anchor_ts_ms") or 0),
+        ): dict(item)
+        for item in changed_details
+    }
+    previous_detail_map = {
+        (
+            str(item.get("market") or "").strip().upper(),
+            int(item.get("anchor_ts_ms") or 0),
+        ): dict(item)
+        for item in previous_details
+    }
+    merged_details: list[dict[str, Any]] = []
+    for row in merged_rows:
+        key = (
+            str(row.get("market") or "").strip().upper(),
+            int(row.get("anchor_ts_ms") or 0),
+        )
+        if key in changed_detail_map:
+            merged_details.append(dict(changed_detail_map[key]))
+            continue
+        previous_detail = previous_detail_map.get(key)
+        cache_file_text = str(row.get("cache_file") or "").strip()
+        cache_file = Path(cache_file_text) if cache_file_text else None
+        if cache_file is None or not cache_file.exists() or cache_file.is_dir():
+            merged_details.append(
+                {
+                    "market": row.get("market"),
+                    "anchor_ts_ms": row.get("anchor_ts_ms"),
+                    "cache_file": cache_file_text,
+                    "status": "FAIL",
+                    "reasons": ["CACHE_FILE_MISSING"],
+                }
+            )
+            continue
+        if previous_detail is None:
+            single_detail = _validate_manifest_rows(rows=[row], options=options)
+            if single_detail:
+                merged_details.append(dict(single_detail[0]))
+            continue
+        merged_details.append(dict(previous_detail))
+    return _write_validate_report(options=options, details=merged_details, mode="incremental")
+
+
+def _validate_manifest_rows(*, rows: list[dict[str, Any]], options: SequenceTensorBuildOptions) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for row in rows:
         cache_file_text = str(row.get("cache_file") or "").strip()
         cache_file = Path(cache_file_text) if cache_file_text else None
         status = "OK"
@@ -311,41 +393,75 @@ def validate_sequence_tensor_store(*, options: SequenceTensorBuildOptions) -> Se
                 if any(value < 0.999999 for value in coverage_values):
                     status = "WARN"
                     reasons.append("PARTIAL_COVERAGE")
+        details.append(
+            {
+                "market": row.get("market"),
+                "anchor_ts_ms": row.get("anchor_ts_ms"),
+                "cache_file": str(cache_file) if cache_file is not None else "",
+                "status": status,
+                "reasons": reasons,
+            }
+        )
+    return details
 
-        detail = {
-            "market": row.get("market"),
-            "anchor_ts_ms": row.get("anchor_ts_ms"),
-            "cache_file": str(cache_file) if cache_file is not None else "",
-            "status": status,
-            "reasons": reasons,
-        }
-        details.append(detail)
+
+def _write_validate_report(
+    *,
+    options: SequenceTensorBuildOptions,
+    details: list[dict[str, Any]],
+    mode: str,
+) -> SequenceTensorValidateSummary:
+    ordered_details = sorted(
+        details,
+        key=lambda item: (
+            str(item.get("market") or "").strip().upper(),
+            int(item.get("anchor_ts_ms") or 0),
+        ),
+    )
+    ok_files = 0
+    warn_files = 0
+    fail_files = 0
+    for detail in ordered_details:
+        status = str(detail.get("status") or "").strip().upper()
         if status == "OK":
             ok_files += 1
         elif status == "WARN":
             warn_files += 1
         else:
             fail_files += 1
-
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset_name": options.out_dataset,
         "dataset_root": str(options.out_root),
-        "checked_files": len(details),
+        "validation_mode": str(mode).strip().lower(),
+        "checked_files": len(ordered_details),
         "ok_files": ok_files,
         "warn_files": warn_files,
         "fail_files": fail_files,
-        "details": details,
+        "details": ordered_details,
     }
     options.validate_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return SequenceTensorValidateSummary(
-        checked_files=len(details),
+        checked_files=len(ordered_details),
         ok_files=ok_files,
         warn_files=warn_files,
         fail_files=fail_files,
         validate_report_file=options.validate_report_path,
-        details=tuple(details),
+        details=tuple(ordered_details),
     )
+
+
+def _load_previous_validate_details(*, path: Path) -> list[dict[str, Any]] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    details = payload.get("details")
+    if not isinstance(details, list):
+        return None
+    return [dict(item) for item in details if isinstance(item, dict)]
 
 
 def _resolve_markets(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
