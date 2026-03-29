@@ -52,6 +52,7 @@ class SequenceTensorBuildOptions:
     date: str | None = None
     max_markets: int = 5
     max_anchors_per_market: int = 32
+    skip_existing_ready: bool = True
     second_lookback_steps: int = 120
     minute_lookback_steps: int = 30
     micro_lookback_steps: int = 30
@@ -132,6 +133,14 @@ class SequenceTensorValidateSummary:
     details: tuple[dict[str, Any], ...]
 
 
+@dataclass(frozen=True)
+class _MarketSourceFrames:
+    second_frame: pl.DataFrame
+    minute_frame: pl.DataFrame
+    micro_frame: pl.DataFrame
+    lob_frame: pl.DataFrame
+
+
 def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> SequenceTensorBuildSummary:
     options.meta_root.mkdir(parents=True, exist_ok=True)
     options.cache_root.mkdir(parents=True, exist_ok=True)
@@ -139,22 +148,48 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
     selected_markets = _resolve_markets(options)
     details: list[dict[str, Any]] = []
     manifest_rows: list[dict[str, Any]] = []
+    existing_manifest_rows = _load_manifest_rows(options.manifest_path)
+    existing_ready_rows: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in existing_manifest_rows:
+        market = str(row.get("market") or "").strip().upper()
+        anchor_ts_ms = int(row.get("anchor_ts_ms") or 0)
+        cache_file_text = str(row.get("cache_file") or "").strip()
+        if not market or anchor_ts_ms <= 0 or not cache_file_text:
+            continue
+        if str(row.get("status") or "").strip().upper() == "FAIL":
+            continue
+        cache_file = Path(cache_file_text)
+        if not cache_file.exists() or cache_file.is_dir():
+            continue
+        existing_ready_rows[(market, anchor_ts_ms)] = dict(row)
     discovered_anchors = 0
     built_anchors = 0
     ok_anchors = 0
     warn_anchors = 0
     fail_anchors = 0
+    reused_anchors = 0
 
     for market in selected_markets:
-        anchor_rows = _load_anchor_rows(options=options, market=market)
+        market_frames = _load_market_source_frames(options=options, market=market)
+        anchor_rows = _load_anchor_rows_from_frames(frames=market_frames)
         if options.date:
             anchor_rows = [row for row in anchor_rows if _date_utc_from_ts_ms(int(row["anchor_ts_ms"])) == str(options.date)]
         if options.max_anchors_per_market > 0:
             anchor_rows = anchor_rows[-max(int(options.max_anchors_per_market), 0) :]
         discovered_anchors += len(anchor_rows)
         for anchor_row in anchor_rows:
+            anchor_ts_ms = int(anchor_row["anchor_ts_ms"])
+            anchor_key = (str(market).strip().upper(), anchor_ts_ms)
+            if bool(options.skip_existing_ready) and anchor_key in existing_ready_rows:
+                reused_anchors += 1
+                continue
             try:
-                detail, manifest_row = _build_anchor_tensor(options=options, market=market, anchor_ts_ms=int(anchor_row["anchor_ts_ms"]))
+                detail, manifest_row = _build_anchor_tensor(
+                    options=options,
+                    market=market,
+                    anchor_ts_ms=anchor_ts_ms,
+                    frames=market_frames,
+                )
                 details.append(detail)
                 manifest_rows.append(manifest_row)
                 built_anchors += 1
@@ -167,8 +202,8 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
             except Exception as exc:
                 detail = {
                     "market": market,
-                    "anchor_ts_ms": int(anchor_row["anchor_ts_ms"]),
-                    "anchor_utc": _ts_ms_to_utc_text(int(anchor_row["anchor_ts_ms"])),
+                    "anchor_ts_ms": anchor_ts_ms,
+                    "anchor_utc": _ts_ms_to_utc_text(anchor_ts_ms),
                     "status": "FAIL",
                     "reasons": ["BUILD_EXCEPTION"],
                     "error_message": str(exc),
@@ -177,9 +212,9 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
                 manifest_rows.append(
                     {
                         "market": market,
-                        "date": _date_utc_from_ts_ms(int(anchor_row["anchor_ts_ms"])),
-                        "anchor_ts_ms": int(anchor_row["anchor_ts_ms"]),
-                        "anchor_utc": _ts_ms_to_utc_text(int(anchor_row["anchor_ts_ms"])),
+                        "date": _date_utc_from_ts_ms(anchor_ts_ms),
+                        "anchor_ts_ms": anchor_ts_ms,
+                        "anchor_utc": _ts_ms_to_utc_text(anchor_ts_ms),
                         "status": "FAIL",
                         "reasons_json": json.dumps(["BUILD_EXCEPTION"], ensure_ascii=False),
                         "error_message": str(exc),
@@ -193,7 +228,8 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
                 )
                 fail_anchors += 1
 
-    _write_manifest(path=options.manifest_path, rows=manifest_rows)
+    merged_manifest_rows = _merge_manifest_rows(existing_rows=existing_manifest_rows, new_rows=manifest_rows)
+    _write_manifest(path=options.manifest_path, rows=merged_manifest_rows)
     _write_contract_files(options=options)
     build_report = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -202,10 +238,12 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         "selected_markets": len(selected_markets),
         "discovered_anchors": discovered_anchors,
         "built_anchors": built_anchors,
+        "reused_anchors": reused_anchors,
         "ok_anchors": ok_anchors,
         "warn_anchors": warn_anchors,
         "fail_anchors": fail_anchors,
         "manifest_file": str(options.manifest_path),
+        "manifest_rows_total": len(merged_manifest_rows),
         "sequence_contract_file": str(options.sequence_contract_path),
         "lob_contract_file": str(options.lob_contract_path),
         "details": details,
@@ -367,30 +405,7 @@ def _load_preferred_markets_from_plans(options: SequenceTensorBuildOptions) -> t
     return tuple(ordered)
 
 
-def _load_anchor_rows(*, options: SequenceTensorBuildOptions, market: str) -> list[dict[str, Any]]:
-    ws_one_m = _read_parquet_rows(options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet")
-    if ws_one_m.height > 0 and "ts_ms" in ws_one_m.columns:
-        unique_ts = sorted(int(value) for value in ws_one_m.get_column("ts_ms").unique().to_list())
-        return [{"anchor_ts_ms": value} for value in unique_ts]
-
-    second_rows = _read_parquet_rows(options.second_root / "tf=1s" / f"market={market}" / "*.parquet")
-    if second_rows.height > 0 and "ts_ms" in second_rows.columns:
-        anchor_ts = sorted({int(value // 60_000) * 60_000 for value in second_rows.get_column("ts_ms").to_list()})
-        return [{"anchor_ts_ms": value} for value in anchor_ts]
-
-    micro_rows = _read_parquet_rows(options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet")
-    if micro_rows.height > 0 and "ts_ms" in micro_rows.columns:
-        unique_ts = sorted(int(value) for value in micro_rows.get_column("ts_ms").unique().to_list())
-        return [{"anchor_ts_ms": value} for value in unique_ts]
-    return []
-
-
-def _build_anchor_tensor(
-    *,
-    options: SequenceTensorBuildOptions,
-    market: str,
-    anchor_ts_ms: int,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_market_source_frames(*, options: SequenceTensorBuildOptions, market: str) -> _MarketSourceFrames:
     second_frame = _read_parquet_rows(options.second_root / "tf=1s" / f"market={market}" / "*.parquet")
     ws_one_s_frame = _read_parquet_rows(options.ws_candle_root / "tf=1s" / f"market={market}" / "*.parquet")
     if second_frame.height > 0 and ws_one_s_frame.height > 0:
@@ -404,9 +419,43 @@ def _build_anchor_tensor(
         )
     elif second_frame.height <= 0:
         second_frame = ws_one_s_frame
-    ws_one_m_frame = _read_parquet_rows(options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet")
-    micro_frame = _read_parquet_rows(options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet")
-    lob_frame = _read_parquet_rows(options.lob_root / f"market={market}" / "date=*" / "*.parquet")
+    return _MarketSourceFrames(
+        second_frame=second_frame,
+        minute_frame=_read_parquet_rows(options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet"),
+        micro_frame=_read_parquet_rows(options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet"),
+        lob_frame=_read_parquet_rows(options.lob_root / f"market={market}" / "date=*" / "*.parquet"),
+    )
+
+
+def _load_anchor_rows_from_frames(*, frames: _MarketSourceFrames) -> list[dict[str, Any]]:
+    ws_one_m = frames.minute_frame
+    if ws_one_m.height > 0 and "ts_ms" in ws_one_m.columns:
+        unique_ts = sorted(int(value) for value in ws_one_m.get_column("ts_ms").unique().to_list())
+        return [{"anchor_ts_ms": value} for value in unique_ts]
+
+    second_rows = frames.second_frame
+    if second_rows.height > 0 and "ts_ms" in second_rows.columns:
+        anchor_ts = sorted({int(value // 60_000) * 60_000 for value in second_rows.get_column("ts_ms").to_list()})
+        return [{"anchor_ts_ms": value} for value in anchor_ts]
+
+    micro_rows = frames.micro_frame
+    if micro_rows.height > 0 and "ts_ms" in micro_rows.columns:
+        unique_ts = sorted(int(value) for value in micro_rows.get_column("ts_ms").unique().to_list())
+        return [{"anchor_ts_ms": value} for value in unique_ts]
+    return []
+
+
+def _build_anchor_tensor(
+    *,
+    options: SequenceTensorBuildOptions,
+    market: str,
+    anchor_ts_ms: int,
+    frames: _MarketSourceFrames,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    second_frame = frames.second_frame
+    ws_one_m_frame = frames.minute_frame
+    micro_frame = frames.micro_frame
+    lob_frame = frames.lob_frame
     context_end_ts_ms = _resolve_context_end_ts_ms(
         anchor_ts_ms=anchor_ts_ms,
         second_frame=second_frame,
@@ -726,6 +775,32 @@ def _write_manifest(*, path: Path, rows: list[dict[str, Any]]) -> None:
     frame = pl.DataFrame(rows, schema=schema, orient="row") if rows else pl.DataFrame([], schema=schema, orient="row")
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(path, compression="zstd")
+
+
+def _merge_manifest_rows(*, existing_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in existing_rows:
+        market = str(row.get("market") or "").strip().upper()
+        anchor_ts_ms = int(row.get("anchor_ts_ms") or 0)
+        if not market or anchor_ts_ms <= 0:
+            continue
+        merged[(market, anchor_ts_ms)] = dict(row)
+    for row in new_rows:
+        market = str(row.get("market") or "").strip().upper()
+        anchor_ts_ms = int(row.get("anchor_ts_ms") or 0)
+        if not market or anchor_ts_ms <= 0:
+            continue
+        payload = dict(row)
+        payload["market"] = market
+        payload["anchor_ts_ms"] = anchor_ts_ms
+        merged[(market, anchor_ts_ms)] = payload
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            str(item.get("market") or "").strip().upper(),
+            int(item.get("anchor_ts_ms") or 0),
+        ),
+    )
 
 
 def _load_manifest_rows(path: Path) -> list[dict[str, Any]]:

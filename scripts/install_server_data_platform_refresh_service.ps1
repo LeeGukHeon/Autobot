@@ -14,6 +14,7 @@ param(
     [int]$Lob30DurationSec = 180,
     [int]$TensorMaxMarkets = 20,
     [int]$TensorMaxAnchorsPerMarket = 64,
+    [int]$TensorRecentDates = 2,
     [string[]]$TensorMarkets = @(),
     [string]$OnBootSec = "5min",
     [string]$OnUnitActiveSec = "20min",
@@ -53,7 +54,8 @@ $refreshArgs = @(
     "-WsCandleDurationSec", ([string]([Math]::Max([int]$WsCandleDurationSec, 1))),
     "-Lob30DurationSec", ([string]([Math]::Max([int]$Lob30DurationSec, 1))),
     "-TensorMaxMarkets", ([string]([Math]::Max([int]$TensorMaxMarkets, 1))),
-    "-TensorMaxAnchorsPerMarket", ([string]([Math]::Max([int]$TensorMaxAnchorsPerMarket, 1)))
+    "-TensorMaxAnchorsPerMarket", ([string]([Math]::Max([int]$TensorMaxAnchorsPerMarket, 1))),
+    "-TensorRecentDates", ([string]([Math]::Max([int]$TensorRecentDates, 1)))
 )
 if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     $refreshArgs += @("-TensorMarkets", $serializedTensorMarkets)
@@ -96,6 +98,7 @@ if ($DryRun) {
     Write-Host ("[data-platform-install][dry-run] service={0}" -f $ServiceUnitName)
     Write-Host ("[data-platform-install][dry-run] refresh_script={0}" -f $resolvedRefreshScript)
     Write-Host "[data-platform-install][dry-run] datasets=candles_second_v1,ws_candle_v1,lob30_v1,sequence_v1"
+    Write-Host ("[data-platform-install][dry-run] tensor_recent_dates={0}" -f ([Math]::Max([int]$TensorRecentDates, 1)))
     Write-Host $serviceContent
     Write-Host ("[data-platform-install][dry-run] timer={0}" -f $TimerUnitName)
     Write-Host $timerContent

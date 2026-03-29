@@ -23,6 +23,7 @@ param(
     [string[]]$TensorMarkets = @(),
     [int]$TensorMaxMarkets = 20,
     [int]$TensorMaxAnchorsPerMarket = 64,
+    [int]$TensorRecentDates = 2,
     [int]$TensorSecondLookbackSteps = 120,
     [int]$TensorMinuteLookbackSteps = 30,
     [int]$TensorMicroLookbackSteps = 30,
@@ -105,6 +106,17 @@ function Invoke-ProjectPythonStep {
         dry_run = $false
         output_preview = if ([string]::IsNullOrWhiteSpace($outputText)) { "" } elseif ($outputText.Length -le 2000) { $outputText } else { $outputText.Substring(0, 2000) }
     }
+}
+
+function Get-RecentUtcDateValues {
+    param([int]$Count)
+    $resolvedCount = [Math]::Max([int]$Count, 1)
+    $todayUtc = (Get-Date).ToUniversalTime().Date
+    $values = @()
+    for ($offset = 0; $offset -lt $resolvedCount; $offset++) {
+        $values += $todayUtc.AddDays(-$offset).ToString("yyyy-MM-dd")
+    }
+    return @($values)
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -202,20 +214,6 @@ $steps = @(
         )
     }
     [ordered]@{
-        name = "collect_sequence_tensors"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "tensors",
-            "--out-dataset", "sequence_v1",
-            "--max-markets", ([string]([Math]::Max([int]$TensorMaxMarkets, 1))),
-            "--max-anchors-per-market", ([string]([Math]::Max([int]$TensorMaxAnchorsPerMarket, 1))),
-            "--second-lookback-steps", ([string]([Math]::Max([int]$TensorSecondLookbackSteps, 1))),
-            "--minute-lookback-steps", ([string]([Math]::Max([int]$TensorMinuteLookbackSteps, 1))),
-            "--micro-lookback-steps", ([string]([Math]::Max([int]$TensorMicroLookbackSteps, 1))),
-            "--lob-lookback-steps", ([string]([Math]::Max([int]$TensorLobLookbackSteps, 1)))
-        )
-    }
-    [ordered]@{
         name = "refresh_data_contract_registry"
         args = @(
             "-m", "autobot.ops.data_contract_registry",
@@ -223,6 +221,33 @@ $steps = @(
         )
     }
 )
+
+$tensorDateValues = Get-RecentUtcDateValues -Count $TensorRecentDates
+$tensorSteps = @()
+for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
+    $dateValue = [string]$tensorDateValues[$index]
+    $stepName = if ($index -eq 0) { "collect_sequence_tensors" } else { "collect_sequence_tensors_prev$index" }
+    $tensorArgs = @(
+        "-m", "autobot.cli",
+        "collect", "tensors",
+        "--out-dataset", "sequence_v1",
+        "--date", $dateValue,
+        "--max-markets", ([string]([Math]::Max([int]$TensorMaxMarkets, 1))),
+        "--max-anchors-per-market", ([string]([Math]::Max([int]$TensorMaxAnchorsPerMarket, 1))),
+        "--second-lookback-steps", ([string]([Math]::Max([int]$TensorSecondLookbackSteps, 1))),
+        "--minute-lookback-steps", ([string]([Math]::Max([int]$TensorMinuteLookbackSteps, 1))),
+        "--micro-lookback-steps", ([string]([Math]::Max([int]$TensorMicroLookbackSteps, 1))),
+        "--lob-lookback-steps", ([string]([Math]::Max([int]$TensorLobLookbackSteps, 1)))
+    )
+    $tensorSteps += ,([ordered]@{
+        name = $stepName
+        args = $tensorArgs
+    })
+}
+$insertIndex = [Math]::Max($steps.Count - 1, 0)
+$prefixSteps = if ($insertIndex -gt 0) { @($steps[0..($insertIndex - 1)]) } else { @() }
+$suffixSteps = if ($insertIndex -lt $steps.Count) { @($steps[$insertIndex..($steps.Count - 1)]) } else { @() }
+$steps = @($prefixSteps + $tensorSteps + $suffixSteps)
 
 if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     foreach ($step in @($steps)) {

@@ -122,6 +122,116 @@ def test_validate_sequence_tensor_store_treats_blank_cache_path_as_missing(tmp_p
     assert validate_summary.details[0]["reasons"] == ["CACHE_FILE_MISSING"]
 
 
+def test_build_sequence_tensor_store_merges_manifest_rows_across_dates(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    market = "KRW-BTC"
+    first_date = "2026-03-27"
+    second_date = "2026-03-28"
+    first_anchor_ts_ms = 1_774_569_660_000
+    second_anchor_ts_ms = 1_774_656_060_000
+
+    _write_second_candles(
+        parquet_root / "candles_second_v1" / "tf=1s" / f"market={market}" / "part-000.parquet",
+        start_ts_ms=first_anchor_ts_ms - 3_000,
+        count=90_000,
+    )
+    _write_minute_candles(
+        parquet_root / "ws_candle_v1" / "tf=1m" / f"market={market}" / "part-000.parquet",
+        ts_values=[first_anchor_ts_ms, second_anchor_ts_ms],
+    )
+    _write_micro_rows(
+        parquet_root / "micro_v1" / "tf=1m" / f"market={market}" / f"date={first_date}" / "part-000.parquet",
+        ts_values=[first_anchor_ts_ms],
+    )
+    _write_micro_rows(
+        parquet_root / "micro_v1" / "tf=1m" / f"market={market}" / f"date={second_date}" / "part-000.parquet",
+        ts_values=[second_anchor_ts_ms],
+    )
+    _write_lob_rows(
+        parquet_root / "lob30_v1" / f"market={market}" / f"date={first_date}" / "part-000.parquet",
+        ts_values=[first_anchor_ts_ms - 2_000, first_anchor_ts_ms - 1_000, first_anchor_ts_ms],
+    )
+    _write_lob_rows(
+        parquet_root / "lob30_v1" / f"market={market}" / f"date={second_date}" / "part-000.parquet",
+        ts_values=[second_anchor_ts_ms - 2_000, second_anchor_ts_ms - 1_000, second_anchor_ts_ms],
+    )
+
+    first_options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=(market,),
+        date=first_date,
+        max_anchors_per_market=10,
+        second_lookback_steps=4,
+        minute_lookback_steps=1,
+        micro_lookback_steps=1,
+        lob_lookback_steps=3,
+    )
+    second_options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=(market,),
+        date=second_date,
+        max_anchors_per_market=10,
+        second_lookback_steps=4,
+        minute_lookback_steps=1,
+        micro_lookback_steps=1,
+        lob_lookback_steps=3,
+    )
+
+    build_sequence_tensor_store(first_options)
+    build_sequence_tensor_store(second_options)
+
+    manifest = pl.read_parquet(parquet_root / "sequence_v1" / "_meta" / "manifest.parquet").sort("anchor_ts_ms")
+    assert manifest.height == 2
+    assert manifest.get_column("date").to_list() == [first_date, second_date]
+
+
+def test_build_sequence_tensor_store_skips_existing_ready_anchors(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    market = "KRW-BTC"
+    date_value = "2026-03-27"
+    anchor_ts_ms = 1_774_569_660_000
+
+    _write_second_candles(
+        parquet_root / "candles_second_v1" / "tf=1s" / f"market={market}" / "part-000.parquet",
+        start_ts_ms=anchor_ts_ms - 3_000,
+        count=4,
+    )
+    _write_minute_candles(
+        parquet_root / "ws_candle_v1" / "tf=1m" / f"market={market}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_micro_rows(
+        parquet_root / "micro_v1" / "tf=1m" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_lob_rows(
+        parquet_root / "lob30_v1" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms - 2_000, anchor_ts_ms - 1_000, anchor_ts_ms],
+    )
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=(market,),
+        date=date_value,
+        max_anchors_per_market=1,
+        second_lookback_steps=4,
+        minute_lookback_steps=1,
+        micro_lookback_steps=1,
+        lob_lookback_steps=3,
+    )
+
+    first_summary = build_sequence_tensor_store(options)
+    second_summary = build_sequence_tensor_store(options)
+
+    assert first_summary.built_anchors == 1
+    assert second_summary.built_anchors == 0
+    manifest = pl.read_parquet(parquet_root / "sequence_v1" / "_meta" / "manifest.parquet")
+    assert manifest.height == 1
+
+
 def _write_second_candles(path: Path, *, start_ts_ms: int, count: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame = pl.DataFrame(

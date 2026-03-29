@@ -16,6 +16,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
+from autobot.features.multitf_join_v1 import bucket_end_timestamp_expr
 
 from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
@@ -489,6 +490,7 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
 
     second_root = options.dataset_root.parent / "candles_second_v1" / "tf=1s"
     ws_second_root = options.dataset_root.parent / "ws_candle_v1" / "tf=1s"
+    second_root = options.dataset_root.parent / "candles_second_v1" / "tf=1s"
     ws_minute_root = options.dataset_root.parent / "ws_candle_v1" / "tf=1m"
     candles_api_minute_root = options.dataset_root.parent / "candles_api_v1" / "tf=1m"
     candles_v1_minute_root = options.dataset_root.parent / "candles_v1" / "tf=1m"
@@ -498,7 +500,7 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
         second_maps[market] = _load_second_close_series(second_root=second_root, ws_second_root=ws_second_root, market=market)
         minute_maps[market] = _load_minute_close_map_sources(
             market=market,
-            roots=(candles_api_minute_root, candles_v1_minute_root, ws_minute_root),
+            roots=(second_root, candles_api_minute_root, candles_v1_minute_root, ws_minute_root),
         )
 
     lob_parts: list[np.ndarray] = []
@@ -607,10 +609,30 @@ def _load_second_close_series(*, second_root: Path, ws_second_root: Path, market
 def _load_minute_close_map_sources(*, market: str, roots: tuple[Path, ...]) -> dict[int, float]:
     frames: list[pl.DataFrame] = []
     for root in roots:
-        files = sorted((root / f"market={market}").glob("*.parquet"))
+        market_root = root / f"market={market}"
+        files = sorted(market_root.glob("*.parquet"))
+        if not files:
+            for date_dir in sorted(market_root.glob("date=*")):
+                if not date_dir.is_dir():
+                    continue
+                files.extend(sorted(path for path in date_dir.glob("*.parquet") if path.is_file()))
         if not files:
             continue
-        frames.append(pl.concat([pl.read_parquet(path) for path in files], how="vertical"))
+        frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical")
+        if "ts_ms" not in frame.columns or "close" not in frame.columns:
+            continue
+        frame = (
+            frame.select(["ts_ms", "close"])
+            .with_columns(
+                bucket_end_timestamp_expr(pl.col("ts_ms"), interval_ms=60_000).alias("ts_ms")
+            )
+            .with_row_index("__row_id")
+            .sort(["ts_ms", "__row_id"])
+            .unique(subset=["ts_ms"], keep="last")
+            .sort("ts_ms")
+            .drop("__row_id")
+        )
+        frames.append(frame)
     if not frames:
         return {}
     frame = (

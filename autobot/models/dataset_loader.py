@@ -398,6 +398,11 @@ def _scan_market_frame(
         files=market_files,
         required_columns=("ts_ms", y_cls_column, *feature_columns),
     )
+    market_files = _filter_market_files_by_date_range(
+        files=market_files,
+        start_ts_ms=request.start_ts_ms,
+        end_ts_ms=request.end_ts_ms,
+    )
     if not market_files:
         return pl.DataFrame()
 
@@ -450,6 +455,11 @@ def _scan_market_rows(
     market_files = _filter_market_files_by_required_columns(
         files=market_files,
         required_columns=("ts_ms", *feature_columns),
+    )
+    market_files = _filter_market_files_by_date_range(
+        files=market_files,
+        start_ts_ms=request.start_ts_ms,
+        end_ts_ms=request.end_ts_ms,
     )
     if not market_files:
         return pl.DataFrame()
@@ -504,6 +514,11 @@ def _scan_market_aux_frame(
     market_files = _filter_market_files_by_required_columns(
         files=market_files,
         required_columns=("ts_ms", y_cls_column, *columns),
+    )
+    market_files = _filter_market_files_by_date_range(
+        files=market_files,
+        start_ts_ms=request.start_ts_ms,
+        end_ts_ms=request.end_ts_ms,
     )
     if not market_files:
         return pl.DataFrame()
@@ -598,6 +613,38 @@ def _filter_market_files_by_required_columns(*, files: list[Path], required_colu
         names = set(schema.names())
         if all(name in names for name in required):
             compatible.append(path)
+    return compatible
+
+
+def _filter_market_files_by_date_range(
+    *,
+    files: list[Path],
+    start_ts_ms: int | None,
+    end_ts_ms: int | None,
+) -> list[Path]:
+    if not files or (start_ts_ms is None and end_ts_ms is None):
+        return files
+    compatible: list[Path] = []
+    for path in files:
+        date_label = ""
+        for parent in path.parents:
+            name = str(parent.name).strip()
+            if name.startswith("date="):
+                date_label = name.split("=", 1)[-1].strip()
+                break
+        if not date_label:
+            compatible.append(path)
+            continue
+        date_start_ts_ms = parse_date_to_ts_ms(date_label)
+        date_end_ts_ms = parse_date_to_ts_ms(date_label, end_of_day=True)
+        if date_start_ts_ms is None or date_end_ts_ms is None:
+            compatible.append(path)
+            continue
+        if start_ts_ms is not None and int(date_end_ts_ms) < int(start_ts_ms):
+            continue
+        if end_ts_ms is not None and int(date_start_ts_ms) > int(end_ts_ms):
+            continue
+        compatible.append(path)
     return compatible
 
 

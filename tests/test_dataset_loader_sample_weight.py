@@ -16,11 +16,11 @@ def test_dataset_loader_reads_sample_weight_column(tmp_path: Path) -> None:
     (meta_dir / "feature_spec.json").write_text(json.dumps({"feature_columns": ["f_num"]}), encoding="utf-8")
     (meta_dir / "label_spec.json").write_text(json.dumps({"label_columns": ["y_reg", "y_cls"]}), encoding="utf-8")
 
-    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=2026-01-01"
+    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=2023-11-14"
     part_dir.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
-            "ts_ms": [1_700_000_000_000, 1_700_000_300_000, 1_700_000_600_000],
+            "ts_ms": [1_699_920_000_000, 1_699_920_300_000, 1_699_920_600_000],
             "f_num": [0.1, 0.2, 0.3],
             "sample_weight": [1.0, 0.5, 0.25],
             "y_reg": [0.0, 0.01, 0.02],
@@ -52,11 +52,11 @@ def test_dataset_loader_supports_custom_label_columns(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=2026-01-01"
+    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=2023-11-14"
     part_dir.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
-            "ts_ms": [1_700_000_000_000, 1_700_000_300_000, 1_700_000_600_000],
+            "ts_ms": [1_699_920_000_000, 1_699_920_300_000, 1_699_920_600_000],
             "f_num": [0.1, 0.2, 0.3],
             "sample_weight": [1.0, 0.5, 0.25],
             "y_reg_net_12": [0.0, 0.01, 0.02],

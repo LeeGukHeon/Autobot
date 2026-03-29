@@ -8,7 +8,7 @@ import polars as pl
 
 from autobot.models.predictor import load_predictor_from_registry
 from autobot.models.registry import load_json
-from autobot.models.train_v5_lob import TrainV5LobOptions, train_and_register_v5_lob
+from autobot.models.train_v5_lob import TrainV5LobOptions, _load_minute_close_map_sources, train_and_register_v5_lob
 
 
 def test_train_v5_lob_writes_core_contract_artifacts(tmp_path: Path) -> None:
@@ -129,3 +129,19 @@ def test_train_v5_lob_writes_core_contract_artifacts(tmp_path: Path) -> None:
     )
     payload = predictor.predict_score_contract(np.zeros((2, len(predictor.feature_columns)), dtype=np.float64))
     assert payload["final_rank_score"].shape == (2,)
+
+
+def test_train_v5_lob_load_minute_close_map_sources_reads_date_partitions(tmp_path: Path) -> None:
+    root = tmp_path / "parquet" / "ws_candle_v1" / "tf=1m" / "market=KRW-BTC" / "date=2026-03-27"
+    root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "ts_ms": [1_774_569_548_855, 1_774_569_607_341],
+            "close": [200.0, 201.0],
+        }
+    ).write_parquet(root / "part-000.parquet")
+
+    close_map = _load_minute_close_map_sources(market="KRW-BTC", roots=(tmp_path / "parquet" / "ws_candle_v1" / "tf=1m",))
+
+    assert close_map[1_774_569_600_000] == 200.0
+    assert close_map[1_774_569_660_000] == 201.0

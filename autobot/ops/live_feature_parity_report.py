@@ -14,6 +14,7 @@ import numpy as np
 import polars as pl
 
 from autobot.data import expected_interval_ms
+from autobot.features.feature_blocks_v4_live_base import cast_feature_output_v4_live_base
 from autobot.features.feature_set_v4 import (
     attach_interaction_features_v4,
     attach_order_flow_panel_v1,
@@ -313,18 +314,30 @@ def _build_live_frames_for_sampled_ts(
             history_span_bars = int(math.ceil((float(int(ts_value) - int(history_start_ts_ms)) / float(interval_ms)))) + 1
             history_bars = max(history_bars, history_span_bars)
 
+        parity_diag_columns = ("one_m_fail",)
         base_frame, base_stats = provider._build_runtime_context_frame(  # noqa: SLF001
             ts_ms=int(ts_value),
             markets=context_markets,
             feature_columns=provider._base_feature_columns,  # noqa: SLF001
-            extra_columns=tuple(provider._extra_columns) + ("volume_base",),  # noqa: SLF001
+            extra_columns=tuple(provider._extra_columns) + ("volume_base", *parity_diag_columns),  # noqa: SLF001
             provider_name="LIVE_V4_PARITY_BASE",
             missing_feature_warn_ratio=1.0,
             missing_feature_skip_ratio=1.0,
             history_bars=history_bars,
         )
+        base_frame, offline_filter_stats = _filter_parity_base_frame_for_offline_contract(
+            base_frame,
+            requested_ts_ms=int(ts_value),
+        )
         base_frame, context_stats = provider._filter_context_for_micro_contract(base_frame)  # noqa: SLF001
+        if base_frame.height > 0:
+            base_frame = cast_feature_output_v4_live_base(
+                base_frame,
+                float_dtype="float32",
+                high_tfs=tuple(getattr(provider, "_high_tfs", ())),
+            )
         merged_base_stats = dict(base_stats)
+        merged_base_stats.update(offline_filter_stats)
         merged_base_stats.update(context_stats)
 
         if base_frame.height > 0:
@@ -382,6 +395,33 @@ def _build_live_frames_for_sampled_ts(
             "skipped_market_samples": skipped_markets[:20],
         }
     return frames_by_ts, stats_by_ts
+
+
+def _filter_parity_base_frame_for_offline_contract(
+    frame: pl.DataFrame,
+    *,
+    requested_ts_ms: int,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    rows_before = int(frame.height)
+    if rows_before <= 0:
+        return frame, {
+            "offline_contract_rows_before_filter": 0,
+            "offline_contract_rows_after_filter": 0,
+            "offline_contract_rows_dropped_one_m_fail": 0,
+        }
+
+    filtered = frame
+    dropped_one_m_fail = 0
+    if "one_m_fail" in filtered.columns:
+        history_fail_mask = (pl.col("ts_ms").cast(pl.Int64) < int(requested_ts_ms)) & (pl.col("one_m_fail").cast(pl.Boolean) == True)  # noqa: E712
+        dropped_one_m_fail = int(filtered.filter(history_fail_mask).height)
+        filtered = filtered.filter(~history_fail_mask)
+
+    return filtered, {
+        "offline_contract_rows_before_filter": rows_before,
+        "offline_contract_rows_after_filter": int(filtered.height),
+        "offline_contract_rows_dropped_one_m_fail": int(dropped_one_m_fail),
+    }
 
 
 def _resolve_context_markets_by_ts(
@@ -691,6 +731,10 @@ def _normalize_column_value(column: str, value: Any) -> Any:
             return 1.0
         if text == "none":
             return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            return value
     return value
 
 

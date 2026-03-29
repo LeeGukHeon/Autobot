@@ -98,6 +98,7 @@ def test_t23_2_data_platform_refresh_installer_dry_run_keeps_new_dataset_contrac
     assert "ws_candle_v1" in stdout
     assert "lob30_v1" in stdout
     assert "sequence_v1" in stdout
+    assert "tensor_recent_dates=2" in stdout
 
 
 def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -> None:
@@ -110,6 +111,7 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "[data-platform-refresh] step=plan_lob30" in stdout
     assert "[data-platform-refresh] step=collect_lob30" in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors" in stdout
+    assert "[data-platform-refresh] step=collect_sequence_tensors_prev1" in stdout
     assert "[data-platform-refresh] step=refresh_data_contract_registry" in stdout
     assert "candles_second_v1" in stdout
     assert "ws_candle_v1" in stdout
@@ -117,6 +119,7 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "sequence_v1" in stdout
     assert "--market-source-dataset' 'candles_api_v1" in stdout or '--market-source-dataset" "candles_api_v1' in stdout or "--market-source-dataset candles_api_v1" in stdout
     assert "--max-requests' '120" in stdout or '--max-requests" "120' in stdout or "--max-requests 120" in stdout
+    assert "--date" in stdout
 
 
 def test_t23_2_feature_contract_refresh_wrapper_dry_run_emits_contract_steps() -> None:
