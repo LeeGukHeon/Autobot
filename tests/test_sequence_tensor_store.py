@@ -13,6 +13,7 @@ from autobot.data.collect.sequence_tensor_store import (
     ONE_MIN_FEATURE_NAMES,
     SECOND_FEATURE_NAMES,
     SequenceTensorBuildOptions,
+    _filter_markets_for_label_source_coverage,
     build_sequence_tensor_store,
     validate_sequence_tensor_store,
 )
@@ -230,6 +231,34 @@ def test_build_sequence_tensor_store_skips_existing_ready_anchors(tmp_path: Path
     assert second_summary.built_anchors == 0
     manifest = pl.read_parquet(parquet_root / "sequence_v1" / "_meta" / "manifest.parquet")
     assert manifest.height == 1
+
+
+def test_filter_markets_for_label_source_coverage_skips_stale_markets(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    current_date = "2026-03-20"
+
+    fresh_root = parquet_root / "candles_api_v1" / "tf=1m" / "market=KRW-BTC"
+    fresh_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"ts_ms": [1_774_051_200_000], "close": [100.0]}).write_parquet(fresh_root / "part-000.parquet")
+
+    stale_root = parquet_root / "candles_v1" / "tf=1m" / "market=KRW-ETH"
+    stale_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"ts_ms": [1_771_760_077_043], "close": [200.0]}).write_parquet(stale_root / "part.parquet")
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=None,
+        date=current_date,
+        filter_markets_by_label_source=True,
+    )
+
+    filtered = _filter_markets_for_label_source_coverage(
+        options=options,
+        markets=("KRW-BTC", "KRW-ETH"),
+    )
+
+    assert filtered == ("KRW-BTC",)
 
 
 def _write_second_candles(path: Path, *, start_ts_ms: int, count: int) -> None:

@@ -52,6 +52,7 @@ class SequenceTensorBuildOptions:
     date: str | None = None
     max_markets: int = 5
     max_anchors_per_market: int = 32
+    filter_markets_by_label_source: bool = True
     skip_existing_ready: bool = True
     second_lookback_steps: int = 120
     minute_lookback_steps: int = 30
@@ -354,11 +355,14 @@ def _resolve_markets(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
         if str(item).strip()
     )
     if explicit:
-        return explicit
+        return _filter_markets_for_label_source_coverage(options=options, markets=explicit)
 
     preferred = _load_preferred_markets_from_plans(options)
     if preferred:
-        return preferred[: max(int(options.max_markets), 1)]
+        return _filter_markets_for_label_source_coverage(
+            options=options,
+            markets=preferred[: max(int(options.max_markets), 1)],
+        )
 
     ws_markets = sorted(
         path.name.replace("market=", "", 1).upper()
@@ -366,14 +370,20 @@ def _resolve_markets(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
         if path.is_dir()
     )
     if ws_markets:
-        return tuple(ws_markets[: max(int(options.max_markets), 1)])
+        return _filter_markets_for_label_source_coverage(
+            options=options,
+            markets=tuple(ws_markets[: max(int(options.max_markets), 1)]),
+        )
 
     lob_markets = sorted(
         path.name.replace("market=", "", 1).upper()
         for path in options.lob_root.glob("market=*")
         if path.is_dir()
     )
-    return tuple(lob_markets[: max(int(options.max_markets), 1)])
+    return _filter_markets_for_label_source_coverage(
+        options=options,
+        markets=tuple(lob_markets[: max(int(options.max_markets), 1)]),
+    )
 
 
 def _load_preferred_markets_from_plans(options: SequenceTensorBuildOptions) -> tuple[str, ...]:
@@ -403,6 +413,47 @@ def _load_preferred_markets_from_plans(options: SequenceTensorBuildOptions) -> t
             seen.add(market)
             ordered.append(market)
     return tuple(ordered)
+
+
+def _filter_markets_for_label_source_coverage(
+    *,
+    options: SequenceTensorBuildOptions,
+    markets: tuple[str, ...],
+) -> tuple[str, ...]:
+    ordered = tuple(str(item).strip().upper() for item in markets if str(item).strip())
+    if not ordered or not bool(options.filter_markets_by_label_source):
+        return ordered
+    date_value = str(options.date or "").strip()
+    if not date_value:
+        return ordered
+    min_ts_ms = _date_start_ts_ms(date_value)
+    if min_ts_ms is None:
+        return ordered
+    filtered: list[str] = []
+    for market in ordered:
+        if _market_has_label_source_on_or_after_ts(options=options, market=market, min_ts_ms=min_ts_ms):
+            filtered.append(market)
+    return tuple(filtered)
+
+
+def _market_has_label_source_on_or_after_ts(
+    *,
+    options: SequenceTensorBuildOptions,
+    market: str,
+    min_ts_ms: int,
+) -> bool:
+    roots = (
+        options.ws_candle_root / "tf=1m",
+        options.ws_candle_root / "tf=1s",
+        options.second_root / "tf=1s",
+        options.parquet_root / "candles_api_v1" / "tf=1m",
+        options.parquet_root / "candles_v1" / "tf=1m",
+    )
+    for root in roots:
+        latest_ts_ms = _latest_market_ts_ms(dataset_root=root, market=market)
+        if latest_ts_ms is not None and int(latest_ts_ms) >= int(min_ts_ms):
+            return True
+    return False
 
 
 def _load_market_source_frames(*, options: SequenceTensorBuildOptions, market: str) -> _MarketSourceFrames:
@@ -810,6 +861,31 @@ def _load_manifest_rows(path: Path) -> list[dict[str, Any]]:
     return [dict(row) for row in frame.iter_rows(named=True)]
 
 
+def _latest_market_ts_ms(*, dataset_root: Path, market: str) -> int | None:
+    market_root = dataset_root / f"market={market}"
+    if not market_root.exists():
+        return None
+    files = sorted(path for path in market_root.glob("*.parquet") if path.is_file())
+    if not files:
+        for date_dir in sorted(market_root.glob("date=*")):
+            if not date_dir.is_dir():
+                continue
+            files.extend(sorted(path for path in date_dir.glob("*.parquet") if path.is_file()))
+    latest_ts_ms: int | None = None
+    for path in files:
+        try:
+            frame = pl.scan_parquet(str(path)).select(pl.col("ts_ms").max().alias("ts_ms")).collect()
+        except Exception:
+            continue
+        if frame.height <= 0 or "ts_ms" not in frame.columns:
+            continue
+        value = frame.item(0, "ts_ms")
+        if value is None:
+            continue
+        latest_ts_ms = int(value) if latest_ts_ms is None else max(latest_ts_ms, int(value))
+    return latest_ts_ms
+
+
 def _read_parquet_rows(glob_path: Path) -> pl.DataFrame:
     files = sorted(Path(path) for path in glob.glob(str(glob_path)))
     if not files:
@@ -831,6 +907,16 @@ def _slice_rows(frame: pl.DataFrame, *, start_ts_ms: int | None, end_ts_ms: int 
 def _date_utc_from_ts_ms(ts_ms: int) -> str:
     dt = datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc)
     return dt.date().isoformat()
+
+
+def _date_start_ts_ms(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except ValueError:
+        return None
 
 
 def _ts_ms_to_utc_text(ts_ms: int) -> str:
