@@ -5,6 +5,7 @@ import sqlite3
 import time
 
 import pytest
+import polars as pl
 
 from autobot.dashboard_server import (
     _execute_dashboard_operation,
@@ -1533,7 +1534,28 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
     _write_json(project_root / "data" / "collect" / "_meta" / "candle_second_validate_report.json", {"checked_files": 1, "warn_files": 0, "fail_files": 0})
     _write_json(project_root / "data" / "collect" / "_meta" / "ws_candle_validate_report.json", {"checked_files": 1, "warn_files": 0, "fail_files": 0})
     _write_json(project_root / "data" / "collect" / "_meta" / "lob30_validate_report.json", {"checked_files": 1, "warn_files": 0, "fail_files": 0})
-    _write_json(project_root / "data" / "parquet" / "sequence_v1" / "_meta" / "validate_report.json", {"checked_files": 1, "warn_files": 1, "fail_files": 0})
+    sequence_meta = project_root / "data" / "parquet" / "sequence_v1" / "_meta"
+    _write_json(
+        sequence_meta / "validate_report.json",
+        {
+            "checked_files": 3,
+            "warn_files": 2,
+            "fail_files": 0,
+            "support_level_counts": {"strict_full": 1, "reduced_context": 2, "structural_invalid": 0},
+            "details": [
+                {"market": "KRW-BTC", "anchor_ts_ms": 1000, "support_level": "strict_full"},
+                {"market": "KRW-BTC", "anchor_ts_ms": 2000, "support_level": "reduced_context"},
+                {"market": "KRW-BTC", "anchor_ts_ms": 3000, "support_level": "reduced_context"},
+            ],
+        },
+    )
+    pl.DataFrame(
+        [
+            {"market": "KRW-BTC", "date": "2026-03-27", "anchor_ts_ms": 1000, "support_level": "strict_full", "status": "OK"},
+            {"market": "KRW-BTC", "date": "2026-03-26", "anchor_ts_ms": 2000, "support_level": "reduced_context", "status": "WARN"},
+            {"market": "KRW-BTC", "date": "2026-03-20", "anchor_ts_ms": 3000, "support_level": "reduced_context", "status": "WARN"},
+        ]
+    ).write_parquet(sequence_meta / "manifest.parquet")
     _write_json(project_root / "logs" / "model_v4_challenger" / "step_06_promote.json", {"policy": "promote_abort_continue_state_machine_v1", "state": "continue", "reason": "CANARY_CONTINUE", "next_action": "keep_collecting_evidence"})
     family_root = project_root / "models" / "registry" / "train_v5_sequence"
     _write_json(family_root / "latest.json", {"run_id": "v5-seq-001", "updated_at_utc": "2026-03-27T00:31:00Z"})
@@ -1543,6 +1565,8 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
 
     assert snapshot["data_platform"]["refresh"]["exists"] is True
     assert snapshot["data_platform"]["datasets"]["sequence_v1"]["registry_present"] is True
+    assert snapshot["data_platform"]["datasets"]["sequence_v1"]["current_window_support"]["support_level_counts"]["strict_full"] == 1
+    assert snapshot["data_platform"]["datasets"]["sequence_v1"]["legacy_window_support"]["support_level_counts"]["reduced_context"] == 1
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["run_id"] == "v5-seq-001"
     assert snapshot["challenger"]["promotion_state_machine"]["state"] == "continue"
     assert "start_data_platform_refresh" in [item["id"] for item in snapshot["operations"]["actions"]]

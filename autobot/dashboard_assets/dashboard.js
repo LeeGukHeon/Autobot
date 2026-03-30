@@ -1848,6 +1848,9 @@
     const rawTicksBackfill = foundation.raw_ticks_backfill || {};
     const candlesApi = foundation.candles_api_v1 || {};
     const sequenceSupport = ((datasets.sequence_v1 || {}).support_level_counts) || {};
+    const sequenceCurrent = (((datasets.sequence_v1 || {}).current_window_support || {}).support_level_counts) || {};
+    const sequenceLegacy = (((datasets.sequence_v1 || {}).legacy_window_support || {}).support_level_counts) || {};
+    const sequenceCurrentDates = (((datasets.sequence_v1 || {}).current_window_support || {}).latest_dates) || [];
     const lastRxTs = Math.max(
       toNumber(health.updated_at_ms) || 0,
       toNumber((health.last_rx_ts_ms || {}).trade) || 0,
@@ -1917,7 +1920,9 @@
         }),
         compactRow({
           title: "파생 데이터 레이어",
-          summary: "second / ws candle / lob30 / sequence 상태를 한 곳에 모아 보여줍니다.",
+          summary: sequenceCurrentDates.length
+            ? `second / ws candle / lob30 / sequence 상태와 최근 ${sequenceCurrentDates.join(", ")} 기준 sequence strict 현황을 함께 봅니다.`
+            : "second / ws candle / lob30 / sequence 상태를 한 곳에 모아 보여줍니다.",
           items: [
             compactStat("second", maybe((datasets.candles_second_v1 || {}).status)),
             compactStat("ws candle", maybe((datasets.ws_candle_v1 || {}).status)),
@@ -1926,6 +1931,10 @@
             compactStat("seq strict", maybe(sequenceSupport.strict_full, "0")),
             compactStat("seq reduced", maybe(sequenceSupport.reduced_context, "0")),
             compactStat("seq invalid", maybe(sequenceSupport.structural_invalid, "0")),
+            compactStat("seq current strict", maybe(sequenceCurrent.strict_full, "0")),
+            compactStat("seq current reduced", maybe(sequenceCurrent.reduced_context, "0")),
+            compactStat("seq legacy strict", maybe(sequenceLegacy.strict_full, "0")),
+            compactStat("seq legacy reduced", maybe(sequenceLegacy.reduced_context, "0")),
             compactStat("registry", boolLabel(Boolean((dataPlatform.registry || {}).exists))),
             compactStat("contract 수", maybe((dataPlatform.registry || {}).contract_count)),
           ],

@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+import polars as pl
 
 from autobot.live.breaker_taxonomy import annotate_reason_payload
 from autobot.live.breakers import breaker_status, clear_breaker, clear_breaker_reasons
@@ -2293,6 +2294,13 @@ def _summarize_data_platform_dataset(
         "reduced_context": _coerce_int(raw_support_counts.get("reduced_context")) or 0,
         "structural_invalid": _coerce_int(raw_support_counts.get("structural_invalid")) or 0,
     }
+    current_window_support = {"latest_dates": [], "support_level_counts": dict(support_level_counts), "rows": 0}
+    legacy_window_support = {"latest_dates": [], "support_level_counts": {"strict_full": 0, "reduced_context": 0, "structural_invalid": 0}, "rows": 0}
+    if str(dataset_name).strip().lower() == "sequence_v1":
+        current_window_support, legacy_window_support = _summarize_sequence_support_windows(
+            dataset_root=dataset_root,
+            validate_report=validate_report,
+        )
     cache_file_count = len(list((dataset_root / "cache").rglob("*.npz"))) if (dataset_root / "cache").exists() else 0
     return {
         "dataset_name": dataset_name,
@@ -2305,6 +2313,8 @@ def _summarize_data_platform_dataset(
         "build_summary": build_summary,
         "validate_summary": validate_summary,
         "support_level_counts": support_level_counts,
+        "current_window_support": current_window_support,
+        "legacy_window_support": legacy_window_support,
         "manifest_exists": (meta_root / "manifest.parquet").exists(),
         "cache_file_count": cache_file_count,
         "artifact_paths": {
@@ -2312,6 +2322,79 @@ def _summarize_data_platform_dataset(
             "validate_report": str(validate_path),
         },
     }
+
+
+def _summarize_sequence_support_windows(
+    *,
+    dataset_root: Path,
+    validate_report: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    manifest_path = dataset_root / "_meta" / "manifest.parquet"
+    default_counts = {"strict_full": 0, "reduced_context": 0, "structural_invalid": 0}
+    if not manifest_path.exists():
+        return (
+            {"latest_dates": [], "support_level_counts": dict(default_counts), "rows": 0},
+            {"latest_dates": [], "support_level_counts": dict(default_counts), "rows": 0},
+        )
+    try:
+        full_frame = pl.read_parquet(manifest_path)
+        frame = full_frame.select(
+            [col for col in ("market", "anchor_ts_ms", "date", "support_level", "status") if col in full_frame.columns]
+        )
+    except Exception:
+        return (
+            {"latest_dates": [], "support_level_counts": dict(default_counts), "rows": 0},
+            {"latest_dates": [], "support_level_counts": dict(default_counts), "rows": 0},
+        )
+    if frame.height <= 0 or "date" not in frame.columns:
+        return (
+            {"latest_dates": [], "support_level_counts": dict(default_counts), "rows": 0},
+            {"latest_dates": [], "support_level_counts": dict(default_counts), "rows": 0},
+        )
+
+    support_by_key: dict[tuple[str, int], str] = {}
+    for detail in list(validate_report.get("details") or []):
+        if not isinstance(detail, dict):
+            continue
+        market = str(detail.get("market") or "").strip().upper()
+        anchor_ts_ms = _coerce_int(detail.get("anchor_ts_ms")) or 0
+        if market and anchor_ts_ms > 0:
+            support_by_key[(market, anchor_ts_ms)] = str(detail.get("support_level") or "").strip().lower()
+
+    latest_dates = sorted(
+        {
+            str(item).strip()
+            for item in frame.get_column("date").to_list()
+            if str(item).strip()
+        },
+        reverse=True,
+    )[:2]
+    current_dates = set(latest_dates)
+    current_counts = dict(default_counts)
+    legacy_counts = dict(default_counts)
+    current_rows = 0
+    legacy_rows = 0
+    for row in frame.iter_rows(named=True):
+        market = str(row.get("market") or "").strip().upper()
+        anchor_ts_ms = _coerce_int(row.get("anchor_ts_ms")) or 0
+        support_level = str(row.get("support_level") or "").strip().lower()
+        if not support_level:
+            support_level = support_by_key.get((market, anchor_ts_ms), "")
+        if support_level not in default_counts:
+            status_value = str(row.get("status") or "").strip().upper()
+            support_level = "structural_invalid" if status_value == "FAIL" else "reduced_context"
+        date_value = str(row.get("date") or "").strip()
+        if date_value in current_dates:
+            current_counts[support_level] += 1
+            current_rows += 1
+        else:
+            legacy_counts[support_level] += 1
+            legacy_rows += 1
+    latest_dates_sorted = sorted(current_dates)
+    return (
+        {"latest_dates": latest_dates_sorted, "support_level_counts": current_counts, "rows": current_rows},
+        {"latest_dates": latest_dates_sorted, "support_level_counts": legacy_counts, "rows": legacy_rows},
+    )
 
 
 def _summarize_data_platform(project_root: Path) -> dict[str, Any]:
