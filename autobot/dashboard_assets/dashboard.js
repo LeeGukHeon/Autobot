@@ -1828,13 +1828,21 @@
   function renderWs(snapshot) {
     const ws = snapshot.ws_public || {};
     const dataPlatform = snapshot.data_platform || {};
+    const foundation = snapshot.foundation_ingestion || {};
     const refresh = dataPlatform.refresh || {};
     const datasets = dataPlatform.datasets || {};
     const services = snapshot.services || {};
     const dataRefreshService = services.data_platform_refresh_service || {};
     const dataRefreshTimer = services.data_platform_refresh_timer || {};
+    const candlesRefreshService = services.candles_api_refresh_service || {};
+    const candlesRefreshTimer = services.candles_api_refresh_timer || {};
+    const rawTicksService = services.raw_ticks_daily_service || {};
+    const rawTicksTimer = services.raw_ticks_daily_timer || {};
     const health = ws.health_snapshot || {};
     const latestRun = ws.runs_summary_latest || {};
+    const rawWs = foundation.raw_ws_public || {};
+    const rawTicks = foundation.raw_ticks_daily || {};
+    const candlesApi = foundation.candles_api_v1 || {};
     const lastRxTs = Math.max(
       toNumber(health.updated_at_ms) || 0,
       toNumber((health.last_rx_ts_ms || {}).trade) || 0,
@@ -1881,6 +1889,20 @@
             compactStat("최근 refresh", fmtDateTime(refresh.generated_at_utc)),
             compactStat("step 수", maybe(refresh.step_count)),
             compactStat("artifact", shortPath(refresh.artifact_path)),
+          ],
+        }),
+        compactRow({
+          title: "원천 데이터 수집",
+          summary: "raw ws / raw ticks / candles_api 상시 수집 상태를 함께 보여줍니다.",
+          items: [
+            compactStat("raw ws", boolLabel(Boolean(rawWs.connected))),
+            compactStat("raw ws topk", maybe(rawWs.orderbook_topk)),
+            compactStat("ticks timer", translate(rawTicksTimer.active_state)),
+            compactStat("ticks 최근", fmtDateTime(rawTicks.latest_generated_at_utc)),
+            compactStat("candles timer", translate(candlesRefreshTimer.active_state)),
+            compactStat("candles 최근", fmtDateTime(candlesApi.summary_generated_at_utc || candlesApi.build_generated_at)),
+            compactStat("candles 상태", maybe(candlesApi.status)),
+            compactStat("ticks 파일 수", fmtNumber(rawTicks.file_count, 0)),
           ],
         }),
         compactRow({

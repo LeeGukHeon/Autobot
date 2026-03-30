@@ -2362,6 +2362,78 @@ def _summarize_data_platform(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _raw_ticks_file_count(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return len(list(root.glob("date=*/market=*/*.jsonl.zst")))
+
+
+def _summarize_foundation_ingestion(
+    project_root: Path,
+    *,
+    ws_status: dict[str, Any],
+    services: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    candles_summary_path = project_root / "data" / "collect" / "_meta" / "candles_api_refresh_latest.json"
+    candles_summary = _load_json(candles_summary_path)
+    candles_dataset = _summarize_data_platform_dataset(
+        project_root,
+        dataset_name="candles_api_v1",
+        validate_report_path=project_root / "data" / "collect" / "_meta" / "candle_validate_report.json",
+        registry_dataset_names=None,
+    )
+    raw_ticks_root = project_root / "data" / "raw_ticks" / "upbit" / "trades"
+    raw_ticks_summary_path = project_root / "data" / "raw_ticks" / "upbit" / "_meta" / "ticks_daily_latest.json"
+    raw_ticks_summary = _load_json(raw_ticks_summary_path)
+    ws_collect_report = dict(ws_status.get("collect_report") or {})
+    ws_health = dict(ws_status.get("health_snapshot") or {})
+    ws_details = {}
+    raw_details = list(ws_collect_report.get("details") or [])
+    if raw_details and isinstance(raw_details[0], dict):
+        ws_details = dict(raw_details[0])
+    ws_last_rx_ms = max(
+        _coerce_int((ws_health.get("last_rx_ts_ms") or {}).get("trade")) or 0,
+        _coerce_int((ws_health.get("last_rx_ts_ms") or {}).get("orderbook")) or 0,
+        _coerce_int(ws_health.get("updated_at_ms")) or 0,
+    )
+    return {
+        "raw_ws_public": {
+            "status": "ready" if bool(ws_health.get("connected")) else "warn",
+            "connected": bool(ws_health.get("connected")),
+            "last_event_ts_ms": ws_last_rx_ms or None,
+            "subscribed_markets_count": _coerce_int(ws_health.get("subscribed_markets_count")),
+            "orderbook_topk": _coerce_int(ws_details.get("orderbook_topk")),
+            "written_trade": _coerce_int(ws_health.get("written_rows", {}).get("trade")),
+            "written_orderbook": _coerce_int(ws_health.get("written_rows", {}).get("orderbook")),
+            "collect_report_path": str(project_root / "data" / "raw_ws" / "upbit" / "_meta" / "ws_collect_report.json"),
+            "health_snapshot_path": str(project_root / "data" / "raw_ws" / "upbit" / "_meta" / "ws_public_health.json"),
+            "service": dict(services.get("ws_public") or {}),
+        },
+        "raw_ticks_daily": {
+            "status": "ready" if bool(raw_ticks_summary) and raw_ticks_root.exists() else ("present" if raw_ticks_root.exists() else "missing"),
+            "exists": raw_ticks_root.exists(),
+            "latest_generated_at_utc": raw_ticks_summary.get("generated_at_utc") or _path_mtime_iso(raw_ticks_summary_path),
+            "summary_path": str(raw_ticks_summary_path),
+            "raw_root": str(raw_ticks_root),
+            "file_count": _raw_ticks_file_count(raw_ticks_root),
+            "service": dict(services.get("raw_ticks_daily_service") or {}),
+            "timer": dict(services.get("raw_ticks_daily_timer") or {}),
+        },
+        "candles_api_v1": {
+            "status": str(candles_dataset.get("status") or "missing"),
+            "exists": bool(candles_dataset.get("exists")),
+            "build_generated_at": candles_dataset.get("build_generated_at"),
+            "validate_generated_at": candles_dataset.get("validate_generated_at"),
+            "summary_generated_at_utc": candles_summary.get("generated_at_utc") or _path_mtime_iso(candles_summary_path),
+            "summary_path": str(candles_summary_path),
+            "dataset_root": candles_dataset.get("dataset_root"),
+            "service": dict(services.get("candles_api_refresh_service") or {}),
+            "timer": dict(services.get("candles_api_refresh_timer") or {}),
+            "validate_summary": dict(candles_dataset.get("validate_summary") or {}),
+        },
+    }
+
+
 def _summarize_v5_readiness(project_root: Path, *, data_platform: dict[str, Any]) -> dict[str, Any]:
     dataset_rows = dict(data_platform.get("datasets") or {})
     families = {
@@ -3086,6 +3158,31 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     )
     acceptance = _summarize_acceptance(acceptance_latest)
     data_platform = _summarize_data_platform(project_root)
+    services = {
+        "paper_champion": _unit_snapshot("autobot-paper-v4.service"),
+        "paper_challenger": _unit_snapshot("autobot-paper-v4-challenger.service"),
+        "paper_paired": _unit_snapshot("autobot-paper-v4-paired.service"),
+        "ws_public": _unit_snapshot("autobot-ws-public.service"),
+        "live_main": _unit_snapshot("autobot-live-alpha.service"),
+        "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
+        "data_platform_refresh_service": _unit_snapshot("autobot-data-platform-refresh.service"),
+        "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
+        "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
+        "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
+        "candles_api_refresh_service": _unit_snapshot("autobot-candles-api-refresh.service"),
+        "raw_ticks_daily_service": _unit_snapshot("autobot-raw-ticks-daily.service"),
+        "data_platform_refresh_timer": _unit_snapshot("autobot-data-platform-refresh.timer", timer=True),
+        "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
+        "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
+        "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
+        "candles_api_refresh_timer": _unit_snapshot("autobot-candles-api-refresh.timer", timer=True),
+        "raw_ticks_daily_timer": _unit_snapshot("autobot-raw-ticks-daily.timer", timer=True),
+    }
+    foundation_ingestion = _summarize_foundation_ingestion(
+        project_root,
+        ws_status=ws_status,
+        services=services,
+    )
     live_db_candidates = [item for item in _resolve_live_db_candidates(project_root) if item.get("service_key")]
     live_account_summary = _load_live_account_summary(project_root)
     challenger_summary = _summarize_challenger(challenger_latest, challenger_state)
@@ -3094,22 +3191,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "generated_at": _utc_now_iso(),
         "project_root": str(project_root),
         "system": _filesystem_usage(project_root),
-        "services": {
-            "paper_champion": _unit_snapshot("autobot-paper-v4.service"),
-            "paper_challenger": _unit_snapshot("autobot-paper-v4-challenger.service"),
-            "paper_paired": _unit_snapshot("autobot-paper-v4-paired.service"),
-            "ws_public": _unit_snapshot("autobot-ws-public.service"),
-            "live_main": _unit_snapshot("autobot-live-alpha.service"),
-            "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
-            "data_platform_refresh_service": _unit_snapshot("autobot-data-platform-refresh.service"),
-            "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
-            "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
-            "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
-            "data_platform_refresh_timer": _unit_snapshot("autobot-data-platform-refresh.timer", timer=True),
-            "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
-            "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
-            "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
-        },
+        "services": services,
         "training": {
             "acceptance": acceptance,
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
@@ -3145,6 +3227,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         },
         "ws_public": ws_status,
         "data_platform": data_platform,
+        "foundation_ingestion": foundation_ingestion,
         "operations": _build_dashboard_ops_snapshot(project_root),
     }
 
