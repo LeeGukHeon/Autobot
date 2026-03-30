@@ -193,6 +193,68 @@ class WsPublicDaemonSummary:
     failures: tuple[dict[str, Any], ...]
 
 
+def _build_ws_public_daemon_collect_report(
+    *,
+    started_at: int,
+    finished_at: int,
+    run_id: str,
+    options: WsPublicDaemonOptions,
+    channels: tuple[str, ...],
+    fmt: str,
+    top_n: int,
+    max_markets: int,
+    refresh_sec: int,
+    runtime_counters: _RuntimeCounters,
+    files_written: int,
+    bytes_written: int,
+    retention_payload: dict[str, Any] | None,
+    details: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+    running: bool,
+) -> dict[str, Any]:
+    return {
+        "started_at": int(started_at),
+        "finished_at": int(finished_at),
+        "run_id": run_id,
+        "mode": "daemon",
+        "running": bool(running),
+        "duration_sec": int(options.duration_sec) if options.duration_sec is not None else 86_400 * 365,
+        "quote": str(options.quote).strip().upper() or "KRW",
+        "top_n": int(top_n),
+        "max_markets": int(max_markets),
+        "refresh_sec": int(refresh_sec),
+        "plan_file": str(options.plan_path),
+        "raw_root": str(options.raw_root),
+        "meta_dir": str(options.meta_dir),
+        "codes_count": int(runtime_counters.subscribed_markets_count),
+        "channels": list(channels),
+        "format": fmt,
+        "received_trade": int(runtime_counters.received_trade),
+        "received_orderbook": int(runtime_counters.received_orderbook),
+        "written_trade": int(runtime_counters.written_trade),
+        "written_orderbook": int(runtime_counters.written_orderbook),
+        "dropped_orderbook_by_interval": int(runtime_counters.dropped_orderbook_by_interval),
+        "dropped_by_parse_error": int(runtime_counters.dropped_by_parse_error),
+        "reconnect_count": int(runtime_counters.reconnect_count),
+        "ping_sent_count": int(runtime_counters.ping_sent_count),
+        "pong_rx_count": int(runtime_counters.pong_rx_count),
+        "status_up_count": int(runtime_counters.status_up_count),
+        "refresh_attempt_count": int(runtime_counters.refresh_attempt_count),
+        "refresh_applied_count": int(runtime_counters.refresh_applied_count),
+        "refresh_noop_count": int(runtime_counters.refresh_noop_count),
+        "files_written": int(files_written),
+        "bytes_written": int(bytes_written),
+        "fatal_reason": runtime_counters.fatal_reason,
+        "manifest_file": str(options.manifest_path),
+        "checkpoint_file": str(options.checkpoint_path),
+        "runs_summary_file": str(options.runs_summary_path),
+        "health_snapshot_file": str(options.health_snapshot_path),
+        "retention_report": dict(retention_payload or {}),
+        "details": list(details),
+        "failures": list(failures),
+    }
+
+
 @dataclass
 class _RuntimeCounters:
     received_trade: int = 0
@@ -474,6 +536,55 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
         "last_refresh_at_ms": int(time.time() * 1000),
     }
 
+    def _report_details(*, retention_doc: dict[str, Any] | None) -> list[dict[str, Any]]:
+        return [
+            {
+                "quote": quote,
+                "top_n": top_n,
+                "max_markets": max_markets,
+                "refresh_sec": refresh_sec,
+                "channels": list(channels),
+                "format": fmt,
+                "orderbook_topk": int(options.orderbook_topk),
+                "orderbook_level": options.orderbook_level,
+                "downsample_hz": downsample_hz,
+                "orderbook_min_write_interval_ms": orderbook_min_write_interval_ms,
+                "keepalive_mode": _normalize_keepalive_mode(options.keepalive_mode),
+                "keepalive_interval_sec": max(int(options.keepalive_interval_sec), 1),
+                "keepalive_stale_sec": max(int(options.keepalive_stale_sec), 30),
+                "retention_days": max(int(options.retention_days), 1),
+                "refresh_last_codes_count": len(tuple(refresh_state.get("codes") or ())),
+                "retention_report": dict(retention_doc or {}),
+            }
+        ]
+
+    def _write_runtime_collect_report(*, connected: bool, retention_doc: dict[str, Any] | None = None) -> None:
+        files_written_live = len(writer.closed_parts)
+        bytes_written_live = int(sum(int(item.get("bytes", 0)) for item in writer.closed_parts))
+        report = _build_ws_public_daemon_collect_report(
+            started_at=started_at,
+            finished_at=int(time.time()),
+            run_id=run_id,
+            options=options,
+            channels=channels,
+            fmt=fmt,
+            top_n=top_n,
+            max_markets=max_markets,
+            refresh_sec=refresh_sec,
+            runtime_counters=runtime_counters,
+            files_written=files_written_live,
+            bytes_written=bytes_written_live,
+            retention_payload=retention_doc,
+            details=_report_details(retention_doc=retention_doc),
+            failures=failures,
+            running=connected and not bool(runtime_counters.fatal_reason),
+        )
+        options.collect_report_path.parent.mkdir(parents=True, exist_ok=True)
+        options.collect_report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
     def _resolve_codes() -> tuple[str, ...]:
         latest = fetch_top_quote_markets(
             config_dir=options.config_dir,
@@ -526,6 +637,10 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
                 health_snapshot_path=options.health_snapshot_path,
                 health_update_sec=max(int(options.health_update_sec), 1),
                 manifest_flush_callback=_flush_manifest_state,
+                progress_snapshot_callback=lambda counters, connected: _write_runtime_collect_report(
+                    connected=connected,
+                    retention_doc=None,
+                ),
                 run_id=run_id,
             )
         )
@@ -560,72 +675,8 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
     if runtime_counters.fatal_reason:
         failures.append({"reason": runtime_counters.fatal_reason})
 
-    details.append(
-        {
-            "quote": quote,
-            "top_n": top_n,
-            "max_markets": max_markets,
-            "refresh_sec": refresh_sec,
-            "channels": list(channels),
-            "format": fmt,
-            "orderbook_topk": int(options.orderbook_topk),
-            "orderbook_level": options.orderbook_level,
-            "downsample_hz": downsample_hz,
-            "orderbook_min_write_interval_ms": orderbook_min_write_interval_ms,
-            "keepalive_mode": _normalize_keepalive_mode(options.keepalive_mode),
-            "keepalive_interval_sec": max(int(options.keepalive_interval_sec), 1),
-            "keepalive_stale_sec": max(int(options.keepalive_stale_sec), 30),
-            "retention_days": max(int(options.retention_days), 1),
-            "refresh_last_codes_count": len(tuple(refresh_state.get("codes") or ())),
-            "retention_report": retention_payload,
-        }
-    )
-
-    collect_report = {
-        "started_at": started_at,
-        "finished_at": int(time.time()),
-        "run_id": run_id,
-        "mode": "daemon",
-        "duration_sec": duration_sec,
-        "quote": quote,
-        "top_n": top_n,
-        "max_markets": max_markets,
-        "refresh_sec": refresh_sec,
-        "plan_file": str(options.plan_path),
-        "raw_root": str(options.raw_root),
-        "meta_dir": str(options.meta_dir),
-        "codes_count": int(runtime_counters.subscribed_markets_count),
-        "channels": list(channels),
-        "format": fmt,
-        "received_trade": int(runtime_counters.received_trade),
-        "received_orderbook": int(runtime_counters.received_orderbook),
-        "written_trade": int(runtime_counters.written_trade),
-        "written_orderbook": int(runtime_counters.written_orderbook),
-        "dropped_orderbook_by_interval": int(runtime_counters.dropped_orderbook_by_interval),
-        "dropped_by_parse_error": int(runtime_counters.dropped_by_parse_error),
-        "reconnect_count": int(runtime_counters.reconnect_count),
-        "ping_sent_count": int(runtime_counters.ping_sent_count),
-        "pong_rx_count": int(runtime_counters.pong_rx_count),
-        "status_up_count": int(runtime_counters.status_up_count),
-        "refresh_attempt_count": int(runtime_counters.refresh_attempt_count),
-        "refresh_applied_count": int(runtime_counters.refresh_applied_count),
-        "refresh_noop_count": int(runtime_counters.refresh_noop_count),
-        "files_written": int(files_written),
-        "bytes_written": int(bytes_written),
-        "fatal_reason": runtime_counters.fatal_reason,
-        "manifest_file": str(options.manifest_path),
-        "checkpoint_file": str(options.checkpoint_path),
-        "runs_summary_file": str(options.runs_summary_path),
-        "health_snapshot_file": str(options.health_snapshot_path),
-        "retention_report": retention_payload,
-        "details": details,
-        "failures": failures,
-    }
-    options.collect_report_path.parent.mkdir(parents=True, exist_ok=True)
-    options.collect_report_path.write_text(
-        json.dumps(collect_report, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    details.extend(_report_details(retention_doc=retention_payload))
+    _write_runtime_collect_report(connected=False, retention_doc=retention_payload)
 
     _write_health_snapshot(
         path=options.health_snapshot_path,
@@ -802,6 +853,7 @@ async def _run_ws_collection(
     health_snapshot_path: Path | None,
     health_update_sec: int,
     manifest_flush_callback: Callable[[], None] | None,
+    progress_snapshot_callback: Callable[[_RuntimeCounters, bool], None] | None,
     run_id: str,
 ) -> _RuntimeCounters:
     counters = _RuntimeCounters()
@@ -837,6 +889,8 @@ async def _run_ws_collection(
                 path=health_snapshot_path,
                 payload=_health_payload(run_id=run_id, counters=counters, connected=connected),
             )
+            if progress_snapshot_callback is not None:
+                progress_snapshot_callback(counters, connected)
             next_health_update_monotonic = time.monotonic() + float(health_interval_sec)
 
         await connect_limiter.acquire()
@@ -861,6 +915,8 @@ async def _run_ws_collection(
                     if rate_limit_strict:
                         counters.fatal_reason = "MAX_SUBSCRIBE_MESSAGES_PER_MIN_REACHED"
                         connected = False
+                        if progress_snapshot_callback is not None:
+                            progress_snapshot_callback(counters, connected)
                         return counters
                     await asyncio.sleep(1.0)
                 await _send_json_with_limit(websocket, payload, send_limiter)
@@ -920,6 +976,8 @@ async def _run_ws_collection(
                                                 for market, state in orderbook_state.items()
                                                 if market in active_codes_set
                                             }
+                                            if progress_snapshot_callback is not None:
+                                                progress_snapshot_callback(counters, connected)
                             else:
                                 counters.refresh_noop_count += 1
 
@@ -1028,10 +1086,6 @@ async def _run_ws_collection(
                         continue
 
                     last_recv_monotonic = time.monotonic()
-                    _write_health_snapshot(
-                        path=health_snapshot_path,
-                        payload=_health_payload(run_id=run_id, counters=counters, connected=connected),
-                    )
             connected = False
         except asyncio.CancelledError:
             raise
@@ -1049,6 +1103,8 @@ async def _run_ws_collection(
                     path=health_snapshot_path,
                     payload=_health_payload(run_id=run_id, counters=counters, connected=connected),
                 )
+                if progress_snapshot_callback is not None:
+                    progress_snapshot_callback(counters, connected)
                 return counters
 
             delay = _reconnect_delay_sec(reconnect_attempt, rng=rng)
@@ -1063,6 +1119,8 @@ async def _run_ws_collection(
         path=health_snapshot_path,
         payload=_health_payload(run_id=run_id, counters=counters, connected=False),
     )
+    if progress_snapshot_callback is not None:
+        progress_snapshot_callback(counters, False)
     return counters
 
 

@@ -16,8 +16,9 @@ param(
     [int]$TensorMaxAnchorsPerMarket = 64,
     [int]$TensorRecentDates = 2,
     [string[]]$TensorMarkets = @(),
-    [string]$OnBootSec = "5min",
-    [string]$OnUnitActiveSec = "20min",
+    [string]$OnBootSec = "12min",
+    [string]$OnUnitActiveSec = "45min",
+    [string]$LockFile = "/tmp/autobot-data-platform-refresh.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
@@ -61,7 +62,8 @@ if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     $refreshArgs += @("-TensorMarkets", $serializedTensorMarkets)
 }
 $execStartCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-$execStart = "/bin/bash -lc " + (Quote-ShellArg $execStartCommand)
+$lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $LockFile) + " bash -lc " + (Quote-ShellArg $execStartCommand) + "; else exec bash -lc " + (Quote-ShellArg $execStartCommand) + "; fi"
+$execStart = "/bin/bash -lc " + (Quote-ShellArg $lockCommand)
 
 $serviceContent = @"
 [Unit]
@@ -75,7 +77,7 @@ User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$execStart
-TimeoutStartSec=2700
+TimeoutStartSec=3600
 StandardOutput=journal
 StandardError=journal
 "@

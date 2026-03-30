@@ -1,0 +1,126 @@
+param(
+    [string]$ProjectRoot = "",
+    [string]$PythonExe = "",
+    [string]$SummaryPath = "data/raw_ticks/upbit/_meta/ticks_daily_latest.json",
+    [string]$Quote = "KRW",
+    [int]$TopN = 50,
+    [int]$DaysAgo = 1,
+    [string]$RawRoot = "data/raw_ticks/upbit/trades",
+    [string]$MetaDir = "data/raw_ticks/upbit/_meta",
+    [int]$Workers = 1,
+    [int]$MaxPagesPerTarget = 50,
+    [string]$RateLimitStrict = "true",
+    [switch]$DryRun
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot "systemd_service_utils.ps1")
+
+function Resolve-ProjectPath {
+    param(
+        [string]$Root,
+        [string]$PathValue
+    )
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return $Root
+    }
+    if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        return [System.IO.Path]::GetFullPath($PathValue)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $Root $PathValue))
+}
+
+function Invoke-ProjectPythonStep {
+    param(
+        [string]$PythonPath,
+        [string]$StepName,
+        [string[]]$ArgList
+    )
+    $commandText = $PythonPath + " " + (($ArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
+    Write-Host ("[raw-ticks-daily] step={0}" -f $StepName)
+    Write-Host ("[raw-ticks-daily] command={0}" -f $commandText)
+    if ($DryRun) {
+        return [ordered]@{
+            step = $StepName
+            command = $commandText
+            exit_code = 0
+            dry_run = $true
+            output_preview = ""
+        }
+    }
+    $output = & $PythonPath @ArgList 2>&1
+    $exitCode = [int]$LASTEXITCODE
+    $outputText = [string]($output -join [Environment]::NewLine)
+    if (-not [string]::IsNullOrWhiteSpace($outputText)) {
+        Write-Host $outputText
+    }
+    if ($exitCode -ne 0) {
+        throw ("step failed: " + $StepName + " exit_code=" + $exitCode)
+    }
+    return [ordered]@{
+        step = $StepName
+        command = $commandText
+        exit_code = $exitCode
+        dry_run = $false
+        output_preview = if ([string]::IsNullOrWhiteSpace($outputText)) { "" } elseif ($outputText.Length -le 2000) { $outputText } else { $outputText.Substring(0, 2000) }
+    }
+}
+
+$resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
+$resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
+$resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
+$resolvedSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $SummaryPath
+$resolvedRawRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $RawRoot
+$resolvedMetaDir = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MetaDir
+$validateDate = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max([int]$DaysAgo, 1)).ToString("yyyy-MM-dd")
+
+$collectArgs = @(
+    "-m", "autobot.cli",
+    "collect", "ticks",
+    "--mode", "daily",
+    "--quote", $Quote,
+    "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+    "--days-ago", ([string]([Math]::Max([int]$DaysAgo, 1))),
+    "--raw-root", $resolvedRawRoot,
+    "--meta-dir", $resolvedMetaDir,
+    "--rate-limit-strict", $RateLimitStrict,
+    "--workers", ([string]([Math]::Max([int]$Workers, 1))),
+    "--max-pages-per-target", ([string]([Math]::Max([int]$MaxPagesPerTarget, 1))),
+    "--dry-run", "false"
+)
+
+$validateArgs = @(
+    "-m", "autobot.cli",
+    "collect", "ticks", "validate",
+    "--date", $validateDate,
+    "--raw-root", $resolvedRawRoot,
+    "--meta-dir", $resolvedMetaDir
+)
+
+$stepResults = @()
+Push-Location $resolvedProjectRoot
+try {
+    $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "collect_raw_ticks_daily" -ArgList $collectArgs)
+    $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "validate_raw_ticks_daily" -ArgList $validateArgs)
+} finally {
+    Pop-Location
+}
+
+$summary = [ordered]@{
+    policy = "raw_ticks_daily_v1"
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    project_root = $resolvedProjectRoot
+    python_exe = $resolvedPythonExe
+    raw_root = $resolvedRawRoot
+    meta_dir = $resolvedMetaDir
+    validate_date = $validateDate
+    steps = @($stepResults)
+}
+$summaryDir = Split-Path -Parent $resolvedSummaryPath
+if (-not [string]::IsNullOrWhiteSpace($summaryDir)) {
+    New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
+}
+$summary | ConvertTo-Json -Depth 8 | Set-Content -Path $resolvedSummaryPath -Encoding UTF8
+Write-Host $resolvedSummaryPath
