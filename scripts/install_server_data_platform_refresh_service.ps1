@@ -87,6 +87,7 @@ $timerContent = @"
 Description=Autobot Data Platform Refresh Timer
 
 [Timer]
+OnActiveSec=$OnBootSec
 OnBootSec=$OnBootSec
 OnUnitActiveSec=$OnUnitActiveSec
 Persistent=true

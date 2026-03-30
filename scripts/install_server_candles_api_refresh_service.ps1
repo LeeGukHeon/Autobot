@@ -78,6 +78,7 @@ $timerContent = @"
 Description=Autobot candles_api refresh timer
 
 [Timer]
+OnActiveSec=$OnBootSec
 OnBootSec=$OnBootSec
 OnUnitActiveSec=$OnUnitActiveSec
 Persistent=true

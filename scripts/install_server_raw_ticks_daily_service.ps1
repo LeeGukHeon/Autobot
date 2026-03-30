@@ -72,6 +72,7 @@ $timerContent = @"
 Description=Autobot raw ticks daily refresh timer
 
 [Timer]
+OnActiveSec=$OnBootSec
 OnBootSec=$OnBootSec
 OnUnitActiveSec=$OnUnitActiveSec
 Persistent=true
