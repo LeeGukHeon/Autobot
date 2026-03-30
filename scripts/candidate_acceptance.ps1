@@ -4401,6 +4401,7 @@ try {
     $report.split_policy.artifact_path = $script:splitPolicyArtifactPath
     $report.candidate = [ordered]@{
         run_id = $candidateRunId
+        fusion_run_id = $candidateRunId
         run_dir = $candidateRunDir
         lane_mode = [string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue "")
         promotion_eligible = [bool](Get-PropValue -ObjectValue $report.split_policy -Name "promotion_eligible" -DefaultValue $false)
@@ -4419,6 +4420,7 @@ try {
         lane_governance_reasons = @($laneGovernanceReasons)
         promotion_decision_path = $promotionDecisionPath
         data_platform_ready_snapshot_id = $candidateSnapshotId
+        fusion_snapshot_id = $candidateSnapshotId
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
         promotion_decision = $promotionDecision
@@ -4436,10 +4438,48 @@ try {
         dependency_trainer_model_families = @((Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "model_families" -DefaultValue @()))
         dependency_snapshot_id = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "")
         dependency_snapshot_id_consistent = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "snapshot_id_consistent" -DefaultValue $false)
+        snapshot_chain_consistent = ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "")) -or ([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "") -eq $candidateSnapshotId))
     }
     Sync-SplitPolicyState
+    $report.steps.train.fusion_run_id = $candidateRunId
+    $report.steps.train.fusion_snapshot_id = $candidateSnapshotId
+    $report.steps.train.dependency_trainer_run_ids = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_run_ids" -DefaultValue @()))
+    $report.steps.train.dependency_trainer_model_families = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_model_families" -DefaultValue @()))
+    $report.steps.train.dependency_snapshot_id = [string](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id" -DefaultValue "")
+    $report.steps.train.snapshot_chain_consistent = [bool](Get-PropValue -ObjectValue $report.candidate -Name "snapshot_chain_consistent" -DefaultValue $true)
     $report.steps.train.duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
     $report.steps.train.duplicate_candidate_artifacts = $duplicateCandidateArtifacts
+
+    if ((@($DependencyTrainers).Count -gt 0) -and (-not [bool](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id_consistent" -DefaultValue $false))) {
+        $report.reasons = @("DEPENDENCY_TRAINER_SNAPSHOT_CHAIN_INCONSISTENT")
+        $report.gates.overall_pass = $false
+        Update-RunArtifactStatus `
+            -RunDir $candidateRunDir `
+            -RunId $candidateRunId `
+            -Status "acceptance_incomplete" `
+            -AcceptanceCompleted $false `
+            -CandidateAdoptable $false `
+            -CandidateAdopted $false `
+            -Promoted $false | Out-Null
+        $paths = Save-Report
+        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+        exit 2
+    }
+    if ((@($DependencyTrainers).Count -gt 0) -and (-not [bool](Get-PropValue -ObjectValue $report.candidate -Name "snapshot_chain_consistent" -DefaultValue $true))) {
+        $report.reasons = @("FUSION_SNAPSHOT_ID_MISMATCH")
+        $report.gates.overall_pass = $false
+        Update-RunArtifactStatus `
+            -RunDir $candidateRunDir `
+            -RunId $candidateRunId `
+            -Status "acceptance_incomplete" `
+            -AcceptanceCompleted $false `
+            -CandidateAdoptable $false `
+            -CandidateAdopted $false `
+            -Promoted $false | Out-Null
+        $paths = Save-Report
+        Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+        exit 2
+    }
 
     if (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false) {
         $report.steps.backtest_candidate = [ordered]@{

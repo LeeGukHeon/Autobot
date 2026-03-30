@@ -301,8 +301,11 @@ def finalize_v5_expert_family_run(
     data_platform_ready_snapshot_id: str | None,
     resumed: bool,
     tail_started_at: float,
+    publish_global_latest: bool = False,
 ) -> Path:
     update_latest_pointer(registry_root, model_family, run_id)
+    if publish_global_latest:
+        update_latest_pointer(registry_root, "_global", run_id, family=model_family)
     update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
     report = dict(report_payload)
     report["status"] = str(report.get("status", "candidate")).strip() or "candidate"

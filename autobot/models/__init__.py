@@ -48,6 +48,7 @@ from .train_v5_lob import (
 from .train_v5_fusion import (
     TrainV5FusionOptions,
     TrainV5FusionResult,
+    resume_v5_fusion_tail,
     train_and_register_v5_fusion,
 )
 from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
@@ -88,6 +89,7 @@ __all__ = [
     "train_and_register_v5_lob",
     "TrainV5FusionOptions",
     "TrainV5FusionResult",
+    "resume_v5_fusion_tail",
     "train_and_register_v5_fusion",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import numpy as np
@@ -16,18 +17,26 @@ from autobot import __version__ as autobot_version
 from .entry_boundary import build_risk_calibrated_entry_boundary
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
-from .registry import RegistrySavePayload, load_json, make_run_id, save_run, update_artifact_status, update_latest_pointer
+from .registry import RegistrySavePayload, load_json, load_model_bundle, make_run_id, save_run, update_artifact_status, update_latest_pointer
 from .runtime_feature_dataset import write_runtime_feature_dataset
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
-from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
+from .v5_expert_tail import (
+    build_v5_expert_tail_context,
+    expert_tail_context_path,
+    finalize_v5_expert_family_run,
+    resolve_existing_v5_expert_tail_artifacts,
+    run_or_reuse_v5_runtime_governance_artifacts,
+)
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 
 VALID_FUSION_STACKERS = ("linear", "monotone_gbdt")
+_FUSION_INPUT_CONTRACT_FILENAME = "fusion_input_contract.json"
+_FUSION_ENTRY_BOUNDARY_STATUS_KEY = "entry_boundary_complete"
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,14 @@ class TrainV5FusionResult:
     fusion_model_contract_path: Path
     predictor_contract_path: Path
     entry_boundary_contract_path: Path
+
+
+@dataclass(frozen=True)
+class _FusionInputBundle:
+    merged: pl.DataFrame
+    input_contract: dict[str, Any]
+    feature_names: tuple[str, ...]
+    monotone_signs: tuple[int, ...]
 
 
 @dataclass
@@ -102,16 +119,294 @@ class V5FusionEstimator:
         }
 
 
-def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5FusionResult:
-    stacker_family = str(options.stacker_family).strip().lower()
-    if stacker_family not in VALID_FUSION_STACKERS:
-        raise ValueError(f"stacker_family must be one of: {', '.join(VALID_FUSION_STACKERS)}")
+def _fusion_input_contract_path(run_dir: Path) -> Path:
+    return run_dir / _FUSION_INPUT_CONTRACT_FILENAME
 
-    run_id = make_run_id(seed=options.seed)
-    merged = _load_and_merge_expert_tables(options)
-    if merged.height <= 0:
-        raise ValueError("fusion inputs produced no aligned rows")
 
+def _fusion_entry_boundary_path(run_dir: Path) -> Path:
+    return run_dir / "entry_boundary_contract.json"
+
+
+def _normalize_support_level_summary(frame: pl.DataFrame) -> dict[str, int]:
+    if "support_level" not in frame.columns:
+        return {}
+    counts: dict[str, int] = {}
+    for row in frame.group_by("support_level").len().iter_rows(named=True):
+        key = str(row.get("support_level") or "").strip()
+        if not key:
+            continue
+        counts[key] = int(row.get("len", 0) or 0)
+    return counts
+
+
+def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
+    resolved_path = Path(path).resolve()
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"{prefix} input parquet missing: {resolved_path}")
+    run_dir = resolved_path.parent
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise FileNotFoundError(f"{prefix} input missing train_config.yaml: {run_dir}")
+    runtime_recommendations = load_json(run_dir / "runtime_recommendations.json")
+    return {
+        "prefix": prefix,
+        "path": str(resolved_path),
+        "run_dir": str(run_dir),
+        "run_id": run_dir.name,
+        "model_family": str(train_config.get("model_family") or "").strip() or run_dir.parent.name,
+        "trainer": str(train_config.get("trainer") or "").strip(),
+        "data_platform_ready_snapshot_id": str(train_config.get("data_platform_ready_snapshot_id") or "").strip(),
+        "runtime_recommendations": dict(runtime_recommendations or {}),
+    }
+
+
+def _required_input_columns(prefix: str) -> tuple[str, ...]:
+    if prefix == "panel":
+        return (
+            "market",
+            "ts_ms",
+            "split",
+            "y_cls",
+            "y_reg",
+            "final_rank_score",
+            "final_expected_return",
+            "final_expected_es",
+            "final_tradability",
+            "final_uncertainty",
+            "final_alpha_lcb",
+        )
+    if prefix == "sequence":
+        return (
+            "market",
+            "ts_ms",
+            "split",
+            "y_cls",
+            "y_reg",
+            "directional_probability_primary",
+            "sequence_uncertainty_primary",
+        )
+    if prefix == "lob":
+        return (
+            "market",
+            "ts_ms",
+            "split",
+            "y_cls",
+            "y_reg",
+            "micro_alpha_1s",
+            "micro_alpha_5s",
+            "micro_alpha_30s",
+            "micro_uncertainty",
+        )
+    raise ValueError(f"unsupported fusion input prefix: {prefix}")
+
+
+def _assert_required_input_columns(frame: pl.DataFrame, *, prefix: str) -> None:
+    missing = [name for name in _required_input_columns(prefix) if name not in frame.columns]
+    if missing:
+        raise ValueError(f"{prefix} fusion input missing required columns: {', '.join(missing)}")
+
+
+def _assert_no_duplicate_input_rows(frame: pl.DataFrame, *, prefix: str) -> None:
+    duplicates = frame.group_by(["market", "ts_ms"]).len().filter(pl.col("len") > 1)
+    if duplicates.height > 0:
+        raise ValueError(f"{prefix} fusion input contains duplicate (market, ts_ms) rows")
+
+
+def _support_level_indicator_columns(frame: pl.DataFrame, *, prefix: str) -> list[pl.Expr]:
+    if "support_level" not in frame.columns:
+        return []
+    base = pl.col("support_level").cast(pl.Utf8).fill_null("")
+    return [
+        base.eq("strict_full").cast(pl.Float64).alias(f"{prefix}_support_is_strict"),
+        base.eq("reduced_context").cast(pl.Float64).alias(f"{prefix}_support_is_reduced"),
+        (
+            pl.when(base.eq("strict_full"))
+            .then(2.0)
+            .when(base.eq("reduced_context"))
+            .then(1.0)
+            .otherwise(0.0)
+        ).cast(pl.Float64).alias(f"{prefix}_support_score"),
+    ]
+
+
+def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[str, Any]]:
+    frame = pl.read_parquet(path)
+    _assert_required_input_columns(frame, prefix=prefix)
+    _assert_no_duplicate_input_rows(frame, prefix=prefix)
+    metadata = _load_fusion_input_metadata(path=path, prefix=prefix)
+    metadata["rows"] = int(frame.height)
+    metadata["support_level_counts"] = _normalize_support_level_summary(frame)
+    renamed: list[pl.Expr] = [pl.col("market"), pl.col("ts_ms")]
+    if prefix == "panel":
+        renamed.extend(
+            [
+                pl.col("split"),
+                pl.col("y_cls"),
+                pl.col("y_reg"),
+            ]
+        )
+    else:
+        renamed.extend(
+            [
+                pl.col("split").alias(f"split_{prefix}"),
+                pl.col("y_cls").alias(f"y_cls_{prefix}"),
+                pl.col("y_reg").alias(f"y_reg_{prefix}"),
+            ]
+        )
+    renamed.extend(_support_level_indicator_columns(frame, prefix=prefix))
+    for column in frame.columns:
+        if column in {"market", "ts_ms", "split", "y_cls", "y_reg", "support_level"}:
+            continue
+        dtype = frame.schema.get(column)
+        if dtype is None:
+            continue
+        if dtype.is_numeric():
+            renamed.append(pl.col(column).cast(pl.Float64).alias(f"{prefix}_{column}"))
+    return frame.select(renamed), metadata
+
+
+def _assert_consistent_targets(merged: pl.DataFrame) -> None:
+    checks = (
+        ("split", "split_sequence"),
+        ("split", "split_lob"),
+        ("y_cls", "y_cls_sequence"),
+        ("y_cls", "y_cls_lob"),
+        ("y_reg", "y_reg_sequence"),
+        ("y_reg", "y_reg_lob"),
+    )
+    for left, right in checks:
+        if left not in merged.columns or right not in merged.columns:
+            continue
+        mismatch = merged.filter(
+            pl.col(left).is_not_null() & pl.col(right).is_not_null() & (pl.col(left) != pl.col(right))
+        )
+        if mismatch.height > 0:
+            raise ValueError(f"fusion target alignment mismatch: {left} vs {right}")
+
+
+def _resolve_fusion_monotone_sign(feature_name: str) -> int:
+    name = str(feature_name).strip().lower()
+    if not name:
+        return 0
+    if "present" in name or "support_" in name or "regime_embedding" in name:
+        return 0
+    negative_tokens = (
+        "uncertainty",
+        "expected_es",
+        "adverse_excursion",
+        "score_std",
+    )
+    if any(token in name for token in negative_tokens):
+        return -1
+    positive_tokens = (
+        "final_rank_score",
+        "score_mean",
+        "directional_probability",
+        "micro_alpha",
+        "return_quantile",
+        "final_expected_return",
+        "final_tradability",
+        "final_alpha_lcb",
+    )
+    if any(token in name for token in positive_tokens):
+        return 1
+    return 0
+
+
+def _build_fusion_numeric_feature_contract(merged: pl.DataFrame) -> tuple[tuple[str, ...], tuple[int, ...], dict[str, Any]]:
+    excluded = {"market", "ts_ms", "split", "y_cls", "y_reg", "y_es_proxy", "y_tradability_target"}
+    feature_names: list[str] = []
+    excluded_non_numeric: list[str] = []
+    monotone_signs: list[int] = []
+    for column, dtype in merged.schema.items():
+        if column in excluded:
+            continue
+        if not dtype.is_numeric():
+            excluded_non_numeric.append(column)
+            continue
+        feature_names.append(column)
+        monotone_signs.append(_resolve_fusion_monotone_sign(column))
+    return tuple(feature_names), tuple(monotone_signs), {
+        "excluded_non_numeric_columns": excluded_non_numeric,
+        "feature_columns": list(feature_names),
+        "monotone_sign_map": {name: sign for name, sign in zip(feature_names, monotone_signs, strict=False)},
+    }
+
+
+def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInputBundle:
+    panel, panel_meta = _load_expert_table(options.panel_input_path, prefix="panel")
+    sequence, sequence_meta = _load_expert_table(options.sequence_input_path, prefix="sequence")
+    lob, lob_meta = _load_expert_table(options.lob_input_path, prefix="lob")
+    snapshot_ids = {
+        str(panel_meta.get("data_platform_ready_snapshot_id") or "").strip(),
+        str(sequence_meta.get("data_platform_ready_snapshot_id") or "").strip(),
+        str(lob_meta.get("data_platform_ready_snapshot_id") or "").strip(),
+    }
+    if "" in snapshot_ids or len(snapshot_ids) != 1:
+        raise ValueError("fusion inputs must come from the same non-empty data_platform_ready_snapshot_id")
+    merged = panel.join(sequence, on=["market", "ts_ms"], how="full", coalesce=True)
+    merged = merged.join(lob, on=["market", "ts_ms"], how="full", coalesce=True)
+    _assert_consistent_targets(merged)
+    merged = merged.with_columns(
+        pl.coalesce(["split", "split_sequence", "split_lob"]).alias("split"),
+        pl.coalesce(["y_cls", "y_cls_sequence", "y_cls_lob"]).cast(pl.Int64).alias("y_cls"),
+        pl.coalesce(["y_reg", "y_reg_sequence", "y_reg_lob"]).cast(pl.Float64).alias("y_reg"),
+        pl.col("panel_final_rank_score").is_not_null().cast(pl.Float64).alias("panel_present"),
+        pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Float64).alias("sequence_present"),
+        pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Float64).alias("lob_present"),
+    )
+    expert_value_columns = [
+        name
+        for name, dtype in merged.schema.items()
+        if (name.startswith("panel_") or name.startswith("sequence_") or name.startswith("lob_"))
+        and dtype.is_numeric()
+    ]
+    if expert_value_columns:
+        merged = merged.with_columns([pl.col(name).fill_null(0.0) for name in expert_value_columns])
+    merged = merged.drop(
+        [
+            name
+            for name in ("split_sequence", "split_lob", "y_cls_sequence", "y_cls_lob", "y_reg_sequence", "y_reg_lob")
+            if name in merged.columns
+        ]
+    )
+    merged = merged.filter(pl.col("split").is_not_null() & pl.col("y_cls").is_not_null() & pl.col("y_reg").is_not_null())
+    merged = merged.with_columns(
+        pl.when(pl.col("y_reg") < 0.0).then(pl.col("y_reg").abs()).otherwise(0.0).alias("y_es_proxy"),
+        (
+            (pl.col("y_reg") > 0.0)
+            & (
+                pl.col("y_reg").abs()
+                >= pl.when(pl.col("y_reg") < 0.0).then(pl.col("y_reg").abs()).otherwise(0.0)
+            )
+        )
+        .cast(pl.Int64)
+        .alias("y_tradability_target"),
+    )
+    feature_names, monotone_signs, feature_contract = _build_fusion_numeric_feature_contract(merged)
+    input_contract = {
+        "policy": "v5_fusion_input_contract_v1",
+        "keys": ["market", "ts_ms", "split"],
+        "snapshot_id": str(next(iter(snapshot_ids))),
+        "inputs": {
+            "panel": panel_meta,
+            "sequence": sequence_meta,
+            "lob": lob_meta,
+        },
+        "feature_contract": feature_contract,
+        "rows_after_merge": int(merged.height),
+    }
+    return _FusionInputBundle(
+        merged=merged.sort(["ts_ms", "market"]),
+        input_contract=input_contract,
+        feature_names=feature_names,
+        monotone_signs=monotone_signs,
+    )
+
+
+def _prepare_fusion_input_bundle(options: TrainV5FusionOptions) -> _FusionInputBundle:
+    input_bundle = _load_and_merge_expert_tables(options)
+    merged = input_bundle.merged
     start_ts_ms = _parse_date_to_ts_ms(options.start)
     end_ts_ms = _parse_date_to_ts_ms(options.end, end_of_day=True)
     if start_ts_ms is not None:
@@ -120,10 +415,196 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         merged = merged.filter(pl.col("ts_ms") <= int(end_ts_ms))
     if merged.height <= 0:
         raise ValueError("fusion inputs have no rows in the requested range")
-
-    feature_names = tuple(
-        col for col in merged.columns if col not in {"market", "ts_ms", "split", "y_cls", "y_reg", "y_es_proxy", "y_tradability_target"}
+    input_contract = dict(input_bundle.input_contract)
+    input_contract["rows_after_date_filter"] = int(merged.height)
+    return _FusionInputBundle(
+        merged=merged,
+        input_contract=input_contract,
+        feature_names=input_bundle.feature_names,
+        monotone_signs=input_bundle.monotone_signs,
     )
+
+
+def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, input_contract: dict[str, Any]) -> dict[str, Any]:
+    upstream_inputs = dict(input_contract.get("inputs") or {})
+    upstream_runtime_context: dict[str, Any] = {}
+    for key in ("panel", "sequence", "lob"):
+        payload = dict(upstream_inputs.get(key) or {})
+        upstream_runtime_context[key] = dict(payload.get("runtime_recommendations") or {})
+    return {
+        "status": "fusion_runtime_ready",
+        "source_family": "train_v5_fusion",
+        "entry_boundary_enabled": True,
+        "upstream_experts": {
+            key: {
+                "run_id": str((upstream_inputs.get(key) or {}).get("run_id") or "").strip(),
+                "model_family": str((upstream_inputs.get(key) or {}).get("model_family") or "").strip(),
+                "data_platform_ready_snapshot_id": str(
+                    (upstream_inputs.get(key) or {}).get("data_platform_ready_snapshot_id") or ""
+                ).strip(),
+            }
+            for key in ("panel", "sequence", "lob")
+        },
+        "upstream_runtime_context": upstream_runtime_context,
+    }
+
+
+def _build_v5_fusion_tail_context(
+    *,
+    run_id: str,
+    options: TrainV5FusionOptions,
+    data_platform_ready_snapshot_id: str | None,
+    runtime_dataset_root: Path,
+    input_contract: dict[str, Any],
+) -> dict[str, Any]:
+    return build_v5_expert_tail_context(
+        run_id=run_id,
+        trainer_name="v5_fusion",
+        model_family=options.model_family,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        dataset_root=runtime_dataset_root,
+        source_dataset_root=Path("fusion_oof_tables"),
+        runtime_dataset_root=runtime_dataset_root,
+        selected_markets=tuple(),
+        support_level_counts={},
+        run_scope=options.run_scope,
+    ) | {
+        "panel_run_id": str(((input_contract.get("inputs") or {}).get("panel") or {}).get("run_id") or "").strip(),
+        "sequence_run_id": str(((input_contract.get("inputs") or {}).get("sequence") or {}).get("run_id") or "").strip(),
+        "lob_run_id": str(((input_contract.get("inputs") or {}).get("lob") or {}).get("run_id") or "").strip(),
+        "panel_input_path": str(options.panel_input_path),
+        "sequence_input_path": str(options.sequence_input_path),
+        "lob_input_path": str(options.lob_input_path),
+    }
+
+
+def _resolve_existing_v5_fusion_tail_artifacts(*, run_dir: Path, tail_context: dict[str, Any]) -> dict[str, Any]:
+    payload = resolve_existing_v5_expert_tail_artifacts(run_dir=run_dir, tail_context=tail_context)
+    artifacts = dict(payload.get("artifacts") or {})
+    artifacts["entry_boundary_contract_path"] = {
+        "path": _fusion_entry_boundary_path(run_dir),
+        "exists": _fusion_entry_boundary_path(run_dir).exists(),
+        "payload": load_json(_fusion_entry_boundary_path(run_dir)) if _fusion_entry_boundary_path(run_dir).exists() else None,
+    }
+    artifacts["fusion_input_contract_path"] = {
+        "path": _fusion_input_contract_path(run_dir),
+        "exists": _fusion_input_contract_path(run_dir).exists(),
+        "payload": load_json(_fusion_input_contract_path(run_dir)) if _fusion_input_contract_path(run_dir).exists() else None,
+    }
+    payload["artifacts"] = artifacts
+    return payload
+
+
+def _fusion_tail_stage_reusable(*, existing_tail_artifacts: dict[str, Any], stage_name: str) -> bool:
+    if stage_name == "entry_boundary":
+        if not bool(existing_tail_artifacts.get("context_matches", False)):
+            return False
+        artifacts = dict(existing_tail_artifacts.get("artifacts") or {})
+        return bool((artifacts.get("entry_boundary_contract_path") or {}).get("payload"))
+    if stage_name == "fusion_input_contract":
+        if not bool(existing_tail_artifacts.get("context_matches", False)):
+            return False
+        artifacts = dict(existing_tail_artifacts.get("artifacts") or {})
+        return bool((artifacts.get("fusion_input_contract_path") or {}).get("payload"))
+    return False
+
+
+def _run_fusion_tail(
+    *,
+    run_dir: Path,
+    run_id: str,
+    options: TrainV5FusionOptions,
+    metrics: dict[str, Any],
+    valid_metrics: dict[str, Any],
+    test_metrics: dict[str, Any],
+    data_platform_ready_snapshot_id: str | None,
+    runtime_dataset_root: Path,
+    input_contract: dict[str, Any],
+    runtime_recommendations: dict[str, Any],
+    promotion_payload: dict[str, Any],
+    entry_boundary: dict[str, Any],
+    resumed: bool,
+) -> tuple[dict[str, Any], Path]:
+    tail_started_at = time.time()
+    tail_context = _build_v5_fusion_tail_context(
+        run_id=run_id,
+        options=options,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        runtime_dataset_root=runtime_dataset_root,
+        input_contract=input_contract,
+    )
+    existing_tail_artifacts = _resolve_existing_v5_fusion_tail_artifacts(
+        run_dir=run_dir,
+        tail_context=tail_context,
+    )
+    _fusion_input_contract_path(run_dir).write_text(
+        json.dumps(dict(input_contract), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    Path(expert_tail_context_path(run_dir)).write_text(
+        json.dumps(dict(tail_context), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    update_artifact_status(run_dir, tail_context_written=True)
+    if not _fusion_tail_stage_reusable(existing_tail_artifacts=existing_tail_artifacts, stage_name="entry_boundary"):
+        _fusion_entry_boundary_path(run_dir).write_text(
+            json.dumps(dict(entry_boundary), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    runtime_artifacts = run_or_reuse_v5_runtime_governance_artifacts(
+        run_dir=run_dir,
+        trainer_name="v5_fusion",
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+        metrics=metrics,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion_payload,
+        trainer_research_reasons=["FUSION_RUNTIME_CONTRACT_READY"],
+        tail_context=tail_context,
+        existing_tail_artifacts=existing_tail_artifacts,
+        resumed=resumed,
+    )
+    report_path = finalize_v5_expert_family_run(
+        run_dir=run_dir,
+        run_id=run_id,
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        logs_root=options.logs_root,
+        report_name="train_v5_fusion_report.json",
+        report_payload={
+            "run_id": run_id,
+            "status": "candidate",
+            "leaderboard_row": load_json(run_dir / "leaderboard_row.json"),
+            "valid_metrics": valid_metrics,
+            "test_metrics": test_metrics,
+            "runtime_dataset_root": str(runtime_dataset_root),
+            "entry_boundary_contract_path": str(_fusion_entry_boundary_path(run_dir)),
+            "fusion_input_contract_path": str(_fusion_input_contract_path(run_dir)),
+        },
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        resumed=resumed,
+        tail_started_at=tail_started_at,
+        publish_global_latest=(str(options.run_scope).strip().lower() == "scheduled_daily"),
+    )
+    return runtime_artifacts, report_path
+
+def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5FusionResult:
+    stacker_family = str(options.stacker_family).strip().lower()
+    if stacker_family not in VALID_FUSION_STACKERS:
+        raise ValueError(f"stacker_family must be one of: {', '.join(VALID_FUSION_STACKERS)}")
+
+    run_id = make_run_id(seed=options.seed)
+    input_bundle = _prepare_fusion_input_bundle(options)
+    merged = input_bundle.merged
+    if merged.height <= 0:
+        raise ValueError("fusion inputs produced no aligned rows")
+    start_ts_ms = _parse_date_to_ts_ms(options.start)
+    end_ts_ms = _parse_date_to_ts_ms(options.end, end_of_day=True)
+
+    feature_names = tuple(input_bundle.feature_names)
+    if not feature_names:
+        raise ValueError("fusion inputs produced no numeric feature columns")
+    monotone_signs = tuple(int(item) for item in input_bundle.monotone_signs)
     x = merged.select(list(feature_names)).to_numpy().astype(np.float64, copy=False)
     y_cls = merged.get_column("y_cls").to_numpy().astype(np.int64, copy=False)
     y_reg = merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False)
@@ -146,14 +627,44 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     if not np.any(train_mask) or not np.any(valid_mask) or not np.any(test_mask):
         raise ValueError("fusion trainer requires non-empty train/valid/test rows")
 
-    score_model = _fit_binary_head(x[train_mask], y_cls[train_mask], stacker_family=stacker_family, seed=options.seed)
-    return_model = _fit_reg_head(x[train_mask], y_reg[train_mask], stacker_family=stacker_family, seed=options.seed + 1)
-    es_model = _fit_reg_head(x[train_mask], y_es[train_mask], stacker_family=stacker_family, seed=options.seed + 2)
-    tradability_model = _fit_binary_head(x[train_mask], y_tradability[train_mask], stacker_family=stacker_family, seed=options.seed + 3)
+    score_model = _fit_binary_head(
+        x[train_mask],
+        y_cls[train_mask],
+        stacker_family=stacker_family,
+        seed=options.seed,
+        monotone_signs=monotone_signs,
+    )
+    return_model = _fit_reg_head(
+        x[train_mask],
+        y_reg[train_mask],
+        stacker_family=stacker_family,
+        seed=options.seed + 1,
+        monotone_signs=monotone_signs,
+    )
+    es_model = _fit_reg_head(
+        x[train_mask],
+        y_es[train_mask],
+        stacker_family=stacker_family,
+        seed=options.seed + 2,
+        monotone_signs=tuple(-1 if sign == 1 else (1 if sign == -1 else 0) for sign in monotone_signs),
+    )
+    tradability_model = _fit_binary_head(
+        x[train_mask],
+        y_tradability[train_mask],
+        stacker_family=stacker_family,
+        seed=options.seed + 3,
+        monotone_signs=monotone_signs,
+    )
 
     valid_return_pred = np.asarray(return_model.predict(x[valid_mask]), dtype=np.float64)
     uncertainty_target = np.abs(y_reg[valid_mask] - valid_return_pred)
-    uncertainty_model = _fit_reg_head(x[valid_mask], uncertainty_target, stacker_family="linear", seed=options.seed + 4)
+    uncertainty_model = _fit_reg_head(
+        x[valid_mask],
+        uncertainty_target,
+        stacker_family="linear",
+        seed=options.seed + 4,
+        monotone_signs=tuple(0 for _ in feature_names),
+    )
 
     estimator = V5FusionEstimator(
         score_model=score_model,
@@ -196,6 +707,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
             "stacker_family": stacker_family,
             "input_experts": ["panel", "sequence", "lob"],
             "outputs": ["final_rank_score", "final_expected_return", "final_expected_es", "final_tradability", "final_uncertainty", "final_alpha_lcb"],
+            "feature_columns": list(feature_names),
         },
     }
     leaderboard_row = {
@@ -227,7 +739,8 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "lob_input_sha256": _sha256_file(options.lob_input_path),
         "sample_count": int(merged.height),
         "code_version": autobot_version,
-        "data_platform_ready_snapshot_id": resolve_ready_snapshot_id(project_root=Path.cwd()),
+        "data_platform_ready_snapshot_id": str(input_bundle.input_contract.get("snapshot_id") or "").strip()
+        or resolve_ready_snapshot_id(project_root=Path.cwd()),
     }
     model_card = render_model_card(
         run_id=run_id,
@@ -251,8 +764,12 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "feature_columns": list(feature_names),
         "autobot_version": autobot_version,
         "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
+        "fusion_input_contract_path": str(_fusion_input_contract_path(options.registry_root / options.model_family / run_id)),
     }
-    runtime_recommendations = _load_inherited_runtime_recommendations(options.panel_input_path)
+    runtime_recommendations = _build_fusion_runtime_recommendations(
+        options=options,
+        input_contract=input_bundle.input_contract,
+    )
     run_dir = save_run(
         RegistrySavePayload(
             registry_root=options.registry_root,
@@ -283,10 +800,12 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "policy": "v5_fusion_v1",
                 "stacker_family": stacker_family,
                 "input_experts": {
-                    "panel": str(options.panel_input_path),
-                    "sequence": str(options.sequence_input_path),
-                    "lob": str(options.lob_input_path),
+                    "panel": dict((input_bundle.input_contract.get("inputs") or {}).get("panel") or {}),
+                    "sequence": dict((input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}),
+                    "lob": dict((input_bundle.input_contract.get("inputs") or {}).get("lob") or {}),
                 },
+                "feature_columns": list(feature_names),
+                "monotone_sign_map": dict(input_bundle.input_contract.get("feature_contract", {}).get("monotone_sign_map") or {}),
                 "outputs": {
                     "final_rank_score": "final_rank_score",
                     "final_expected_return": "final_expected_return",
@@ -316,6 +835,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "final_expected_es_field": "final_expected_es",
                 "final_tradability_field": "final_tradability",
                 "final_alpha_lcb_field": "final_alpha_lcb",
+                "feature_columns": list(feature_names),
             },
             ensure_ascii=False,
             indent=2,
@@ -347,8 +867,6 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         },
         "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
     }
-    entry_boundary_contract_path = run_dir / "entry_boundary_contract.json"
-    entry_boundary_contract_path.write_text(json.dumps(entry_boundary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
         tf="5m",
@@ -361,48 +879,21 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         y_rank=y_reg,
         sample_weight=np.ones(merged.height, dtype=np.float64),
     )
-    runtime_artifacts = persist_v5_runtime_governance_artifacts(
+    runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
-        trainer_name="v5_fusion",
-        model_family=options.model_family,
-        run_scope=options.run_scope,
+        run_id=run_id,
+        options=options,
         metrics=metrics,
+        valid_metrics=valid_metrics,
+        test_metrics=test_metrics,
+        data_platform_ready_snapshot_id=data_fingerprint.get("data_platform_ready_snapshot_id"),
+        runtime_dataset_root=runtime_dataset_written_root,
+        input_contract=input_bundle.input_contract | {"feature_contract": input_bundle.input_contract.get("feature_contract", {})},
         runtime_recommendations=runtime_recommendations,
-        promotion=promotion_payload,
-        trainer_research_reasons=["FUSION_RUNTIME_CONTRACT_READY"],
+        promotion_payload=promotion_payload,
+        entry_boundary=entry_boundary,
+        resumed=False,
     )
-    update_artifact_status(
-        run_dir,
-        status="trainer_artifacts_complete",
-        execution_acceptance_complete=True,
-        runtime_recommendations_complete=True,
-        governance_artifacts_complete=True,
-    )
-    train_report_path = options.logs_root / "train_v5_fusion_report.json"
-    train_report_path.parent.mkdir(parents=True, exist_ok=True)
-    train_report_path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "status": "candidate",
-                "leaderboard_row": leaderboard_row,
-                "valid_metrics": valid_metrics,
-                "test_metrics": test_metrics,
-                "runtime_dataset_root": str(runtime_dataset_written_root),
-                "entry_boundary_contract_path": str(entry_boundary_contract_path),
-                "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    update_latest_pointer(options.registry_root, options.model_family, run_id)
-    if str(options.run_scope).strip().lower() == "scheduled_daily":
-        update_latest_pointer(options.registry_root, "_global", run_id, family=options.model_family)
-    update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
     return TrainV5FusionResult(
         run_id=run_id,
         run_dir=run_dir,
@@ -415,78 +906,122 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         walk_forward_report_path=walk_forward_report_path,
         fusion_model_contract_path=fusion_model_contract_path,
         predictor_contract_path=predictor_contract_path,
-        entry_boundary_contract_path=entry_boundary_contract_path,
+        entry_boundary_contract_path=_fusion_entry_boundary_path(run_dir),
     )
 
 
-def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> pl.DataFrame:
-    panel = _load_expert_table(options.panel_input_path, prefix="panel")
-    sequence = _load_expert_table(options.sequence_input_path, prefix="sequence")
-    lob = _load_expert_table(options.lob_input_path, prefix="lob")
-    merged = panel.join(sequence, on=["market", "ts_ms"], how="full", coalesce=True)
-    merged = merged.join(lob, on=["market", "ts_ms"], how="full", coalesce=True)
-    merged = merged.with_columns(
-        pl.coalesce(["split", "split_sequence", "split_lob"]).alias("split"),
-        pl.coalesce(["y_cls", "y_cls_sequence", "y_cls_lob"]).cast(pl.Int64).alias("y_cls"),
-        pl.coalesce(["y_reg", "y_reg_sequence", "y_reg_lob"]).cast(pl.Float64).alias("y_reg"),
-        pl.col("panel_final_rank_score").is_not_null().cast(pl.Int64).alias("panel_present"),
-        pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Int64).alias("sequence_present"),
-        pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Int64).alias("lob_present"),
+def _options_from_v5_fusion_train_config(train_config: dict[str, Any]) -> TrainV5FusionOptions:
+    base = dict(train_config or {})
+    return TrainV5FusionOptions(
+        panel_input_path=Path(str(base["panel_input_path"])),
+        sequence_input_path=Path(str(base["sequence_input_path"])),
+        lob_input_path=Path(str(base["lob_input_path"])),
+        registry_root=Path(str(base["registry_root"])),
+        logs_root=Path(str(base["logs_root"])),
+        model_family=str(base["model_family"]),
+        quote=str(base["quote"]),
+        start=str(base["start"]),
+        end=str(base["end"]),
+        seed=int(base["seed"]),
+        stacker_family=str(base.get("stacker_family", "linear")),
+        run_scope=str(base.get("run_scope", "manual_fusion_expert")),
     )
-    expert_value_columns = [
-        name
-        for name in merged.columns
-        if name.startswith("panel_") or name.startswith("sequence_") or name.startswith("lob_")
-    ]
-    if expert_value_columns:
-        merged = merged.with_columns([pl.col(name).fill_null(0.0) for name in expert_value_columns])
-    merged = merged.drop([name for name in ("split_sequence", "split_lob", "y_cls_sequence", "y_cls_lob", "y_reg_sequence", "y_reg_lob") if name in merged.columns])
-    merged = merged.filter(pl.col("split").is_not_null() & pl.col("y_cls").is_not_null() & pl.col("y_reg").is_not_null())
-    merged = merged.with_columns(
-        pl.when(pl.col("y_reg") < 0.0).then(pl.col("y_reg").abs()).otherwise(0.0).alias("y_es_proxy"),
-        (
-            (pl.col("y_reg") > 0.0)
-            & (
-                pl.col("y_reg").abs()
-                >= pl.when(pl.col("y_reg") < 0.0).then(pl.col("y_reg").abs()).otherwise(0.0)
-            )
+
+
+def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
+    run_dir = Path(run_dir).resolve()
+    if not run_dir.exists():
+        raise FileNotFoundError(f"run_dir not found: {run_dir}")
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
+    options = _options_from_v5_fusion_train_config(train_config)
+    model_bundle = load_model_bundle(run_dir)
+    estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
+    if estimator is None:
+        raise ValueError(f"run_dir does not contain a usable fusion estimator: {run_dir}")
+    metrics = load_json(run_dir / "metrics.json")
+    thresholds = load_json(run_dir / "thresholds.json")
+    leaderboard_row = load_json(run_dir / "leaderboard_row.json")
+    walk_forward_report_path = run_dir / "walk_forward_report.json"
+    walk_forward_report = load_json(walk_forward_report_path)
+    valid_metrics = dict((walk_forward_report.get("valid_metrics") or {}))
+    test_metrics = dict((walk_forward_report.get("test_metrics") or {}))
+    data_platform_ready_snapshot_id = (
+        str(train_config.get("data_platform_ready_snapshot_id") or "").strip()
+        or resolve_ready_snapshot_id(project_root=Path.cwd())
+    )
+    input_bundle = _prepare_fusion_input_bundle(options)
+    merged = input_bundle.merged
+    x = merged.select(list(input_bundle.feature_names)).to_numpy().astype(np.float64, copy=False)
+    if "split" in merged.columns:
+        labels = merged.get_column("split").to_numpy()
+        masks = split_masks(labels)
+    else:
+        labels, _ = compute_time_splits(
+            merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False),
+            train_ratio=0.6,
+            valid_ratio=0.2,
+            test_ratio=0.2,
+            embargo_bars=0,
+            interval_ms=60_000,
         )
-        .cast(pl.Int64)
-        .alias("y_tradability_target"),
+        masks = split_masks(labels)
+    valid_mask = masks["valid"]
+    y_reg = merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False)
+    valid_contract = estimator.predict_panel_contract(x[valid_mask])
+    entry_boundary = build_risk_calibrated_entry_boundary(
+        final_rank_score=valid_contract["final_rank_score"],
+        final_expected_return=valid_contract["final_expected_return"],
+        final_expected_es=valid_contract["final_expected_es"],
+        final_tradability=valid_contract["final_tradability"],
+        final_uncertainty=valid_contract["final_uncertainty"],
+        final_alpha_lcb=valid_contract["final_alpha_lcb"],
+        realized_return=y_reg[valid_mask],
     )
-    return merged.sort(["ts_ms", "market"])
+    runtime_dataset_root = Path(str(train_config.get("dataset_root") or run_dir / "runtime_feature_dataset"))
+    runtime_recommendations = _build_fusion_runtime_recommendations(
+        options=options,
+        input_contract=input_bundle.input_contract,
+    )
+    promotion_payload = load_json(run_dir / "promotion_decision.json") or {
+        "run_id": run_dir.name,
+        "promote": False,
+        "status": "candidate",
+        "reasons": ["CANDIDATE_ACCEPTANCE_REQUIRED"],
+    }
+    runtime_artifacts, train_report_path = _run_fusion_tail(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        options=options,
+        metrics=metrics,
+        valid_metrics=valid_metrics,
+        test_metrics=test_metrics,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        runtime_dataset_root=runtime_dataset_root,
+        input_contract=input_bundle.input_contract,
+        runtime_recommendations=runtime_recommendations,
+        promotion_payload=promotion_payload,
+        entry_boundary=entry_boundary,
+        resumed=True,
+    )
+    return TrainV5FusionResult(
+        run_id=run_dir.name,
+        run_dir=run_dir,
+        status="candidate",
+        leaderboard_row=leaderboard_row,
+        metrics=metrics,
+        thresholds=thresholds,
+        train_report_path=train_report_path,
+        promotion_path=runtime_artifacts["promotion_path"],
+        walk_forward_report_path=walk_forward_report_path,
+        fusion_model_contract_path=run_dir / "fusion_model_contract.json",
+        predictor_contract_path=run_dir / "predictor_contract.json",
+        entry_boundary_contract_path=_fusion_entry_boundary_path(run_dir),
+    )
 
 
-def _load_expert_table(path: Path, *, prefix: str) -> pl.DataFrame:
-    frame = pl.read_parquet(path)
-    keep_base = ["market", "ts_ms"]
-    renamed = []
-    for column in frame.columns:
-        if column in keep_base:
-            renamed.append(pl.col(column))
-        elif column == "split":
-            renamed.append(pl.col(column).alias("split" if prefix == "panel" else f"split_{prefix}"))
-        elif column == "y_cls":
-            renamed.append(pl.col(column).alias("y_cls" if prefix == "panel" else f"y_cls_{prefix}"))
-        elif column == "y_reg":
-            renamed.append(pl.col(column).alias("y_reg" if prefix == "panel" else f"y_reg_{prefix}"))
-        else:
-            renamed.append(pl.col(column).alias(f"{prefix}_{column}"))
-    return frame.select(renamed)
-
-
-def _load_inherited_runtime_recommendations(panel_input_path: Path) -> dict[str, Any]:
-    panel_run_dir = Path(panel_input_path).parent
-    inherited = load_json(panel_run_dir / "runtime_recommendations.json")
-    payload = dict(inherited) if isinstance(inherited, dict) else {}
-    payload["status"] = "fusion_runtime_ready"
-    payload["source_family"] = "train_v5_fusion"
-    payload["inherited_from_panel_run_id"] = panel_run_dir.name
-    payload["entry_boundary_enabled"] = True
-    return payload
-
-
-def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int) -> Any:
+def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int, monotone_signs: tuple[int, ...]) -> Any:
     if stacker_family == "linear":
         from sklearn.linear_model import LogisticRegression
 
@@ -495,7 +1030,7 @@ def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed:
         return model
     import xgboost as xgb
 
-    constraints = "(" + ",".join(["1"] * x.shape[1]) + ")"
+    constraints = "(" + ",".join(str(int(item)) for item in monotone_signs) + ")"
     model = xgb.XGBClassifier(
         objective="binary:logistic",
         tree_method="hist",
@@ -511,7 +1046,7 @@ def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed:
     return model
 
 
-def _fit_reg_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int) -> Any:
+def _fit_reg_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int, monotone_signs: tuple[int, ...]) -> Any:
     if stacker_family == "linear":
         from sklearn.linear_model import Ridge
 
@@ -520,7 +1055,7 @@ def _fit_reg_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: in
         return model
     import xgboost as xgb
 
-    constraints = "(" + ",".join(["1"] * x.shape[1]) + ")"
+    constraints = "(" + ",".join(str(int(item)) for item in monotone_signs) + ")"
     model = xgb.XGBRegressor(
         objective="reg:squarederror",
         tree_method="hist",
