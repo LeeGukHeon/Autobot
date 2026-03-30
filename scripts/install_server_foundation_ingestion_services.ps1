@@ -12,28 +12,28 @@ Set-StrictMode -Version Latest
 $candlesScript = Join-Path $PSScriptRoot "install_server_candles_api_refresh_service.ps1"
 $ticksScript = Join-Path $PSScriptRoot "install_server_raw_ticks_daily_service.ps1"
 
-$commonArgs = @()
+$commonParams = @{}
 if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    $commonArgs += @("-ProjectRoot", $ProjectRoot)
+    $commonParams["ProjectRoot"] = $ProjectRoot
 }
 if (-not [string]::IsNullOrWhiteSpace($PythonExe)) {
-    $commonArgs += @("-PythonExe", $PythonExe)
+    $commonParams["PythonExe"] = $PythonExe
 }
 if ($NoStart) {
-    $commonArgs += "-NoStart"
+    $commonParams["NoStart"] = $true
 }
 if ($NoEnable) {
-    $commonArgs += "-NoEnable"
+    $commonParams["NoEnable"] = $true
 }
 if ($DryRun) {
-    $commonArgs += "-DryRun"
+    $commonParams["DryRun"] = $true
 }
 
-& $candlesScript @commonArgs
+& $candlesScript @commonParams
 if ($LASTEXITCODE -ne 0) {
     throw "install_server_candles_api_refresh_service.ps1 failed"
 }
-& $ticksScript @commonArgs
+& $ticksScript @commonParams
 if ($LASTEXITCODE -ne 0) {
     throw "install_server_raw_ticks_daily_service.ps1 failed"
 }
