@@ -883,15 +883,21 @@ async def _run_ws_collection(
     last_subscribe_sent_monotonic = 0.0
     connected = False
 
+    def _emit_runtime_snapshots(*, force: bool = False) -> None:
+        nonlocal next_health_update_monotonic
+        now_monotonic = time.monotonic()
+        if (not force) and now_monotonic < next_health_update_monotonic:
+            return
+        _write_health_snapshot(
+            path=health_snapshot_path,
+            payload=_health_payload(run_id=run_id, counters=counters, connected=connected),
+        )
+        if progress_snapshot_callback is not None:
+            progress_snapshot_callback(counters, connected)
+        next_health_update_monotonic = now_monotonic + float(health_interval_sec)
+
     while time.monotonic() < deadline:
-        if health_snapshot_path is not None and time.monotonic() >= next_health_update_monotonic:
-            _write_health_snapshot(
-                path=health_snapshot_path,
-                payload=_health_payload(run_id=run_id, counters=counters, connected=connected),
-            )
-            if progress_snapshot_callback is not None:
-                progress_snapshot_callback(counters, connected)
-            next_health_update_monotonic = time.monotonic() + float(health_interval_sec)
+        _emit_runtime_snapshots()
 
         await connect_limiter.acquire()
         payload = _build_public_subscribe_payload(
@@ -923,6 +929,7 @@ async def _run_ws_collection(
                 subscribe_window.append(time.monotonic())
                 counters.subscribe_messages_sent += 1
                 last_subscribe_sent_monotonic = time.monotonic()
+                _emit_runtime_snapshots(force=True)
 
                 last_recv_monotonic = time.monotonic()
                 last_text_ping_monotonic = 0.0
@@ -930,6 +937,7 @@ async def _run_ws_collection(
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
+                    _emit_runtime_snapshots()
 
                     if next_refresh_monotonic is not None and time.monotonic() >= next_refresh_monotonic:
                         next_refresh_monotonic = time.monotonic() + float(refresh_period_sec or 1)
@@ -976,8 +984,7 @@ async def _run_ws_collection(
                                                 for market, state in orderbook_state.items()
                                                 if market in active_codes_set
                                             }
-                                            if progress_snapshot_callback is not None:
-                                                progress_snapshot_callback(counters, connected)
+                                            _emit_runtime_snapshots(force=True)
                             else:
                                 counters.refresh_noop_count += 1
 
@@ -1086,6 +1093,7 @@ async def _run_ws_collection(
                         continue
 
                     last_recv_monotonic = time.monotonic()
+                    _emit_runtime_snapshots()
             connected = False
         except asyncio.CancelledError:
             raise
@@ -1099,12 +1107,7 @@ async def _run_ws_collection(
                 reconnect_window.popleft()
             if len(reconnect_window) > reconnect_max_per_min:
                 counters.fatal_reason = "MAX_RECONNECT_PER_MIN_REACHED"
-                _write_health_snapshot(
-                    path=health_snapshot_path,
-                    payload=_health_payload(run_id=run_id, counters=counters, connected=connected),
-                )
-                if progress_snapshot_callback is not None:
-                    progress_snapshot_callback(counters, connected)
+                _emit_runtime_snapshots(force=True)
                 return counters
 
             delay = _reconnect_delay_sec(reconnect_attempt, rng=rng)
@@ -1115,12 +1118,7 @@ async def _run_ws_collection(
             await asyncio.sleep(min(delay, remaining))
             continue
 
-    _write_health_snapshot(
-        path=health_snapshot_path,
-        payload=_health_payload(run_id=run_id, counters=counters, connected=False),
-    )
-    if progress_snapshot_callback is not None:
-        progress_snapshot_callback(counters, False)
+    _emit_runtime_snapshots(force=True)
     return counters
 
 
