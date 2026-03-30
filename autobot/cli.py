@@ -37,6 +37,7 @@ from .data.collect import (
     Lob30PlanOptions,
     SequenceTensorBuildOptions,
     TicksCollectOptions,
+    PrivateWsDaemonOptions,
     TicksPlanOptions,
     WsCandleCollectOptions,
     WsCandlePlanOptions,
@@ -45,6 +46,7 @@ from .data.collect import (
     WsPublicPlanOptions,
     collect_candles_from_plan,
     collect_lob30_from_plan,
+    collect_private_ws_daemon,
     collect_ws_candles_from_plan,
     build_sequence_tensor_store,
     collect_ws_public_daemon,
@@ -657,6 +659,31 @@ def build_parser() -> argparse.ArgumentParser:
     collect_ws_public_daemon_parser.add_argument("--keepalive-interval-sec", type=int, default=55)
     collect_ws_public_daemon_parser.add_argument("--keepalive-stale-sec", type=int, default=120)
     collect_ws_public_daemon_parser.add_argument("--health-update-sec", type=int, default=5)
+
+    collect_private_ws_parser = collect_subparsers.add_parser(
+        "private-ws",
+        help="Collect raw Upbit private websocket myOrder/myAsset.",
+    )
+    collect_private_ws_subparsers = collect_private_ws_parser.add_subparsers(
+        dest="collect_private_ws_command",
+        required=True,
+    )
+    collect_private_ws_daemon_parser = collect_private_ws_subparsers.add_parser(
+        "daemon",
+        help="Run private websocket raw collector with health/report snapshots.",
+    )
+    collect_private_ws_daemon_parser.add_argument("--raw-root", default="data/raw_ws/upbit/private")
+    collect_private_ws_daemon_parser.add_argument("--meta-dir", default="data/raw_ws/upbit/_meta")
+    collect_private_ws_daemon_parser.add_argument(
+        "--duration-sec",
+        type=int,
+        default=0,
+        help="0 means long-running (effectively unbounded).",
+    )
+    collect_private_ws_daemon_parser.add_argument("--retention-days", type=int, default=30)
+    collect_private_ws_daemon_parser.add_argument("--rotate-sec", type=int, default=3600)
+    collect_private_ws_daemon_parser.add_argument("--max-bytes", type=int, default=67_108_864)
+    collect_private_ws_daemon_parser.add_argument("--health-update-sec", type=int, default=5)
 
     collect_ws_public_validate_parser = collect_ws_public_subparsers.add_parser(
         "validate",
@@ -1636,6 +1663,8 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
         return _handle_collect_ticks(args, config_dir, base_config)
     if args.collect_command == "ws-public":
         return _handle_collect_ws_public(args, config_dir, base_config)
+    if args.collect_command == "private-ws":
+        return _handle_collect_private_ws(args, config_dir)
     raise ValueError(f"Unsupported collect command: {args.collect_command}")
 
 
@@ -2236,6 +2265,35 @@ def _handle_collect_ws_public(args: argparse.Namespace, config_dir: Path, base_c
     print(f"[collect][ws-public][validate] report={validate_summary.validate_report_file}")
     if collect_summary.failures or validate_summary.fail_files > 0:
         return 2
+    return 0
+
+
+def _handle_collect_private_ws(args: argparse.Namespace, config_dir: Path) -> int:
+    private_command = getattr(args, "collect_private_ws_command", None)
+    if private_command != "daemon":
+        raise ValueError(f"Unsupported private-ws subcommand: {private_command}")
+
+    daemon_options = PrivateWsDaemonOptions(
+        raw_root=Path(args.raw_root),
+        meta_dir=Path(args.meta_dir),
+        duration_sec=(int(args.duration_sec) if int(args.duration_sec) > 0 else None),
+        retention_days=max(int(args.retention_days), 1),
+        rotate_sec=max(int(args.rotate_sec), 1),
+        max_bytes=max(int(args.max_bytes), 1024),
+        health_update_sec=max(int(args.health_update_sec), 1),
+        config_dir=config_dir,
+    )
+    summary = collect_private_ws_daemon(daemon_options)
+    print(
+        "[collect][private-ws][daemon] "
+        f"run_id={summary.run_id} duration={summary.duration_sec}s "
+        f"received_myorder={summary.received_myorder} received_myasset={summary.received_myasset} "
+        f"files_written={summary.files_written} bytes_written={summary.bytes_written} "
+        f"reconnect={summary.reconnect_count}"
+    )
+    print(f"[collect][private-ws][daemon] collect_report={summary.collect_report_file}")
+    print(f"[collect][private-ws][daemon] health={summary.health_snapshot_file}")
+    print(f"[collect][private-ws][daemon] manifest={summary.manifest_file}")
     return 0
 
 

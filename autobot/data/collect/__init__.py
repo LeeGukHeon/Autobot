@@ -11,6 +11,7 @@ from .plan_candles import CandlePlanOptions, generate_candle_topup_plan
 from .plan_ticks import TicksPlanOptions, generate_ticks_collection_plan
 from .plan_ws_candles import WsCandlePlanOptions, generate_ws_candle_collection_plan
 from .plan_ws_public import WsPublicPlanOptions, generate_ws_public_collection_plan
+from .private_ws_collector import PrivateWsDaemonOptions, PrivateWsDaemonSummary, collect_private_ws_daemon
 from .sequence_tensor_store import (
     SequenceTensorBuildOptions,
     SequenceTensorBuildSummary,
@@ -50,6 +51,8 @@ __all__ = [
     "Lob30CollectSummary",
     "Lob30PlanOptions",
     "Lob30ValidateSummary",
+    "PrivateWsDaemonOptions",
+    "PrivateWsDaemonSummary",
     "SequenceTensorBuildOptions",
     "SequenceTensorBuildSummary",
     "SequenceTensorValidateSummary",
@@ -75,6 +78,7 @@ __all__ = [
     "build_sequence_tensor_store",
     "collect_candles_from_plan",
     "collect_lob30_from_plan",
+    "collect_private_ws_daemon",
     "collect_ticks_from_plan",
     "collect_ticks_stats",
     "collect_ws_candles_from_plan",
