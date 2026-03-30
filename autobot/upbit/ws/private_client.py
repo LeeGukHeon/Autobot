@@ -74,7 +74,7 @@ class UpbitWebSocketPrivateClient:
 
         try:
             while True:
-                if stop_event.is_set() and queue.empty() and worker.done():
+                if stop_event.is_set() and queue.empty():
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=1.0)

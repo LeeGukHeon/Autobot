@@ -120,6 +120,7 @@ async def _collect_private_ws_daemon_async(
             last_event_ts_ms = int(event_ts_ms)
             last_event_latency_ms = max(int(time.time() * 1000) - int(event_ts_ms), 0)
         if bootstrap_rows:
+            writer.close()
             _flush_manifest_state()
             _write_health_snapshot(
                 path=options.health_snapshot_path,
