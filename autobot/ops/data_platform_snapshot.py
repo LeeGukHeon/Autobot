@@ -50,6 +50,12 @@ def resolve_ready_snapshot_dataset_root(*, project_root: Path, dataset_name: str
     return Path(path_value)
 
 
+def resolve_ready_snapshot_id(*, project_root: Path) -> str | None:
+    payload = load_ready_snapshot(project_root=project_root)
+    value = str(payload.get("snapshot_id") or "").strip()
+    return value or None
+
+
 def publish_ready_snapshot(
     *,
     project_root: Path,

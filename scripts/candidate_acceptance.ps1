@@ -157,6 +157,14 @@ function Resolve-PathFromProjectRoot {
     return [System.IO.Path]::GetFullPath((Join-Path $Root $PathValue))
 }
 
+function Get-DataPlatformReadySnapshotId {
+    param([string]$ProjectRoot)
+    $pointerPath = Join-Path $ProjectRoot "data/_meta/data_platform_ready_snapshot.json"
+    $payload = Load-JsonOrEmpty -PathValue $pointerPath
+    $snapshotId = [string](Get-PropValue -ObjectValue $payload -Name "snapshot_id" -DefaultValue "")
+    return $snapshotId.Trim()
+}
+
 function Resolve-DependencyTrainerModelFamily {
     param([string]$TrainerName)
     $normalized = [string]$TrainerName
@@ -3055,6 +3063,7 @@ $latestPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistry
 $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest_candidate"
 $championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $resolvedChampionModelFamily -PointerName "champion"
 $championBefore = Load-JsonOrEmpty -PathValue $championPointerPath
+$dataPlatformReadySnapshotId = Get-DataPlatformReadySnapshotId -ProjectRoot $resolvedProjectRoot
 
 $report = [ordered]@{
     generated_at = (Get-Date).ToString("o")
@@ -3135,6 +3144,7 @@ $report = [ordered]@{
         restart_units = @($RestartUnits)
         known_runtime_units = @($KnownRuntimeUnits)
         auto_restart_known_units = [bool]$AutoRestartKnownUnits
+        data_platform_ready_snapshot_id = $dataPlatformReadySnapshotId
     }
     windows_by_step = [ordered]@{
         train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }

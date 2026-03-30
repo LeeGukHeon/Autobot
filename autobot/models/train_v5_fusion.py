@@ -24,6 +24,7 @@ from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
+from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 
 VALID_FUSION_STACKERS = ("linear", "monotone_gbdt")
@@ -226,6 +227,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "lob_input_sha256": _sha256_file(options.lob_input_path),
         "sample_count": int(merged.height),
         "code_version": autobot_version,
+        "data_platform_ready_snapshot_id": resolve_ready_snapshot_id(project_root=Path.cwd()),
     }
     model_card = render_model_card(
         run_id=run_id,
@@ -248,6 +250,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "trainer": "v5_fusion",
         "feature_columns": list(feature_names),
         "autobot_version": autobot_version,
+        "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
     }
     runtime_recommendations = _load_inherited_runtime_recommendations(options.panel_input_path)
     run_dir = save_run(
@@ -342,6 +345,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "test_metrics": test_metrics,
             }
         },
+        "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
     }
     entry_boundary_contract_path = run_dir / "entry_boundary_contract.json"
     entry_boundary_contract_path.write_text(json.dumps(entry_boundary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -386,6 +390,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "test_metrics": test_metrics,
                 "runtime_dataset_root": str(runtime_dataset_written_root),
                 "entry_boundary_contract_path": str(entry_boundary_contract_path),
+                "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
             },
             ensure_ascii=False,
             indent=2,
