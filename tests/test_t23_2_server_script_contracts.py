@@ -110,6 +110,8 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "[data-platform-refresh] step=collect_ws_candles" in stdout
     assert "[data-platform-refresh] step=plan_lob30" in stdout
     assert "[data-platform-refresh] step=collect_lob30" in stdout
+    assert "[data-platform-refresh] step=aggregate_micro_current_window" in stdout
+    assert "[data-platform-refresh] step=validate_micro_current_window" in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors" in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors_prev1" in stdout
     assert "[data-platform-refresh] step=refresh_data_contract_registry" in stdout

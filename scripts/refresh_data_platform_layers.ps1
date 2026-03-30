@@ -24,6 +24,11 @@ param(
     [int]$TensorMaxMarkets = 20,
     [int]$TensorMaxAnchorsPerMarket = 64,
     [int]$TensorRecentDates = 2,
+    [string]$MicroOutRoot = "data/parquet/micro_v1",
+    [string]$MicroRawTicksRoot = "data/raw_ticks/upbit/trades",
+    [string]$MicroRawWsRoot = "data/raw_ws/upbit/public",
+    [string]$MicroBaseCandles = "candles_api_v1",
+    [int]$MicroRecentDates = 2,
     [int]$TensorSecondLookbackSteps = 120,
     [int]$TensorMinuteLookbackSteps = 30,
     [int]$TensorMicroLookbackSteps = 30,
@@ -127,6 +132,9 @@ $resolvedSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue
 $resolvedSecondPlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $SecondPlanPath
 $resolvedWsCandlePlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $WsCandlePlanPath
 $resolvedLob30PlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $Lob30PlanPath
+$resolvedMicroOutRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MicroOutRoot
+$resolvedMicroRawTicksRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MicroRawTicksRoot
+$resolvedMicroRawWsRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MicroRawWsRoot
 $serializedTensorMarkets = Join-DelimitedStringArray -Values $TensorMarkets
 
 $steps = @(
@@ -231,6 +239,38 @@ $steps = @(
 )
 
 $tensorDateValues = Get-RecentUtcDateValues -Count $TensorRecentDates
+$microDateValues = Get-RecentUtcDateValues -Count $MicroRecentDates
+$microDateStart = [string]$microDateValues[-1]
+$microDateEnd = [string]$microDateValues[0]
+$microSteps = @(
+    [ordered]@{
+        name = "aggregate_micro_current_window"
+        args = @(
+            "-m", "autobot.cli",
+            "micro", "aggregate",
+            "--start", $microDateStart,
+            "--end", $microDateEnd,
+            "--tf", "1m,5m",
+            "--quote", $Quote,
+            "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+            "--raw-ticks-root", $resolvedMicroRawTicksRoot,
+            "--raw-ws-root", $resolvedMicroRawWsRoot,
+            "--out-root", $resolvedMicroOutRoot,
+            "--base-candles", $MicroBaseCandles,
+            "--mode", "overwrite"
+        )
+    }
+    [ordered]@{
+        name = "validate_micro_current_window"
+        args = @(
+            "-m", "autobot.cli",
+            "micro", "validate",
+            "--out-root", $resolvedMicroOutRoot,
+            "--tf", "1m,5m",
+            "--base-candles", $MicroBaseCandles
+        )
+    }
+)
 $tensorSteps = @()
 for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
     $dateValue = [string]$tensorDateValues[$index]
@@ -255,7 +295,7 @@ for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
 $insertIndex = [Math]::Max($steps.Count - 1, 0)
 $prefixSteps = if ($insertIndex -gt 0) { @($steps[0..($insertIndex - 1)]) } else { @() }
 $suffixSteps = if ($insertIndex -lt $steps.Count) { @($steps[$insertIndex..($steps.Count - 1)]) } else { @() }
-$steps = @($prefixSteps + $tensorSteps + $suffixSteps)
+$steps = @($prefixSteps + $microSteps + $tensorSteps + $suffixSteps)
 
 if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     foreach ($step in @($steps)) {
