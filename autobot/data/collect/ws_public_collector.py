@@ -558,7 +558,12 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
             }
         ]
 
-    def _write_runtime_collect_report(*, connected: bool, retention_doc: dict[str, Any] | None = None) -> None:
+    def _write_runtime_collect_report(
+        *,
+        counters: _RuntimeCounters,
+        connected: bool,
+        retention_doc: dict[str, Any] | None = None,
+    ) -> None:
         files_written_live = len(writer.closed_parts)
         bytes_written_live = int(sum(int(item.get("bytes", 0)) for item in writer.closed_parts))
         report = _build_ws_public_daemon_collect_report(
@@ -571,13 +576,13 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
             top_n=top_n,
             max_markets=max_markets,
             refresh_sec=refresh_sec,
-            runtime_counters=runtime_counters,
+            runtime_counters=counters,
             files_written=files_written_live,
             bytes_written=bytes_written_live,
             retention_payload=retention_doc,
             details=_report_details(retention_doc=retention_doc),
             failures=failures,
-            running=connected and not bool(runtime_counters.fatal_reason),
+            running=connected and not bool(counters.fatal_reason),
         )
         options.collect_report_path.parent.mkdir(parents=True, exist_ok=True)
         options.collect_report_path.write_text(
@@ -638,6 +643,7 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
                 health_update_sec=max(int(options.health_update_sec), 1),
                 manifest_flush_callback=_flush_manifest_state,
                 progress_snapshot_callback=lambda counters, connected: _write_runtime_collect_report(
+                    counters=counters,
                     connected=connected,
                     retention_doc=None,
                 ),
@@ -676,7 +682,11 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
         failures.append({"reason": runtime_counters.fatal_reason})
 
     details.extend(_report_details(retention_doc=retention_payload))
-    _write_runtime_collect_report(connected=False, retention_doc=retention_payload)
+    _write_runtime_collect_report(
+        counters=runtime_counters,
+        connected=False,
+        retention_doc=retention_payload,
+    )
 
     _write_health_snapshot(
         path=options.health_snapshot_path,
