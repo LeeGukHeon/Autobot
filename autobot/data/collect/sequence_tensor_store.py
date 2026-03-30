@@ -39,6 +39,10 @@ LOB_GLOBAL_CHANNELS: tuple[str, ...] = (
     "relative_tick_bps",
 )
 
+SUPPORT_LEVEL_STRICT_FULL = "strict_full"
+SUPPORT_LEVEL_REDUCED_CONTEXT = "reduced_context"
+SUPPORT_LEVEL_STRUCTURAL_INVALID = "structural_invalid"
+
 
 @dataclass(frozen=True)
 class SequenceTensorBuildOptions:
@@ -132,6 +136,29 @@ class SequenceTensorValidateSummary:
     fail_files: int
     validate_report_file: Path
     details: tuple[dict[str, Any], ...]
+
+
+def resolve_sequence_support_level_from_row(row: dict[str, Any] | None) -> str:
+    item = dict(row or {})
+    explicit = str(item.get("support_level") or "").strip().lower()
+    if explicit in {
+        SUPPORT_LEVEL_STRICT_FULL,
+        SUPPORT_LEVEL_REDUCED_CONTEXT,
+        SUPPORT_LEVEL_STRUCTURAL_INVALID,
+    }:
+        return explicit
+    status = str(item.get("status") or "").strip().upper()
+    if status == "FAIL":
+        return SUPPORT_LEVEL_STRUCTURAL_INVALID
+    coverage_values = [
+        float(item.get("second_coverage_ratio") or 0.0),
+        float(item.get("minute_coverage_ratio") or 0.0),
+        float(item.get("micro_coverage_ratio") or 0.0),
+        float(item.get("lob_coverage_ratio") or 0.0),
+    ]
+    if all(value >= 0.999999 for value in coverage_values):
+        return SUPPORT_LEVEL_STRICT_FULL
+    return SUPPORT_LEVEL_REDUCED_CONTEXT
 
 
 @dataclass(frozen=True)
@@ -233,6 +260,7 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
                         "anchor_ts_ms": anchor_ts_ms,
                         "anchor_utc": _ts_ms_to_utc_text(anchor_ts_ms),
                         "status": "FAIL",
+                        "support_level": SUPPORT_LEVEL_STRUCTURAL_INVALID,
                         "reasons_json": json.dumps(["BUILD_EXCEPTION"], ensure_ascii=False),
                         "error_message": str(exc),
                         "cache_file": "",
@@ -259,6 +287,11 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         "ok_anchors": ok_anchors,
         "warn_anchors": warn_anchors,
         "fail_anchors": fail_anchors,
+        "support_level_counts": {
+            SUPPORT_LEVEL_STRICT_FULL: sum(1 for item in details if item.get("support_level") == SUPPORT_LEVEL_STRICT_FULL),
+            SUPPORT_LEVEL_REDUCED_CONTEXT: sum(1 for item in details if item.get("support_level") == SUPPORT_LEVEL_REDUCED_CONTEXT),
+            SUPPORT_LEVEL_STRUCTURAL_INVALID: sum(1 for item in details if item.get("support_level") == SUPPORT_LEVEL_STRUCTURAL_INVALID),
+        },
         "manifest_file": str(options.manifest_path),
         "manifest_rows_total": len(merged_manifest_rows),
         "sequence_contract_file": str(options.sequence_contract_path),
@@ -379,6 +412,7 @@ def _validate_sequence_tensor_store_incremental(
                     "anchor_ts_ms": row.get("anchor_ts_ms"),
                     "cache_file": cache_file_text,
                     "status": "FAIL",
+                    "support_level": SUPPORT_LEVEL_STRUCTURAL_INVALID,
                     "reasons": ["CACHE_FILE_MISSING"],
                 }
             )
@@ -436,6 +470,12 @@ def _validate_manifest_rows(*, rows: list[dict[str, Any]], options: SequenceTens
                 "anchor_ts_ms": row.get("anchor_ts_ms"),
                 "cache_file": str(cache_file) if cache_file is not None else "",
                 "status": status,
+                "support_level": resolve_sequence_support_level_from_row(
+                    {
+                        **dict(row),
+                        "status": status,
+                    }
+                ),
                 "reasons": reasons,
             }
         )
@@ -458,6 +498,11 @@ def _write_validate_report(
     ok_files = 0
     warn_files = 0
     fail_files = 0
+    support_level_counts = {
+        SUPPORT_LEVEL_STRICT_FULL: 0,
+        SUPPORT_LEVEL_REDUCED_CONTEXT: 0,
+        SUPPORT_LEVEL_STRUCTURAL_INVALID: 0,
+    }
     for detail in ordered_details:
         status = str(detail.get("status") or "").strip().upper()
         if status == "OK":
@@ -466,6 +511,7 @@ def _write_validate_report(
             warn_files += 1
         else:
             fail_files += 1
+        support_level_counts[resolve_sequence_support_level_from_row(detail)] += 1
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset_name": options.out_dataset,
@@ -475,6 +521,7 @@ def _write_validate_report(
         "ok_files": ok_files,
         "warn_files": warn_files,
         "fail_files": fail_files,
+        "support_level_counts": support_level_counts,
         "details": ordered_details,
     }
     options.validate_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
@@ -711,6 +758,15 @@ def _build_anchor_tensor(
     if lob_ratio < 1.0:
         reasons.append("PARTIAL_LOB_CONTEXT")
     status = "WARN" if reasons else "OK"
+    support_level = resolve_sequence_support_level_from_row(
+        {
+            "status": status,
+            "second_coverage_ratio": second_ratio,
+            "minute_coverage_ratio": minute_ratio,
+            "micro_coverage_ratio": micro_ratio,
+            "lob_coverage_ratio": lob_ratio,
+        }
+    )
 
     date_value = _date_utc_from_ts_ms(anchor_ts_ms)
     cache_dir = options.cache_root / f"market={market}" / f"date={date_value}"
@@ -738,6 +794,7 @@ def _build_anchor_tensor(
         "context_end_utc": _ts_ms_to_utc_text(context_end_ts_ms),
         "cache_file": str(cache_file),
         "status": status,
+        "support_level": support_level,
         "reasons": reasons,
         "second_coverage_ratio": round(second_ratio, 6),
         "minute_coverage_ratio": round(minute_ratio, 6),
@@ -750,6 +807,7 @@ def _build_anchor_tensor(
         "anchor_ts_ms": anchor_ts_ms,
         "anchor_utc": _ts_ms_to_utc_text(anchor_ts_ms),
         "status": status,
+        "support_level": support_level,
         "reasons_json": json.dumps(reasons, ensure_ascii=False),
         "error_message": None,
         "cache_file": str(cache_file),
@@ -988,6 +1046,7 @@ def _write_manifest(*, path: Path, rows: list[dict[str, Any]]) -> None:
         "anchor_ts_ms": pl.Int64,
         "anchor_utc": pl.Utf8,
         "status": pl.Utf8,
+        "support_level": pl.Utf8,
         "reasons_json": pl.Utf8,
         "error_message": pl.Utf8,
         "cache_file": pl.Utf8,

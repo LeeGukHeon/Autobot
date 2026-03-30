@@ -29,6 +29,12 @@ from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
+from autobot.data.collect.sequence_tensor_store import (
+    SUPPORT_LEVEL_REDUCED_CONTEXT,
+    SUPPORT_LEVEL_STRICT_FULL,
+    SUPPORT_LEVEL_STRUCTURAL_INVALID,
+    resolve_sequence_support_level_from_row,
+)
 
 
 LOB_HORIZONS_SECONDS: tuple[int, ...] = (1, 5, 30, 60)
@@ -86,12 +92,14 @@ class _LobSamples:
     y_cls: np.ndarray
     y_rank: np.ndarray
     sample_weight: np.ndarray
+    support_level: np.ndarray
     ts_ms: np.ndarray
     markets: np.ndarray
     pooled_features: np.ndarray
     feature_names: tuple[str, ...]
     selected_markets: tuple[str, ...]
     rows_by_market: dict[str, int]
+    support_level_counts: dict[str, int]
 
     @property
     def rows(self) -> int:
@@ -313,6 +321,7 @@ def _write_lob_expert_prediction_table(
             "market": np.asarray(samples.markets, dtype=object),
             "ts_ms": np.asarray(samples.ts_ms, dtype=np.int64),
             "split": np.asarray(split_labels, dtype=object),
+            "support_level": np.asarray(samples.support_level, dtype=object),
             "y_cls": np.asarray(samples.y_cls, dtype=np.int64),
             "y_reg": np.asarray(samples.y_rank, dtype=np.float64),
             "micro_alpha_1s": np.asarray(payload["micro_alpha_1s"], dtype=np.float64),
@@ -326,6 +335,26 @@ def _write_lob_expert_prediction_table(
     output_path = run_dir / "expert_prediction_table.parquet"
     frame.write_parquet(output_path)
     return output_path
+
+
+def _support_level_weight(level: str) -> float:
+    normalized = str(level or "").strip().lower()
+    if normalized == SUPPORT_LEVEL_STRICT_FULL:
+        return 1.0
+    if normalized == SUPPORT_LEVEL_REDUCED_CONTEXT:
+        return 0.5
+    return 0.0
+
+
+def _strict_eval_indices(indices: np.ndarray, support_levels: np.ndarray) -> np.ndarray:
+    idx = np.asarray(indices, dtype=np.int64)
+    if idx.size <= 0:
+        return idx
+    support = np.asarray(support_levels, dtype=object)
+    strict = idx[np.asarray(support[idx] == SUPPORT_LEVEL_STRICT_FULL, dtype=bool)]
+    if strict.size >= max(8, min(32, idx.size // 4 if idx.size > 0 else 0)):
+        return strict
+    return idx
 
 
 def _evaluate_loss(model: _V5LobModel, loader: DataLoader, device: torch.device) -> float:
@@ -513,13 +542,22 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
     y_rank_parts: list[float] = []
     close_parts: list[float] = []
     weight_parts: list[float] = []
+    support_level_parts: list[str] = []
     ts_parts: list[int] = []
     market_parts: list[str] = []
     rows_by_market: dict[str, int] = {}
+    support_level_counts = {
+        SUPPORT_LEVEL_STRICT_FULL: 0,
+        SUPPORT_LEVEL_REDUCED_CONTEXT: 0,
+        SUPPORT_LEVEL_STRUCTURAL_INVALID: 0,
+    }
 
     for row in manifest.iter_rows(named=True):
         market = str(row["market"]).strip().upper()
         anchor_ts_ms = int(row["anchor_ts_ms"])
+        support_level = resolve_sequence_support_level_from_row(row)
+        if support_level == SUPPORT_LEVEL_STRUCTURAL_INVALID:
+            continue
         second_ts, second_close = second_maps.get(market, (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)))
         minute_close_map = minute_maps.get(market, {})
         context_end_ts_ms = _resolve_context_end_ts_ms(anchor_ts_ms=anchor_ts_ms, second_ts=second_ts)
@@ -552,10 +590,12 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
                 ]
             )
         )
-        weight_parts.append(max(weight, 0.1))
+        weight_parts.append(max(weight * _support_level_weight(support_level), 0.1))
+        support_level_parts.append(support_level)
         ts_parts.append(anchor_ts_ms)
         market_parts.append(market)
         rows_by_market[market] = rows_by_market.get(market, 0) + 1
+        support_level_counts[support_level] += 1
 
     if not lob_parts:
         raise ValueError("sequence_v1 has no lob-trainable anchors with short-horizon label coverage")
@@ -575,12 +615,14 @@ def _load_lob_samples(options: TrainV5LobOptions) -> _LobSamples:
         y_cls=np.asarray(y_cls_parts, dtype=np.int64),
         y_rank=np.asarray(y_rank_parts, dtype=np.float64),
         sample_weight=np.asarray(weight_parts, dtype=np.float64),
+        support_level=np.asarray(support_level_parts, dtype=object),
         ts_ms=np.asarray(ts_parts, dtype=np.int64),
         markets=np.asarray(market_parts, dtype=object),
         pooled_features=_build_pooled_lob_features(lob=lob_array, lob_global=lob_global_array, micro=micro_array),
         feature_names=_pooled_lob_feature_names(),
         selected_markets=tuple(sorted(rows_by_market.keys())),
         rows_by_market=rows_by_market,
+        support_level_counts=support_level_counts,
     )
 
 
@@ -758,34 +800,38 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
     test_outputs = _predict_split(model=model, samples=samples, indices=test_idx, device=device)
     all_idx = np.arange(samples.rows, dtype=np.int64)
     all_outputs = _predict_split(model=model, samples=samples, indices=all_idx, device=device)
+    valid_eval_idx = _strict_eval_indices(valid_idx, samples.support_level)
+    test_eval_idx = _strict_eval_indices(test_idx, samples.support_level)
+    valid_eval_positions = np.searchsorted(valid_idx, valid_eval_idx)
+    test_eval_positions = np.searchsorted(test_idx, test_eval_idx)
     valid_scores = _build_lob_score(valid_outputs["micro_alpha"][:, 2], valid_outputs["micro_uncertainty"])
     test_scores = _build_lob_score(test_outputs["micro_alpha"][:, 2], test_outputs["micro_uncertainty"])
     valid_metrics = _evaluate_lob_split(
-        y_cls=samples.y_cls[valid_idx],
-        y_reg=samples.y_rank[valid_idx],
-        scores=valid_scores,
-        markets=samples.markets[valid_idx],
-        sample_weight=samples.sample_weight[valid_idx],
+        y_cls=samples.y_cls[valid_eval_idx],
+        y_reg=samples.y_rank[valid_eval_idx],
+        scores=valid_scores[valid_eval_positions],
+        markets=samples.markets[valid_eval_idx],
+        sample_weight=samples.sample_weight[valid_eval_idx],
     )
     test_metrics = _evaluate_lob_split(
-        y_cls=samples.y_cls[test_idx],
-        y_reg=samples.y_rank[test_idx],
-        scores=test_scores,
-        markets=samples.markets[test_idx],
-        sample_weight=samples.sample_weight[test_idx],
+        y_cls=samples.y_cls[test_eval_idx],
+        y_reg=samples.y_rank[test_eval_idx],
+        scores=test_scores[test_eval_positions],
+        markets=samples.markets[test_eval_idx],
+        sample_weight=samples.sample_weight[test_eval_idx],
     )
     thresholds = _build_thresholds(
-        valid_scores=valid_scores,
-        y_reg_valid=samples.y_rank[valid_idx],
+        valid_scores=valid_scores[valid_eval_positions],
+        y_reg_valid=samples.y_rank[valid_eval_idx],
         fee_bps_est=0.0,
         safety_bps=0.0,
         ev_scan_steps=10,
         ev_min_selected=1,
-        sample_weight=samples.sample_weight[valid_idx],
+        sample_weight=samples.sample_weight[valid_eval_idx],
     )
     selection_recommendations = build_selection_recommendations(
-        valid_scores=valid_scores,
-        valid_ts_ms=samples.ts_ms[valid_idx],
+        valid_scores=valid_scores[valid_eval_positions],
+        valid_ts_ms=samples.ts_ms[valid_eval_idx],
         thresholds=thresholds,
     )
     selection_policy = build_selection_policy_from_recommendations(
@@ -835,6 +881,11 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         },
         "valid_metrics": valid_metrics,
         "champion_metrics": test_metrics,
+        "support_level_counts": dict(samples.support_level_counts),
+        "evaluation_support_policy": {
+            "valid": SUPPORT_LEVEL_STRICT_FULL if valid_eval_idx.size != valid_idx.size else "mixed_available",
+            "test": SUPPORT_LEVEL_STRICT_FULL if test_eval_idx.size != test_idx.size else "mixed_available",
+        },
         "lob_model": {
             "policy": "v5_lob_v1",
             "backbone_family": backbone_family,
@@ -879,6 +930,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "trainer": "v5_lob",
         "feature_columns": list(samples.feature_names),
         "selected_markets": list(samples.selected_markets),
+        "support_level_counts": dict(samples.support_level_counts),
         "autobot_version": autobot_version,
     }
     runtime_recommendations = {
