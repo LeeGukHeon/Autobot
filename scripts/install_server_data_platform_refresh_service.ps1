@@ -10,7 +10,7 @@ param(
     [int]$TopN = 50,
     [int]$SecondMaxBackfillDays = 7,
     [int]$CandlesMaxRequests = 120,
-    [int]$WsCandleDurationSec = 180,
+    [int]$WsCandleDurationSec = 1800,
     [int]$Lob30DurationSec = 180,
     [int]$TensorMaxMarkets = 20,
     [int]$TensorMaxAnchorsPerMarket = 64,

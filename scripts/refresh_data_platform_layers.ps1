@@ -15,7 +15,7 @@ param(
     [string]$WsCandleMarketSourceDataset = "candles_api_v1",
     [string]$WsCandlePlanPath = "data/collect/_meta/ws_candle_plan.json",
     [string]$WsCandleTf = "1s,1m",
-    [int]$WsCandleDurationSec = 180,
+    [int]$WsCandleDurationSec = 1800,
     [string]$Lob30BaseDataset = "lob30_v1",
     [string]$Lob30MarketSourceDataset = "candles_api_v1",
     [string]$Lob30PlanPath = "data/collect/_meta/lob30_plan.json",
