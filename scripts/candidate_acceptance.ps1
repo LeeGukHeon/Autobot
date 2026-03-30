@@ -24,7 +24,7 @@ param(
     [int]$FeatureParityTopN = 20,
     [int]$BacktestTopN = 20,
     [string]$ModelFamily = "train_v5_fusion",
-    [string]$Trainer = "v5_panel_ensemble",
+    [string]$Trainer = "v5_fusion",
     [string[]]$DependencyTrainers = @(),
     [string]$FeatureSet = "v4",
     [string]$LabelSet = "v3",

@@ -56,7 +56,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             args = sys.argv[1:]
             command_key = tuple(args[:4])
             if command_key == ("-m", "autobot.cli", "model", "train"):
-                family = arg_value("--model-family", "train_v4_crypto_cs")
+                family = arg_value("--model-family", "train_v5_fusion")
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
                 candidate_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +65,50 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 (candidate_dir / "model.bin").write_bytes(b"same-model")
                 write_json(candidate_dir / "thresholds.json", {"top_5pct": 0.75})
                 print(json.dumps({"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}))
+                sys.exit(0)
+
+            if tuple(args[:3]) == ("-m", "autobot.ops.data_contract_registry", "--project-root"):
+                report_path = ROOT / "data" / "_meta" / "data_contract_registry.json"
+                write_json(
+                    report_path,
+                    {
+                        "version": 1,
+                        "entries": [{"contract_id": "feature_dataset:features_v4"}],
+                        "summary": {"contract_count": 1},
+                    },
+                )
+                print(str(report_path))
+                sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "features", "validate"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "validate_report.json"
+                write_json(
+                    report_path,
+                    {
+                        "checked_files": 1,
+                        "ok_files": 1,
+                        "warn_files": 0,
+                        "fail_files": 0,
+                        "schema_ok": True,
+                        "leakage_smoke": "PASS",
+                    },
+                )
+                print(str(report_path))
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.ops.live_feature_parity_report"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "live_feature_parity_report.json"
+                write_json(
+                    report_path,
+                    {
+                        "sampled_pairs": 1,
+                        "compared_pairs": 1,
+                        "passing_pairs": 1,
+                        "acceptable": True,
+                        "status": "PASS",
+                    },
+                )
+                print(str(report_path))
                 sys.exit(0)
 
             print("unexpected fake python invocation: " + " ".join(args), file=sys.stderr)
@@ -95,12 +139,12 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
 def test_candidate_acceptance_short_circuits_duplicate_candidate_before_backtest(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    registry_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    registry_dir = project_root / "models" / "registry" / "train_v5_fusion"
     champion_dir = registry_dir / "champion-run-000"
     champion_dir.mkdir(parents=True, exist_ok=True)
     _write_json(registry_dir / "champion.json", {"run_id": "champion-run-000"})
     _write_json(registry_dir / "latest_candidate.json", {"run_id": "candidate-prev-000"})
-    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "candidate-prev-000", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "candidate-prev-000", "model_family": "train_v5_fusion"})
     (champion_dir / "model.bin").write_bytes(b"same-model")
     _write_json(champion_dir / "thresholds.json", {"top_5pct": 0.75})
 

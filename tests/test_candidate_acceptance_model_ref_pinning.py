@@ -286,7 +286,7 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
     project_root.mkdir()
 
     _write_json(
-        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
         {"run_id": "champion-run-000"},
     )
 
@@ -331,23 +331,26 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
     paper_candidate = report["steps"]["paper_candidate"]
 
     assert candidate["run_id"] == "candidate-run-001"
-    assert candidate["candidate_model_ref_requested"] == "latest_candidate_v4"
+    assert candidate["candidate_model_ref_requested"] == "latest_candidate"
     assert candidate["candidate_run_id_used_for_backtest"] == "candidate-run-001"
     assert candidate["candidate_run_id_used_for_paper"] == "candidate-run-001"
-    assert candidate["champion_model_ref_requested"] == "champion_v4"
+    assert candidate["champion_model_ref_requested"] == "champion"
     assert candidate["champion_run_id_used_for_backtest"] == "champion-run-000"
+    assert candidate["fusion_run_id"] == "candidate-run-001"
+    assert candidate["dependency_trainer_run_ids"] == []
+    assert candidate["snapshot_chain_consistent"] is True
 
-    assert backtest_candidate["model_ref_requested"] == "latest_candidate_v4"
+    assert backtest_candidate["model_ref_requested"] == "latest_candidate"
     assert backtest_candidate["model_ref_used"] == "candidate-run-001"
     assert "--model-ref candidate-run-001" in backtest_candidate["command"]
     assert backtest_candidate["run_dir"].endswith("run_001_actual")
 
-    assert backtest_champion["model_ref_requested"] == "champion_v4"
+    assert backtest_champion["model_ref_requested"] == "champion"
     assert backtest_champion["model_ref_used"] == "champion-run-000"
     assert "--model-ref champion-run-000" in backtest_champion["command"]
     assert backtest_champion["run_dir"].endswith("run_003_actual")
 
-    assert paper_candidate["model_ref_requested"] == "latest_candidate_v4"
+    assert paper_candidate["model_ref_requested"] == "latest_candidate"
     assert paper_candidate["model_ref_used"] == "candidate-run-001"
     assert "-ModelRef candidate-run-001" in paper_candidate["command"]
     assert paper_candidate["smoke_report_source"] == "run_report"
@@ -356,13 +359,13 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
     assert report["gates"]["paper"]["pass"] is True
     assert report["gates"]["overall_pass"] is True
     assert json.loads(
-        (project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json").read_text(encoding="utf-8-sig")
+        (project_root / "models" / "registry" / "train_v5_fusion" / "latest_candidate.json").read_text(encoding="utf-8-sig")
     )["run_id"] == "candidate-run-001"
     global_candidate_pointer = json.loads(
         (project_root / "models" / "registry" / "latest_candidate.json").read_text(encoding="utf-8-sig")
     )
     assert global_candidate_pointer["run_id"] == "candidate-run-001"
-    assert global_candidate_pointer["model_family"] == "train_v4_crypto_cs"
+    assert global_candidate_pointer["model_family"] == "train_v5_fusion"
 
 
 def test_candidate_acceptance_can_skip_champion_compare_for_new_baseline(tmp_path: Path) -> None:

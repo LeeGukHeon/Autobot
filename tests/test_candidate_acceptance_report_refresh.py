@@ -351,9 +351,11 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
     assert latest_report["completed_at"]
     assert latest_report["steps"]["features_build"]["attempted"] is True
     assert latest_report["steps"]["features_build"]["feature_set"] == "v4"
-    assert latest_report["steps"]["features_build"]["label_set"] == "v2"
+    assert latest_report["steps"]["features_build"]["label_set"] == "v3"
     assert latest_report["reasons"] == []
     assert latest_report["notes"] == ["PAPER_SOAK_SKIPPED"]
+    assert latest_report["candidate"]["fusion_run_id"] == "candidate-run-001"
+    assert latest_report["candidate"]["snapshot_chain_consistent"] is True
     assert json.loads(
-        (project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json").read_text(encoding="utf-8-sig")
+        (project_root / "models" / "registry" / "train_v5_fusion" / "latest_candidate.json").read_text(encoding="utf-8-sig")
     )["run_id"] == "candidate-run-001"
