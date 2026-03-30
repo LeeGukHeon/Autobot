@@ -8,7 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Callable
 
 import joblib
 import numpy as np
@@ -18,18 +18,27 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
-from autobot.features.multitf_join_v1 import bucket_end_timestamp_expr
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
-from .registry import RegistrySavePayload, make_run_id, save_run, update_artifact_status, update_latest_pointer
+from .registry import RegistrySavePayload, load_json, load_model_bundle, make_run_id, save_run, update_artifact_status
 from .runtime_feature_dataset import write_runtime_feature_dataset
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
+from .v5_expert_data import load_minute_close_map_sources, strict_eval_indices, support_level_weight
+from .v5_expert_tail import (
+    build_v5_expert_tail_context,
+    expert_tail_context_path,
+    finalize_v5_expert_family_run,
+    resolve_existing_v5_expert_tail_artifacts,
+    run_or_reuse_v5_expert_prediction_table,
+    run_or_reuse_v5_runtime_governance_artifacts,
+    v5_expert_tail_stage_reusable,
+)
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
 from autobot.data.collect.sequence_tensor_store import (
     SUPPORT_LEVEL_REDUCED_CONTEXT,
@@ -244,6 +253,169 @@ def _write_sequence_expert_prediction_table(
     output_path = run_dir / "expert_prediction_table.parquet"
     frame.write_parquet(output_path)
     return output_path
+
+
+def _build_sequence_runtime_recommendations(*, options: TrainV5SequenceOptions, runtime_dataset_root: Path) -> dict[str, Any]:
+    return {
+        "status": "sequence_runtime_ready",
+        "source_family": options.model_family,
+        "runtime_feature_dataset_root": str(runtime_dataset_root),
+    }
+
+
+def _build_sequence_promotion_payload(
+    *,
+    run_id: str,
+    valid_metrics: dict[str, Any],
+    test_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "promote": False,
+        "status": "candidate",
+        "reasons": ["EXPERT_FAMILY_REQUIRES_EXPLICIT_PROMOTION_PATH"],
+        "checks": {
+            "existing_champion_present": False,
+            "walk_forward_present": True,
+            "walk_forward_windows_run": 1,
+            "execution_acceptance_enabled": False,
+            "execution_acceptance_present": False,
+            "risk_control_required": False,
+        },
+        "research_acceptance": {"walk_forward_summary": {"valid_metrics": valid_metrics, "test_metrics": test_metrics}},
+    }
+
+
+def _options_from_v5_sequence_train_config(train_config: dict[str, Any]) -> TrainV5SequenceOptions:
+    base = dict(train_config or {})
+    return TrainV5SequenceOptions(
+        dataset_root=Path(str(base["source_dataset_root"] if base.get("source_dataset_root") else base["dataset_root"])),
+        registry_root=Path(str(base["registry_root"])),
+        logs_root=Path(str(base["logs_root"])),
+        model_family=str(base["model_family"]),
+        quote=str(base["quote"]),
+        top_n=int(base["top_n"]),
+        start=str(base["start"]),
+        end=str(base["end"]),
+        seed=int(base["seed"]),
+        backbone_family=str(base.get("backbone_family", "patchtst")),
+        pretrain_method=str(base.get("pretrain_method", "ts2vec_like")),
+        batch_size=int(base.get("batch_size", 16)),
+        pretrain_epochs=int(base.get("pretrain_epochs", 1)),
+        finetune_epochs=int(base.get("finetune_epochs", 5)),
+        learning_rate=float(base.get("learning_rate", 1e-3)),
+        train_ratio=float(base.get("train_ratio", 0.6)),
+        valid_ratio=float(base.get("valid_ratio", 0.2)),
+        test_ratio=float(base.get("test_ratio", 0.2)),
+        horizons_minutes=tuple(int(item) for item in (base.get("horizons_minutes") or DEFAULT_HORIZONS_MINUTES)),
+        quantile_levels=tuple(float(item) for item in (base.get("quantile_levels") or DEFAULT_QUANTILES)),
+        hidden_dim=int(base.get("hidden_dim", 64)),
+        regime_embedding_dim=int(base.get("regime_embedding_dim", 8)),
+        patch_len=int(base.get("patch_len", 4)),
+        patch_stride=int(base.get("patch_stride", 2)),
+        weight_decay=float(base.get("weight_decay", 1e-4)),
+        run_scope=str(base.get("run_scope", "manual_sequence_expert")),
+    )
+
+
+def _run_sequence_expert_tail(
+    *,
+    run_dir: Path,
+    run_id: str,
+    options: TrainV5SequenceOptions,
+    samples: _SequenceSamples | None,
+    labels: np.ndarray | None,
+    estimator: V5SequenceEstimator,
+    metrics: dict[str, Any],
+    valid_metrics: dict[str, Any],
+    test_metrics: dict[str, Any],
+    data_platform_ready_snapshot_id: str | None,
+    runtime_dataset_root: Path,
+    runtime_dataset_written_root: Path,
+    sample_payload_loader: Callable[[], tuple[_SequenceSamples, np.ndarray]] | None,
+    resumed: bool,
+) -> tuple[Path, Path]:
+    tail_started_at = time.time()
+    existing_train_config = load_json(run_dir / "train_config.yaml")
+    tail_context = build_v5_expert_tail_context(
+        run_id=run_id,
+        trainer_name="v5_sequence",
+        model_family=options.model_family,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        dataset_root=Path(str(runtime_dataset_root)),
+        source_dataset_root=Path(str(options.dataset_root)),
+        runtime_dataset_root=Path(str(runtime_dataset_written_root)),
+        selected_markets=samples.selected_markets if samples is not None else tuple(str(item) for item in (existing_train_config.get("selected_markets") or [])),
+        support_level_counts=samples.support_level_counts if samples is not None else dict(existing_train_config.get("support_level_counts") or {}),
+        run_scope=options.run_scope,
+    )
+    existing_tail_artifacts = resolve_existing_v5_expert_tail_artifacts(
+        run_dir=run_dir,
+        tail_context=tail_context,
+    )
+    Path(expert_tail_context_path(run_dir)).write_text(
+        json.dumps(tail_context, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    update_artifact_status(run_dir, tail_context_written=True)
+
+    runtime_recommendations = _build_sequence_runtime_recommendations(
+        options=options,
+        runtime_dataset_root=runtime_dataset_written_root,
+    )
+    promotion_payload = _build_sequence_promotion_payload(
+        run_id=run_id,
+        valid_metrics=valid_metrics,
+        test_metrics=test_metrics,
+    )
+    _ = run_or_reuse_v5_runtime_governance_artifacts(
+        run_dir=run_dir,
+        trainer_name="v5_sequence",
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+        metrics=metrics,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion_payload,
+        trainer_research_reasons=["SEQUENCE_EXPERT_RUNTIME_READY"],
+        tail_context=tail_context,
+        existing_tail_artifacts=existing_tail_artifacts,
+        resumed=resumed,
+    )
+    expert_prediction_table_path = run_or_reuse_v5_expert_prediction_table(
+        run_dir=run_dir,
+        existing_tail_artifacts=existing_tail_artifacts,
+        writer=lambda: _write_sequence_expert_prediction_table(
+            run_dir=run_dir,
+            samples=(samples if samples is not None else sample_payload_loader()[0]),
+            split_labels=np.asarray((labels if labels is not None else sample_payload_loader()[1]), dtype=object),
+            estimator=estimator,
+        ),
+    )
+    report_path = finalize_v5_expert_family_run(
+        run_dir=run_dir,
+        run_id=run_id,
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        logs_root=options.logs_root,
+        report_name="train_v5_sequence_report.json",
+        report_payload={
+            "run_id": run_id,
+            "status": "candidate",
+            "started_at_utc": datetime.now(timezone.utc).isoformat(),
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "rows": metrics["rows"],
+            "leaderboard_row": load_json(run_dir / "leaderboard_row.json"),
+            "valid_metrics": valid_metrics,
+            "test_metrics": test_metrics,
+            "sequence_model_contract_path": str(run_dir / "sequence_model_contract.json"),
+            "expert_prediction_table_path": str(expert_prediction_table_path),
+            "runtime_dataset_root": str(runtime_dataset_written_root),
+        },
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        resumed=resumed,
+        tail_started_at=tail_started_at,
+    )
+    return expert_prediction_table_path, report_path
 
 
 class _PatchTSTEncoder(nn.Module):
@@ -639,23 +811,11 @@ def _estimate_residual_sigma_by_horizon(
 
 
 def _support_level_weight(level: str) -> float:
-    normalized = str(level or "").strip().lower()
-    if normalized == SUPPORT_LEVEL_STRICT_FULL:
-        return 1.0
-    if normalized == SUPPORT_LEVEL_REDUCED_CONTEXT:
-        return 0.5
-    return 0.0
+    return support_level_weight(level)
 
 
 def _strict_eval_indices(indices: np.ndarray, support_levels: np.ndarray) -> np.ndarray:
-    idx = np.asarray(indices, dtype=np.int64)
-    if idx.size <= 0:
-        return idx
-    support = np.asarray(support_levels, dtype=object)
-    strict = idx[np.asarray(support[idx] == SUPPORT_LEVEL_STRICT_FULL, dtype=bool)]
-    if strict.size >= max(8, min(32, idx.size // 4 if idx.size > 0 else 0)):
-        return strict
-    return idx
+    return strict_eval_indices(indices, support_levels)
 
 
 def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
@@ -868,43 +1028,7 @@ def _leader_return(close_map: dict[int, float], anchor_ts_ms: int) -> float:
 
 
 def _load_minute_close_map_sources(*, market: str, roots: tuple[Path, ...]) -> dict[int, float]:
-    frames: list[pl.DataFrame] = []
-    for root in roots:
-        market_root = root / f"market={market}"
-        files = sorted(market_root.glob("*.parquet"))
-        if not files:
-            for date_dir in sorted(market_root.glob("date=*")):
-                if not date_dir.is_dir():
-                    continue
-                files.extend(sorted(path for path in date_dir.glob("*.parquet") if path.is_file()))
-        if not files:
-            continue
-        frame = pl.concat([pl.read_parquet(path) for path in files], how="vertical")
-        if "ts_ms" not in frame.columns or "close" not in frame.columns:
-            continue
-        frame = (
-            frame.select(["ts_ms", "close"])
-            .with_columns(
-                bucket_end_timestamp_expr(pl.col("ts_ms"), interval_ms=60_000).alias("ts_ms")
-            )
-            .with_row_index("__row_id")
-            .sort(["ts_ms", "__row_id"])
-            .unique(subset=["ts_ms"], keep="last")
-            .sort("ts_ms")
-            .drop("__row_id")
-        )
-        frames.append(frame)
-    if not frames:
-        return {}
-    frame = (
-        pl.concat(frames, how="vertical")
-        .with_row_index("__row_id")
-        .sort(["ts_ms", "__row_id"])
-        .unique(subset=["ts_ms"], keep="last")
-        .sort("ts_ms")
-        .drop("__row_id")
-    )
-    return {int(row["ts_ms"]): float(row["close"]) for row in frame.iter_rows(named=True)}
+    return load_minute_close_map_sources(market=market, roots=roots)
 
 
 def _pooled_feature_names() -> tuple[str, ...]:
@@ -1252,11 +1376,10 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "autobot_version": autobot_version,
         "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
     }
-    runtime_recommendations = {
-        "status": "sequence_runtime_ready",
-        "source_family": options.model_family,
-        "runtime_feature_dataset_root": str(runtime_dataset_root),
-    }
+    runtime_recommendations = _build_sequence_runtime_recommendations(
+        options=options,
+        runtime_dataset_root=runtime_dataset_root,
+    )
     data_fingerprint = _build_sequence_data_fingerprint(options=options, sample_count=samples.rows)
     data_fingerprint["data_platform_ready_snapshot_id"] = data_platform_ready_snapshot_id
     model_card = render_model_card(
@@ -1362,27 +1485,6 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         + "\n",
         encoding="utf-8",
     )
-    promotion_payload = {
-        "run_id": run_id,
-        "promote": False,
-        "status": "candidate",
-        "reasons": ["EXPERT_FAMILY_REQUIRES_EXPLICIT_PROMOTION_PATH"],
-        "checks": {
-            "existing_champion_present": False,
-            "walk_forward_present": True,
-            "walk_forward_windows_run": 1,
-            "execution_acceptance_enabled": False,
-            "execution_acceptance_present": False,
-            "risk_control_required": False,
-        },
-        "research_acceptance": {"walk_forward_summary": {"valid_metrics": valid_metrics, "test_metrics": test_metrics}},
-    }
-    expert_prediction_table_path = _write_sequence_expert_prediction_table(
-        run_dir=run_dir,
-        samples=samples,
-        split_labels=np.asarray(labels, dtype=object),
-        estimator=estimator,
-    )
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
         tf="5m",
@@ -1396,50 +1498,22 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         sample_weight=samples.sample_weight,
         extra_columns=_build_sequence_runtime_extra_columns(samples),
     )
-    runtime_artifacts = persist_v5_runtime_governance_artifacts(
+    expert_prediction_table_path, train_report_path = _run_sequence_expert_tail(
         run_dir=run_dir,
-        trainer_name="v5_sequence",
-        model_family=options.model_family,
-        run_scope=options.run_scope,
+        run_id=run_id,
+        options=options,
+        samples=samples,
+        labels=labels,
+        estimator=estimator,
         metrics=metrics,
-        runtime_recommendations=runtime_recommendations,
-        promotion=promotion_payload,
-        trainer_research_reasons=["SEQUENCE_EXPERT_RUNTIME_READY"],
+        valid_metrics=valid_metrics,
+        test_metrics=test_metrics,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        runtime_dataset_root=runtime_dataset_root,
+        runtime_dataset_written_root=runtime_dataset_written_root,
+        sample_payload_loader=None,
+        resumed=False,
     )
-    update_artifact_status(
-        run_dir,
-        status="trainer_artifacts_complete",
-        execution_acceptance_complete=True,
-        runtime_recommendations_complete=True,
-        governance_artifacts_complete=True,
-    )
-    train_report_path = options.logs_root / "train_v5_sequence_report.json"
-    train_report_path.parent.mkdir(parents=True, exist_ok=True)
-    train_report_path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "status": "candidate",
-                "started_at_utc": datetime.fromtimestamp(started_at, tz=timezone.utc).isoformat(),
-                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
-                "rows": metrics["rows"],
-                "leaderboard_row": leaderboard_row,
-                "valid_metrics": valid_metrics,
-                "test_metrics": test_metrics,
-                "sequence_model_contract_path": str(sequence_model_contract_path),
-                "expert_prediction_table_path": str(expert_prediction_table_path),
-                "runtime_dataset_root": str(runtime_dataset_written_root),
-                "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    update_latest_pointer(options.registry_root, options.model_family, run_id)
-    update_artifact_status(run_dir, status="candidate", support_artifacts_written=True)
 
     return TrainV5SequenceResult(
         run_id=run_id,
@@ -1449,8 +1523,112 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         metrics=metrics,
         thresholds=thresholds,
         train_report_path=train_report_path,
-        promotion_path=runtime_artifacts["promotion_path"],
+        promotion_path=run_dir / "promotion_decision.json",
         walk_forward_report_path=walk_forward_report_path,
         sequence_model_contract_path=sequence_model_contract_path,
         predictor_contract_path=predictor_contract_path,
+    )
+
+
+def resume_v5_sequence_tail(*, run_dir: Path) -> TrainV5SequenceResult:
+    run_dir = Path(run_dir).resolve()
+    if not run_dir.exists():
+        raise FileNotFoundError(f"run_dir not found: {run_dir}")
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
+    options = _options_from_v5_sequence_train_config(train_config)
+    model_bundle = load_model_bundle(run_dir)
+    estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
+    if estimator is None:
+        raise ValueError(f"run_dir does not contain a usable sequence estimator: {run_dir}")
+    metrics = load_json(run_dir / "metrics.json")
+    thresholds = load_json(run_dir / "thresholds.json")
+    leaderboard_row = load_json(run_dir / "leaderboard_row.json")
+    walk_forward_report_path = run_dir / "walk_forward_report.json"
+    walk_forward_report = load_json(walk_forward_report_path)
+    valid_metrics = dict((walk_forward_report.get("valid_metrics") or {}))
+    test_metrics = dict((walk_forward_report.get("test_metrics") or {}))
+    data_platform_ready_snapshot_id = (
+        str(train_config.get("data_platform_ready_snapshot_id") or "").strip()
+        or resolve_ready_snapshot_id(project_root=Path.cwd())
+    )
+    runtime_dataset_root = Path(str(train_config.get("dataset_root") or run_dir / "runtime_feature_dataset"))
+    tail_context = build_v5_expert_tail_context(
+        run_id=run_dir.name,
+        trainer_name="v5_sequence",
+        model_family=options.model_family,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        dataset_root=runtime_dataset_root,
+        source_dataset_root=options.dataset_root,
+        runtime_dataset_root=runtime_dataset_root,
+        selected_markets=tuple(str(item) for item in (train_config.get("selected_markets") or [])),
+        support_level_counts=dict(train_config.get("support_level_counts") or {}),
+        run_scope=options.run_scope,
+    )
+    existing_tail_artifacts = resolve_existing_v5_expert_tail_artifacts(
+        run_dir=run_dir,
+        tail_context=tail_context,
+    )
+    needs_samples = not v5_expert_tail_stage_reusable(
+        existing_tail_artifacts=existing_tail_artifacts,
+        stage_name="expert_prediction_table",
+    )
+    samples: _SequenceSamples | None = None
+    labels: np.ndarray | None = None
+    if needs_samples:
+        samples = _load_sequence_samples(options)
+        labels, _split_info = compute_time_splits(
+            samples.ts_ms,
+            train_ratio=float(options.train_ratio),
+            valid_ratio=float(options.valid_ratio),
+            test_ratio=float(options.test_ratio),
+            embargo_bars=0,
+            interval_ms=60_000,
+        )
+    lazy_sample_payload: dict[str, Any] = {}
+
+    def _load_sample_payload() -> tuple[_SequenceSamples, np.ndarray]:
+        if "samples" not in lazy_sample_payload or "labels" not in lazy_sample_payload:
+            lazy_samples = _load_sequence_samples(options)
+            lazy_labels, _ = compute_time_splits(
+                lazy_samples.ts_ms,
+                train_ratio=float(options.train_ratio),
+                valid_ratio=float(options.valid_ratio),
+                test_ratio=float(options.test_ratio),
+                embargo_bars=0,
+                interval_ms=60_000,
+            )
+            lazy_sample_payload["samples"] = lazy_samples
+            lazy_sample_payload["labels"] = lazy_labels
+        return lazy_sample_payload["samples"], lazy_sample_payload["labels"]
+
+    expert_prediction_table_path, train_report_path = _run_sequence_expert_tail(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        options=options,
+        samples=samples,
+        labels=labels,
+        estimator=estimator,
+        metrics=metrics,
+        valid_metrics=valid_metrics,
+        test_metrics=test_metrics,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        runtime_dataset_root=runtime_dataset_root,
+        runtime_dataset_written_root=runtime_dataset_root,
+        sample_payload_loader=_load_sample_payload,
+        resumed=True,
+    )
+    return TrainV5SequenceResult(
+        run_id=run_dir.name,
+        run_dir=run_dir,
+        status="candidate",
+        leaderboard_row=leaderboard_row,
+        metrics=metrics,
+        thresholds=thresholds,
+        train_report_path=train_report_path,
+        promotion_path=run_dir / "promotion_decision.json",
+        walk_forward_report_path=walk_forward_report_path,
+        sequence_model_contract_path=run_dir / "sequence_model_contract.json",
+        predictor_contract_path=run_dir / "predictor_contract.json",
     )

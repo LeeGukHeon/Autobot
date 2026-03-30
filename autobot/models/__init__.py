@@ -30,16 +30,19 @@ from .train_v4_crypto_cs import (
 from .train_v5_panel_ensemble import (
     TrainV5PanelEnsembleOptions,
     TrainV5PanelEnsembleResult,
+    resume_v5_panel_ensemble_tail,
     train_and_register_v5_panel_ensemble,
 )
 from .train_v5_sequence import (
     TrainV5SequenceOptions,
     TrainV5SequenceResult,
+    resume_v5_sequence_tail,
     train_and_register_v5_sequence,
 )
 from .train_v5_lob import (
     TrainV5LobOptions,
     TrainV5LobResult,
+    resume_v5_lob_tail,
     train_and_register_v5_lob,
 )
 from .train_v5_fusion import (
@@ -73,12 +76,15 @@ __all__ = [
     "train_and_register_v4_crypto_cs",
     "TrainV5PanelEnsembleOptions",
     "TrainV5PanelEnsembleResult",
+    "resume_v5_panel_ensemble_tail",
     "train_and_register_v5_panel_ensemble",
     "TrainV5SequenceOptions",
     "TrainV5SequenceResult",
+    "resume_v5_sequence_tail",
     "train_and_register_v5_sequence",
     "TrainV5LobOptions",
     "TrainV5LobResult",
+    "resume_v5_lob_tail",
     "train_and_register_v5_lob",
     "TrainV5FusionOptions",
     "TrainV5FusionResult",

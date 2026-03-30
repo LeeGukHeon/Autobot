@@ -16,11 +16,12 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
-def test_v5_governed_candidate_acceptance_targets_v5_panel_contract() -> None:
+def test_v5_governed_candidate_acceptance_targets_v5_fusion_contract() -> None:
     source = (REPO_ROOT / "scripts" / "v5_governed_candidate_acceptance.ps1").read_text(encoding="utf-8")
 
-    assert '-ModelFamily "train_v5_panel_ensemble"' in source
-    assert '-Trainer "v5_panel_ensemble"' in source
+    assert '-ModelFamily "train_v5_fusion"' in source
+    assert '-Trainer "v5_fusion"' in source
+    assert '-DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob")' in source
     assert '-FeatureSet "v4"' in source
     assert '-LabelSet "v3"' in source
     assert '-CandidateModelRef "latest_candidate"' in source
@@ -39,12 +40,13 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     )
     fake_candidate_acceptance = scripts_dir / "candidate_acceptance.ps1"
     fake_candidate_acceptance.write_text(
-        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '')\n"
+        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '', [string[]]$DependencyTrainers = @())\n"
         "Write-Host ('[fake-v5] family=' + $ModelFamily)\n"
         "Write-Host ('[fake-v5] trainer=' + $Trainer)\n"
         "Write-Host ('[fake-v5] feature=' + $FeatureSet)\n"
         "Write-Host ('[fake-v5] label=' + $LabelSet)\n"
         "Write-Host ('[fake-v5] champion_family=' + $ChampionModelFamily)\n"
+        "Write-Host ('[fake-v5] deps=' + (($DependencyTrainers | ForEach-Object { [string]$_ }) -join ','))\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -62,6 +64,10 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
             "Bypass",
             "-File",
             str(governed_script),
+            "-ProjectRoot",
+            str(tmp_path),
+            "-PythonExe",
+            "python",
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -70,8 +76,9 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     )
 
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
-    assert "[fake-v5] family=train_v5_panel_ensemble" in completed.stdout
-    assert "[fake-v5] trainer=v5_panel_ensemble" in completed.stdout
+    assert "[fake-v5] family=train_v5_fusion" in completed.stdout
+    assert "[fake-v5] trainer=v5_fusion" in completed.stdout
     assert "[fake-v5] feature=v4" in completed.stdout
     assert "[fake-v5] label=v3" in completed.stdout
     assert "[fake-v5] champion_family=" in completed.stdout
+    assert "[fake-v5] deps=v5_panel_ensemble,v5_sequence,v5_lob" in completed.stdout

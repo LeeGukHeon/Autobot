@@ -225,6 +225,9 @@ function Invoke-DependencyTrainerChain {
         $trainExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $trainArgs
         $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
         $runId = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Split-Path -Leaf $runDir }
+        $trainConfigPath = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Join-Path $runDir "train_config.yaml" }
+        $trainConfig = if ([string]::IsNullOrWhiteSpace($trainConfigPath)) { @{} } else { Load-JsonOrEmpty -PathValue $trainConfigPath }
+        $snapshotId = [string](Get-PropValue -ObjectValue $trainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
         if ((-not $DryRun) -and ([int]$trainExec.ExitCode -ne 0)) {
             throw ("dependency trainer failed: " + $trainerName)
         }
@@ -240,6 +243,7 @@ function Invoke-DependencyTrainerChain {
             output_preview = (Get-OutputPreview -Text ([string]$trainExec.Output))
             run_dir = $runDir
             run_id = $runId
+            data_platform_ready_snapshot_id = $snapshotId
         }
     }
     return @($results)
@@ -4179,10 +4183,20 @@ try {
             -TrainEndDate $trainEndDate `
             -ExecutionEvalStartDate $certificationStartDate `
             -ExecutionEvalEndDate $effectiveBatchDate
+        $dependencyRunIds = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "run_id" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $dependencyFamilies = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "model_family" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $dependencySnapshotIds = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "data_platform_ready_snapshot_id" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $dependencyUniqueSnapshotIds = @($dependencySnapshotIds | Select-Object -Unique)
         $report.steps.dependency_trainers = [ordered]@{
             attempted = $true
             count = @($dependencyTrainerResults).Count
             results = @($dependencyTrainerResults)
+            run_ids = @($dependencyRunIds)
+            model_families = @($dependencyFamilies)
+            data_platform_ready_snapshot_ids = @($dependencySnapshotIds)
+            same_snapshot_id = if (@($dependencyUniqueSnapshotIds).Count -eq 1) { [string]$dependencyUniqueSnapshotIds[0] } else { "" }
+            snapshot_id_consistent = (@($dependencyUniqueSnapshotIds).Count -le 1)
+            expected_snapshot_id = $dataPlatformReadySnapshotId
         }
     } else {
         $report.steps.dependency_trainers = [ordered]@{
@@ -4232,6 +4246,9 @@ try {
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
     $researchEvidencePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "trainer_research_evidence.json" }
     $researchEvidenceArtifact = if ([string]::IsNullOrWhiteSpace($researchEvidencePath)) { @{} } else { Load-JsonOrEmpty -PathValue $researchEvidencePath }
+    $candidateTrainConfigPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "train_config.yaml" }
+    $candidateTrainConfig = if ([string]::IsNullOrWhiteSpace($candidateTrainConfigPath)) { @{} } else { Load-JsonOrEmpty -PathValue $candidateTrainConfigPath }
+    $candidateSnapshotId = [string](Get-PropValue -ObjectValue $candidateTrainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
     $searchBudgetDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "search_budget_decision.json" }
     $searchBudgetDecision = if ([string]::IsNullOrWhiteSpace($searchBudgetDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $searchBudgetDecisionPath }
     $economicObjectiveProfilePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "economic_objective_profile.json" }
@@ -4347,6 +4364,7 @@ try {
         promotion_policy_contract_profile_id = [string]$promotionPolicyConfig.profile_id
         promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
         promotion_decision_path = $promotionDecisionPath
+        data_platform_ready_snapshot_id = $candidateSnapshotId
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
         promotion_decision_status = [string](Get-PropValue -ObjectValue $promotionDecision -Name "status" -DefaultValue "")
@@ -4400,6 +4418,7 @@ try {
         lane_promotion_allowed = $lanePromotionAllowed
         lane_governance_reasons = @($laneGovernanceReasons)
         promotion_decision_path = $promotionDecisionPath
+        data_platform_ready_snapshot_id = $candidateSnapshotId
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
         promotion_decision = $promotionDecision
@@ -4412,6 +4431,11 @@ try {
         champion_before_run_id = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
         duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
         duplicate_artifacts = $duplicateCandidateArtifacts
+        dependency_trainers = @((Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "results" -DefaultValue @()))
+        dependency_trainer_run_ids = @((Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "run_ids" -DefaultValue @()))
+        dependency_trainer_model_families = @((Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "model_families" -DefaultValue @()))
+        dependency_snapshot_id = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "")
+        dependency_snapshot_id_consistent = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "snapshot_id_consistent" -DefaultValue $false)
     }
     Sync-SplitPolicyState
     $report.steps.train.duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
