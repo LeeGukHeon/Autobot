@@ -481,3 +481,62 @@ def test_fanout_public_ws_client_preserves_unbounded_duration_when_zero() -> Non
 
     assert source.calls
     assert source.calls[0] == ("ticker", None)
+
+
+def test_fanout_public_ws_client_bounds_in_memory_history_but_keeps_total_capture_counts() -> None:
+    class _BurstSourceClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, float | None]] = []
+
+        async def stream_ticker(self, markets: list[str] | tuple[str, ...], *, duration_sec: float | None = None):
+            _ = markets
+            self.calls.append(("ticker", duration_sec))
+            base_ts_ms = 1_000
+            for idx in range(10):
+                yield TickerEvent(
+                    market="KRW-BTC",
+                    ts_ms=base_ts_ms + (idx * 1_000),
+                    trade_price=100.0 + idx,
+                    acc_trade_price_24h=1_000_000_000_000.0 + idx,
+                )
+
+        async def stream_trade(self, markets: list[str] | tuple[str, ...], *, duration_sec: float | None = None):
+            _ = (markets, duration_sec)
+            if False:
+                yield None
+
+        async def stream_orderbook(
+            self,
+            markets: list[str] | tuple[str, ...],
+            *,
+            duration_sec: float | None = None,
+            level: int | str | None = 0,
+        ):
+            _ = (markets, duration_sec, level)
+            if False:
+                yield None
+
+    source = _BurstSourceClient()
+    client = paired_runtime_module.FanoutPublicWsClient(
+        source_client=source,
+        source_markets=["KRW-BTC"],
+        duration_sec=0,
+        orderbook_level=0,
+        history_sec=3,
+        max_ticker_history=3,
+    )
+
+    captured = []
+
+    async def _consume_all() -> None:
+        async for event in client.stream_ticker(["KRW-BTC"]):
+            captured.append(int(event.ts_ms))
+            if len(captured) >= 10:
+                await client.close()
+                break
+
+    asyncio.run(_consume_all())
+
+    assert captured == [1_000 + (idx * 1_000) for idx in range(10)]
+    assert client.capture_counts["ticker_events_captured"] == 10
+    assert client.capture_counts["ticker_events_buffered"] <= 3

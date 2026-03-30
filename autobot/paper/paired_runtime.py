@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -124,14 +125,22 @@ class FanoutPublicWsClient:
         source_markets: Sequence[str],
         duration_sec: int,
         orderbook_level: int | str | None = 0,
+        history_sec: int = 30,
+        max_ticker_history: int = 2048,
+        max_trade_history: int = 8192,
+        max_orderbook_history: int = 2048,
     ) -> None:
         self._source_client = source_client
         self._source_markets = tuple(str(item).strip().upper() for item in source_markets if str(item).strip())
         self._duration_sec = max(int(duration_sec), 0)
         self._orderbook_level = orderbook_level
-        self._ticker_history: list[TickerEvent] = []
-        self._trade_history: list[TradeEvent] = []
-        self._orderbook_history: list[OrderbookEvent] = []
+        self._history_window_ms = max(int(history_sec), 1) * 1000
+        self._ticker_history: deque[TickerEvent] = deque(maxlen=max(int(max_ticker_history), 1))
+        self._trade_history: deque[TradeEvent] = deque(maxlen=max(int(max_trade_history), 1))
+        self._orderbook_history: deque[OrderbookEvent] = deque(maxlen=max(int(max_orderbook_history), 1))
+        self._ticker_events_captured_total = 0
+        self._trade_events_captured_total = 0
+        self._orderbook_events_captured_total = 0
         self._ticker_subscribers: list[_FanoutSubscriber] = []
         self._trade_subscribers: list[_FanoutSubscriber] = []
         self._orderbook_subscribers: list[_FanoutSubscriber] = []
@@ -144,9 +153,12 @@ class FanoutPublicWsClient:
     @property
     def capture_counts(self) -> dict[str, int]:
         return {
-            "ticker_events_captured": len(self._ticker_history),
-            "trade_events_captured": len(self._trade_history),
-            "orderbook_events_captured": len(self._orderbook_history),
+            "ticker_events_captured": int(self._ticker_events_captured_total),
+            "trade_events_captured": int(self._trade_events_captured_total),
+            "orderbook_events_captured": int(self._orderbook_events_captured_total),
+            "ticker_events_buffered": len(self._ticker_history),
+            "trade_events_buffered": len(self._trade_history),
+            "orderbook_events_buffered": len(self._orderbook_history),
         }
 
     async def stream_ticker(
@@ -203,7 +215,7 @@ class FanoutPublicWsClient:
         *,
         event_type: str,
         markets: Sequence[str],
-        history: list[Any],
+        history: deque[Any],
         subscribers: list[_FanoutSubscriber],
         ensure_task: Callable[[], asyncio.Task[None]],
     ) -> AsyncIterator[Any]:
@@ -213,7 +225,7 @@ class FanoutPublicWsClient:
         async with self._lock:
             if self._closed:
                 return
-            for event in history:
+            for event in list(history):
                 event_market = str(getattr(event, "market", "")).strip().upper()
                 if allowed_markets and event_market not in allowed_markets:
                     continue
@@ -268,7 +280,7 @@ class FanoutPublicWsClient:
         self,
         *,
         stream: str,
-        history: list[Any],
+        history: deque[Any],
         subscribers: list[_FanoutSubscriber],
     ) -> None:
         try:
@@ -291,7 +303,14 @@ class FanoutPublicWsClient:
             async for event in generator:
                 if self._closed:
                     break
+                if stream == "ticker":
+                    self._ticker_events_captured_total += 1
+                elif stream == "trade":
+                    self._trade_events_captured_total += 1
+                else:
+                    self._orderbook_events_captured_total += 1
                 history.append(event)
+                self._trim_history(history)
                 event_market = str(getattr(event, "market", "")).strip().upper()
                 async with self._lock:
                     targets = list(subscribers)
@@ -320,6 +339,19 @@ class FanoutPublicWsClient:
             await asyncio.gather(*tasks, return_exceptions=True)
         for subscriber in ticker_subscribers + trade_subscribers + orderbook_subscribers:
             subscriber.queue.put_nowait(_STREAM_SENTINEL)
+
+    def _trim_history(self, history: deque[Any]) -> None:
+        if not history:
+            return
+        newest_ts_ms = int(getattr(history[-1], "ts_ms", 0) or 0)
+        if newest_ts_ms <= 0:
+            return
+        cutoff_ts_ms = newest_ts_ms - self._history_window_ms
+        while history:
+            oldest_ts_ms = int(getattr(history[0], "ts_ms", 0) or 0)
+            if oldest_ts_ms <= 0 or oldest_ts_ms >= cutoff_ts_ms:
+                break
+            history.popleft()
 
 
 async def run_recorded_paired_paper(
