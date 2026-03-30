@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 
 import polars as pl
 
@@ -9,6 +10,7 @@ from autobot.ops.data_platform_snapshot import (
     load_ready_snapshot,
     publish_ready_snapshot,
     ready_snapshot_pointer_path,
+    ready_snapshot_summary_path,
     resolve_ready_snapshot_dataset_root,
 )
 
@@ -46,3 +48,26 @@ def test_publish_ready_snapshot_writes_pointer_and_resolves_dataset_roots(tmp_pa
     features_root = resolve_ready_snapshot_dataset_root(project_root=project_root, dataset_name="features_v4")
     assert features_root is not None
     assert features_root.exists()
+
+
+def test_env_snapshot_id_overrides_ready_pointer(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    for name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "candles_api_v1", "features_v4"):
+        _write_dataset(project_root, name)
+
+    first = publish_ready_snapshot(project_root=project_root)
+    time.sleep(1.1)
+    second = publish_ready_snapshot(project_root=project_root)
+    assert first["snapshot_id"] != second["snapshot_id"]
+
+    pointer_payload = load_ready_snapshot(project_root=project_root)
+    assert pointer_payload["snapshot_id"] == second["snapshot_id"]
+
+    monkeypatch.setenv("AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID", first["snapshot_id"])
+    env_payload = load_ready_snapshot(project_root=project_root)
+    assert env_payload["snapshot_id"] == first["snapshot_id"]
+    assert ready_snapshot_summary_path(project_root=project_root, snapshot_id=first["snapshot_id"]).exists()
+
+    resolved = resolve_ready_snapshot_dataset_root(project_root=project_root, dataset_name="sequence_v1")
+    assert resolved is not None
+    assert str(resolved).startswith(str(project_root / "data" / "snapshots" / "data_platform" / first["snapshot_id"]))

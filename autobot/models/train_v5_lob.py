@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
 from autobot.features.multitf_join_v1 import bucket_end_timestamp_expr
+from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
@@ -921,6 +922,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "primary_horizon_seconds": 30,
         "auxiliary_targets": ["micro_alpha_60s", "five_min_alpha", "adverse_excursion_30s"],
     }
+    data_platform_ready_snapshot_id = resolve_ready_snapshot_id(project_root=Path.cwd())
     train_config = {
         **asdict(options),
         "dataset_root": str(runtime_dataset_root),
@@ -932,6 +934,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "selected_markets": list(samples.selected_markets),
         "support_level_counts": dict(samples.support_level_counts),
         "autobot_version": autobot_version,
+        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
     }
     runtime_recommendations = {
         "status": "lob_runtime_ready",
@@ -948,6 +951,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "manifest_sha256": _sha256_file(options.dataset_root / "_meta" / "manifest.parquet"),
         "sample_count": int(samples.rows),
         "code_version": autobot_version,
+        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
     }
     model_card = render_model_card(
         run_id=run_id,
@@ -1115,6 +1119,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
                 "lob_model_contract_path": str(lob_model_contract_path),
                 "expert_prediction_table_path": str(expert_prediction_table_path),
                 "runtime_dataset_root": str(runtime_dataset_written_root),
+                "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
             },
             ensure_ascii=False,
             indent=2,

@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
 from autobot.features.multitf_join_v1 import bucket_end_timestamp_expr
+from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
@@ -1237,6 +1238,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "quantile_levels": list(samples.quantile_levels),
         "target_definition": "future 1m close return by horizon from ws_candle_v1 with canonical 1m candle fallback",
     }
+    data_platform_ready_snapshot_id = resolve_ready_snapshot_id(project_root=Path.cwd())
     train_config = {
         **asdict(options),
         "dataset_root": str(runtime_dataset_root),
@@ -1248,6 +1250,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "selected_markets": list(samples.selected_markets),
         "support_level_counts": dict(samples.support_level_counts),
         "autobot_version": autobot_version,
+        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
     }
     runtime_recommendations = {
         "status": "sequence_runtime_ready",
@@ -1255,6 +1258,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "runtime_feature_dataset_root": str(runtime_dataset_root),
     }
     data_fingerprint = _build_sequence_data_fingerprint(options=options, sample_count=samples.rows)
+    data_fingerprint["data_platform_ready_snapshot_id"] = data_platform_ready_snapshot_id
     model_card = render_model_card(
         run_id=run_id,
         model_family=options.model_family,
@@ -1425,6 +1429,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
                 "sequence_model_contract_path": str(sequence_model_contract_path),
                 "expert_prediction_table_path": str(expert_prediction_table_path),
                 "runtime_dataset_root": str(runtime_dataset_written_root),
+                "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
             },
             ensure_ascii=False,
             indent=2,

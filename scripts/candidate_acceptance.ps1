@@ -2338,8 +2338,25 @@ function Invoke-CommandCapture {
             DryRun = $true
         }
     }
-    $output = & $Exe @ArgList 2>&1
-    $exitCode = [int]$LASTEXITCODE
+    $snapshotEnvName = "AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID"
+    $hadSnapshotEnv = Test-Path ("Env:" + $snapshotEnvName)
+    $previousSnapshotEnv = if ($hadSnapshotEnv) { [string](Get-Item ("Env:" + $snapshotEnvName)).Value } else { "" }
+    $effectiveSnapshotEnv = [string]$script:dataPlatformReadySnapshotId
+    try {
+        if ([string]::IsNullOrWhiteSpace($effectiveSnapshotEnv)) {
+            Remove-Item ("Env:" + $snapshotEnvName) -ErrorAction SilentlyContinue
+        } else {
+            $env:AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID = $effectiveSnapshotEnv
+        }
+        $output = & $Exe @ArgList 2>&1
+        $exitCode = [int]$LASTEXITCODE
+    } finally {
+        if ($hadSnapshotEnv) {
+            $env:AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID = $previousSnapshotEnv
+        } else {
+            Remove-Item ("Env:" + $snapshotEnvName) -ErrorAction SilentlyContinue
+        }
+    }
     if ((-not $AllowFailure) -and $exitCode -ne 0) {
         $outputText = ($output -join "`n")
         throw "Command failed (exit=$exitCode): $commandText`n$outputText"
@@ -3064,6 +3081,7 @@ $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegis
 $championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $resolvedChampionModelFamily -PointerName "champion"
 $championBefore = Load-JsonOrEmpty -PathValue $championPointerPath
 $dataPlatformReadySnapshotId = Get-DataPlatformReadySnapshotId -ProjectRoot $resolvedProjectRoot
+$script:dataPlatformReadySnapshotId = $dataPlatformReadySnapshotId
 
 $report = [ordered]@{
     generated_at = (Get-Date).ToString("o")

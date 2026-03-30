@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
+from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 from . import train_v4_crypto_cs as v4
 from . import train_v4_persistence as v4_persistence
@@ -1143,8 +1144,11 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         lane_governance=lane_governance,
         ensemble_contract=metrics.get("panel_ensemble", {}),
     )
+    data_platform_ready_snapshot_id = resolve_ready_snapshot_id(project_root=Path.cwd())
+    train_config["data_platform_ready_snapshot_id"] = data_platform_ready_snapshot_id
     data_fingerprint = build_data_fingerprint(request=request, selected_markets=dataset.selected_markets, total_rows=dataset.rows)
     data_fingerprint["code_version"] = autobot_version
+    data_fingerprint["data_platform_ready_snapshot_id"] = data_platform_ready_snapshot_id
     if live_domain_reweighting:
         data_fingerprint["live_domain_reweighting"] = live_domain_reweighting
     model_card = render_model_card(
@@ -1384,6 +1388,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
             "trainer": "v5_panel_ensemble",
             "status": status,
             "duration_sec": duration_sec,
+            "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
             "walk_forward_summary": walk_forward.get("summary", {}),
             "panel_ensemble": metrics.get("panel_ensemble", {}),
             "expert_prediction_table_path": str(expert_prediction_table_path),

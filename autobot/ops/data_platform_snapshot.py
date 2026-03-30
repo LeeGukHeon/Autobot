@@ -11,6 +11,8 @@ import shutil
 from typing import Any
 
 
+READY_SNAPSHOT_ID_ENV = "AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID"
+
 SNAPSHOT_DATASET_LAYOUT: dict[str, tuple[Path, Path]] = {
     "candles_second_v1": (Path("data/parquet/candles_second_v1"), Path("data/parquet/candles_second_v1")),
     "ws_candle_v1": (Path("data/parquet/ws_candle_v1"), Path("data/parquet/ws_candle_v1")),
@@ -27,8 +29,18 @@ def ready_snapshot_pointer_path(*, project_root: Path) -> Path:
     return project_root / "data" / "_meta" / "data_platform_ready_snapshot.json"
 
 
-def load_ready_snapshot(*, project_root: Path) -> dict[str, Any]:
-    path = ready_snapshot_pointer_path(project_root=project_root)
+def ready_snapshot_summary_path(*, project_root: Path, snapshot_id: str) -> Path:
+    return project_root / "data" / "snapshots" / "data_platform" / str(snapshot_id).strip() / "_meta" / "summary.json"
+
+
+def _resolve_requested_snapshot_id(*, snapshot_id: str | None = None) -> str:
+    explicit = str(snapshot_id or "").strip()
+    if explicit:
+        return explicit
+    return str(os.getenv(READY_SNAPSHOT_ID_ENV, "")).strip()
+
+
+def _load_json_doc(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
@@ -38,8 +50,22 @@ def load_ready_snapshot(*, project_root: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def resolve_ready_snapshot_dataset_root(*, project_root: Path, dataset_name: str) -> Path | None:
-    payload = load_ready_snapshot(project_root=project_root)
+def load_ready_snapshot(*, project_root: Path, snapshot_id: str | None = None) -> dict[str, Any]:
+    requested_snapshot_id = _resolve_requested_snapshot_id(snapshot_id=snapshot_id)
+    if requested_snapshot_id:
+        return _load_json_doc(
+            ready_snapshot_summary_path(project_root=project_root, snapshot_id=requested_snapshot_id)
+        )
+    return _load_json_doc(ready_snapshot_pointer_path(project_root=project_root))
+
+
+def resolve_ready_snapshot_dataset_root(
+    *,
+    project_root: Path,
+    dataset_name: str,
+    snapshot_id: str | None = None,
+) -> Path | None:
+    payload = load_ready_snapshot(project_root=project_root, snapshot_id=snapshot_id)
     datasets = dict(payload.get("datasets") or {})
     raw = datasets.get(str(dataset_name).strip())
     if not isinstance(raw, dict):
@@ -50,8 +76,8 @@ def resolve_ready_snapshot_dataset_root(*, project_root: Path, dataset_name: str
     return Path(path_value)
 
 
-def resolve_ready_snapshot_id(*, project_root: Path) -> str | None:
-    payload = load_ready_snapshot(project_root=project_root)
+def resolve_ready_snapshot_id(*, project_root: Path, snapshot_id: str | None = None) -> str | None:
+    payload = load_ready_snapshot(project_root=project_root, snapshot_id=snapshot_id)
     value = str(payload.get("snapshot_id") or "").strip()
     return value or None
 

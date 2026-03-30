@@ -165,6 +165,7 @@ from .models import (
 )
 from .models.offpolicy_evaluation import write_execution_dr_ope_report
 from .models.registry import load_json, promote_run_to_champion
+from .ops.data_platform_snapshot import load_ready_snapshot as load_data_platform_ready_snapshot
 from .strategy import TopTradeValueScanner
 from .strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
@@ -6218,13 +6219,12 @@ def _resolve_backtest_dataset_name_for_model_features(
 
 
 def _resolve_data_platform_ready_dataset_root(*, project_root: Path, dataset_name: str) -> Path | None:
-    pointer_path = project_root / "data" / "_meta" / "data_platform_ready_snapshot.json"
-    if not pointer_path.exists():
-        return None
-    try:
-        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    requested_snapshot_id = str(os.getenv("AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID", "")).strip()
+    payload = load_data_platform_ready_snapshot(project_root=project_root)
+    if requested_snapshot_id and not payload:
+        raise FileNotFoundError(
+            f"requested data platform ready snapshot missing: {requested_snapshot_id}"
+        )
     datasets = dict(payload.get("datasets") or {})
     item = datasets.get(str(dataset_name).strip())
     if not isinstance(item, dict):
