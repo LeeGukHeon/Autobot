@@ -1066,13 +1066,22 @@ def _merge_manifest_rows(*, existing_rows: list[dict[str, Any]], new_rows: list[
     for row in existing_rows:
         market = str(row.get("market") or "").strip().upper()
         anchor_ts_ms = int(row.get("anchor_ts_ms") or 0)
+        cache_file_text = str(row.get("cache_file") or "").strip()
+        status = str(row.get("status") or "").strip().upper()
         if not market or anchor_ts_ms <= 0:
+            continue
+        if status == "FAIL" or not cache_file_text:
             continue
         merged[(market, anchor_ts_ms)] = dict(row)
     for row in new_rows:
         market = str(row.get("market") or "").strip().upper()
         anchor_ts_ms = int(row.get("anchor_ts_ms") or 0)
+        cache_file_text = str(row.get("cache_file") or "").strip()
+        status = str(row.get("status") or "").strip().upper()
         if not market or anchor_ts_ms <= 0:
+            continue
+        if status == "FAIL" or not cache_file_text:
+            merged.pop((market, anchor_ts_ms), None)
             continue
         payload = dict(row)
         payload["market"] = market
