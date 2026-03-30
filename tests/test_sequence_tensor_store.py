@@ -15,6 +15,7 @@ from autobot.data.collect.sequence_tensor_store import (
     SECOND_FEATURE_NAMES,
     SequenceTensorBuildOptions,
     _read_parquet_rows,
+    _resolve_source_time_window,
     _filter_markets_for_label_source_coverage,
     build_sequence_tensor_store,
     validate_sequence_tensor_store,
@@ -342,6 +343,27 @@ def test_read_parquet_rows_relaxes_null_schema_across_files(tmp_path: Path) -> N
     assert frame.schema["mid_mean"] == pl.Float64
     assert frame.schema["book_min_ts_ms"] == pl.Int64
     assert frame.get_column("book_min_ts_ms").to_list() == [1_774_850_940_000, None]
+
+
+def test_resolve_source_time_window_expands_date_for_context() -> None:
+    options = SequenceTensorBuildOptions(
+        parquet_root=Path("data/parquet"),
+        out_dataset="sequence_v1",
+        date="2026-03-29",
+        second_lookback_steps=120,
+        minute_lookback_steps=30,
+        micro_lookback_steps=30,
+        lob_lookback_steps=32,
+    )
+
+    second_start, second_end, minute_start, minute_end = _resolve_source_time_window(options=options)
+
+    assert second_start is not None
+    assert second_end is not None
+    assert minute_start is not None
+    assert minute_end is not None
+    assert second_start < minute_end
+    assert minute_start < minute_end
 
 
 def _write_second_candles(path: Path, *, start_ts_ms: int, count: int) -> None:

@@ -573,8 +573,17 @@ def _market_has_label_source_on_or_after_ts(
 
 
 def _load_market_source_frames(*, options: SequenceTensorBuildOptions, market: str) -> _MarketSourceFrames:
-    second_frame = _read_parquet_rows(options.second_root / "tf=1s" / f"market={market}" / "*.parquet")
-    ws_one_s_frame = _read_parquet_rows(options.ws_candle_root / "tf=1s" / f"market={market}" / "*.parquet")
+    second_start_ts_ms, second_end_ts_ms, minute_start_ts_ms, minute_end_ts_ms = _resolve_source_time_window(options=options)
+    second_frame = _read_parquet_rows(
+        options.second_root / "tf=1s" / f"market={market}" / "*.parquet",
+        start_ts_ms=second_start_ts_ms,
+        end_ts_ms=second_end_ts_ms,
+    )
+    ws_one_s_frame = _read_parquet_rows(
+        options.ws_candle_root / "tf=1s" / f"market={market}" / "*.parquet",
+        start_ts_ms=second_start_ts_ms,
+        end_ts_ms=second_end_ts_ms,
+    )
     if second_frame.height > 0 and ws_one_s_frame.height > 0:
         second_frame = (
             pl.concat([second_frame, ws_one_s_frame], how="vertical")
@@ -588,9 +597,21 @@ def _load_market_source_frames(*, options: SequenceTensorBuildOptions, market: s
         second_frame = ws_one_s_frame
     return _MarketSourceFrames(
         second_frame=second_frame,
-        minute_frame=_read_parquet_rows(options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet"),
-        micro_frame=_read_parquet_rows(options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet"),
-        lob_frame=_read_parquet_rows(options.lob_root / f"market={market}" / "date=*" / "*.parquet"),
+        minute_frame=_read_parquet_rows(
+            options.ws_candle_root / "tf=1m" / f"market={market}" / "*.parquet",
+            start_ts_ms=minute_start_ts_ms,
+            end_ts_ms=minute_end_ts_ms,
+        ),
+        micro_frame=_read_parquet_rows(
+            options.micro_root / "tf=1m" / f"market={market}" / "date=*" / "*.parquet",
+            start_ts_ms=minute_start_ts_ms,
+            end_ts_ms=minute_end_ts_ms,
+        ),
+        lob_frame=_read_parquet_rows(
+            options.lob_root / f"market={market}" / "date=*" / "*.parquet",
+            start_ts_ms=minute_start_ts_ms,
+            end_ts_ms=second_end_ts_ms,
+        ),
     )
 
 
@@ -1002,11 +1023,54 @@ def _latest_market_ts_ms(*, dataset_root: Path, market: str) -> int | None:
     return latest_ts_ms
 
 
-def _read_parquet_rows(glob_path: Path) -> pl.DataFrame:
+def _resolve_source_time_window(
+    *,
+    options: SequenceTensorBuildOptions,
+) -> tuple[int | None, int | None, int | None, int | None]:
+    if not options.date:
+        return None, None, None, None
+    date_start_ts_ms = _date_start_ts_ms(str(options.date))
+    if date_start_ts_ms is None:
+        return None, None, None, None
+    date_end_ts_ms = int(date_start_ts_ms) + 86_400_000 - 1
+    second_lookback_ms = max(int(options.second_lookback_steps), 1) * 1_000
+    minute_context_lookback_ms = max(
+        int(options.minute_lookback_steps),
+        int(options.micro_lookback_steps),
+        int(options.lob_lookback_steps),
+        1,
+    ) * 60_000
+    second_start_ts_ms = int(date_start_ts_ms) - max(second_lookback_ms, 60_000)
+    second_end_ts_ms = int(date_end_ts_ms) + 60_000
+    minute_start_ts_ms = int(date_start_ts_ms) - max(minute_context_lookback_ms, 60_000)
+    minute_end_ts_ms = int(date_end_ts_ms) + 60_000
+    return second_start_ts_ms, second_end_ts_ms, minute_start_ts_ms, minute_end_ts_ms
+
+
+def _read_parquet_rows(
+    glob_path: Path,
+    *,
+    start_ts_ms: int | None = None,
+    end_ts_ms: int | None = None,
+) -> pl.DataFrame:
     files = sorted(Path(path) for path in glob.glob(str(glob_path)))
     if not files:
         return pl.DataFrame()
-    frames = [pl.read_parquet(path) for path in files]
+    frames: list[pl.DataFrame] = []
+    for path in files:
+        lazy = pl.scan_parquet(str(path))
+        if start_ts_ms is not None:
+            lazy = lazy.filter(pl.col("ts_ms") >= int(start_ts_ms))
+        if end_ts_ms is not None:
+            lazy = lazy.filter(pl.col("ts_ms") <= int(end_ts_ms))
+        try:
+            frame = lazy.collect(engine="streaming")
+        except TypeError:
+            frame = lazy.collect(streaming=True)
+        if frame.height > 0:
+            frames.append(frame)
+    if not frames:
+        return pl.DataFrame()
     if len(frames) == 1:
         return frames[0]
     return pl.concat(frames, how="diagonal_relaxed")
