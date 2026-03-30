@@ -43,6 +43,7 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
                 collect_report_name="ws_collect_report.json",
                 health_snapshot_name="ws_public_health.json",
                 status_mode="ws_connected",
+                artifact_prefixes=("ws_",),
             )
         )
     if raw_private_ws_root is not None:
@@ -56,6 +57,7 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
                 collect_report_name="private_ws_collect_report.json",
                 health_snapshot_name="private_ws_health.json",
                 status_mode="artifact_presence",
+                artifact_prefixes=("private_ws_",),
             )
         )
     if raw_ticks_root is not None:
@@ -69,6 +71,7 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
                 collect_report_name="ticks_collect_report.json",
                 health_snapshot_name="ticks_daily_latest.json",
                 status_mode="artifact_presence",
+                artifact_prefixes=("ticks_",),
             )
         )
 
@@ -192,16 +195,19 @@ def _build_raw_contract_entry(
     collect_report_name: str,
     health_snapshot_name: str,
     status_mode: str,
+    artifact_prefixes: tuple[str, ...],
 ) -> dict[str, Any]:
     meta_dir = root_path.parent / "_meta"
-    meta_files = _meta_artifacts(meta_dir=meta_dir)
+    meta_files = _meta_artifacts(meta_dir=meta_dir, artifact_prefixes=artifact_prefixes)
     collect_report = _load_json(meta_dir / collect_report_name)
     health = _load_json(meta_dir / health_snapshot_name)
     validate_report = _load_json(meta_dir / "ws_validate_report.json")
     source_roots = []
     raw_root_text = str((collect_report or {}).get("raw_root", "")).strip()
     if raw_root_text:
-        source_roots.append(_normalize_root_reference(project_root=project_root, value=raw_root_text))
+        normalized_root = _normalize_root_reference(project_root=project_root, value=raw_root_text)
+        if normalized_root and normalized_root != _relpath(project_root, root_path):
+            source_roots.append(normalized_root)
     status = "present"
     if str(status_mode).strip().lower() == "ws_connected":
         if health:
@@ -418,11 +424,15 @@ def _build_runtime_contract_entry(
     }
 
 
-def _meta_artifacts(*, meta_dir: Path) -> list[dict[str, Any]]:
+def _meta_artifacts(*, meta_dir: Path, artifact_prefixes: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
     if not meta_dir.exists():
         return []
     artifacts: list[dict[str, Any]] = []
     for path in sorted(item for item in meta_dir.iterdir() if item.is_file()):
+        if artifact_prefixes:
+            name = str(path.name)
+            if not any(name.startswith(prefix) for prefix in artifact_prefixes):
+                continue
         artifacts.append(_artifact_descriptor(path))
     return artifacts
 
