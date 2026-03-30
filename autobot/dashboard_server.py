@@ -2287,6 +2287,12 @@ def _summarize_data_platform_dataset(
         "warn_files": _coerce_int(validate_report.get("warn_files")),
         "fail_files": _coerce_int(validate_report.get("fail_files")),
     }
+    raw_support_counts = dict(validate_report.get("support_level_counts") or {})
+    support_level_counts = {
+        "strict_full": _coerce_int(raw_support_counts.get("strict_full")) or 0,
+        "reduced_context": _coerce_int(raw_support_counts.get("reduced_context")) or 0,
+        "structural_invalid": _coerce_int(raw_support_counts.get("structural_invalid")) or 0,
+    }
     cache_file_count = len(list((dataset_root / "cache").rglob("*.npz"))) if (dataset_root / "cache").exists() else 0
     return {
         "dataset_name": dataset_name,
@@ -2298,6 +2304,7 @@ def _summarize_data_platform_dataset(
         "validate_generated_at": validate_report.get("generated_at") or _path_mtime_iso(validate_path),
         "build_summary": build_summary,
         "validate_summary": validate_summary,
+        "support_level_counts": support_level_counts,
         "manifest_exists": (meta_root / "manifest.parquet").exists(),
         "cache_file_count": cache_file_count,
         "artifact_paths": {

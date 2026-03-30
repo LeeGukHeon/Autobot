@@ -1843,6 +1843,7 @@
     const rawWs = foundation.raw_ws_public || {};
     const rawTicks = foundation.raw_ticks_daily || {};
     const candlesApi = foundation.candles_api_v1 || {};
+    const sequenceSupport = ((datasets.sequence_v1 || {}).support_level_counts) || {};
     const lastRxTs = Math.max(
       toNumber(health.updated_at_ms) || 0,
       toNumber((health.last_rx_ts_ms || {}).trade) || 0,
@@ -1913,6 +1914,9 @@
             compactStat("ws candle", maybe((datasets.ws_candle_v1 || {}).status)),
             compactStat("lob30", maybe((datasets.lob30_v1 || {}).status)),
             compactStat("sequence", maybe((datasets.sequence_v1 || {}).status)),
+            compactStat("seq strict", maybe(sequenceSupport.strict_full, "0")),
+            compactStat("seq reduced", maybe(sequenceSupport.reduced_context, "0")),
+            compactStat("seq invalid", maybe(sequenceSupport.structural_invalid, "0")),
             compactStat("registry", boolLabel(Boolean((dataPlatform.registry || {}).exists))),
             compactStat("contract 수", maybe((dataPlatform.registry || {}).contract_count)),
           ],
