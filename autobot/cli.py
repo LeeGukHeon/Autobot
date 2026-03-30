@@ -2883,6 +2883,15 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 print(f"[model][train][v5_sequence] predictor_contract={summary_v5_sequence.predictor_contract_path}")
                 return 0
             if trainer == "v5_panel_ensemble":
+                project_root = config_dir.resolve().parent
+                ready_features_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=project_root,
+                    dataset_name="features_v4",
+                )
+                ready_parquet_root = _resolve_data_platform_ready_parquet_root(
+                    project_root=project_root,
+                    dataset_name="candles_api_v1",
+                )
                 options_v5 = _cli_train_v4_helpers.build_v4_train_options(
                     args=args,
                     defaults=defaults,
@@ -2891,6 +2900,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     registry_root=registry_root,
                     logs_root=logs_root,
                     top_n=top_n,
+                    dataset_root_override=ready_features_root,
+                    execution_acceptance_parquet_root_override=ready_parquet_root,
                     resolve_backtest_dataset_name_for_model_features=_resolve_backtest_dataset_name_for_model_features,
                     clamp_prob_value=_clamp_prob_value,
                     optional_float_value=_optional_float_value,
@@ -2915,6 +2926,15 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     print(f"[model][train][v5_panel_ensemble] search_budget={summary_v5.search_budget_decision_path}")
                 return 0
             if trainer == "v4_crypto_cs":
+                project_root = config_dir.resolve().parent
+                ready_features_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=project_root,
+                    dataset_name="features_v4",
+                )
+                ready_parquet_root = _resolve_data_platform_ready_parquet_root(
+                    project_root=project_root,
+                    dataset_name="candles_api_v1",
+                )
                 options_v4 = _cli_train_v4_helpers.build_v4_train_options(
                     args=args,
                     defaults=defaults,
@@ -2923,6 +2943,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     registry_root=registry_root,
                     logs_root=logs_root,
                     top_n=top_n,
+                    dataset_root_override=ready_features_root,
+                    execution_acceptance_parquet_root_override=ready_parquet_root,
                     resolve_backtest_dataset_name_for_model_features=_resolve_backtest_dataset_name_for_model_features,
                     clamp_prob_value=_clamp_prob_value,
                     optional_float_value=_optional_float_value,
@@ -6211,6 +6233,16 @@ def _resolve_data_platform_ready_dataset_root(*, project_root: Path, dataset_nam
     if not dataset_root:
         return None
     return Path(dataset_root)
+
+
+def _resolve_data_platform_ready_parquet_root(*, project_root: Path, dataset_name: str) -> Path | None:
+    dataset_root = _resolve_data_platform_ready_dataset_root(project_root=project_root, dataset_name=dataset_name)
+    if dataset_root is None:
+        return None
+    parent = dataset_root.parent
+    if parent.name == "parquet":
+        return parent
+    return parent
 
 
 def _data_defaults(config: dict[str, Any]) -> dict[str, Any]:

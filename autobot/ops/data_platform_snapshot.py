@@ -11,12 +11,16 @@ import shutil
 from typing import Any
 
 
-CORE_DERIVED_DATASETS: tuple[str, ...] = (
-    "candles_second_v1",
-    "ws_candle_v1",
-    "lob30_v1",
-    "sequence_v1",
-)
+SNAPSHOT_DATASET_LAYOUT: dict[str, tuple[Path, Path]] = {
+    "candles_second_v1": (Path("data/parquet/candles_second_v1"), Path("data/parquet/candles_second_v1")),
+    "ws_candle_v1": (Path("data/parquet/ws_candle_v1"), Path("data/parquet/ws_candle_v1")),
+    "lob30_v1": (Path("data/parquet/lob30_v1"), Path("data/parquet/lob30_v1")),
+    "sequence_v1": (Path("data/parquet/sequence_v1"), Path("data/parquet/sequence_v1")),
+    "candles_api_v1": (Path("data/parquet/candles_api_v1"), Path("data/parquet/candles_api_v1")),
+    "features_v4": (Path("data/features/features_v4"), Path("data/features/features_v4")),
+}
+
+CORE_DERIVED_DATASETS: tuple[str, ...] = tuple(SNAPSHOT_DATASET_LAYOUT.keys())
 
 
 def ready_snapshot_pointer_path(*, project_root: Path) -> Path:
@@ -55,9 +59,7 @@ def publish_ready_snapshot(
     parquet_root = resolved_project_root / "data" / "parquet"
     snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     snapshot_root = resolved_project_root / "data" / "snapshots" / "data_platform" / snapshot_id
-    datasets_root = snapshot_root / "data" / "parquet"
     summary_root = snapshot_root / "_meta"
-    datasets_root.mkdir(parents=True, exist_ok=True)
     summary_root.mkdir(parents=True, exist_ok=True)
 
     dataset_payload: dict[str, Any] = {}
@@ -65,10 +67,11 @@ def publish_ready_snapshot(
         name = str(dataset_name).strip()
         if not name:
             continue
-        source_root = parquet_root / name
+        relative_source, relative_target = SNAPSHOT_DATASET_LAYOUT.get(name, (Path("data/parquet") / name, Path("data/parquet") / name))
+        source_root = resolved_project_root / relative_source
         if not source_root.exists():
             raise FileNotFoundError(f"derived dataset root missing: {source_root}")
-        target_root = datasets_root / name
+        target_root = snapshot_root / relative_target
         _copytree_hardlink(src=source_root, dst=target_root)
         dataset_payload[name] = {
             "dataset_root": str(target_root),

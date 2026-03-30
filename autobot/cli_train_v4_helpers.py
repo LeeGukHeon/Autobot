@@ -25,6 +25,8 @@ def build_v4_train_options(
     registry_root: Path,
     logs_root: Path,
     top_n: int,
+    dataset_root_override: Path | None = None,
+    execution_acceptance_parquet_root_override: Path | None = None,
     resolve_backtest_dataset_name_for_model_features: Callable[..., str],
     clamp_prob_value: Callable[[float | None], float | None],
     optional_float_value: Callable[[Any], float | None],
@@ -109,7 +111,7 @@ def build_v4_train_options(
     )
     execution_eval_overridden = bool(execution_eval_start and execution_eval_end)
     return TrainV4CryptoCsOptions(
-        dataset_root=features_v4_config.output_dataset_root,
+        dataset_root=(Path(dataset_root_override) if dataset_root_override is not None else features_v4_config.output_dataset_root),
         registry_root=registry_root,
         logs_root=logs_root,
         model_family=model_family,
@@ -171,7 +173,11 @@ def build_v4_train_options(
         run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip().lower(),
         execution_acceptance_enabled=True,
         execution_acceptance_dataset_name=backtest_dataset_name_v4,
-        execution_acceptance_parquet_root=Path(str(backtest_defaults["parquet_root"])),
+        execution_acceptance_parquet_root=(
+            Path(execution_acceptance_parquet_root_override)
+            if execution_acceptance_parquet_root_override is not None
+            else Path(str(backtest_defaults["parquet_root"]))
+        ),
         execution_acceptance_output_root=logs_root / "train_v4_execution_backtest",
         execution_acceptance_eval_start=execution_eval_start,
         execution_acceptance_eval_end=execution_eval_end,
