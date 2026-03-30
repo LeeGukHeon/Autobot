@@ -2799,10 +2799,18 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 print(f"[model][train][v5_fusion] predictor_contract={summary_v5_fusion.predictor_contract_path}")
                 return 0
             if trainer == "v5_lob":
+                ready_sequence_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=config_dir.resolve().parent,
+                    dataset_name="sequence_v1",
+                )
                 lob_dataset_root = (
                     Path(str(args.lob_dataset_root))
                     if getattr(args, "lob_dataset_root", None)
-                    else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                    else (
+                        ready_sequence_root
+                        if ready_sequence_root is not None
+                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                    )
                 )
                 options_v5_lob = TrainV5LobOptions(
                     dataset_root=lob_dataset_root,
@@ -2832,10 +2840,18 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 print(f"[model][train][v5_lob] predictor_contract={summary_v5_lob.predictor_contract_path}")
                 return 0
             if trainer == "v5_sequence":
+                ready_sequence_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=config_dir.resolve().parent,
+                    dataset_name="sequence_v1",
+                )
                 sequence_dataset_root = (
                     Path(str(args.sequence_dataset_root))
                     if getattr(args, "sequence_dataset_root", None)
-                    else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                    else (
+                        ready_sequence_root
+                        if ready_sequence_root is not None
+                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                    )
                 )
                 options_v5_sequence = TrainV5SequenceOptions(
                     dataset_root=sequence_dataset_root,
@@ -6177,6 +6193,24 @@ def _resolve_backtest_dataset_name_for_model_features(
     if (parquet_root / candidate).exists():
         return str(candidate).strip()
     return str(fallback).strip() or "candles_v1"
+
+
+def _resolve_data_platform_ready_dataset_root(*, project_root: Path, dataset_name: str) -> Path | None:
+    pointer_path = project_root / "data" / "_meta" / "data_platform_ready_snapshot.json"
+    if not pointer_path.exists():
+        return None
+    try:
+        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    datasets = dict(payload.get("datasets") or {})
+    item = datasets.get(str(dataset_name).strip())
+    if not isinstance(item, dict):
+        return None
+    dataset_root = str(item.get("dataset_root") or "").strip()
+    if not dataset_root:
+        return None
+    return Path(dataset_root)
 
 
 def _data_defaults(config: dict[str, Any]) -> dict[str, Any]:

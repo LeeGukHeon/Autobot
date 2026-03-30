@@ -18,7 +18,7 @@ param(
     [string[]]$TensorMarkets = @(),
     [string]$OnBootSec = "12min",
     [string]$OnUnitActiveSec = "45min",
-    [string]$LockFile = "/tmp/autobot-data-platform-refresh.lock",
+    [string]$LockFile = "/tmp/autobot-data-orchestration.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun

@@ -19,6 +19,7 @@ param(
     [string]$SpawnServiceUnitName = "autobot-v4-challenger-spawn.service",
     [string]$SpawnTimerUnitName = "autobot-v4-challenger-spawn.timer",
     [string]$SpawnOnCalendar = "*-*-* 00:20:00",
+    [string]$LockFile = "/tmp/autobot-data-orchestration.lock",
     [string[]]$DisableLegacyTimerNames = @("autobot-daily-micro.timer", "autobot-daily-v4-accept.timer"),
     [string[]]$DisableLegacyServiceNames = @("autobot-daily-micro.service", "autobot-daily-v4-accept.service", "autobot-paper-v4-replay.service", "autobot-live-alpha-replay-shadow.service"),
     [switch]$NoStart,
@@ -100,7 +101,8 @@ function Build-ExecStart {
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
         [string[]]$ExtraPromotionUnits,
-        [string[]]$ExtraCandidateUnits
+        [string[]]$ExtraCandidateUnits,
+        [string]$SharedLockFile
     )
     $argList = @(
         "-NoProfile",
@@ -137,7 +139,8 @@ function Build-ExecStart {
         $argList += @($ExtraCandidateUnits)
     }
     $command = $PwshExe + " " + (($argList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-    return ("/bin/bash -lc " + (Quote-ShellArg $command))
+    $lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $SharedLockFile) + " bash -lc " + (Quote-ShellArg $command) + "; else exec bash -lc " + (Quote-ShellArg $command) + "; fi"
+    return ("/bin/bash -lc " + (Quote-ShellArg $lockCommand))
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -179,7 +182,8 @@ $promoteExecStart = Build-ExecStart `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -ExtraPromotionUnits $PromotionTargetUnits `
-    -ExtraCandidateUnits $CandidateTargetUnits
+    -ExtraCandidateUnits $CandidateTargetUnits `
+    -SharedLockFile $LockFile
 $spawnExecStart = Build-ExecStart `
     -PwshExe $resolvedPwshExe `
     -WrapperPath $resolvedWrapperScript `
@@ -195,7 +199,8 @@ $spawnExecStart = Build-ExecStart `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -ExtraPromotionUnits $PromotionTargetUnits `
-    -ExtraCandidateUnits $CandidateTargetUnits
+    -ExtraCandidateUnits $CandidateTargetUnits `
+    -SharedLockFile $LockFile
 
 $promoteServiceContent = New-ServiceContent `
     -Description "Autobot V4 Challenger Promotion" `

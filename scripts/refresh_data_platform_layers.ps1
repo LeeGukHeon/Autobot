@@ -220,6 +220,14 @@ $steps = @(
             "--project-root", $resolvedProjectRoot
         )
     }
+    [ordered]@{
+        name = "publish_data_platform_snapshot"
+        args = @(
+            "-m", "autobot.ops.data_platform_snapshot",
+            "publish",
+            "--project-root", $resolvedProjectRoot
+        )
+    }
 )
 
 $tensorDateValues = Get-RecentUtcDateValues -Count $TensorRecentDates

@@ -15,7 +15,7 @@ param(
     [int]$MaxRequests = 120,
     [string]$OnBootSec = "4min",
     [string]$OnUnitActiveSec = "20min",
-    [string]$LockFile = "/tmp/autobot-candles-api-refresh.lock",
+    [string]$LockFile = "/tmp/autobot-data-orchestration.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
