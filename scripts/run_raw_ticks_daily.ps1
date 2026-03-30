@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$SummaryPath = "data/raw_ticks/upbit/_meta/ticks_daily_latest.json",
+    [string]$PlanPath = "data/raw_ticks/upbit/_meta/ticks_plan_daily_auto.json",
     [string]$Quote = "KRW",
     [int]$TopN = 50,
     [int]$DaysAgo = 1,
@@ -72,13 +73,27 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $SummaryPath
+$resolvedPlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $PlanPath
 $resolvedRawRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $RawRoot
 $resolvedMetaDir = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MetaDir
 $validateDate = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max([int]$DaysAgo, 1)).ToString("yyyy-MM-dd")
 
+$planArgs = @(
+    "-m", "autobot.cli",
+    "collect", "plan-ticks",
+    "--parquet-root", "data/parquet",
+    "--base-dataset", "candles_api_v1",
+    "--out", $resolvedPlanPath,
+    "--quote", $Quote,
+    "--market-mode", "top_n_by_recent_value_est",
+    "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+    "--days-ago", ([string]([Math]::Max([int]$DaysAgo, 1)))
+)
+
 $collectArgs = @(
     "-m", "autobot.cli",
     "collect", "ticks",
+    "--plan", $resolvedPlanPath,
     "--mode", "daily",
     "--quote", $Quote,
     "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
@@ -102,6 +117,7 @@ $validateArgs = @(
 $stepResults = @()
 Push-Location $resolvedProjectRoot
 try {
+    $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "plan_raw_ticks_daily" -ArgList $planArgs)
     $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "collect_raw_ticks_daily" -ArgList $collectArgs)
     $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "validate_raw_ticks_daily" -ArgList $validateArgs)
 } finally {
@@ -115,6 +131,7 @@ $summary = [ordered]@{
     python_exe = $resolvedPythonExe
     raw_root = $resolvedRawRoot
     meta_dir = $resolvedMetaDir
+    plan_path = $resolvedPlanPath
     validate_date = $validateDate
     steps = @($stepResults)
 }

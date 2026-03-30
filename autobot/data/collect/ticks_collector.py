@@ -126,10 +126,12 @@ def collect_ticks_from_plan(
         processed_targets += 1
         market = detail["market"]
         days_ago = int(detail["days_ago"])
-        checkpoint_key = f"{market}|{days_ago}"
+        target_date = _expected_target_date(days_ago)
+        checkpoint_key = f"{market}|{target_date}"
         checkpoint_entry = checkpoint.get(checkpoint_key) if isinstance(checkpoint.get(checkpoint_key), dict) else {}
         start_cursor = _as_str(checkpoint_entry.get("last_cursor")) if checkpoint_entry else None
         detail["start_cursor"] = start_cursor
+        detail["target_date"] = target_date
 
         if options.dry_run:
             detail["status"] = "DRY_RUN"
@@ -202,6 +204,7 @@ def collect_ticks_from_plan(
                     {
                         "run_id": run_id,
                         "date": _expected_target_date(days_ago),
+                        "target_date": target_date,
                         "market": market,
                         "days_ago": days_ago,
                         "rows": 0,
@@ -222,6 +225,7 @@ def collect_ticks_from_plan(
                 checkpoint,
                 market=market,
                 days_ago=days_ago,
+                target_date=target_date,
                 last_cursor=result.last_cursor,
                 last_success_ts_ms=now_ms,
                 pages_collected=result.pages_collected,
@@ -250,6 +254,7 @@ def collect_ticks_from_plan(
                 {
                     "run_id": run_id,
                     "date": _expected_target_date(days_ago),
+                    "target_date": target_date,
                     "market": market,
                     "days_ago": days_ago,
                     "rows": 0,
@@ -280,6 +285,7 @@ def collect_ticks_from_plan(
                     {
                         "run_id": run_id,
                         "date": _expected_target_date(days_ago),
+                        "target_date": target_date,
                         "market": market,
                         "days_ago": days_ago,
                         "rows": 0,
@@ -310,6 +316,7 @@ def collect_ticks_from_plan(
                 {
                     "run_id": run_id,
                     "date": _expected_target_date(days_ago),
+                    "target_date": target_date,
                     "market": market,
                     "days_ago": days_ago,
                     "rows": 0,

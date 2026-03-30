@@ -7,8 +7,18 @@ from pathlib import Path
 from typing import Any
 
 
-def checkpoint_key(market: str, days_ago: int) -> str:
-    return f"{str(market).strip().upper()}|{int(days_ago)}"
+def checkpoint_key(
+    market: str,
+    days_ago: int | None = None,
+    *,
+    target_date: str | None = None,
+) -> str:
+    market_value = str(market).strip().upper()
+    if str(target_date or "").strip():
+        return f"{market_value}|{str(target_date).strip()}"
+    if days_ago is None:
+        raise ValueError("checkpoint_key requires days_ago or target_date")
+    return f"{market_value}|{int(days_ago)}"
 
 
 def load_ticks_checkpoint(path: Path) -> dict[str, dict[str, Any]]:
@@ -28,12 +38,14 @@ def load_ticks_checkpoint(path: Path) -> dict[str, dict[str, Any]]:
             continue
         market = str(value.get("market", "")).strip().upper()
         days_ago = _as_int(value.get("days_ago"))
-        if not market or days_ago is None:
+        target_date = _as_str(value.get("target_date"))
+        if not market or (days_ago is None and not target_date):
             continue
-        normalized_key = checkpoint_key(market, days_ago)
+        normalized_key = checkpoint_key(market, days_ago, target_date=target_date)
         normalized[normalized_key] = {
             "market": market,
-            "days_ago": int(days_ago),
+            "days_ago": (int(days_ago) if days_ago is not None else None),
+            "target_date": target_date,
             "last_cursor": _as_str(value.get("last_cursor")),
             "last_success_ts_ms": _as_int(value.get("last_success_ts_ms")),
             "pages_collected": _as_int(value.get("pages_collected"), default=0) or 0,
@@ -50,6 +62,7 @@ def save_ticks_checkpoint(path: Path, state: dict[str, dict[str, Any]]) -> None:
         payload[key] = {
             "market": _as_str(value.get("market")),
             "days_ago": _as_int(value.get("days_ago")),
+            "target_date": _as_str(value.get("target_date")),
             "last_cursor": _as_str(value.get("last_cursor")),
             "last_success_ts_ms": _as_int(value.get("last_success_ts_ms")),
             "pages_collected": _as_int(value.get("pages_collected"), default=0),
@@ -67,12 +80,13 @@ def update_ticks_checkpoint(
     *,
     market: str,
     days_ago: int,
+    target_date: str | None = None,
     last_cursor: str | None,
     last_success_ts_ms: int,
     pages_collected: int,
     updated_at_ms: int,
 ) -> dict[str, Any]:
-    key = checkpoint_key(market, days_ago)
+    key = checkpoint_key(market, days_ago, target_date=target_date)
     existing_pages = 0
     existing = state.get(key)
     if isinstance(existing, dict):
@@ -81,6 +95,7 @@ def update_ticks_checkpoint(
     entry = {
         "market": str(market).strip().upper(),
         "days_ago": int(days_ago),
+        "target_date": _as_str(target_date),
         "last_cursor": _as_str(last_cursor),
         "last_success_ts_ms": int(last_success_ts_ms),
         "pages_collected": int(existing_pages + max(int(pages_collected), 0)),
