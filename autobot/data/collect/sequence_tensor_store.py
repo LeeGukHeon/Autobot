@@ -1006,7 +1006,10 @@ def _read_parquet_rows(glob_path: Path) -> pl.DataFrame:
     files = sorted(Path(path) for path in glob.glob(str(glob_path)))
     if not files:
         return pl.DataFrame()
-    return pl.concat([pl.read_parquet(path) for path in files], how="vertical")
+    frames = [pl.read_parquet(path) for path in files]
+    if len(frames) == 1:
+        return frames[0]
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _slice_rows(frame: pl.DataFrame, *, start_ts_ms: int | None, end_ts_ms: int | None) -> pl.DataFrame:

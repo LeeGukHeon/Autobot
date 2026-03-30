@@ -14,6 +14,7 @@ from autobot.data.collect.sequence_tensor_store import (
     ONE_MIN_FEATURE_NAMES,
     SECOND_FEATURE_NAMES,
     SequenceTensorBuildOptions,
+    _read_parquet_rows,
     _filter_markets_for_label_source_coverage,
     build_sequence_tensor_store,
     validate_sequence_tensor_store,
@@ -312,6 +313,35 @@ def test_filter_markets_for_label_source_coverage_skips_stale_markets(tmp_path: 
     )
 
     assert filtered == ("KRW-BTC",)
+
+
+def test_read_parquet_rows_relaxes_null_schema_across_files(tmp_path: Path) -> None:
+    market_dir = tmp_path / "micro_v1" / "tf=1m" / "market=KRW-BTC" / "date=2026-03-29"
+    market_dir.mkdir(parents=True, exist_ok=True)
+    first = pl.DataFrame(
+        {
+            "ts_ms": [1_774_851_000_000],
+            "mid_mean": [100.0],
+            "book_min_ts_ms": [1_774_850_940_000],
+        }
+    )
+    second = pl.DataFrame(
+        {
+            "ts_ms": [1_774_851_060_000],
+            "mid_mean": [None],
+            "book_min_ts_ms": [None],
+        }
+    )
+    first.write_parquet(market_dir / "part-a.parquet")
+    second.write_parquet(market_dir / "part-b.parquet")
+
+    frame = _read_parquet_rows(market_dir / "*.parquet").sort("ts_ms")
+
+    assert frame.height == 2
+    assert frame.schema["ts_ms"] == pl.Int64
+    assert frame.schema["mid_mean"] == pl.Float64
+    assert frame.schema["book_min_ts_ms"] == pl.Int64
+    assert frame.get_column("book_min_ts_ms").to_list() == [1_774_850_940_000, None]
 
 
 def _write_second_candles(path: Path, *, start_ts_ms: int, count: int) -> None:
