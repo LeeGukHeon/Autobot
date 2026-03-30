@@ -151,9 +151,11 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
     manifest_rows: list[dict[str, Any]] = []
     existing_manifest_rows = _load_manifest_rows(options.manifest_path)
     existing_ready_rows: dict[tuple[str, int], dict[str, Any]] = {}
+    existing_ready_by_market_date: dict[tuple[str, str], list[int]] = {}
     for row in existing_manifest_rows:
         market = str(row.get("market") or "").strip().upper()
         anchor_ts_ms = int(row.get("anchor_ts_ms") or 0)
+        date_value = str(row.get("date") or "").strip()
         cache_file_text = str(row.get("cache_file") or "").strip()
         if not market or anchor_ts_ms <= 0 or not cache_file_text:
             continue
@@ -163,6 +165,8 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         if not cache_file.exists() or cache_file.is_dir():
             continue
         existing_ready_rows[(market, anchor_ts_ms)] = dict(row)
+        if date_value:
+            existing_ready_by_market_date.setdefault((market, date_value), []).append(anchor_ts_ms)
     discovered_anchors = 0
     built_anchors = 0
     ok_anchors = 0
@@ -171,6 +175,18 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
     reused_anchors = 0
 
     for market in selected_markets:
+        if _can_skip_market_source_load(
+            options=options,
+            market=market,
+            existing_ready_by_market_date=existing_ready_by_market_date,
+        ):
+            ready_ts_values = sorted(
+                existing_ready_by_market_date.get((str(market).strip().upper(), str(options.date).strip()), [])
+            )
+            reused_count = min(len(ready_ts_values), max(int(options.max_anchors_per_market), 0))
+            discovered_anchors += reused_count
+            reused_anchors += reused_count
+            continue
         market_frames = _load_market_source_frames(options=options, market=market)
         anchor_rows = _load_anchor_rows_from_frames(frames=market_frames)
         if options.date:
@@ -270,6 +286,27 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         lob_contract_file=options.lob_contract_path,
         details=tuple(details),
     )
+
+
+def _can_skip_market_source_load(
+    *,
+    options: SequenceTensorBuildOptions,
+    market: str,
+    existing_ready_by_market_date: dict[tuple[str, str], list[int]],
+) -> bool:
+    if not bool(options.skip_existing_ready):
+        return False
+    if not options.date:
+        return False
+    if int(options.max_anchors_per_market) <= 0:
+        return False
+    target_date = str(options.date).strip()
+    if not target_date:
+        return False
+    if target_date >= datetime.now(timezone.utc).date().isoformat():
+        return False
+    ready_anchor_ts = existing_ready_by_market_date.get((str(market).strip().upper(), target_date), [])
+    return len(ready_anchor_ts) >= max(int(options.max_anchors_per_market), 0)
 
 
 def validate_sequence_tensor_store(*, options: SequenceTensorBuildOptions) -> SequenceTensorValidateSummary:

@@ -288,6 +288,113 @@ def test_build_sequence_tensor_store_reuses_previous_validate_details_for_unchan
     assert load_calls["count"] == 0
 
 
+def test_build_sequence_tensor_store_skips_past_date_market_load_when_ready_tail_exists(tmp_path: Path, monkeypatch) -> None:
+    parquet_root = tmp_path / "parquet"
+    out_root = parquet_root / "sequence_v1"
+    meta_root = out_root / "_meta"
+    cache_dir = out_root / "cache" / "market=KRW-BTC" / "date=2020-01-02"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, anchor_ts_ms in enumerate((1577923200000, 1577923260000), start=1):
+        cache_file = cache_dir / f"anchor-{anchor_ts_ms}.npz"
+        np.savez_compressed(
+            cache_file,
+            second_tensor=np.zeros((4, len(SECOND_FEATURE_NAMES)), dtype=np.float32),
+            second_mask=np.ones((4,), dtype=np.float32),
+            minute_tensor=np.zeros((1, len(ONE_MIN_FEATURE_NAMES)), dtype=np.float32),
+            minute_mask=np.ones((1,), dtype=np.float32),
+            micro_tensor=np.zeros((1, len(MICRO_FEATURE_NAMES)), dtype=np.float32),
+            micro_mask=np.ones((1,), dtype=np.float32),
+            lob_tensor=np.zeros((3, 30, len(LOB_PER_LEVEL_CHANNELS)), dtype=np.float32),
+            lob_global_tensor=np.zeros((3, len(LOB_GLOBAL_CHANNELS)), dtype=np.float32),
+            lob_mask=np.ones((3,), dtype=np.float32),
+        )
+
+    manifest = pl.DataFrame(
+        [
+            {
+                "market": "KRW-BTC",
+                "date": "2020-01-02",
+                "anchor_ts_ms": 1577923200000,
+                "anchor_utc": "2020-01-02T00:00:00+00:00",
+                "status": "OK",
+                "reasons_json": "[]",
+                "error_message": None,
+                "cache_file": str(cache_dir / "anchor-1577923200000.npz"),
+                "second_coverage_ratio": 1.0,
+                "minute_coverage_ratio": 1.0,
+                "micro_coverage_ratio": 1.0,
+                "lob_coverage_ratio": 1.0,
+                "built_at_ms": 1577923200000,
+            },
+            {
+                "market": "KRW-BTC",
+                "date": "2020-01-02",
+                "anchor_ts_ms": 1577923260000,
+                "anchor_utc": "2020-01-02T00:01:00+00:00",
+                "status": "OK",
+                "reasons_json": "[]",
+                "error_message": None,
+                "cache_file": str(cache_dir / "anchor-1577923260000.npz"),
+                "second_coverage_ratio": 1.0,
+                "minute_coverage_ratio": 1.0,
+                "micro_coverage_ratio": 1.0,
+                "lob_coverage_ratio": 1.0,
+                "built_at_ms": 1577923260000,
+            },
+        ]
+    )
+    manifest.write_parquet(meta_root / "manifest.parquet")
+
+    validate_report = {
+        "generated_at": "2020-01-02T00:05:00+00:00",
+        "dataset_name": "sequence_v1",
+        "dataset_root": str(out_root),
+        "validation_mode": "incremental",
+        "checked_files": 2,
+        "ok_files": 2,
+        "warn_files": 0,
+        "fail_files": 0,
+        "details": [
+            {
+                "market": "KRW-BTC",
+                "anchor_ts_ms": 1577923200000,
+                "cache_file": str(cache_dir / "anchor-1577923200000.npz"),
+                "status": "OK",
+                "reasons": [],
+            },
+            {
+                "market": "KRW-BTC",
+                "anchor_ts_ms": 1577923260000,
+                "cache_file": str(cache_dir / "anchor-1577923260000.npz"),
+                "status": "OK",
+                "reasons": [],
+            },
+        ],
+    }
+    (meta_root / "validate_report.json").write_text(json.dumps(validate_report, ensure_ascii=False), encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("_load_market_source_frames should not be called")
+
+    monkeypatch.setattr(sequence_module, "_load_market_source_frames", _boom)
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=("KRW-BTC",),
+        date="2020-01-02",
+        max_anchors_per_market=2,
+        filter_markets_by_label_source=False,
+    )
+
+    summary = build_sequence_tensor_store(options)
+
+    assert summary.built_anchors == 0
+    assert summary.selected_markets == 1
+
+
 def test_filter_markets_for_label_source_coverage_skips_stale_markets(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     current_date = "2026-03-20"
