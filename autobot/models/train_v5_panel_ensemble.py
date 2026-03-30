@@ -29,7 +29,7 @@ from .factor_block_selector import (
     v4_factor_block_registry,
 )
 from .model_card import render_model_card
-from .registry import RegistrySavePayload, save_run, update_artifact_status, update_latest_pointer
+from .registry import RegistrySavePayload, load_json, load_model_bundle, save_run, update_artifact_status, update_latest_pointer
 from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
 from .search_budget import resolve_v4_search_budget
 from .selection_calibration import build_selection_calibration_by_score_source, build_selection_calibration_from_oos_rows
@@ -39,6 +39,14 @@ from .split import SPLIT_DROP, SPLIT_TEST, SPLIT_TRAIN, SPLIT_VALID, compute_anc
 from .train_v1 import _build_thresholds, _evaluate_split, _predict_scores, build_selection_recommendations
 from .train_v4_artifacts import build_decision_surface_v4, build_v4_metrics_doc, train_config_snapshot_v4
 from .train_v4_core import prepare_v4_training_inputs
+from ..strategy.model_alpha_v1 import (
+    ModelAlphaExecutionSettings,
+    ModelAlphaExitSettings,
+    ModelAlphaOperationalSettings,
+    ModelAlphaPositionSettings,
+    ModelAlphaSelectionSettings,
+    ModelAlphaSettings,
+)
 
 
 TrainV5PanelEnsembleOptions = v4.TrainV4CryptoCsOptions
@@ -1405,4 +1413,371 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         experiment_ledger_path=experiment_ledger_path,
         experiment_ledger_summary_path=experiment_ledger_summary_path,
         live_domain_reweighting_path=None,
+    )
+
+
+def resume_v5_panel_ensemble_tail(*, run_dir: Path) -> TrainV5PanelEnsembleResult:
+    run_dir = Path(run_dir).resolve()
+    if not run_dir.exists():
+        raise FileNotFoundError(f"run_dir not found: {run_dir}")
+
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
+    options = _options_from_v5_panel_train_config(train_config)
+
+    prepared = prepare_v4_training_inputs(
+        options=options,
+        task="cls",
+        build_dataset_request_fn=v4.build_dataset_request,
+        load_feature_spec_fn=load_feature_spec,
+        load_label_spec_fn=load_label_spec,
+        feature_columns_from_spec_fn=feature_columns_from_spec,
+        resolve_selected_feature_columns_from_latest_fn=resolve_selected_feature_columns_from_latest,
+        resolve_v4_search_budget_fn=resolve_v4_search_budget,
+        load_feature_dataset_fn=v4.load_feature_dataset,
+        load_feature_aux_frame_fn=load_feature_aux_frame,
+        expected_interval_ms_fn=v4.expected_interval_ms,
+        compute_time_splits_fn=compute_time_splits,
+        split_masks_fn=split_masks,
+        validate_split_counts_fn=v4._validate_split_counts,
+        resolve_ranker_budget_profile_fn=v4._resolve_ranker_budget_profile,
+        factor_block_registry_fn=v4_factor_block_registry,
+        resolve_cpcv_lite_runtime_config_fn=v4._resolve_cpcv_lite_runtime_config,
+    )
+    dataset = prepared["dataset"]
+    label_spec = prepared["label_spec"]
+    label_contract = prepared["label_contract"]
+    train_mask = prepared["train_mask"]
+    valid_mask = prepared["valid_mask"]
+    test_mask = prepared["test_mask"]
+    rows = prepared["rows"]
+    split_info = prepared["split_info"]
+    interval_ms = int(prepared["interval_ms"])
+
+    regression_targets = _load_v5_regression_targets(
+        request=prepared["request"],
+        label_spec=label_spec,
+        dataset=dataset,
+        primary_y_cls_column=str(label_contract["y_cls_column"]),
+        primary_y_reg_column=str(label_contract["y_reg_column"]),
+        primary_y_rank_column=str(label_contract["y_rank_column"]),
+    )
+    primary_horizon_key = f"h{int(label_contract.get('primary_horizon_bars', 12))}"
+    primary_y_reg = np.asarray(regression_targets.get(primary_horizon_key, dataset.y_reg), dtype=np.float64)
+
+    walk_forward = load_json(run_dir / "walk_forward_report.json")
+    cpcv_lite = load_json(run_dir / "cpcv_lite_report.json")
+    factor_block_selection = load_json(run_dir / "factor_block_selection.json")
+    search_budget_decision = load_json(run_dir / "search_budget_decision.json") or prepared["search_budget_decision"]
+    selection_policy = load_json(run_dir / "selection_policy.json")
+    selection_calibration = load_json(run_dir / "selection_calibration.json")
+    metrics = load_json(run_dir / "metrics.json")
+    thresholds = load_json(run_dir / "thresholds.json")
+    leaderboard_row = load_json(run_dir / "leaderboard_row.json")
+    model_bundle = load_model_bundle(run_dir)
+    estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
+    if estimator is None:
+        raise ValueError(f"run_dir does not contain a usable panel estimator: {run_dir}")
+
+    factor_block_selection_context = dict(((train_config.get("factor_block_selection") or {}).get("resolution_context")) or {})
+    cpcv_lite_runtime = dict(train_config.get("cpcv_lite") or prepared["cpcv_lite_runtime"])
+    economic_objective_profile = v4.build_v4_shared_economic_objective_profile()
+    lane_governance = v4._build_lane_governance_v4(
+        task="cls",
+        run_scope=options.run_scope,
+        economic_objective_profile=economic_objective_profile,
+    )
+    research_support_lane = v4._build_research_support_lane_v4(walk_forward=walk_forward, cpcv_lite=cpcv_lite)
+    duplicate_artifacts = v4._detect_duplicate_candidate_artifacts(
+        options=options,
+        run_id=run_dir.name,
+        run_dir=run_dir,
+    )
+    duplicate_candidate = bool(duplicate_artifacts.get("duplicate", False))
+    trade_action_oos_rows = list(walk_forward.get("_trade_action_oos_rows") or [])
+
+    if duplicate_candidate:
+        execution_acceptance = v4._build_duplicate_candidate_execution_acceptance(
+            run_id=run_dir.name,
+            duplicate_artifacts=duplicate_artifacts,
+        )
+        runtime_recommendations = v4._build_duplicate_candidate_runtime_recommendations(
+            run_id=run_dir.name,
+            duplicate_artifacts=duplicate_artifacts,
+        )
+    else:
+        execution_acceptance = v4._run_execution_acceptance_v4(
+            options=options,
+            run_id=run_dir.name,
+        )
+        runtime_recommendations = v4._build_runtime_recommendations_v4(
+            options=options,
+            run_id=run_dir.name,
+            search_budget_decision=search_budget_decision,
+        )
+        runtime_recommendations["exit_path_risk"] = v4._build_exit_path_risk_summary_v4(
+            runtime_recommendations=runtime_recommendations,
+            selection_calibration=selection_calibration,
+            oos_rows=trade_action_oos_rows,
+        )
+        if isinstance(runtime_recommendations.get("exit"), dict):
+            runtime_recommendations["exit"]["path_risk"] = dict(runtime_recommendations["exit_path_risk"])
+        runtime_recommendations["trade_action"] = v4._build_trade_action_policy_v4(
+            options=options,
+            runtime_recommendations=runtime_recommendations,
+            selection_calibration=selection_calibration,
+            oos_rows=trade_action_oos_rows,
+        )
+        runtime_recommendations["risk_control"] = v4._build_execution_risk_control_v4(
+            options=options,
+            runtime_recommendations=runtime_recommendations,
+            selection_calibration=selection_calibration,
+            oos_rows=trade_action_oos_rows,
+        )
+
+    execution_artifact_cleanup = v4._purge_execution_artifact_run_dirs(
+        output_root=options.execution_acceptance_output_root,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+    )
+    if execution_artifact_cleanup.get("evaluated"):
+        execution_acceptance["artifacts_cleanup"] = execution_artifact_cleanup
+        runtime_recommendations["artifacts_cleanup"] = execution_artifact_cleanup
+
+    if duplicate_candidate:
+        promotion = v4._build_duplicate_candidate_promotion_decision_v4(
+            options=options,
+            run_id=run_dir.name,
+            walk_forward=walk_forward,
+            execution_acceptance=execution_acceptance,
+            duplicate_artifacts=duplicate_artifacts,
+            runtime_recommendations=runtime_recommendations,
+        )
+    else:
+        promotion = v4._manual_promotion_decision_v4(
+            options=options,
+            run_id=run_dir.name,
+            walk_forward=walk_forward,
+            execution_acceptance=execution_acceptance,
+            runtime_recommendations=runtime_recommendations,
+        )
+
+    trainer_research_evidence = v4._build_trainer_research_evidence_from_promotion_v4(
+        promotion=promotion,
+        support_lane=research_support_lane,
+    )
+    decision_surface = build_decision_surface_v4(
+        options=options,
+        task="cls",
+        selection_policy=selection_policy,
+        selection_calibration=selection_calibration,
+        factor_block_selection=factor_block_selection,
+        research_support_lane=research_support_lane,
+        factor_block_selection_context=factor_block_selection_context,
+        cpcv_lite_runtime=cpcv_lite_runtime,
+        search_budget_decision=search_budget_decision,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+        economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
+    )
+    decision_surface["panel_ensemble"] = dict(metrics.get("panel_ensemble", {}))
+    runtime_artifacts = v4_persistence.persist_v4_runtime_and_governance_artifacts(
+        run_dir=run_dir,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+        trainer_research_evidence=trainer_research_evidence,
+        economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
+        decision_surface=decision_surface,
+    )
+    update_artifact_status(
+        run_dir,
+        status="trainer_artifacts_complete",
+        execution_acceptance_complete=True,
+        runtime_recommendations_complete=True,
+        governance_artifacts_complete=True,
+    )
+    expert_prediction_table_path = _write_expert_prediction_table(
+        run_dir=run_dir,
+        dataset=dataset,
+        estimator=estimator,
+        primary_y_reg=primary_y_reg,
+        split_labels=_build_split_labels(
+            train_mask=train_mask,
+            valid_mask=valid_mask,
+            test_mask=test_mask,
+            size=dataset.rows,
+        ),
+    )
+    if v4.normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
+        update_latest_pointer(options.registry_root, options.model_family, run_dir.name)
+        update_latest_pointer(options.registry_root, "_global", run_dir.name, family=options.model_family)
+    status = str(promotion.get("status", "candidate")).strip() or "candidate"
+    update_artifact_status(run_dir, status=status)
+
+    experiment_ledger_record = v4.build_experiment_ledger_record(
+        run_id=run_dir.name,
+        task="cls",
+        status=status,
+        duration_sec=0.0,
+        run_dir=run_dir,
+        search_budget_decision=search_budget_decision,
+        walk_forward=walk_forward,
+        cpcv_lite=cpcv_lite,
+        factor_block_selection=factor_block_selection,
+        factor_block_policy={},
+        factor_block_selection_context=factor_block_selection_context,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+        duplicate_candidate=duplicate_candidate,
+        economic_objective_profile=economic_objective_profile,
+        lane_governance=lane_governance,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_path = v4.append_experiment_ledger_record(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        record=experiment_ledger_record,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_history = v4.load_experiment_ledger(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_scope=options.run_scope,
+    )
+    experiment_ledger_summary = v4.build_recent_experiment_ledger_summary(
+        history_records=experiment_ledger_history,
+    )
+    experiment_ledger_summary_path = v4.write_latest_experiment_ledger_summary(
+        registry_root=options.registry_root,
+        model_family=options.model_family,
+        run_id=run_dir.name,
+        summary=experiment_ledger_summary,
+        run_scope=options.run_scope,
+    )
+    train_report_path = _write_json(
+        options.logs_root / "train_v5_panel_ensemble_report.json",
+        {
+            "run_id": run_dir.name,
+            "trainer": "v5_panel_ensemble",
+            "status": status,
+            "duration_sec": 0.0,
+            "walk_forward_summary": walk_forward.get("summary", {}),
+            "panel_ensemble": metrics.get("panel_ensemble", {}),
+            "expert_prediction_table_path": str(expert_prediction_table_path),
+            "resumed_from_run_dir": str(run_dir),
+        },
+    )
+    return TrainV5PanelEnsembleResult(
+        run_id=run_dir.name,
+        run_dir=run_dir,
+        status=status,
+        leaderboard_row=leaderboard_row,
+        metrics=metrics,
+        thresholds=thresholds,
+        train_report_path=train_report_path,
+        promotion_path=runtime_artifacts["promotion_path"],
+        walk_forward_report_path=(run_dir / "walk_forward_report.json") if (run_dir / "walk_forward_report.json").exists() else None,
+        cpcv_lite_report_path=(run_dir / "cpcv_lite_report.json") if (run_dir / "cpcv_lite_report.json").exists() else None,
+        factor_block_selection_path=(run_dir / "factor_block_selection.json") if (run_dir / "factor_block_selection.json").exists() else None,
+        factor_block_history_path=Path(str((factor_block_selection or {}).get("history_path"))) if str((factor_block_selection or {}).get("history_path", "")).strip() else None,
+        factor_block_policy_path=Path(str((factor_block_selection or {}).get("guarded_policy_path"))) if str((factor_block_selection or {}).get("guarded_policy_path", "")).strip() else None,
+        search_budget_decision_path=(run_dir / "search_budget_decision.json") if (run_dir / "search_budget_decision.json").exists() else None,
+        execution_acceptance_report_path=runtime_artifacts.get("execution_acceptance_report_path"),
+        runtime_recommendations_path=runtime_artifacts.get("runtime_recommendations_path"),
+        trainer_research_evidence_path=runtime_artifacts.get("trainer_research_evidence_path"),
+        economic_objective_profile_path=runtime_artifacts.get("economic_objective_profile_path"),
+        lane_governance_path=runtime_artifacts.get("lane_governance_path"),
+        decision_surface_path=runtime_artifacts.get("decision_surface_path"),
+        experiment_ledger_path=experiment_ledger_path,
+        experiment_ledger_summary_path=experiment_ledger_summary_path,
+        live_domain_reweighting_path=None,
+    )
+
+
+def _options_from_v5_panel_train_config(train_config: dict[str, Any]) -> TrainV5PanelEnsembleOptions:
+    base = dict(train_config or {})
+    alpha_doc = dict(base.get("execution_acceptance_model_alpha") or {})
+    return v4.TrainV4CryptoCsOptions(
+        dataset_root=Path(str(base["dataset_root"])),
+        registry_root=Path(str(base["registry_root"])),
+        logs_root=Path(str(base["logs_root"])),
+        model_family=str(base["model_family"]),
+        tf=str(base["tf"]),
+        quote=str(base["quote"]),
+        top_n=int(base["top_n"]),
+        start=str(base["start"]),
+        end=str(base["end"]),
+        feature_set=str(base["feature_set"]),
+        label_set=str(base["label_set"]),
+        task=str(base["task"]),
+        booster_sweep_trials=int(base["booster_sweep_trials"]),
+        seed=int(base["seed"]),
+        nthread=int(base["nthread"]),
+        batch_rows=int(base["batch_rows"]),
+        train_ratio=float(base["train_ratio"]),
+        valid_ratio=float(base["valid_ratio"]),
+        test_ratio=float(base["test_ratio"]),
+        embargo_bars=int(base["embargo_bars"]),
+        fee_bps_est=float(base["fee_bps_est"]),
+        safety_bps=float(base["safety_bps"]),
+        ev_scan_steps=int(base["ev_scan_steps"]),
+        ev_min_selected=int(base["ev_min_selected"]),
+        min_rows_for_train=int(base.get("min_rows_for_train", 5000)),
+        walk_forward_enabled=bool(base.get("walk_forward_enabled", True)),
+        walk_forward_windows=int(base.get("walk_forward_windows", 4)),
+        walk_forward_sweep_trials=int(base.get("walk_forward_sweep_trials", 3)),
+        walk_forward_min_train_rows=int(base.get("walk_forward_min_train_rows", 1000)),
+        walk_forward_min_test_rows=int(base.get("walk_forward_min_test_rows", 200)),
+        cpcv_lite_enabled=bool(base.get("cpcv_lite_enabled", False)),
+        cpcv_lite_group_count=int(base.get("cpcv_lite_group_count", 6)),
+        cpcv_lite_test_group_count=int(base.get("cpcv_lite_test_group_count", 2)),
+        cpcv_lite_max_combinations=int(base.get("cpcv_lite_max_combinations", 6)),
+        cpcv_lite_min_train_rows=int(base.get("cpcv_lite_min_train_rows", 1000)),
+        cpcv_lite_min_test_rows=int(base.get("cpcv_lite_min_test_rows", 200)),
+        factor_block_selection_mode=str(base.get("factor_block_selection_mode", "guarded_auto")),
+        selection_threshold_key_override=base.get("selection_threshold_key_override"),
+        multiple_testing_alpha=float(base.get("multiple_testing_alpha", 0.20)),
+        multiple_testing_bootstrap_iters=int(base.get("multiple_testing_bootstrap_iters", 500)),
+        multiple_testing_block_length=int(base.get("multiple_testing_block_length", 0)),
+        execution_acceptance_enabled=bool(base.get("execution_acceptance_enabled", False)),
+        execution_acceptance_dataset_name=str(base.get("execution_acceptance_dataset_name", "candles_v1")),
+        execution_acceptance_parquet_root=Path(str(base.get("execution_acceptance_parquet_root", "data/parquet"))),
+        execution_acceptance_output_root=Path(str(base.get("execution_acceptance_output_root", "data/backtest"))),
+        execution_acceptance_eval_start=base.get("execution_acceptance_eval_start"),
+        execution_acceptance_eval_end=base.get("execution_acceptance_eval_end"),
+        execution_acceptance_eval_label=str(base.get("execution_acceptance_eval_label", "train_window")),
+        execution_acceptance_eval_source=str(base.get("execution_acceptance_eval_source", "train_command_window")),
+        execution_acceptance_top_n=int(base.get("execution_acceptance_top_n", 0)),
+        execution_acceptance_dense_grid=bool(base.get("execution_acceptance_dense_grid", False)),
+        execution_acceptance_starting_krw=float(base.get("execution_acceptance_starting_krw", 50000.0)),
+        execution_acceptance_per_trade_krw=float(base.get("execution_acceptance_per_trade_krw", 10000.0)),
+        execution_acceptance_max_positions=int(base.get("execution_acceptance_max_positions", 2)),
+        execution_acceptance_min_order_krw=float(base.get("execution_acceptance_min_order_krw", 5000.0)),
+        execution_acceptance_order_timeout_bars=int(base.get("execution_acceptance_order_timeout_bars", 5)),
+        execution_acceptance_reprice_max_attempts=int(base.get("execution_acceptance_reprice_max_attempts", 1)),
+        execution_acceptance_reprice_tick_steps=int(base.get("execution_acceptance_reprice_tick_steps", 1)),
+        execution_acceptance_rules_ttl_sec=int(base.get("execution_acceptance_rules_ttl_sec", 86400)),
+        run_scope=str(base.get("run_scope", "scheduled_daily")),
+        execution_acceptance_model_alpha=ModelAlphaSettings(
+            model_ref=str(alpha_doc.get("model_ref", "champion_v4")),
+            model_family=alpha_doc.get("model_family"),
+            feature_set=str(alpha_doc.get("feature_set", "v4")),
+            selection=ModelAlphaSelectionSettings(**dict(alpha_doc.get("selection") or {})),
+            position=ModelAlphaPositionSettings(**dict(alpha_doc.get("position") or {})),
+            exit=ModelAlphaExitSettings(**dict(alpha_doc.get("exit") or {})),
+            execution=ModelAlphaExecutionSettings(**dict(alpha_doc.get("execution") or {})),
+            operational=ModelAlphaOperationalSettings(**dict(alpha_doc.get("operational") or {})),
+        ),
+        live_domain_reweighting_enabled=bool(base.get("live_domain_reweighting_enabled", False)),
+        live_domain_reweighting_db_path=Path(str(base["live_domain_reweighting_db_path"])) if base.get("live_domain_reweighting_db_path") else None,
+        live_domain_reweighting_min_target_rows=int(base.get("live_domain_reweighting_min_target_rows", 32)),
+        live_domain_reweighting_max_target_rows=int(base.get("live_domain_reweighting_max_target_rows", 1024)),
+        live_domain_reweighting_clip_min=float(base.get("live_domain_reweighting_clip_min", 0.5)),
+        live_domain_reweighting_clip_max=float(base.get("live_domain_reweighting_clip_max", 3.0)),
     )
