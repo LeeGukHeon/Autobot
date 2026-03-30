@@ -1615,23 +1615,23 @@ def _handle_data_inventory(args: argparse.Namespace, config: dict[str, Any]) -> 
 
 def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_config: dict[str, Any]) -> int:
     if args.collect_command == "plan-candles":
-        return _handle_collect_plan_candles(args, base_config)
+        return _handle_collect_plan_candles(args, config_dir, base_config)
     if args.collect_command == "candles":
         return _handle_collect_candles(args, config_dir, base_config)
     if args.collect_command == "plan-ws-candles":
-        return _handle_collect_plan_ws_candles(args, base_config)
+        return _handle_collect_plan_ws_candles(args, config_dir, base_config)
     if args.collect_command == "ws-candles":
         return _handle_collect_ws_candles(args, config_dir, base_config)
     if args.collect_command == "plan-lob30":
-        return _handle_collect_plan_lob30(args, base_config)
+        return _handle_collect_plan_lob30(args, config_dir, base_config)
     if args.collect_command == "lob30":
         return _handle_collect_lob30(args, config_dir, base_config)
     if args.collect_command == "tensors":
         return _handle_collect_tensors(args, base_config)
     if args.collect_command == "plan-ticks":
-        return _handle_collect_plan_ticks(args, base_config)
+        return _handle_collect_plan_ticks(args, config_dir, base_config)
     if args.collect_command == "plan-ws-public":
-        return _handle_collect_plan_ws_public(args, base_config)
+        return _handle_collect_plan_ws_public(args, config_dir, base_config)
     if args.collect_command == "ticks":
         return _handle_collect_ticks(args, config_dir, base_config)
     if args.collect_command == "ws-public":
@@ -1639,7 +1639,7 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
     raise ValueError(f"Unsupported collect command: {args.collect_command}")
 
 
-def _handle_collect_plan_candles(args: argparse.Namespace, config: dict[str, Any]) -> int:
+def _handle_collect_plan_candles(args: argparse.Namespace, config_dir: Path, config: dict[str, Any]) -> int:
     defaults = _data_defaults(config)
     parquet_root = str(args.parquet_root or defaults["parquet_root"])
     base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
@@ -1657,6 +1657,8 @@ def _handle_collect_plan_candles(args: argparse.Namespace, config: dict[str, Any
         max_backfill_days_1s=max(int(args.max_backfill_days_1s), 1),
         max_backfill_days_1m=max(int(args.max_backfill_days_1m), 1),
         end_ts_ms=parse_utc_ts_ms(args.end, end_of_day=True),
+        config_dir=config_dir,
+        resolve_active_markets=True,
     )
 
     plan = generate_candle_topup_plan(plan_options)
@@ -1722,7 +1724,7 @@ def _handle_collect_candles(args: argparse.Namespace, config_dir: Path, base_con
     return 0
 
 
-def _handle_collect_plan_ticks(args: argparse.Namespace, config: dict[str, Any]) -> int:
+def _handle_collect_plan_ticks(args: argparse.Namespace, config_dir: Path, config: dict[str, Any]) -> int:
     defaults = _data_defaults(config)
     parquet_root = Path(args.parquet_root or defaults["parquet_root"])
     base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
@@ -1736,6 +1738,8 @@ def _handle_collect_plan_ticks(args: argparse.Namespace, config: dict[str, Any])
         top_n=max(int(args.top_n), 1),
         fixed_markets=_parse_csv_list(args.markets, normalize=str.upper),
         days_ago=_parse_days_ago_csv(args.days_ago, default=(1, 2, 3, 4, 5, 6, 7)),
+        config_dir=config_dir,
+        resolve_active_markets=True,
     )
     plan = generate_ticks_collection_plan(plan_options)
     print(
@@ -1759,7 +1763,7 @@ def _default_candle_validate_report_path(options: CandleCollectOptions) -> Path:
     return options.collect_meta_dir / f"{safe}_validate_report.json"
 
 
-def _handle_collect_plan_ws_candles(args: argparse.Namespace, config: dict[str, Any]) -> int:
+def _handle_collect_plan_ws_candles(args: argparse.Namespace, config_dir: Path, config: dict[str, Any]) -> int:
     defaults = _data_defaults(config)
     parquet_root = Path(args.parquet_root or defaults["parquet_root"])
     base_dataset = str(args.base_dataset or "ws_candle_v1").strip() or "ws_candle_v1"
@@ -1777,6 +1781,8 @@ def _handle_collect_plan_ws_candles(args: argparse.Namespace, config: dict[str, 
         format=str(args.format).strip().upper() or "DEFAULT",
         is_only_snapshot=_parse_bool_arg(args.snapshot_only, default=False),
         is_only_realtime=_parse_bool_arg(args.realtime_only, default=False),
+        config_dir=config_dir,
+        resolve_active_markets=True,
     )
     plan = generate_ws_candle_collection_plan(plan_options)
     print(
@@ -1838,7 +1844,7 @@ def _handle_collect_ws_candles(args: argparse.Namespace, config_dir: Path, base_
     return 0
 
 
-def _handle_collect_plan_lob30(args: argparse.Namespace, config: dict[str, Any]) -> int:
+def _handle_collect_plan_lob30(args: argparse.Namespace, config_dir: Path, config: dict[str, Any]) -> int:
     defaults = _data_defaults(config)
     parquet_root = Path(args.parquet_root or defaults["parquet_root"])
     base_dataset = str(args.base_dataset or "lob30_v1").strip() or "lob30_v1"
@@ -1855,6 +1861,8 @@ def _handle_collect_plan_lob30(args: argparse.Namespace, config: dict[str, Any])
         format=str(args.format).strip().upper() or "DEFAULT",
         is_only_snapshot=_parse_bool_arg(args.snapshot_only, default=False),
         is_only_realtime=_parse_bool_arg(args.realtime_only, default=False),
+        config_dir=config_dir,
+        resolve_active_markets=True,
     )
     plan = generate_lob30_collection_plan(plan_options)
     print(
@@ -1958,7 +1966,7 @@ def _handle_collect_tensors(args: argparse.Namespace, base_config: dict[str, Any
     return 0
 
 
-def _handle_collect_plan_ws_public(args: argparse.Namespace, config: dict[str, Any]) -> int:
+def _handle_collect_plan_ws_public(args: argparse.Namespace, config_dir: Path, config: dict[str, Any]) -> int:
     defaults = _data_defaults(config)
     parquet_root = Path(args.parquet_root or defaults["parquet_root"])
     base_dataset = str(args.base_dataset or defaults["dataset_name"]).strip() or defaults["dataset_name"]
@@ -1976,6 +1984,8 @@ def _handle_collect_plan_ws_public(args: argparse.Namespace, config: dict[str, A
         orderbook_topk=max(int(args.orderbook_topk), 1),
         orderbook_level=_parse_orderbook_level_arg(args.orderbook_level),
         orderbook_min_write_interval_ms=max(int(args.orderbook_min_write_interval_ms), 1),
+        config_dir=config_dir,
+        resolve_active_markets=True,
     )
     plan = generate_ws_public_collection_plan(plan_options)
     print(

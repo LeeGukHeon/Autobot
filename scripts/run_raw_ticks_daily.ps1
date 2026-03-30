@@ -6,6 +6,7 @@ param(
     [string]$Quote = "KRW",
     [int]$TopN = 50,
     [int]$DaysAgo = 1,
+    [string]$DaysAgoCsv = "",
     [string]$RawRoot = "data/raw_ticks/upbit/trades",
     [string]$MetaDir = "data/raw_ticks/upbit/_meta",
     [int]$Workers = 1,
@@ -69,6 +70,17 @@ function Invoke-ProjectPythonStep {
     }
 }
 
+function Resolve-DaysAgoSpec {
+    param(
+        [int]$SingleDay,
+        [string]$DaysAgoCsvText
+    )
+    if (-not [string]::IsNullOrWhiteSpace($DaysAgoCsvText)) {
+        return $DaysAgoCsvText.Trim()
+    }
+    return ([string]([Math]::Max([int]$SingleDay, 1)))
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -76,7 +88,18 @@ $resolvedSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue
 $resolvedPlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $PlanPath
 $resolvedRawRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $RawRoot
 $resolvedMetaDir = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MetaDir
-$validateDate = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max([int]$DaysAgo, 1)).ToString("yyyy-MM-dd")
+$daysAgoSpec = Resolve-DaysAgoSpec -SingleDay $DaysAgo -DaysAgoCsvText $DaysAgoCsv
+$daysAgoValues = @(
+    $daysAgoSpec.Split(",") |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { [Math]::Max([int]$_, 1) } |
+        Sort-Object -Unique
+)
+$validateDates = @(
+    $daysAgoValues |
+        ForEach-Object { (Get-Date).ToUniversalTime().AddDays(-1 * [int]$_).ToString("yyyy-MM-dd") }
+)
 
 $planArgs = @(
     "-m", "autobot.cli",
@@ -87,7 +110,7 @@ $planArgs = @(
     "--quote", $Quote,
     "--market-mode", "top_n_by_recent_value_est",
     "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
-    "--days-ago", ([string]([Math]::Max([int]$DaysAgo, 1)))
+    "--days-ago", $daysAgoSpec
 )
 
 $collectArgs = @(
@@ -97,7 +120,7 @@ $collectArgs = @(
     "--mode", "daily",
     "--quote", $Quote,
     "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
-    "--days-ago", ([string]([Math]::Max([int]$DaysAgo, 1))),
+    "--days-ago", $daysAgoSpec,
     "--raw-root", $resolvedRawRoot,
     "--meta-dir", $resolvedMetaDir,
     "--rate-limit-strict", $RateLimitStrict,
@@ -106,20 +129,21 @@ $collectArgs = @(
     "--dry-run", "false"
 )
 
-$validateArgs = @(
-    "-m", "autobot.cli",
-    "collect", "ticks", "validate",
-    "--date", $validateDate,
-    "--raw-root", $resolvedRawRoot,
-    "--meta-dir", $resolvedMetaDir
-)
-
 $stepResults = @()
 Push-Location $resolvedProjectRoot
 try {
     $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "plan_raw_ticks_daily" -ArgList $planArgs)
     $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "collect_raw_ticks_daily" -ArgList $collectArgs)
-    $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "validate_raw_ticks_daily" -ArgList $validateArgs)
+    foreach ($validateDate in $validateDates) {
+        $validateArgs = @(
+            "-m", "autobot.cli",
+            "collect", "ticks", "validate",
+            "--date", $validateDate,
+            "--raw-root", $resolvedRawRoot,
+            "--meta-dir", $resolvedMetaDir
+        )
+        $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName ("validate_raw_ticks_" + $validateDate) -ArgList $validateArgs)
+    }
 } finally {
     Pop-Location
 }
@@ -132,7 +156,8 @@ $summary = [ordered]@{
     raw_root = $resolvedRawRoot
     meta_dir = $resolvedMetaDir
     plan_path = $resolvedPlanPath
-    validate_date = $validateDate
+    days_ago = @($daysAgoValues)
+    validate_dates = @($validateDates)
     steps = @($stepResults)
 }
 $summaryDir = Split-Path -Parent $resolvedSummaryPath

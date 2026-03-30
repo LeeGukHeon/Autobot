@@ -50,3 +50,46 @@ def test_generate_ws_public_plan_fixed_list(tmp_path: Path) -> None:
     assert plan["codes"] == ["KRW-BTC"]
     assert plan["runtime_policy"]["orderbook_topk"] == 5
     assert plan["runtime_policy"]["orderbook_min_write_interval_ms"] == 200
+
+
+def test_generate_ws_public_plan_filters_inactive_markets(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    dataset_root = parquet_root / "candles_v1"
+    manifest_file = dataset_root / "_meta" / "manifest.parquet"
+
+    append_manifest_rows(
+        manifest_file,
+        [
+            {
+                "quote": "KRW",
+                "symbol": "BTC",
+                "market": "KRW-BTC",
+                "tf": "1m",
+                "rows": 100,
+                "min_ts_ms": 1_772_300_000_000,
+                "max_ts_ms": 1_772_399_000_000,
+                "status": "OK",
+                "ingested_at": 1,
+                "reasons_json": "[]",
+            }
+        ],
+    )
+
+    options = WsPublicPlanOptions(
+        parquet_root=parquet_root,
+        base_dataset="candles_v1",
+        output_path=tmp_path / "ws_public_plan.json",
+        quote="KRW",
+        market_mode="fixed_list",
+        fixed_markets=("krw-btc", "krw-flow"),
+        channels=("trade", "orderbook"),
+        format="DEFAULT",
+        orderbook_topk=30,
+        active_markets_override=("KRW-BTC",),
+    )
+    plan = generate_ws_public_collection_plan(options)
+
+    assert plan["codes"] == ["KRW-BTC"]
+    active_filter = dict(plan["market_selection"]["active_market_filter"])
+    assert active_filter["status"] == "override"
+    assert active_filter["dropped_count"] == 1

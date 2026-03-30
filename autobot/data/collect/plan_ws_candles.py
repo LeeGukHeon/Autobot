@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .active_markets import filter_markets_by_active_set, resolve_active_quote_markets
 from ...upbit.ws.payloads import VALID_WS_FORMATS
 from ..inventory import build_candle_inventory, default_inventory_window, estimate_recent_value_by_market
 
@@ -35,6 +36,9 @@ class WsCandlePlanOptions:
     end_ts_ms: int | None = None
     enforce_no_origin_header: bool = True
     max_subscribe_messages_per_min: int = 20
+    config_dir: Path = Path("config")
+    resolve_active_markets: bool = False
+    active_markets_override: tuple[str, ...] | None = None
 
     @property
     def base_dataset_root(self) -> Path:
@@ -158,7 +162,13 @@ def _select_markets(
             if value.strip() and value.strip().upper().startswith(quote_prefix)
         ]
         deduped = _dedupe_preserve(fixed_markets)
-        return deduped, {"mode": market_mode, "count": len(deduped)}
+        return _finalize_market_selection(
+            candidates=deduped,
+            options=options,
+            quote=quote,
+            top_n=None,
+            meta={"mode": market_mode},
+        )
 
     if market_mode == "one_m_existing_only":
         selected = sorted(
@@ -170,7 +180,13 @@ def _select_markets(
                 and str(item.get("market", "")).strip().upper().startswith(quote_prefix)
             }
         )
-        return selected, {"mode": market_mode, "count": len(selected)}
+        return _finalize_market_selection(
+            candidates=selected,
+            options=options,
+            quote=quote,
+            top_n=None,
+            meta={"mode": market_mode},
+        )
 
     top_n = max(int(options.top_n), 1)
     estimates, tf_used = estimate_recent_value_by_market(
@@ -181,23 +197,61 @@ def _select_markets(
     )
     ranked = sorted(estimates.items(), key=lambda item: (-float(item[1]), item[0]))
     if ranked:
-        selected = [market for market, _ in ranked[:top_n]]
-        return selected, {
-            "mode": market_mode,
-            "count": len(selected),
-            "top_n": top_n,
-            "value_est_tf": tf_used,
-            "value_est_lookback_days": max(int(options.value_est_lookback_days), 1),
-        }
+        candidates = [market for market, _ in ranked]
+        return _finalize_market_selection(
+            candidates=candidates,
+            options=options,
+            quote=quote,
+            top_n=top_n,
+            meta={
+                "mode": market_mode,
+                "top_n": top_n,
+                "value_est_tf": tf_used,
+                "value_est_lookback_days": max(int(options.value_est_lookback_days), 1),
+            },
+        )
 
-    fallback = inventory_markets[:top_n]
-    return fallback, {
-        "mode": market_mode,
-        "count": len(fallback),
-        "top_n": top_n,
-        "value_est_tf": None,
-        "fallback": "inventory_alphabetical",
+    return _finalize_market_selection(
+        candidates=inventory_markets,
+        options=options,
+        quote=quote,
+        top_n=top_n,
+        meta={
+            "mode": market_mode,
+            "top_n": top_n,
+            "value_est_tf": None,
+            "fallback": "inventory_alphabetical",
+        },
+    )
+
+
+def _finalize_market_selection(
+    *,
+    candidates: list[str],
+    options: WsCandlePlanOptions,
+    quote: str,
+    top_n: int | None,
+    meta: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    active_markets, active_meta = resolve_active_quote_markets(
+        quote=quote,
+        config_dir=Path(options.config_dir),
+        active_markets_override=options.active_markets_override,
+        enabled=bool(options.resolve_active_markets),
+    )
+    selected, dropped = filter_markets_by_active_set(
+        markets=list(candidates),
+        active_markets=active_markets,
+        top_n=top_n,
+    )
+    finalized = dict(meta)
+    finalized["count"] = len(selected)
+    finalized["active_market_filter"] = {
+        **dict(active_meta),
+        "dropped_count": len(dropped),
+        "dropped_sample": list(dropped[:20]),
     }
+    return selected, finalized
 
 
 def _normalize_tf_set(tf_set: tuple[str, ...] | None) -> tuple[str, ...]:
