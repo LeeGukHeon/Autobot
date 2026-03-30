@@ -11,7 +11,7 @@ import shutil
 import time
 from typing import Any
 
-from ...upbit import load_upbit_settings, require_upbit_credentials
+from ...upbit import UpbitHttpClient, UpbitPrivateClient, load_upbit_settings, require_upbit_credentials
 from ...upbit.ws import MyAssetEvent, MyOrderEvent, UpbitWebSocketPrivateClient
 from .private_ws_manifest import append_private_ws_manifest_rows
 from .private_ws_writer import PrivateWsRawRotatingWriter
@@ -78,9 +78,13 @@ async def _collect_private_ws_daemon_async(
 ) -> PrivateWsDaemonSummary:
     started_at = int(time.time())
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    bootstrap_rows: list[tuple[str, dict[str, Any], int]] = []
     if ws_client is None:
         settings = load_upbit_settings(options.config_dir)
         credentials = require_upbit_credentials(settings)
+        with UpbitHttpClient(settings, credentials=credentials) as private_http:
+            private_client = UpbitPrivateClient(private_http)
+            bootstrap_rows = _bootstrap_private_rest_rows(private_client=private_client)
         client = UpbitWebSocketPrivateClient(settings.websocket, credentials)
     else:
         client = ws_client
@@ -107,6 +111,39 @@ async def _collect_private_ws_daemon_async(
         _update_runs_summary(options.manifest_path, options.runs_summary_path)
 
     try:
+        for channel, row, event_ts_ms in bootstrap_rows:
+            writer.write(channel=channel, row=row, event_ts_ms=event_ts_ms)
+            if channel == "myorder":
+                received_myorder += 1
+            else:
+                received_myasset += 1
+            last_event_ts_ms = int(event_ts_ms)
+            last_event_latency_ms = max(int(time.time() * 1000) - int(event_ts_ms), 0)
+        if bootstrap_rows:
+            _flush_manifest_state()
+            _write_health_snapshot(
+                path=options.health_snapshot_path,
+                payload=_build_health_payload(
+                    run_id=run_id,
+                    connected=False,
+                    client=client,
+                    received_myorder=received_myorder,
+                    received_myasset=received_myasset,
+                    last_event_ts_ms=last_event_ts_ms,
+                    last_event_latency_ms=last_event_latency_ms,
+                ),
+            )
+            _write_collect_report(
+                options=options,
+                run_id=run_id,
+                started_at=started_at,
+                finished_at=int(time.time()),
+                received_myorder=received_myorder,
+                received_myasset=received_myasset,
+                writer=writer,
+                client=client,
+                running=True,
+            )
         async for ws_event in client.stream_private(channels=("myOrder", "myAsset"), duration_sec=stream_duration):
             connected = True
             now_ms = int(time.time() * 1000)
@@ -235,6 +272,73 @@ def _normalize_private_event_row(*, event: MyOrderEvent | MyAssetEvent, collecte
     if isinstance(event.raw, dict):
         payload["raw"] = dict(event.raw)
     return payload
+
+
+def _bootstrap_private_rest_rows(*, private_client: UpbitPrivateClient) -> list[tuple[str, dict[str, Any], int]]:
+    rows: list[tuple[str, dict[str, Any], int]] = []
+    collected_at_ms = int(time.time() * 1000)
+    try:
+        accounts_payload = private_client.accounts()
+    except Exception:
+        accounts_payload = []
+    if isinstance(accounts_payload, list):
+        for item in accounts_payload:
+            if not isinstance(item, dict):
+                continue
+            currency = str(item.get("currency") or "").strip().upper()
+            if not currency:
+                continue
+            rows.append(
+                (
+                    "myasset",
+                    {
+                        "channel": "myasset",
+                        "stream_type": "BOOTSTRAP",
+                        "source": "accounts_rest_bootstrap",
+                        "ts_ms": collected_at_ms,
+                        "collected_at_ms": collected_at_ms,
+                        "currency": currency,
+                        "balance": item.get("balance"),
+                        "locked": item.get("locked"),
+                        "avg_buy_price": item.get("avg_buy_price"),
+                        "raw": dict(item),
+                    },
+                    collected_at_ms,
+                )
+            )
+    try:
+        open_orders_payload = private_client.open_orders(states=("wait", "watch"))
+    except Exception:
+        open_orders_payload = []
+    if isinstance(open_orders_payload, list):
+        for item in open_orders_payload:
+            if not isinstance(item, dict):
+                continue
+            market = str(item.get("market") or "").strip().upper()
+            rows.append(
+                (
+                    "myorder",
+                    {
+                        "channel": "myorder",
+                        "stream_type": "BOOTSTRAP",
+                        "source": "open_orders_rest_bootstrap",
+                        "ts_ms": collected_at_ms,
+                        "collected_at_ms": collected_at_ms,
+                        "uuid": item.get("uuid"),
+                        "identifier": item.get("identifier"),
+                        "market": market or None,
+                        "side": item.get("side"),
+                        "ord_type": item.get("ord_type"),
+                        "state": item.get("state"),
+                        "price": item.get("price"),
+                        "volume": item.get("volume"),
+                        "executed_volume": item.get("executed_volume"),
+                        "raw": dict(item),
+                    },
+                    collected_at_ms,
+                )
+            )
+    return rows
 
 
 def _build_health_payload(
