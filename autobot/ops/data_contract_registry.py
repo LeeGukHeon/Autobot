@@ -24,6 +24,9 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
         data_root / "raw_ws" / "upbit" / "public",
         data_root / "raw_ws" / "upbit",
     )
+    raw_private_ws_root = _resolve_existing_root(
+        data_root / "raw_ws" / "upbit" / "private",
+    )
     raw_ticks_root = _resolve_existing_root(
         data_root / "raw_ticks" / "upbit" / "trades",
         data_root / "raw_ticks" / "upbit",
@@ -37,6 +40,22 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
                 layer="raw_ws_dataset",
                 dataset_name="upbit_public",
                 root_path=raw_ws_root,
+                collect_report_name="ws_collect_report.json",
+                health_snapshot_name="ws_public_health.json",
+                status_mode="ws_connected",
+            )
+        )
+    if raw_private_ws_root is not None:
+        entries.append(
+            _build_raw_contract_entry(
+                project_root=root,
+                contract_id="raw_ws_dataset:upbit_private",
+                layer="raw_ws_dataset",
+                dataset_name="upbit_private",
+                root_path=raw_private_ws_root,
+                collect_report_name="private_ws_collect_report.json",
+                health_snapshot_name="private_ws_health.json",
+                status_mode="artifact_presence",
             )
         )
     if raw_ticks_root is not None:
@@ -47,6 +66,9 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
                 layer="raw_ticks_dataset",
                 dataset_name="upbit_trades",
                 root_path=raw_ticks_root,
+                collect_report_name="ticks_collect_report.json",
+                health_snapshot_name="ticks_daily_latest.json",
+                status_mode="artifact_presence",
             )
         )
 
@@ -167,19 +189,27 @@ def _build_raw_contract_entry(
     layer: str,
     dataset_name: str,
     root_path: Path,
+    collect_report_name: str,
+    health_snapshot_name: str,
+    status_mode: str,
 ) -> dict[str, Any]:
     meta_dir = root_path.parent / "_meta"
     meta_files = _meta_artifacts(meta_dir=meta_dir)
-    collect_report = _load_json(meta_dir / "ws_collect_report.json")
-    health = _load_json(meta_dir / "ws_public_health.json")
+    collect_report = _load_json(meta_dir / collect_report_name)
+    health = _load_json(meta_dir / health_snapshot_name)
     validate_report = _load_json(meta_dir / "ws_validate_report.json")
     source_roots = []
     raw_root_text = str((collect_report or {}).get("raw_root", "")).strip()
     if raw_root_text:
         source_roots.append(_normalize_root_reference(project_root=project_root, value=raw_root_text))
     status = "present"
-    if health:
-        status = "active" if bool(health.get("connected", False)) else "stale"
+    if str(status_mode).strip().lower() == "ws_connected":
+        if health:
+            status = "active" if bool(health.get("connected", False)) else "stale"
+        elif validate_report:
+            status = "validated"
+    elif health or collect_report:
+        status = "active"
     elif validate_report:
         status = "validated"
     validation_status = _validation_status_from_status(status=status, validate_report=validate_report)

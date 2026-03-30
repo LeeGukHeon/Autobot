@@ -1838,10 +1838,14 @@
     const candlesRefreshTimer = services.candles_api_refresh_timer || {};
     const rawTicksService = services.raw_ticks_daily_service || {};
     const rawTicksTimer = services.raw_ticks_daily_timer || {};
+    const rawTicksBackfillService = services.raw_ticks_backfill_service || {};
+    const rawTicksBackfillTimer = services.raw_ticks_backfill_timer || {};
     const health = ws.health_snapshot || {};
     const latestRun = ws.runs_summary_latest || {};
     const rawWs = foundation.raw_ws_public || {};
+    const rawPrivate = foundation.raw_ws_private || {};
     const rawTicks = foundation.raw_ticks_daily || {};
+    const rawTicksBackfill = foundation.raw_ticks_backfill || {};
     const candlesApi = foundation.candles_api_v1 || {};
     const sequenceSupport = ((datasets.sequence_v1 || {}).support_level_counts) || {};
     const lastRxTs = Math.max(
@@ -1898,12 +1902,17 @@
           items: [
             compactStat("raw ws", boolLabel(Boolean(rawWs.connected))),
             compactStat("raw ws topk", maybe(rawWs.orderbook_topk)),
+            compactStat("private ws", maybe(rawPrivate.status)),
+            compactStat("private 최근", fmtDateTime(rawPrivate.latest_event_ts_ms)),
             compactStat("ticks timer", translate(rawTicksTimer.active_state)),
             compactStat("ticks 최근", fmtDateTime(rawTicks.latest_generated_at_utc)),
+            compactStat("ticks backfill", translate(rawTicksBackfillTimer.active_state)),
+            compactStat("backfill 최근", fmtDateTime(rawTicksBackfill.latest_generated_at_utc)),
             compactStat("candles timer", translate(candlesRefreshTimer.active_state)),
             compactStat("candles 최근", fmtDateTime(candlesApi.summary_generated_at_utc || candlesApi.build_generated_at)),
             compactStat("candles 상태", maybe(candlesApi.status)),
             compactStat("ticks 파일 수", fmtNumber(rawTicks.file_count, 0)),
+            compactStat("private 파일 수", fmtNumber(rawPrivate.file_count, 0)),
           ],
         }),
         compactRow({

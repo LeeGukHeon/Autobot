@@ -2375,6 +2375,12 @@ def _raw_ticks_file_count(root: Path) -> int:
     return len(list(root.glob("date=*/market=*/*.jsonl.zst")))
 
 
+def _raw_private_ws_file_count(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return len(list(root.glob("my*/date=*/hour=*/*.jsonl.zst")))
+
+
 def _summarize_foundation_ingestion(
     project_root: Path,
     *,
@@ -2392,6 +2398,13 @@ def _summarize_foundation_ingestion(
     raw_ticks_root = project_root / "data" / "raw_ticks" / "upbit" / "trades"
     raw_ticks_summary_path = project_root / "data" / "raw_ticks" / "upbit" / "_meta" / "ticks_daily_latest.json"
     raw_ticks_summary = _load_json(raw_ticks_summary_path)
+    raw_ticks_backfill_summary_path = project_root / "data" / "raw_ticks" / "upbit" / "_meta" / "ticks_backfill_latest.json"
+    raw_ticks_backfill_summary = _load_json(raw_ticks_backfill_summary_path)
+    private_ws_root = project_root / "data" / "raw_ws" / "upbit" / "private"
+    private_ws_health_path = project_root / "data" / "raw_ws" / "upbit" / "_meta" / "private_ws_health.json"
+    private_ws_report_path = project_root / "data" / "raw_ws" / "upbit" / "_meta" / "private_ws_collect_report.json"
+    private_ws_health = _load_json(private_ws_health_path)
+    private_ws_report = _load_json(private_ws_report_path)
     ws_collect_report = dict(ws_status.get("collect_report") or {})
     ws_health = dict(ws_status.get("health_snapshot") or {})
     ws_details = {}
@@ -2425,6 +2438,23 @@ def _summarize_foundation_ingestion(
             "file_count": _raw_ticks_file_count(raw_ticks_root),
             "service": dict(services.get("raw_ticks_daily_service") or {}),
             "timer": dict(services.get("raw_ticks_daily_timer") or {}),
+        },
+        "raw_ticks_backfill": {
+            "status": "ready" if bool(raw_ticks_backfill_summary) else "present",
+            "latest_generated_at_utc": raw_ticks_backfill_summary.get("generated_at_utc") or _path_mtime_iso(raw_ticks_backfill_summary_path),
+            "summary_path": str(raw_ticks_backfill_summary_path),
+            "service": dict(services.get("raw_ticks_backfill_service") or {}),
+            "timer": dict(services.get("raw_ticks_backfill_timer") or {}),
+        },
+        "raw_ws_private": {
+            "status": "ready" if bool(private_ws_report) else ("present" if private_ws_root.exists() else "missing"),
+            "exists": private_ws_root.exists(),
+            "latest_event_ts_ms": _coerce_int(private_ws_health.get("last_event_ts_ms")),
+            "received_total": _coerce_int((private_ws_health.get("received_events") or {}).get("total")),
+            "file_count": _raw_private_ws_file_count(private_ws_root),
+            "collect_report_path": str(private_ws_report_path),
+            "health_snapshot_path": str(private_ws_health_path),
+            "service": dict(services.get("private_ws_archive_service") or {}),
         },
         "candles_api_v1": {
             "status": str(candles_dataset.get("status") or "missing"),
@@ -3178,12 +3208,15 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
         "candles_api_refresh_service": _unit_snapshot("autobot-candles-api-refresh.service"),
         "raw_ticks_daily_service": _unit_snapshot("autobot-raw-ticks-daily.service"),
+        "raw_ticks_backfill_service": _unit_snapshot("autobot-raw-ticks-backfill.service"),
+        "private_ws_archive_service": _unit_snapshot("autobot-private-ws-archive.service"),
         "data_platform_refresh_timer": _unit_snapshot("autobot-data-platform-refresh.timer", timer=True),
         "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
         "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
         "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
         "candles_api_refresh_timer": _unit_snapshot("autobot-candles-api-refresh.timer", timer=True),
         "raw_ticks_daily_timer": _unit_snapshot("autobot-raw-ticks-daily.timer", timer=True),
+        "raw_ticks_backfill_timer": _unit_snapshot("autobot-raw-ticks-backfill.timer", timer=True),
     }
     foundation_ingestion = _summarize_foundation_ingestion(
         project_root,
