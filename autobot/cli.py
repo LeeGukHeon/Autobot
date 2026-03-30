@@ -551,6 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_tensors_parser.add_argument("--minute-lookback-steps", type=int, default=30)
     collect_tensors_parser.add_argument("--micro-lookback-steps", type=int, default=30)
     collect_tensors_parser.add_argument("--lob-lookback-steps", type=int, default=32)
+    collect_tensors_parser.add_argument("--skip-existing-ready", default="true", help="true|false")
 
     collect_ticks_parser = collect_subparsers.add_parser("ticks", help="Collect raw REST ticks.")
     collect_ticks_parser.add_argument("--plan", default="data/raw_ticks/upbit/_meta/ticks_plan.json")
@@ -1966,6 +1967,7 @@ def _handle_collect_tensors(args: argparse.Namespace, base_config: dict[str, Any
         date=(str(args.date).strip() if args.date else None) or None,
         max_markets=max(int(args.max_markets), 1),
         max_anchors_per_market=max(int(args.max_anchors_per_market), 1),
+        skip_existing_ready=_parse_bool_arg(args.skip_existing_ready, default=True),
         second_lookback_steps=max(int(args.second_lookback_steps), 1),
         minute_lookback_steps=max(int(args.minute_lookback_steps), 1),
         micro_lookback_steps=max(int(args.micro_lookback_steps), 1),

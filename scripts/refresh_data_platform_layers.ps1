@@ -285,7 +285,8 @@ for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
         "--second-lookback-steps", ([string]([Math]::Max([int]$TensorSecondLookbackSteps, 1))),
         "--minute-lookback-steps", ([string]([Math]::Max([int]$TensorMinuteLookbackSteps, 1))),
         "--micro-lookback-steps", ([string]([Math]::Max([int]$TensorMicroLookbackSteps, 1))),
-        "--lob-lookback-steps", ([string]([Math]::Max([int]$TensorLobLookbackSteps, 1)))
+        "--lob-lookback-steps", ([string]([Math]::Max([int]$TensorLobLookbackSteps, 1))),
+        "--skip-existing-ready", "false"
     )
     $tensorSteps += ,([ordered]@{
         name = $stepName
