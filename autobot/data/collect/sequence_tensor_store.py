@@ -276,6 +276,18 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
     merged_manifest_rows = _merge_manifest_rows(existing_rows=existing_manifest_rows, new_rows=manifest_rows)
     _write_manifest(path=options.manifest_path, rows=merged_manifest_rows)
     _write_contract_files(options=options)
+    total_support_level_counts = {
+        SUPPORT_LEVEL_STRICT_FULL: 0,
+        SUPPORT_LEVEL_REDUCED_CONTEXT: 0,
+        SUPPORT_LEVEL_STRUCTURAL_INVALID: 0,
+    }
+    total_status_counts = {"OK": 0, "WARN": 0, "FAIL": 0}
+    for row in merged_manifest_rows:
+        total_support_level_counts[resolve_sequence_support_level_from_row(row)] += 1
+        status_value = str(row.get("status") or "").strip().upper() or "WARN"
+        if status_value not in total_status_counts:
+            total_status_counts[status_value] = 0
+        total_status_counts[status_value] += 1
     build_report = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset_name": options.out_dataset,
@@ -287,11 +299,13 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         "ok_anchors": ok_anchors,
         "warn_anchors": warn_anchors,
         "fail_anchors": fail_anchors,
-        "support_level_counts": {
+        "delta_support_level_counts": {
             SUPPORT_LEVEL_STRICT_FULL: sum(1 for item in details if item.get("support_level") == SUPPORT_LEVEL_STRICT_FULL),
             SUPPORT_LEVEL_REDUCED_CONTEXT: sum(1 for item in details if item.get("support_level") == SUPPORT_LEVEL_REDUCED_CONTEXT),
             SUPPORT_LEVEL_STRUCTURAL_INVALID: sum(1 for item in details if item.get("support_level") == SUPPORT_LEVEL_STRUCTURAL_INVALID),
         },
+        "support_level_counts": total_support_level_counts,
+        "manifest_status_counts": total_status_counts,
         "manifest_file": str(options.manifest_path),
         "manifest_rows_total": len(merged_manifest_rows),
         "sequence_contract_file": str(options.sequence_contract_path),

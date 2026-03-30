@@ -234,6 +234,10 @@ def test_build_sequence_tensor_store_skips_existing_ready_anchors(tmp_path: Path
     assert second_summary.built_anchors == 0
     manifest = pl.read_parquet(parquet_root / "sequence_v1" / "_meta" / "manifest.parquet")
     assert manifest.height == 1
+    build_report = json.loads((parquet_root / "sequence_v1" / "_meta" / "build_report.json").read_text(encoding="utf-8"))
+    assert build_report["built_anchors"] == 0
+    assert build_report["manifest_rows_total"] == 1
+    assert build_report["support_level_counts"]["strict_full"] == 1
 
 
 def test_build_sequence_tensor_store_reuses_previous_validate_details_for_unchanged_anchors(tmp_path: Path, monkeypatch) -> None:
