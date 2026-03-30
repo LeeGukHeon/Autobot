@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 import csv
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 import heapq
 import json
 from pathlib import Path
@@ -48,7 +49,7 @@ from autobot.paper.sim_exchange import (
     order_volume_from_notional,
     round_price_to_tick,
 )
-from autobot.models.dataset_loader import DatasetRequest, iter_feature_rows_grouped_by_ts
+from autobot.models.dataset_loader import DatasetRequest, FeatureTsGroup, iter_feature_rows_grouped_by_ts
 from autobot.models.live_execution_policy import (
     DEFAULT_EXECUTION_CONTRACT_ARTIFACT_PATH,
     build_execution_policy_state,
@@ -57,6 +58,7 @@ from autobot.models.live_execution_policy import (
     select_live_execution_action,
 )
 from autobot.models.predictor import load_predictor_from_registry
+from autobot.models.registry import resolve_run_dir
 from autobot.strategy.model_alpha_v1 import (
     ModelAlphaSettings,
     ModelAlphaStrategyV1,
@@ -339,6 +341,99 @@ class BacktestRulesProvider:
             if tick_size is not None and tick_size > 0:
                 return tick_size
         return None
+
+
+def clear_backtest_process_caches() -> None:
+    """Clear process-local caches used to amortize repeated execution backtests."""
+
+    _cached_market_time_bounds.cache_clear()
+    _cached_market_bars.cache_clear()
+    _cached_predictor_from_run_dir.cache_clear()
+    _cached_feature_groups.cache_clear()
+
+
+@lru_cache(maxsize=512)
+def _cached_market_time_bounds(
+    parquet_root: str,
+    dataset_name: str,
+    tf: str,
+    dense_grid: bool,
+    market: str,
+) -> tuple[int, int] | None:
+    loader = CandleDataLoader(
+        parquet_root=parquet_root,
+        dataset_name=dataset_name,
+        tf=tf,
+        dense_grid=dense_grid,
+    )
+    return loader.market_time_bounds(market=market)
+
+
+@lru_cache(maxsize=512)
+def _cached_market_bars(
+    parquet_root: str,
+    dataset_name: str,
+    tf: str,
+    dense_grid: bool,
+    market: str,
+    from_ts_ms: int,
+    to_ts_ms: int,
+) -> tuple[CandleBar, ...]:
+    loader = CandleDataLoader(
+        parquet_root=parquet_root,
+        dataset_name=dataset_name,
+        tf=tf,
+        dense_grid=dense_grid,
+    )
+    return tuple(
+        loader.load_market_bars(
+            market=market,
+            from_ts_ms=from_ts_ms,
+            to_ts_ms=to_ts_ms,
+        )
+    )
+
+
+@lru_cache(maxsize=64)
+def _cached_predictor_from_run_dir(run_dir: str) -> Any:
+    resolved = Path(run_dir)
+    return load_predictor_from_registry(
+        registry_root=resolved.parent.parent,
+        model_ref=resolved.name,
+        model_family=resolved.parent.name,
+    )
+
+
+@lru_cache(maxsize=16)
+def _cached_feature_groups(
+    dataset_root: str,
+    tf: str,
+    quote: str,
+    top_n: int,
+    start_ts_ms: int,
+    end_ts_ms: int,
+    markets: tuple[str, ...],
+    batch_rows: int,
+    feature_columns: tuple[str, ...],
+    extra_columns: tuple[str, ...],
+) -> tuple[FeatureTsGroup, ...]:
+    request = DatasetRequest(
+        dataset_root=Path(dataset_root),
+        tf=tf,
+        quote=quote,
+        top_n=top_n,
+        start_ts_ms=start_ts_ms,
+        end_ts_ms=end_ts_ms,
+        markets=markets,
+        batch_rows=batch_rows,
+    )
+    return tuple(
+        iter_feature_rows_grouped_by_ts(
+            request,
+            feature_columns=feature_columns,
+            extra_columns=extra_columns,
+        )
+    )
 
 
 @dataclass
@@ -2188,11 +2283,12 @@ class BacktestRunEngine:
         if not model_ref:
             raise ValueError("model_alpha_v1 requires model_ref")
         model_family = str(settings.model_family).strip() if settings.model_family else settings.model_alpha.model_family
-        predictor = load_predictor_from_registry(
+        predictor_run_dir = resolve_run_dir(
             registry_root=Path(settings.model_registry_root),
             model_ref=model_ref,
             model_family=model_family,
         )
+        predictor = _cached_predictor_from_run_dir(str(predictor_run_dir.resolve()))
         resolved_model_alpha, runtime_recommendation_state = resolve_runtime_model_alpha_settings(
             predictor=predictor,
             settings=settings.model_alpha,
@@ -2219,15 +2315,22 @@ class BacktestRunEngine:
             markets=tuple(active_markets),
             batch_rows=200_000,
         )
-        groups = iter_feature_rows_grouped_by_ts(
-            request,
-            feature_columns=predictor.feature_columns,
-            extra_columns=resolve_model_alpha_runtime_row_columns(predictor=predictor),
+        cached_groups = _cached_feature_groups(
+            str(request.dataset_root.resolve()),
+            request.tf,
+            str(request.quote or "").strip().upper(),
+            int(request.top_n or 0),
+            int(request.start_ts_ms or 0),
+            int(request.end_ts_ms or 0),
+            tuple(request.markets),
+            int(request.batch_rows),
+            tuple(predictor.feature_columns),
+            tuple(resolve_model_alpha_runtime_row_columns(predictor=predictor)),
         )
         interval_ms = _interval_ms_from_tf(settings.tf)
         return ModelAlphaStrategyV1(
             predictor=predictor,
-            feature_groups=groups,
+            feature_groups=iter(cached_groups),
             settings=resolved_model_alpha,
             interval_ms=interval_ms,
         )
@@ -2261,8 +2364,18 @@ class BacktestRunEngine:
 
     def _resolve_time_window(self, *, markets: list[str]) -> tuple[int, int]:
         bounds: list[tuple[int, int]] = []
+        use_shared_loader_cache = isinstance(self._loader, CandleDataLoader)
         for market in markets:
-            bound = self._loader.market_time_bounds(market=market)
+            if use_shared_loader_cache:
+                bound = _cached_market_time_bounds(
+                    str(self._loader.parquet_root.resolve()),
+                    str(self._loader.dataset_name).strip(),
+                    str(self._loader.tf).strip().lower(),
+                    bool(self._loader.dense_grid),
+                    str(market).strip().upper(),
+                )
+            else:
+                bound = self._loader.market_time_bounds(market=market)
             if bound is not None:
                 bounds.append(bound)
         if not bounds:
@@ -2311,12 +2424,26 @@ class BacktestRunEngine:
         to_ts_ms: int,
     ) -> dict[str, list[CandleBar]]:
         loaded: dict[str, list[CandleBar]] = {}
+        use_shared_loader_cache = isinstance(self._loader, CandleDataLoader)
         for market in markets:
-            bars = self._loader.load_market_bars(
-                market=market,
-                from_ts_ms=from_ts_ms,
-                to_ts_ms=to_ts_ms,
-            )
+            if use_shared_loader_cache:
+                bars = list(
+                    _cached_market_bars(
+                        str(self._loader.parquet_root.resolve()),
+                        str(self._loader.dataset_name).strip(),
+                        str(self._loader.tf).strip().lower(),
+                        bool(self._loader.dense_grid),
+                        str(market).strip().upper(),
+                        int(from_ts_ms),
+                        int(to_ts_ms),
+                    )
+                )
+            else:
+                bars = self._loader.load_market_bars(
+                    market=market,
+                    from_ts_ms=from_ts_ms,
+                    to_ts_ms=to_ts_ms,
+                )
             if not bars:
                 continue
             loaded[market] = bars
