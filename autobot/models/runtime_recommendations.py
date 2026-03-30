@@ -67,11 +67,147 @@ def runtime_recommendation_grid_for_profile(profile: str | None) -> RuntimeRecom
     return RuntimeRecommendationGrid()
 
 
+def _build_runtime_recommendation_search_context(
+    *,
+    options: ExecutionAcceptanceOptions,
+    candidate_ref: str,
+    grid: RuntimeRecommendationGrid,
+    cache_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    external = dict(cache_context or {})
+    return {
+        "candidate_ref": str(candidate_ref).strip(),
+        "model_family": str(options.model_family).strip(),
+        "dataset_name": str(options.dataset_name).strip(),
+        "parquet_root": str(options.parquet_root),
+        "evaluation_window": _build_evaluation_window_doc(options),
+        "data_platform_ready_snapshot_id": str(
+            external.get("data_platform_ready_snapshot_id") or ""
+        ).strip(),
+        "profile": str(external.get("profile") or "").strip() or "full",
+        "grid_signature": {
+            "hold_bars_grid": [int(item) for item in grid.hold_bars_grid],
+            "risk_vol_feature_grid": [str(item) for item in grid.risk_vol_feature_grid],
+            "tp_vol_multiplier_grid": [float(item) for item in grid.tp_vol_multiplier_grid],
+            "sl_vol_multiplier_grid": [float(item) for item in grid.sl_vol_multiplier_grid],
+            "trailing_vol_multiplier_grid": [float(item) for item in grid.trailing_vol_multiplier_grid],
+            "price_mode_grid": [str(item) for item in grid.price_mode_grid],
+            "timeout_bars_grid": [int(item) for item in grid.timeout_bars_grid],
+            "replace_max_grid": [int(item) for item in grid.replace_max_grid],
+        },
+    }
+
+
+def _load_runtime_recommendation_search_cache(
+    cache_path: Path | None,
+    *,
+    expected_context: dict[str, Any],
+) -> dict[str, Any]:
+    default_state = {
+        "version": 1,
+        "context": expected_context,
+        "completed_stages": [],
+        "stage_rows": {
+            "hold": {},
+            "risk_exit": {},
+            "execution": {},
+        },
+    }
+    if cache_path is None or not Path(cache_path).exists():
+        return default_state
+    try:
+        payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except Exception:
+        return default_state
+    if not isinstance(payload, dict):
+        return default_state
+    if dict(payload.get("context") or {}) != dict(expected_context):
+        return default_state
+    stage_rows = dict(payload.get("stage_rows") or {})
+    return {
+        "version": 1,
+        "context": expected_context,
+        "completed_stages": [
+            str(item).strip()
+            for item in (payload.get("completed_stages") or [])
+            if str(item).strip()
+        ],
+        "stage_rows": {
+            "hold": dict(stage_rows.get("hold") or {}),
+            "risk_exit": dict(stage_rows.get("risk_exit") or {}),
+            "execution": dict(stage_rows.get("execution") or {}),
+        },
+    }
+
+
+def _save_runtime_recommendation_search_cache(cache_path: Path | None, payload: dict[str, Any]) -> None:
+    if cache_path is None:
+        return
+    resolved = Path(cache_path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _grid_cache_key(*, kind: str, grid_point: dict[str, Any]) -> str:
+    return f"{str(kind).strip().lower()}:{json.dumps(dict(grid_point or {}), ensure_ascii=False, sort_keys=True)}"
+
+
+def _reuse_or_run_execution_backtest(
+    *,
+    cache_state: dict[str, Any],
+    cache_path: Path | None,
+    stage_name: str,
+    rule_id: str,
+    grid_point: dict[str, Any],
+    options: ExecutionAcceptanceOptions,
+    candidate_ref: str,
+    model_alpha_settings: ModelAlphaSettings,
+) -> dict[str, Any]:
+    stage_key = str(stage_name).strip().lower()
+    key = _grid_cache_key(kind=stage_key, grid_point=grid_point)
+    stage_rows = dict((cache_state.get("stage_rows") or {}).get(stage_key) or {})
+    cached = stage_rows.get(key)
+    if isinstance(cached, dict) and isinstance(cached.get("summary"), dict):
+        return dict(cached)
+    row = {
+        "kind": stage_key,
+        "rule_id": str(rule_id).strip(),
+        "grid_point": dict(grid_point),
+        "summary": run_model_execution_backtest(
+            options=options,
+            model_ref=str(candidate_ref).strip(),
+            model_alpha_settings=model_alpha_settings,
+        ),
+    }
+    cache_state.setdefault("stage_rows", {}).setdefault(stage_key, {})[key] = row
+    _save_runtime_recommendation_search_cache(cache_path, cache_state)
+    return dict(row)
+
+
+def _mark_runtime_recommendation_stage_complete(
+    cache_state: dict[str, Any],
+    *,
+    cache_path: Path | None,
+    stage_name: str,
+) -> None:
+    stage = str(stage_name).strip().lower()
+    completed = [str(item).strip().lower() for item in (cache_state.get("completed_stages") or []) if str(item).strip()]
+    if stage not in completed:
+        completed.append(stage)
+    cache_state["completed_stages"] = completed
+    _save_runtime_recommendation_search_cache(cache_path, cache_state)
+
+
 def optimize_runtime_recommendations(
     *,
     options: ExecutionAcceptanceOptions,
     candidate_ref: str,
     grid: RuntimeRecommendationGrid | None = None,
+    cache_path: Path | None = None,
+    cache_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     active_grid = grid or RuntimeRecommendationGrid()
     execution_compare_contract = resolve_v4_execution_compare_contract()
@@ -94,6 +230,15 @@ def optimize_runtime_recommendations(
         feature_set=str(options.feature_set).strip().lower() or "v4",
         selection=base_selection,
     )
+    search_cache = _load_runtime_recommendation_search_cache(
+        cache_path,
+        expected_context=_build_runtime_recommendation_search_context(
+            options=options,
+            candidate_ref=candidate_id,
+            grid=active_grid,
+            cache_context=cache_context,
+        ),
+    )
 
     hold_rows: list[dict[str, Any]] = []
     for hold_bars in _dedupe_positive_ints(active_grid.hold_bars_grid):
@@ -111,19 +256,19 @@ def optimize_runtime_recommendations(
                 use_learned_recommendations=False,
             ),
         )
-        summary = run_model_execution_backtest(
-            options=options,
-            model_ref=candidate_id,
-            model_alpha_settings=candidate_settings,
-        )
         hold_rows.append(
-            {
-                "kind": "hold",
-                "rule_id": _build_exit_rule_id(kind="hold", grid_point=grid_point),
-                "grid_point": grid_point,
-                "summary": summary,
-            }
+            _reuse_or_run_execution_backtest(
+                cache_state=search_cache,
+                cache_path=cache_path,
+                stage_name="hold",
+                rule_id=_build_exit_rule_id(kind="hold", grid_point=grid_point),
+                grid_point=grid_point,
+                options=options,
+                candidate_ref=candidate_id,
+                model_alpha_settings=candidate_settings,
+            )
         )
+    _mark_runtime_recommendation_stage_complete(search_cache, cache_path=cache_path, stage_name="hold")
 
     ranked_holds = _rank_execution_rows(hold_rows)
     hold_family = _build_exit_family_doc(family="hold", rows=ranked_holds)
@@ -167,19 +312,19 @@ def optimize_runtime_recommendations(
                                 use_learned_recommendations=False,
                             ),
                         )
-                        summary = run_model_execution_backtest(
-                            options=options,
-                            model_ref=candidate_id,
-                            model_alpha_settings=candidate_settings,
-                        )
                         risk_exit_rows.append(
-                            {
-                                "kind": "risk_exit",
-                                "rule_id": _build_exit_rule_id(kind="risk_exit", grid_point=grid_point),
-                                "grid_point": grid_point,
-                                "summary": summary,
-                            }
+                            _reuse_or_run_execution_backtest(
+                                cache_state=search_cache,
+                                cache_path=cache_path,
+                                stage_name="risk_exit",
+                                rule_id=_build_exit_rule_id(kind="risk_exit", grid_point=grid_point),
+                                grid_point=grid_point,
+                                options=options,
+                                candidate_ref=candidate_id,
+                                model_alpha_settings=candidate_settings,
+                            )
                         )
+    _mark_runtime_recommendation_stage_complete(search_cache, cache_path=cache_path, stage_name="risk_exit")
 
     ranked_risk_exit = _rank_execution_rows(risk_exit_rows)
     risk_family = _build_exit_family_doc(family="risk", rows=ranked_risk_exit)
@@ -214,26 +359,26 @@ def optimize_runtime_recommendations(
                         use_learned_recommendations=False,
                     ),
                 )
-                summary = run_model_execution_backtest(
-                    options=options,
-                    model_ref=candidate_id,
-                    model_alpha_settings=candidate_settings,
-                )
                 execution_rows.append(
-                    {
-                        "kind": "execution",
-                        "rule_id": (
+                    _reuse_or_run_execution_backtest(
+                        cache_state=search_cache,
+                        cache_path=cache_path,
+                        stage_name="execution",
+                        rule_id=(
                             f"execution_{str(price_mode).strip().upper().lower()}"
                             f"_t{int(timeout_bars)}_r{int(replace_max)}"
                         ),
-                        "grid_point": {
+                        grid_point={
                             "price_mode": str(price_mode),
                             "timeout_bars": int(timeout_bars),
                             "replace_max": int(replace_max),
                         },
-                        "summary": summary,
-                    }
+                        options=options,
+                        candidate_ref=candidate_id,
+                        model_alpha_settings=candidate_settings,
+                    )
                 )
+    _mark_runtime_recommendation_stage_complete(search_cache, cache_path=cache_path, stage_name="execution")
 
     ranked_execution = _rank_execution_rows(execution_rows)
     best_execution = ranked_execution[0] if ranked_execution else None

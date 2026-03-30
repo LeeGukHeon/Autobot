@@ -1824,6 +1824,8 @@ def _build_runtime_recommendations_v4(
     options: TrainV4CryptoCsOptions,
     run_id: str,
     search_budget_decision: dict[str, Any],
+    runtime_recommendation_cache_path: Path | None = None,
+    cache_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _train_v4_execution.build_runtime_recommendations_v4(
         options=options,
@@ -1831,6 +1833,8 @@ def _build_runtime_recommendations_v4(
         search_budget_decision=search_budget_decision,
         optimize_runtime_recommendations_fn=optimize_runtime_recommendations,
         runtime_recommendation_grid_for_profile_fn=runtime_recommendation_grid_for_profile,
+        runtime_recommendation_cache_path=runtime_recommendation_cache_path,
+        cache_context=cache_context,
     )
 
 

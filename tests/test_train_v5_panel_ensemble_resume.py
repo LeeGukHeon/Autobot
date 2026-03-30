@@ -73,6 +73,7 @@ def test_resume_v5_panel_ensemble_tail_writes_missing_runtime_artifacts(tmp_path
     (options.execution_acceptance_output_root).mkdir(parents=True, exist_ok=True)
 
     train_config = asdict(options)
+    train_config["data_platform_ready_snapshot_id"] = "snapshot-resume"
     (run_dir / "train_config.yaml").write_text(json.dumps(train_config, default=str), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps({"panel_ensemble": {"policy": "v5_panel_ensemble_v1"}}), encoding="utf-8")
     (run_dir / "thresholds.json").write_text(json.dumps({"top_5pct": 0.5}), encoding="utf-8")
@@ -134,15 +135,42 @@ def test_resume_v5_panel_ensemble_tail_writes_missing_runtime_artifacts(tmp_path
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_lane_governance_v4", lambda **kwargs: {"lane_id": "cls_primary"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_research_support_lane_v4", lambda **kwargs: {"summary": {"status": "ok"}})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._detect_duplicate_candidate_artifacts", lambda **kwargs: {"duplicate": False})
-    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._run_execution_acceptance_v4", lambda **kwargs: {"status": "ok"})
-    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_runtime_recommendations_v4", lambda **kwargs: {"status": "ready", "exit": {}})
+    calls = {
+        "execution_acceptance": 0,
+        "runtime_recommendations": 0,
+        "promotion": 0,
+        "decision_surface": 0,
+    }
+
+    def _fake_execution_acceptance(**kwargs):
+        _ = kwargs
+        calls["execution_acceptance"] += 1
+        return {"status": "ok"}
+
+    def _fake_runtime_recommendations(**kwargs):
+        _ = kwargs
+        calls["runtime_recommendations"] += 1
+        return {"status": "ready", "exit": {}}
+
+    def _fake_promotion(**kwargs):
+        _ = kwargs
+        calls["promotion"] += 1
+        return {"status": "candidate", "reasons": ["ok"]}
+
+    def _fake_decision_surface(**kwargs):
+        _ = kwargs
+        calls["decision_surface"] += 1
+        return {"status": "ok"}
+
+    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._run_execution_acceptance_v4", _fake_execution_acceptance)
+    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_runtime_recommendations_v4", _fake_runtime_recommendations)
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_exit_path_risk_summary_v4", lambda **kwargs: {"status": "ok"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_trade_action_policy_v4", lambda **kwargs: {"status": "ok"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_execution_risk_control_v4", lambda **kwargs: {"status": "ok"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._purge_execution_artifact_run_dirs", lambda **kwargs: {"evaluated": False})
-    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._manual_promotion_decision_v4", lambda **kwargs: {"status": "candidate", "reasons": ["ok"]})
+    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._manual_promotion_decision_v4", _fake_promotion)
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._build_trainer_research_evidence_from_promotion_v4", lambda **kwargs: {"available": True})
-    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.build_decision_surface_v4", lambda **kwargs: {"status": "ok"})
+    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.build_decision_surface_v4", _fake_decision_surface)
     monkeypatch.setattr(
         "autobot.models.train_v5_panel_ensemble.v4.build_experiment_ledger_record",
         lambda **kwargs: {"run_id": run_id},
@@ -165,13 +193,28 @@ def test_resume_v5_panel_ensemble_tail_writes_missing_runtime_artifacts(tmp_path
     )
 
     result = resume_v5_panel_ensemble_tail(run_dir=run_dir)
+    calls_after_first = dict(calls)
 
     assert result.run_id == run_id
     assert (run_dir / "execution_acceptance_report.json").exists()
     assert (run_dir / "runtime_recommendations.json").exists()
     assert (run_dir / "promotion_decision.json").exists()
     assert (run_dir / "expert_prediction_table.parquet").exists()
+    assert (run_dir / "panel_tail_context.json").exists()
     artifact_status = json.loads((run_dir / "artifact_status.json").read_text(encoding="utf-8"))
+    assert artifact_status["tail_context_written"] is True
     assert artifact_status["execution_acceptance_complete"] is True
     assert artifact_status["runtime_recommendations_complete"] is True
     assert artifact_status["governance_artifacts_complete"] is True
+    assert artifact_status["promotion_complete"] is True
+    assert artifact_status["decision_surface_complete"] is True
+    assert artifact_status["expert_prediction_table_complete"] is True
+    report = json.loads(result.train_report_path.read_text(encoding="utf-8"))
+    assert report["data_platform_ready_snapshot_id"] == "snapshot-resume"
+    assert report["resumed"] is True
+    assert float(report["tail_duration_sec"]) >= 0.0
+
+    resumed_result = resume_v5_panel_ensemble_tail(run_dir=run_dir)
+
+    assert resumed_result.run_id == run_id
+    assert calls == calls_after_first

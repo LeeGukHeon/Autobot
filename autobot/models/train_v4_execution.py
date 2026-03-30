@@ -357,6 +357,8 @@ def build_runtime_recommendations_v4(
     search_budget_decision: dict[str, Any],
     optimize_runtime_recommendations_fn: Callable[..., dict[str, Any]],
     runtime_recommendation_grid_for_profile_fn: Callable[[str], Any],
+    runtime_recommendation_cache_path: Path | None = None,
+    cache_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not bool(options.execution_acceptance_enabled):
         return {
@@ -385,6 +387,9 @@ def build_runtime_recommendations_v4(
             exit=exit_settings,
             execution=execution_settings,
         )
+        runtime_profile = str((search_budget_decision.get("applied") or {}).get("runtime_recommendation_profile", "full")).strip() or "full"
+        effective_cache_context = dict(cache_context or {})
+        effective_cache_context.setdefault("profile", runtime_profile)
         return optimize_runtime_recommendations_fn(
             options=ExecutionAcceptanceOptions(
                 registry_root=options.registry_root,
@@ -419,8 +424,10 @@ def build_runtime_recommendations_v4(
             ),
             candidate_ref=run_id,
             grid=runtime_recommendation_grid_for_profile_fn(
-                str((search_budget_decision.get("applied") or {}).get("runtime_recommendation_profile", "full"))
+                runtime_profile
             ),
+            cache_path=runtime_recommendation_cache_path,
+            cache_context=effective_cache_context,
         )
     except Exception as exc:
         return {

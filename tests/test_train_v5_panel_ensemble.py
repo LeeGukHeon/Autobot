@@ -143,6 +143,7 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     )
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.build_data_fingerprint", lambda **kwargs: {"manifest_sha256": "abc"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.render_model_card", lambda **kwargs: "# card")
+    monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.resolve_ready_snapshot_id", lambda **kwargs: "snapshot-main")
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.v4._detect_duplicate_candidate_artifacts", lambda **kwargs: {"duplicate": False})
     monkeypatch.setattr(
         "autobot.models.train_v5_panel_ensemble.v4._run_execution_acceptance_v4",
@@ -203,6 +204,7 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
         ev_scan_steps=10,
         ev_min_selected=1,
         min_rows_for_train=1,
+        run_scope="scheduled_daily",
     )
 
     result = train_and_register_v5_panel_ensemble(options)
@@ -214,7 +216,9 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     assert result.promotion_path.exists()
     assert result.experiment_ledger_path is not None
     assert result.experiment_ledger_summary_path is not None
+    assert (result.run_dir / "panel_tail_context.json").exists()
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_panel_ensemble"
+    assert load_json(result.run_dir / "train_config.yaml")["data_platform_ready_snapshot_id"] == "snapshot-main"
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["policy"] == "v5_panel_ensemble_v1"
     assert load_json(result.run_dir / "predictor_contract.json")["score_lcb_field"] == "score_lcb"
     assert load_json(result.run_dir / "predictor_contract.json")["final_rank_score_field"] == "final_rank_score"
@@ -228,3 +232,13 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["expected_es_field"] == "final_expected_es"
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["tradability_field"] == "final_tradability"
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["final_output_contract"]["alpha_lcb_field"] == "final_alpha_lcb"
+    artifact_status = load_json(result.run_dir / "artifact_status.json")
+    assert artifact_status["tail_context_written"] is True
+    assert artifact_status["promotion_complete"] is True
+    assert artifact_status["decision_surface_complete"] is True
+    assert artifact_status["expert_prediction_table_complete"] is True
+    assert load_json(result.train_report_path)["data_platform_ready_snapshot_id"] == "snapshot-main"
+    assert load_json(result.train_report_path)["resumed"] is False
+    assert float(load_json(result.train_report_path)["tail_duration_sec"]) >= 0.0
+    assert (tmp_path / "registry" / "train_v5_panel_ensemble" / "latest.json").exists()
+    assert not (tmp_path / "registry" / "latest.json").exists()

@@ -82,13 +82,15 @@ def test_run_execution_acceptance_v4_uses_explicit_evaluation_window(tmp_path: P
 def test_build_runtime_recommendations_v4_uses_explicit_evaluation_window(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    def _fake_optimize_runtime_recommendations_fn(*, options, candidate_ref, grid):
+    def _fake_optimize_runtime_recommendations_fn(*, options, candidate_ref, grid, cache_path=None, cache_context=None):
         captured["start_ts_ms"] = options.start_ts_ms
         captured["end_ts_ms"] = options.end_ts_ms
         captured["label"] = options.evaluation_window_label
         captured["source"] = options.evaluation_window_source
         captured["candidate_ref"] = candidate_ref
         captured["grid"] = grid
+        captured["cache_path"] = cache_path
+        captured["cache_context"] = cache_context
         return {
             "version": 1,
             "status": "ready",
@@ -106,6 +108,8 @@ def test_build_runtime_recommendations_v4_uses_explicit_evaluation_window(tmp_pa
         search_budget_decision={"applied": {"runtime_recommendation_profile": "compact"}},
         optimize_runtime_recommendations_fn=_fake_optimize_runtime_recommendations_fn,
         runtime_recommendation_grid_for_profile_fn=lambda profile: {"profile": profile},
+        runtime_recommendation_cache_path=tmp_path / "runtime_cache.json",
+        cache_context={"data_platform_ready_snapshot_id": "snapshot-001"},
     )
 
     assert report["status"] == "ready"
@@ -121,3 +125,8 @@ def test_build_runtime_recommendations_v4_uses_explicit_evaluation_window(tmp_pa
     assert captured["source"] == "candidate_acceptance_certification_window"
     assert captured["candidate_ref"] == "run-001"
     assert captured["grid"] == {"profile": "compact"}
+    assert captured["cache_path"] == tmp_path / "runtime_cache.json"
+    assert captured["cache_context"] == {
+        "data_platform_ready_snapshot_id": "snapshot-001",
+        "profile": "compact",
+    }
