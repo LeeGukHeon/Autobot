@@ -10,6 +10,7 @@ param(
     [double]$DownsampleHz = 1.0,
     [int]$MaxMarkets = 60,
     [string]$Format = "DEFAULT",
+    [int]$OrderbookTopk = 30,
     [int]$DurationSec = 0,
     [switch]$NoStart,
     [switch]$NoEnable,
@@ -36,7 +37,8 @@ $argList = @(
     "--retention-days", ([string]([Math]::Max([int]$RetentionDays, 1))),
     "--downsample-hz", ([string][double]$DownsampleHz),
     "--max-markets", ([string]([Math]::Max([int]$MaxMarkets, 1))),
-    "--format", (([string]$Format).Trim().ToUpperInvariant())
+    "--format", (([string]$Format).Trim().ToUpperInvariant()),
+    "--orderbook-topk", ([string]([Math]::Max([int]$OrderbookTopk, 1)))
 )
 if ([int]$DurationSec -gt 0) {
     $argList += @("--duration-sec", ([string][int]$DurationSec))
@@ -74,6 +76,7 @@ if ($DryRun) {
     Write-Host ("[ws-public-install][dry-run] unit={0}" -f $UnitName)
     Write-Host ("[ws-public-install][dry-run] quote={0}" -f $Quote)
     Write-Host ("[ws-public-install][dry-run] top_n={0}" -f $TopN)
+    Write-Host ("[ws-public-install][dry-run] orderbook_topk={0}" -f $OrderbookTopk)
     Write-Host $unitContent
     exit 0
 }

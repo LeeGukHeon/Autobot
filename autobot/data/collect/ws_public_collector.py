@@ -87,7 +87,7 @@ class WsPublicDaemonOptions:
     max_markets: int = 60
     format: str = "DEFAULT"
     channels: tuple[str, ...] = ("trade", "orderbook")
-    orderbook_topk: int = 5
+    orderbook_topk: int = 30
     orderbook_level: int | str | None = 0
     keepalive_mode: str = "message"
     keepalive_interval_sec: int = 55
@@ -235,7 +235,7 @@ def collect_ws_public_from_plan(options: WsPublicCollectOptions) -> WsPublicColl
         raise ValueError("plan.codes is required")
 
     fmt = str(runtime_policy.get("format", "DEFAULT")).strip().upper() or "DEFAULT"
-    orderbook_topk = max(int(runtime_policy.get("orderbook_topk", 5)), 1)
+    orderbook_topk = max(int(runtime_policy.get("orderbook_topk", 30)), 1)
     orderbook_level = runtime_policy.get("orderbook_level", 0)
     orderbook_min_write_interval_ms = max(int(runtime_policy.get("orderbook_min_write_interval_ms", 200)), 1)
     max_subscribe_messages_per_min = max(int(safety_policy.get("max_subscribe_messages_per_min", 5)), 1)

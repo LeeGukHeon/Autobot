@@ -25,7 +25,7 @@
     live_ws:
       enabled: false
       window_sec: 60
-      orderbook_topk: 5
+      orderbook_topk: 30
       orderbook_level: 0
       subscribe_format: DEFAULT
       max_markets: 30

@@ -425,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="DEFAULT",
         choices=("DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"),
     )
-    collect_plan_ws_parser.add_argument("--orderbook-topk", type=int, default=5)
+    collect_plan_ws_parser.add_argument("--orderbook-topk", type=int, default=30)
     collect_plan_ws_parser.add_argument("--orderbook-level", default="0")
     collect_plan_ws_parser.add_argument("--orderbook-min-write-interval-ms", type=int, default=200)
 
@@ -638,7 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"),
     )
     collect_ws_public_daemon_parser.add_argument("--channels", default="trade,orderbook")
-    collect_ws_public_daemon_parser.add_argument("--orderbook-topk", type=int, default=5)
+    collect_ws_public_daemon_parser.add_argument("--orderbook-topk", type=int, default=30)
     collect_ws_public_daemon_parser.add_argument("--orderbook-level", default="0")
     collect_ws_public_daemon_parser.add_argument("--rotate-sec", type=int, default=3600)
     collect_ws_public_daemon_parser.add_argument("--max-bytes", type=int, default=67_108_864)
@@ -5565,7 +5565,7 @@ def _strategy_micro_gate_defaults(
         "live_ws": {
             "enabled": bool(live_ws_cfg.get("enabled", False)),
             "window_sec": max(int(live_ws_cfg.get("window_sec", 60)), 1),
-            "orderbook_topk": max(int(live_ws_cfg.get("orderbook_topk", 5)), 1),
+            "orderbook_topk": max(int(live_ws_cfg.get("orderbook_topk", 30)), 1),
             "orderbook_level": live_ws_cfg.get("orderbook_level", 0),
             "subscribe_format": str(live_ws_cfg.get("subscribe_format", "DEFAULT")).strip().upper() or "DEFAULT",
             "max_markets": max(int(live_ws_cfg.get("max_markets", 30)), 1),
@@ -5713,7 +5713,7 @@ def _build_micro_gate_settings(
         live_ws=LiveWsProviderSettings(
             enabled=bool(live_ws_cfg.get("enabled", False)),
             window_sec=max(int(live_ws_cfg.get("window_sec", 60)), 1),
-            orderbook_topk=max(int(live_ws_cfg.get("orderbook_topk", 5)), 1),
+            orderbook_topk=max(int(live_ws_cfg.get("orderbook_topk", 30)), 1),
             orderbook_level=live_ws_cfg.get("orderbook_level", 0),
             subscribe_format=str(live_ws_cfg.get("subscribe_format", "DEFAULT")).strip().upper() or "DEFAULT",
             max_markets=max(int(live_ws_cfg.get("max_markets", 30)), 1),

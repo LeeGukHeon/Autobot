@@ -28,7 +28,7 @@ class WsPublicPlanOptions:
     fixed_markets: tuple[str, ...] | None = None
     channels: tuple[str, ...] = DEFAULT_WS_CHANNELS
     format: str = "DEFAULT"
-    orderbook_topk: int = 5
+    orderbook_topk: int = 30
     orderbook_level: str | int | None = 0
     orderbook_min_write_interval_ms: int = 200
     trade_store_all: bool = True
