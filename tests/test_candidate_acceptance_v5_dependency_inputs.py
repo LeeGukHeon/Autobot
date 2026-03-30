@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ACCEPTANCE_SCRIPT = REPO_ROOT / "scripts" / "candidate_acceptance.ps1"
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _powershell_exe() -> str:
+    for name in ("powershell.exe", "pwsh"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    pytest.skip("PowerShell executable is required for this test")
+
+
+def _make_fake_python_exe(tmp_path: Path) -> Path:
+    driver_path = tmp_path / "fake_python_driver.py"
+    driver_path.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            ROOT = Path.cwd()
+            SNAPSHOT_ID = "snapshot-dependency-001"
+            PANEL_RUN_ID = "panel-run-001"
+            SEQ_RUN_ID = "sequence-run-001"
+            LOB_RUN_ID = "lob-run-001"
+            FUSION_RUN_ID = "fusion-run-001"
+
+            def arg_value(name: str, default: str = "") -> str:
+                if name not in sys.argv:
+                    return default
+                index = sys.argv.index(name)
+                if index + 1 >= len(sys.argv):
+                    return default
+                return sys.argv[index + 1]
+
+            def write_json(path: Path, payload: object) -> None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            def append_log(payload: object) -> None:
+                log_path = ROOT / "logs" / "fake_python_invocations.jsonl"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload) + "\\n")
+
+            def expert_run(family: str, trainer: str, run_id: str) -> Path:
+                run_dir = ROOT / "models" / "registry" / family / run_id
+                run_dir.mkdir(parents=True, exist_ok=True)
+                write_json(run_dir / "train_config.yaml", {
+                    "trainer": trainer,
+                    "model_family": family,
+                    "data_platform_ready_snapshot_id": SNAPSHOT_ID,
+                })
+                write_json(run_dir / "promotion_decision.json", {"status": "candidate"})
+                write_json(run_dir / "trainer_research_evidence.json", {"available": True})
+                write_json(run_dir / "search_budget_decision.json", {"status": "default"})
+                write_json(run_dir / "economic_objective_profile.json", {"profile_id": "test"})
+                write_json(run_dir / "lane_governance.json", {"lane_id": "cls_primary"})
+                write_json(run_dir / "decision_surface.json", {"status": "ok"})
+                table = run_dir / "expert_prediction_table.parquet"
+                table.write_bytes(b"PAR1")
+                return run_dir
+
+            args = sys.argv[1:]
+            command_key = tuple(args[:4])
+
+            if command_key == ("-m", "autobot.cli", "features", "build"):
+                append_log({"command": "features build", "label_set": arg_value("--label-set")})
+                print("features_build_ok")
+                sys.exit(0)
+
+            if tuple(args[:3]) == ("-m", "autobot.ops.data_contract_registry", "--project-root"):
+                report_path = ROOT / "data" / "_meta" / "data_contract_registry.json"
+                write_json(report_path, {"summary": {"contract_count": 1}, "entries": [{"contract_id": "feature_dataset:features_v4"}]})
+                print(str(report_path))
+                sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "features", "validate"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "validate_report.json"
+                write_json(report_path, {"checked_files": 1, "ok_files": 1, "warn_files": 0, "fail_files": 0, "schema_ok": True, "leakage_smoke": "PASS"})
+                print(str(report_path))
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.ops.live_feature_parity_report"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "live_feature_parity_report.json"
+                write_json(report_path, {"sampled_pairs": 1, "compared_pairs": 1, "passing_pairs": 1, "acceptable": True, "status": "PASS"})
+                print(str(report_path))
+                sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "model", "train"):
+                trainer = arg_value("--trainer")
+                family = arg_value("--model-family")
+                append_log({
+                    "command": "model train",
+                    "trainer": trainer,
+                    "family": family,
+                    "args": args,
+                })
+                if trainer == "v5_panel_ensemble":
+                    run_dir = expert_run(family, trainer, PANEL_RUN_ID)
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": PANEL_RUN_ID}))
+                    sys.exit(0)
+                if trainer == "v5_sequence":
+                    run_dir = expert_run(family, trainer, SEQ_RUN_ID)
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": SEQ_RUN_ID}))
+                    sys.exit(0)
+                if trainer == "v5_lob":
+                    run_dir = expert_run(family, trainer, LOB_RUN_ID)
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": LOB_RUN_ID}))
+                    sys.exit(0)
+                if trainer == "v5_fusion":
+                    panel_input = arg_value("--fusion-panel-input")
+                    sequence_input = arg_value("--fusion-sequence-input")
+                    lob_input = arg_value("--fusion-lob-input")
+                    expected_panel = str(ROOT / "models" / "registry" / "train_v5_panel_ensemble" / PANEL_RUN_ID / "expert_prediction_table.parquet")
+                    expected_sequence = str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "expert_prediction_table.parquet")
+                    expected_lob = str(ROOT / "models" / "registry" / "train_v5_lob" / LOB_RUN_ID / "expert_prediction_table.parquet")
+                    if panel_input != expected_panel or sequence_input != expected_sequence or lob_input != expected_lob:
+                        print("fusion input mismatch", file=sys.stderr)
+                        print(json.dumps({
+                            "panel_input": panel_input,
+                            "sequence_input": sequence_input,
+                            "lob_input": lob_input,
+                            "expected_panel": expected_panel,
+                            "expected_sequence": expected_sequence,
+                            "expected_lob": expected_lob,
+                        }), file=sys.stderr)
+                        sys.exit(2)
+                    run_dir = expert_run(family, trainer, FUSION_RUN_ID)
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": FUSION_RUN_ID}))
+                    sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
+                model_ref = arg_value("--model-ref")
+                runs_dir = ROOT / "data" / "backtest" / "runs"
+                run_dir = runs_dir / ("candidate" if model_ref == FUSION_RUN_ID else "champion")
+                run_dir.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "orders_filled": 64,
+                    "realized_pnl_quote": 250.0 if model_ref == FUSION_RUN_ID else 100.0,
+                    "fill_rate": 0.82,
+                    "max_drawdown_pct": 0.05 if model_ref == FUSION_RUN_ID else 0.08,
+                    "slippage_bps_mean": 1.0 if model_ref == FUSION_RUN_ID else 1.4,
+                }
+                write_json(run_dir / "summary.json", payload)
+                print(json.dumps({"run_dir": str(run_dir), "model_ref": model_ref}))
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.models.stat_validation"):
+                print(json.dumps({"comparable": True, "deflated_sharpe_ratio_est": 0.75, "probabilistic_sharpe_ratio": 0.90}))
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.common.operational_overlay_calibration"):
+                output_path = arg_value("--output-path")
+                if output_path:
+                    write_json(Path(output_path), {"report_count": 0, "sufficient_reports": False, "applied_fields": []})
+                print("{}")
+                sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "model", "promote"):
+                print("promote_ok")
+                sys.exit(0)
+
+            print("unexpected fake python invocation: " + " ".join(args), file=sys.stderr)
+            sys.exit(1)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        wrapper_path = tmp_path / "fake_python.cmd"
+        wrapper_path.write_text(
+            f'@echo off\r\n"{sys.executable}" "%~dp0fake_python_driver.py" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "fake_python"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$(dirname "$0")/fake_python_driver.py" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    python_exe = _make_fake_python_exe(tmp_path)
+    wrapper_script = tmp_path / "run_acceptance.ps1"
+    wrapper_script.write_text(
+        (
+            "& "
+            + json.dumps(str(ACCEPTANCE_SCRIPT))
+            + " -ProjectRoot "
+            + json.dumps(str(project_root))
+            + " -PythonExe "
+            + json.dumps(str(python_exe))
+            + " -OutDir "
+            + json.dumps("logs/test_acceptance_v5_dependency")
+            + " -BatchDate "
+            + json.dumps("2026-03-08")
+            + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
+            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\")\n"
+        ),
+        encoding="utf-8",
+    )
+    command = [
+        _powershell_exe(),
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(wrapper_script),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    train_calls = [row for row in invocations if row.get("command") == "model train"]
+    assert [row["trainer"] for row in train_calls] == [
+        "v5_panel_ensemble",
+        "v5_sequence",
+        "v5_lob",
+        "v5_fusion",
+    ]
+    fusion_call = train_calls[-1]
+    args = fusion_call["args"]
+    assert "--fusion-panel-input" in args
+    assert "--fusion-sequence-input" in args
+    assert "--fusion-lob-input" in args
+
+    report = json.loads(
+        (project_root / "logs" / "test_acceptance_v5_dependency" / "latest.json").read_text(encoding="utf-8-sig")
+    )
+    assert report["candidate"]["fusion_run_id"] == "fusion-run-001"
+    assert report["candidate"]["dependency_trainer_run_ids"] == [
+        "panel-run-001",
+        "sequence-run-001",
+        "lob-run-001",
+    ]
+    assert report["candidate"]["snapshot_chain_consistent"] is True
+    inputs = report["steps"]["train"]["fusion_dependency_inputs"]
+    assert inputs["fusion_panel_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/expert_prediction_table.parquet")
+    assert inputs["fusion_sequence_input"].replace("\\", "/").endswith("/train_v5_sequence/sequence-run-001/expert_prediction_table.parquet")
+    assert inputs["fusion_lob_input"].replace("\\", "/").endswith("/train_v5_lob/lob-run-001/expert_prediction_table.parquet")

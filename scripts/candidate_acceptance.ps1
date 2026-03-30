@@ -249,6 +249,42 @@ function Invoke-DependencyTrainerChain {
     return @($results)
 }
 
+function Resolve-DependencyFusionInputPaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$DependencyResults
+    )
+    $required = [ordered]@{
+        v5_panel_ensemble = "fusion_panel_input"
+        v5_sequence = "fusion_sequence_input"
+        v5_lob = "fusion_lob_input"
+    }
+    $resolved = [ordered]@{}
+    foreach ($trainerName in $required.Keys) {
+        $match = $null
+        foreach ($item in @($DependencyResults)) {
+            $candidateTrainer = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
+            if ($candidateTrainer -eq $trainerName) {
+                $match = $item
+                break
+            }
+        }
+        if ($null -eq $match) {
+            throw ("missing dependency trainer result: " + $trainerName)
+        }
+        $runDir = [string](Get-PropValue -ObjectValue $match -Name "run_dir" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($runDir)) {
+            throw ("dependency trainer run_dir missing: " + $trainerName)
+        }
+        $expertTablePath = Join-Path $runDir "expert_prediction_table.parquet"
+        if ((-not $DryRun) -and (-not (Test-Path $expertTablePath))) {
+            throw ("dependency expert_prediction_table missing: " + $expertTablePath)
+        }
+        $resolved[$required[$trainerName]] = $expertTablePath
+    }
+    return $resolved
+}
+
 function Get-MicroDateCoverageCounts {
     param(
         [string]$MicroRoot,
@@ -4236,12 +4272,32 @@ try {
             "--execution-eval-end", $effectiveBatchDate
         )
     }
+    $fusionDependencyInputs = @{}
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion" -and @($DependencyTrainers).Count -gt 0) {
+        $fusionDependencyInputs = Resolve-DependencyFusionInputPaths -DependencyResults @($dependencyTrainerResults)
+        $panelInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_panel_input" -DefaultValue "")
+        $sequenceInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_sequence_input" -DefaultValue "")
+        $lobInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_lob_input" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($panelInputPath)) {
+            $trainArgs += @("--fusion-panel-input", $panelInputPath)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($sequenceInputPath)) {
+            $trainArgs += @("--fusion-sequence-input", $sequenceInputPath)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($lobInputPath)) {
+            $trainArgs += @("--fusion-lob-input", $lobInputPath)
+        }
+    }
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
     $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
     $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
     if ([string]::IsNullOrWhiteSpace($candidateRunDir) -and (-not [string]::IsNullOrWhiteSpace($candidateRunId))) {
         $candidateRunDir = Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId
     }
+    $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
+    $resolvedChampionModelFamily = if ([string]::IsNullOrWhiteSpace($ChampionModelFamily)) { $ModelFamily } else { $ChampionModelFamily.Trim() }
+    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $resolvedChampionModelFamily) $championRunId }
+    $duplicateCandidateArtifacts = Resolve-DuplicateCandidateArtifacts -CandidateRunDir $candidateRunDir -ChampionRunDir $championModelRunDir
     $promotionDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "promotion_decision.json" }
     $promotionDecision = if ([string]::IsNullOrWhiteSpace($promotionDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $promotionDecisionPath }
     $researchEvidencePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "trainer_research_evidence.json" }
@@ -4365,6 +4421,7 @@ try {
         promotion_policy_cli_override_keys = @($promotionPolicyConfig.cli_override_keys)
         promotion_decision_path = $promotionDecisionPath
         data_platform_ready_snapshot_id = $candidateSnapshotId
+        fusion_dependency_inputs = $fusionDependencyInputs
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
         promotion_decision_status = [string](Get-PropValue -ObjectValue $promotionDecision -Name "status" -DefaultValue "")
@@ -4387,10 +4444,7 @@ try {
     }
     $candidateBacktestModelRef = if ([string]::IsNullOrWhiteSpace($candidateRunId)) { $CandidateModelRef } else { $candidateRunId }
     $candidatePaperModelRef = $candidateBacktestModelRef
-    $championRunId = [string](Get-PropValue -ObjectValue $championBefore -Name "run_id" -DefaultValue "")
     $championBacktestModelRef = if ([string]::IsNullOrWhiteSpace($championRunId)) { $ChampionModelRef } else { $championRunId }
-    $championModelRunDir = if ([string]::IsNullOrWhiteSpace($championRunId)) { "" } else { Join-Path (Join-Path $resolvedRegistryRoot $resolvedChampionModelFamily) $championRunId }
-    $duplicateCandidateArtifacts = Resolve-DuplicateCandidateArtifacts -CandidateRunDir $candidateRunDir -ChampionRunDir $championModelRunDir
     $report.split_policy.candidate_run_id = $candidateRunId
     $report.split_policy.candidate_run_dir = $candidateRunDir
     $script:splitPolicyArtifactPath = if ($DryRun) {
@@ -4439,10 +4493,12 @@ try {
         dependency_snapshot_id = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "")
         dependency_snapshot_id_consistent = [bool](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "snapshot_id_consistent" -DefaultValue $false)
         snapshot_chain_consistent = ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "")) -or ([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "") -eq $candidateSnapshotId))
+        fusion_dependency_inputs = $fusionDependencyInputs
     }
     Sync-SplitPolicyState
     $report.steps.train.fusion_run_id = $candidateRunId
     $report.steps.train.fusion_snapshot_id = $candidateSnapshotId
+    $report.steps.train.fusion_dependency_inputs = $fusionDependencyInputs
     $report.steps.train.dependency_trainer_run_ids = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_run_ids" -DefaultValue @()))
     $report.steps.train.dependency_trainer_model_families = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_model_families" -DefaultValue @()))
     $report.steps.train.dependency_snapshot_id = [string](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id" -DefaultValue "")
