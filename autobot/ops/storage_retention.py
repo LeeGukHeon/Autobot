@@ -27,6 +27,7 @@ class StorageRetentionPolicy:
     paper_runs_retention_days: int = 30
     backtest_runs_retention_days: int = 1
     execution_backtest_retention_days: int = 1
+    acceptance_backtest_cache_retention_days: int = 14
     registry_retention_days: int = 30
     registry_keep_recent_count: int = 6
 
@@ -36,6 +37,7 @@ class EmergencyRetentionPolicy:
     paper_runs_retention_days: int = 7
     backtest_runs_retention_days: int = 1
     execution_backtest_retention_days: int = 1
+    acceptance_backtest_cache_retention_days: int = 7
     registry_retention_days: int = 14
     registry_keep_recent_count: int = 3
 
@@ -649,6 +651,16 @@ def run_storage_retention(
     )
     sections.append(
         _section_payload(
+            "acceptance_backtest_cache",
+            prune_run_dirs(
+                root=resolved_root / "models" / "registry" / model_family / "_acceptance_backtest_cache",
+                retention_days=policy.acceptance_backtest_cache_retention_days,
+                dry_run=dry_run,
+            ),
+        )
+    )
+    sections.append(
+        _section_payload(
             "registry_family",
             prune_registry_family(
                 family_root=resolved_root / "models" / "registry" / model_family,
@@ -691,6 +703,16 @@ def run_storage_retention(
                 prune_run_dirs(
                     root=resolved_root / "logs" / "train_v4_execution_backtest" / "runs",
                     retention_days=emergency_policy.execution_backtest_retention_days,
+                    dry_run=dry_run,
+                ),
+            )
+        )
+        emergency_sections.append(
+            _section_payload(
+                "acceptance_backtest_cache_emergency",
+                prune_run_dirs(
+                    root=resolved_root / "models" / "registry" / model_family / "_acceptance_backtest_cache",
+                    retention_days=emergency_policy.acceptance_backtest_cache_retention_days,
                     dry_run=dry_run,
                 ),
             )
@@ -761,11 +783,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paper-runs-retention-days", type=int, default=30)
     parser.add_argument("--backtest-runs-retention-days", type=int, default=5)
     parser.add_argument("--execution-backtest-retention-days", type=int, default=2)
+    parser.add_argument("--acceptance-backtest-cache-retention-days", type=int, default=14)
     parser.add_argument("--registry-retention-days", type=int, default=30)
     parser.add_argument("--registry-keep-recent-count", type=int, default=6)
     parser.add_argument("--emergency-paper-runs-retention-days", type=int, default=7)
     parser.add_argument("--emergency-backtest-runs-retention-days", type=int, default=3)
     parser.add_argument("--emergency-execution-backtest-retention-days", type=int, default=1)
+    parser.add_argument("--emergency-acceptance-backtest-cache-retention-days", type=int, default=7)
     parser.add_argument("--emergency-registry-retention-days", type=int, default=14)
     parser.add_argument("--emergency-registry-keep-recent-count", type=int, default=3)
     parser.add_argument("--warning-threshold-gb", type=float, default=100.0)
@@ -797,6 +821,7 @@ def main(argv: list[str] | None = None) -> int:
             paper_runs_retention_days=max(int(args.paper_runs_retention_days), 1),
             backtest_runs_retention_days=max(int(args.backtest_runs_retention_days), 1),
             execution_backtest_retention_days=max(int(args.execution_backtest_retention_days), 1),
+            acceptance_backtest_cache_retention_days=max(int(args.acceptance_backtest_cache_retention_days), 1),
             registry_retention_days=max(int(args.registry_retention_days), 1),
             registry_keep_recent_count=max(int(args.registry_keep_recent_count), 0),
         ),
@@ -804,6 +829,7 @@ def main(argv: list[str] | None = None) -> int:
             paper_runs_retention_days=max(int(args.emergency_paper_runs_retention_days), 1),
             backtest_runs_retention_days=max(int(args.emergency_backtest_runs_retention_days), 1),
             execution_backtest_retention_days=max(int(args.emergency_execution_backtest_retention_days), 1),
+            acceptance_backtest_cache_retention_days=max(int(args.emergency_acceptance_backtest_cache_retention_days), 1),
             registry_retention_days=max(int(args.emergency_registry_retention_days), 1),
             registry_keep_recent_count=max(int(args.emergency_registry_keep_recent_count), 0),
         ),

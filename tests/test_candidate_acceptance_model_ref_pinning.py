@@ -16,6 +16,11 @@ ACCEPTANCE_SCRIPT = REPO_ROOT / "scripts" / "candidate_acceptance.ps1"
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+    normalized = str(path).replace("\\", "/")
+    if normalized.endswith("/models/registry/train_v4_crypto_cs/champion.json"):
+        mirror = path.parents[1] / "train_v5_fusion" / "champion.json"
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _make_fake_python_exe(tmp_path: Path) -> Path:

@@ -2703,6 +2703,391 @@ function Invoke-BacktestStatValidation {
     }
 }
 
+function Get-Sha256Hex {
+    param([string]$Text)
+    $value = [string]$Text
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($value)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha.ComputeHash($bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "").ToLowerInvariant()
+}
+
+function Resolve-ModelRunSnapshotId {
+    param(
+        [string]$ModelRunDir,
+        [string]$DefaultSnapshotId = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($ModelRunDir)) {
+        return [string]$DefaultSnapshotId
+    }
+    $trainConfigPath = Join-Path $ModelRunDir "train_config.yaml"
+    if (-not (Test-Path $trainConfigPath)) {
+        return [string]$DefaultSnapshotId
+    }
+    $trainConfig = Load-JsonOrEmpty -PathValue $trainConfigPath
+    $resolved = [string](Get-PropValue -ObjectValue $trainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($resolved)) {
+        return [string]$DefaultSnapshotId
+    }
+    return $resolved
+}
+
+function New-AcceptanceBacktestContract {
+    param(
+        [string]$StepName,
+        [string]$ModelRef,
+        [string]$ModelFamilyName,
+        [string]$ModelRunDir,
+        [string]$StartDate,
+        [string]$EndDate,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset
+    )
+    $resolvedSnapshotId = Resolve-ModelRunSnapshotId -ModelRunDir $ModelRunDir -DefaultSnapshotId $script:dataPlatformReadySnapshotId
+    $candidateOrChampion = if ([string]$StepName -match "champion") { "champion" } else { "candidate" }
+    return [ordered]@{
+        version = 1
+        policy = "candidate_acceptance_backtest_contract_v1"
+        step_name = [string]$StepName
+        candidate_or_champion = $candidateOrChampion
+        model_ref = [string]$ModelRef
+        model_family = [string]$ModelFamilyName
+        model_run_dir = [string]$ModelRunDir
+        preset = [string]$Preset
+        feature_set = [string]$FeatureSet
+        tf = [string]$Tf
+        quote = [string]$Quote
+        top_n = [int]$BacktestTopN
+        start = [string]$StartDate
+        end = [string]$EndDate
+        top_pct = [double]$BacktestTopPct
+        min_prob = [double]$BacktestMinProb
+        min_candidates_per_ts = [int]$BacktestMinCandidatesPerTs
+        hold_bars = [int]$HoldBars
+        backtest_runtime_parity_enabled = [bool]$BacktestRuntimeParityEnabled
+        compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
+        compare_mode = [string]$promotionPolicyConfig.name
+        feature_dataset_snapshot_id = [string]$resolvedSnapshotId
+    }
+}
+
+function Get-AcceptanceBacktestCacheRoot {
+    param(
+        [string]$RegistryRoot,
+        [string]$ModelFamilyName
+    )
+    return (Join-Path (Join-Path $RegistryRoot $ModelFamilyName) "_acceptance_backtest_cache")
+}
+
+function Get-AcceptanceBacktestCacheKey {
+    param($Contract)
+    $contractJson = $Contract | ConvertTo-Json -Depth 20 -Compress
+    return (Get-Sha256Hex -Text $contractJson)
+}
+
+function Get-AcceptanceBacktestCacheEntryPaths {
+    param(
+        [string]$RegistryRoot,
+        [string]$ModelFamilyName,
+        $Contract
+    )
+    $cacheRoot = Get-AcceptanceBacktestCacheRoot -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamilyName
+    $cacheKey = Get-AcceptanceBacktestCacheKey -Contract $Contract
+    $entryRoot = Join-Path $cacheRoot $cacheKey
+    return [ordered]@{
+        cache_root = $cacheRoot
+        cache_key = $cacheKey
+        entry_root = $entryRoot
+        contract_path = (Join-Path $entryRoot "contract.json")
+        summary_path = (Join-Path $entryRoot "summary.json")
+        stat_validation_path = (Join-Path $entryRoot "stat_validation.json")
+        metadata_path = (Join-Path $entryRoot "metadata.json")
+    }
+}
+
+function Resolve-AcceptanceBacktestCacheHit {
+    param(
+        [string]$RegistryRoot,
+        [string]$ModelFamilyName,
+        $Contract
+    )
+    $paths = Get-AcceptanceBacktestCacheEntryPaths -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamilyName -Contract $Contract
+    $contractPath = [string](Get-PropValue -ObjectValue $paths -Name "contract_path" -DefaultValue "")
+    $summaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+    $statValidationPath = [string](Get-PropValue -ObjectValue $paths -Name "stat_validation_path" -DefaultValue "")
+    $metadataPath = [string](Get-PropValue -ObjectValue $paths -Name "metadata_path" -DefaultValue "")
+    if ((-not (Test-Path $contractPath)) -or (-not (Test-Path $summaryPath)) -or (-not (Test-Path $statValidationPath)) -or (-not (Test-Path $metadataPath))) {
+        return [ordered]@{
+            hit = $false
+            reason = "CACHE_ENTRY_MISSING"
+            paths = $paths
+        }
+    }
+    $cachedContract = Load-JsonOrEmpty -PathValue $contractPath
+    $expectedJson = $Contract | ConvertTo-Json -Depth 20 -Compress
+    $cachedJson = $cachedContract | ConvertTo-Json -Depth 20 -Compress
+    if ($cachedJson -ne $expectedJson) {
+        return [ordered]@{
+            hit = $false
+            reason = "CACHE_CONTRACT_MISMATCH"
+            paths = $paths
+        }
+    }
+    return [ordered]@{
+        hit = $true
+        reason = "CACHE_HIT"
+        paths = $paths
+        contract = $cachedContract
+        summary = Load-JsonOrEmpty -PathValue $summaryPath
+        stat_validation = Load-JsonOrEmpty -PathValue $statValidationPath
+        metadata = Load-JsonOrEmpty -PathValue $metadataPath
+    }
+}
+
+function Write-AcceptanceBacktestCacheEntry {
+    param(
+        [string]$RegistryRoot,
+        [string]$ModelFamilyName,
+        $Contract,
+        $Summary,
+        $StatValidation,
+        [string]$SourceBacktestRunDir
+    )
+    if ($DryRun) {
+        return (Get-AcceptanceBacktestCacheEntryPaths -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamilyName -Contract $Contract)
+    }
+    $paths = Get-AcceptanceBacktestCacheEntryPaths -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamilyName -Contract $Contract
+    $entryRoot = [string](Get-PropValue -ObjectValue $paths -Name "entry_root" -DefaultValue "")
+    New-Item -ItemType Directory -Force -Path $entryRoot | Out-Null
+    Write-JsonFile -PathValue ([string](Get-PropValue -ObjectValue $paths -Name "contract_path" -DefaultValue "")) -Payload $Contract
+    Write-JsonFile -PathValue ([string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")) -Payload $Summary
+    Write-JsonFile -PathValue ([string](Get-PropValue -ObjectValue $paths -Name "stat_validation_path" -DefaultValue "")) -Payload $StatValidation
+    Write-JsonFile -PathValue ([string](Get-PropValue -ObjectValue $paths -Name "metadata_path" -DefaultValue "")) -Payload ([ordered]@{
+        version = 1
+        policy = "candidate_acceptance_backtest_cache_metadata_v1"
+        cache_key = [string](Get-PropValue -ObjectValue $paths -Name "cache_key" -DefaultValue "")
+        step_name = [string](Get-PropValue -ObjectValue $Contract -Name "step_name" -DefaultValue "")
+        candidate_or_champion = [string](Get-PropValue -ObjectValue $Contract -Name "candidate_or_champion" -DefaultValue "")
+        preset = [string](Get-PropValue -ObjectValue $Contract -Name "preset" -DefaultValue "")
+        model_ref = [string](Get-PropValue -ObjectValue $Contract -Name "model_ref" -DefaultValue "")
+        model_family = [string](Get-PropValue -ObjectValue $Contract -Name "model_family" -DefaultValue "")
+        source_backtest_run_dir = [string]$SourceBacktestRunDir
+        created_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    })
+    return $paths
+}
+
+function Invoke-OrReuse-AcceptanceBacktest {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$RegistryRoot,
+        [string]$StepName,
+        [string]$ModelRef,
+        [string]$ModelFamilyName,
+        [string]$ModelRunDir,
+        [string]$StartDate,
+        [string]$EndDate,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset
+    )
+    $contract = New-AcceptanceBacktestContract `
+        -StepName $StepName `
+        -ModelRef $ModelRef `
+        -ModelFamilyName $ModelFamilyName `
+        -ModelRunDir $ModelRunDir `
+        -StartDate $StartDate `
+        -EndDate $EndDate `
+        -Preset $Preset
+    $cacheHit = Resolve-AcceptanceBacktestCacheHit -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamilyName -Contract $contract
+    $paths = Get-PropValue -ObjectValue $cacheHit -Name "paths" -DefaultValue @{}
+    if ([bool](Get-PropValue -ObjectValue $cacheHit -Name "hit" -DefaultValue $false)) {
+        $metadata = Get-PropValue -ObjectValue $cacheHit -Name "metadata" -DefaultValue @{}
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = "[cache-hit]"
+                Command = ""
+                DryRun = $false
+            }
+            RunDir = [string](Get-PropValue -ObjectValue $metadata -Name "source_backtest_run_dir" -DefaultValue "")
+            SummaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+            Summary = (Get-PropValue -ObjectValue $cacheHit -Name "summary" -DefaultValue @{})
+            Preset = $Preset
+            Reused = $true
+            SourceMode = "cached_result"
+            SourceBacktestRunDir = [string](Get-PropValue -ObjectValue $metadata -Name "source_backtest_run_dir" -DefaultValue "")
+            CacheKey = [string](Get-PropValue -ObjectValue $paths -Name "cache_key" -DefaultValue "")
+            CacheContractPath = [string](Get-PropValue -ObjectValue $paths -Name "contract_path" -DefaultValue "")
+            CacheSummaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+            CacheStatValidationPath = [string](Get-PropValue -ObjectValue $paths -Name "stat_validation_path" -DefaultValue "")
+            CacheMetadataPath = [string](Get-PropValue -ObjectValue $paths -Name "metadata_path" -DefaultValue "")
+            Contract = $contract
+        }
+    }
+    $backtest = Invoke-BacktestAndLoadSummary `
+        -PythonPath $PythonPath `
+        -Root $Root `
+        -ModelRef $ModelRef `
+        -ModelFamilyName $ModelFamilyName `
+        -StartDate $StartDate `
+        -EndDate $EndDate `
+        -Preset $Preset
+    return [PSCustomObject]@{
+        Exec = $backtest.Exec
+        RunDir = $backtest.RunDir
+        SummaryPath = $backtest.SummaryPath
+        Summary = $backtest.Summary
+        Preset = $Preset
+        Reused = $false
+        SourceMode = "fresh_run"
+        SourceBacktestRunDir = $backtest.RunDir
+        CacheKey = [string](Get-PropValue -ObjectValue $paths -Name "cache_key" -DefaultValue "")
+        CacheContractPath = [string](Get-PropValue -ObjectValue $paths -Name "contract_path" -DefaultValue "")
+        CacheSummaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+        CacheStatValidationPath = [string](Get-PropValue -ObjectValue $paths -Name "stat_validation_path" -DefaultValue "")
+        CacheMetadataPath = [string](Get-PropValue -ObjectValue $paths -Name "metadata_path" -DefaultValue "")
+        Contract = $contract
+    }
+}
+
+function Invoke-OrReuse-AcceptanceStatValidation {
+    param(
+        $BacktestValue,
+        [string]$PythonPath,
+        [string]$Root,
+        [int]$TrialCount,
+        [string]$ModelRunDir = ""
+    )
+    if ([bool](Get-PropValue -ObjectValue $BacktestValue -Name "Reused" -DefaultValue $false)) {
+        $cachedStatValidation = Load-JsonOrEmpty -PathValue ([string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheStatValidationPath" -DefaultValue ""))
+        if (-not (Test-IsEffectivelyEmptyObject -ObjectValue $cachedStatValidation)) {
+            return $cachedStatValidation
+        }
+    }
+    $runDir = [string](Get-PropValue -ObjectValue $BacktestValue -Name "RunDir" -DefaultValue "")
+    $validation = Invoke-BacktestStatValidation `
+        -PythonPath $PythonPath `
+        -Root $Root `
+        -RunDir $runDir `
+        -TrialCount $TrialCount `
+        -ModelRunDir $ModelRunDir
+    $summary = Get-PropValue -ObjectValue $BacktestValue -Name "Summary" -DefaultValue @{}
+    $contract = Get-PropValue -ObjectValue $BacktestValue -Name "Contract" -DefaultValue @{}
+    $modelFamilyName = [string](Get-PropValue -ObjectValue $contract -Name "model_family" -DefaultValue "")
+    if (-not [string]::IsNullOrWhiteSpace($modelFamilyName)) {
+        (
+            Write-AcceptanceBacktestCacheEntry `
+                -RegistryRoot $resolvedRegistryRoot `
+                -ModelFamilyName $modelFamilyName `
+                -Contract $contract `
+                -Summary $summary `
+                -StatValidation $validation `
+                -SourceBacktestRunDir ([string](Get-PropValue -ObjectValue $BacktestValue -Name "SourceBacktestRunDir" -DefaultValue ""))
+        ) | Out-Null
+    }
+    return $validation
+}
+
+function Build-BacktestEvidenceFromSummary {
+    param(
+        [Parameter(Mandatory = $false)]$Summary,
+        [Parameter(Mandatory = $false)]$StatValidation
+    )
+    $ordersSubmitted = [int64](To-Int64 (Get-PropValue -ObjectValue $Summary -Name "orders_submitted" -DefaultValue 0) 0)
+    $ordersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $Summary -Name "orders_filled" -DefaultValue 0) 0)
+    $realizedPnl = To-Double (Get-PropValue -ObjectValue $Summary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
+    $fillRate = To-Double (Get-PropValue -ObjectValue $Summary -Name "fill_rate" -DefaultValue -1.0) -1.0
+    $maxDrawdownPct = To-Double (Get-PropValue -ObjectValue $Summary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
+    $slippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $Summary -Name "slippage_bps_mean" -DefaultValue $null)
+    $candidatesAbortedByPolicy = [int64](To-Int64 (Get-PropValue -ObjectValue $Summary -Name "candidates_aborted_by_policy" -DefaultValue 0) 0)
+    $executionPolicyVetoFailure = ($ordersSubmitted -le 0) -and ($candidatesAbortedByPolicy -gt 0)
+    $calmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $realizedPnl -MaxDrawdownPct $maxDrawdownPct
+    $deflatedSharpeRatio = To-Double (Get-PropValue -ObjectValue $StatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0) 0.0
+    $probabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $StatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
+    $statComparable = To-Bool (Get-PropValue -ObjectValue $StatValidation -Name "comparable" -DefaultValue $false) $false
+    return [ordered]@{
+        orders_submitted = [int64]$ordersSubmitted
+        orders_filled = [int64]$ordersFilled
+        realized_pnl_quote = [double]$realizedPnl
+        fill_rate = [double]$fillRate
+        max_drawdown_pct = [double]$maxDrawdownPct
+        slippage_bps_mean = $slippageBpsMean
+        candidates_aborted_by_policy = [int64]$candidatesAbortedByPolicy
+        execution_policy_veto_failure = $executionPolicyVetoFailure
+        calmar_like_score = $calmarLikeScore
+        stat_validation = $StatValidation
+        deflated_sharpe_ratio_est = [double]$deflatedSharpeRatio
+        probabilistic_sharpe_ratio = [double]$probabilisticSharpeRatio
+        stat_comparable = $statComparable
+    }
+}
+
+function Build-BacktestStepReport {
+    param(
+        [string]$StepName,
+        $BacktestValue,
+        [string]$StartDate,
+        [string]$EndDate,
+        [string]$ModelRefRequested,
+        [string]$ModelRefUsed,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset,
+        $Evidence,
+        [hashtable]$ExtraFields = @{}
+    )
+    $doc = [ordered]@{
+        exit_code = [int](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $BacktestValue -Name "Exec" -DefaultValue @{}) -Name "ExitCode" -DefaultValue 0)
+        command = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $BacktestValue -Name "Exec" -DefaultValue @{}) -Name "Command" -DefaultValue "")
+        output_preview = (Get-OutputPreview -Text ([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $BacktestValue -Name "Exec" -DefaultValue @{}) -Name "Output" -DefaultValue "")))
+        start = $StartDate
+        end = $EndDate
+        model_ref_requested = $ModelRefRequested
+        model_ref_used = $ModelRefUsed
+        run_dir = [string](Get-PropValue -ObjectValue $BacktestValue -Name "RunDir" -DefaultValue "")
+        summary_path = [string](Get-PropValue -ObjectValue $BacktestValue -Name "SummaryPath" -DefaultValue "")
+        preset = [string]$Preset
+        reused = [bool](Get-PropValue -ObjectValue $BacktestValue -Name "Reused" -DefaultValue $false)
+        source_mode = [string](Get-PropValue -ObjectValue $BacktestValue -Name "SourceMode" -DefaultValue "")
+        cache_key = [string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheKey" -DefaultValue "")
+        cache_contract_path = [string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheContractPath" -DefaultValue "")
+        cache_summary_path = [string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheSummaryPath" -DefaultValue "")
+        cache_stat_validation_path = [string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheStatValidationPath" -DefaultValue "")
+        source_backtest_run_dir = [string](Get-PropValue -ObjectValue $BacktestValue -Name "SourceBacktestRunDir" -DefaultValue "")
+        orders_submitted = [int64](Get-PropValue -ObjectValue $Evidence -Name "orders_submitted" -DefaultValue 0)
+        orders_filled = [int64](Get-PropValue -ObjectValue $Evidence -Name "orders_filled" -DefaultValue 0)
+        realized_pnl_quote = [double](Get-PropValue -ObjectValue $Evidence -Name "realized_pnl_quote" -DefaultValue 0.0)
+        fill_rate = [double](Get-PropValue -ObjectValue $Evidence -Name "fill_rate" -DefaultValue -1.0)
+        max_drawdown_pct = [double](Get-PropValue -ObjectValue $Evidence -Name "max_drawdown_pct" -DefaultValue -1.0)
+        slippage_bps_mean = (Get-PropValue -ObjectValue $Evidence -Name "slippage_bps_mean" -DefaultValue $null)
+        calmar_like_score = (Get-PropValue -ObjectValue $Evidence -Name "calmar_like_score" -DefaultValue $null)
+        deflated_sharpe_ratio_est = [double](Get-PropValue -ObjectValue $Evidence -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0)
+        probabilistic_sharpe_ratio = [double](Get-PropValue -ObjectValue $Evidence -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0)
+        stat_validation = (Get-PropValue -ObjectValue $Evidence -Name "stat_validation" -DefaultValue @{})
+        candidates_aborted_by_policy = [int64](Get-PropValue -ObjectValue $Evidence -Name "candidates_aborted_by_policy" -DefaultValue 0)
+        execution_policy_veto_failure = [bool](Get-PropValue -ObjectValue $Evidence -Name "execution_policy_veto_failure" -DefaultValue $false)
+    }
+    foreach ($entry in $ExtraFields.GetEnumerator()) {
+        $doc[[string]$entry.Key] = $entry.Value
+    }
+    return $doc
+}
+
+function Build-BacktestCompareMetrics {
+    param($Evidence)
+    return @{
+        realized_pnl_quote = [double](Get-PropValue -ObjectValue $Evidence -Name "realized_pnl_quote" -DefaultValue 0.0)
+        fill_rate = if ([double](Get-PropValue -ObjectValue $Evidence -Name "fill_rate" -DefaultValue -1.0) -ge 0.0) { [double](Get-PropValue -ObjectValue $Evidence -Name "fill_rate" -DefaultValue -1.0) } else { $null }
+        max_drawdown_pct = if ([double](Get-PropValue -ObjectValue $Evidence -Name "max_drawdown_pct" -DefaultValue -1.0) -ge 0.0) { [double](Get-PropValue -ObjectValue $Evidence -Name "max_drawdown_pct" -DefaultValue -1.0) } else { $null }
+        slippage_bps_mean = Get-PropValue -ObjectValue $Evidence -Name "slippage_bps_mean" -DefaultValue $null
+        calmar_like = Get-PropValue -ObjectValue $Evidence -Name "calmar_like_score" -DefaultValue $null
+    }
+}
+
 function Get-PaperHistoryEvidence {
     param(
         [string]$DirectoryPath,
@@ -4949,32 +5334,43 @@ try {
         exit 2
     }
 
-    $candidateBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $candidateBacktestModelRef -ModelFamilyName $ModelFamily -StartDate $certificationStartDate -EndDate $effectiveBatchDate
-    $candidateSummary = $candidateBacktest.Summary
-    $candidateOrdersSubmitted = [int64](To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_submitted" -DefaultValue 0) 0)
-    $candidateOrdersFilled = To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "orders_filled" -DefaultValue 0) 0
-    $candidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
-    $candidateFillRate = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
-    $candidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
-    $candidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $candidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
-    $candidateAbortedByPolicy = [int64](To-Int64 (Get-PropValue -ObjectValue $candidateSummary -Name "candidates_aborted_by_policy" -DefaultValue 0) 0)
-    $candidateExecutionPolicyVetoFailure = ($candidateOrdersSubmitted -le 0) -and ($candidateAbortedByPolicy -gt 0)
-    $candidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $candidateRealizedPnl -MaxDrawdownPct $candidateMaxDrawdownPct
+    $candidateBacktest = Invoke-OrReuse-AcceptanceBacktest `
+        -PythonPath $resolvedPythonExe `
+        -Root $resolvedProjectRoot `
+        -RegistryRoot $resolvedRegistryRoot `
+        -StepName "backtest_candidate" `
+        -ModelRef $candidateBacktestModelRef `
+        -ModelFamilyName $ModelFamily `
+        -ModelRunDir $candidateRunDir `
+        -StartDate $certificationStartDate `
+        -EndDate $effectiveBatchDate `
+        -Preset "acceptance"
+    $candidateSummary = Get-PropValue -ObjectValue $candidateBacktest -Name "Summary" -DefaultValue @{}
+    $candidateStatValidation = Invoke-OrReuse-AcceptanceStatValidation `
+        -BacktestValue $candidateBacktest `
+        -PythonPath $resolvedPythonExe `
+        -Root $resolvedProjectRoot `
+        -TrialCount $BoosterSweepTrials `
+        -ModelRunDir $candidateRunDir
+    $candidateEvidence = Build-BacktestEvidenceFromSummary -Summary $candidateSummary -StatValidation $candidateStatValidation
+    $candidateOrdersSubmitted = [int64](Get-PropValue -ObjectValue $candidateEvidence -Name "orders_submitted" -DefaultValue 0)
+    $candidateOrdersFilled = [int64](Get-PropValue -ObjectValue $candidateEvidence -Name "orders_filled" -DefaultValue 0)
+    $candidateRealizedPnl = [double](Get-PropValue -ObjectValue $candidateEvidence -Name "realized_pnl_quote" -DefaultValue 0.0)
+    $candidateFillRate = [double](Get-PropValue -ObjectValue $candidateEvidence -Name "fill_rate" -DefaultValue -1.0)
+    $candidateMaxDrawdownPct = [double](Get-PropValue -ObjectValue $candidateEvidence -Name "max_drawdown_pct" -DefaultValue -1.0)
+    $candidateSlippageBpsMean = Get-PropValue -ObjectValue $candidateEvidence -Name "slippage_bps_mean" -DefaultValue $null
+    $candidateAbortedByPolicy = [int64](Get-PropValue -ObjectValue $candidateEvidence -Name "candidates_aborted_by_policy" -DefaultValue 0)
+    $candidateExecutionPolicyVetoFailure = [bool](Get-PropValue -ObjectValue $candidateEvidence -Name "execution_policy_veto_failure" -DefaultValue $false)
+    $candidateCalmarLikeScore = Get-PropValue -ObjectValue $candidateEvidence -Name "calmar_like_score" -DefaultValue $null
     $candidateExecutionStructure = Get-ExecutionStructureMetrics -Summary $candidateSummary
     $candidateExecutionStructureGate = Test-ExecutionStructureGate `
         -Metrics $candidateExecutionStructure `
         -MinPayoffRatio $BacktestMinPayoffRatio `
         -MaxLossConcentration $BacktestMaxLossConcentration `
         -MinClosedTrades $ExecutionStructureMinClosedTrades
-    $candidateStatValidation = Invoke-BacktestStatValidation `
-        -PythonPath $resolvedPythonExe `
-        -Root $resolvedProjectRoot `
-        -RunDir $candidateBacktest.RunDir `
-        -TrialCount $BoosterSweepTrials `
-        -ModelRunDir $candidateRunDir
-    $candidateDeflatedSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0) 0.0
-    $candidateProbabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $candidateStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
-    $candidateStatComparable = To-Bool (Get-PropValue -ObjectValue $candidateStatValidation -Name "comparable" -DefaultValue $false) $false
+    $candidateDeflatedSharpeRatio = [double](Get-PropValue -ObjectValue $candidateEvidence -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0)
+    $candidateProbabilisticSharpeRatio = [double](Get-PropValue -ObjectValue $candidateEvidence -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0)
+    $candidateStatComparable = [bool](Get-PropValue -ObjectValue $candidateEvidence -Name "stat_comparable" -DefaultValue $false)
 
     $championBacktest = $null
     $championSummary = @{}
@@ -4989,22 +5385,33 @@ try {
     $championProbabilisticSharpeRatio = $null
     $compareRequired = [bool]$promotionPolicyConfig.backtest_compare_required -and (-not $SkipChampionCompare)
     if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
-        $championBacktest = Invoke-BacktestAndLoadSummary -PythonPath $resolvedPythonExe -Root $resolvedProjectRoot -ModelRef $championBacktestModelRef -ModelFamilyName $resolvedChampionModelFamily -StartDate $certificationStartDate -EndDate $effectiveBatchDate
-        $championSummary = $championBacktest.Summary
-        $championRealizedPnl = To-Double (Get-PropValue -ObjectValue $championSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
-        $championFillRate = To-Double (Get-PropValue -ObjectValue $championSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
-        $championMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $championSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
-        $championSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $championSummary -Name "slippage_bps_mean" -DefaultValue $null)
-        $championCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $championRealizedPnl -MaxDrawdownPct $championMaxDrawdownPct
-        $championExecutionStructure = Get-ExecutionStructureMetrics -Summary $championSummary
-        $championStatValidation = Invoke-BacktestStatValidation `
+        $championBacktest = Invoke-OrReuse-AcceptanceBacktest `
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
-            -RunDir $championBacktest.RunDir `
+            -RegistryRoot $resolvedRegistryRoot `
+            -StepName "backtest_champion" `
+            -ModelRef $championBacktestModelRef `
+            -ModelFamilyName $resolvedChampionModelFamily `
+            -ModelRunDir $championModelRunDir `
+            -StartDate $certificationStartDate `
+            -EndDate $effectiveBatchDate `
+            -Preset "acceptance"
+        $championSummary = Get-PropValue -ObjectValue $championBacktest -Name "Summary" -DefaultValue @{}
+        $championStatValidation = Invoke-OrReuse-AcceptanceStatValidation `
+            -BacktestValue $championBacktest `
+            -PythonPath $resolvedPythonExe `
+            -Root $resolvedProjectRoot `
             -TrialCount $BoosterSweepTrials `
             -ModelRunDir $championModelRunDir
-        $championDeflatedSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $championStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue $null)
-        $championProbabilisticSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $championStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue $null)
+        $championEvidence = Build-BacktestEvidenceFromSummary -Summary $championSummary -StatValidation $championStatValidation
+        $championRealizedPnl = [double](Get-PropValue -ObjectValue $championEvidence -Name "realized_pnl_quote" -DefaultValue 0.0)
+        $championFillRate = [double](Get-PropValue -ObjectValue $championEvidence -Name "fill_rate" -DefaultValue -1.0)
+        $championMaxDrawdownPct = [double](Get-PropValue -ObjectValue $championEvidence -Name "max_drawdown_pct" -DefaultValue -1.0)
+        $championSlippageBpsMean = Get-PropValue -ObjectValue $championEvidence -Name "slippage_bps_mean" -DefaultValue $null
+        $championCalmarLikeScore = Get-PropValue -ObjectValue $championEvidence -Name "calmar_like_score" -DefaultValue $null
+        $championExecutionStructure = Get-ExecutionStructureMetrics -Summary $championSummary
+        $championDeflatedSharpeRatio = Get-PropValue -ObjectValue $championEvidence -Name "deflated_sharpe_ratio_est" -DefaultValue $null
+        $championProbabilisticSharpeRatio = Get-PropValue -ObjectValue $championEvidence -Name "probabilistic_sharpe_ratio" -DefaultValue $null
         $championCompareEvaluated = $true
     }
 
@@ -5116,20 +5523,8 @@ try {
             $slippageDeteriorationBps = $candidateSlippageBpsMean - $championSlippageBpsMean
             $slippageGuardPass = $slippageDeteriorationBps -le [double]$promotionPolicyConfig.backtest_champion_max_slippage_deterioration_bps
         }
-        $candidateCompareMetrics = @{
-            realized_pnl_quote = [double]$candidateRealizedPnl
-            fill_rate = if ($candidateFillRate -ge 0.0) { [double]$candidateFillRate } else { $null }
-            max_drawdown_pct = if ($candidateMaxDrawdownPct -ge 0.0) { [double]$candidateMaxDrawdownPct } else { $null }
-            slippage_bps_mean = $candidateSlippageBpsMean
-            calmar_like = $candidateCalmarLikeScore
-        }
-        $championCompareMetrics = @{
-            realized_pnl_quote = [double]$championRealizedPnl
-            fill_rate = if ($championFillRate -ge 0.0) { [double]$championFillRate } else { $null }
-            max_drawdown_pct = if ($championMaxDrawdownPct -ge 0.0) { [double]$championMaxDrawdownPct } else { $null }
-            slippage_bps_mean = $championSlippageBpsMean
-            calmar_like = $championCalmarLikeScore
-        }
+        $candidateCompareMetrics = Build-BacktestCompareMetrics -Evidence $candidateEvidence
+        $championCompareMetrics = Build-BacktestCompareMetrics -Evidence $championEvidence
         if ($promotionPolicyConfig.use_pareto) {
             $paretoComparableMetricCount = 0
             $candidateWorseOnAny = $false
@@ -5278,59 +5673,37 @@ try {
     } elseif (-not $budgetContractGatePass) {
         $decisionBasis = "SCOUT_ONLY_BUDGET_EVIDENCE"
     }
-    $report.steps.backtest_candidate = [ordered]@{
-        exit_code = [int]$candidateBacktest.Exec.ExitCode
-        command = $candidateBacktest.Exec.Command
-        output_preview = (Get-OutputPreview -Text ([string]$candidateBacktest.Exec.Output))
-        preset = [string](Get-PropValue -ObjectValue $candidateBacktest -Name "Preset" -DefaultValue "runtime_parity")
-        start = $certificationStartDate
-        end = $effectiveBatchDate
-        model_ref_requested = $CandidateModelRef
-        model_ref_used = $candidateBacktestModelRef
-        run_dir = $candidateBacktest.RunDir
-        summary_path = $candidateBacktest.SummaryPath
-        orders_submitted = [int64]$candidateOrdersSubmitted
-        orders_filled = [int64]$candidateOrdersFilled
-        realized_pnl_quote = [double]$candidateRealizedPnl
-        fill_rate = [double]$candidateFillRate
-        avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
-        p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
-        p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
-        max_drawdown_pct = [double]$candidateMaxDrawdownPct
-        slippage_bps_mean = $candidateSlippageBpsMean
-        calmar_like_score = $candidateCalmarLikeScore
-        deflated_sharpe_ratio_est = [double]$candidateDeflatedSharpeRatio
-        probabilistic_sharpe_ratio = [double]$candidateProbabilisticSharpeRatio
-        stat_validation = $candidateStatValidation
-        candidates_aborted_by_policy = [int64]$candidateAbortedByPolicy
-        execution_policy_veto_failure = $candidateExecutionPolicyVetoFailure
-        execution_structure = (Get-PropValue -ObjectValue $candidateExecutionStructure -Name "payload" -DefaultValue @{})
-    }
+    $report.steps.backtest_candidate = Build-BacktestStepReport `
+        -StepName "backtest_candidate" `
+        -BacktestValue $candidateBacktest `
+        -StartDate $certificationStartDate `
+        -EndDate $effectiveBatchDate `
+        -ModelRefRequested $CandidateModelRef `
+        -ModelRefUsed $candidateBacktestModelRef `
+        -Preset "acceptance" `
+        -Evidence $candidateEvidence `
+        -ExtraFields ([ordered]@{
+            avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $candidateSummary -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+            execution_structure = (Get-PropValue -ObjectValue $candidateExecutionStructure -Name "payload" -DefaultValue @{})
+        })
     $report.steps.backtest_champion = if ($championCompareEvaluated) {
-        [ordered]@{
-            exit_code = [int]$championBacktest.Exec.ExitCode
-            command = $championBacktest.Exec.Command
-            output_preview = (Get-OutputPreview -Text ([string]$championBacktest.Exec.Output))
-            preset = [string](Get-PropValue -ObjectValue $championBacktest -Name "Preset" -DefaultValue "runtime_parity")
-            start = $certificationStartDate
-            end = $effectiveBatchDate
-            model_ref_requested = $ChampionModelRef
-            model_ref_used = $championBacktestModelRef
-            run_dir = $championBacktest.RunDir
-            summary_path = $championBacktest.SummaryPath
-            realized_pnl_quote = [double]$championRealizedPnl
-            fill_rate = [double]$championFillRate
-            avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
-            p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
-            p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
-            max_drawdown_pct = [double]$championMaxDrawdownPct
-            slippage_bps_mean = $championSlippageBpsMean
-            calmar_like_score = $championCalmarLikeScore
-            deflated_sharpe_ratio_est = $championDeflatedSharpeRatio
-            probabilistic_sharpe_ratio = $championProbabilisticSharpeRatio
-            stat_validation = $championStatValidation
-            execution_structure = (Get-PropValue -ObjectValue $championExecutionStructure -Name "payload" -DefaultValue @{})
-        }
+        Build-BacktestStepReport `
+            -StepName "backtest_champion" `
+            -BacktestValue $championBacktest `
+            -StartDate $certificationStartDate `
+            -EndDate $effectiveBatchDate `
+            -ModelRefRequested $ChampionModelRef `
+            -ModelRefUsed $championBacktestModelRef `
+            -Preset "acceptance" `
+            -Evidence $championEvidence `
+            -ExtraFields ([ordered]@{
+                avg_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "avg_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+                p50_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "p50_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+                p90_time_to_fill_ms = [double](To-Double (Get-PropValue -ObjectValue $championSummary -Name "p90_time_to_fill_ms" -DefaultValue 0.0) 0.0)
+                execution_structure = (Get-PropValue -ObjectValue $championExecutionStructure -Name "payload" -DefaultValue @{})
+            })
     } elseif ($SkipChampionCompare) {
         [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     } else {
@@ -5445,57 +5818,46 @@ try {
             pass = $null
         }
     } else {
-        $runtimeParityCandidateBacktest = Invoke-BacktestAndLoadSummary `
+        $runtimeParityCandidateBacktest = Invoke-OrReuse-AcceptanceBacktest `
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
+            -RegistryRoot $resolvedRegistryRoot `
+            -StepName "backtest_runtime_parity_candidate" `
             -ModelRef $candidateBacktestModelRef `
             -ModelFamilyName $ModelFamily `
+            -ModelRunDir $candidateRunDir `
             -StartDate $certificationStartDate `
             -EndDate $effectiveBatchDate `
             -Preset "runtime_parity"
-        $runtimeParityCandidateSummary = $runtimeParityCandidateBacktest.Summary
-        $runtimeParityCandidateOrdersSubmitted = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "orders_submitted" -DefaultValue 0) 0)
-        $runtimeParityCandidateOrdersFilled = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "orders_filled" -DefaultValue 0) 0)
-        $runtimeParityCandidateRealizedPnl = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
-        $runtimeParityCandidateFillRate = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
-        $runtimeParityCandidateMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
-        $runtimeParityCandidateSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "slippage_bps_mean" -DefaultValue $null)
-        $runtimeParityCandidateAbortedByPolicy = [int64](To-Int64 (Get-PropValue -ObjectValue $runtimeParityCandidateSummary -Name "candidates_aborted_by_policy" -DefaultValue 0) 0)
-        $runtimeParityCandidateExecutionPolicyVetoFailure = ($runtimeParityCandidateOrdersSubmitted -le 0) -and ($runtimeParityCandidateAbortedByPolicy -gt 0)
-        $runtimeParityCandidateCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $runtimeParityCandidateRealizedPnl -MaxDrawdownPct $runtimeParityCandidateMaxDrawdownPct
-        $runtimeParityCandidateStatValidation = Invoke-BacktestStatValidation `
+        $runtimeParityCandidateSummary = Get-PropValue -ObjectValue $runtimeParityCandidateBacktest -Name "Summary" -DefaultValue @{}
+        $runtimeParityCandidateStatValidation = Invoke-OrReuse-AcceptanceStatValidation `
+            -BacktestValue $runtimeParityCandidateBacktest `
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
-            -RunDir $runtimeParityCandidateBacktest.RunDir `
             -TrialCount $BoosterSweepTrials `
             -ModelRunDir $candidateRunDir
-        $runtimeParityCandidateDeflatedSharpeRatio = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0) 0.0
-        $runtimeParityCandidateProbabilisticSharpeRatio = To-Double (Get-PropValue -ObjectValue $runtimeParityCandidateStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0) 0.0
-        $runtimeParityCandidateStatComparable = To-Bool (Get-PropValue -ObjectValue $runtimeParityCandidateStatValidation -Name "comparable" -DefaultValue $false) $false
-        $report.steps.backtest_runtime_parity_candidate = [ordered]@{
-            exit_code = [int]$runtimeParityCandidateBacktest.Exec.ExitCode
-            command = $runtimeParityCandidateBacktest.Exec.Command
-            output_preview = (Get-OutputPreview -Text ([string]$runtimeParityCandidateBacktest.Exec.Output))
-            start = $certificationStartDate
-            end = $effectiveBatchDate
-            model_ref_requested = $CandidateModelRef
-            model_ref_used = $candidateBacktestModelRef
-            run_dir = $runtimeParityCandidateBacktest.RunDir
-            summary_path = $runtimeParityCandidateBacktest.SummaryPath
-            preset = "runtime_parity"
-            orders_submitted = [int64]$runtimeParityCandidateOrdersSubmitted
-            orders_filled = [int64]$runtimeParityCandidateOrdersFilled
-            realized_pnl_quote = [double]$runtimeParityCandidateRealizedPnl
-            fill_rate = [double]$runtimeParityCandidateFillRate
-            max_drawdown_pct = [double]$runtimeParityCandidateMaxDrawdownPct
-            slippage_bps_mean = $runtimeParityCandidateSlippageBpsMean
-            calmar_like_score = $runtimeParityCandidateCalmarLikeScore
-            deflated_sharpe_ratio_est = [double]$runtimeParityCandidateDeflatedSharpeRatio
-            probabilistic_sharpe_ratio = [double]$runtimeParityCandidateProbabilisticSharpeRatio
-            stat_validation = $runtimeParityCandidateStatValidation
-            candidates_aborted_by_policy = [int64]$runtimeParityCandidateAbortedByPolicy
-            execution_policy_veto_failure = $runtimeParityCandidateExecutionPolicyVetoFailure
-        }
+        $runtimeParityCandidateEvidence = Build-BacktestEvidenceFromSummary -Summary $runtimeParityCandidateSummary -StatValidation $runtimeParityCandidateStatValidation
+        $runtimeParityCandidateOrdersSubmitted = [int64](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "orders_submitted" -DefaultValue 0)
+        $runtimeParityCandidateOrdersFilled = [int64](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "orders_filled" -DefaultValue 0)
+        $runtimeParityCandidateRealizedPnl = [double](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "realized_pnl_quote" -DefaultValue 0.0)
+        $runtimeParityCandidateFillRate = [double](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "fill_rate" -DefaultValue -1.0)
+        $runtimeParityCandidateMaxDrawdownPct = [double](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "max_drawdown_pct" -DefaultValue -1.0)
+        $runtimeParityCandidateSlippageBpsMean = Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "slippage_bps_mean" -DefaultValue $null
+        $runtimeParityCandidateAbortedByPolicy = [int64](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "candidates_aborted_by_policy" -DefaultValue 0)
+        $runtimeParityCandidateExecutionPolicyVetoFailure = [bool](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "execution_policy_veto_failure" -DefaultValue $false)
+        $runtimeParityCandidateCalmarLikeScore = Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "calmar_like_score" -DefaultValue $null
+        $runtimeParityCandidateDeflatedSharpeRatio = [double](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "deflated_sharpe_ratio_est" -DefaultValue 0.0)
+        $runtimeParityCandidateProbabilisticSharpeRatio = [double](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "probabilistic_sharpe_ratio" -DefaultValue 0.0)
+        $runtimeParityCandidateStatComparable = [bool](Get-PropValue -ObjectValue $runtimeParityCandidateEvidence -Name "stat_comparable" -DefaultValue $false)
+        $report.steps.backtest_runtime_parity_candidate = Build-BacktestStepReport `
+            -StepName "backtest_runtime_parity_candidate" `
+            -BacktestValue $runtimeParityCandidateBacktest `
+            -StartDate $certificationStartDate `
+            -EndDate $effectiveBatchDate `
+            -ModelRefRequested $CandidateModelRef `
+            -ModelRefUsed $candidateBacktestModelRef `
+            -Preset "runtime_parity" `
+            -Evidence $runtimeParityCandidateEvidence
 
         $runtimeParityCompareRequired = [bool]$promotionPolicyConfig.backtest_compare_required -and (-not $SkipChampionCompare)
         $runtimeParityChampionCompareEvaluated = $false
@@ -5508,49 +5870,42 @@ try {
         $runtimeParityChampionProbabilisticSharpeRatio = $null
         $runtimeParityChampionStatValidation = @{}
         if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
-            $runtimeParityChampionBacktest = Invoke-BacktestAndLoadSummary `
+            $runtimeParityChampionBacktest = Invoke-OrReuse-AcceptanceBacktest `
                 -PythonPath $resolvedPythonExe `
                 -Root $resolvedProjectRoot `
+                -RegistryRoot $resolvedRegistryRoot `
+                -StepName "backtest_runtime_parity_champion" `
                 -ModelRef $championBacktestModelRef `
                 -ModelFamilyName $resolvedChampionModelFamily `
+                -ModelRunDir $championModelRunDir `
                 -StartDate $certificationStartDate `
                 -EndDate $effectiveBatchDate `
                 -Preset "runtime_parity"
-            $runtimeParityChampionSummary = $runtimeParityChampionBacktest.Summary
-            $runtimeParityChampionRealizedPnl = To-Double (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "realized_pnl_quote" -DefaultValue 0.0) 0.0
-            $runtimeParityChampionFillRate = To-Double (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "fill_rate" -DefaultValue -1.0) -1.0
-            $runtimeParityChampionMaxDrawdownPct = To-Double (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "max_drawdown_pct" -DefaultValue -1.0) -1.0
-            $runtimeParityChampionSlippageBpsMean = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityChampionSummary -Name "slippage_bps_mean" -DefaultValue $null)
-            $runtimeParityChampionCalmarLikeScore = Get-CalmarLikeScore -RealizedPnlQuote $runtimeParityChampionRealizedPnl -MaxDrawdownPct $runtimeParityChampionMaxDrawdownPct
-            $runtimeParityChampionStatValidation = Invoke-BacktestStatValidation `
+            $runtimeParityChampionSummary = Get-PropValue -ObjectValue $runtimeParityChampionBacktest -Name "Summary" -DefaultValue @{}
+            $runtimeParityChampionStatValidation = Invoke-OrReuse-AcceptanceStatValidation `
+                -BacktestValue $runtimeParityChampionBacktest `
                 -PythonPath $resolvedPythonExe `
                 -Root $resolvedProjectRoot `
-                -RunDir $runtimeParityChampionBacktest.RunDir `
                 -TrialCount $BoosterSweepTrials `
                 -ModelRunDir $championModelRunDir
-            $runtimeParityChampionDeflatedSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityChampionStatValidation -Name "deflated_sharpe_ratio_est" -DefaultValue $null)
-            $runtimeParityChampionProbabilisticSharpeRatio = Get-NullableDouble (Get-PropValue -ObjectValue $runtimeParityChampionStatValidation -Name "probabilistic_sharpe_ratio" -DefaultValue $null)
+            $runtimeParityChampionEvidence = Build-BacktestEvidenceFromSummary -Summary $runtimeParityChampionSummary -StatValidation $runtimeParityChampionStatValidation
+            $runtimeParityChampionRealizedPnl = [double](Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "realized_pnl_quote" -DefaultValue 0.0)
+            $runtimeParityChampionFillRate = [double](Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "fill_rate" -DefaultValue -1.0)
+            $runtimeParityChampionMaxDrawdownPct = [double](Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "max_drawdown_pct" -DefaultValue -1.0)
+            $runtimeParityChampionSlippageBpsMean = Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "slippage_bps_mean" -DefaultValue $null
+            $runtimeParityChampionCalmarLikeScore = Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "calmar_like_score" -DefaultValue $null
+            $runtimeParityChampionDeflatedSharpeRatio = Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "deflated_sharpe_ratio_est" -DefaultValue $null
+            $runtimeParityChampionProbabilisticSharpeRatio = Get-PropValue -ObjectValue $runtimeParityChampionEvidence -Name "probabilistic_sharpe_ratio" -DefaultValue $null
             $runtimeParityChampionCompareEvaluated = $true
-            $report.steps.backtest_runtime_parity_champion = [ordered]@{
-                exit_code = [int]$runtimeParityChampionBacktest.Exec.ExitCode
-                command = $runtimeParityChampionBacktest.Exec.Command
-                output_preview = (Get-OutputPreview -Text ([string]$runtimeParityChampionBacktest.Exec.Output))
-                start = $certificationStartDate
-                end = $effectiveBatchDate
-                model_ref_requested = $ChampionModelRef
-                model_ref_used = $championBacktestModelRef
-                run_dir = $runtimeParityChampionBacktest.RunDir
-                summary_path = $runtimeParityChampionBacktest.SummaryPath
-                preset = "runtime_parity"
-                realized_pnl_quote = [double]$runtimeParityChampionRealizedPnl
-                fill_rate = [double]$runtimeParityChampionFillRate
-                max_drawdown_pct = [double]$runtimeParityChampionMaxDrawdownPct
-                slippage_bps_mean = $runtimeParityChampionSlippageBpsMean
-                calmar_like_score = $runtimeParityChampionCalmarLikeScore
-                deflated_sharpe_ratio_est = $runtimeParityChampionDeflatedSharpeRatio
-                probabilistic_sharpe_ratio = $runtimeParityChampionProbabilisticSharpeRatio
-                stat_validation = $runtimeParityChampionStatValidation
-            }
+            $report.steps.backtest_runtime_parity_champion = Build-BacktestStepReport `
+                -StepName "backtest_runtime_parity_champion" `
+                -BacktestValue $runtimeParityChampionBacktest `
+                -StartDate $certificationStartDate `
+                -EndDate $effectiveBatchDate `
+                -ModelRefRequested $ChampionModelRef `
+                -ModelRefUsed $championBacktestModelRef `
+                -Preset "runtime_parity" `
+                -Evidence $runtimeParityChampionEvidence
         } elseif ($SkipChampionCompare) {
             $report.steps.backtest_runtime_parity_champion = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
         } else {
@@ -5661,6 +6016,29 @@ try {
             Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
         }
     }
+
+    $report.backtest_cache_hits = @(
+        @($report.steps.backtest_candidate, $report.steps.backtest_champion) |
+            Where-Object { To-Bool (Get-PropValue -ObjectValue $_ -Name "reused" -DefaultValue $false) $false }
+    ).Count
+    $report.backtest_cache_misses = @(
+        @($report.steps.backtest_candidate, $report.steps.backtest_champion) |
+            Where-Object {
+                (-not (To-Bool (Get-PropValue -ObjectValue $_ -Name "reused" -DefaultValue $false) $false)) `
+                    -and (-not [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $_ -Name "run_dir" -DefaultValue "")))
+            }
+    ).Count
+    $report.runtime_parity_cache_hits = @(
+        @($report.steps.backtest_runtime_parity_candidate, $report.steps.backtest_runtime_parity_champion) |
+            Where-Object { To-Bool (Get-PropValue -ObjectValue $_ -Name "reused" -DefaultValue $false) $false }
+    ).Count
+    $report.runtime_parity_cache_misses = @(
+        @($report.steps.backtest_runtime_parity_candidate, $report.steps.backtest_runtime_parity_champion) |
+            Where-Object {
+                (-not (To-Bool (Get-PropValue -ObjectValue $_ -Name "reused" -DefaultValue $false) $false)) `
+                    -and (-not [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $_ -Name "run_dir" -DefaultValue "")))
+            }
+    ).Count
 
     $paperPass = $null
     $paperSmokeLatestPath = Join-Path $resolvedPaperSmokeOutDir "latest.json"

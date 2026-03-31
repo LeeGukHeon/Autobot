@@ -44,4 +44,5 @@ def test_storage_retention_installer_generates_units() -> None:
     assert "OnCalendar=*-*-* 06:30:00" in stdout
     assert "autobot.ops.storage_retention" in stdout
     assert "--execution-backtest-retention-days" in stdout
+    assert "--acceptance-backtest-cache-retention-days" in stdout
     assert "ExecStart=/bin/bash -lc " in stdout

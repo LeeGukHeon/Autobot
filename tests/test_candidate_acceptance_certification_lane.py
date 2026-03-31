@@ -16,6 +16,11 @@ ACCEPTANCE_SCRIPT = REPO_ROOT / "scripts" / "candidate_acceptance.ps1"
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+    normalized = str(path).replace("\\", "/")
+    if normalized.endswith("/models/registry/train_v4_crypto_cs/champion.json"):
+        mirror = path.parents[1] / "train_v5_fusion" / "champion.json"
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _powershell_exe() -> str:
@@ -762,6 +767,9 @@ def _write_split_policy_selector_history(
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = "\n".join(json.dumps(record) for record in records)
     path.write_text((payload + "\n") if payload else "", encoding="utf-8")
+    mirror = project_root / "models" / "registry" / "train_v5_fusion" / f"split_policy_selector_history.{task}.jsonl"
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    mirror.write_text((payload + "\n") if payload else "", encoding="utf-8")
     return path
 
 
@@ -812,7 +820,7 @@ def test_candidate_acceptance_ramps_train_window_from_available_micro_history(tm
     project_root = tmp_path / "project"
     project_root.mkdir()
     _write_json(
-        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
         {"run_id": "champion-run-000"},
     )
     _write_micro_dates(
@@ -1482,7 +1490,7 @@ def test_candidate_acceptance_backfills_selector_history_and_selects_holdout_whe
         if line.strip()
     ]
     report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
-    history_path = project_root / "models" / "registry" / "train_v4_crypto_cs" / "split_policy_selector_history.cls.jsonl"
+    history_path = project_root / "models" / "registry" / "train_v5_fusion" / "split_policy_selector_history.cls.jsonl"
     history_records = [
         json.loads(line)
         for line in history_path.read_text(encoding="utf-8-sig").splitlines()
@@ -2095,8 +2103,10 @@ def test_candidate_acceptance_runs_runtime_parity_backtests_and_reports_gate(tmp
     report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
 
     assert len(backtests) == 4
-    assert [item["preset"] for item in backtests].count("runtime_parity") == 4
-    assert report["steps"]["backtest_candidate"]["preset"] == "runtime_parity"
+    assert [item["preset"] for item in backtests].count("acceptance") == 2
+    assert [item["preset"] for item in backtests].count("runtime_parity") == 2
+    assert report["steps"]["backtest_candidate"]["preset"] == "acceptance"
+    assert report["steps"]["backtest_champion"]["preset"] == "acceptance"
     assert report["gates"]["runtime_parity"]["evaluated"] is True
     assert report["gates"]["runtime_parity"]["pass"] is True
     assert report["steps"]["backtest_runtime_parity_candidate"]["preset"] == "runtime_parity"

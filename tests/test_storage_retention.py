@@ -55,6 +55,8 @@ def test_run_storage_retention_prunes_old_operational_artifacts(tmp_path: Path) 
     keep_backtest = _make_run_dir(project_root / "data" / "backtest" / "runs", "backtest-keep", age_days=2)
     _make_run_dir(project_root / "logs" / "train_v4_execution_backtest" / "runs", "backtest-old", age_days=4)
     keep_exec = _make_run_dir(project_root / "logs" / "train_v4_execution_backtest" / "runs", "backtest-keep", age_days=1)
+    old_cache = _make_run_dir(project_root / "models" / "registry" / "train_v4_crypto_cs" / "_acceptance_backtest_cache", "cache-old", age_days=20)
+    keep_cache = _make_run_dir(project_root / "models" / "registry" / "train_v4_crypto_cs" / "_acceptance_backtest_cache", "cache-keep", age_days=1)
 
     family_root = project_root / "models" / "registry" / "train_v4_crypto_cs"
     protected_run = _make_run_dir(family_root, "20260201T000000Z-s42-protected", age_days=120)
@@ -77,6 +79,7 @@ def test_run_storage_retention_prunes_old_operational_artifacts(tmp_path: Path) 
             paper_runs_retention_days=30,
             backtest_runs_retention_days=5,
             execution_backtest_retention_days=2,
+            acceptance_backtest_cache_retention_days=14,
             registry_retention_days=30,
             registry_keep_recent_count=1,
         ),
@@ -101,6 +104,8 @@ def test_run_storage_retention_prunes_old_operational_artifacts(tmp_path: Path) 
     assert keep_backtest.exists()
     assert not (project_root / "logs" / "train_v4_execution_backtest" / "runs" / "backtest-old").exists()
     assert keep_exec.exists()
+    assert not old_cache.exists()
+    assert keep_cache.exists()
     assert protected_run.exists()
     assert keep_recent_run.exists()
     assert not removable_run.exists()
