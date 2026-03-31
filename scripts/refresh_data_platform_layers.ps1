@@ -33,6 +33,7 @@ param(
     [int]$TensorMinuteLookbackSteps = 30,
     [int]$TensorMicroLookbackSteps = 30,
     [int]$TensorLobLookbackSteps = 32,
+    [string]$PublishLockFile = "/tmp/autobot-train-acceptance.lock",
     [switch]$DryRun
 )
 
@@ -67,11 +68,16 @@ function Invoke-ProjectPythonStep {
     param(
         [string]$PythonPath,
         [string]$StepName,
-        [string[]]$ArgList
+        [string[]]$ArgList,
+        [string]$LockFile = "",
+        [switch]$BlockingLock
     )
     $commandText = Format-CommandLine -Exe $PythonPath -ArgList $ArgList
     Write-Host ("[data-platform-refresh] step={0}" -f $StepName)
     Write-Host ("[data-platform-refresh] command={0}" -f $commandText)
+    if (-not [string]::IsNullOrWhiteSpace($LockFile)) {
+        Write-Host ("[data-platform-refresh] lock_file={0}" -f $LockFile)
+    }
     if ($DryRun) {
         return [ordered]@{
             step = $StepName
@@ -81,8 +87,21 @@ function Invoke-ProjectPythonStep {
             output_preview = ""
         }
     }
-    $output = & $PythonPath @ArgList 2>&1
-    $exitCode = [int]$LASTEXITCODE
+    if ([string]::IsNullOrWhiteSpace($LockFile)) {
+        $output = & $PythonPath @ArgList 2>&1
+        $exitCode = [int]$LASTEXITCODE
+    } else {
+        $bashExe = "/bin/bash"
+        $quotedCommand = Quote-ShellArg $commandText
+        $quotedLockFile = Quote-ShellArg $LockFile
+        if ($BlockingLock) {
+            $lockCommand = "if command -v flock >/dev/null 2>&1; then flock " + $quotedLockFile + " bash -lc " + $quotedCommand + "; else bash -lc " + $quotedCommand + "; fi"
+        } else {
+            $lockCommand = "if command -v flock >/dev/null 2>&1; then flock -n " + $quotedLockFile + " bash -lc " + $quotedCommand + "; status=$?; if [ $status -eq 1 ]; then echo lock busy, skipping; exit 0; else exit $status; fi; else bash -lc " + $quotedCommand + "; fi"
+        }
+        $output = & $bashExe -lc $lockCommand 2>&1
+        $exitCode = [int]$LASTEXITCODE
+    }
     $outputText = [string]($output -join [Environment]::NewLine)
     if (-not [string]::IsNullOrWhiteSpace($outputText)) {
         Write-Host $outputText
@@ -227,6 +246,8 @@ $steps = @(
             "-m", "autobot.ops.data_contract_registry",
             "--project-root", $resolvedProjectRoot
         )
+        lock_file = $PublishLockFile
+        blocking_lock = $true
     }
     [ordered]@{
         name = "publish_data_platform_snapshot"
@@ -235,6 +256,8 @@ $steps = @(
             "publish",
             "--project-root", $resolvedProjectRoot
         )
+        lock_file = $PublishLockFile
+        blocking_lock = $true
     }
 )
 
@@ -311,13 +334,27 @@ if ($DryRun) {
     Write-Host ("[data-platform-refresh][dry-run] project_root={0}" -f $resolvedProjectRoot)
     Write-Host ("[data-platform-refresh][dry-run] meta_dir={0}" -f $resolvedMetaDir)
     Write-Host ("[data-platform-refresh][dry-run] summary_path={0}" -f $resolvedSummaryPath)
+    Write-Host ("[data-platform-refresh][dry-run] publish_lock_file={0}" -f $PublishLockFile)
 }
 
 $stepResults = @()
 Push-Location $resolvedProjectRoot
 try {
     foreach ($step in @($steps)) {
-        $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName ([string]$step.name) -ArgList @($step.args))
+        $stepLockFile = ""
+        if ($step.Contains('lock_file')) {
+            $stepLockFile = [string]$step.lock_file
+        }
+        $stepBlockingLock = $false
+        if ($step.Contains('blocking_lock')) {
+            $stepBlockingLock = [bool]$step.blocking_lock
+        }
+        $stepResults += ,(Invoke-ProjectPythonStep `
+            -PythonPath $resolvedPythonExe `
+            -StepName ([string]$step.name) `
+            -ArgList @($step.args) `
+            -LockFile $stepLockFile `
+            -BlockingLock:$stepBlockingLock)
     }
 } finally {
     Pop-Location

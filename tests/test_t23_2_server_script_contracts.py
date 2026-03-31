@@ -60,7 +60,7 @@ def test_t23_2_daily_acceptance_installer_dry_run_keeps_wrapper_and_runtime_unit
     assert "[daily-accept-install][dry-run] service=autobot-daily-v4-accept.service" in stdout
     assert "[daily-accept-install][dry-run] timer=autobot-daily-v4-accept.timer" in stdout
     assert "daily_champion_challenger_v4_for_server.ps1" in stdout
-    assert "v4_governed_candidate_acceptance.ps1" in stdout
+    assert "v5_governed_candidate_acceptance.ps1" in stdout
     assert "autobot-paper-v4.service" in stdout
     assert "autobot-paper-v4-challenger.service" in stdout
 

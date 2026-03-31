@@ -68,6 +68,27 @@ function Quote-ShellArg {
     return "'" + $Value.Replace("'", "'""'""'") + "'"
 }
 
+function Build-FlockWrappedExecStart {
+    param(
+        [string]$Command,
+        [string]$LockFile,
+        [switch]$Blocking,
+        [string]$BusyMessage = "lock busy, skipping"
+    )
+    $quotedCommand = Quote-ShellArg $Command
+    if ([string]::IsNullOrWhiteSpace($LockFile)) {
+        return ("/bin/bash -lc " + $quotedCommand)
+    }
+    $quotedLockFile = Quote-ShellArg $LockFile
+    $quotedBusyMessage = Quote-ShellArg $BusyMessage
+    if ($Blocking) {
+        $lockCommand = 'if command -v flock >/dev/null 2>&1; then exec flock ' + $quotedLockFile + ' bash -lc ' + $quotedCommand + '; else exec bash -lc ' + $quotedCommand + '; fi'
+    } else {
+        $lockCommand = 'if command -v flock >/dev/null 2>&1; then flock -n ' + $quotedLockFile + ' bash -lc ' + $quotedCommand + '; status=$?; if [ $status -eq 1 ]; then echo ' + $quotedBusyMessage + '; exit 0; else exit $status; fi; else exec bash -lc ' + $quotedCommand + '; fi'
+    }
+    return ("/bin/bash -lc " + (Quote-ShellArg $lockCommand))
+}
+
 function Expand-DelimitedStringArray {
     param([Parameter(Mandatory = $false)]$Value)
     if ($null -eq $Value) {

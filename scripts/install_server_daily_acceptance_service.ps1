@@ -17,7 +17,7 @@ param(
     [string[]]$AcceptanceArgs = @(),
     [bool]$SkipDailyPipeline = $true,
     [bool]$SkipReportRefresh = $true,
-    [string]$LockFile = "/tmp/autobot-data-orchestration.lock",
+    [string]$LockFile = "/tmp/autobot-train-acceptance.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
@@ -82,8 +82,10 @@ if (@($AcceptanceArgs).Count -gt 0) {
 }
 
 $execStartCommand = $resolvedPwshExe + " " + (($wrapperArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-$lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $LockFile) + " bash -lc " + (Quote-ShellArg $execStartCommand) + "; else exec bash -lc " + (Quote-ShellArg $execStartCommand) + "; fi"
-$execStart = "/bin/bash -lc " + (Quote-ShellArg $lockCommand)
+$execStart = Build-FlockWrappedExecStart `
+    -Command $execStartCommand `
+    -LockFile $LockFile `
+    -BusyMessage "[daily-accept] lock busy, skipping"
 
 $serviceContent = @"
 [Unit]
@@ -122,6 +124,7 @@ if ($DryRun) {
     Write-Host ("[daily-accept-install][dry-run] service={0}" -f $ServiceUnitName)
     Write-Host ("[daily-accept-install][dry-run] service_user={0}" -f $ServiceUser)
     Write-Host ("[daily-accept-install][dry-run] pwsh={0}" -f $resolvedPwshExe)
+    Write-Host ("[daily-accept-install][dry-run] lock_file={0}" -f $LockFile)
     Write-Host $serviceContent
     Write-Host ("[daily-accept-install][dry-run] timer={0}" -f $TimerUnitName)
     Write-Host $timerContent

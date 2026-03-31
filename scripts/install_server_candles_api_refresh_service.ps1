@@ -15,7 +15,7 @@ param(
     [int]$MaxRequests = 120,
     [string]$OnBootSec = "4min",
     [string]$OnUnitActiveSec = "20min",
-    [string]$LockFile = "/tmp/autobot-data-orchestration.lock",
+    [string]$LockFile = "/tmp/autobot-candles-api-refresh.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
@@ -53,8 +53,10 @@ $refreshArgs = @(
     "-MaxRequests", ([string]([Math]::Max([int]$MaxRequests, 1)))
 )
 $refreshCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-$lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $LockFile) + " bash -lc " + (Quote-ShellArg $refreshCommand) + "; else exec bash -lc " + (Quote-ShellArg $refreshCommand) + "; fi"
-$execStart = "/bin/bash -lc " + (Quote-ShellArg $lockCommand)
+$execStart = Build-FlockWrappedExecStart `
+    -Command $refreshCommand `
+    -LockFile $LockFile `
+    -BusyMessage "[candles-api-refresh] lock busy, skipping"
 
 $serviceContent = @"
 [Unit]
@@ -91,6 +93,7 @@ WantedBy=timers.target
 if ($DryRun) {
     Write-Host ("[candles-api-install][dry-run] service={0}" -f $ServiceUnitName)
     Write-Host ("[candles-api-install][dry-run] refresh_script={0}" -f $resolvedRefreshScript)
+    Write-Host ("[candles-api-install][dry-run] lock_file={0}" -f $LockFile)
     Write-Host $serviceContent
     Write-Host $timerContent
     exit 0

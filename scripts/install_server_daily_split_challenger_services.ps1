@@ -19,7 +19,7 @@ param(
     [string]$SpawnServiceUnitName = "autobot-v4-challenger-spawn.service",
     [string]$SpawnTimerUnitName = "autobot-v4-challenger-spawn.timer",
     [string]$SpawnOnCalendar = "*-*-* 00:20:00",
-    [string]$LockFile = "/tmp/autobot-data-orchestration.lock",
+    [string]$LockFile = "/tmp/autobot-train-acceptance.lock",
     [string[]]$DisableLegacyTimerNames = @("autobot-daily-micro.timer", "autobot-daily-v4-accept.timer"),
     [string[]]$DisableLegacyServiceNames = @("autobot-daily-micro.service", "autobot-daily-v4-accept.service", "autobot-paper-v4-replay.service", "autobot-live-alpha-replay-shadow.service"),
     [switch]$NoStart,
@@ -139,8 +139,10 @@ function Build-ExecStart {
         $argList += @($ExtraCandidateUnits)
     }
     $command = $PwshExe + " " + (($argList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-    $lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $SharedLockFile) + " bash -lc " + (Quote-ShellArg $command) + "; else exec bash -lc " + (Quote-ShellArg $command) + "; fi"
-    return ("/bin/bash -lc " + (Quote-ShellArg $lockCommand))
+    return (Build-FlockWrappedExecStart `
+        -Command $command `
+        -LockFile $SharedLockFile `
+        -BusyMessage ("[daily-split] lock busy for mode=" + $ModeName + ", skipping"))
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -224,6 +226,7 @@ $spawnTimerContent = New-TimerContent `
 if ($DryRun) {
     Write-Host ("[daily-split-install][dry-run] service_user={0}" -f $ServiceUser)
     Write-Host ("[daily-split-install][dry-run] pwsh={0}" -f $resolvedPwshExe)
+    Write-Host ("[daily-split-install][dry-run] lock_file={0}" -f $LockFile)
     Write-Host ("[daily-split-install][dry-run] model_family={0}" -f $resolvedModelFamily)
     Write-Host ("[daily-split-install][dry-run] champion_compare_model_family={0}" -f $resolvedChampionCompareModelFamily)
     Write-Host ("[daily-split-install][dry-run] paired_paper_model_family={0}" -f $resolvedPairedPaperModelFamily)
