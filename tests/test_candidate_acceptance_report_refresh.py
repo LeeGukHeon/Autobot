@@ -330,6 +330,35 @@ def _make_fake_daily_pipeline_script(tmp_path: Path) -> Path:
     return script_path
 
 
+def _seed_train_snapshot_close_contract(
+    project_root: Path,
+    *,
+    batch_date: str = "2026-03-07",
+    snapshot_id: str = "snapshot-refresh-001",
+) -> None:
+    _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": snapshot_id})
+    _write_json(
+        project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
+        {
+            "policy": "v5_train_snapshot_close_v1",
+            "batch_date": batch_date,
+            "snapshot_id": snapshot_id,
+            "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / snapshot_id),
+            "published_at_utc": "2026-03-07T00:05:00Z",
+            "generated_at_utc": "2026-03-07T00:05:00Z",
+            "deadline_met": True,
+            "overall_pass": True,
+            "failure_reasons": [],
+            "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+            "micro_date_coverage_counts": {},
+            "source_freshness": {
+                "candles_api_refresh": {"pass": True},
+                "raw_ticks_daily": {"pass": True, "batch_date": batch_date, "batch_covered": True},
+            },
+        },
+    )
+
+
 def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_paper_is_skipped(
     tmp_path: Path,
 ) -> None:
@@ -340,6 +369,7 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
         project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
         {"run_id": "champion-run-000"},
     )
+    _seed_train_snapshot_close_contract(project_root)
 
     python_exe = _make_fake_python_exe(tmp_path)
     daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
@@ -353,13 +383,15 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
             "-File",
             str(ACCEPTANCE_SCRIPT),
             "-ProjectRoot",
-            str(project_root),
-            "-PythonExe",
-            str(python_exe),
-            "-DailyPipelineScript",
-            str(daily_pipeline_script),
-            "-OutDir",
-            "logs/model_acceptance_test",
+                str(project_root),
+                "-PythonExe",
+                str(python_exe),
+                "-DailyPipelineScript",
+                str(daily_pipeline_script),
+                "-BatchDate",
+                "2026-03-07",
+                "-OutDir",
+                "logs/model_acceptance_test",
             "-SkipPaperSoak",
             "-SkipPromote",
             "-TrainerEvidenceMode",
@@ -379,17 +411,14 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
         for line in invocations_path.read_text(encoding="utf-8-sig").splitlines()
         if line.strip()
     ]
-    assert len(entries) == 2
-    assert entries[0]["smoke_report_json"] == "logs/paper_micro_smoke/latest.json"
-    assert entries[0]["skip_ticks"] is True
-    assert entries[0]["skip_candles"] is False
-
     expected_refresh_path = (
         project_root / "logs" / "model_acceptance_test" / "paper_smoke" / "latest.json"
     )
-    assert entries[1]["smoke_report_json"] == str(expected_refresh_path)
-    assert entries[1]["smoke_report_json"] != str(project_root)
-    assert entries[1]["skip_ticks"] is True
+    assert len(entries) == 1
+    assert entries[0]["smoke_report_json"] == str(expected_refresh_path)
+    assert entries[0]["smoke_report_json"] != str(project_root)
+    assert entries[0]["skip_ticks"] is True
+    assert entries[0]["skip_candles"] is True
 
     python_invocations_path = project_root / "logs" / "fake_python_invocations.jsonl"
     python_invocations = [

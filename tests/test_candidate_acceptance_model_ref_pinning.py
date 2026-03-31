@@ -339,6 +339,30 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
+def _seed_train_snapshot_close_contract(project_root: Path, *, batch_date: str = "2026-03-07") -> None:
+    _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": "snapshot-test-001"})
+    _write_json(
+        project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
+        {
+            "policy": "v5_train_snapshot_close_v1",
+            "batch_date": batch_date,
+            "snapshot_id": "snapshot-test-001",
+            "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / "snapshot-test-001"),
+            "published_at_utc": "2026-03-07T00:05:00Z",
+            "generated_at_utc": "2026-03-07T00:05:00Z",
+            "deadline_met": True,
+            "overall_pass": True,
+            "failure_reasons": [],
+            "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+            "micro_date_coverage_counts": {},
+            "source_freshness": {
+                "candles_api_refresh": {"pass": True},
+                "raw_ticks_daily": {"pass": True, "batch_date": batch_date, "batch_covered": True},
+            },
+        },
+    )
+
+
 def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -347,6 +371,7 @@ def test_candidate_acceptance_pins_concrete_model_refs_for_backtest_and_paper(tm
         project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
         {"run_id": "champion-run-000"},
     )
+    _seed_train_snapshot_close_contract(project_root)
 
     python_exe = _make_fake_python_exe(tmp_path)
     paper_smoke_script = _make_fake_paper_smoke_script(tmp_path)
@@ -434,6 +459,7 @@ def test_candidate_acceptance_can_skip_champion_compare_for_new_baseline(tmp_pat
         project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
         {"run_id": "champion-run-000"},
     )
+    _seed_train_snapshot_close_contract(project_root)
 
     python_exe = _make_fake_python_exe(tmp_path)
     paper_smoke_script = _make_fake_paper_smoke_script(tmp_path)
@@ -486,6 +512,7 @@ def test_candidate_acceptance_can_compare_v5_candidate_against_v4_champion_famil
         project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
         {"run_id": "champion-run-000"},
     )
+    _seed_train_snapshot_close_contract(project_root)
 
     python_exe = _make_fake_python_exe(tmp_path)
     paper_smoke_script = _make_fake_paper_smoke_script(tmp_path)

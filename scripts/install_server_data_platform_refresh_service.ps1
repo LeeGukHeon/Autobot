@@ -16,10 +16,13 @@ param(
     [int]$TensorMaxAnchorsPerMarket = 64,
     [int]$TensorRecentDates = 2,
     [string[]]$TensorMarkets = @(),
+    [ValidateSet("runtime_rich", "training_critical", "full")]
+    [string]$Mode = "runtime_rich",
     [string]$OnBootSec = "12min",
     [string]$OnUnitActiveSec = "45min",
     [string]$LockFile = "/tmp/autobot-data-platform-refresh.lock",
     [string]$PublishLockFile = "/tmp/autobot-train-acceptance.lock",
+    [switch]$SkipPublishReadySnapshot = $true,
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
@@ -58,10 +61,14 @@ $refreshArgs = @(
     "-TensorMaxMarkets", ([string]([Math]::Max([int]$TensorMaxMarkets, 1))),
     "-TensorMaxAnchorsPerMarket", ([string]([Math]::Max([int]$TensorMaxAnchorsPerMarket, 1))),
     "-TensorRecentDates", ([string]([Math]::Max([int]$TensorRecentDates, 1))),
+    "-Mode", $Mode,
     "-PublishLockFile", $PublishLockFile
 )
 if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     $refreshArgs += @("-TensorMarkets", $serializedTensorMarkets)
+}
+if ($SkipPublishReadySnapshot) {
+    $refreshArgs += "-SkipPublishReadySnapshot"
 }
 $execStartCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 $execStart = Build-FlockWrappedExecStart `
@@ -106,6 +113,8 @@ if ($DryRun) {
     Write-Host ("[data-platform-install][dry-run] refresh_script={0}" -f $resolvedRefreshScript)
     Write-Host ("[data-platform-install][dry-run] lock_file={0}" -f $LockFile)
     Write-Host ("[data-platform-install][dry-run] publish_lock_file={0}" -f $PublishLockFile)
+    Write-Host ("[data-platform-install][dry-run] mode={0}" -f $Mode)
+    Write-Host ("[data-platform-install][dry-run] skip_publish_ready_snapshot={0}" -f [bool]$SkipPublishReadySnapshot)
     Write-Host "[data-platform-install][dry-run] datasets=candles_second_v1,ws_candle_v1,lob30_v1,sequence_v1"
     Write-Host ("[data-platform-install][dry-run] tensor_recent_dates={0}" -f ([Math]::Max([int]$TensorRecentDates, 1)))
     Write-Host $serviceContent

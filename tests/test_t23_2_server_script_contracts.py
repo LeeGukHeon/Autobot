@@ -93,6 +93,8 @@ def test_t23_2_data_platform_refresh_installer_dry_run_keeps_new_dataset_contrac
     assert "[data-platform-install][dry-run] service=autobot-data-platform-refresh.service" in stdout
     assert "[data-platform-install][dry-run] timer=autobot-data-platform-refresh.timer" in stdout
     assert "refresh_data_platform_layers.ps1" in stdout
+    assert "mode=runtime_rich" in stdout
+    assert "skip_publish_ready_snapshot=True" in stdout
     assert "candles_second_v1" in stdout
     assert "ws_candle_v1" in stdout
     assert "lob30_v1" in stdout
@@ -118,9 +120,59 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "ws_candle_v1" in stdout
     assert "lob30_v1" in stdout
     assert "sequence_v1" in stdout
-    assert "--market-source-dataset' 'candles_api_v1" in stdout or '--market-source-dataset" "candles_api_v1' in stdout or "--market-source-dataset candles_api_v1" in stdout
-    assert "--max-requests' '120" in stdout or '--max-requests" "120' in stdout or "--max-requests 120" in stdout
-    assert "--date" in stdout
+
+
+def test_t23_2_data_platform_refresh_wrapper_runtime_rich_dry_run_excludes_training_steps() -> None:
+    stdout = _run_script_dry_run(
+        "refresh_data_platform_layers.ps1",
+        "-Mode",
+        "runtime_rich",
+        "-SkipPublishReadySnapshot",
+    )
+
+    assert "mode=runtime_rich" in stdout
+    assert "[data-platform-refresh] step=plan_ws_candles" in stdout
+    assert "[data-platform-refresh] step=collect_ws_candles" in stdout
+    assert "[data-platform-refresh] step=aggregate_micro_current_window" not in stdout
+    assert "[data-platform-refresh] step=collect_sequence_tensors" not in stdout
+    assert "[data-platform-refresh] step=publish_data_platform_snapshot" not in stdout
+
+
+def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_excludes_ws_candles() -> None:
+    stdout = _run_script_dry_run(
+        "refresh_data_platform_layers.ps1",
+        "-Mode",
+        "training_critical",
+        "-SkipPublishReadySnapshot",
+    )
+
+    assert "mode=training_critical" in stdout
+    assert "[data-platform-refresh] step=plan_candles_second" in stdout
+    assert "[data-platform-refresh] step=aggregate_micro_current_window" in stdout
+    assert "[data-platform-refresh] step=collect_sequence_tensors" in stdout
+    assert "[data-platform-refresh] step=plan_ws_candles" not in stdout
+    assert "[data-platform-refresh] step=collect_ws_candles" not in stdout
+    assert "[data-platform-refresh] step=publish_data_platform_snapshot" not in stdout
+
+
+def test_t23_2_train_snapshot_close_installer_dry_run_keeps_v5_timer_contract() -> None:
+    stdout = _run_script_dry_run("install_server_train_snapshot_close_service.ps1")
+
+    assert "[train-snapshot-close-install][dry-run] service=autobot-v5-train-snapshot-close.service" in stdout
+    assert "[train-snapshot-close-install][dry-run] timer=autobot-v5-train-snapshot-close.timer" in stdout
+    assert "close_v5_train_ready_snapshot.ps1" in stdout
+    assert "OnCalendar=*-*-* 00:05:00" in stdout
+
+
+def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contract() -> None:
+    stdout = _run_script_dry_run("close_v5_train_ready_snapshot.ps1")
+
+    assert "[train-snapshot-close] command=" in stdout
+    assert "refresh_data_platform_layers.ps1" in stdout
+    assert "-Mode' 'training_critical" in stdout or '-Mode" "training_critical' in stdout or "-Mode training_critical" in stdout
+    assert "refresh_current_features_v4_contract_artifacts.ps1" in stdout
+    assert "autobot.ops.data_platform_snapshot" in stdout
+    assert "train_snapshot_close_latest.json" in stdout
 
 
 def test_t23_2_feature_contract_refresh_wrapper_dry_run_emits_contract_steps() -> None:

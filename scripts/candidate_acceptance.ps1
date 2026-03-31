@@ -3,6 +3,7 @@ param(
     [string]$ProjectRoot = "",
     [string]$BatchDate = "",
     [string]$DailyPipelineScript = "",
+    [string]$TrainSnapshotCloseReportPath = "data/collect/_meta/train_snapshot_close_latest.json",
     [string]$PaperSmokeScript = "",
     [string]$OutDir = "logs/model_acceptance",
     [int]$TrainLookbackDays = 30,
@@ -125,6 +126,11 @@ function Resolve-DefaultDailyPipelineScript {
     return (Join-Path $Root "scripts/daily_micro_pipeline_for_server.ps1")
 }
 
+function Resolve-DefaultTrainSnapshotCloseReportPath {
+    param([string]$Root)
+    return (Join-Path $Root "data/collect/_meta/train_snapshot_close_latest.json")
+}
+
 function Resolve-DateToken {
     param([string]$DateText, [string]$LabelForError)
     if ([string]::IsNullOrWhiteSpace($DateText)) {
@@ -175,6 +181,18 @@ function Resolve-DependencyTrainerModelFamily {
         "v5_lob" { return "train_v5_lob" }
         "v5_fusion" { return "train_v5_fusion" }
         default { return "" }
+    }
+}
+
+function Resolve-DateTimeOffsetOrNull {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $null
+    }
+    try {
+        return [DateTimeOffset]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        return $null
     }
 }
 
@@ -767,6 +785,109 @@ function Get-MicroDateCoverageCounts {
     return $counts
 }
 
+function Convert-ToStringIntMap {
+    param([Parameter(Mandatory = $false)]$Value)
+    $result = @{}
+    if ($null -eq $Value) {
+        return $result
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in @($Value.Keys)) {
+            $name = [string]$key
+            if ([string]::IsNullOrWhiteSpace($name)) {
+                continue
+            }
+            try {
+                $result[$name] = [int]$Value[$key]
+            } catch {
+            }
+        }
+        return $result
+    }
+    if ($Value.PSObject) {
+        foreach ($prop in @($Value.PSObject.Properties)) {
+            $name = [string]$prop.Name
+            if ([string]::IsNullOrWhiteSpace($name)) {
+                continue
+            }
+            try {
+                $result[$name] = [int]$prop.Value
+            } catch {
+            }
+        }
+    }
+    return $result
+}
+
+function Resolve-TrainSnapshotCloseContract {
+    param(
+        [string]$ProjectRoot,
+        [string]$ReportPath,
+        [string]$ExpectedBatchDate,
+        [string]$ExpectedSnapshotId
+    )
+    $resolvedReportPath = if ([string]::IsNullOrWhiteSpace($ReportPath)) {
+        Resolve-DefaultTrainSnapshotCloseReportPath -Root $ProjectRoot
+    } else {
+        Resolve-PathFromProjectRoot -Root $ProjectRoot -PathValue $ReportPath
+    }
+    $payload = Load-JsonOrEmpty -PathValue $resolvedReportPath
+    $exists = (Test-Path $resolvedReportPath) -and (-not (Test-IsEffectivelyEmptyObject -ObjectValue $payload))
+    $reportBatchDate = [string](Get-PropValue -ObjectValue $payload -Name "batch_date" -DefaultValue "")
+    $reportSnapshotId = [string](Get-PropValue -ObjectValue $payload -Name "snapshot_id" -DefaultValue "")
+    $overallPass = To-Bool (Get-PropValue -ObjectValue $payload -Name "overall_pass" -DefaultValue $false) $false
+    $deadlineMet = To-Bool (Get-PropValue -ObjectValue $payload -Name "deadline_met" -DefaultValue $false) $false
+    $publishedAtUtc = [string](Get-PropValue -ObjectValue $payload -Name "published_at_utc" -DefaultValue "")
+    $generatedAtUtc = [string](Get-PropValue -ObjectValue $payload -Name "generated_at_utc" -DefaultValue "")
+    $snapshotRoot = [string](Get-PropValue -ObjectValue $payload -Name "snapshot_root" -DefaultValue "")
+    $microCoverageCounts = Convert-ToStringIntMap -Value (Get-PropValue -ObjectValue $payload -Name "micro_date_coverage_counts" -DefaultValue @{})
+    $microRoot = [string](Get-PropValue -ObjectValue $payload -Name "micro_root" -DefaultValue "")
+    $failureReasons = @(
+        @(Get-PropValue -ObjectValue $payload -Name "failure_reasons" -DefaultValue @()) |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    $sourceFreshness = Get-PropValue -ObjectValue $payload -Name "source_freshness" -DefaultValue @{}
+
+    $reasons = @()
+    if (-not $exists) {
+        $reasons += "TRAIN_SNAPSHOT_CLOSE_REPORT_MISSING"
+    }
+    if ($exists -and ([string]$reportBatchDate).Trim() -ne ([string]$ExpectedBatchDate).Trim()) {
+        $reasons += "TRAIN_SNAPSHOT_CLOSE_BATCH_DATE_MISMATCH"
+    }
+    if ($exists -and (-not $overallPass)) {
+        $reasons += "TRAIN_SNAPSHOT_CLOSE_FAILED"
+    }
+    if ($exists -and ([string]$reportSnapshotId).Trim() -ne ([string]$ExpectedSnapshotId).Trim()) {
+        $reasons += "TRAIN_SNAPSHOT_CLOSE_SNAPSHOT_ID_MISMATCH"
+    }
+    if ($exists -and (-not $deadlineMet)) {
+        $reasons += "TRAIN_SNAPSHOT_CLOSE_DEADLINE_MISSED"
+    }
+
+    return [ordered]@{
+        attempted = $true
+        report_path = $resolvedReportPath
+        exists = $exists
+        batch_date = $reportBatchDate
+        expected_batch_date = $ExpectedBatchDate
+        snapshot_id = $reportSnapshotId
+        expected_snapshot_id = $ExpectedSnapshotId
+        snapshot_root = $snapshotRoot
+        generated_at_utc = $generatedAtUtc
+        published_at_utc = $publishedAtUtc
+        overall_pass = $overallPass
+        deadline_met = $deadlineMet
+        source_freshness = $sourceFreshness
+        micro_root = $microRoot
+        micro_date_coverage_counts = $microCoverageCounts
+        failure_reasons = @($failureReasons)
+        pass = (@($reasons).Count -eq 0)
+        reasons = @($reasons)
+    }
+}
+
 function Resolve-TrainWindowRamp {
     param(
         [string]$ProjectRoot,
@@ -778,7 +899,8 @@ function Resolve-TrainWindowRamp {
         [string]$MicroRoot,
         [int]$MinMarketsPerDate,
         [string]$TrainDataQualityFloorDate,
-        [string]$TrainStartFloorDate
+        [string]$TrainStartFloorDate,
+        [Parameter(Mandatory = $false)]$CoverageCounts = $null
     )
     $resolvedMicroRoot = Resolve-PathFromProjectRoot -Root $ProjectRoot -PathValue $MicroRoot
     $batchDateValue = Resolve-DateToken -DateText $BatchDate -LabelForError "batch_date"
@@ -801,7 +923,12 @@ function Resolve-TrainWindowRamp {
     $requestedTrainDays = [Math]::Max([int]$RequestedTrainLookbackDays, 1)
     $requestedBacktestDays = [Math]::Max([int]$RequestedBacktestLookbackDays, 1)
     $minMarkets = [Math]::Max([int]$MinMarketsPerDate, 1)
-    $coverageCounts = Get-MicroDateCoverageCounts -MicroRoot $resolvedMicroRoot -Tf $Tf
+    $coverageCounts = Convert-ToStringIntMap -Value $CoverageCounts
+    $coverageSource = "train_snapshot_close_report"
+    if ($coverageCounts.Count -eq 0) {
+        $coverageCounts = Get-MicroDateCoverageCounts -MicroRoot $resolvedMicroRoot -Tf $Tf
+        $coverageSource = "mutable_micro_root"
+    }
     $availableDates = @(
         $coverageCounts.Keys |
             Sort-Object
@@ -864,6 +991,7 @@ function Resolve-TrainWindowRamp {
     return [ordered]@{
         enabled = [bool]$RampEnabled
         micro_root = $resolvedMicroRoot
+        micro_coverage_source = $coverageSource
         micro_coverage_present = $coveragePresent
         requested_train_lookback_days = [int]$requestedTrainDays
         requested_backtest_lookback_days = [int]$requestedBacktestDays
@@ -4017,6 +4145,11 @@ $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedDailyPipelineScript = if ([string]::IsNullOrWhiteSpace($DailyPipelineScript)) { Resolve-DefaultDailyPipelineScript -Root $resolvedProjectRoot } else { $DailyPipelineScript }
+$resolvedTrainSnapshotCloseReportPath = if ([string]::IsNullOrWhiteSpace($TrainSnapshotCloseReportPath)) {
+    Resolve-DefaultTrainSnapshotCloseReportPath -Root $resolvedProjectRoot
+} else {
+    Resolve-PathFromProjectRoot -Root $resolvedProjectRoot -PathValue $TrainSnapshotCloseReportPath
+}
 $resolvedPaperSmokeScript = if ([string]::IsNullOrWhiteSpace($PaperSmokeScript)) { Join-Path $resolvedProjectRoot "scripts/paper_micro_smoke.ps1" } else { $PaperSmokeScript }
 $resolvedOutDir = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $resolvedProjectRoot $OutDir }
 $resolvedPaperSmokeOutDir = Join-Path $resolvedOutDir "paper_smoke"
@@ -4040,6 +4173,13 @@ New-Item -ItemType Directory -Path $resolvedPaperSmokeOutDir -Force | Out-Null
 
 $effectiveBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) { (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd") } else { $BatchDate }
 $effectiveBatchDate = Resolve-DateToken -DateText $effectiveBatchDate -LabelForError "batch_date"
+$dataPlatformReadySnapshotId = Get-DataPlatformReadySnapshotId -ProjectRoot $resolvedProjectRoot
+$script:dataPlatformReadySnapshotId = $dataPlatformReadySnapshotId
+$trainSnapshotCloseContract = Resolve-TrainSnapshotCloseContract `
+    -ProjectRoot $resolvedProjectRoot `
+    -ReportPath $resolvedTrainSnapshotCloseReportPath `
+    -ExpectedBatchDate $effectiveBatchDate `
+    -ExpectedSnapshotId $dataPlatformReadySnapshotId
 $windowRamp = Resolve-TrainWindowRamp `
     -ProjectRoot $resolvedProjectRoot `
     -BatchDate $effectiveBatchDate `
@@ -4050,7 +4190,8 @@ $windowRamp = Resolve-TrainWindowRamp `
     -MicroRoot $TrainLookbackRampMicroRoot `
     -MinMarketsPerDate $TrainLookbackRampMinMarketsPerDate `
     -TrainDataQualityFloorDate $TrainDataQualityFloorDate `
-    -TrainStartFloorDate $TrainStartFloorDate
+    -TrainStartFloorDate $TrainStartFloorDate `
+    -CoverageCounts (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "micro_date_coverage_counts" -DefaultValue @{})
 $certificationStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "certification_start_date" -DefaultValue "")
 $trainEndDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_end_date" -DefaultValue "")
 $trainStartDate = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_start_date" -DefaultValue "")
@@ -4060,8 +4201,6 @@ $latestPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistry
 $candidatePointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $ModelFamily -PointerName "latest_candidate"
 $championPointerPath = Resolve-RegistryPointerPath -RegistryRoot $resolvedRegistryRoot -Family $resolvedChampionModelFamily -PointerName "champion"
 $championBefore = Load-JsonOrEmpty -PathValue $championPointerPath
-$dataPlatformReadySnapshotId = Get-DataPlatformReadySnapshotId -ProjectRoot $resolvedProjectRoot
-$script:dataPlatformReadySnapshotId = $dataPlatformReadySnapshotId
 
 $report = [ordered]@{
     generated_at = (Get-Date).ToString("o")
@@ -4143,6 +4282,7 @@ $report = [ordered]@{
         known_runtime_units = @($KnownRuntimeUnits)
         auto_restart_known_units = [bool]$AutoRestartKnownUnits
         data_platform_ready_snapshot_id = $dataPlatformReadySnapshotId
+        train_snapshot_close_report_path = $resolvedTrainSnapshotCloseReportPath
     }
     windows_by_step = [ordered]@{
         train = [ordered]@{ start = $trainStartDate; end = $trainEndDate }
@@ -4162,6 +4302,40 @@ $report = [ordered]@{
     gates = [ordered]@{}
     reasons = @()
 }
+
+$report.steps.train_snapshot_close_preflight = [ordered]@{
+    attempted = $true
+    report_path = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "report_path" -DefaultValue "")
+    exists = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "exists" -DefaultValue $false)
+    batch_date = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "batch_date" -DefaultValue "")
+    expected_batch_date = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "expected_batch_date" -DefaultValue "")
+    snapshot_id = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "snapshot_id" -DefaultValue "")
+    expected_snapshot_id = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "expected_snapshot_id" -DefaultValue "")
+    snapshot_root = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "snapshot_root" -DefaultValue "")
+    generated_at_utc = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "generated_at_utc" -DefaultValue "")
+    published_at_utc = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "published_at_utc" -DefaultValue "")
+    overall_pass = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "overall_pass" -DefaultValue $false)
+    deadline_met = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "deadline_met" -DefaultValue $false)
+    source_freshness = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "source_freshness" -DefaultValue @{})
+    actual_dataset_rows = $null
+    actual_dataset_min_ts_ms = $null
+    actual_dataset_max_ts_ms = $null
+    manifest_path = ""
+    data_file_count = 0
+    pass = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "pass" -DefaultValue $false)
+    reasons = @(
+        @(Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "reasons" -DefaultValue @()) |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
+$script:trainSnapshotClosePreflightFailed = -not (To-Bool (Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "pass" -DefaultValue $false) $false)
+$script:trainSnapshotClosePreflightReasons = @(
+    @(Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "reasons" -DefaultValue @()) |
+        ForEach-Object { [string]$_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
 
 $runtimeUnitsBefore = if ($DryRun) { @() } else { @(Get-UnitStates -Units $KnownRuntimeUnits) }
 $activeKnownUnits = @(
@@ -4327,6 +4501,14 @@ function Write-ReportPointers {
     Write-Host ("[{0}] overall_pass={1}" -f $LogTag, $OverallPass)
     Write-Host ("[{0}] report={1}" -f $LogTag, $Paths.RunReportPath)
     Write-Host ("[{0}] latest={1}" -f $LogTag, $Paths.LatestReportPath)
+}
+
+if ($script:trainSnapshotClosePreflightFailed) {
+    $report.reasons = @($script:trainSnapshotClosePreflightReasons)
+    $report.gates.overall_pass = $false
+    $paths = Save-Report
+    Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+    exit 2
 }
 
 function Resolve-ReportedJsonPathFromText {
@@ -4723,52 +4905,18 @@ function Resolve-RunDirFromText {
 
 try {
     if (-not $SkipDailyPipeline) {
-        $dailyArgs = @(
-            "-NoProfile",
-            "-File", $resolvedDailyPipelineScript,
-            "-ProjectRoot", $resolvedProjectRoot,
-            "-PythonExe", $resolvedPythonExe,
-            "-Date", $effectiveBatchDate,
-            "-SkipTicks",
-            "-SkipSmoke"
-        )
-        $dailyExec = Invoke-CommandCapture -Exe $psExe -ArgList $dailyArgs
         $report.steps.daily_pipeline = [ordered]@{
-            attempted = $true
-            exit_code = [int]$dailyExec.ExitCode
-            command = $dailyExec.Command
-            output_preview = (Get-OutputPreview -Text ([string]$dailyExec.Output))
+            attempted = $false
+            reason = "REPLACED_BY_TRAIN_SNAPSHOT_CLOSE"
+            script_path = $resolvedDailyPipelineScript
         }
-        if ($dailyExec.ExitCode -ne 0) {
-            $report.reasons = @("DAILY_PIPELINE_FAILED")
-            $report.gates.overall_pass = $false
-            $paths = Save-Report
-            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
-            exit 2
-        }
-        $windowRamp = Resolve-TrainWindowRamp `
-            -ProjectRoot $resolvedProjectRoot `
-            -BatchDate $effectiveBatchDate `
-            -Tf $Tf `
-            -RequestedTrainLookbackDays $TrainLookbackDays `
-            -RequestedBacktestLookbackDays $BacktestLookbackDays `
-            -RampEnabled $TrainLookbackRampEnabled `
-            -MicroRoot $TrainLookbackRampMicroRoot `
-            -MinMarketsPerDate $TrainLookbackRampMinMarketsPerDate `
-            -TrainDataQualityFloorDate $TrainDataQualityFloorDate `
-            -TrainStartFloorDate $TrainStartFloorDate
-        Sync-WindowRampState -WindowRampValue $windowRamp
-        $script:bootstrapWindowStart = [string](Get-PropValue -ObjectValue $windowRamp -Name "train_data_quality_floor_date" -DefaultValue "")
-        $script:bootstrapWindowEnd = $effectiveBatchDate
-        Sync-SplitPolicyState
         $report.steps.window_ramp_recomputed_after_pipeline = [ordered]@{
-            attempted = $true
-            source = "daily_pipeline_complete"
-            reason = [string](Get-PropValue -ObjectValue $windowRamp -Name "reason" -DefaultValue "")
-            effective_train_lookback_days = [int](Get-PropValue -ObjectValue $windowRamp -Name "effective_train_lookback_days" -DefaultValue $TrainLookbackDays)
+            attempted = $false
+            reason = "REPLACED_BY_TRAIN_SNAPSHOT_CLOSE"
         }
     } else {
-        $report.steps.daily_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+        $report.steps.daily_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG"; script_path = $resolvedDailyPipelineScript }
+        $report.steps.window_ramp_recomputed_after_pipeline = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
     }
 
     if ($SplitPolicyHistoricalSelectorEnabled) {
@@ -5539,7 +5687,8 @@ try {
         exit 2
     }
 
-    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+    $isDuplicateCandidate = To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion" -and (-not $isDuplicateCandidate)) {
         $runtimeCoveragePreflightEligible = Test-ShouldAttemptRuntimeDatasetCoveragePreflight `
             -TrainerName $Trainer `
             -CertificationStartDate $certificationStartDate `
@@ -5596,6 +5745,11 @@ try {
                 reason = "BOOTSTRAP_OR_NO_CERTIFICATION_WINDOW"
             }
         }
+    } elseif (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+        }
     } else {
         $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
             attempted = $false
@@ -5603,7 +5757,7 @@ try {
         }
     }
 
-    if (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false) {
+    if ($isDuplicateCandidate) {
         $report.steps.backtest_candidate = [ordered]@{
             attempted = $false
             reason = "DUPLICATE_CANDIDATE"

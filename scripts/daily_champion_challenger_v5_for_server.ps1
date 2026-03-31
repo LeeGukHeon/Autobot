@@ -100,7 +100,7 @@ $resolvedAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScr
     -ExecutionContractMinRows $ExecutionContractMinRows `
     -Mode $Mode `
     -SkipDailyPipeline:$SkipDailyPipeline `
-    -SkipFeatureContractRefresh:$SkipFeatureContractRefresh `
+    -SkipFeatureContractRefresh:$true `
     -SkipReportRefresh:$SkipReportRefresh `
     -DryRun:$DryRun `
     @args

@@ -10,8 +10,7 @@ param(
     [string]$DaysAgoCsv = "2,3,4,5,6,7",
     [int]$Workers = 1,
     [int]$MaxPagesPerTarget = 50,
-    [string]$OnBootSec = "20min",
-    [string]$OnUnitActiveSec = "24h",
+    [string]$OnCalendar = "*-*-* 05:30:00",
     [string]$LockFile = "/tmp/autobot-raw-ticks-backfill.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
@@ -72,9 +71,7 @@ $timerContent = @"
 Description=Autobot raw ticks backfill sweep timer
 
 [Timer]
-OnActiveSec=$OnBootSec
-OnBootSec=$OnBootSec
-OnUnitActiveSec=$OnUnitActiveSec
+OnCalendar=$OnCalendar
 Persistent=true
 Unit=$ServiceUnitName
 

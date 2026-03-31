@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 $candlesScript = Join-Path $PSScriptRoot "install_server_candles_api_refresh_service.ps1"
 $ticksScript = Join-Path $PSScriptRoot "install_server_raw_ticks_daily_service.ps1"
 $ticksBackfillScript = Join-Path $PSScriptRoot "install_server_raw_ticks_backfill_service.ps1"
+$trainSnapshotCloseScript = Join-Path $PSScriptRoot "install_server_train_snapshot_close_service.ps1"
 
 $commonParams = @{}
 if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -41,4 +42,8 @@ if ($LASTEXITCODE -ne 0) {
 & $ticksBackfillScript @commonParams
 if ($LASTEXITCODE -ne 0) {
     throw "install_server_raw_ticks_backfill_service.ps1 failed"
+}
+& $trainSnapshotCloseScript @commonParams
+if ($LASTEXITCODE -ne 0) {
+    throw "install_server_train_snapshot_close_service.ps1 failed"
 }

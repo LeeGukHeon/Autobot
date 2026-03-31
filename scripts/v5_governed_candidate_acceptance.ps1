@@ -13,48 +13,8 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "v4_acceptance_contract.ps1")
 
-function Resolve-DefaultDataPlatformRefreshScript {
-    param([string]$Root)
-    return (Join-Path $Root "scripts/refresh_data_platform_layers.ps1")
-}
-
-function Resolve-DefaultPwshExe {
-    if ($IsWindows) {
-        return "powershell.exe"
-    }
-    $cmd = Get-Command pwsh -ErrorAction SilentlyContinue
-    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
-        return [string]$cmd.Source
-    }
-    return "pwsh"
-}
-
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { [System.IO.Path]::GetFullPath($ProjectRoot) }
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
-$resolvedDataPlatformRefreshScript = if ([string]::IsNullOrWhiteSpace($DataPlatformRefreshScript)) {
-    Resolve-DefaultDataPlatformRefreshScript -Root $resolvedProjectRoot
-} else {
-    $DataPlatformRefreshScript
-}
-
-if ((-not $SkipDataPlatformRefresh) -and (Test-Path $resolvedDataPlatformRefreshScript)) {
-    $pwshExe = Resolve-DefaultPwshExe
-    $refreshArgs = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $resolvedDataPlatformRefreshScript,
-        "-ProjectRoot", $resolvedProjectRoot,
-        "-PythonExe", $resolvedPythonExe
-    )
-    if ($DryRun) {
-        $refreshArgs += "-DryRun"
-    }
-    & $pwshExe @refreshArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw ("data platform refresh failed: " + $resolvedDataPlatformRefreshScript)
-    }
-}
-
 $knownRuntimeUnits = @("autobot-paper-v5.service", "autobot-live-alpha.service")
 $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
 

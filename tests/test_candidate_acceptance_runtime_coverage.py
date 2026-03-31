@@ -28,6 +28,34 @@ def _powershell_exe() -> str:
     pytest.skip("PowerShell executable is required for this test")
 
 
+def _seed_train_snapshot_close_contract(
+    project_root: Path,
+    *,
+    batch_date: str,
+    snapshot_id: str,
+) -> None:
+    _write_json(
+        project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
+        {
+            "policy": "v5_train_snapshot_close_v1",
+            "batch_date": batch_date,
+            "snapshot_id": snapshot_id,
+            "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / snapshot_id),
+            "published_at_utc": "2026-03-08T00:05:00Z",
+            "generated_at_utc": "2026-03-08T00:05:00Z",
+            "deadline_met": True,
+            "overall_pass": True,
+            "failure_reasons": [],
+            "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+            "micro_date_coverage_counts": {},
+            "source_freshness": {
+                "candles_api_refresh": {"pass": True},
+                "raw_ticks_daily": {"pass": True, "batch_date": batch_date, "batch_covered": True},
+            },
+        },
+    )
+
+
 def _make_fake_python_exe(tmp_path: Path) -> Path:
     driver_path = tmp_path / "fake_python_driver.py"
     driver_path.write_text(
@@ -123,6 +151,7 @@ def test_candidate_acceptance_fails_early_on_runtime_dataset_coverage_gap(tmp_pa
     project_root.mkdir()
     _write_json(project_root / "models" / "registry" / "train_v5_fusion" / "champion.json", {"run_id": "champion-run-000"})
     _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": "snapshot-coverage-001"})
+    _seed_train_snapshot_close_contract(project_root, batch_date="2026-03-08", snapshot_id="snapshot-coverage-001")
     python_exe = _make_fake_python_exe(tmp_path)
     wrapper_script = tmp_path / "run_acceptance.ps1"
     wrapper_script.write_text(

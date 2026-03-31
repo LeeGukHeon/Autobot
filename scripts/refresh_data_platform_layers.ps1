@@ -1,6 +1,8 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
+    [ValidateSet("full", "training_critical", "runtime_rich")]
+    [string]$Mode = "full",
     [string]$MetaDir = "data/collect/_meta",
     [string]$SummaryPath = "data/collect/_meta/data_platform_refresh_latest.json",
     [string]$Quote = "KRW",
@@ -34,6 +36,7 @@ param(
     [int]$TensorMicroLookbackSteps = 30,
     [int]$TensorLobLookbackSteps = 32,
     [string]$PublishLockFile = "/tmp/autobot-train-acceptance.lock",
+    [switch]$SkipPublishReadySnapshot,
     [switch]$DryRun
 )
 
@@ -156,109 +159,93 @@ $resolvedMicroRawTicksRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -Pat
 $resolvedMicroRawWsRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MicroRawWsRoot
 $serializedTensorMarkets = Join-DelimitedStringArray -Values $TensorMarkets
 
-$steps = @(
-    [ordered]@{
-        name = "plan_candles_second"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "plan-candles",
-            "--base-dataset", $SecondBaseDataset,
-            "--market-source-dataset", $SecondMarketSourceDataset,
-            "--out", $resolvedSecondPlanPath,
-            "--tf", "1s",
-            "--quote", $Quote,
-            "--market-mode", $MarketMode,
-            "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
-            "--max-backfill-days-1s", ([string]([Math]::Max([int]$SecondMaxBackfillDays, 1))),
-            "--max-backfill-days-1m", ([string]([Math]::Max([int]$SecondMaxBackfillDays, 1)))
-        )
+function New-RefreshStep {
+    param(
+        [string]$Name,
+        [string[]]$Args,
+        [string]$LockFile = "",
+        [switch]$BlockingLock
+    )
+    $step = [ordered]@{
+        name = $Name
+        args = $Args
     }
-    [ordered]@{
-        name = "collect_candles_second"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "candles",
-            "--plan", $resolvedSecondPlanPath,
-            "--out-dataset", "candles_second_v1",
-            "--collect-meta-dir", $resolvedMetaDir,
-            "--validate-report", (Join-Path $resolvedMetaDir "candle_second_validate_report.json"),
-            "--workers", "1",
-            "--dry-run", "false",
-            "--max-requests", ([string]([Math]::Max([int]$CandlesMaxRequests, 1))),
-            "--stop-on-first-fail", "true",
-            "--rate-limit-strict", "true"
-        )
+    if (-not [string]::IsNullOrWhiteSpace($LockFile)) {
+        $step.lock_file = $LockFile
+        $step.blocking_lock = [bool]$BlockingLock
     }
-    [ordered]@{
-        name = "plan_ws_candles"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "plan-ws-candles",
-            "--base-dataset", $WsCandleBaseDataset,
-            "--market-source-dataset", $WsCandleMarketSourceDataset,
-            "--out", $resolvedWsCandlePlanPath,
-            "--quote", $Quote,
-            "--market-mode", $MarketMode,
-            "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
-            "--tf", $WsCandleTf
-        )
-    }
-    [ordered]@{
-        name = "collect_ws_candles"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "ws-candles",
-            "--plan", $resolvedWsCandlePlanPath,
-            "--out-dataset", "ws_candle_v1",
-            "--meta-dir", $resolvedMetaDir,
-            "--duration-sec", ([string]([Math]::Max([int]$WsCandleDurationSec, 1))),
-            "--rate-limit-strict", "true"
-        )
-    }
-    [ordered]@{
-        name = "plan_lob30"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "plan-lob30",
-            "--base-dataset", $Lob30BaseDataset,
-            "--market-source-dataset", $Lob30MarketSourceDataset,
-            "--out", $resolvedLob30PlanPath,
-            "--quote", $Quote,
-            "--market-mode", $MarketMode,
-            "--top-n", ([string]([Math]::Max([int]$TopN, 1)))
-        )
-    }
-    [ordered]@{
-        name = "collect_lob30"
-        args = @(
-            "-m", "autobot.cli",
-            "collect", "lob30",
-            "--plan", $resolvedLob30PlanPath,
-            "--out-dataset", "lob30_v1",
-            "--meta-dir", $resolvedMetaDir,
-            "--duration-sec", ([string]([Math]::Max([int]$Lob30DurationSec, 1))),
-            "--rate-limit-strict", "true"
-        )
-    }
-    [ordered]@{
-        name = "refresh_data_contract_registry"
-        args = @(
-            "-m", "autobot.ops.data_contract_registry",
-            "--project-root", $resolvedProjectRoot
-        )
-        lock_file = $PublishLockFile
-        blocking_lock = $true
-    }
-    [ordered]@{
-        name = "publish_data_platform_snapshot"
-        args = @(
-            "-m", "autobot.ops.data_platform_snapshot",
-            "publish",
-            "--project-root", $resolvedProjectRoot
-        )
-        lock_file = $PublishLockFile
-        blocking_lock = $true
-    }
+    return $step
+}
+
+$trainingCriticalSteps = @(
+    (New-RefreshStep -Name "plan_candles_second" -Args @(
+        "-m", "autobot.cli",
+        "collect", "plan-candles",
+        "--base-dataset", $SecondBaseDataset,
+        "--market-source-dataset", $SecondMarketSourceDataset,
+        "--out", $resolvedSecondPlanPath,
+        "--tf", "1s",
+        "--quote", $Quote,
+        "--market-mode", $MarketMode,
+        "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+        "--max-backfill-days-1s", ([string]([Math]::Max([int]$SecondMaxBackfillDays, 1))),
+        "--max-backfill-days-1m", ([string]([Math]::Max([int]$SecondMaxBackfillDays, 1)))
+    ))
+    (New-RefreshStep -Name "collect_candles_second" -Args @(
+        "-m", "autobot.cli",
+        "collect", "candles",
+        "--plan", $resolvedSecondPlanPath,
+        "--out-dataset", "candles_second_v1",
+        "--collect-meta-dir", $resolvedMetaDir,
+        "--validate-report", (Join-Path $resolvedMetaDir "candle_second_validate_report.json"),
+        "--workers", "1",
+        "--dry-run", "false",
+        "--max-requests", ([string]([Math]::Max([int]$CandlesMaxRequests, 1))),
+        "--stop-on-first-fail", "true",
+        "--rate-limit-strict", "true"
+    ))
+    (New-RefreshStep -Name "plan_lob30" -Args @(
+        "-m", "autobot.cli",
+        "collect", "plan-lob30",
+        "--base-dataset", $Lob30BaseDataset,
+        "--market-source-dataset", $Lob30MarketSourceDataset,
+        "--out", $resolvedLob30PlanPath,
+        "--quote", $Quote,
+        "--market-mode", $MarketMode,
+        "--top-n", ([string]([Math]::Max([int]$TopN, 1)))
+    ))
+    (New-RefreshStep -Name "collect_lob30" -Args @(
+        "-m", "autobot.cli",
+        "collect", "lob30",
+        "--plan", $resolvedLob30PlanPath,
+        "--out-dataset", "lob30_v1",
+        "--meta-dir", $resolvedMetaDir,
+        "--duration-sec", ([string]([Math]::Max([int]$Lob30DurationSec, 1))),
+        "--rate-limit-strict", "true"
+    ))
+)
+
+$runtimeRichSteps = @(
+    (New-RefreshStep -Name "plan_ws_candles" -Args @(
+        "-m", "autobot.cli",
+        "collect", "plan-ws-candles",
+        "--base-dataset", $WsCandleBaseDataset,
+        "--market-source-dataset", $WsCandleMarketSourceDataset,
+        "--out", $resolvedWsCandlePlanPath,
+        "--quote", $Quote,
+        "--market-mode", $MarketMode,
+        "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+        "--tf", $WsCandleTf
+    ))
+    (New-RefreshStep -Name "collect_ws_candles" -Args @(
+        "-m", "autobot.cli",
+        "collect", "ws-candles",
+        "--plan", $resolvedWsCandlePlanPath,
+        "--out-dataset", "ws_candle_v1",
+        "--meta-dir", $resolvedMetaDir,
+        "--duration-sec", ([string]([Math]::Max([int]$WsCandleDurationSec, 1))),
+        "--rate-limit-strict", "true"
+    ))
 )
 
 $tensorDateValues = Get-RecentUtcDateValues -Count $TensorRecentDates
@@ -266,33 +253,27 @@ $microDateValues = Get-RecentUtcDateValues -Count $MicroRecentDates
 $microDateStart = [string]$microDateValues[-1]
 $microDateEnd = [string]$microDateValues[0]
 $microSteps = @(
-    [ordered]@{
-        name = "aggregate_micro_current_window"
-        args = @(
-            "-m", "autobot.cli",
-            "micro", "aggregate",
-            "--start", $microDateStart,
-            "--end", $microDateEnd,
-            "--tf", "1m,5m",
-            "--quote", $Quote,
-            "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
-            "--raw-ticks-root", $resolvedMicroRawTicksRoot,
-            "--raw-ws-root", $resolvedMicroRawWsRoot,
-            "--out-root", $resolvedMicroOutRoot,
-            "--base-candles", $MicroBaseCandles,
-            "--mode", "overwrite"
-        )
-    }
-    [ordered]@{
-        name = "validate_micro_current_window"
-        args = @(
-            "-m", "autobot.cli",
-            "micro", "validate",
-            "--out-root", $resolvedMicroOutRoot,
-            "--tf", "1m,5m",
-            "--base-candles", $MicroBaseCandles
-        )
-    }
+    (New-RefreshStep -Name "aggregate_micro_current_window" -Args @(
+        "-m", "autobot.cli",
+        "micro", "aggregate",
+        "--start", $microDateStart,
+        "--end", $microDateEnd,
+        "--tf", "1m,5m",
+        "--quote", $Quote,
+        "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+        "--raw-ticks-root", $resolvedMicroRawTicksRoot,
+        "--raw-ws-root", $resolvedMicroRawWsRoot,
+        "--out-root", $resolvedMicroOutRoot,
+        "--base-candles", $MicroBaseCandles,
+        "--mode", "overwrite"
+    ))
+    (New-RefreshStep -Name "validate_micro_current_window" -Args @(
+        "-m", "autobot.cli",
+        "micro", "validate",
+        "--out-root", $resolvedMicroOutRoot,
+        "--tf", "1m,5m",
+        "--base-candles", $MicroBaseCandles
+    ))
 )
 $tensorSteps = @()
 for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
@@ -311,15 +292,49 @@ for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
         "--lob-lookback-steps", ([string]([Math]::Max([int]$TensorLobLookbackSteps, 1))),
         "--skip-existing-ready", "false"
     )
-    $tensorSteps += ,([ordered]@{
-        name = $stepName
-        args = $tensorArgs
-    })
+    $tensorSteps += ,(New-RefreshStep -Name $stepName -Args $tensorArgs)
 }
-$insertIndex = [Math]::Max($steps.Count - 1, 0)
-$prefixSteps = if ($insertIndex -gt 0) { @($steps[0..($insertIndex - 1)]) } else { @() }
-$suffixSteps = if ($insertIndex -lt $steps.Count) { @($steps[$insertIndex..($steps.Count - 1)]) } else { @() }
-$steps = @($prefixSteps + $microSteps + $tensorSteps + $suffixSteps)
+
+$publishStep = New-RefreshStep `
+    -Name "publish_data_platform_snapshot" `
+    -Args @(
+        "-m", "autobot.ops.data_platform_snapshot",
+        "publish",
+        "--project-root", $resolvedProjectRoot
+    ) `
+    -LockFile $PublishLockFile `
+    -BlockingLock
+
+$registryStep = New-RefreshStep `
+    -Name "refresh_data_contract_registry" `
+    -Args @(
+        "-m", "autobot.ops.data_contract_registry",
+        "--project-root", $resolvedProjectRoot
+    ) `
+    -LockFile $PublishLockFile `
+    -BlockingLock
+
+$steps = @()
+switch ($Mode) {
+    "training_critical" {
+        $steps = @($trainingCriticalSteps + $microSteps + $tensorSteps + @($registryStep))
+        if (-not $SkipPublishReadySnapshot) {
+            $steps += ,$publishStep
+        }
+    }
+    "runtime_rich" {
+        $steps = @($runtimeRichSteps + @($registryStep))
+        if (-not $SkipPublishReadySnapshot) {
+            $steps += ,$publishStep
+        }
+    }
+    default {
+        $steps = @($trainingCriticalSteps + $runtimeRichSteps + $microSteps + $tensorSteps + @($registryStep))
+        if (-not $SkipPublishReadySnapshot) {
+            $steps += ,$publishStep
+        }
+    }
+}
 
 if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     foreach ($step in @($steps)) {
@@ -332,9 +347,13 @@ if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
 
 if ($DryRun) {
     Write-Host ("[data-platform-refresh][dry-run] project_root={0}" -f $resolvedProjectRoot)
+    Write-Host ("[data-platform-refresh][dry-run] mode={0}" -f $Mode)
     Write-Host ("[data-platform-refresh][dry-run] meta_dir={0}" -f $resolvedMetaDir)
     Write-Host ("[data-platform-refresh][dry-run] summary_path={0}" -f $resolvedSummaryPath)
     Write-Host ("[data-platform-refresh][dry-run] publish_lock_file={0}" -f $PublishLockFile)
+    Write-Host ("[data-platform-refresh][dry-run] skip_publish_ready_snapshot={0}" -f [bool]$SkipPublishReadySnapshot)
+    Write-Host "[data-platform-refresh][dry-run] training_critical_datasets=candles_second_v1,lob30_v1,micro_v1,sequence_v1"
+    Write-Host "[data-platform-refresh][dry-run] runtime_rich_datasets=ws_candle_v1"
 }
 
 $stepResults = @()
@@ -365,7 +384,9 @@ $summary = [ordered]@{
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     project_root = $resolvedProjectRoot
     python_exe = $resolvedPythonExe
+    mode = $Mode
     meta_dir = $resolvedMetaDir
+    skip_publish_ready_snapshot = [bool]$SkipPublishReadySnapshot
     steps = @($stepResults)
 }
 $summaryDir = Split-Path -Parent $resolvedSummaryPath

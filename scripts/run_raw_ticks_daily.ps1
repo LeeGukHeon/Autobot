@@ -1,6 +1,7 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
+    [string]$BatchDate = "",
     [string]$SummaryPath = "data/raw_ticks/upbit/_meta/ticks_daily_latest.json",
     [string]$PlanPath = "data/raw_ticks/upbit/_meta/ticks_plan_daily_auto.json",
     [string]$Quote = "KRW",
@@ -73,8 +74,20 @@ function Invoke-ProjectPythonStep {
 function Resolve-DaysAgoSpec {
     param(
         [int]$SingleDay,
-        [string]$DaysAgoCsvText
+        [string]$DaysAgoCsvText,
+        [string]$BatchDateText
     )
+    if (-not [string]::IsNullOrWhiteSpace($BatchDateText)) {
+        $batchDateValue = [DateTime]::ParseExact(
+            $BatchDateText,
+            "yyyy-MM-dd",
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None
+        )
+        $todayLocal = (Get-Date).Date
+        $deltaDays = [int]($todayLocal - $batchDateValue.Date).TotalDays
+        return ([string]([Math]::Max($deltaDays, 1)))
+    }
     if (-not [string]::IsNullOrWhiteSpace($DaysAgoCsvText)) {
         return $DaysAgoCsvText.Trim()
     }
@@ -88,7 +101,8 @@ $resolvedSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue
 $resolvedPlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $PlanPath
 $resolvedRawRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $RawRoot
 $resolvedMetaDir = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MetaDir
-$daysAgoSpec = Resolve-DaysAgoSpec -SingleDay $DaysAgo -DaysAgoCsvText $DaysAgoCsv
+$resolvedBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) { (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd") } else { $BatchDate.Trim() }
+$daysAgoSpec = Resolve-DaysAgoSpec -SingleDay $DaysAgo -DaysAgoCsvText $DaysAgoCsv -BatchDateText $resolvedBatchDate
 $daysAgoValues = @(
     $daysAgoSpec.Split(",") |
         ForEach-Object { $_.Trim() } |
@@ -156,6 +170,7 @@ $summary = [ordered]@{
     raw_root = $resolvedRawRoot
     meta_dir = $resolvedMetaDir
     plan_path = $resolvedPlanPath
+    batch_date = $resolvedBatchDate
     days_ago = @($daysAgoValues)
     validate_dates = @($validateDates)
     steps = @($stepResults)

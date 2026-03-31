@@ -2,16 +2,11 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$ServiceUser = "ubuntu",
-    [string]$ServiceUnitName = "autobot-raw-ticks-daily.service",
-    [string]$TimerUnitName = "autobot-raw-ticks-daily.timer",
-    [string]$RefreshScript = "",
-    [string]$Quote = "KRW",
-    [int]$TopN = 50,
-    [int]$DaysAgo = 1,
-    [int]$Workers = 1,
-    [int]$MaxPagesPerTarget = 50,
-    [string]$OnCalendar = "*-*-* 00:00:00",
-    [string]$LockFile = "/tmp/autobot-raw-ticks-daily.lock",
+    [string]$ServiceUnitName = "autobot-v5-train-snapshot-close.service",
+    [string]$TimerUnitName = "autobot-v5-train-snapshot-close.timer",
+    [string]$CloseScript = "",
+    [string]$OnCalendar = "*-*-* 00:05:00",
+    [string]$LockFile = "/tmp/autobot-v5-train-snapshot-close.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
@@ -22,36 +17,33 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "systemd_service_utils.ps1")
 
-function Resolve-DefaultRefreshScript {
+function Resolve-DefaultCloseScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/run_raw_ticks_daily.ps1")
+    return (Join-Path $Root "scripts/close_v5_train_ready_snapshot.ps1")
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
-$resolvedRefreshScript = if ([string]::IsNullOrWhiteSpace($RefreshScript)) { Resolve-DefaultRefreshScript -Root $resolvedProjectRoot } else { $RefreshScript }
+$resolvedCloseScript = if ([string]::IsNullOrWhiteSpace($CloseScript)) { Resolve-DefaultCloseScript -Root $resolvedProjectRoot } else { $CloseScript }
 $resolvedPwshExe = Resolve-PwshExe
 
-$refreshArgs = @(
+$closeArgs = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-File", $resolvedRefreshScript,
+    "-File", $resolvedCloseScript,
     "-ProjectRoot", $resolvedProjectRoot,
-    "-PythonExe", $resolvedPythonExe,
-    "-Quote", $Quote,
-    "-TopN", ([string]([Math]::Max([int]$TopN, 1))),
-    "-DaysAgo", ([string]([Math]::Max([int]$DaysAgo, 1))),
-    "-Workers", ([string]([Math]::Max([int]$Workers, 1))),
-    "-MaxPagesPerTarget", ([string]([Math]::Max([int]$MaxPagesPerTarget, 1)))
+    "-PythonExe", $resolvedPythonExe
 )
-$refreshCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-$lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $LockFile) + " bash -lc " + (Quote-ShellArg $refreshCommand) + "; else exec bash -lc " + (Quote-ShellArg $refreshCommand) + "; fi"
-$execStart = "/bin/bash -lc " + (Quote-ShellArg $lockCommand)
+$closeCommand = $resolvedPwshExe + " " + (($closeArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
+$execStart = Build-FlockWrappedExecStart `
+    -Command $closeCommand `
+    -LockFile $LockFile `
+    -BusyMessage "[train-snapshot-close] lock busy, skipping"
 
 $serviceContent = @"
 [Unit]
-Description=Autobot raw ticks daily refresh
+Description=Autobot V5 nightly train snapshot close
 After=network-online.target
 Wants=network-online.target
 
@@ -68,7 +60,7 @@ StandardError=journal
 
 $timerContent = @"
 [Unit]
-Description=Autobot raw ticks daily refresh timer
+Description=Autobot V5 nightly train snapshot close timer
 
 [Timer]
 OnCalendar=$OnCalendar
@@ -80,8 +72,10 @@ WantedBy=timers.target
 "@
 
 if ($DryRun) {
-    Write-Host ("[raw-ticks-install][dry-run] service={0}" -f $ServiceUnitName)
-    Write-Host ("[raw-ticks-install][dry-run] refresh_script={0}" -f $resolvedRefreshScript)
+    Write-Host ("[train-snapshot-close-install][dry-run] service={0}" -f $ServiceUnitName)
+    Write-Host ("[train-snapshot-close-install][dry-run] timer={0}" -f $TimerUnitName)
+    Write-Host ("[train-snapshot-close-install][dry-run] close_script={0}" -f $resolvedCloseScript)
+    Write-Host ("[train-snapshot-close-install][dry-run] lock_file={0}" -f $LockFile)
     Write-Host $serviceContent
     Write-Host $timerContent
     exit 0

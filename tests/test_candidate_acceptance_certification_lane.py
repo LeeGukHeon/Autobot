@@ -812,6 +812,50 @@ def _write_micro_dates(project_root: Path, *, tf: str, market: str, dates: list[
         part_dir = project_root / "data" / "parquet" / "micro_v1" / f"tf={tf}" / f"market={market}" / f"date={date_value}"
         part_dir.mkdir(parents=True, exist_ok=True)
         (part_dir / "part.parquet").write_text("placeholder", encoding="utf-8")
+    close_report_path = project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json"
+    if not close_report_path.exists():
+        _seed_train_snapshot_close_contract(project_root, batch_date=sorted(dates)[-1], tf=tf)
+
+
+def _seed_train_snapshot_close_contract(
+    project_root: Path,
+    *,
+    batch_date: str,
+    snapshot_id: str = "snapshot-test-001",
+    tf: str = "5m",
+) -> None:
+    counts: dict[str, int] = {}
+    tf_root = project_root / "data" / "parquet" / "micro_v1" / f"tf={tf}"
+    if tf_root.exists():
+        for market_dir in tf_root.glob("market=*"):
+            for date_dir in market_dir.glob("date=*"):
+                date_value = date_dir.name.removeprefix("date=")
+                counts[date_value] = counts.get(date_value, 0) + 1
+
+    _write_json(
+        project_root / "data" / "_meta" / "data_platform_ready_snapshot.json",
+        {"snapshot_id": snapshot_id},
+    )
+    _write_json(
+        project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
+        {
+            "policy": "v5_train_snapshot_close_v1",
+            "batch_date": batch_date,
+            "snapshot_id": snapshot_id,
+            "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / snapshot_id),
+            "published_at_utc": "2026-03-07T00:05:00Z",
+            "generated_at_utc": "2026-03-07T00:05:00Z",
+            "deadline_met": True,
+            "overall_pass": True,
+            "failure_reasons": [],
+            "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+            "micro_date_coverage_counts": counts,
+            "source_freshness": {
+                "candles_api_refresh": {"pass": True},
+                "raw_ticks_daily": {"pass": True, "batch_date": batch_date, "batch_covered": True},
+            },
+        },
+    )
 
 
 def _write_split_policy_selector_history(
@@ -837,6 +881,7 @@ def _run_acceptance(
     *,
     extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    _seed_train_snapshot_close_contract(project_root, batch_date="2026-03-07")
     return subprocess.run(
         [
             _powershell_exe(),
@@ -1013,7 +1058,7 @@ def test_candidate_acceptance_generates_data_contract_registry_before_training(t
     assert Path(report["steps"]["data_contract_registry"]["registry_path"]).exists()
 
 
-def test_candidate_acceptance_recomputes_window_ramp_after_daily_pipeline_updates_micro_history(
+def test_candidate_acceptance_uses_train_snapshot_close_coverage_for_window_ramp(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "project"
@@ -1026,16 +1071,11 @@ def test_candidate_acceptance_recomputes_window_ramp_after_daily_pipeline_update
         project_root,
         tf="5m",
         market="KRW-BTC",
-        dates=["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"],
+        dates=["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"],
     )
 
     python_exe = _make_fake_python_exe(tmp_path, write_decision_surface=True)
-    daily_pipeline_script = _make_fake_daily_pipeline_script(
-        tmp_path,
-        populate_batch_micro_date=True,
-        tf="5m",
-        market="KRW-BTC",
-    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
     result = subprocess.run(
         [
             _powershell_exe(),
@@ -1088,8 +1128,8 @@ def test_candidate_acceptance_recomputes_window_ramp_after_daily_pipeline_update
     assert report["config"]["train_lookback_days_effective"] == 3
     assert report["config"]["train_window_ramp_reason"] == "TARGET_REACHED"
     assert report["config"]["train_window_ramp_available_contiguous_micro_days"] == 5
-    assert report["steps"]["window_ramp_recomputed_after_pipeline"]["attempted"] is True
-    assert report["steps"]["window_ramp_recomputed_after_pipeline"]["effective_train_lookback_days"] == 3
+    assert report["steps"]["window_ramp_recomputed_after_pipeline"]["attempted"] is False
+    assert report["steps"]["window_ramp_recomputed_after_pipeline"]["reason"] == "REPLACED_BY_TRAIN_SNAPSHOT_CLOSE"
     assert report["windows_by_step"]["train"]["start"] == "2026-03-03"
     assert report["windows_by_step"]["train"]["end"] == "2026-03-05"
 
