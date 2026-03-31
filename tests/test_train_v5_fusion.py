@@ -367,9 +367,14 @@ def test_train_v5_fusion_uses_runtime_input_bundle_for_runtime_dataset(tmp_path:
     )
     result = train_and_register_v5_fusion(options)
     runtime_contract = load_json(result.run_dir / "fusion_runtime_input_contract.json")
+    tail_context = load_json(result.run_dir / "expert_tail_context.json")
     assert runtime_contract["runtime_window"]["start"] == "2026-03-28"
     assert runtime_contract["runtime_window"]["end"] == "2026-03-28"
     assert runtime_contract["runtime_rows_after_date_filter"] == 2
+    assert tail_context["panel_runtime_input_path"] == str(panel_runtime)
+    assert tail_context["sequence_runtime_input_path"] == str(sequence_runtime)
+    assert tail_context["lob_runtime_input_path"] == str(lob_runtime)
+    assert tail_context["runtime_window_id"] == "2026-03-28__2026-03-28"
     feature_manifest = load_json(result.train_report_path)
     assert feature_manifest["runtime_dataset_root"].endswith("runtime_feature_dataset")
 

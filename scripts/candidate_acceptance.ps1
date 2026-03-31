@@ -178,6 +178,29 @@ function Resolve-DependencyTrainerModelFamily {
     }
 }
 
+function Convert-DateTokenToUnixMs {
+    param(
+        [string]$DateText,
+        [switch]$EndOfDay
+    )
+    if ([string]::IsNullOrWhiteSpace($DateText)) {
+        return [int64]0
+    }
+    $normalized = Resolve-DateToken -DateText $DateText -LabelForError "date_token"
+    $parsed = [DateTime]::ParseExact(
+        $normalized,
+        "yyyy-MM-dd",
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    )
+    if ($EndOfDay) {
+        $parsed = $parsed.Date.AddDays(1).AddMilliseconds(-1)
+    } else {
+        $parsed = $parsed.Date
+    }
+    return [int64][DateTimeOffset]::new($parsed).ToUnixTimeMilliseconds()
+}
+
 function Invoke-DependencyTrainerChain {
     param(
         [string]$PythonPath,
@@ -325,6 +348,12 @@ function Resolve-DependencyFusionInputPaths {
             throw ("missing dependency trainer result: " + $trainerName)
         }
         $runDir = [string](Get-PropValue -ObjectValue $match -Name "run_dir" -DefaultValue "")
+        if ($DryRun -and [string]::IsNullOrWhiteSpace($runDir)) {
+            $modelFamily = [string](Get-PropValue -ObjectValue $match -Name "model_family" -DefaultValue "")
+            if (-not [string]::IsNullOrWhiteSpace($modelFamily)) {
+                $runDir = Join-Path (Join-Path $resolvedRegistryRoot $modelFamily) ("dry-run-" + $trainerName)
+            }
+        }
         if ([string]::IsNullOrWhiteSpace($runDir)) {
             throw ("dependency trainer run_dir missing: " + $trainerName)
         }
@@ -356,7 +385,52 @@ function Test-DependencyRuntimeExportUsable {
     if ([string]::IsNullOrWhiteSpace($snapshotId) -or ($snapshotId -ne [string]$ExpectedSnapshotId)) {
         return $false
     }
+    if ($DryRun) {
+        return $true
+    }
     return ($rows -gt 0)
+}
+
+function Test-ShouldAttemptDependencyRuntimeCoverage {
+    param(
+        [string]$TrainerName,
+        [object[]]$DependencyResults,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate,
+        [string]$LaneMode
+    )
+    if (([string]$TrainerName).Trim().ToLowerInvariant() -ne "v5_fusion") {
+        return $false
+    }
+    if (@($DependencyResults).Count -le 0) {
+        return $false
+    }
+    if ([string]::Equals(([string]$LaneMode).Trim(), "bootstrap_latest_inclusive", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace($CertificationStartDate) -or [string]::IsNullOrWhiteSpace($CertificationEndDate)) {
+        return $false
+    }
+    return $true
+}
+
+function Test-ShouldAttemptRuntimeDatasetCoveragePreflight {
+    param(
+        [string]$TrainerName,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate,
+        [string]$LaneMode
+    )
+    if (([string]$TrainerName).Trim().ToLowerInvariant() -ne "v5_fusion") {
+        return $false
+    }
+    if ([string]::Equals(([string]$LaneMode).Trim(), "bootstrap_latest_inclusive", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace($CertificationStartDate) -or [string]::IsNullOrWhiteSpace($CertificationEndDate)) {
+        return $false
+    }
+    return $true
 }
 
 function Invoke-DependencyRuntimeExportChain {
@@ -373,23 +447,60 @@ function Invoke-DependencyRuntimeExportChain {
         $runId = [string](Get-PropValue -ObjectValue $item -Name "run_id" -DefaultValue "")
         $modelFamily = [string](Get-PropValue -ObjectValue $item -Name "model_family" -DefaultValue "")
         $snapshotId = [string](Get-PropValue -ObjectValue $item -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+        if ($DryRun -and [string]::IsNullOrWhiteSpace($runDir)) {
+            if (-not [string]::IsNullOrWhiteSpace($modelFamily)) {
+                $runDir = Join-Path (Join-Path $resolvedRegistryRoot $modelFamily) ("dry-run-" + $trainerName)
+            } else {
+                $runDir = Join-Path $resolvedProjectRoot ("dry-run-" + $trainerName)
+            }
+        }
+        if ($DryRun -and [string]::IsNullOrWhiteSpace($runId)) {
+            $runId = "dry-run-" + $trainerName
+        }
         if ([string]::IsNullOrWhiteSpace($trainerName) -or [string]::IsNullOrWhiteSpace($runDir)) {
             throw "dependency runtime export requires trainer and run_dir"
         }
-        $args = @(
-            "-m", "autobot.cli",
-            "model", "export-expert-table",
-            "--trainer", $trainerName,
-            "--run-dir", $runDir,
-            "--start", $CertificationStartDate,
-            "--end", $CertificationEndDate
-        )
-        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
-        $payload = @{}
-        try {
-            $payload = [string]$exec.Output | ConvertFrom-Json
-        } catch {
-            throw ("dependency runtime export payload parse failed: " + $trainerName)
+        $exportRoot = Join-Path $runDir "_runtime_exports"
+        $windowId = $CertificationStartDate + "__" + $CertificationEndDate
+        $exportDir = Join-Path $exportRoot $windowId
+        $syntheticPayload = [ordered]@{
+            run_id = $runId
+            trainer = $trainerName
+            model_family = $modelFamily
+            data_platform_ready_snapshot_id = $snapshotId
+            start = $CertificationStartDate
+            end = $CertificationEndDate
+            rows = 0
+            selected_markets = @()
+            export_path = Join-Path $exportDir "expert_prediction_table.parquet"
+            metadata_path = Join-Path $exportDir "metadata.json"
+            reused = $false
+            source_mode = "dry_run"
+        }
+        if ($DryRun) {
+            $exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ($syntheticPayload | ConvertTo-Json -Depth 12 -Compress)
+                Command = "[dry-run] autobot.cli model export-expert-table"
+                DryRun = $true
+            }
+            $payload = $syntheticPayload
+        } else {
+            $args = @(
+                "-m", "autobot.cli",
+                "model", "export-expert-table",
+                "--trainer", $trainerName,
+                "--run-dir", $runDir,
+                "--start", $CertificationStartDate,
+                "--end", $CertificationEndDate
+            )
+            $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
+            $payload = @{}
+            try {
+                $payload = [string]$exec.Output | ConvertFrom-Json
+            } catch {
+                throw ("dependency runtime export payload parse failed: " + $trainerName)
+            }
         }
         if (-not (Test-DependencyRuntimeExportUsable -ExportResult $payload -ExpectedSnapshotId $snapshotId)) {
             throw ("dependency runtime export unusable: " + $trainerName)
@@ -3194,7 +3305,10 @@ function Build-BacktestCompareMetrics {
 }
 
 function Resolve-CandidateRuntimeDatasetCoverage {
-    param([string]$CandidateRunDir)
+    param(
+        [string]$PythonPath,
+        [string]$CandidateRunDir
+    )
     if ([string]::IsNullOrWhiteSpace($CandidateRunDir)) {
         return @{}
     }
@@ -3204,9 +3318,28 @@ function Resolve-CandidateRuntimeDatasetCoverage {
         return @{}
     }
     $runtimeWindow = Get-PropValue -ObjectValue $runtimeContract -Name "runtime_window" -DefaultValue @{}
+    $datasetRoot = [string](Get-PropValue -ObjectValue $runtimeContract -Name "runtime_dataset_root" -DefaultValue "")
+    $datasetSummary = @{}
+    $inspectCommand = ""
+    $inspectOutputPreview = ""
+    if ((-not [string]::IsNullOrWhiteSpace($PythonPath)) -and (-not [string]::IsNullOrWhiteSpace($datasetRoot))) {
+        $inspectArgs = @(
+            "-m", "autobot.cli",
+            "model", "inspect-runtime-dataset",
+            "--dataset-root", $datasetRoot
+        )
+        $inspectExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $inspectArgs
+        $inspectCommand = [string]$inspectExec.Command
+        $inspectOutputPreview = Get-OutputPreview -Text ([string]$inspectExec.Output)
+        try {
+            $datasetSummary = [string]$inspectExec.Output | ConvertFrom-Json
+        } catch {
+            throw "runtime dataset summary payload parse failed"
+        }
+    }
     return [ordered]@{
         contract_path = $runtimeContractPath
-        dataset_root = [string](Get-PropValue -ObjectValue $runtimeContract -Name "runtime_dataset_root" -DefaultValue "")
+        dataset_root = $datasetRoot
         rows = [int](Get-PropValue -ObjectValue $runtimeContract -Name "runtime_rows_after_date_filter" -DefaultValue 0)
         coverage_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeContract -Name "coverage_start_ts_ms" -DefaultValue 0)
         coverage_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeContract -Name "coverage_end_ts_ms" -DefaultValue 0)
@@ -3215,6 +3348,16 @@ function Resolve-CandidateRuntimeDatasetCoverage {
         requested_start = [string](Get-PropValue -ObjectValue $runtimeWindow -Name "start" -DefaultValue "")
         requested_end = [string](Get-PropValue -ObjectValue $runtimeWindow -Name "end" -DefaultValue "")
         data_platform_ready_snapshot_id = [string](Get-PropValue -ObjectValue $runtimeContract -Name "snapshot_id" -DefaultValue "")
+        inspect_command = $inspectCommand
+        inspect_output_preview = $inspectOutputPreview
+        actual_dataset_exists = [bool](Get-PropValue -ObjectValue $datasetSummary -Name "exists" -DefaultValue $false)
+        actual_dataset_rows = [int](Get-PropValue -ObjectValue $datasetSummary -Name "rows" -DefaultValue 0)
+        actual_dataset_min_ts_ms = (Get-PropValue -ObjectValue $datasetSummary -Name "min_ts_ms" -DefaultValue $null)
+        actual_dataset_max_ts_ms = (Get-PropValue -ObjectValue $datasetSummary -Name "max_ts_ms" -DefaultValue $null)
+        manifest_path = [string](Get-PropValue -ObjectValue $datasetSummary -Name "manifest_path" -DefaultValue "")
+        manifest_exists = [bool](Get-PropValue -ObjectValue $datasetSummary -Name "manifest_exists" -DefaultValue $false)
+        data_file_count = [int](Get-PropValue -ObjectValue $datasetSummary -Name "data_file_count" -DefaultValue 0)
+        markets = @((Get-PropValue -ObjectValue $datasetSummary -Name "markets" -DefaultValue @()))
     }
 }
 
@@ -3231,24 +3374,27 @@ function Test-CandidateRuntimeDatasetCertificationCoverage {
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"
         }
     }
-    $rows = [int](Get-PropValue -ObjectValue $Coverage -Name "rows" -DefaultValue 0)
-    if ($rows -le 0) {
+    $datasetExists = [bool](Get-PropValue -ObjectValue $Coverage -Name "actual_dataset_exists" -DefaultValue $false)
+    $manifestExists = [bool](Get-PropValue -ObjectValue $Coverage -Name "manifest_exists" -DefaultValue $false)
+    $dataFileCount = [int](Get-PropValue -ObjectValue $Coverage -Name "data_file_count" -DefaultValue 0)
+    $rows = [int](Get-PropValue -ObjectValue $Coverage -Name "actual_dataset_rows" -DefaultValue 0)
+    if ((-not $datasetExists) -or (-not $manifestExists) -or ($dataFileCount -le 0) -or ($rows -le 0)) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"
         }
     }
-    $requestedStartTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "requested_start_ts_ms" -DefaultValue 0)
-    $requestedEndTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "requested_end_ts_ms" -DefaultValue 0)
-    $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "coverage_start_ts_ms" -DefaultValue 0)
-    $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "coverage_end_ts_ms" -DefaultValue 0)
-    if (($requestedStartTsMs -gt 0) -and ($coverageStartTsMs -gt $requestedStartTsMs)) {
+    $expectedStartTsMs = Convert-DateTokenToUnixMs -DateText $CertificationStartDate
+    $expectedEndTsMs = Convert-DateTokenToUnixMs -DateText $CertificationEndDate -EndOfDay
+    $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "actual_dataset_min_ts_ms" -DefaultValue 0)
+    $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "actual_dataset_max_ts_ms" -DefaultValue 0)
+    if (($expectedStartTsMs -gt 0) -and (($coverageStartTsMs -le 0) -or ($coverageStartTsMs -gt $expectedStartTsMs))) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
         }
     }
-    if (($requestedEndTsMs -gt 0) -and ($coverageEndTsMs -lt $requestedEndTsMs)) {
+    if (($expectedEndTsMs -gt 0) -and (($coverageEndTsMs -le 0) -or ($coverageEndTsMs -lt $expectedEndTsMs))) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
@@ -5006,6 +5152,7 @@ try {
         }
     }
 
+    $dependencyTrainerResults = @()
     if (@($DependencyTrainers).Count -gt 0) {
         $dependencyTrainerResults = Invoke-DependencyTrainerChain `
             -PythonPath $resolvedPythonExe `
@@ -5044,7 +5191,13 @@ try {
         }
     }
     $dependencyRuntimeExportResults = @()
-    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion" -and @($DependencyTrainers).Count -gt 0) {
+    $dependencyRuntimeCoverageEligible = Test-ShouldAttemptDependencyRuntimeCoverage `
+        -TrainerName $Trainer `
+        -DependencyResults @($dependencyTrainerResults) `
+        -CertificationStartDate $certificationStartDate `
+        -CertificationEndDate $effectiveBatchDate `
+        -LaneMode ([string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue ""))
+    if ($dependencyRuntimeCoverageEligible) {
         $dependencyRuntimeExportResults = Invoke-DependencyRuntimeExportChain `
             -PythonPath $resolvedPythonExe `
             -DependencyResults @($dependencyTrainerResults) `
@@ -5058,9 +5211,14 @@ try {
             data_platform_ready_snapshot_ids = @($dependencyRuntimeExportResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "data_platform_ready_snapshot_id" -DefaultValue "") })
         }
     } else {
+        $runtimeExportSkipReason = if (([string]$Trainer).Trim().ToLowerInvariant() -ne "v5_fusion" -or @($DependencyTrainers).Count -le 0) {
+            "NO_RUNTIME_EXPORT_CHAIN_REQUIRED"
+        } else {
+            "BOOTSTRAP_OR_NO_CERTIFICATION_WINDOW"
+        }
         $report.steps.dependency_runtime_exports = [ordered]@{
             attempted = $false
-            reason = "NO_RUNTIME_EXPORT_CHAIN_REQUIRED"
+            reason = $runtimeExportSkipReason
         }
     }
 
@@ -5381,37 +5539,61 @@ try {
     }
 
     if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
-        $runtimeCoverage = Resolve-CandidateRuntimeDatasetCoverage -CandidateRunDir $candidateRunDir
-        $runtimeCoverageGate = Test-CandidateRuntimeDatasetCertificationCoverage `
-            -Coverage $runtimeCoverage `
+        $runtimeCoveragePreflightEligible = Test-ShouldAttemptRuntimeDatasetCoveragePreflight `
+            -TrainerName $Trainer `
             -CertificationStartDate $certificationStartDate `
-            -CertificationEndDate $effectiveBatchDate
-        $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
-            attempted = $true
-            contract_path = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "contract_path" -DefaultValue "")
-            dataset_root = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "dataset_root" -DefaultValue "")
-            rows = [int](Get-PropValue -ObjectValue $runtimeCoverage -Name "rows" -DefaultValue 0)
-            coverage_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "coverage_start_ts_ms" -DefaultValue 0)
-            coverage_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "coverage_end_ts_ms" -DefaultValue 0)
-            requested_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "requested_start_ts_ms" -DefaultValue 0)
-            requested_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "requested_end_ts_ms" -DefaultValue 0)
-            pass = [bool](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "pass" -DefaultValue $false)
-            reason = [string](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "reason" -DefaultValue "")
-        }
-        if (-not [bool](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "pass" -DefaultValue $false)) {
-            $report.reasons = @([string](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "reason" -DefaultValue "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"))
-            $report.gates.overall_pass = $false
-            Update-RunArtifactStatus `
-                -RunDir $candidateRunDir `
-                -RunId $candidateRunId `
-                -Status "acceptance_incomplete" `
-                -AcceptanceCompleted $false `
-                -CandidateAdoptable $false `
-                -CandidateAdopted $false `
-                -Promoted $false | Out-Null
-            $paths = Save-Report
-            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
-            exit 2
+            -CertificationEndDate $effectiveBatchDate `
+            -LaneMode ([string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue ""))
+        if ($DryRun) {
+            $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
+                attempted = $false
+                reason = "DRY_RUN_SKIP"
+            }
+        } elseif ($runtimeCoveragePreflightEligible) {
+            $runtimeCoverage = Resolve-CandidateRuntimeDatasetCoverage -PythonPath $resolvedPythonExe -CandidateRunDir $candidateRunDir
+            $runtimeCoverageGate = Test-CandidateRuntimeDatasetCertificationCoverage `
+                -Coverage $runtimeCoverage `
+                -CertificationStartDate $certificationStartDate `
+                -CertificationEndDate $effectiveBatchDate
+            $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
+                attempted = $true
+                contract_path = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "contract_path" -DefaultValue "")
+                dataset_root = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "dataset_root" -DefaultValue "")
+                rows = [int](Get-PropValue -ObjectValue $runtimeCoverage -Name "rows" -DefaultValue 0)
+                coverage_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "coverage_start_ts_ms" -DefaultValue 0)
+                coverage_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "coverage_end_ts_ms" -DefaultValue 0)
+                requested_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "requested_start_ts_ms" -DefaultValue 0)
+                requested_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeCoverage -Name "requested_end_ts_ms" -DefaultValue 0)
+                inspect_command = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "inspect_command" -DefaultValue "")
+                inspect_output_preview = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "inspect_output_preview" -DefaultValue "")
+                actual_dataset_rows = [int](Get-PropValue -ObjectValue $runtimeCoverage -Name "actual_dataset_rows" -DefaultValue 0)
+                actual_dataset_min_ts_ms = Get-PropValue -ObjectValue $runtimeCoverage -Name "actual_dataset_min_ts_ms" -DefaultValue $null
+                actual_dataset_max_ts_ms = Get-PropValue -ObjectValue $runtimeCoverage -Name "actual_dataset_max_ts_ms" -DefaultValue $null
+                manifest_path = [string](Get-PropValue -ObjectValue $runtimeCoverage -Name "manifest_path" -DefaultValue "")
+                data_file_count = [int](Get-PropValue -ObjectValue $runtimeCoverage -Name "data_file_count" -DefaultValue 0)
+                pass = [bool](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "pass" -DefaultValue $false)
+                reason = [string](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "reason" -DefaultValue "")
+            }
+            if (-not [bool](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "pass" -DefaultValue $false)) {
+                $report.reasons = @([string](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "reason" -DefaultValue "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"))
+                $report.gates.overall_pass = $false
+                Update-RunArtifactStatus `
+                    -RunDir $candidateRunDir `
+                    -RunId $candidateRunId `
+                    -Status "acceptance_incomplete" `
+                    -AcceptanceCompleted $false `
+                    -CandidateAdoptable $false `
+                    -CandidateAdopted $false `
+                    -Promoted $false | Out-Null
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
+        } else {
+            $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
+                attempted = $false
+                reason = "BOOTSTRAP_OR_NO_CERTIFICATION_WINDOW"
+            }
         }
     } else {
         $report.steps.runtime_dataset_coverage_preflight = [ordered]@{

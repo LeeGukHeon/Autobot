@@ -220,6 +220,30 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(json.dumps(export_run(family, trainer, run_id, start, end)))
                 sys.exit(0)
 
+            if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
+                dataset_root = Path(arg_value("--dataset-root"))
+                contract_path = dataset_root.parent / "fusion_runtime_input_contract.json"
+                contract = json.loads(contract_path.read_text(encoding="utf-8")) if contract_path.exists() else {}
+                runtime_window = contract.get("runtime_window", {})
+                runtime_start = runtime_window.get("start", "2026-03-07")
+                runtime_end = runtime_window.get("end", runtime_start)
+                append_log({
+                    "command": "model inspect-runtime-dataset",
+                    "dataset_root": str(dataset_root),
+                })
+                print(json.dumps({
+                    "dataset_root": str(dataset_root),
+                    "manifest_path": str(dataset_root / "_meta" / "manifest.parquet"),
+                    "data_file_count": 1,
+                    "rows": int(contract.get("runtime_rows_after_date_filter", 12) or 0),
+                    "min_ts_ms": date_to_ts_ms(runtime_start),
+                    "max_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
+                    "markets": ["KRW-BTC"],
+                    "exists": True,
+                    "manifest_exists": True,
+                }))
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
                 runs_dir = ROOT / "data" / "backtest" / "runs"

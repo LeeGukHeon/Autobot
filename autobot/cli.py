@@ -170,6 +170,7 @@ from .models import (
 )
 from .models.offpolicy_evaluation import write_execution_dr_ope_report
 from .models.registry import load_json, promote_run_to_champion
+from .models.runtime_feature_dataset import summarize_runtime_feature_dataset
 from .ops.data_platform_snapshot import load_ready_snapshot as load_data_platform_ready_snapshot
 from .strategy import TopTradeValueScanner
 from .strategy.model_alpha_v1 import (
@@ -950,6 +951,12 @@ def build_parser() -> argparse.ArgumentParser:
     model_export_expert_parser.add_argument("--run-dir", required=True, help="Saved trainer run directory.")
     model_export_expert_parser.add_argument("--start", required=True, help="Export window start YYYY-MM-DD.")
     model_export_expert_parser.add_argument("--end", required=True, help="Export window end YYYY-MM-DD.")
+
+    model_inspect_runtime_parser = model_subparsers.add_parser(
+        "inspect-runtime-dataset",
+        help="Summarize a materialized runtime feature dataset root.",
+    )
+    model_inspect_runtime_parser.add_argument("--dataset-root", required=True, help="Runtime feature dataset root.")
 
     model_daily_v4_parser = model_subparsers.add_parser(
         "daily-v4",
@@ -2864,6 +2871,12 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 payload = materialize_v5_lob_runtime_export(run_dir=run_dir, start=start, end=end)
             else:
                 raise ValueError(f"unsupported export-expert-table trainer: {trainer}")
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
+
+        if args.model_command == "inspect-runtime-dataset":
+            dataset_root = Path(str(getattr(args, "dataset_root", "")).strip()).resolve()
+            payload = summarize_runtime_feature_dataset(dataset_root)
             print(json.dumps(payload, ensure_ascii=False))
             return 0
 

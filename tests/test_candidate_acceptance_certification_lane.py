@@ -635,6 +635,36 @@ def _make_fake_python_exe(
                     sys.exit(2)
                 sys.exit(0)
 
+            if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
+                dataset_root = Path(arg_value("--dataset-root"))
+                contract_path = dataset_root.parent / "fusion_runtime_input_contract.json"
+                contract = json.loads(contract_path.read_text(encoding="utf-8")) if contract_path.exists() else {{}}
+                runtime_window = contract.get("runtime_window", {{}})
+                runtime_start = runtime_window.get("start", "2026-03-06")
+                runtime_end = runtime_window.get("end", runtime_start)
+                append_log(
+                    {{
+                        "command": "model inspect-runtime-dataset",
+                        "dataset_root": str(dataset_root),
+                    }}
+                )
+                print(
+                    json.dumps(
+                        {{
+                            "dataset_root": str(dataset_root),
+                            "manifest_path": str(dataset_root / "_meta" / "manifest.parquet"),
+                            "data_file_count": 1,
+                            "rows": int(contract.get("runtime_rows_after_date_filter", 12) or 0),
+                            "min_ts_ms": date_to_ts_ms(runtime_start),
+                            "max_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
+                            "markets": ["KRW-BTC"],
+                            "exists": True,
+                            "manifest_exists": True,
+                        }}
+                    )
+                )
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
                 start_value = arg_value("--start")
@@ -1318,6 +1348,8 @@ def test_candidate_acceptance_falls_back_to_bootstrap_latest_inclusive_lane_when
     assert report["split_policy"]["promotion_eligible"] is False
     assert report["split_policy"]["selected_holdout_days"] == 0
     assert report["steps"]["features_build"]["resolution_status"] == "BOOTSTRAP_ONLY_POLICY"
+    assert report["steps"]["runtime_dataset_coverage_preflight"]["attempted"] is False
+    assert report["steps"]["runtime_dataset_coverage_preflight"]["reason"] == "BOOTSTRAP_OR_NO_CERTIFICATION_WINDOW"
     assert report["steps"]["features_build"]["strict_best_attempt"]["rows_final"] == 899
     assert report["steps"]["features_build"]["bootstrap_attempt"]["rows_final"] == 11628
     assert report["windows_by_step"]["train"]["start"] == "2026-03-04"

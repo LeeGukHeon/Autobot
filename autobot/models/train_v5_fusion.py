@@ -537,6 +537,8 @@ def _build_v5_fusion_tail_context(
     runtime_dataset_root: Path,
     input_contract: dict[str, Any],
 ) -> dict[str, Any]:
+    runtime_start = str(options.runtime_start or options.start).strip()
+    runtime_end = str(options.runtime_end or options.end).strip()
     return build_v5_expert_tail_context(
         run_id=run_id,
         trainer_name="v5_fusion",
@@ -555,6 +557,12 @@ def _build_v5_fusion_tail_context(
         "panel_input_path": str(options.panel_input_path),
         "sequence_input_path": str(options.sequence_input_path),
         "lob_input_path": str(options.lob_input_path),
+        "panel_runtime_input_path": str(options.panel_runtime_input_path or options.panel_input_path),
+        "sequence_runtime_input_path": str(options.sequence_runtime_input_path or options.sequence_input_path),
+        "lob_runtime_input_path": str(options.lob_runtime_input_path or options.lob_input_path),
+        "runtime_start": runtime_start,
+        "runtime_end": runtime_end,
+        "runtime_window_id": f"{runtime_start}__{runtime_end}",
     }
 
 

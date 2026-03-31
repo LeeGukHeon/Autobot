@@ -1,4 +1,4 @@
-"""Helpers for writing runtime-loadable feature datasets from non-tabular expert trainers."""
+"""Helpers for writing and inspecting runtime-loadable feature datasets."""
 
 from __future__ import annotations
 
@@ -80,3 +80,56 @@ def write_runtime_feature_dataset(
     (meta_root / "label_spec.json").write_text(json.dumps(label_spec, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     pl.DataFrame(manifest_rows).write_parquet(meta_root / "manifest.parquet")
     return root
+
+
+def summarize_runtime_feature_dataset(dataset_root: Path) -> dict[str, Any]:
+    root = Path(dataset_root)
+    manifest_path = root / "_meta" / "manifest.parquet"
+    data_files = sorted(root.glob("tf=*/market=*/part-*.parquet"))
+    summary: dict[str, Any] = {
+        "dataset_root": str(root),
+        "manifest_path": str(manifest_path),
+        "data_file_count": len(data_files),
+        "rows": 0,
+        "min_ts_ms": None,
+        "max_ts_ms": None,
+        "markets": [],
+        "exists": root.exists(),
+        "manifest_exists": manifest_path.exists(),
+    }
+    if not root.exists() or not manifest_path.exists():
+        return summary
+
+    manifest = pl.read_parquet(manifest_path)
+    if manifest.height <= 0:
+        return summary
+
+    rows = 0
+    if "rows" in manifest.columns:
+        rows = int(sum(int(value or 0) for value in manifest.get_column("rows").to_list()))
+
+    min_ts_ms = None
+    if "start_ts_ms" in manifest.columns:
+        start_values = [int(value) for value in manifest.get_column("start_ts_ms").drop_nulls().to_list()]
+        if start_values:
+            min_ts_ms = min(start_values)
+
+    max_ts_ms = None
+    if "end_ts_ms" in manifest.columns:
+        end_values = [int(value) for value in manifest.get_column("end_ts_ms").drop_nulls().to_list()]
+        if end_values:
+            max_ts_ms = max(end_values)
+
+    markets: list[str] = []
+    if "market" in manifest.columns:
+        markets = sorted({str(value).strip() for value in manifest.get_column("market").drop_nulls().to_list() if str(value).strip()})
+
+    summary.update(
+        {
+            "rows": rows,
+            "min_ts_ms": min_ts_ms,
+            "max_ts_ms": max_ts_ms,
+            "markets": markets,
+        }
+    )
+    return summary
