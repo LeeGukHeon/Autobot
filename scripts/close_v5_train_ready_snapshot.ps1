@@ -13,6 +13,7 @@ param(
     [string]$Tf = "5m",
     [int]$MaxCandlesSummaryAgeMinutes = 120,
     [int]$MaxTicksSummaryAgeMinutes = 120,
+    [switch]$SkipDeadline,
     [switch]$DryRun
 )
 
@@ -390,10 +391,10 @@ if (@($failureReasons).Count -eq 0) {
 $publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 $deadlineDate = [DateTime]::ParseExact($batchDateValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture).AddDays(1).AddMinutes(20)
 $deadlineMet = $true
-if (-not $DryRun) {
+if ((-not $DryRun) -and (-not $SkipDeadline)) {
     $deadlineMet = ((Get-Date).ToUniversalTime() -le $deadlineDate.ToUniversalTime())
 }
-if ((@($failureReasons).Count -eq 0) -and (-not $deadlineMet)) {
+if ((@($failureReasons).Count -eq 0) -and (-not $SkipDeadline) -and (-not $deadlineMet)) {
     $failureReasons += "TRAIN_SNAPSHOT_CLOSE_DEADLINE_MISSED"
 }
 
@@ -433,6 +434,7 @@ $summary = [ordered]@{
     snapshot_summary_path = $snapshotSummaryPath
     pointer_path = $pointerPath
     published_at_utc = $publishedAtUtc
+    deadline_enforced = (-not [bool]$SkipDeadline)
     deadline_met = $deadlineMet
     overall_pass = (@($failureReasons).Count -eq 0)
     failure_reasons = @($failureReasons)
