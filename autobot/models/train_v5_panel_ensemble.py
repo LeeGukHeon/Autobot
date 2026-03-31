@@ -49,6 +49,7 @@ from .split import SPLIT_DROP, SPLIT_TEST, SPLIT_TRAIN, SPLIT_VALID, compute_anc
 from .train_v1 import _build_thresholds, _evaluate_split, _predict_scores, build_selection_recommendations
 from .train_v4_artifacts import build_decision_surface_v4, build_v4_metrics_doc, train_config_snapshot_v4
 from .train_v4_core import prepare_v4_training_inputs
+from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
 from ..strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
@@ -311,6 +312,16 @@ def _runtime_recommendation_profile_from_search_budget(search_budget_decision: d
     )
 
 
+def _should_use_dependency_expert_only_mode(options: TrainV5PanelEnsembleOptions) -> bool:
+    return bool(getattr(options, "dependency_expert_only", False))
+
+
+def _panel_tail_mode(options: TrainV5PanelEnsembleOptions) -> str:
+    if _should_use_dependency_expert_only_mode(options):
+        return "dependency_expert_only"
+    return "full"
+
+
 def _panel_tail_context_path(run_dir: Path) -> Path:
     return run_dir / _PANEL_TAIL_CONTEXT_FILENAME
 
@@ -342,6 +353,8 @@ def _normalize_panel_tail_context(payload: dict[str, Any] | None) -> dict[str, A
         "candidate_ref": str(doc.get("candidate_ref", "")).strip(),
         "data_platform_ready_snapshot_id": str(doc.get("data_platform_ready_snapshot_id") or "").strip(),
         "duplicate_candidate": bool(doc.get("duplicate_candidate", False)),
+        "dependency_expert_only": bool(doc.get("dependency_expert_only", False)),
+        "tail_mode": str(doc.get("tail_mode", "")).strip() or "full",
         "runtime_recommendation_profile": str(doc.get("runtime_recommendation_profile") or "").strip() or "full",
         "execution_window": {
             "start_ts_ms": int(execution_window.get("start_ts_ms", 0) or 0),
@@ -381,6 +394,8 @@ def _build_panel_tail_context(
         "candidate_ref": str(run_id).strip(),
         "data_platform_ready_snapshot_id": str(data_platform_ready_snapshot_id or "").strip(),
         "duplicate_candidate": bool(duplicate_candidate),
+        "dependency_expert_only": _should_use_dependency_expert_only_mode(options),
+        "tail_mode": _panel_tail_mode(options),
         "runtime_recommendation_profile": _runtime_recommendation_profile_from_search_budget(search_budget_decision),
         "execution_window": execution_window,
         "execution_acceptance": {
@@ -508,6 +523,8 @@ def _annotate_panel_tail_artifact(
     doc["candidate_ref"] = str(tail_context.get("candidate_ref", "")).strip()
     doc["model_family"] = str(tail_context.get("model_family", "")).strip()
     doc["data_platform_ready_snapshot_id"] = str(tail_context.get("data_platform_ready_snapshot_id") or "").strip()
+    doc["dependency_expert_only"] = bool(tail_context.get("dependency_expert_only", False))
+    doc["tail_mode"] = str(tail_context.get("tail_mode", "")).strip() or "full"
     doc["tail_context"] = dict(tail_context)
     doc["resumed"] = bool(resumed)
     return doc
@@ -804,6 +821,282 @@ def _run_or_reuse_expert_prediction_table(
     return expert_prediction_table_path
 
 
+def _build_panel_dependency_runtime_recommendations(
+    *,
+    options: TrainV5PanelEnsembleOptions,
+    run_id: str,
+    search_budget_decision: dict[str, Any],
+    data_platform_ready_snapshot_id: str | None,
+) -> dict[str, Any]:
+    execution_window = _build_execution_evaluation_window_doc(options=options)
+    return {
+        "version": 1,
+        "policy": "v5_panel_dependency_runtime_recommendations_v1",
+        "status": "trainer_runtime_contract_ready",
+        "reason": "DEPENDENCY_EXPERT_ONLY_MODE",
+        "run_id": str(run_id).strip(),
+        "model_family": str(options.model_family).strip(),
+        "trainer": "v5_panel_ensemble",
+        "source_family": str(options.model_family).strip(),
+        "source_trainer": "v5_panel_ensemble",
+        "dependency_expert_only": True,
+        "tail_mode": "dependency_expert_only",
+        "data_platform_ready_snapshot_id": str(data_platform_ready_snapshot_id or "").strip(),
+        "runtime_recommendation_profile": _runtime_recommendation_profile_from_search_budget(search_budget_decision),
+        "selection": {
+            "top_n": max(
+                int(options.execution_acceptance_top_n)
+                if int(options.execution_acceptance_top_n) > 0
+                else int(options.top_n),
+                1,
+            ),
+            "quote": str(options.quote).strip().upper(),
+            "tf": str(options.tf).strip().lower(),
+        },
+        "execution_window": execution_window,
+        "entry": {"mode": "dependency_expert_only"},
+        "exit": {"mode": "dependency_expert_only"},
+        "execution": {"mode": "dependency_expert_only"},
+        "risk_control": {
+            "status": "not_required",
+            "contract_status": "not_required",
+            "operating_mode": "dependency_expert_only",
+        },
+    }
+
+
+def _build_panel_dependency_promotion_payload(
+    *,
+    options: TrainV5PanelEnsembleOptions,
+    run_id: str,
+    walk_forward: dict[str, Any],
+    runtime_recommendations: dict[str, Any],
+) -> dict[str, Any]:
+    walk_forward_summary = dict((walk_forward or {}).get("summary") or {})
+    windows_run = int(walk_forward_summary.get("windows_run", 0) or 0)
+    return {
+        "run_id": str(run_id).strip(),
+        "promote": False,
+        "status": "candidate",
+        "promotion_mode": "dependency_expert_only",
+        "reasons": ["DEPENDENCY_EXPERT_ONLY_MODE"],
+        "checks": {
+            "manual_review_required": False,
+            "existing_champion_present": False,
+            "walk_forward_present": windows_run > 0,
+            "walk_forward_windows_run": windows_run,
+            "execution_acceptance_enabled": False,
+            "execution_acceptance_present": False,
+            "risk_control_required": False,
+            "risk_control_present": bool((runtime_recommendations.get("risk_control") or {})),
+            "risk_control_governance_pass": True,
+            "dependency_expert_only": True,
+        },
+        "research_acceptance": {
+            "policy": "dependency_expert_only",
+            "walk_forward_summary": walk_forward_summary,
+        },
+        "execution_acceptance": {"status": "not_required"},
+        "candidate_ref": {
+            "model_ref": "latest_candidate",
+            "model_family": str(options.model_family).strip(),
+        },
+    }
+
+
+def _run_panel_dependency_expert_tail(
+    *,
+    run_dir: Path,
+    run_id: str,
+    options: TrainV5PanelEnsembleOptions,
+    dataset: Any,
+    estimator: Any,
+    primary_y_reg: np.ndarray,
+    train_mask: np.ndarray,
+    valid_mask: np.ndarray,
+    test_mask: np.ndarray,
+    walk_forward: dict[str, Any],
+    cpcv_lite: dict[str, Any],
+    factor_block_selection: dict[str, Any],
+    factor_block_selection_context: dict[str, Any],
+    search_budget_decision: dict[str, Any],
+    metrics: dict[str, Any],
+    economic_objective_profile: dict[str, Any],
+    lane_governance: dict[str, Any],
+    data_platform_ready_snapshot_id: str | None,
+    logs_root: Path,
+    pipeline_started_at: float,
+    resumed: bool,
+) -> dict[str, Any]:
+    tail_started_at = time.time()
+    duplicate_artifacts = v4._detect_duplicate_candidate_artifacts(
+        options=options,
+        run_id=run_id,
+        run_dir=run_dir,
+    )
+    duplicate_candidate = bool(duplicate_artifacts.get("duplicate", False))
+    tail_context = _build_panel_tail_context(
+        run_id=run_id,
+        options=options,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        search_budget_decision=search_budget_decision,
+        duplicate_candidate=duplicate_candidate,
+    )
+    existing_tail_artifacts = _resolve_existing_tail_artifacts(
+        run_dir=run_dir,
+        tail_context=tail_context,
+    )
+    _write_json(_panel_tail_context_path(run_dir), tail_context)
+    update_artifact_status(run_dir, tail_context_written=True)
+
+    artifact_paths = _build_panel_runtime_artifact_paths(run_dir)
+    execution_acceptance = _load_existing_execution_acceptance(existing_tail_artifacts=existing_tail_artifacts)
+    runtime_recommendations = _load_existing_runtime_recommendations(existing_tail_artifacts=existing_tail_artifacts)
+    promotion = _load_existing_promotion_decision(existing_tail_artifacts=existing_tail_artifacts)
+    trainer_research_evidence = _load_existing_trainer_research_evidence(
+        existing_tail_artifacts=existing_tail_artifacts
+    )
+    decision_surface = _load_existing_decision_surface(existing_tail_artifacts=existing_tail_artifacts)
+    economic_objective_profile_doc = dict(
+        ((existing_tail_artifacts.get("artifacts") or {}).get("economic_objective_profile_path") or {}).get("payload")
+        or {}
+    )
+    lane_governance_doc = dict(
+        ((existing_tail_artifacts.get("artifacts") or {}).get("lane_governance_path") or {}).get("payload") or {}
+    )
+
+    if not (
+        execution_acceptance
+        and runtime_recommendations
+        and promotion
+        and trainer_research_evidence
+        and decision_surface
+        and economic_objective_profile_doc
+        and lane_governance_doc
+        and _tail_stage_is_reusable(existing_tail_artifacts=existing_tail_artifacts, stage_name="promotion_bundle")
+    ):
+        runtime_recommendations = _build_panel_dependency_runtime_recommendations(
+            options=options,
+            run_id=run_id,
+            search_budget_decision=search_budget_decision,
+            data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        )
+        promotion = _build_panel_dependency_promotion_payload(
+            options=options,
+            run_id=run_id,
+            walk_forward=walk_forward,
+            runtime_recommendations=runtime_recommendations,
+        )
+        runtime_artifacts = persist_v5_runtime_governance_artifacts(
+            run_dir=run_dir,
+            trainer_name="v5_panel_ensemble",
+            model_family=options.model_family,
+            run_scope=options.run_scope,
+            metrics=metrics,
+            runtime_recommendations=runtime_recommendations,
+            promotion=promotion,
+            trainer_research_reasons=["DEPENDENCY_EXPERT_ONLY_MODE"],
+        )
+        execution_acceptance = _annotate_panel_tail_artifact(
+            dict(runtime_artifacts.get("execution_acceptance") or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        runtime_recommendations = _annotate_panel_tail_artifact(
+            dict(runtime_recommendations or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        promotion = _annotate_panel_tail_artifact(
+            dict(promotion or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        trainer_research_evidence = _annotate_panel_tail_artifact(
+            dict(runtime_artifacts.get("trainer_research_evidence") or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        economic_objective_profile_doc = _annotate_panel_tail_artifact(
+            dict(runtime_artifacts.get("economic_objective_profile") or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        lane_governance_doc = _annotate_panel_tail_artifact(
+            dict(runtime_artifacts.get("lane_governance") or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        decision_surface = _annotate_panel_tail_artifact(
+            dict(runtime_artifacts.get("decision_surface") or {}),
+            tail_context=tail_context,
+            resumed=resumed,
+        )
+        _write_json(artifact_paths["execution_acceptance_report_path"], execution_acceptance)
+        _write_json(artifact_paths["runtime_recommendations_path"], runtime_recommendations)
+        _write_json(artifact_paths["promotion_path"], promotion)
+        _write_json(artifact_paths["trainer_research_evidence_path"], trainer_research_evidence)
+        _write_json(artifact_paths["economic_objective_profile_path"], economic_objective_profile_doc)
+        _write_json(artifact_paths["lane_governance_path"], lane_governance_doc)
+        _write_json(artifact_paths["decision_surface_path"], decision_surface)
+        update_artifact_status(
+            run_dir,
+            execution_acceptance_complete=True,
+            runtime_recommendations_complete=True,
+            governance_artifacts_complete=True,
+            promotion_complete=True,
+            decision_surface_complete=True,
+        )
+
+    expert_prediction_table_path = _run_or_reuse_expert_prediction_table(
+        run_dir=run_dir,
+        existing_tail_artifacts=existing_tail_artifacts,
+        dataset=dataset,
+        estimator=estimator,
+        primary_y_reg=primary_y_reg,
+        train_mask=train_mask,
+        valid_mask=valid_mask,
+        test_mask=test_mask,
+    )
+    finalization = _finalize_panel_tail_outputs(
+        run_dir=run_dir,
+        run_id=run_id,
+        options=options,
+        walk_forward=walk_forward,
+        cpcv_lite=cpcv_lite,
+        factor_block_selection=factor_block_selection,
+        factor_block_selection_context=factor_block_selection_context,
+        search_budget_decision=search_budget_decision,
+        execution_acceptance=execution_acceptance,
+        runtime_recommendations=runtime_recommendations,
+        promotion=promotion,
+        economic_objective_profile=economic_objective_profile_doc,
+        lane_governance=lane_governance_doc,
+        data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+        expert_prediction_table_path=expert_prediction_table_path,
+        logs_root=logs_root,
+        pipeline_duration_sec=round(time.time() - pipeline_started_at, 3),
+        tail_duration_sec=round(time.time() - tail_started_at, 3),
+        resumed=resumed,
+    )
+    return {
+        "execution_acceptance": execution_acceptance,
+        "runtime_recommendations": runtime_recommendations,
+        "promotion": promotion,
+        "runtime_artifacts": {
+            "execution_acceptance_report_path": artifact_paths["execution_acceptance_report_path"],
+            "runtime_recommendations_path": artifact_paths["runtime_recommendations_path"],
+            "promotion_path": artifact_paths["promotion_path"],
+            "trainer_research_evidence_path": artifact_paths["trainer_research_evidence_path"],
+            "economic_objective_profile_path": artifact_paths["economic_objective_profile_path"],
+            "lane_governance_path": artifact_paths["lane_governance_path"],
+            "decision_surface_path": artifact_paths["decision_surface_path"],
+        },
+        "expert_prediction_table_path": expert_prediction_table_path,
+        **finalization,
+    }
+
+
 def _finalize_panel_tail_outputs(
     *,
     run_dir: Path,
@@ -827,7 +1120,9 @@ def _finalize_panel_tail_outputs(
     resumed: bool,
 ) -> dict[str, Any]:
     status = str(promotion.get("status", "candidate")).strip() or "candidate"
-    if v4.normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily":
+    if (v4.normalize_factor_block_run_scope(options.run_scope) == "scheduled_daily") and (
+        not _should_use_dependency_expert_only_mode(options)
+    ):
         update_latest_pointer(options.registry_root, options.model_family, run_id)
     update_artifact_status(run_dir, status=status)
     experiment_ledger_record = v4.build_experiment_ledger_record(
@@ -884,6 +1179,8 @@ def _finalize_panel_tail_outputs(
             "duration_sec": float(pipeline_duration_sec),
             "tail_duration_sec": float(tail_duration_sec),
             "resumed": bool(resumed),
+            "dependency_expert_only": _should_use_dependency_expert_only_mode(options),
+            "tail_mode": _panel_tail_mode(options),
             "data_platform_ready_snapshot_id": str(data_platform_ready_snapshot_id or "").strip(),
             "walk_forward_summary": walk_forward.get("summary", {}),
             "panel_ensemble": load_json(run_dir / "metrics.json").get("panel_ensemble", {}),
@@ -928,6 +1225,30 @@ def _run_panel_tail_common(
     pipeline_started_at: float,
     resumed: bool,
 ) -> dict[str, Any]:
+    if _should_use_dependency_expert_only_mode(options):
+        return _run_panel_dependency_expert_tail(
+            run_dir=run_dir,
+            run_id=run_id,
+            options=options,
+            dataset=dataset,
+            estimator=estimator,
+            primary_y_reg=primary_y_reg,
+            train_mask=train_mask,
+            valid_mask=valid_mask,
+            test_mask=test_mask,
+            walk_forward=walk_forward,
+            cpcv_lite=cpcv_lite,
+            factor_block_selection=factor_block_selection,
+            factor_block_selection_context=factor_block_selection_context,
+            search_budget_decision=search_budget_decision,
+            metrics=metrics,
+            economic_objective_profile=economic_objective_profile,
+            lane_governance=lane_governance,
+            data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
+            logs_root=logs_root,
+            pipeline_started_at=pipeline_started_at,
+            resumed=resumed,
+        )
     tail_started_at = time.time()
     duplicate_artifacts = v4._detect_duplicate_candidate_artifacts(
         options=options,
@@ -2240,6 +2561,7 @@ def _options_from_v5_panel_train_config(train_config: dict[str, Any]) -> TrainV5
             execution=ModelAlphaExecutionSettings(**dict(alpha_doc.get("execution") or {})),
             operational=ModelAlphaOperationalSettings(**dict(alpha_doc.get("operational") or {})),
         ),
+        dependency_expert_only=bool(base.get("dependency_expert_only", False)),
         live_domain_reweighting_enabled=bool(base.get("live_domain_reweighting_enabled", False)),
         live_domain_reweighting_db_path=Path(str(base["live_domain_reweighting_db_path"])) if base.get("live_domain_reweighting_db_path") else None,
         live_domain_reweighting_min_target_rows=int(base.get("live_domain_reweighting_min_target_rows", 32)),

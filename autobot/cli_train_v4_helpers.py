@@ -164,6 +164,7 @@ def build_v4_train_options(
             if getattr(args, "selection_threshold_key_override", None)
             else None
         ),
+        dependency_expert_only=bool(getattr(args, "dependency_expert_only", False)),
         live_domain_reweighting_enabled=bool(getattr(args, "live_domain_reweighting", False)),
         live_domain_reweighting_db_path=(
             Path(str(getattr(args, "live_domain_reweighting_db_path")).strip())

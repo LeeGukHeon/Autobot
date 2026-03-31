@@ -198,6 +198,34 @@ function Invoke-DependencyTrainerChain {
             throw ("unsupported dependency trainer: " + $trainerName)
         }
         $dependencyRunScope = ([string]$RunScope).Trim() + "_dependency_" + $trainerName
+        $reusableDependencyRun = Resolve-ReusableDependencyTrainerRun `
+            -RegistryRoot $resolvedRegistryRoot `
+            -TrainerName $trainerName `
+            -ModelFamily $dependencyModelFamily `
+            -TrainStartDate $TrainStartDate `
+            -TrainEndDate $TrainEndDate `
+            -ExecutionEvalStartDate $ExecutionEvalStartDate `
+            -ExecutionEvalEndDate $ExecutionEvalEndDate `
+            -ExpectedSnapshotId $script:dataPlatformReadySnapshotId
+        if ([bool](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reusable" -DefaultValue $false)) {
+            $results += [ordered]@{
+                trainer = $trainerName
+                model_family = $dependencyModelFamily
+                run_scope = $dependencyRunScope
+                exit_code = 0
+                command = ""
+                output_preview = "REUSED_EXISTING_RUN"
+                run_dir = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "run_dir" -DefaultValue "")
+                run_id = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "run_id" -DefaultValue "")
+                data_platform_ready_snapshot_id = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+                reused = $true
+                source_mode = "existing_run"
+                reuse_reason = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reason" -DefaultValue "")
+                required_artifacts_complete = [bool](Get-PropValue -ObjectValue $reusableDependencyRun -Name "required_artifacts_complete" -DefaultValue $false)
+                tail_mode = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "tail_mode" -DefaultValue "")
+            }
+            continue
+        }
         $trainArgs = @(
             "-m", "autobot.cli",
             "model", "train",
@@ -222,12 +250,31 @@ function Invoke-DependencyTrainerChain {
                 "--execution-eval-end", $ExecutionEvalEndDate
             )
         }
+        if ([string]::Equals($trainerName, "v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $trainArgs += "--dependency-expert-only"
+        }
         $trainExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $trainArgs
         $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
         $runId = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Split-Path -Leaf $runDir }
         $trainConfigPath = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Join-Path $runDir "train_config.yaml" }
         $trainConfig = if ([string]::IsNullOrWhiteSpace($trainConfigPath)) { @{} } else { Load-JsonOrEmpty -PathValue $trainConfigPath }
         $snapshotId = [string](Get-PropValue -ObjectValue $trainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+        $freshValidation = if ([string]::IsNullOrWhiteSpace($runDir)) {
+            [ordered]@{
+                required_artifacts_complete = $false
+                tail_mode = ""
+            }
+        } else {
+            Test-DependencyTrainerRunReusable `
+                -RunDir $runDir `
+                -TrainerName $trainerName `
+                -ModelFamily $dependencyModelFamily `
+                -TrainStartDate $TrainStartDate `
+                -TrainEndDate $TrainEndDate `
+                -ExecutionEvalStartDate $ExecutionEvalStartDate `
+                -ExecutionEvalEndDate $ExecutionEvalEndDate `
+                -ExpectedSnapshotId $script:dataPlatformReadySnapshotId
+        }
         if ((-not $DryRun) -and ([int]$trainExec.ExitCode -ne 0)) {
             throw ("dependency trainer failed: " + $trainerName)
         }
@@ -244,6 +291,11 @@ function Invoke-DependencyTrainerChain {
             run_dir = $runDir
             run_id = $runId
             data_platform_ready_snapshot_id = $snapshotId
+            reused = $false
+            source_mode = "fresh_train"
+            reuse_reason = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reason" -DefaultValue "")
+            required_artifacts_complete = [bool](Get-PropValue -ObjectValue $freshValidation -Name "required_artifacts_complete" -DefaultValue $false)
+            tail_mode = [string](Get-PropValue -ObjectValue $freshValidation -Name "tail_mode" -DefaultValue "")
         }
     }
     return @($results)
@@ -283,6 +335,191 @@ function Resolve-DependencyFusionInputPaths {
         $resolved[$required[$trainerName]] = $expertTablePath
     }
     return $resolved
+}
+
+function Get-DependencyTrainerRequiredArtifacts {
+    param([string]$TrainerName)
+    return @(
+        "train_config.yaml",
+        "artifact_status.json",
+        "expert_prediction_table.parquet"
+    )
+}
+
+function Resolve-DependencyTrainerTailMode {
+    param(
+        [string]$TrainerName,
+        [Parameter(Mandatory = $false)]$TrainConfig
+    )
+    $normalizedTrainer = ([string]$TrainerName).Trim().ToLowerInvariant()
+    if ($normalizedTrainer -eq "v5_panel_ensemble") {
+        $dependencyExpertOnly = To-Bool (Get-PropValue -ObjectValue $TrainConfig -Name "dependency_expert_only" -DefaultValue $false) $false
+        if ($dependencyExpertOnly) {
+            return "dependency_expert_only"
+        }
+        return "full"
+    }
+    if ($normalizedTrainer -in @("v5_sequence", "v5_lob", "v5_fusion")) {
+        return "expert_tail"
+    }
+    return "standard"
+}
+
+function Test-DependencyTrainerRunReusable {
+    param(
+        [string]$RunDir,
+        [string]$TrainerName,
+        [string]$ModelFamily,
+        [string]$TrainStartDate,
+        [string]$TrainEndDate,
+        [string]$ExecutionEvalStartDate,
+        [string]$ExecutionEvalEndDate,
+        [string]$ExpectedSnapshotId
+    )
+    $runId = if ([string]::IsNullOrWhiteSpace($RunDir)) { "" } else { Split-Path -Leaf $RunDir }
+    $result = [ordered]@{
+        reusable = $false
+        reason = "RUN_DIR_MISSING"
+        required_artifacts_complete = $false
+        trainer = $TrainerName
+        model_family = $ModelFamily
+        run_dir = $RunDir
+        run_id = $runId
+        data_platform_ready_snapshot_id = ""
+        tail_mode = "standard"
+    }
+    if ([string]::IsNullOrWhiteSpace($RunDir) -or (-not (Test-Path $RunDir))) {
+        return $result
+    }
+
+    $requiredArtifactNames = @(Get-DependencyTrainerRequiredArtifacts -TrainerName $TrainerName)
+    $requiredArtifactPaths = @{}
+    $missingArtifacts = New-Object System.Collections.Generic.List[string]
+    foreach ($artifactName in $requiredArtifactNames) {
+        $artifactPath = Join-Path $RunDir $artifactName
+        $requiredArtifactPaths[$artifactName] = $artifactPath
+        if (-not (Test-Path $artifactPath)) {
+            $missingArtifacts.Add($artifactName) | Out-Null
+        }
+    }
+    $result.required_artifacts_complete = ($missingArtifacts.Count -eq 0)
+    if (-not $result.required_artifacts_complete) {
+        $result.reason = "REQUIRED_ARTIFACTS_MISSING:" + (($missingArtifacts.ToArray()) -join ",")
+        return $result
+    }
+
+    $trainConfig = Load-JsonOrEmpty -PathValue ([string]$requiredArtifactPaths["train_config.yaml"])
+    $artifactStatus = Load-JsonOrEmpty -PathValue ([string]$requiredArtifactPaths["artifact_status.json"])
+    $result.data_platform_ready_snapshot_id = [string](Get-PropValue -ObjectValue $trainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+    $result.tail_mode = Resolve-DependencyTrainerTailMode -TrainerName $TrainerName -TrainConfig $trainConfig
+    $expectedRunScope = ([string]$RunScope).Trim() + "_dependency_" + $TrainerName
+
+    $checks = @(
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "trainer" -DefaultValue "") -eq [string]$TrainerName); reason = "TRAINER_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "model_family" -DefaultValue "") -eq [string]$ModelFamily); reason = "MODEL_FAMILY_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "feature_set" -DefaultValue "") -eq [string]$FeatureSet); reason = "FEATURE_SET_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "label_set" -DefaultValue "") -eq [string]$LabelSet); reason = "LABEL_SET_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "task" -DefaultValue "") -eq [string]$Task); reason = "TASK_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "run_scope" -DefaultValue "") -eq $expectedRunScope); reason = "RUN_SCOPE_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "tf" -DefaultValue "") -eq [string]$Tf); reason = "TF_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "quote" -DefaultValue "") -eq [string]$Quote); reason = "QUOTE_MISMATCH" },
+        [ordered]@{ ok = ([int](Get-PropValue -ObjectValue $trainConfig -Name "top_n" -DefaultValue 0) -eq [int]$TrainTopN); reason = "TOP_N_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "start" -DefaultValue "") -eq [string]$TrainStartDate); reason = "TRAIN_START_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "end" -DefaultValue "") -eq [string]$TrainEndDate); reason = "TRAIN_END_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "execution_acceptance_eval_start" -DefaultValue "") -eq [string]$ExecutionEvalStartDate); reason = "EXECUTION_EVAL_START_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "execution_acceptance_eval_end" -DefaultValue "") -eq [string]$ExecutionEvalEndDate); reason = "EXECUTION_EVAL_END_MISMATCH" },
+        [ordered]@{ ok = ([int](Get-PropValue -ObjectValue $trainConfig -Name "seed" -DefaultValue 0) -eq [int]$Seed); reason = "SEED_MISMATCH" },
+        [ordered]@{ ok = ([string](Get-PropValue -ObjectValue $trainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "") -eq [string]$ExpectedSnapshotId); reason = "SNAPSHOT_ID_MISMATCH" },
+        [ordered]@{ ok = (To-Bool (Get-PropValue -ObjectValue $artifactStatus -Name "core_saved" -DefaultValue $false) $false); reason = "ARTIFACT_STATUS_CORE_SAVED_MISSING" },
+        [ordered]@{ ok = (To-Bool (Get-PropValue -ObjectValue $artifactStatus -Name "support_artifacts_written" -DefaultValue $false) $false); reason = "ARTIFACT_STATUS_SUPPORT_ARTIFACTS_MISSING" },
+        [ordered]@{ ok = (To-Bool (Get-PropValue -ObjectValue $artifactStatus -Name "expert_prediction_table_complete" -DefaultValue $false) $false); reason = "ARTIFACT_STATUS_EXPERT_TABLE_MISSING" }
+    )
+    foreach ($check in $checks) {
+        if (-not [bool](Get-PropValue -ObjectValue $check -Name "ok" -DefaultValue $false)) {
+            $result.reason = [string](Get-PropValue -ObjectValue $check -Name "reason" -DefaultValue "MISMATCH")
+            return $result
+        }
+    }
+
+    if (([string]$TrainerName).Trim().ToLowerInvariant() -eq "v5_panel_ensemble") {
+        $dependencyExpertOnly = To-Bool (Get-PropValue -ObjectValue $trainConfig -Name "dependency_expert_only" -DefaultValue $false) $false
+        if (-not $dependencyExpertOnly) {
+            $result.reason = "PANEL_DEPENDENCY_EXPERT_ONLY_REQUIRED"
+            return $result
+        }
+    }
+
+    $result.reusable = $true
+    $result.reason = "MATCHING_RUN_REUSED"
+    return $result
+}
+
+function Resolve-ReusableDependencyTrainerRun {
+    param(
+        [string]$RegistryRoot,
+        [string]$TrainerName,
+        [string]$ModelFamily,
+        [string]$TrainStartDate,
+        [string]$TrainEndDate,
+        [string]$ExecutionEvalStartDate,
+        [string]$ExecutionEvalEndDate,
+        [string]$ExpectedSnapshotId
+    )
+    $familyRoot = Join-Path $RegistryRoot $ModelFamily
+    $default = [ordered]@{
+        reusable = $false
+        reason = "NO_REUSABLE_RUN_FOUND"
+        required_artifacts_complete = $false
+        trainer = $TrainerName
+        model_family = $ModelFamily
+        run_dir = ""
+        run_id = ""
+        data_platform_ready_snapshot_id = ""
+        tail_mode = "standard"
+    }
+    if ([string]::IsNullOrWhiteSpace($RegistryRoot) -or (-not (Test-Path $familyRoot))) {
+        return $default
+    }
+
+    $candidateRunDirs = New-Object System.Collections.Generic.List[string]
+    $latestPath = Join-Path $familyRoot "latest.json"
+    if (Test-Path $latestPath) {
+        $latestPayload = Load-JsonOrEmpty -PathValue $latestPath
+        $latestRunId = [string](Get-PropValue -ObjectValue $latestPayload -Name "run_id" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($latestRunId)) {
+            $latestRunDir = Join-Path $familyRoot $latestRunId
+            if (Test-Path $latestRunDir) {
+                $candidateRunDirs.Add($latestRunDir) | Out-Null
+            }
+        }
+    }
+
+    foreach ($runDir in @(Get-ChildItem -Path $familyRoot -Directory | Sort-Object Name -Descending | Select-Object -ExpandProperty FullName)) {
+        if (-not $candidateRunDirs.Contains([string]$runDir)) {
+            $candidateRunDirs.Add([string]$runDir) | Out-Null
+        }
+    }
+
+    $lastChecked = $default
+    foreach ($candidateRunDir in $candidateRunDirs.ToArray()) {
+        $checked = Test-DependencyTrainerRunReusable `
+            -RunDir $candidateRunDir `
+            -TrainerName $TrainerName `
+            -ModelFamily $ModelFamily `
+            -TrainStartDate $TrainStartDate `
+            -TrainEndDate $TrainEndDate `
+            -ExecutionEvalStartDate $ExecutionEvalStartDate `
+            -ExecutionEvalEndDate $ExecutionEvalEndDate `
+            -ExpectedSnapshotId $ExpectedSnapshotId
+        if ([bool](Get-PropValue -ObjectValue $checked -Name "reusable" -DefaultValue $false)) {
+            return $checked
+        }
+        $lastChecked = $checked
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $lastChecked -Name "reason" -DefaultValue ""))) {
+        return $default
+    }
+    return $lastChecked
 }
 
 function Get-MicroDateCoverageCounts {
@@ -4222,14 +4459,23 @@ try {
         $dependencyRunIds = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "run_id" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $dependencyFamilies = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "model_family" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $dependencySnapshotIds = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "data_platform_ready_snapshot_id" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $dependencyTailModes = @($dependencyTrainerResults | ForEach-Object { [string](Get-PropValue -ObjectValue $_ -Name "tail_mode" -DefaultValue "") } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $dependencyUniqueSnapshotIds = @($dependencySnapshotIds | Select-Object -Unique)
+        $dependencyReusedCount = @(
+            $dependencyTrainerResults |
+                Where-Object { [bool](Get-PropValue -ObjectValue $_ -Name "reused" -DefaultValue $false) }
+        ).Count
+        $dependencyTrainedCount = @($dependencyTrainerResults).Count - $dependencyReusedCount
         $report.steps.dependency_trainers = [ordered]@{
             attempted = $true
             count = @($dependencyTrainerResults).Count
+            trained_count = [int]$dependencyTrainedCount
+            reused_count = [int]$dependencyReusedCount
             results = @($dependencyTrainerResults)
             run_ids = @($dependencyRunIds)
             model_families = @($dependencyFamilies)
             data_platform_ready_snapshot_ids = @($dependencySnapshotIds)
+            tail_modes = @($dependencyTailModes)
             same_snapshot_id = if (@($dependencyUniqueSnapshotIds).Count -eq 1) { [string]$dependencyUniqueSnapshotIds[0] } else { "" }
             snapshot_id_consistent = (@($dependencyUniqueSnapshotIds).Count -le 1)
             expected_snapshot_id = $dataPlatformReadySnapshotId

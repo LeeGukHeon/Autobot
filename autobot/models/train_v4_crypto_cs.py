@@ -186,6 +186,7 @@ class TrainV4CryptoCsOptions:
         exit=ModelAlphaExitSettings(use_learned_exit_mode=False, use_learned_hold_bars=False),
         execution=ModelAlphaExecutionSettings(use_learned_recommendations=False),
     )
+    dependency_expert_only: bool = False
     live_domain_reweighting_enabled: bool = False
     live_domain_reweighting_db_path: Path | None = None
     live_domain_reweighting_min_target_rows: int = 32

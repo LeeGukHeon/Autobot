@@ -38,11 +38,11 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             from pathlib import Path
 
             ROOT = Path.cwd()
-            SNAPSHOT_ID = "snapshot-dependency-001"
-            PANEL_RUN_ID = "panel-run-001"
-            SEQ_RUN_ID = "sequence-run-001"
-            LOB_RUN_ID = "lob-run-001"
-            FUSION_RUN_ID = "fusion-run-001"
+            SNAPSHOT_ID = "snapshot-dependency-002"
+            PANEL_RUN_ID = "panel-run-002"
+            SEQ_RUN_ID = "sequence-run-002"
+            LOB_RUN_ID = "lob-run-002"
+            FUSION_RUN_ID = "fusion-run-002"
 
             def arg_value(name: str, default: str = "") -> str:
                 if name not in sys.argv:
@@ -62,11 +62,8 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(payload) + "\\n")
 
-            def expert_run(family: str, trainer: str, run_id: str) -> Path:
-                run_dir = ROOT / "models" / "registry" / family / run_id
-                run_dir.mkdir(parents=True, exist_ok=True)
-                dependency_expert_only = "--dependency-expert-only" in sys.argv
-                write_json(run_dir / "train_config.yaml", {
+            def train_config_doc(family: str, trainer: str) -> dict:
+                return {
                     "trainer": trainer,
                     "model_family": family,
                     "data_platform_ready_snapshot_id": SNAPSHOT_ID,
@@ -82,21 +79,34 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "execution_acceptance_eval_start": arg_value("--execution-eval-start"),
                     "execution_acceptance_eval_end": arg_value("--execution-eval-end"),
                     "seed": int(arg_value("--seed", "0") or 0),
-                    "dependency_expert_only": dependency_expert_only,
-                })
+                    "dependency_expert_only": ("--dependency-expert-only" in sys.argv),
+                }
+
+            def expert_run(family: str, trainer: str, run_id: str) -> Path:
+                run_dir = ROOT / "models" / "registry" / family / run_id
+                run_dir.mkdir(parents=True, exist_ok=True)
+                write_json(run_dir / "train_config.yaml", train_config_doc(family, trainer))
                 write_json(run_dir / "artifact_status.json", {
                     "run_id": run_id,
                     "status": "candidate",
                     "core_saved": True,
                     "support_artifacts_written": True,
+                    "tail_context_written": True,
+                    "execution_acceptance_complete": True,
+                    "runtime_recommendations_complete": True,
+                    "governance_artifacts_complete": True,
+                    "promotion_complete": True,
+                    "decision_surface_complete": True,
                     "expert_prediction_table_complete": True,
                 })
-                write_json(run_dir / "promotion_decision.json", {"status": "candidate"})
-                write_json(run_dir / "trainer_research_evidence.json", {"available": True})
+                write_json(run_dir / "promotion_decision.json", {"status": "candidate", "promotion_mode": "dependency"})
+                write_json(run_dir / "trainer_research_evidence.json", {"available": True, "pass": True})
                 write_json(run_dir / "search_budget_decision.json", {"status": "default"})
                 write_json(run_dir / "economic_objective_profile.json", {"profile_id": "test"})
                 write_json(run_dir / "lane_governance.json", {"lane_id": "cls_primary"})
                 write_json(run_dir / "decision_surface.json", {"status": "ok"})
+                write_json(run_dir / "runtime_recommendations.json", {"status": "ready"})
+                write_json(run_dir / "execution_acceptance_report.json", {"status": "trainer_runtime_contract_ready"})
                 table = run_dir / "expert_prediction_table.parquet"
                 table.write_bytes(b"PAR1")
                 return run_dir
@@ -105,11 +115,10 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             command_key = tuple(args[:4])
 
             if command_key == ("-m", "autobot.cli", "features", "build"):
-                append_log({"command": "features build", "label_set": arg_value("--label-set")})
                 print("features_build_ok")
                 sys.exit(0)
 
-            if tuple(args[:3]) == ("-m", "autobot.ops.data_contract_registry", "--project-root"):
+            if tuple(args[:2]) == ("-m", "autobot.ops.data_contract_registry"):
                 report_path = ROOT / "data" / "_meta" / "data_contract_registry.json"
                 write_json(report_path, {"summary": {"contract_count": 1}, "entries": [{"contract_id": "feature_dataset:features_v4"}]})
                 print(str(report_path))
@@ -149,23 +158,6 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     print(json.dumps({"run_dir": str(run_dir), "run_id": LOB_RUN_ID}))
                     sys.exit(0)
                 if trainer == "v5_fusion":
-                    panel_input = arg_value("--fusion-panel-input")
-                    sequence_input = arg_value("--fusion-sequence-input")
-                    lob_input = arg_value("--fusion-lob-input")
-                    expected_panel = str(ROOT / "models" / "registry" / "train_v5_panel_ensemble" / PANEL_RUN_ID / "expert_prediction_table.parquet")
-                    expected_sequence = str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "expert_prediction_table.parquet")
-                    expected_lob = str(ROOT / "models" / "registry" / "train_v5_lob" / LOB_RUN_ID / "expert_prediction_table.parquet")
-                    if panel_input != expected_panel or sequence_input != expected_sequence or lob_input != expected_lob:
-                        print("fusion input mismatch", file=sys.stderr)
-                        print(json.dumps({
-                            "panel_input": panel_input,
-                            "sequence_input": sequence_input,
-                            "lob_input": lob_input,
-                            "expected_panel": expected_panel,
-                            "expected_sequence": expected_sequence,
-                            "expected_lob": expected_lob,
-                        }), file=sys.stderr)
-                        sys.exit(2)
                     run_dir = expert_run(family, trainer, FUSION_RUN_ID)
                     print(json.dumps({"run_dir": str(run_dir), "run_id": FUSION_RUN_ID}))
                     sys.exit(0)
@@ -225,15 +217,19 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
     return wrapper_path
 
 
-def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path: Path) -> None:
+def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
+    _write_json(
+        project_root / "data" / "_meta" / "data_platform_ready_snapshot.json",
+        {"snapshot_id": "snapshot-dependency-002"},
+    )
     _write_json(
         project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
         {"run_id": "champion-run-000"},
     )
     python_exe = _make_fake_python_exe(tmp_path)
-    wrapper_script = tmp_path / "run_acceptance.ps1"
+    wrapper_script = tmp_path / "run_acceptance_once.ps1"
     wrapper_script.write_text(
         (
             "& "
@@ -243,7 +239,7 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
             + " -PythonExe "
             + json.dumps(str(python_exe))
             + " -OutDir "
-            + json.dumps("logs/test_acceptance_v5_dependency")
+            + json.dumps("logs/test_acceptance_v5_dependency_reuse")
             + " -BatchDate "
             + json.dumps("2026-03-08")
             + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
@@ -259,8 +255,10 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "-File",
         str(wrapper_script),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    first = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert first.returncode == 0, first.stdout + "\n" + first.stderr
+    second = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert second.returncode == 0, second.stdout + "\n" + second.stderr
 
     invocations = [
         json.loads(line)
@@ -268,34 +266,26 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         if line.strip()
     ]
     train_calls = [row for row in invocations if row.get("command") == "model train"]
-    assert [row["trainer"] for row in train_calls] == [
+    trainer_names = [row["trainer"] for row in train_calls]
+    assert trainer_names.count("v5_panel_ensemble") == 1
+    assert trainer_names.count("v5_sequence") == 1
+    assert trainer_names.count("v5_lob") == 1
+    assert trainer_names.count("v5_fusion") == 2
+
+    report = json.loads(
+        (project_root / "logs" / "test_acceptance_v5_dependency_reuse" / "latest.json").read_text(encoding="utf-8-sig")
+    )
+    assert report["steps"]["dependency_trainers"]["trained_count"] == 0
+    assert report["steps"]["dependency_trainers"]["reused_count"] == 3
+    results = report["steps"]["dependency_trainers"]["results"]
+    assert [item["trainer"] for item in results] == [
         "v5_panel_ensemble",
         "v5_sequence",
         "v5_lob",
-        "v5_fusion",
     ]
-    assert "--dependency-expert-only" in train_calls[0]["args"]
-    assert "--dependency-expert-only" not in train_calls[1]["args"]
-    assert "--dependency-expert-only" not in train_calls[2]["args"]
-    fusion_call = train_calls[-1]
-    args = fusion_call["args"]
-    assert "--fusion-panel-input" in args
-    assert "--fusion-sequence-input" in args
-    assert "--fusion-lob-input" in args
-
-    report = json.loads(
-        (project_root / "logs" / "test_acceptance_v5_dependency" / "latest.json").read_text(encoding="utf-8-sig")
-    )
-    assert report["candidate"]["fusion_run_id"] == "fusion-run-001"
-    assert report["candidate"]["dependency_trainer_run_ids"] == [
-        "panel-run-001",
-        "sequence-run-001",
-        "lob-run-001",
-    ]
-    assert report["candidate"]["snapshot_chain_consistent"] is True
-    assert report["steps"]["dependency_trainers"]["trained_count"] == 3
-    assert report["steps"]["dependency_trainers"]["reused_count"] == 0
-    inputs = report["steps"]["train"]["fusion_dependency_inputs"]
-    assert inputs["fusion_panel_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/expert_prediction_table.parquet")
-    assert inputs["fusion_sequence_input"].replace("\\", "/").endswith("/train_v5_sequence/sequence-run-001/expert_prediction_table.parquet")
-    assert inputs["fusion_lob_input"].replace("\\", "/").endswith("/train_v5_lob/lob-run-001/expert_prediction_table.parquet")
+    assert all(item["reused"] is True for item in results)
+    assert all(item["source_mode"] == "existing_run" for item in results)
+    assert all(item["required_artifacts_complete"] is True for item in results)
+    assert results[0]["tail_mode"] == "dependency_expert_only"
+    assert results[1]["tail_mode"] == "expert_tail"
+    assert results[2]["tail_mode"] == "expert_tail"

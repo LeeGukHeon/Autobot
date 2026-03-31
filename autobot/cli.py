@@ -909,6 +909,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--live-domain-reweighting-db-path",
         help="Override candidate live_state.db path for trainer=v4_crypto_cs live-domain reweighting.",
     )
+    model_train_parser.add_argument(
+        "--dependency-expert-only",
+        action="store_true",
+        help="Skip heavy panel tail stages and emit lightweight expert artifacts for dependency-only runs.",
+    )
     model_train_parser.add_argument("--run-scope", help=argparse.SUPPRESS)
     model_train_parser.add_argument("--sequence-backbone", choices=("patchtst", "timemixer", "tft"))
     model_train_parser.add_argument("--sequence-pretrain-method", choices=("ts2vec_like", "timemae_like", "none"))
