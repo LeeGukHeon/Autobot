@@ -2758,6 +2758,54 @@ def _project_python_exe(project_root: Path) -> str:
     return str(candidate) if candidate.exists() else "python3"
 
 
+def _build_live_rollout_command(
+    project_root: Path,
+    *,
+    unit_name: str,
+    live_rollout_command: str,
+    extra_args: list[str] | None = None,
+) -> list[str]:
+    python_exe = _project_python_exe(project_root)
+    env_payload = _systemctl_show(unit_name, "Environment")
+    env_map = _parse_systemd_environment(env_payload.get("Environment"))
+    db_path = str(env_map.get("AUTOBOT_LIVE_STATE_DB_PATH") or "").strip()
+    model_ref_source = str(env_map.get("AUTOBOT_LIVE_MODEL_REF_SOURCE") or "").strip()
+    model_family = str(env_map.get("AUTOBOT_LIVE_MODEL_FAMILY") or "").strip()
+    rollout_mode = str(env_map.get("AUTOBOT_LIVE_ROLLOUT_MODE") or "canary").strip()
+    target_unit = str(env_map.get("AUTOBOT_LIVE_TARGET_UNIT") or unit_name).strip() or unit_name
+    env_args = ["env"]
+    if db_path:
+        env_args.append(f"AUTOBOT_LIVE_STATE_DB_PATH={db_path}")
+    if model_ref_source:
+        env_args.append(f"AUTOBOT_LIVE_MODEL_REF_SOURCE={model_ref_source}")
+    if model_family:
+        env_args.append(f"AUTOBOT_LIVE_MODEL_FAMILY={model_family}")
+    if target_unit:
+        env_args.append(f"AUTOBOT_LIVE_TARGET_UNIT={target_unit}")
+    if rollout_mode:
+        env_args.append(f"AUTOBOT_LIVE_ROLLOUT_MODE={rollout_mode}")
+    env_args.extend(
+        [
+            python_exe,
+            "-m",
+            "autobot.cli",
+            "live",
+            "rollout",
+            live_rollout_command,
+        ]
+    )
+    if extra_args:
+        env_args.extend(list(extra_args))
+    return env_args
+
+
+def _dashboard_rollout_arm_token() -> str:
+    token = str((_dashboard_ops_config().get("token") or "")).strip()
+    if token:
+        return token
+    return "autobot-dashboard-ops"
+
+
 def _latest_candidate_pointer(project_root: Path) -> dict[str, Any]:
     primary_family = _resolve_dashboard_training_family(project_root)
     payload = _load_json(project_root / "models" / "registry" / primary_family / "latest_candidate.json")
@@ -3253,7 +3301,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "category": "pipeline",
             "confirm": "spawn_only를 지금 수동 실행할까요?",
             "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-spawn.service"],
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v5-challenger-spawn.service"],
         },
         "start_promote_only": {
             "id": "start_promote_only",
@@ -3262,7 +3310,53 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "category": "pipeline",
             "confirm": "promote_only를 지금 수동 실행할까요?",
             "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-challenger-promote.service"],
+            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v5-challenger-promote.service"],
+        },
+        "arm_canary_rollout": {
+            "id": "arm_canary_rollout",
+            "label": "카나리아 주문 허용",
+            "description": "카나리아 rollout arm 계약 생성",
+            "category": "rollout",
+            "confirm": "카나리아 실주문 허용을 위해 rollout arm을 지금 생성할까요?",
+            "kind": "command",
+            "command": _build_live_rollout_command(
+                project_root,
+                unit_name=_CANDIDATE_LIVE_UNITS[0],
+                live_rollout_command="arm",
+                extra_args=[
+                    "--mode",
+                    "canary",
+                    "--target-unit",
+                    _CANDIDATE_LIVE_UNITS[0],
+                    "--arm-token",
+                    _dashboard_rollout_arm_token(),
+                ],
+            ),
+        },
+        "canary_test_order": {
+            "id": "canary_test_order",
+            "label": "카나리아 테스트 주문",
+            "description": "카나리아 rollout test order 실행",
+            "category": "rollout",
+            "confirm": "카나리아 test order를 지금 실행할까요?",
+            "kind": "command",
+            "command": _build_live_rollout_command(
+                project_root,
+                unit_name=_CANDIDATE_LIVE_UNITS[0],
+                live_rollout_command="test-order",
+                extra_args=[
+                    "--market",
+                    "KRW-BTC",
+                    "--side",
+                    "bid",
+                    "--ord-type",
+                    "limit",
+                    "--price",
+                    "5000",
+                    "--volume",
+                    "1",
+                ],
+            ),
         },
         "start_rank_shadow": {
             "id": "start_rank_shadow",

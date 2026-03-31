@@ -1201,6 +1201,10 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     assert actions["clear_canary_breaker"]["category"] == "recovery"
     assert "reset_canary_suppressors" in actions
     assert actions["reset_canary_suppressors"]["category"] == "recovery"
+    assert "arm_canary_rollout" in actions
+    assert actions["arm_canary_rollout"]["category"] == "rollout"
+    assert "canary_test_order" in actions
+    assert actions["canary_test_order"]["category"] == "rollout"
     assert "clear_live_main_breaker" in actions
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
     assert "reset_live_main_suppressors" in actions
@@ -1260,6 +1264,109 @@ def test_execute_dashboard_operation_adopt_latest_candidate_uses_shared_adoption
     history_path = project_root / "logs" / "dashboard_ops" / "ops_history.jsonl"
     assert history_path.exists()
     assert '"action_id": "adopt_latest_candidate"' in history_path.read_text(encoding="utf-8")
+
+
+def test_execute_dashboard_operation_arm_canary_rollout_uses_v5_live_rollout_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_ENABLED", "true")
+    monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_TOKEN", "secret-token")
+    captured: dict[str, object] = {}
+
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        if unit_name == "autobot-live-alpha-canary.service":
+            return {
+                "Environment": (
+                    "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_canary/live_state.db "
+                    "AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate "
+                    "AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion "
+                    "AUTOBOT_LIVE_TARGET_UNIT=autobot-live-alpha-canary.service "
+                    "AUTOBOT_LIVE_ROLLOUT_MODE=canary"
+                )
+            }
+        return {}
+
+    def _fake_run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, object]:
+        captured["command"] = list(command)
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "started_at": "2026-03-24T00:00:00Z",
+            "completed_at": "2026-03-24T00:00:01Z",
+            "exit_code": 0,
+            "stdout_preview": "ok",
+            "stderr_preview": "",
+            "success": True,
+        }
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+    monkeypatch.setattr("autobot.dashboard_server._run_dashboard_command", _fake_run_dashboard_command)
+    monkeypatch.setattr("autobot.dashboard_server._project_python_exe", lambda root: "/venv/bin/python")
+
+    result = _execute_dashboard_operation(project_root, "arm_canary_rollout")
+
+    assert result["success"] is True
+    command = list(captured["command"] or [])
+    assert command[0] == "env"
+    assert "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_canary/live_state.db" in command
+    assert "AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate" in command
+    assert "AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion" in command
+    assert "/venv/bin/python" in command
+    assert "autobot.cli" in command
+    assert "rollout" in command
+    assert "arm" in command
+    assert "autobot-live-alpha-canary.service" in command
+    assert "secret-token" in command
+
+
+def test_execute_dashboard_operation_canary_test_order_uses_v5_live_rollout_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path
+    captured: dict[str, object] = {}
+
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        if unit_name == "autobot-live-alpha-canary.service":
+            return {
+                "Environment": (
+                    "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_canary/live_state.db "
+                    "AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate "
+                    "AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion "
+                    "AUTOBOT_LIVE_TARGET_UNIT=autobot-live-alpha-canary.service "
+                    "AUTOBOT_LIVE_ROLLOUT_MODE=canary"
+                )
+            }
+        return {}
+
+    def _fake_run_dashboard_command(command: list[str], *, timeout_sec: int = 20) -> dict[str, object]:
+        captured["command"] = list(command)
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "started_at": "2026-03-24T00:00:00Z",
+            "completed_at": "2026-03-24T00:00:01Z",
+            "exit_code": 0,
+            "stdout_preview": "ok",
+            "stderr_preview": "",
+            "success": True,
+        }
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+    monkeypatch.setattr("autobot.dashboard_server._run_dashboard_command", _fake_run_dashboard_command)
+    monkeypatch.setattr("autobot.dashboard_server._project_python_exe", lambda root: "/venv/bin/python")
+
+    result = _execute_dashboard_operation(project_root, "canary_test_order")
+
+    assert result["success"] is True
+    command = list(captured["command"] or [])
+    assert command[0] == "env"
+    assert "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_canary/live_state.db" in command
+    assert "test-order" in command
+    assert "KRW-BTC" in command
+    assert "limit" in command
+    assert "5000" in command
+    assert "1" in command
 
 
 def test_execute_dashboard_operation_adopt_latest_candidate_uses_v5_family_and_v4_champion_baseline(
