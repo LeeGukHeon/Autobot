@@ -860,7 +860,9 @@
     const trainClose = foundation.train_snapshot_close || {};
 
     document.getElementById("overview-headline").textContent =
-      acceptance.overall_pass === true ? "이번 후보는 통과했습니다." :
+      trainClose.overall_pass === true && acceptance.overall_pass === false
+        ? "nightly close는 정상이고, acceptance는 이전 실패 결과를 보여주고 있습니다."
+        : acceptance.overall_pass === true ? "이번 후보는 통과했습니다." :
       acceptance.overall_pass === false ? "이번 후보는 탈락했고 챔피언 유지입니다." :
       "최신 검증 결과를 기다리는 중입니다.";
 
@@ -916,6 +918,11 @@
       title: "최근 train snapshot close",
       summary: trainClose.overall_pass ? `snapshot ${shortRun(trainClose.snapshot_id)}로 close 완료` : joinTranslated(trainClose.failure_reasons || []),
       pillHtml: pill("close", trainClose.overall_pass ? "정상" : "실패", trainClose.overall_pass ? "good" : "bad"),
+    }));
+    if (trainClose.overall_pass === true && acceptance.overall_pass === false) notes.push(compactRow({
+      title: "acceptance 표시 주의",
+      summary: "운영개요의 acceptance 판정은 아직 이전 run 결과를 가리키고 있고, 최신 close 결과와는 별개입니다.",
+      pillHtml: pill("메모", "이전 결과", "warn"),
     }));
     if ((acceptance.reasons || []).length) notes.push(compactRow({
       title: "직접 사유",
