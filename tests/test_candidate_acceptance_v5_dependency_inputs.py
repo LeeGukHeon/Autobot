@@ -101,6 +101,32 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 table.write_bytes(b"PAR1")
                 return run_dir
 
+            def export_run(family: str, trainer: str, run_id: str, start: str, end: str) -> dict:
+                export_root = ROOT / "models" / "registry" / family / run_id / "_runtime_exports" / f"{start}__{end}"
+                export_root.mkdir(parents=True, exist_ok=True)
+                export_path = export_root / "expert_prediction_table.parquet"
+                metadata_path = export_root / "metadata.json"
+                reused = export_path.exists() and metadata_path.exists()
+                export_path.write_bytes(b"PAR1")
+                metadata = {
+                    "run_id": run_id,
+                    "trainer": trainer,
+                    "model_family": family,
+                    "data_platform_ready_snapshot_id": SNAPSHOT_ID,
+                    "start": start,
+                    "end": end,
+                    "rows": 12,
+                    "selected_markets": ["KRW-BTC", "KRW-ETH"],
+                }
+                write_json(metadata_path, metadata)
+                return {
+                    **metadata,
+                    "export_path": str(export_path),
+                    "metadata_path": str(metadata_path),
+                    "reused": reused,
+                    "source_mode": "existing_export" if reused else "fresh_export",
+                }
+
             args = sys.argv[1:]
             command_key = tuple(args[:4])
 
@@ -152,23 +178,67 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     panel_input = arg_value("--fusion-panel-input")
                     sequence_input = arg_value("--fusion-sequence-input")
                     lob_input = arg_value("--fusion-lob-input")
+                    panel_runtime_input = arg_value("--fusion-panel-runtime-input")
+                    sequence_runtime_input = arg_value("--fusion-sequence-runtime-input")
+                    lob_runtime_input = arg_value("--fusion-lob-runtime-input")
+                    runtime_start = arg_value("--fusion-runtime-start")
+                    runtime_end = arg_value("--fusion-runtime-end")
                     expected_panel = str(ROOT / "models" / "registry" / "train_v5_panel_ensemble" / PANEL_RUN_ID / "expert_prediction_table.parquet")
                     expected_sequence = str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "expert_prediction_table.parquet")
                     expected_lob = str(ROOT / "models" / "registry" / "train_v5_lob" / LOB_RUN_ID / "expert_prediction_table.parquet")
-                    if panel_input != expected_panel or sequence_input != expected_sequence or lob_input != expected_lob:
+                    expected_panel_runtime = str(ROOT / "models" / "registry" / "train_v5_panel_ensemble" / PANEL_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
+                    expected_sequence_runtime = str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
+                    expected_lob_runtime = str(ROOT / "models" / "registry" / "train_v5_lob" / LOB_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
+                    if panel_input != expected_panel or sequence_input != expected_sequence or lob_input != expected_lob or panel_runtime_input != expected_panel_runtime or sequence_runtime_input != expected_sequence_runtime or lob_runtime_input != expected_lob_runtime:
                         print("fusion input mismatch", file=sys.stderr)
                         print(json.dumps({
                             "panel_input": panel_input,
                             "sequence_input": sequence_input,
                             "lob_input": lob_input,
+                            "panel_runtime_input": panel_runtime_input,
+                            "sequence_runtime_input": sequence_runtime_input,
+                            "lob_runtime_input": lob_runtime_input,
                             "expected_panel": expected_panel,
                             "expected_sequence": expected_sequence,
                             "expected_lob": expected_lob,
+                            "expected_panel_runtime": expected_panel_runtime,
+                            "expected_sequence_runtime": expected_sequence_runtime,
+                            "expected_lob_runtime": expected_lob_runtime,
                         }), file=sys.stderr)
                         sys.exit(2)
                     run_dir = expert_run(family, trainer, FUSION_RUN_ID)
+                    write_json(run_dir / "fusion_runtime_input_contract.json", {
+                        "snapshot_id": SNAPSHOT_ID,
+                        "runtime_window": {
+                            "start": runtime_start,
+                            "end": runtime_end,
+                            "start_ts_ms": 1774656000000,
+                            "end_ts_ms": 1774742399999,
+                        },
+                        "coverage_start_ts_ms": 1774656000000,
+                        "coverage_end_ts_ms": 1774742399999,
+                        "runtime_rows_after_date_filter": 12,
+                        "runtime_dataset_root": str(run_dir / "runtime_feature_dataset"),
+                    })
                     print(json.dumps({"run_dir": str(run_dir), "run_id": FUSION_RUN_ID}))
                     sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "model", "export-expert-table"):
+                trainer = arg_value("--trainer")
+                run_dir = Path(arg_value("--run-dir"))
+                start = arg_value("--start")
+                end = arg_value("--end")
+                family = run_dir.parent.name
+                run_id = run_dir.name
+                append_log({
+                    "command": "model export-expert-table",
+                    "trainer": trainer,
+                    "run_id": run_id,
+                    "start": start,
+                    "end": end,
+                })
+                print(json.dumps(export_run(family, trainer, run_id, start, end)))
+                sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
@@ -277,11 +347,20 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert "--dependency-expert-only" in train_calls[0]["args"]
     assert "--dependency-expert-only" not in train_calls[1]["args"]
     assert "--dependency-expert-only" not in train_calls[2]["args"]
+    export_calls = [row for row in invocations if row.get("command") == "model export-expert-table"]
+    assert [row["trainer"] for row in export_calls] == [
+        "v5_panel_ensemble",
+        "v5_sequence",
+        "v5_lob",
+    ]
     fusion_call = train_calls[-1]
     args = fusion_call["args"]
     assert "--fusion-panel-input" in args
     assert "--fusion-sequence-input" in args
     assert "--fusion-lob-input" in args
+    assert "--fusion-panel-runtime-input" in args
+    assert "--fusion-sequence-runtime-input" in args
+    assert "--fusion-lob-runtime-input" in args
 
     report = json.loads(
         (project_root / "logs" / "test_acceptance_v5_dependency" / "latest.json").read_text(encoding="utf-8-sig")
@@ -295,7 +374,12 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert report["candidate"]["snapshot_chain_consistent"] is True
     assert report["steps"]["dependency_trainers"]["trained_count"] == 3
     assert report["steps"]["dependency_trainers"]["reused_count"] == 0
+    assert report["steps"]["dependency_runtime_exports"]["count"] == 3
     inputs = report["steps"]["train"]["fusion_dependency_inputs"]
+    runtime_inputs = report["steps"]["train"]["fusion_dependency_runtime_inputs"]
     assert inputs["fusion_panel_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/expert_prediction_table.parquet")
     assert inputs["fusion_sequence_input"].replace("\\", "/").endswith("/train_v5_sequence/sequence-run-001/expert_prediction_table.parquet")
     assert inputs["fusion_lob_input"].replace("\\", "/").endswith("/train_v5_lob/lob-run-001/expert_prediction_table.parquet")
+    assert runtime_inputs["fusion_panel_runtime_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")
+    assert runtime_inputs["fusion_sequence_runtime_input"].replace("\\", "/").endswith("/train_v5_sequence/sequence-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")
+    assert runtime_inputs["fusion_lob_runtime_input"].replace("\\", "/").endswith("/train_v5_lob/lob-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -38,6 +38,11 @@ from .v5_expert_tail import (
     run_or_reuse_v5_expert_prediction_table,
     run_or_reuse_v5_runtime_governance_artifacts,
     v5_expert_tail_stage_reusable,
+)
+from .v5_expert_runtime_export import (
+    load_existing_expert_runtime_export,
+    resolve_expert_runtime_export_paths,
+    write_expert_runtime_export_metadata,
 )
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
 from autobot.data.collect.sequence_tensor_store import (
@@ -229,6 +234,7 @@ def _write_sequence_expert_prediction_table(
     samples: _SequenceSamples,
     split_labels: np.ndarray,
     estimator: V5SequenceEstimator,
+    output_path: Path | None = None,
 ) -> Path:
     payload = estimator.predict_cache_batch(_build_sequence_batch(samples))
     quantiles = np.asarray(payload["return_quantiles_by_horizon"], dtype=np.float64)
@@ -250,9 +256,10 @@ def _write_sequence_expert_prediction_table(
         for emb_idx in range(regime.shape[1]):
             frame_payload[f"regime_embedding_{int(emb_idx)}"] = regime[:, emb_idx]
     frame = pl.DataFrame(frame_payload).sort(["ts_ms", "market"])
-    output_path = run_dir / "expert_prediction_table.parquet"
-    frame.write_parquet(output_path)
-    return output_path
+    resolved_output_path = Path(output_path) if output_path is not None else (run_dir / "expert_prediction_table.parquet")
+    resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(resolved_output_path)
+    return resolved_output_path
 
 
 def _build_sequence_runtime_recommendations(*, options: TrainV5SequenceOptions, runtime_dataset_root: Path) -> dict[str, Any]:
@@ -818,7 +825,11 @@ def _strict_eval_indices(indices: np.ndarray, support_levels: np.ndarray) -> np.
     return strict_eval_indices(indices, support_levels)
 
 
-def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
+def _load_sequence_samples(
+    options: TrainV5SequenceOptions,
+    *,
+    selected_markets_override: tuple[str, ...] | None = None,
+) -> _SequenceSamples:
     manifest = pl.read_parquet(options.dataset_root / "_meta" / "manifest.parquet")
     if manifest.height <= 0:
         raise ValueError("sequence_v1 manifest is empty")
@@ -837,18 +848,23 @@ def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
     if manifest.height <= 0:
         raise ValueError("sequence_v1 manifest has no readable cache rows in the requested range")
 
-    selected_markets = [
-        str(row["market"]).strip().upper()
-        for row in (
-            manifest.group_by("market")
-            .len()
-            .sort(["len", "market"], descending=[True, False])
-            .iter_rows(named=True)
-        )
-        if str(row["market"]).strip()
-    ]
-    if int(options.top_n) > 0:
-        selected_markets = selected_markets[: max(int(options.top_n), 1)]
+    if selected_markets_override:
+        selected_markets = [
+            str(item).strip().upper() for item in selected_markets_override if str(item).strip()
+        ]
+    else:
+        selected_markets = [
+            str(row["market"]).strip().upper()
+            for row in (
+                manifest.group_by("market")
+                .len()
+                .sort(["len", "market"], descending=[True, False])
+                .iter_rows(named=True)
+            )
+            if str(row["market"]).strip()
+        ]
+        if int(options.top_n) > 0:
+            selected_markets = selected_markets[: max(int(options.top_n), 1)]
     manifest = manifest.filter(pl.col("market").is_in(selected_markets))
     if manifest.height <= 0:
         raise ValueError("sequence_v1 manifest has no rows after top_n filtering")
@@ -966,6 +982,90 @@ def _load_sequence_samples(options: TrainV5SequenceOptions) -> _SequenceSamples:
         horizons_minutes=tuple(int(item) for item in options.horizons_minutes),
         quantile_levels=tuple(float(item) for item in options.quantile_levels),
     )
+
+
+def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
+    run_dir = Path(run_dir).resolve()
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
+    options = replace(_options_from_v5_sequence_train_config(train_config), start=str(start), end=str(end))
+    data_platform_ready_snapshot_id = (
+        str(train_config.get("data_platform_ready_snapshot_id") or "").strip()
+        or resolve_ready_snapshot_id(project_root=Path.cwd())
+    )
+    selected_markets = tuple(
+        str(item).strip() for item in (train_config.get("selected_markets") or []) if str(item).strip()
+    )
+    existing_export = load_existing_expert_runtime_export(run_dir, start, end)
+    existing_metadata = dict(existing_export.get("metadata") or {})
+    paths = dict(existing_export.get("paths") or {})
+    export_path = Path(str(paths.get("export_path")))
+    metadata_path = Path(str(paths.get("metadata_path")))
+    if (
+        bool(existing_export.get("exists", False))
+        and str(existing_metadata.get("run_id") or "").strip() == run_dir.name
+        and str(existing_metadata.get("data_platform_ready_snapshot_id") or "").strip() == data_platform_ready_snapshot_id
+        and str(existing_metadata.get("start") or "").strip() == str(start).strip()
+        and str(existing_metadata.get("end") or "").strip() == str(end).strip()
+    ):
+        return {
+            "run_id": run_dir.name,
+            "trainer": "v5_sequence",
+            "model_family": str(train_config.get("model_family") or options.model_family).strip(),
+            "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+            "start": str(start).strip(),
+            "end": str(end).strip(),
+            "rows": int(existing_metadata.get("rows", 0) or 0),
+            "selected_markets": list(existing_metadata.get("selected_markets") or []),
+            "export_path": str(export_path),
+            "metadata_path": str(metadata_path),
+            "reused": True,
+            "source_mode": "existing_export",
+        }
+
+    model_bundle = load_model_bundle(run_dir)
+    estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
+    if estimator is None:
+        raise ValueError(f"run_dir does not contain a usable sequence estimator: {run_dir}")
+    samples = _load_sequence_samples(options, selected_markets_override=selected_markets)
+    split_labels = np.full(samples.rows, "runtime", dtype=object)
+    export_path = _write_sequence_expert_prediction_table(
+        run_dir=run_dir,
+        samples=samples,
+        split_labels=split_labels,
+        estimator=estimator,
+        output_path=export_path,
+    )
+    metadata = {
+        "version": 1,
+        "policy": "v5_expert_runtime_export_v1",
+        "run_id": run_dir.name,
+        "trainer": "v5_sequence",
+        "model_family": str(train_config.get("model_family") or options.model_family).strip(),
+        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+        "start": str(start).strip(),
+        "end": str(end).strip(),
+        "rows": int(samples.rows),
+        "selected_markets": list(samples.selected_markets),
+    }
+    metadata_path = write_expert_runtime_export_metadata(
+        run_dir=run_dir,
+        start=start,
+        end=end,
+        payload=metadata,
+    )
+    return {
+        **metadata,
+        "export_path": str(export_path),
+        "metadata_path": str(metadata_path),
+        "reused": False,
+        "source_mode": "fresh_export",
+    }
+
+
+def materialize_v5_sequence_runtime_export(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
+    return _export_sequence_expert_prediction_table_window(run_dir=run_dir, start=start, end=end)
 
 
 def _compute_future_returns(ws_close_map: dict[int, float], *, anchor_ts_ms: int, horizons: tuple[int, ...]) -> list[float] | None:

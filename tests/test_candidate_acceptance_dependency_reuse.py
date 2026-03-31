@@ -111,6 +111,32 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 table.write_bytes(b"PAR1")
                 return run_dir
 
+            def export_run(family: str, trainer: str, run_id: str, start: str, end: str) -> dict:
+                export_root = ROOT / "models" / "registry" / family / run_id / "_runtime_exports" / f"{start}__{end}"
+                export_root.mkdir(parents=True, exist_ok=True)
+                export_path = export_root / "expert_prediction_table.parquet"
+                metadata_path = export_root / "metadata.json"
+                reused = export_path.exists() and metadata_path.exists()
+                export_path.write_bytes(b"PAR1")
+                metadata = {
+                    "run_id": run_id,
+                    "trainer": trainer,
+                    "model_family": family,
+                    "data_platform_ready_snapshot_id": SNAPSHOT_ID,
+                    "start": start,
+                    "end": end,
+                    "rows": 12,
+                    "selected_markets": ["KRW-BTC", "KRW-ETH"],
+                }
+                write_json(metadata_path, metadata)
+                return {
+                    **metadata,
+                    "export_path": str(export_path),
+                    "metadata_path": str(metadata_path),
+                    "reused": reused,
+                    "source_mode": "existing_export" if reused else "fresh_export",
+                }
+
             args = sys.argv[1:]
             command_key = tuple(args[:4])
 
@@ -158,9 +184,41 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     print(json.dumps({"run_dir": str(run_dir), "run_id": LOB_RUN_ID}))
                     sys.exit(0)
                 if trainer == "v5_fusion":
+                    runtime_start = arg_value("--fusion-runtime-start")
+                    runtime_end = arg_value("--fusion-runtime-end")
                     run_dir = expert_run(family, trainer, FUSION_RUN_ID)
+                    write_json(run_dir / "fusion_runtime_input_contract.json", {
+                        "snapshot_id": SNAPSHOT_ID,
+                        "runtime_window": {
+                            "start": runtime_start,
+                            "end": runtime_end,
+                            "start_ts_ms": 1774656000000,
+                            "end_ts_ms": 1774742399999,
+                        },
+                        "coverage_start_ts_ms": 1774656000000,
+                        "coverage_end_ts_ms": 1774742399999,
+                        "runtime_rows_after_date_filter": 12,
+                        "runtime_dataset_root": str(run_dir / "runtime_feature_dataset"),
+                    })
                     print(json.dumps({"run_dir": str(run_dir), "run_id": FUSION_RUN_ID}))
                     sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "model", "export-expert-table"):
+                trainer = arg_value("--trainer")
+                run_dir = Path(arg_value("--run-dir"))
+                start = arg_value("--start")
+                end = arg_value("--end")
+                family = run_dir.parent.name
+                run_id = run_dir.name
+                append_log({
+                    "command": "model export-expert-table",
+                    "trainer": trainer,
+                    "run_id": run_id,
+                    "start": start,
+                    "end": end,
+                })
+                print(json.dumps(export_run(family, trainer, run_id, start, end)))
+                sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 model_ref = arg_value("--model-ref")
@@ -266,11 +324,13 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
         if line.strip()
     ]
     train_calls = [row for row in invocations if row.get("command") == "model train"]
+    export_calls = [row for row in invocations if row.get("command") == "model export-expert-table"]
     trainer_names = [row["trainer"] for row in train_calls]
     assert trainer_names.count("v5_panel_ensemble") == 1
     assert trainer_names.count("v5_sequence") == 1
     assert trainer_names.count("v5_lob") == 1
     assert trainer_names.count("v5_fusion") == 2
+    assert len(export_calls) == 6
 
     report = json.loads(
         (project_root / "logs" / "test_acceptance_v5_dependency_reuse" / "latest.json").read_text(encoding="utf-8-sig")
@@ -289,3 +349,5 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
     assert results[0]["tail_mode"] == "dependency_expert_only"
     assert results[1]["tail_mode"] == "expert_tail"
     assert results[2]["tail_mode"] == "expert_tail"
+    runtime_exports = report["steps"]["dependency_runtime_exports"]["results"]
+    assert all(item["reused"] is True for item in runtime_exports)

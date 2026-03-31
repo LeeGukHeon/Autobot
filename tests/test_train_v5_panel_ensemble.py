@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,6 +9,7 @@ import numpy as np
 from autobot.models.registry import load_json
 from autobot.models.train_v5_panel_ensemble import (
     TrainV5PanelEnsembleOptions,
+    materialize_v5_panel_ensemble_runtime_export,
     train_and_register_v5_panel_ensemble,
 )
 
@@ -410,3 +413,84 @@ def test_train_v5_panel_ensemble_dependency_expert_only_skips_heavy_tail(tmp_pat
     assert load_json(result.run_dir / "train_config.yaml")["dependency_expert_only"] is True
     assert load_json(result.run_dir / "panel_tail_context.json")["dependency_expert_only"] is True
     assert load_json(result.run_dir / "panel_tail_context.json")["tail_mode"] == "dependency_expert_only"
+
+
+def test_materialize_v5_panel_ensemble_runtime_export_writes_window_artifacts(tmp_path, monkeypatch) -> None:
+    class _RuntimeEstimator:
+        def predict_panel_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+            rows = np.asarray(x).shape[0]
+            return {
+                "final_rank_score": np.full(rows, 0.7, dtype=np.float64),
+                "final_uncertainty": np.full(rows, 0.1, dtype=np.float64),
+                "score_mean": np.full(rows, 0.7, dtype=np.float64),
+                "score_std": np.full(rows, 0.1, dtype=np.float64),
+                "score_lcb": np.full(rows, 0.6, dtype=np.float64),
+                "final_expected_return": np.full(rows, 0.02, dtype=np.float64),
+                "final_expected_es": np.full(rows, 0.01, dtype=np.float64),
+                "final_tradability": np.full(rows, 0.8, dtype=np.float64),
+                "final_alpha_lcb": np.full(rows, -0.09, dtype=np.float64),
+            }
+
+    dataset = SimpleNamespace(
+        rows=2,
+        X=np.asarray([[0.1], [0.2]], dtype=np.float64),
+        y_cls=np.asarray([0, 1], dtype=np.int64),
+        y_reg=np.asarray([0.0, 0.1], dtype=np.float64),
+        y_rank=np.asarray([0.0, 0.1], dtype=np.float64),
+        sample_weight=np.asarray([1.0, 1.0], dtype=np.float64),
+        ts_ms=np.asarray([1_000, 2_000], dtype=np.int64),
+        markets=np.asarray(["KRW-BTC", "KRW-ETH"], dtype=object),
+        selected_markets=("KRW-BTC", "KRW-ETH"),
+    )
+    train_config = {
+        "trainer": "v5_panel_ensemble",
+        "model_family": "train_v5_panel_ensemble",
+        "data_platform_ready_snapshot_id": "snapshot-export",
+    }
+    run_dir = tmp_path / "registry" / "train_v5_panel_ensemble" / "panel-export-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "train_config.yaml").write_text(json.dumps(train_config), encoding="utf-8")
+    estimator = _RuntimeEstimator()
+    monkeypatch.setattr(
+        "autobot.models.train_v5_panel_ensemble._load_panel_inference_dataset_window",
+        lambda **kwargs: (
+            dataset,
+            TrainV5PanelEnsembleOptions(
+                dataset_root=tmp_path / "features",
+                registry_root=tmp_path / "registry",
+                logs_root=tmp_path / "logs",
+                model_family="train_v5_panel_ensemble",
+                tf="5m",
+                quote="KRW",
+                top_n=20,
+                start="2026-03-27",
+                end="2026-03-27",
+                feature_set="v4",
+                label_set="v3",
+                task="cls",
+                booster_sweep_trials=1,
+                seed=7,
+                nthread=1,
+                batch_rows=128,
+                train_ratio=0.6,
+                valid_ratio=0.2,
+                test_ratio=0.2,
+                embargo_bars=0,
+                fee_bps_est=5.0,
+                safety_bps=1.0,
+                ev_scan_steps=10,
+                ev_min_selected=1,
+                min_rows_for_train=1,
+            ),
+            {**train_config, "selected_markets": ["KRW-BTC", "KRW-ETH"]},
+        ),
+    )
+    monkeypatch.setattr(
+        "autobot.models.train_v5_panel_ensemble.load_model_bundle",
+        lambda path: {"estimator": estimator},
+    )
+    export = materialize_v5_panel_ensemble_runtime_export(run_dir=run_dir, start="2026-03-27", end="2026-03-27")
+    assert Path(export["export_path"]).exists()
+    assert Path(export["metadata_path"]).exists()
+    assert export["rows"] == 2
+    assert export["reused"] is False

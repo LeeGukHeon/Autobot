@@ -36,6 +36,7 @@ from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 VALID_FUSION_STACKERS = ("linear", "monotone_gbdt")
 _FUSION_INPUT_CONTRACT_FILENAME = "fusion_input_contract.json"
+_FUSION_RUNTIME_INPUT_CONTRACT_FILENAME = "fusion_runtime_input_contract.json"
 _FUSION_ENTRY_BOUNDARY_STATUS_KEY = "entry_boundary_complete"
 
 
@@ -51,6 +52,11 @@ class TrainV5FusionOptions:
     start: str
     end: str
     seed: int
+    panel_runtime_input_path: Path | None = None
+    sequence_runtime_input_path: Path | None = None
+    lob_runtime_input_path: Path | None = None
+    runtime_start: str | None = None
+    runtime_end: str | None = None
     stacker_family: str = "linear"
     run_scope: str = "manual_fusion_expert"
 
@@ -123,6 +129,10 @@ def _fusion_input_contract_path(run_dir: Path) -> Path:
     return run_dir / _FUSION_INPUT_CONTRACT_FILENAME
 
 
+def _fusion_runtime_input_contract_path(run_dir: Path) -> Path:
+    return run_dir / _FUSION_RUNTIME_INPUT_CONTRACT_FILENAME
+
+
 def _fusion_entry_boundary_path(run_dir: Path) -> Path:
     return run_dir / "entry_boundary_contract.json"
 
@@ -144,6 +154,11 @@ def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
     if not resolved_path.exists():
         raise FileNotFoundError(f"{prefix} input parquet missing: {resolved_path}")
     run_dir = resolved_path.parent
+    if not (run_dir / "train_config.yaml").exists():
+        for parent in resolved_path.parents:
+            if (parent / "train_config.yaml").exists():
+                run_dir = parent
+                break
     train_config = load_json(run_dir / "train_config.yaml")
     if not train_config:
         raise FileNotFoundError(f"{prefix} input missing train_config.yaml: {run_dir}")
@@ -403,6 +418,27 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
         monotone_signs=monotone_signs,
     )
 
+def _runtime_fusion_input_options(options: TrainV5FusionOptions) -> TrainV5FusionOptions:
+    return TrainV5FusionOptions(
+        panel_input_path=Path(str(options.panel_runtime_input_path or options.panel_input_path)),
+        sequence_input_path=Path(str(options.sequence_runtime_input_path or options.sequence_input_path)),
+        lob_input_path=Path(str(options.lob_runtime_input_path or options.lob_input_path)),
+        panel_runtime_input_path=options.panel_runtime_input_path,
+        sequence_runtime_input_path=options.sequence_runtime_input_path,
+        lob_runtime_input_path=options.lob_runtime_input_path,
+        registry_root=options.registry_root,
+        logs_root=options.logs_root,
+        model_family=options.model_family,
+        quote=options.quote,
+        start=str(options.runtime_start or options.start),
+        end=str(options.runtime_end or options.end),
+        runtime_start=options.runtime_start,
+        runtime_end=options.runtime_end,
+        seed=options.seed,
+        stacker_family=options.stacker_family,
+        run_scope=options.run_scope,
+    )
+
 
 def _prepare_fusion_input_bundle(options: TrainV5FusionOptions) -> _FusionInputBundle:
     input_bundle = _load_and_merge_expert_tables(options)
@@ -417,6 +453,50 @@ def _prepare_fusion_input_bundle(options: TrainV5FusionOptions) -> _FusionInputB
         raise ValueError("fusion inputs have no rows in the requested range")
     input_contract = dict(input_bundle.input_contract)
     input_contract["rows_after_date_filter"] = int(merged.height)
+    return _FusionInputBundle(
+        merged=merged,
+        input_contract=input_contract,
+        feature_names=input_bundle.feature_names,
+        monotone_signs=input_bundle.monotone_signs,
+    )
+
+
+def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _FusionInputBundle:
+    runtime_options = _runtime_fusion_input_options(options)
+    input_bundle = _prepare_fusion_input_bundle(runtime_options)
+    merged = input_bundle.merged
+    explicit_runtime_requested = any(
+        path is not None
+        for path in (
+            options.panel_runtime_input_path,
+            options.sequence_runtime_input_path,
+            options.lob_runtime_input_path,
+        )
+    ) or (
+        (options.runtime_start is not None and str(options.runtime_start).strip() != str(options.start).strip())
+        or (options.runtime_end is not None and str(options.runtime_end).strip() != str(options.end).strip())
+    )
+    if merged.height <= 0:
+        raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_EMPTY")
+    start_ts_ms = _parse_date_to_ts_ms(runtime_options.start)
+    end_ts_ms = _parse_date_to_ts_ms(runtime_options.end, end_of_day=True)
+    coverage_start = int(merged.get_column("ts_ms").min()) if merged.height > 0 else None
+    coverage_end = int(merged.get_column("ts_ms").max()) if merged.height > 0 else None
+    if explicit_runtime_requested:
+        if start_ts_ms is not None and coverage_start is not None and coverage_start > int(start_ts_ms):
+            raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_GAP")
+        if end_ts_ms is not None and coverage_end is not None and coverage_end < int(end_ts_ms):
+            raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_GAP")
+    input_contract = dict(input_bundle.input_contract)
+    input_contract["runtime_window"] = {
+        "start": runtime_options.start,
+        "end": runtime_options.end,
+        "start_ts_ms": start_ts_ms,
+        "end_ts_ms": end_ts_ms,
+    }
+    input_contract["coverage_start_ts_ms"] = coverage_start
+    input_contract["coverage_end_ts_ms"] = coverage_end
+    input_contract["runtime_rows_after_date_filter"] = int(merged.height)
     return _FusionInputBundle(
         merged=merged,
         input_contract=input_contract,
@@ -491,6 +571,11 @@ def _resolve_existing_v5_fusion_tail_artifacts(*, run_dir: Path, tail_context: d
         "exists": _fusion_input_contract_path(run_dir).exists(),
         "payload": load_json(_fusion_input_contract_path(run_dir)) if _fusion_input_contract_path(run_dir).exists() else None,
     }
+    artifacts["fusion_runtime_input_contract_path"] = {
+        "path": _fusion_runtime_input_contract_path(run_dir),
+        "exists": _fusion_runtime_input_contract_path(run_dir).exists(),
+        "payload": load_json(_fusion_runtime_input_contract_path(run_dir)) if _fusion_runtime_input_contract_path(run_dir).exists() else None,
+    }
     payload["artifacts"] = artifacts
     return payload
 
@@ -506,6 +591,11 @@ def _fusion_tail_stage_reusable(*, existing_tail_artifacts: dict[str, Any], stag
             return False
         artifacts = dict(existing_tail_artifacts.get("artifacts") or {})
         return bool((artifacts.get("fusion_input_contract_path") or {}).get("payload"))
+    if stage_name == "fusion_runtime_input_contract":
+        if not bool(existing_tail_artifacts.get("context_matches", False)):
+            return False
+        artifacts = dict(existing_tail_artifacts.get("artifacts") or {})
+        return bool((artifacts.get("fusion_runtime_input_contract_path") or {}).get("payload"))
     return False
 
 
@@ -520,6 +610,7 @@ def _run_fusion_tail(
     data_platform_ready_snapshot_id: str | None,
     runtime_dataset_root: Path,
     input_contract: dict[str, Any],
+    runtime_input_contract: dict[str, Any],
     runtime_recommendations: dict[str, Any],
     promotion_payload: dict[str, Any],
     entry_boundary: dict[str, Any],
@@ -539,6 +630,10 @@ def _run_fusion_tail(
     )
     _fusion_input_contract_path(run_dir).write_text(
         json.dumps(dict(input_contract), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _fusion_runtime_input_contract_path(run_dir).write_text(
+        json.dumps(dict(runtime_input_contract), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     Path(expert_tail_context_path(run_dir)).write_text(
@@ -580,6 +675,7 @@ def _run_fusion_tail(
             "runtime_dataset_root": str(runtime_dataset_root),
             "entry_boundary_contract_path": str(_fusion_entry_boundary_path(run_dir)),
             "fusion_input_contract_path": str(_fusion_input_contract_path(run_dir)),
+            "fusion_runtime_input_contract_path": str(_fusion_runtime_input_contract_path(run_dir)),
         },
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         resumed=resumed,
@@ -594,17 +690,17 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         raise ValueError(f"stacker_family must be one of: {', '.join(VALID_FUSION_STACKERS)}")
 
     run_id = make_run_id(seed=options.seed)
-    input_bundle = _prepare_fusion_input_bundle(options)
-    merged = input_bundle.merged
+    train_input_bundle = _prepare_fusion_input_bundle(options)
+    merged = train_input_bundle.merged
     if merged.height <= 0:
         raise ValueError("fusion inputs produced no aligned rows")
     start_ts_ms = _parse_date_to_ts_ms(options.start)
     end_ts_ms = _parse_date_to_ts_ms(options.end, end_of_day=True)
 
-    feature_names = tuple(input_bundle.feature_names)
+    feature_names = tuple(train_input_bundle.feature_names)
     if not feature_names:
         raise ValueError("fusion inputs produced no numeric feature columns")
-    monotone_signs = tuple(int(item) for item in input_bundle.monotone_signs)
+    monotone_signs = tuple(int(item) for item in train_input_bundle.monotone_signs)
     x = merged.select(list(feature_names)).to_numpy().astype(np.float64, copy=False)
     y_cls = merged.get_column("y_cls").to_numpy().astype(np.int64, copy=False)
     y_reg = merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False)
@@ -739,7 +835,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "lob_input_sha256": _sha256_file(options.lob_input_path),
         "sample_count": int(merged.height),
         "code_version": autobot_version,
-        "data_platform_ready_snapshot_id": str(input_bundle.input_contract.get("snapshot_id") or "").strip()
+        "data_platform_ready_snapshot_id": str(train_input_bundle.input_contract.get("snapshot_id") or "").strip()
         or resolve_ready_snapshot_id(project_root=Path.cwd()),
     }
     model_card = render_model_card(
@@ -765,10 +861,16 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "autobot_version": autobot_version,
         "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
         "fusion_input_contract_path": str(_fusion_input_contract_path(options.registry_root / options.model_family / run_id)),
+        "fusion_runtime_input_contract_path": str(_fusion_runtime_input_contract_path(options.registry_root / options.model_family / run_id)),
+        "panel_runtime_input_path": str(options.panel_runtime_input_path) if options.panel_runtime_input_path is not None else "",
+        "sequence_runtime_input_path": str(options.sequence_runtime_input_path) if options.sequence_runtime_input_path is not None else "",
+        "lob_runtime_input_path": str(options.lob_runtime_input_path) if options.lob_runtime_input_path is not None else "",
+        "runtime_start": str(options.runtime_start or options.start),
+        "runtime_end": str(options.runtime_end or options.end),
     }
     runtime_recommendations = _build_fusion_runtime_recommendations(
         options=options,
-        input_contract=input_bundle.input_contract,
+        input_contract=train_input_bundle.input_contract,
     )
     run_dir = save_run(
         RegistrySavePayload(
@@ -800,12 +902,12 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "policy": "v5_fusion_v1",
                 "stacker_family": stacker_family,
                 "input_experts": {
-                    "panel": dict((input_bundle.input_contract.get("inputs") or {}).get("panel") or {}),
-                    "sequence": dict((input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}),
-                    "lob": dict((input_bundle.input_contract.get("inputs") or {}).get("lob") or {}),
+                    "panel": dict((train_input_bundle.input_contract.get("inputs") or {}).get("panel") or {}),
+                    "sequence": dict((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}),
+                    "lob": dict((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}),
                 },
                 "feature_columns": list(feature_names),
-                "monotone_sign_map": dict(input_bundle.input_contract.get("feature_contract", {}).get("monotone_sign_map") or {}),
+                "monotone_sign_map": dict(train_input_bundle.input_contract.get("feature_contract", {}).get("monotone_sign_map") or {}),
                 "outputs": {
                     "final_rank_score": "final_rank_score",
                     "final_expected_return": "final_expected_return",
@@ -867,18 +969,28 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         },
         "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
     }
+    runtime_input_bundle = _prepare_fusion_runtime_input_bundle(options)
+    runtime_merged = runtime_input_bundle.merged
+    runtime_x = runtime_merged.select(list(runtime_input_bundle.feature_names)).to_numpy().astype(np.float64, copy=False)
+    runtime_y_cls = runtime_merged.get_column("y_cls").to_numpy().astype(np.int64, copy=False)
+    runtime_y_reg = runtime_merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False)
+    runtime_markets = runtime_merged.get_column("market").to_numpy()
+    runtime_ts_ms = runtime_merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
+
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
         tf="5m",
-        feature_columns=feature_names,
-        markets=markets,
-        ts_ms=ts_ms,
-        x=x,
-        y_cls=y_cls,
-        y_reg=y_reg,
-        y_rank=y_reg,
-        sample_weight=np.ones(merged.height, dtype=np.float64),
+        feature_columns=tuple(runtime_input_bundle.feature_names),
+        markets=runtime_markets,
+        ts_ms=runtime_ts_ms,
+        x=runtime_x,
+        y_cls=runtime_y_cls,
+        y_reg=runtime_y_reg,
+        y_rank=runtime_y_reg,
+        sample_weight=np.ones(runtime_merged.height, dtype=np.float64),
     )
+    runtime_input_contract = dict(runtime_input_bundle.input_contract)
+    runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_id,
@@ -888,7 +1000,8 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         test_metrics=test_metrics,
         data_platform_ready_snapshot_id=data_fingerprint.get("data_platform_ready_snapshot_id"),
         runtime_dataset_root=runtime_dataset_written_root,
-        input_contract=input_bundle.input_contract | {"feature_contract": input_bundle.input_contract.get("feature_contract", {})},
+        input_contract=train_input_bundle.input_contract | {"feature_contract": train_input_bundle.input_contract.get("feature_contract", {})},
+        runtime_input_contract=runtime_input_contract,
         runtime_recommendations=runtime_recommendations,
         promotion_payload=promotion_payload,
         entry_boundary=entry_boundary,
@@ -916,12 +1029,17 @@ def _options_from_v5_fusion_train_config(train_config: dict[str, Any]) -> TrainV
         panel_input_path=Path(str(base["panel_input_path"])),
         sequence_input_path=Path(str(base["sequence_input_path"])),
         lob_input_path=Path(str(base["lob_input_path"])),
+        panel_runtime_input_path=Path(str(base["panel_runtime_input_path"])) if str(base.get("panel_runtime_input_path", "")).strip() else None,
+        sequence_runtime_input_path=Path(str(base["sequence_runtime_input_path"])) if str(base.get("sequence_runtime_input_path", "")).strip() else None,
+        lob_runtime_input_path=Path(str(base["lob_runtime_input_path"])) if str(base.get("lob_runtime_input_path", "")).strip() else None,
         registry_root=Path(str(base["registry_root"])),
         logs_root=Path(str(base["logs_root"])),
         model_family=str(base["model_family"]),
         quote=str(base["quote"]),
         start=str(base["start"]),
         end=str(base["end"]),
+        runtime_start=(str(base.get("runtime_start", "")).strip() or None),
+        runtime_end=(str(base.get("runtime_end", "")).strip() or None),
         seed=int(base["seed"]),
         stacker_family=str(base.get("stacker_family", "linear")),
         run_scope=str(base.get("run_scope", "manual_fusion_expert")),
@@ -952,6 +1070,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         or resolve_ready_snapshot_id(project_root=Path.cwd())
     )
     input_bundle = _prepare_fusion_input_bundle(options)
+    runtime_input_bundle = _prepare_fusion_runtime_input_bundle(options)
     merged = input_bundle.merged
     x = merged.select(list(input_bundle.feature_names)).to_numpy().astype(np.float64, copy=False)
     if "split" in merged.columns:
@@ -980,6 +1099,20 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         realized_return=y_reg[valid_mask],
     )
     runtime_dataset_root = Path(str(train_config.get("dataset_root") or run_dir / "runtime_feature_dataset"))
+    runtime_merged = runtime_input_bundle.merged
+    runtime_x = runtime_merged.select(list(runtime_input_bundle.feature_names)).to_numpy().astype(np.float64, copy=False)
+    runtime_dataset_written_root = write_runtime_feature_dataset(
+        output_root=runtime_dataset_root,
+        tf="5m",
+        feature_columns=tuple(runtime_input_bundle.feature_names),
+        markets=runtime_merged.get_column("market").to_numpy(),
+        ts_ms=runtime_merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False),
+        x=runtime_x,
+        y_cls=runtime_merged.get_column("y_cls").to_numpy().astype(np.int64, copy=False),
+        y_reg=runtime_merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False),
+        y_rank=runtime_merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False),
+        sample_weight=np.ones(runtime_merged.height, dtype=np.float64),
+    )
     runtime_recommendations = _build_fusion_runtime_recommendations(
         options=options,
         input_contract=input_bundle.input_contract,
@@ -990,6 +1123,8 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         "status": "candidate",
         "reasons": ["CANDIDATE_ACCEPTANCE_REQUIRED"],
     }
+    runtime_input_contract = dict(runtime_input_bundle.input_contract)
+    runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -998,8 +1133,9 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         valid_metrics=valid_metrics,
         test_metrics=test_metrics,
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
-        runtime_dataset_root=runtime_dataset_root,
+        runtime_dataset_root=runtime_dataset_written_root,
         input_contract=input_bundle.input_contract,
+        runtime_input_contract=runtime_input_contract,
         runtime_recommendations=runtime_recommendations,
         promotion_payload=promotion_payload,
         entry_boundary=entry_boundary,

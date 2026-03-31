@@ -153,6 +153,9 @@ from .models import (
     evaluate_registered_model_window,
     list_registered_models,
     load_train_defaults,
+    materialize_v5_lob_runtime_export,
+    materialize_v5_panel_ensemble_runtime_export,
+    materialize_v5_sequence_runtime_export,
     run_ablation,
     run_modelbt_proxy,
     show_registered_model,
@@ -928,7 +931,25 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--fusion-panel-input", help="Path to panel fusion input predictions parquet.")
     model_train_parser.add_argument("--fusion-sequence-input", help="Path to sequence fusion input predictions parquet.")
     model_train_parser.add_argument("--fusion-lob-input", help="Path to lob fusion input predictions parquet.")
+    model_train_parser.add_argument("--fusion-panel-runtime-input", help="Path to panel fusion runtime predictions parquet.")
+    model_train_parser.add_argument("--fusion-sequence-runtime-input", help="Path to sequence fusion runtime predictions parquet.")
+    model_train_parser.add_argument("--fusion-lob-runtime-input", help="Path to lob fusion runtime predictions parquet.")
+    model_train_parser.add_argument("--fusion-runtime-start", help="Runtime/certification start date YYYY-MM-DD for fusion runtime dataset export.")
+    model_train_parser.add_argument("--fusion-runtime-end", help="Runtime/certification end date YYYY-MM-DD for fusion runtime dataset export.")
     model_train_parser.add_argument("--fusion-stacker-family", choices=("linear", "monotone_gbdt"))
+
+    model_export_expert_parser = model_subparsers.add_parser(
+        "export-expert-table",
+        help="Materialize a certification-window expert prediction table for a saved v5 expert run.",
+    )
+    model_export_expert_parser.add_argument(
+        "--trainer",
+        required=True,
+        choices=("v5_panel_ensemble", "v5_sequence", "v5_lob"),
+    )
+    model_export_expert_parser.add_argument("--run-dir", required=True, help="Saved trainer run directory.")
+    model_export_expert_parser.add_argument("--start", required=True, help="Export window start YYYY-MM-DD.")
+    model_export_expert_parser.add_argument("--end", required=True, help="Export window end YYYY-MM-DD.")
 
     model_daily_v4_parser = model_subparsers.add_parser(
         "daily-v4",
@@ -2830,6 +2851,22 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
         if args.model_command == "daily-v4":
             return _run_manual_v4_daily_pipeline(args, config_dir)
 
+        if args.model_command == "export-expert-table":
+            trainer = str(getattr(args, "trainer", "")).strip().lower()
+            run_dir = Path(str(getattr(args, "run_dir", "")).strip()).resolve()
+            start = str(getattr(args, "start", "")).strip()
+            end = str(getattr(args, "end", "")).strip()
+            if trainer == "v5_panel_ensemble":
+                payload = materialize_v5_panel_ensemble_runtime_export(run_dir=run_dir, start=start, end=end)
+            elif trainer == "v5_sequence":
+                payload = materialize_v5_sequence_runtime_export(run_dir=run_dir, start=start, end=end)
+            elif trainer == "v5_lob":
+                payload = materialize_v5_lob_runtime_export(run_dir=run_dir, start=start, end=end)
+            else:
+                raise ValueError(f"unsupported export-expert-table trainer: {trainer}")
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
+
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
@@ -2852,12 +2889,17 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     panel_input_path=Path(str(panel_input)),
                     sequence_input_path=Path(str(sequence_input)),
                     lob_input_path=Path(str(lob_input)),
+                    panel_runtime_input_path=(Path(str(getattr(args, "fusion_panel_runtime_input"))) if getattr(args, "fusion_panel_runtime_input", None) else None),
+                    sequence_runtime_input_path=(Path(str(getattr(args, "fusion_sequence_runtime_input"))) if getattr(args, "fusion_sequence_runtime_input", None) else None),
+                    lob_runtime_input_path=(Path(str(getattr(args, "fusion_lob_runtime_input"))) if getattr(args, "fusion_lob_runtime_input", None) else None),
                     registry_root=registry_root,
                     logs_root=logs_root,
                     model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
                     quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
                     start=str(args.start or defaults["start"]).strip(),
                     end=str(args.end or defaults["end"]).strip(),
+                    runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
+                    runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
                     stacker_family=str(getattr(args, "fusion_stacker_family", None) or "linear").strip().lower(),
                 )

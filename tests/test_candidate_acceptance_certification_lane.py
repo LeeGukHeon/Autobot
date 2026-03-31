@@ -64,6 +64,7 @@ def _make_fake_python_exe(
             f"""
             import json
             import sys
+            from datetime import datetime, timezone
             from pathlib import Path
 
             ROOT = Path.cwd()
@@ -106,6 +107,13 @@ def _make_fake_python_exe(
             def write_json(path: Path, payload: object) -> None:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(payload), encoding="utf-8")
+
+            def date_to_ts_ms(text: str, *, end_of_day: bool = False) -> int:
+                parsed = datetime.fromisoformat(text)
+                if end_of_day:
+                    parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999000)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+                return int(parsed.timestamp() * 1000)
 
 
             def append_log(payload: object) -> None:
@@ -466,6 +474,25 @@ def _make_fake_python_exe(
                                     "end": arg_value("--end"),
                                 }}
                             }}
+                        }},
+                    )
+                if family == "train_v5_fusion":
+                    runtime_start = execution_eval_start or start_value
+                    runtime_end = execution_eval_end or end_value
+                    write_json(
+                        candidate_dir / "fusion_runtime_input_contract.json",
+                        {{
+                            "snapshot_id": "snapshot-test-001",
+                            "runtime_window": {{
+                                "start": runtime_start,
+                                "end": runtime_end,
+                                "start_ts_ms": date_to_ts_ms(runtime_start),
+                                "end_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
+                            }},
+                            "coverage_start_ts_ms": date_to_ts_ms(runtime_start),
+                            "coverage_end_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
+                            "runtime_rows_after_date_filter": 12,
+                            "runtime_dataset_root": str(candidate_dir / "runtime_feature_dataset"),
                         }},
                     )
                 if EMIT_TRAIN_RUN_DIR and EMIT_CLI_PREFIXED_TRAIN_RUN_DIR:

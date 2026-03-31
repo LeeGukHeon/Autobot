@@ -35,6 +35,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             """
             import json
             import sys
+            from datetime import datetime, timezone
             from pathlib import Path
 
             ROOT = Path.cwd()
@@ -53,6 +54,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(payload), encoding="utf-8")
 
+            def date_to_ts_ms(text: str, *, end_of_day: bool = False) -> int:
+                parsed = datetime.fromisoformat(text)
+                if end_of_day:
+                    parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999000)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+                return int(parsed.timestamp() * 1000)
+
             def append_log(payload: object) -> None:
                 log_path = ROOT / "logs" / "fake_python_invocations.jsonl"
                 log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +74,8 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 family = arg_value("--model-family", "train_v5_fusion")
                 registry_dir = ROOT / "models" / "registry" / family
                 candidate_dir = registry_dir / CANDIDATE_RUN_ID
+                execution_eval_start = arg_value("--execution-eval-start")
+                execution_eval_end = arg_value("--execution-eval-end")
                 append_log({"command": "model train"})
                 write_json(registry_dir / "latest.json", {"run_id": CANDIDATE_RUN_ID})
                 write_json(candidate_dir / "promotion_decision.json", {"status": "candidate", "checks": {"execution_acceptance_enabled": True, "execution_acceptance_present": True}})
@@ -75,6 +85,24 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 write_json(candidate_dir / "lane_governance.json", {"lane_id": "cls_primary"})
                 write_json(candidate_dir / "decision_surface.json", {"status": "ok"})
                 write_json(candidate_dir / "train_config.yaml", {"data_platform_ready_snapshot_id": "snapshot-cache-001"})
+                runtime_start = execution_eval_start or arg_value("--start")
+                runtime_end = execution_eval_end or arg_value("--end")
+                write_json(
+                    candidate_dir / "fusion_runtime_input_contract.json",
+                    {
+                        "snapshot_id": "snapshot-cache-001",
+                        "runtime_window": {
+                            "start": runtime_start,
+                            "end": runtime_end,
+                            "start_ts_ms": date_to_ts_ms(runtime_start),
+                            "end_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
+                        },
+                        "coverage_start_ts_ms": date_to_ts_ms(runtime_start),
+                        "coverage_end_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
+                        "runtime_rows_after_date_filter": 12,
+                        "runtime_dataset_root": str(candidate_dir / "runtime_feature_dataset"),
+                    },
+                )
                 print(json.dumps({"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}))
                 sys.exit(0)
 

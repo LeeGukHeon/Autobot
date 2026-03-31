@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import time
@@ -19,9 +19,11 @@ from . import train_v4_crypto_cs as v4
 from . import train_v4_persistence as v4_persistence
 from . import train_v4_postprocess as v4_postprocess
 from .dataset_loader import (
+    build_dataset_request,
     build_data_fingerprint,
     feature_columns_from_spec,
     load_feature_aux_frame,
+    load_feature_dataset,
     load_feature_spec,
     load_label_spec,
 )
@@ -50,6 +52,11 @@ from .train_v1 import _build_thresholds, _evaluate_split, _predict_scores, build
 from .train_v4_artifacts import build_decision_surface_v4, build_v4_metrics_doc, train_config_snapshot_v4
 from .train_v4_core import prepare_v4_training_inputs
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
+from .v5_expert_runtime_export import (
+    load_existing_expert_runtime_export,
+    resolve_expert_runtime_export_paths,
+    write_expert_runtime_export_metadata,
+)
 from ..strategy.model_alpha_v1 import (
     ModelAlphaExecutionSettings,
     ModelAlphaExitSettings,
@@ -255,6 +262,7 @@ def _write_expert_prediction_table(
     estimator: Any,
     primary_y_reg: np.ndarray,
     split_labels: np.ndarray,
+    output_path: Path | None = None,
 ) -> Path:
     payload = estimator.predict_panel_contract(dataset.X)
     frame = pl.DataFrame(
@@ -275,9 +283,117 @@ def _write_expert_prediction_table(
             "final_alpha_lcb": np.asarray(payload["final_alpha_lcb"], dtype=np.float64),
         }
     ).sort(["ts_ms", "market"])
-    output_path = run_dir / "expert_prediction_table.parquet"
-    frame.write_parquet(output_path)
-    return output_path
+    resolved_output_path = Path(output_path) if output_path is not None else (run_dir / "expert_prediction_table.parquet")
+    resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(resolved_output_path)
+    return resolved_output_path
+
+
+def _load_panel_inference_dataset_window(*, run_dir: Path, start: str, end: str) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any]]:
+    train_config = load_json(run_dir / "train_config.yaml")
+    if not train_config:
+        raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
+    options = replace(_options_from_v5_panel_train_config(train_config), start=str(start), end=str(end))
+    feature_cols = tuple(str(item).strip() for item in (train_config.get("feature_columns") or []) if str(item).strip())
+    if not feature_cols:
+        feature_cols = feature_columns_from_spec(options.dataset_root)
+    selected_markets = tuple(
+        str(item).strip().upper() for item in (train_config.get("selected_markets") or []) if str(item).strip()
+    )
+    request = build_dataset_request(
+        dataset_root=options.dataset_root,
+        tf=options.tf,
+        start=options.start,
+        end=options.end,
+        markets=selected_markets,
+        batch_rows=options.batch_rows,
+    )
+    dataset = load_feature_dataset(
+        request,
+        feature_columns=feature_cols,
+        y_cls_column=str(train_config.get("y_cls_column") or "y_cls"),
+        y_reg_column=str(train_config.get("y_reg_column") or "y_reg"),
+        y_rank_column=str(train_config.get("y_rank_column") or "y_rank"),
+    )
+    return dataset, options, train_config
+
+
+def _export_panel_expert_prediction_table_window(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
+    run_dir = Path(run_dir).resolve()
+    dataset, options, train_config = _load_panel_inference_dataset_window(run_dir=run_dir, start=start, end=end)
+    data_platform_ready_snapshot_id = (
+        str(train_config.get("data_platform_ready_snapshot_id") or "").strip()
+        or resolve_ready_snapshot_id(project_root=Path.cwd())
+    )
+    existing_export = load_existing_expert_runtime_export(run_dir, start, end)
+    existing_metadata = dict(existing_export.get("metadata") or {})
+    paths = dict(existing_export.get("paths") or {})
+    export_path = Path(str(paths.get("export_path")))
+    metadata_path = Path(str(paths.get("metadata_path")))
+    if (
+        bool(existing_export.get("exists", False))
+        and str(existing_metadata.get("run_id") or "").strip() == run_dir.name
+        and str(existing_metadata.get("data_platform_ready_snapshot_id") or "").strip() == data_platform_ready_snapshot_id
+        and str(existing_metadata.get("start") or "").strip() == str(start).strip()
+        and str(existing_metadata.get("end") or "").strip() == str(end).strip()
+    ):
+        return {
+            "run_id": run_dir.name,
+            "trainer": "v5_panel_ensemble",
+            "model_family": str(train_config.get("model_family") or options.model_family).strip(),
+            "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+            "start": str(start).strip(),
+            "end": str(end).strip(),
+            "rows": int(existing_metadata.get("rows", 0) or 0),
+            "selected_markets": list(existing_metadata.get("selected_markets") or []),
+            "export_path": str(export_path),
+            "metadata_path": str(metadata_path),
+            "reused": True,
+            "source_mode": "existing_export",
+        }
+
+    model_bundle = load_model_bundle(run_dir)
+    estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
+    if estimator is None:
+        raise ValueError(f"run_dir does not contain a usable panel estimator: {run_dir}")
+    split_labels = np.full(int(dataset.rows), "runtime", dtype=object)
+    export_path = _write_expert_prediction_table(
+        run_dir=run_dir,
+        dataset=dataset,
+        estimator=estimator,
+        primary_y_reg=np.asarray(dataset.y_reg, dtype=np.float64),
+        split_labels=split_labels,
+        output_path=export_path,
+    )
+    metadata = {
+        "version": 1,
+        "policy": "v5_expert_runtime_export_v1",
+        "run_id": run_dir.name,
+        "trainer": "v5_panel_ensemble",
+        "model_family": str(train_config.get("model_family") or options.model_family).strip(),
+        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+        "start": str(start).strip(),
+        "end": str(end).strip(),
+        "rows": int(dataset.rows),
+        "selected_markets": [str(item).strip().upper() for item in getattr(dataset, "selected_markets", ())],
+    }
+    metadata_path = write_expert_runtime_export_metadata(
+        run_dir=run_dir,
+        start=start,
+        end=end,
+        payload=metadata,
+    )
+    return {
+        **metadata,
+        "export_path": str(export_path),
+        "metadata_path": str(metadata_path),
+        "reused": False,
+        "source_mode": "fresh_export",
+    }
+
+
+def materialize_v5_panel_ensemble_runtime_export(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
+    return _export_panel_expert_prediction_table_window(run_dir=run_dir, start=start, end=end)
 
 
 def _normalize_optional_path_text(value: Any) -> str:
