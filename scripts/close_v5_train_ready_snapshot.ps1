@@ -97,12 +97,32 @@ function Resolve-BatchDateValue {
 }
 
 function Resolve-DateTimeOffsetOrNull {
-    param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime()
+    }
+    if ($Value -is [DateTime]) {
+        $dateTimeValue = [DateTime]$Value
+        if ($dateTimeValue.Kind -eq [System.DateTimeKind]::Unspecified) {
+            return [DateTimeOffset]::new(
+                [DateTime]::SpecifyKind($dateTimeValue, [System.DateTimeKind]::Utc)
+            ).ToUniversalTime()
+        }
+        return [DateTimeOffset]$dateTimeValue.ToUniversalTime()
+    }
+    $textValue = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($textValue)) {
         return $null
     }
     try {
-        return [DateTimeOffset]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+        return [DateTimeOffset]::Parse(
+            $textValue,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        )
     } catch {
         return $null
     }
@@ -195,11 +215,16 @@ function Get-SourceFreshnessResult {
     )
     $payload = Load-JsonOrEmpty -PathValue $SummaryFile
     $exists = (Test-Path $SummaryFile) -and ($payload -ne $null)
-    $generatedAtUtc = [string](Get-PropValue -ObjectValue $payload -Name "generated_at_utc" -DefaultValue "")
-    if ([string]::IsNullOrWhiteSpace($generatedAtUtc)) {
-        $generatedAtUtc = [string](Get-PropValue -ObjectValue $payload -Name "generated_at" -DefaultValue "")
+    $generatedAtRaw = Get-PropValue -ObjectValue $payload -Name "generated_at_utc" -DefaultValue $null
+    if ($null -eq $generatedAtRaw -or [string]::IsNullOrWhiteSpace([string]$generatedAtRaw)) {
+        $generatedAtRaw = Get-PropValue -ObjectValue $payload -Name "generated_at" -DefaultValue $null
     }
-    $generatedAt = Resolve-DateTimeOffsetOrNull -Value $generatedAtUtc
+    $generatedAt = Resolve-DateTimeOffsetOrNull -Value $generatedAtRaw
+    $generatedAtUtc = if ($null -eq $generatedAt) {
+        [string]$generatedAtRaw
+    } else {
+        $generatedAt.ToString("o")
+    }
     $ageMinutes = $null
     if ($null -ne $generatedAt) {
         $ageMinutes = [Math]::Round(([DateTimeOffset]::UtcNow - $generatedAt.ToUniversalTime()).TotalMinutes, 2)
@@ -211,6 +236,10 @@ function Get-SourceFreshnessResult {
     $stepPass = Test-StepResultsPass -Steps $steps
     $batchCovered = $true
     if (-not [string]::IsNullOrWhiteSpace($BatchDateValue)) {
+        $payloadBatchDate = [string](Get-PropValue -ObjectValue $payload -Name "batch_date" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($payloadBatchDate)) {
+            $batchCovered = ($payloadBatchDate.Trim() -eq $BatchDateValue.Trim())
+        } else {
         $validateDates = @(
             @(Get-PropValue -ObjectValue $payload -Name "validate_dates" -DefaultValue @()) |
                 ForEach-Object { [string]$_ } |
@@ -221,6 +250,7 @@ function Get-SourceFreshnessResult {
         } else {
             $expectedStepName = "validate_raw_ticks_" + $BatchDateValue
             $batchCovered = @($steps | Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "step" -DefaultValue "") -eq $expectedStepName }).Count -gt 0
+        }
         }
     }
     $pass = $exists -and ($null -ne $generatedAt) -and ($ageMinutes -le [double]$MaxAgeMinutes) -and $stepPass -and $batchCovered
