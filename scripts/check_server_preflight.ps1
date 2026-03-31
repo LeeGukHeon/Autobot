@@ -452,7 +452,7 @@ foreach ($reasonCode in @($runtimeTopologyHealthReasons)) {
     if (($code -eq "LIVE_DB_MISSING") -and (-not (@($resolvedRequiredStateDbPaths) | Where-Object { ([string]$_ -match "live_state\.db$") -and (-not ([string]$_ -match "live_candidate")) }))) {
         continue
     }
-    if (($code -eq "CANDIDATE_DB_MISSING") -and (-not (@($resolvedRequiredStateDbPaths) | Where-Object { [string]$_ -match "live_candidate.+live_state\.db$" }))) {
+    if (($code -eq "CANDIDATE_DB_MISSING") -and (-not (@($resolvedRequiredStateDbPaths) | Where-Object { ([string]$_ -match "live_candidate.+live_state\.db$") -or ([string]$_ -match "live_canary.+live_state\.db$") }))) {
         continue
     }
     if (($code -eq "SYSTEMD_UNAVAILABLE") -and (($resolvedRequiredUnitFiles.Count -eq 0) -and ($resolvedBlockOnFailedUnits.Count -eq 0) -and ($resolvedExpectedUnitStates.Count -eq 0))) {
@@ -673,7 +673,10 @@ foreach ($pointerName in $resolvedRequiredPointers) {
     }
 }
 
-$currentStatePath = Join-Path $resolvedProjectRoot "logs/model_v4_challenger/current_state.json"
+$currentStatePath = Join-Path $resolvedProjectRoot "logs/model_v5_candidate/current_state.json"
+if (-not (Test-Path $currentStatePath)) {
+    $currentStatePath = Join-Path $resolvedProjectRoot "logs/model_v4_challenger/current_state.json"
+}
 $currentState = Load-JsonOrEmpty -PathValue $currentStatePath
 if ($CheckCandidateStateConsistency) {
     $latestCandidateRunId = [string](Get-PropValue -ObjectValue $pointerSnapshots.latest_candidate -Name "run_id" -DefaultValue "")

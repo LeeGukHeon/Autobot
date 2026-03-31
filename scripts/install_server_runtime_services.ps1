@@ -12,6 +12,7 @@ param(
     [string]$PaperModelFamilyOverride = "",
     [string]$PaperChampionModelFamilyOverride = "",
     [string]$PaperChallengerModelFamilyOverride = "",
+    [string]$PairedStateRootRelPath = "logs/model_v4_challenger",
     [switch]$BootstrapChampion,
     [switch]$NoBootstrapChampion,
     [switch]$NoStart,
@@ -320,7 +321,7 @@ $paperCommand = ($paperArgList | ForEach-Object { Quote-ShellArg ([string]$_) })
 $activatePath = Join-Path $resolvedProjectRoot ".venv/bin/activate"
 $execStart = "/bin/bash -lc " + (Quote-ShellArg ("source " + $activatePath + " && " + $resolvedPythonExe + " " + $paperCommand))
 $conditionPathExistsLine = if ($PaperPreset -in @("paired_v4", "paired_v5")) {
-    "ConditionPathExists=" + (Join-Path $resolvedProjectRoot "logs/model_v4_challenger/current_state.json")
+    "ConditionPathExists=" + (Join-Path $resolvedProjectRoot (Join-Path $PairedStateRootRelPath "current_state.json"))
 } else {
     ""
 }

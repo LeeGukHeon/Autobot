@@ -33,7 +33,8 @@ $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-Def
 $effectiveTargetUnit = if ([string]::IsNullOrWhiteSpace($RolloutTargetUnit)) { $UnitName } else { $RolloutTargetUnit }
 $trimmedUnitName = [string]$UnitName
 $trimmedUnitName = $trimmedUnitName.Trim()
-$isCandidateUnit = $trimmedUnitName.ToLowerInvariant().Contains("candidate")
+$normalizedUnitName = $trimmedUnitName.ToLowerInvariant()
+$isCandidateUnit = $normalizedUnitName.Contains("candidate") -or $normalizedUnitName.Contains("canary")
 $effectiveModelRefSource = if ([string]::IsNullOrWhiteSpace($ModelRefSource)) {
     if ($isCandidateUnit) { "latest_candidate" } else { "champion" }
 } else {
@@ -50,7 +51,7 @@ $effectiveModelRegistryRoot = if ([string]::IsNullOrWhiteSpace($ModelRegistryRoo
     $ModelRegistryRoot
 }
 $effectiveStateDbPath = if ([string]::IsNullOrWhiteSpace($StateDbPath)) {
-    if ($isCandidateUnit) { "data/state/live_candidate/live_state.db" } else { "data/state/live_state.db" }
+    if ($isCandidateUnit) { "data/state/live_canary/live_state.db" } else { "data/state/live_state.db" }
 } else {
     $StateDbPath
 }

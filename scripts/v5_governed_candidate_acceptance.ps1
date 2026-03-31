@@ -55,7 +55,7 @@ if ((-not $SkipDataPlatformRefresh) -and (Test-Path $resolvedDataPlatformRefresh
     }
 }
 
-$knownRuntimeUnits = @("autobot-paper-v4.service", "autobot-live-alpha.service")
+$knownRuntimeUnits = @("autobot-paper-v5.service", "autobot-live-alpha.service")
 $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
 
 & (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `

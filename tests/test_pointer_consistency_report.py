@@ -32,17 +32,17 @@ def _powershell_exe() -> str:
 
 def test_build_pointer_consistency_report_flags_invalid_server_like_state(tmp_path: Path) -> None:
     project_root = tmp_path
-    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir = project_root / "models" / "registry" / "train_v5_fusion"
     family_dir.mkdir(parents=True, exist_ok=True)
     _write_json(family_dir / "champion.json", {"run_id": "run-1"})
     _write_json(family_dir / "latest.json", {"run_id": "run-2"})
     _write_json(family_dir / "latest_candidate.json", {"run_id": "run-1"})
-    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v4_crypto_cs"})
-    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-1", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v5_fusion"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-1", "model_family": "train_v5_fusion"})
     (family_dir / "run-1").mkdir(parents=True, exist_ok=True)
     (family_dir / "run-2").mkdir(parents=True, exist_ok=True)
     _write_json(
-        project_root / "logs" / "model_v4_challenger" / "latest.json",
+        project_root / "logs" / "model_v5_candidate" / "latest.json",
         {"mode": "spawn_only", "exception": {"message": "candidate acceptance failed unexpectedly"}},
     )
 
@@ -50,8 +50,8 @@ def test_build_pointer_consistency_report_flags_invalid_server_like_state(tmp_pa
     pointer_module._systemd_topology_snapshot = lambda: {
         "available": True,
         "services": [
-            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
-            {"unit": "autobot-paper-v4.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
+            {"unit": "autobot-live-alpha-canary.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+            {"unit": "autobot-paper-v5.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
         ],
         "timers": [],
         "unit_files": [],
@@ -70,18 +70,18 @@ def test_build_pointer_consistency_report_flags_invalid_server_like_state(tmp_pa
 
 def test_build_pointer_consistency_report_is_healthy_for_aligned_candidate_state(tmp_path: Path) -> None:
     project_root = tmp_path
-    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir = project_root / "models" / "registry" / "train_v5_fusion"
     family_dir.mkdir(parents=True, exist_ok=True)
     _write_json(family_dir / "champion.json", {"run_id": "run-1"})
     _write_json(family_dir / "latest.json", {"run_id": "run-2"})
     _write_json(family_dir / "latest_candidate.json", {"run_id": "run-3"})
-    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v4_crypto_cs"})
-    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-3", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v5_fusion"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-3", "model_family": "train_v5_fusion"})
     (family_dir / "run-1").mkdir(parents=True, exist_ok=True)
     (family_dir / "run-2").mkdir(parents=True, exist_ok=True)
     (family_dir / "run-3").mkdir(parents=True, exist_ok=True)
     _write_json(
-        project_root / "logs" / "model_v4_challenger" / "current_state.json",
+        project_root / "logs" / "model_v5_candidate" / "current_state.json",
         {
             "candidate_run_id": "run-3",
             "champion_run_id_at_start": "run-1",
@@ -91,15 +91,15 @@ def test_build_pointer_consistency_report_is_healthy_for_aligned_candidate_state
             "promotion_eligible": True,
         },
     )
-    _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"mode": "spawn_only"})
+    _write_json(project_root / "logs" / "model_v5_candidate" / "latest.json", {"mode": "spawn_only"})
 
     original_systemd = pointer_module._systemd_topology_snapshot
     pointer_module._systemd_topology_snapshot = lambda: {
         "available": True,
         "services": [
-            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
-            {"unit": "autobot-paper-v4-challenger.service", "active": "inactive", "sub": "dead", "load": "loaded", "description": "Challenger paper"},
-            {"unit": "autobot-paper-v4.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
+            {"unit": "autobot-live-alpha-canary.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+            {"unit": "autobot-paper-v5-paired.service", "active": "inactive", "sub": "dead", "load": "loaded", "description": "Paired paper"},
+            {"unit": "autobot-paper-v5.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
         ],
         "timers": [],
         "unit_files": [],
@@ -130,7 +130,7 @@ def test_build_pointer_consistency_report_supports_external_champion_pointer_fam
     (v5_family_dir / "v5-run-2").mkdir(parents=True, exist_ok=True)
     (v5_family_dir / "v5-run-3").mkdir(parents=True, exist_ok=True)
     _write_json(
-        project_root / "logs" / "model_v4_challenger" / "current_state.json",
+        project_root / "logs" / "model_v5_candidate" / "current_state.json",
         {
             "candidate_run_id": "v5-run-3",
             "champion_run_id_at_start": "v4-run-1",
@@ -146,7 +146,7 @@ def test_build_pointer_consistency_report_supports_external_champion_pointer_fam
     pointer_module._systemd_topology_snapshot = lambda: {
         "available": True,
         "services": [
-            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+            {"unit": "autobot-live-alpha-canary.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
         ],
         "timers": [],
         "unit_files": [],
@@ -169,18 +169,18 @@ def test_build_pointer_consistency_report_supports_external_champion_pointer_fam
 
 def test_build_pointer_consistency_report_flags_missing_current_state_contract_fields(tmp_path: Path) -> None:
     project_root = tmp_path
-    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir = project_root / "models" / "registry" / "train_v5_fusion"
     family_dir.mkdir(parents=True, exist_ok=True)
     _write_json(family_dir / "champion.json", {"run_id": "run-1"})
     _write_json(family_dir / "latest.json", {"run_id": "run-2"})
     _write_json(family_dir / "latest_candidate.json", {"run_id": "run-3"})
-    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v4_crypto_cs"})
-    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-3", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v5_fusion"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-3", "model_family": "train_v5_fusion"})
     (family_dir / "run-1").mkdir(parents=True, exist_ok=True)
     (family_dir / "run-2").mkdir(parents=True, exist_ok=True)
     (family_dir / "run-3").mkdir(parents=True, exist_ok=True)
     _write_json(
-        project_root / "logs" / "model_v4_challenger" / "current_state.json",
+        project_root / "logs" / "model_v5_candidate" / "current_state.json",
         {
             "candidate_run_id": "run-3",
             "champion_run_id_at_start": "",
@@ -209,7 +209,7 @@ def test_build_pointer_consistency_report_flags_missing_current_state_contract_f
 
 def test_write_pointer_consistency_report_uses_default_output_path(tmp_path: Path) -> None:
     project_root = tmp_path
-    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir = project_root / "models" / "registry" / "train_v5_fusion"
     family_dir.mkdir(parents=True, exist_ok=True)
     _write_json(family_dir / "champion.json", {"run_id": "run-1"})
     (family_dir / "run-1").mkdir(parents=True, exist_ok=True)
@@ -223,13 +223,13 @@ def test_write_pointer_consistency_report_uses_default_output_path(tmp_path: Pat
 
 def test_check_pointer_consistency_script_returns_nonzero_on_violations(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    family_dir = project_root / "models" / "registry" / "train_v5_fusion"
     family_dir.mkdir(parents=True, exist_ok=True)
     _write_json(family_dir / "champion.json", {"run_id": "run-1"})
     _write_json(family_dir / "latest.json", {"run_id": "run-2"})
     _write_json(family_dir / "latest_candidate.json", {"run_id": "run-1"})
-    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v4_crypto_cs"})
-    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-1", "model_family": "train_v4_crypto_cs"})
+    _write_json(project_root / "models" / "registry" / "latest.json", {"run_id": "run-2", "model_family": "train_v5_fusion"})
+    _write_json(project_root / "models" / "registry" / "latest_candidate.json", {"run_id": "run-1", "model_family": "train_v5_fusion"})
     (family_dir / "run-1").mkdir(parents=True, exist_ok=True)
     (family_dir / "run-2").mkdir(parents=True, exist_ok=True)
 

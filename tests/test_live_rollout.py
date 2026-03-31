@@ -465,8 +465,8 @@ def test_live_installer_dry_run_exposes_rollout_mode() -> None:
     assert "'run'" in stdout or '"run"' in stdout
     assert "--rollout-mode" in stdout
     assert "--use-private-ws" in stdout
-    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion_v4" in stdout
-    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion" in stdout
     assert "RestartPreventExitStatus=2" in stdout
     assert "StartLimitIntervalSec=60" in stdout
     assert "StartLimitBurst=4" in stdout
@@ -582,7 +582,7 @@ def test_live_installer_dry_run_supports_candidate_specific_overrides() -> None:
     assert "Environment=AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS=" in stdout
 
 
-def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_source_blank() -> None:
+def test_live_installer_candidate_defaults_to_latest_candidate_when_model_source_blank() -> None:
     script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
     completed = subprocess.run(
         [
@@ -597,11 +597,11 @@ def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_sou
             "-PythonExe",
             "python",
             "-UnitName",
-            "autobot-live-alpha-candidate.service",
+            "autobot-live-alpha-canary.service",
             "-RolloutMode",
             "canary",
             "-RolloutTargetUnit",
-            "autobot-live-alpha-candidate.service",
+            "autobot-live-alpha-canary.service",
             "-SyncMode",
             "poll",
             "-StrategyRuntime",
@@ -613,9 +613,9 @@ def test_live_installer_candidate_defaults_to_latest_candidate_v4_when_model_sou
         check=True,
     )
     stdout = completed.stdout
-    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate_v4" in stdout
-    assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_candidate/live_state.db" in stdout
-    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate" in stdout
+    assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_canary/live_state.db" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion" in stdout
 
 
 def test_live_installer_candidate_accepts_small_account_position_override() -> None:
@@ -685,9 +685,9 @@ def test_live_installer_main_defaults_to_server_live_state_path_when_blank() -> 
         check=True,
     )
     stdout = completed.stdout
-    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion_v4" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_REF_SOURCE=champion" in stdout
     assert "Environment=AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_state.db" in stdout
-    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+    assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion" in stdout
 
 
 def test_live_defaults_accept_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -4,6 +4,7 @@ param(
     [string]$OutputDir = "logs/live_execution_policy",
     [string[]]$StateDbPaths = @(
         "data/state/live_state.db",
+        "data/state/live_canary/live_state.db",
         "data/state/live_candidate/live_state.db"
     ),
     [int]$LookbackDays = 14,

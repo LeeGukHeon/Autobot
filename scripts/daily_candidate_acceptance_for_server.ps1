@@ -167,30 +167,30 @@ function Invoke-PreflightCapture {
     )
     if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
         $requiredUnits = @(
-            "autobot-paper-v4.service",
+            "autobot-paper-v5.service",
             "autobot-paper-v4-challenger.service",
-            "autobot-paper-v4-paired.service",
+            "autobot-paper-v5-paired.service",
             "autobot-v4-challenger-spawn.timer",
             "autobot-v4-challenger-promote.timer"
         )
         $failedUnits = @(
-            "autobot-paper-v4.service",
+            "autobot-paper-v5.service",
             "autobot-paper-v4-challenger.service",
-            "autobot-paper-v4-paired.service",
+            "autobot-paper-v5-paired.service",
             "autobot-v4-challenger-spawn.service",
             "autobot-v4-challenger-promote.service"
         )
         $expectedUnitStates = @(
-            "autobot-paper-v4.service=disabled",
+            "autobot-paper-v5.service=disabled",
             "autobot-paper-v4-challenger.service=disabled",
-            "autobot-paper-v4-paired.service=enabled",
+            "autobot-paper-v5-paired.service=enabled",
             "autobot-v4-challenger-spawn.timer=enabled",
             "autobot-v4-challenger-promote.timer=enabled",
             "autobot-paper-v4-replay.service=disabled",
             "autobot-live-alpha-replay-shadow.service=disabled"
         )
         $requiredStateDbPaths = @(
-            "data/state/live_candidate/live_state.db",
+            "data/state/live_canary/live_state.db",
             "data/state/live_state.db"
         )
         $args += @(

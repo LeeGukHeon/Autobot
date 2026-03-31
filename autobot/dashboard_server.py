@@ -51,6 +51,9 @@ _DASHBOARD_OPS_HISTORY_DIRNAME = "dashboard_ops"
 _DASHBOARD_OPS_HISTORY_FILENAME = "ops_history.jsonl"
 _DASHBOARD_OPS_LOCK = threading.Lock()
 _PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_fusion"
+_CANDIDATE_LOG_ROOTS = (Path("logs") / "model_v5_candidate", Path("logs") / "model_v4_challenger")
+_CANDIDATE_LIVE_UNITS = ("autobot-live-alpha-canary.service", "autobot-live-alpha-candidate.service")
+_PAIRED_PAPER_UNITS = ("autobot-paper-v5-paired.service", "autobot-paper-v4-paired.service")
 
 
 def _utc_now_iso() -> str:
@@ -375,6 +378,22 @@ def _unit_snapshot(unit_name: str, *, timer: bool = False) -> dict[str, Any]:
     }
 
 
+def _unit_snapshot_first(*unit_names: str, timer: bool = False) -> dict[str, Any]:
+    for unit_name in unit_names:
+        snapshot = _unit_snapshot(unit_name, timer=timer)
+        if snapshot.get("active_state") != "unknown" or snapshot.get("description") != unit_name:
+            return snapshot
+    return _unit_snapshot(unit_names[0], timer=timer)
+
+
+def _first_existing_path(project_root: Path, roots: tuple[Path, ...], filename: str) -> Path:
+    for rel_root in roots:
+        candidate = project_root / rel_root / filename
+        if candidate.exists():
+            return candidate
+    return project_root / roots[0] / filename
+
+
 def _truncate(value: str | None, limit: int = 120) -> str | None:
     text = str(value or "").strip()
     if not text:
@@ -632,16 +651,27 @@ def _service_state_db_path(project_root: Path, unit_name: str, fallback: Path) -
 def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
     legacy_main_db = project_root / "data" / "state" / "live_state.db"
     canonical_main_db = project_root / "data" / "state" / "live" / "live_state.db"
-    candidate_default_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    candidate_default_db = project_root / "data" / "state" / "live_canary" / "live_state.db"
+    legacy_candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
 
     configured_main_db = _service_state_db_path(project_root, "autobot-live-alpha.service", legacy_main_db)
     configured_candidate_db = _service_state_db_path(
         project_root,
-        "autobot-live-alpha-candidate.service",
+        _CANDIDATE_LIVE_UNITS[0],
         candidate_default_db,
     )
+    if configured_candidate_db == candidate_default_db:
+        legacy_configured_candidate_db = _service_state_db_path(
+            project_root,
+            _CANDIDATE_LIVE_UNITS[1],
+            candidate_default_db,
+        )
+        if legacy_configured_candidate_db != candidate_default_db:
+            configured_candidate_db = legacy_configured_candidate_db
     if not configured_main_db.exists() and canonical_main_db.exists():
         configured_main_db = canonical_main_db
+    if not configured_candidate_db.exists() and legacy_candidate_db.exists():
+        configured_candidate_db = legacy_candidate_db
 
     seen: set[str] = set()
     candidates: list[dict[str, Any]] = []
@@ -666,6 +696,8 @@ def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
         _append("보조 라이브 DB", canonical_main_db)
     if legacy_main_db != configured_main_db:
         _append("레거시 라이브 DB", legacy_main_db)
+    if legacy_candidate_db != configured_candidate_db:
+        _append("레거시 후보 카나리아 DB", legacy_candidate_db, service_key="live_candidate")
 
     return candidates
 
@@ -673,7 +705,7 @@ def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
 def _live_target_unit_for_service_key(service_key: str | None) -> str:
     key = str(service_key or "").strip().lower()
     if key == "live_candidate":
-        return "autobot-live-alpha-candidate.service"
+        return _CANDIDATE_LIVE_UNITS[0]
     if key == "live_main":
         return "autobot-live-alpha.service"
     return ""
@@ -2581,7 +2613,7 @@ def _summarize_v5_readiness(project_root: Path, *, data_platform: dict[str, Any]
 
 
 def _summarize_promotion_state_machine(project_root: Path) -> dict[str, Any]:
-    path = project_root / "logs" / "model_v4_challenger" / "step_06_promote.json"
+    path = _first_existing_path(project_root, _CANDIDATE_LOG_ROOTS, "step_06_promote.json")
     payload = _load_json(path)
     return {
         "exists": bool(payload),
@@ -2742,7 +2774,7 @@ def _run_adopt_latest_candidate(
         }
     pwsh_exe = _resolve_pwsh_exe()
     python_exe = _project_python_exe(project_root)
-    adoption_script = project_root / "scripts" / "adopt_v4_candidate_for_server.ps1"
+    adoption_script = project_root / "scripts" / "adopt_v5_candidate_for_server.ps1"
     adoption_result = _run_dashboard_command(
         [
             pwsh_exe,
@@ -2760,7 +2792,7 @@ def _run_adopt_latest_candidate(
             "-ModelFamily",
             str(model_family or _resolve_dashboard_training_family(project_root)),
             "-CandidateTargetUnits",
-            "autobot-live-alpha-candidate.service",
+            _CANDIDATE_LIVE_UNITS[0],
         ]
         + (
             [
@@ -3020,14 +3052,14 @@ def _run_reset_live_suppressors(
                 run_id=run_id,
                 confidence_monitor_config=dict(risk_control_payload.get("confidence_sequence_monitors") or {}),
                 runtime_health=runtime_health,
-                lane="live_candidate" if "live_candidate" in str(db_rel_path) else "live_champion",
-                unit_name=_live_target_unit_for_service_key("live_candidate" if "live_candidate" in str(db_rel_path) else "live_main"),
+                lane="live_candidate" if any(token in str(db_rel_path) for token in ("live_candidate", "live_canary")) else "live_champion",
+                unit_name=_live_target_unit_for_service_key("live_candidate" if any(token in str(db_rel_path) for token in ("live_candidate", "live_canary")) else "live_main"),
                 rollout_mode=str((store.live_rollout_status() or {}).get("mode") or "").strip().lower(),
                 ts_ms=now_ts_ms,
             )
             confidence_latest_path = _confidence_sequence_latest_path(
                 project_root,
-                service_key="live_candidate" if "live_candidate" in str(db_rel_path) else "live_main",
+                service_key="live_candidate" if any(token in str(db_rel_path) for token in ("live_candidate", "live_canary")) else "live_main",
             )
             if confidence_latest_path is not None:
                 write_live_risk_confidence_sequence_report(
@@ -3081,20 +3113,20 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "restart_paired_paper": {
             "id": "restart_paired_paper",
             "label": "페어드 페이퍼 재시작",
-            "description": "autobot-paper-v4-paired.service 재시작",
+            "description": "autobot-paper-v5-paired.service 재시작",
             "category": "services",
             "confirm": "paired paper 서비스를 지금 재시작할까요?",
             "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-paper-v4-paired.service"],
+            "command": ["sudo", "-n", "systemctl", "restart", _PAIRED_PAPER_UNITS[0]],
         },
         "restart_canary": {
             "id": "restart_canary",
             "label": "라이브 카나리아 재시작",
-            "description": "autobot-live-alpha-candidate.service 재시작",
+            "description": "autobot-live-alpha-canary.service 재시작",
             "category": "services",
             "confirm": "카나리아 라이브 서비스를 지금 재시작할까요?",
             "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "restart", "autobot-live-alpha-candidate.service"],
+            "command": ["sudo", "-n", "systemctl", "restart", _CANDIDATE_LIVE_UNITS[0]],
         },
         "clear_canary_breaker": {
             "id": "clear_canary_breaker",
@@ -3103,7 +3135,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "category": "recovery",
             "confirm": "카나리아 persistent breaker와 관련 버퍼를 지금 정리할까요?",
             "kind": "clear_breaker",
-            "db_rel_path": "data/state/live_candidate/live_state.db",
+            "db_rel_path": "data/state/live_canary/live_state.db",
             "source": "dashboard_ops_clear_canary_breaker",
             "note": "dashboard ops clear canary breaker",
         },
@@ -3114,7 +3146,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "category": "recovery",
             "confirm": "카나리아 non-breaker suppressor 상태를 지금 리셋할까요?",
             "kind": "reset_suppressors",
-            "db_rel_path": "data/state/live_candidate/live_state.db",
+            "db_rel_path": "data/state/live_canary/live_state.db",
             "source": "dashboard_ops_reset_canary_suppressors",
             "note": "dashboard ops reset canary suppressors",
         },
@@ -3267,8 +3299,8 @@ def _execute_dashboard_operation(project_root: Path, action_id: str) -> dict[str
 def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     project_root = project_root.resolve()
     acceptance_latest = _acceptance_latest_path(project_root)
-    challenger_latest = project_root / "logs" / "model_v4_challenger" / "latest.json"
-    challenger_state = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    challenger_latest = _first_existing_path(project_root, _CANDIDATE_LOG_ROOTS, "latest.json")
+    challenger_state = _first_existing_path(project_root, _CANDIDATE_LOG_ROOTS, "current_state.json")
     rank_shadow_latest = project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json"
     rank_shadow_governance = project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json"
     live_rollout_latest = project_root / "logs" / "live_rollout" / "latest.json"
@@ -3279,15 +3311,15 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
     acceptance = _summarize_acceptance(acceptance_latest)
     data_platform = _summarize_data_platform(project_root)
     services = {
-        "paper_champion": _unit_snapshot("autobot-paper-v4.service"),
+        "paper_champion": _unit_snapshot_first("autobot-paper-v5.service", "autobot-paper-v4.service"),
         "paper_challenger": _unit_snapshot("autobot-paper-v4-challenger.service"),
-        "paper_paired": _unit_snapshot("autobot-paper-v4-paired.service"),
+        "paper_paired": _unit_snapshot_first(*_PAIRED_PAPER_UNITS),
         "ws_public": _unit_snapshot("autobot-ws-public.service"),
         "live_main": _unit_snapshot("autobot-live-alpha.service"),
-        "live_candidate": _unit_snapshot("autobot-live-alpha-candidate.service"),
+        "live_candidate": _unit_snapshot_first(*_CANDIDATE_LIVE_UNITS),
         "data_platform_refresh_service": _unit_snapshot("autobot-data-platform-refresh.service"),
-        "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
-        "promote_service": _unit_snapshot("autobot-v4-challenger-promote.service"),
+        "spawn_service": _unit_snapshot("autobot-v5-challenger-spawn.service"),
+        "promote_service": _unit_snapshot("autobot-v5-challenger-promote.service"),
         "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
         "candles_api_refresh_service": _unit_snapshot("autobot-candles-api-refresh.service"),
         "raw_ticks_daily_service": _unit_snapshot("autobot-raw-ticks-daily.service"),
@@ -3452,7 +3484,7 @@ def _summarize_training_activity(
 
     if not processes:
         manual_tokens = (
-            "daily_champion_challenger_v4_for_server.ps1",
+            "daily_champion_challenger_v5_for_server.ps1",
             "candidate_acceptance.ps1",
             "v4_governed_candidate_acceptance.ps1",
             "v5_governed_candidate_acceptance.ps1",

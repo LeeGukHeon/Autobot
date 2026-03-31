@@ -439,6 +439,8 @@ async def run_live_model_alpha_runtime(
                     risk_manager=risk_manager,
                     daemon_settings=daemon_settings,
                     summary=summary,
+                    live_opportunity_log_path=live_opportunity_log_path,
+                    live_counterfactual_log_path=live_counterfactual_log_path,
                     spawn_private_ws_task_fn=_spawn_private_ws_task,
                 )
             _drain_public_micro_events(
@@ -627,6 +629,8 @@ async def run_live_model_alpha_runtime(
                         risk_manager=risk_manager,
                         daemon_settings=daemon_settings,
                         summary=summary,
+                        live_opportunity_log_path=live_opportunity_log_path,
+                        live_counterfactual_log_path=live_counterfactual_log_path,
                         spawn_private_ws_task_fn=_spawn_private_ws_task,
                     )
                 _drain_public_micro_events(
@@ -677,6 +681,8 @@ async def run_live_model_alpha_runtime(
                 risk_manager=risk_manager,
                 daemon_settings=daemon_settings,
                 summary=summary,
+                live_opportunity_log_path=live_opportunity_log_path,
+                live_counterfactual_log_path=live_counterfactual_log_path,
                 spawn_private_ws_task_fn=_spawn_private_ws_task,
             )
         _drain_public_micro_events(
@@ -735,7 +741,7 @@ def _resolve_live_opportunity_log_path(*, settings: LiveModelAlphaRuntimeSetting
 
 def _resolve_live_opportunity_lane(*, settings: LiveModelAlphaRuntimeSettings) -> str:
     target_unit = str(settings.daemon.rollout_target_unit).strip().lower()
-    if "candidate" in target_unit:
+    if ("candidate" in target_unit) or ("canary" in target_unit):
         return "live_candidate"
     return "live_champion"
 
@@ -845,6 +851,10 @@ def _startup_sync(
     summary["startup_online_risk_recovery"] = _startup_online_risk_recovery(
         store=store,
         runtime_status=runtime_status,
+        ts_ms=int(time.time() * 1000),
+    )
+    summary["startup_runtime_loop_recovery"] = _startup_runtime_loop_recovery(
+        store=store,
         ts_ms=int(time.time() * 1000),
     )
     rollout_status = _evaluate_rollout_gate(
@@ -959,6 +969,30 @@ def _startup_online_risk_recovery(
         "cleared_reason_codes": cleared_reason_codes,
         "online_threshold": online_threshold,
         "confidence_sequence": confidence_sequence,
+    }
+
+
+def _startup_runtime_loop_recovery(*, store: LiveStateStore, ts_ms: int) -> dict[str, Any]:
+    breaker_report = breaker_status(store)
+    active_reason_codes = [
+        str(reason_code).strip().upper()
+        for reason_code in (breaker_report.get("reason_codes") or [])
+        if str(reason_code).strip()
+    ]
+    clear_reason_codes = [reason_code for reason_code in active_reason_codes if reason_code == "LIVE_RUNTIME_LOOP_FAILED"]
+    if clear_reason_codes:
+        clear_breaker_reasons(
+            store,
+            reason_codes=clear_reason_codes,
+            source="startup_runtime_loop_recovery",
+            ts_ms=ts_ms,
+            details={
+                "cleared_reason_codes": clear_reason_codes,
+            },
+        )
+    return {
+        "attempted": True,
+        "cleared_reason_codes": clear_reason_codes,
     }
 
 
@@ -1691,6 +1725,8 @@ def _drain_private_ws_events(
     risk_manager: LiveRiskManager | None,
     daemon_settings: LiveDaemonSettings,
     summary: dict[str, Any],
+    live_opportunity_log_path: Path,
+    live_counterfactual_log_path: Path,
     spawn_private_ws_task_fn: Any | None = None,
 ) -> asyncio.Task[None] | None:
     while True:

@@ -279,7 +279,10 @@ def collect_protected_registry_run_ids(*, project_root: Path, model_family: str)
         run_id = _read_pointer_run_id(family_root / name)
         if run_id:
             protected.add(run_id)
-    current_state = _load_json(project_root / "logs" / "model_v4_challenger" / "current_state.json")
+    current_state_path = project_root / "logs" / "model_v5_candidate" / "current_state.json"
+    if not current_state_path.exists():
+        current_state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    current_state = _load_json(current_state_path)
     for key in (
         "candidate_run_id",
         "champion_run_id_at_start",
@@ -533,6 +536,7 @@ def _build_budget_summary(*, project_root: Path, model_family: str) -> dict[str,
         "execution_backtest_runs": project_root / "logs" / "train_v4_execution_backtest" / "runs",
         "registry_family": project_root / "models" / "registry" / model_family,
         "model_v4_acceptance": project_root / "logs" / "model_v4_acceptance",
+        "model_v5_candidate": project_root / "logs" / "model_v5_candidate",
         "model_v4_challenger": project_root / "logs" / "model_v4_challenger",
         "paper_micro_smoke": project_root / "logs" / "paper_micro_smoke",
         "micro_tiering": project_root / "logs" / "micro_tiering",

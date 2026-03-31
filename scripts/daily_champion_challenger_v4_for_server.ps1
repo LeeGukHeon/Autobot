@@ -13,6 +13,13 @@ param(
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string]$PairedPaperUnitName = "autobot-paper-v4-paired.service",
+    [string]$CanaryUnitName = "autobot-live-alpha-candidate.service",
+    [string]$StateRootRelPath = "logs/model_v4_challenger",
+    [string]$CandidateStateDbPath = "data/state/live_candidate/live_state.db",
+    [string]$SpawnServiceUnitName = "autobot-v4-challenger-spawn.service",
+    [string]$PromoteServiceUnitName = "autobot-v4-challenger-promote.service",
+    [string]$SpawnTimerUnitName = "autobot-v4-challenger-spawn.timer",
+    [string]$PromoteTimerUnitName = "autobot-v4-challenger-promote.timer",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
     [string[]]$BlockOnActiveUnits = @(),
@@ -115,6 +122,9 @@ function Resolve-BatchDateValue {
 
 function Test-SystemdUnitActive {
     param([string]$UnitName)
+    if ([string]::IsNullOrWhiteSpace($UnitName)) {
+        return $false
+    }
     if ($DryRun) {
         return $false
     }
@@ -184,7 +194,7 @@ function Invoke-PreflightCapture {
         if ($requiredUnits -notcontains $PairedPaperUnitName) {
             $requiredUnits += $PairedPaperUnitName
         }
-        foreach ($timerUnit in @("autobot-v4-challenger-spawn.timer", "autobot-v4-challenger-promote.timer")) {
+        foreach ($timerUnit in @($SpawnTimerUnitName, $PromoteTimerUnitName)) {
             if ($requiredUnits -contains $timerUnit) {
                 continue
             }
@@ -193,7 +203,7 @@ function Invoke-PreflightCapture {
         if ($requiredUnits.Count -gt 0) {
             $serializedUnits = Join-DelimitedStringArray -Values $requiredUnits
             $failedUnitsList = @($requiredUnits)
-            foreach ($value in @("autobot-v4-challenger-spawn.service", "autobot-v4-challenger-promote.service")) {
+            foreach ($value in @($SpawnServiceUnitName, $PromoteServiceUnitName)) {
                 if ($failedUnitsList -contains $value) {
                     continue
                 }
@@ -204,8 +214,8 @@ function Invoke-PreflightCapture {
                 ($ChampionUnit + "=disabled"),
                 ($ChallengerUnit + "=disabled"),
                 ($PairedPaperUnitName + "=enabled"),
-                "autobot-v4-challenger-spawn.timer=enabled",
-                "autobot-v4-challenger-promote.timer=enabled",
+                ($SpawnTimerUnitName + "=enabled"),
+                ($PromoteTimerUnitName + "=enabled"),
                 "autobot-paper-v4-replay.service=disabled",
                 "autobot-live-alpha-replay-shadow.service=disabled"
             )
@@ -217,7 +227,7 @@ function Invoke-PreflightCapture {
                 $expectedUnitStates += ($text.Trim() + "=enabled")
             }
             $requiredStateDbPaths = @(
-                "data/state/live_candidate/live_state.db",
+                $CandidateStateDbPath,
                 "data/state/live_state.db"
             )
             $args += @(
@@ -276,7 +286,7 @@ function Resolve-CanaryConfidenceSequenceLatestPath {
     )
     $trimmedUnit = [string]$UnitName
     if ([string]::IsNullOrWhiteSpace($trimmedUnit)) {
-        $trimmedUnit = "autobot-live-alpha-candidate.service"
+        $trimmedUnit = $CanaryUnitName
     }
     $slug = (($trimmedUnit.Trim().ToLowerInvariant()) -replace '[^a-z0-9]+', '_').Trim('_')
     if ([string]::IsNullOrWhiteSpace($slug)) {
@@ -969,7 +979,7 @@ $resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
 $resolvedBlockOnActiveUnits = @(Get-StringArray -Value $BlockOnActiveUnits)
 $resolvedAcceptanceArgs = @(Get-StringArray -Value $AcceptanceArgs)
 $registryRoot = Join-Path $resolvedProjectRoot "models/registry"
-$stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
+$stateRoot = Join-Path $resolvedProjectRoot $StateRootRelPath
 $statePath = Join-Path $stateRoot "current_state.json"
 $archiveRoot = Join-Path $stateRoot "archive"
 $pairedPaperRoot = Join-Path $resolvedProjectRoot "logs/paired_paper"
@@ -1236,7 +1246,7 @@ if ($runPromotionPhase) {
                     Select-Object -First 1
             )
             if ([string]::IsNullOrWhiteSpace($canaryUnitName)) {
-                $canaryUnitName = "autobot-live-alpha-candidate.service"
+                $canaryUnitName = $CanaryUnitName
             }
             $canaryLatestPath = Resolve-CanaryConfidenceSequenceLatestPath -Root $resolvedProjectRoot -UnitName $canaryUnitName
             $canaryArtifact = Load-JsonOrEmpty -PathValue $canaryLatestPath

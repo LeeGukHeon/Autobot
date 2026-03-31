@@ -59,10 +59,9 @@ def test_t23_2_daily_acceptance_installer_dry_run_keeps_wrapper_and_runtime_unit
 
     assert "[daily-accept-install][dry-run] service=autobot-daily-v4-accept.service" in stdout
     assert "[daily-accept-install][dry-run] timer=autobot-daily-v4-accept.timer" in stdout
-    assert "daily_champion_challenger_v4_for_server.ps1" in stdout
+    assert "daily_champion_challenger_v5_for_server.ps1" in stdout
     assert "v5_governed_candidate_acceptance.ps1" in stdout
-    assert "autobot-paper-v4.service" in stdout
-    assert "autobot-paper-v4-challenger.service" in stdout
+    assert "autobot-paper-v5.service" in stdout
 
 
 def test_t23_2_rank_shadow_installer_dry_run_keeps_protected_units() -> None:
@@ -85,7 +84,7 @@ def test_t23_2_live_execution_policy_installer_dry_run_keeps_timer_contract() ->
     assert "[live-exec-install][dry-run] service=autobot-live-execution-policy.service" in stdout
     assert "[live-exec-install][dry-run] timer=autobot-live-execution-policy.timer" in stdout
     assert "refresh_live_execution_policy.ps1" in stdout
-    assert "data/state/live_state.db,data/state/live_candidate/live_state.db" in stdout
+    assert "data/state/live_state.db,data/state/live_canary/live_state.db,data/state/live_candidate/live_state.db" in stdout
 
 
 def test_t23_2_data_platform_refresh_installer_dry_run_keeps_new_dataset_contracts() -> None:

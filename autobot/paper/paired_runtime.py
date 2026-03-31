@@ -415,7 +415,7 @@ async def run_recorded_paired_paper(
     )
 
     with _paper_runtime_env(
-        unit_name="autobot-paper-v4-paired.service",
+        unit_name="autobot-paper-v5-paired.service",
         runtime_role="champion",
         lane=lane,
         pinned_model_ref=str(champion_settings.model_ref or champion_settings.model_alpha.model_ref or "").strip(),
@@ -423,7 +423,7 @@ async def run_recorded_paired_paper(
         champion_summary = await champion_engine.run()
 
     with _paper_runtime_env(
-        unit_name="autobot-paper-v4-paired.service",
+        unit_name="autobot-paper-v5-paired.service",
         runtime_role="challenger",
         lane=lane,
         pinned_model_ref=str(challenger_settings.model_ref or challenger_settings.model_alpha.model_ref or "").strip(),
@@ -574,9 +574,9 @@ async def run_live_paired_paper(
             rules_provider=rules_provider,
         )
         with _paper_runtime_env(
-            unit_name="autobot-paper-v4-paired.service",
+            unit_name="autobot-paper-v5-paired.service",
             runtime_role=runtime_role,
-            lane="v4",
+            lane="v5",
             pinned_model_ref=str(run_settings.model_ref or run_settings.model_alpha.model_ref or "").strip(),
         ):
             return await engine.run()
@@ -666,7 +666,9 @@ async def run_service_paired_paper(
     max_time_to_fill_deterioration_factor: float,
 ) -> dict[str, Any]:
     root = Path(project_root).resolve()
-    state_path = root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path = root / "logs" / "model_v5_candidate" / "current_state.json"
+    if not state_path.exists():
+        state_path = root / "logs" / "model_v4_challenger" / "current_state.json"
     state = _load_json(state_path)
     candidate_run_id = str(state.get("candidate_run_id") or "").strip()
     champion_run_id = str(state.get("champion_run_id_at_start") or "").strip()
@@ -746,9 +748,9 @@ async def run_service_paired_paper(
             market_loader=lambda quote_value: list(markets),
         )
         with _paper_runtime_env(
-            unit_name="autobot-paper-v4-paired.service",
+            unit_name="autobot-paper-v5-paired.service",
             runtime_role=runtime_role,
-            lane="v4",
+            lane="v5",
             pinned_model_ref=str(run_settings.model_ref or run_settings.model_alpha.model_ref or "").strip(),
         ):
             return await engine.run()

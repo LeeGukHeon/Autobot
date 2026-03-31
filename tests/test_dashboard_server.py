@@ -164,8 +164,8 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     monkeypatch.delenv("AUTOBOT_DASHBOARD_OPS_TOKEN", raising=False)
     project_root = tmp_path
     _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-10T00:10:00Z", "candidate_run_id": "run-abc", "overall_pass": False, "backtest_pass": False, "reasons": ["TRAINER_EVIDENCE_REQUIRED_FAILED"], "notes": ["PAPER_SOAK_SKIPPED"], "gates": {"backtest": {"decision_basis": "TRAINER_EVIDENCE_REQUIRED_FAIL"}}})
-    _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"steps": {"start_challenger": {"candidate_run_id": "run-abc", "started": False, "reason": "TRAINER_EVIDENCE_REQUIRED_FAILED", "acceptance_notes": ["PAPER_SOAK_SKIPPED"]}}})
-    _write_json(project_root / "logs" / "model_v4_challenger" / "current_state.json", {"candidate_run_id": "run-abc"})
+    _write_json(project_root / "logs" / "model_v5_candidate" / "latest.json", {"steps": {"start_challenger": {"candidate_run_id": "run-abc", "started": False, "reason": "TRAINER_EVIDENCE_REQUIRED_FAILED", "acceptance_notes": ["PAPER_SOAK_SKIPPED"]}}})
+    _write_json(project_root / "logs" / "model_v5_candidate" / "current_state.json", {"candidate_run_id": "run-abc"})
     _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {"status": "shadow_pass", "next_action": "use_rank_governed_lane", "candidate_run_id": "rank-run-001", "lane_id": "rank_shadow"})
     _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {"selected_lane_id": "rank_governed_primary", "selected_acceptance_script": "v4_rank_governed_candidate_acceptance.ps1"})
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
@@ -603,6 +603,8 @@ def test_build_dashboard_snapshot_uses_service_configured_live_db_paths(tmp_path
     def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
         if unit_name == "autobot-live-alpha.service":
             return {"Environment": "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_state.db"}
+        if unit_name == "autobot-live-alpha-canary.service":
+            return {"Environment": "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_canary/live_state.db"}
         if unit_name == "autobot-live-alpha-candidate.service":
             return {"Environment": "AUTOBOT_LIVE_STATE_DB_PATH=data/state/live_candidate/live_state.db"}
         return {}
@@ -1160,7 +1162,7 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     actions = {item["id"]: item for item in snapshot["operations"]["actions"]}
 
     assert "restart_paired_paper" in actions
-    assert actions["restart_paired_paper"]["description"] == "autobot-paper-v4-paired.service 재시작"
+    assert actions["restart_paired_paper"]["description"] == "autobot-paper-v5-paired.service 재시작"
     assert "restart_paper_champion" not in actions
     assert "restart_paper_challenger" not in actions
     assert "clear_canary_breaker" in actions
@@ -1218,10 +1220,10 @@ def test_execute_dashboard_operation_adopt_latest_candidate_uses_shared_adoption
     assert result["run_id"] == "run-001"
     command = list(captured["command"] or [])
     assert command[0] == "pwsh"
-    assert str(project_root / "scripts" / "adopt_v4_candidate_for_server.ps1") in command
+    assert str(project_root / "scripts" / "adopt_v5_candidate_for_server.ps1") in command
     assert command[command.index("-CandidateRunId") + 1] == "run-001"
     assert command[command.index("-ModelFamily") + 1] == "train_v4_crypto_cs"
-    assert command[command.index("-CandidateTargetUnits") + 1] == "autobot-live-alpha-candidate.service"
+    assert command[command.index("-CandidateTargetUnits") + 1] == "autobot-live-alpha-canary.service"
     assert int(captured["timeout_sec"]) == 120
     history_path = project_root / "logs" / "dashboard_ops" / "ops_history.jsonl"
     assert history_path.exists()
@@ -1300,7 +1302,7 @@ def test_build_dashboard_snapshot_uses_acceptance_model_family_for_training_poin
 
 def test_run_clear_live_breaker_resolves_breaker_state_and_cleans_online_buffer(tmp_path: Path) -> None:
     project_root = tmp_path
-    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    db_path = project_root / "data" / "state" / "live_canary" / "live_state.db"
     _init_live_db(db_path)
 
     conn = sqlite3.connect(db_path)
@@ -1330,7 +1332,7 @@ def test_run_clear_live_breaker_resolves_breaker_state_and_cleans_online_buffer(
 
     result = _run_clear_live_breaker(
         project_root,
-        db_rel_path="data/state/live_candidate/live_state.db",
+        db_rel_path="data/state/live_canary/live_state.db",
         source="dashboard_ops_clear_canary_breaker",
         note="unit-test",
     )
@@ -1425,7 +1427,7 @@ def test_run_reset_live_suppressors_sets_reset_checkpoint_and_refreshes_confiden
     assert breaker_row is not None
     assert int(breaker_row[0]) == 0
     assert json.loads(breaker_row[1]) == []
-    confidence_path = project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_candidate_service" / "latest.json"
+    confidence_path = project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_canary_service" / "latest.json"
     assert confidence_path.exists()
     confidence_payload = json.loads(confidence_path.read_text(encoding="utf-8"))
     assert confidence_payload["halt_triggered"] is False
@@ -1434,10 +1436,10 @@ def test_run_reset_live_suppressors_sets_reset_checkpoint_and_refreshes_confiden
 def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_suppressor(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": True}})
-    db_path = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    db_path = project_root / "data" / "state" / "live_canary" / "live_state.db"
     _init_live_db(db_path)
     _write_json(
-        project_root / "logs" / "risk_budget_ledger" / "autobot_live_alpha_candidate_service" / "latest.json",
+        project_root / "logs" / "risk_budget_ledger" / "autobot_live_alpha_canary_service" / "latest.json",
         {
             "last_entry": {
                 "ts_ms": int(time.time() * 1000),
@@ -1451,7 +1453,7 @@ def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_
         },
     )
     _write_json(
-        project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_candidate_service" / "latest.json",
+        project_root / "logs" / "live_risk_confidence_sequence" / "autobot_live_alpha_canary_service" / "latest.json",
         {
             "artifact_version": 1,
             "ts_ms": int(time.time() * 1000),
@@ -1475,13 +1477,13 @@ def test_build_dashboard_snapshot_treats_canary_spread_min_total_as_warning_not_
 def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_service_is_inactive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-21T01:00:00Z"})
-    _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"steps": {}})
+    _write_json(project_root / "logs" / "model_v5_candidate" / "latest.json", {"steps": {}})
     _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {})
     _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {})
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {})
 
     def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
-        if unit_name == "autobot-v4-challenger-spawn.service":
+        if unit_name == "autobot-v5-challenger-spawn.service":
             return {
                 "ActiveState": "inactive",
                 "SubState": "dead",
@@ -1500,7 +1502,7 @@ def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_ser
             {
                 "pid": 9991,
                 "ppid": 1,
-                "args": "/snap/powershell/332/opt/powershell/pwsh -NoProfile -File /home/ubuntu/MyApps/Autobot/scripts/daily_champion_challenger_v4_for_server.ps1 -Mode spawn_only",
+                "args": "/snap/powershell/332/opt/powershell/pwsh -NoProfile -File /home/ubuntu/MyApps/Autobot/scripts/daily_champion_challenger_v5_for_server.ps1 -Mode spawn_only",
             },
             {
                 "pid": 9992,

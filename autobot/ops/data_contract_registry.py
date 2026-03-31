@@ -125,7 +125,7 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
 
     for contract_id, dataset_name, db_path in (
         ("runtime:live_main", "live_main", _resolve_existing_root(data_root / "state" / "live" / "live_state.db", data_root / "state" / "live_state.db")),
-        ("runtime:live_candidate", "live_candidate", _resolve_existing_root(data_root / "state" / "live_candidate" / "live_state.db")),
+        ("runtime:live_candidate", "live_candidate", _resolve_existing_root(data_root / "state" / "live_canary" / "live_state.db", data_root / "state" / "live_candidate" / "live_state.db")),
     ):
         if db_path is None:
             continue

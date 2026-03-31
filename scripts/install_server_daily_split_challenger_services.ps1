@@ -9,7 +9,7 @@ param(
     [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionCompareModelFamily = "",
     [string]$PairedPaperModelFamily = "",
-    [string]$ChampionUnitName = "autobot-paper-v4.service",
+    [string]$ChampionUnitName = "autobot-paper-v5.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
@@ -34,7 +34,7 @@ Set-StrictMode -Version Latest
 
 function Resolve-DefaultWrapperScript {
     param([string]$Root)
-    return (Join-Path $Root "scripts/daily_champion_challenger_v4_for_server.ps1")
+    return (Join-Path $Root "scripts/daily_champion_challenger_v5_for_server.ps1")
 }
 
 function New-ServiceContent {

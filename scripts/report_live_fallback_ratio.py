@@ -112,7 +112,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Report fallback_bin usage from live trade journal.")
     parser.add_argument(
         "--db-path",
-        default="data/state/live_candidate/live_state.db",
+        default="data/state/live_canary/live_state.db",
         help="Path to live state SQLite DB",
     )
     parser.add_argument(

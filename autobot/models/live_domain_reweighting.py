@@ -31,6 +31,9 @@ _CANONICAL_SOURCE_FEATURE_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def resolve_default_live_candidate_db_path(*, project_root: Path) -> Path:
+    preferred = Path(project_root) / "data" / "state" / "live_canary" / "live_state.db"
+    if preferred.exists():
+        return preferred
     return Path(project_root) / "data" / "state" / "live_candidate" / "live_state.db"
 
 

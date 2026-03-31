@@ -12,7 +12,7 @@ from autobot.live.breaker_taxonomy import annotate_reason_payload
 from autobot.models.live_execution_policy import build_live_execution_contract
 from autobot.models.registry import resolve_run_dir
 
-DEFAULT_DB_PATH = Path("data/state/live_candidate/live_state.db")
+DEFAULT_DB_PATH = Path("data/state/live_canary/live_state.db")
 DEFAULT_REGISTRY_ROOT = Path("models/registry")
 DEFAULT_MODEL_FAMILY = "train_v4_crypto_cs"
 

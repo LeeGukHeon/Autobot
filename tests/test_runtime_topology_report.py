@@ -16,7 +16,7 @@ def _write_json(path: Path, payload: object) -> None:
 
 def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) -> None:
     project_root = tmp_path
-    registry_root = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    registry_root = project_root / "models" / "registry" / "train_v5_fusion"
     registry_root.mkdir(parents=True, exist_ok=True)
     _write_json(registry_root / "champion.json", {"run_id": "run-1"})
     _write_json(registry_root / "latest.json", {"run_id": "run-2"})
@@ -54,14 +54,14 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         rollout_root / "latest.json",
         {
             "event_kind": "STATUS",
-            "target_unit": "autobot-live-alpha-candidate.service",
+            "target_unit": "autobot-live-alpha-canary.service",
             "status": {"mode": "canary", "order_emission_allowed": True},
-            "contract": {"armed": True, "mode": "canary", "target_unit": "autobot-live-alpha-candidate.service"},
+            "contract": {"armed": True, "mode": "canary", "target_unit": "autobot-live-alpha-canary.service"},
             "test_order": {"ok": True, "ts_ms": 9_950},
         },
     )
 
-    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    candidate_db = project_root / "data" / "state" / "live_canary" / "live_state.db"
     candidate_db.parent.mkdir(parents=True, exist_ok=True)
     with LiveStateStore(candidate_db) as store:
         store.set_runtime_contract(payload={"live_runtime_model_run_id": "run-3"}, ts_ms=10_000)
@@ -83,15 +83,15 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     topology_module._systemd_topology_snapshot = lambda: {
         "available": True,
         "services": [
-            {"unit": "autobot-paper-v4.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
-            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+            {"unit": "autobot-paper-v5.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion paper"},
+            {"unit": "autobot-live-alpha-canary.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
             {"unit": "autobot-paper-v4-replay.service", "active": "active", "sub": "running", "load": "loaded", "description": "Replay paper"},
         ],
         "timers": [
-            {"unit": "autobot-v4-challenger-promote.timer", "active": "active", "sub": "waiting", "load": "loaded", "description": "Promote timer"},
+            {"unit": "autobot-v5-challenger-promote.timer", "active": "active", "sub": "waiting", "load": "loaded", "description": "Promote timer"},
         ],
         "unit_files": [
-            {"unit_file": "autobot-paper-v4.service", "state": "enabled", "preset": "enabled"},
+            {"unit_file": "autobot-paper-v5.service", "state": "enabled", "preset": "enabled"},
             {"unit_file": "autobot-paper-v4-replay.service", "state": "enabled", "preset": "enabled"},
         ],
         "errors": {},
@@ -113,7 +113,7 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
         "replay_path_present": True,
     }
     try:
-        report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-candidate.service", ts_ms=10_000)
+        report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-canary.service", ts_ms=10_000)
     finally:
         topology_module._systemd_topology_snapshot = original_systemd
         topology_module._systemd_show_properties = original_show
@@ -140,14 +140,17 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
     assert report["current_runtime_contract"]["model_ref_source_requested"] == "latest_candidate"
     assert report["candidate_lane"]["breaker_state"]["primary_reason_type"] == "STATE_INTEGRITY"
     assert report["candidate_lane"]["breaker_state"]["typed_reason_codes"][0]["reason_code"] == "MODEL_POINTER_UNRESOLVED"
-    assert report["rollout_latest"]["target_unit"] == "autobot-live-alpha-candidate.service"
+    assert report["rollout_latest"]["target_unit"] == "autobot-live-alpha-canary.service"
     assert report["summary"]["all_primary_pointers_equal"] is False
     assert report["systemd"]["available"] is True
-    assert report["systemd"]["services"][0]["unit"] == "autobot-paper-v4.service"
+    assert report["systemd"]["services"][0]["unit"] == "autobot-paper-v5.service"
     assert report["git"]["dirty"] is True
     assert report["project_topology"]["replay_path_present"] is True
-    assert report["target_topology"]["lanes"]["candidate"]["paired_paper_unit"] == "autobot-paper-v4-paired.service"
-    assert report["target_topology"]["expected_state_db_paths"]["candidate"] == [str(candidate_db)]
+    assert report["target_topology"]["lanes"]["candidate"]["paired_paper_unit"] == "autobot-paper-v5-paired.service"
+    assert report["target_topology"]["expected_state_db_paths"]["candidate"] == [
+        str(project_root / "data" / "state" / "live_canary" / "live_state.db"),
+        str(project_root / "data" / "state" / "live_candidate" / "live_state.db"),
+    ]
     assert report["legacy_replay"]["classification"] == "legacy_excluded_from_target_topology"
     assert report["legacy_replay"]["present"] is True
     assert report["legacy_replay"]["active_unit_count"] == 1
@@ -166,8 +169,8 @@ def test_build_runtime_topology_report_summarizes_current_state(tmp_path: Path) 
 
 def test_write_runtime_topology_report_uses_default_output_path(tmp_path: Path) -> None:
     project_root = tmp_path
-    (project_root / "models" / "registry" / "train_v4_crypto_cs").mkdir(parents=True, exist_ok=True)
-    _write_json(project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json", {"run_id": "run-1"})
+    (project_root / "models" / "registry" / "train_v5_fusion").mkdir(parents=True, exist_ok=True)
+    _write_json(project_root / "models" / "registry" / "train_v5_fusion" / "champion.json", {"run_id": "run-1"})
     original_show = topology_module._systemd_show_properties
     topology_module._systemd_show_properties = lambda unit_name, *properties: {}
     try:
@@ -183,7 +186,7 @@ def test_write_runtime_topology_report_uses_default_output_path(tmp_path: Path) 
 
 def test_build_runtime_topology_report_ignores_inactive_live_main_pointer_drift(tmp_path: Path) -> None:
     project_root = tmp_path
-    registry_root = project_root / "models" / "registry" / "train_v4_crypto_cs"
+    registry_root = project_root / "models" / "registry" / "train_v5_fusion"
     registry_root.mkdir(parents=True, exist_ok=True)
     _write_json(registry_root / "champion.json", {"run_id": "run-1"})
     (registry_root / "run-1").mkdir(parents=True, exist_ok=True)
@@ -197,7 +200,7 @@ def test_build_runtime_topology_report_ignores_inactive_live_main_pointer_drift(
     micro_meta.mkdir(parents=True, exist_ok=True)
     _write_json(micro_meta / "aggregate_report.json", {"run_id": "micro-run-1"})
 
-    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    candidate_db = project_root / "data" / "state" / "live_canary" / "live_state.db"
     candidate_db.parent.mkdir(parents=True, exist_ok=True)
     candidate_db.write_text("", encoding="utf-8")
     live_db = project_root / "data" / "state" / "live" / "live_state.db"
@@ -251,7 +254,7 @@ def test_build_runtime_topology_report_uses_live_service_env_model_family(tmp_pa
     micro_meta.mkdir(parents=True, exist_ok=True)
     _write_json(micro_meta / "aggregate_report.json", {"run_id": "micro-run-1"})
 
-    candidate_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    candidate_db = project_root / "data" / "state" / "live_canary" / "live_state.db"
     candidate_db.parent.mkdir(parents=True, exist_ok=True)
     with LiveStateStore(candidate_db) as store:
         store.set_runtime_contract(payload={"live_runtime_model_run_id": "v5-run-2"}, ts_ms=10_000)
@@ -268,23 +271,23 @@ def test_build_runtime_topology_report_uses_live_service_env_model_family(tmp_pa
         "available": True,
         "services": [
             {"unit": "autobot-live-alpha.service", "active": "active", "sub": "running", "load": "loaded", "description": "Champion live"},
-            {"unit": "autobot-live-alpha-candidate.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
+            {"unit": "autobot-live-alpha-canary.service", "active": "active", "sub": "running", "load": "loaded", "description": "Candidate live"},
         ],
         "timers": [],
         "unit_files": [],
         "errors": {},
     }
     topology_module._systemd_show_properties = lambda unit_name, *properties: {
-        "Environment": (
-            "AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate AUTOBOT_LIVE_MODEL_FAMILY=train_v5_panel_ensemble"
-            if unit_name == "autobot-live-alpha-candidate.service"
-            else "AUTOBOT_LIVE_MODEL_REF_SOURCE=champion AUTOBOT_LIVE_MODEL_FAMILY=train_v5_panel_ensemble"
-        )
-    }
+            "Environment": (
+                "AUTOBOT_LIVE_MODEL_REF_SOURCE=latest_candidate AUTOBOT_LIVE_MODEL_FAMILY=train_v5_panel_ensemble"
+                if unit_name == "autobot-live-alpha-canary.service"
+                else "AUTOBOT_LIVE_MODEL_REF_SOURCE=champion AUTOBOT_LIVE_MODEL_FAMILY=train_v5_panel_ensemble"
+            )
+        }
     topology_module._git_topology_snapshot = lambda *, root: {"available": True, "head": "abc123", "branch": "main", "remote_origin": "", "status_short": [], "dirty": False, "errors": {}}
     topology_module._project_topology_snapshot = lambda *, root: {"project_root_parent": str(root.parent), "sibling_directories": [], "replay_like_paths": [], "replay_path_present": False}
     try:
-        report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-candidate.service", ts_ms=10_000)
+        report = build_runtime_topology_report(project_root=project_root, target_unit="autobot-live-alpha-canary.service", ts_ms=10_000)
     finally:
         topology_module._systemd_topology_snapshot = original_systemd
         topology_module._systemd_show_properties = original_show

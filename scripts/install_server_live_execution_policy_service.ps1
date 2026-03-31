@@ -8,6 +8,7 @@ param(
     [string]$OutputDir = "logs/live_execution_policy",
     [string[]]$StateDbPaths = @(
         "data/state/live_state.db",
+        "data/state/live_canary/live_state.db",
         "data/state/live_candidate/live_state.db"
     ),
     [string]$OnCalendar = "*-*-* 23:40:00",

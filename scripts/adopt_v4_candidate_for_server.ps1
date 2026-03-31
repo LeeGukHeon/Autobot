@@ -5,6 +5,7 @@ param(
     [string]$BatchDate = "",
     [string]$CandidateRunId = "",
     [string]$ModelFamily = "train_v5_fusion",
+    [string]$StateRootRelPath = "logs/model_v4_challenger",
     [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v4.service",
     [string]$ChallengerUnitName = "autobot-paper-v4-challenger.service",
@@ -233,7 +234,7 @@ $resolvedCandidateRunId = $resolvedCandidateRunId.Trim()
 $resolvedCandidateTargetUnits = @(Expand-DelimitedStringArray -Value $CandidateTargetUnits)
 $resolvedPromotionTargetUnits = @(Expand-DelimitedStringArray -Value $PromotionTargetUnits)
 $registryRoot = Join-Path $resolvedProjectRoot "models/registry"
-$stateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
+$stateRoot = Join-Path $resolvedProjectRoot $StateRootRelPath
 $statePath = Join-Path $stateRoot "current_state.json"
 $reportPath = Join-Path $stateRoot ("candidate_adoption_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $resolvedCandidateRunId + ".json")
 $latestReportPath = Join-Path $stateRoot "latest_candidate_adoption.json"
@@ -304,6 +305,7 @@ try {
         "-PaperModelFamilyOverride", $resolvedPairedPaperModelFamily,
         "-PaperChampionModelFamilyOverride", $resolvedChampionCompareModelFamily,
         "-PaperChallengerModelFamilyOverride", $resolvedPairedPaperModelFamily,
+        "-PairedStateRootRelPath", $StateRootRelPath,
         "-NoBootstrapChampion"
     )
     if ($DryRun) {

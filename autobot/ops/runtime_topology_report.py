@@ -22,6 +22,14 @@ LEGACY_REPLAY_UNITS = (
     "autobot-paper-v4-replay.service",
     "autobot-live-alpha-replay-shadow.service",
 )
+_CANDIDATE_STATE_DB_CANDIDATES = (
+    Path("data") / "state" / "live_canary" / "live_state.db",
+    Path("data") / "state" / "live_candidate" / "live_state.db",
+)
+_CANDIDATE_RUNTIME_UNITS = (
+    "autobot-live-alpha-canary.service",
+    "autobot-live-alpha-candidate.service",
+)
 
 
 def build_runtime_topology_report(
@@ -39,9 +47,7 @@ def build_runtime_topology_report(
         root / "data" / "state" / "live" / "live_state.db",
         root / "data" / "state" / "live_state.db",
     ]
-    candidate_db_candidates = [
-        root / "data" / "state" / "live_candidate" / "live_state.db",
-    ]
+    candidate_db_candidates = [root / rel_path for rel_path in _CANDIDATE_STATE_DB_CANDIDATES]
     live_db = _first_existing_file(live_db_candidates)
     candidate_db = _first_existing_file(candidate_db_candidates)
     target_topology = _target_topology_contract(
@@ -62,7 +68,7 @@ def build_runtime_topology_report(
     )
     candidate_lane_defaults = _load_unit_runtime_defaults(
         root,
-        unit_name="autobot-live-alpha-candidate.service",
+        unit_name=_CANDIDATE_RUNTIME_UNITS[0],
         fallback_model_ref_source="latest_candidate",
     )
     family = _resolve_report_model_family(
@@ -84,7 +90,7 @@ def build_runtime_topology_report(
     effective_target_unit = str(target_unit or "").strip() or None
     daemon_defaults = (
         candidate_lane_defaults
-        if effective_target_unit in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}
+        if effective_target_unit in set(_CANDIDATE_RUNTIME_UNITS) | {"autobot-paper-v4-challenger.service"}
         else live_lane_defaults
     )
     ws_public_contract = load_ws_public_runtime_contract(
@@ -131,7 +137,7 @@ def build_runtime_topology_report(
         ws_public_contract=ws_public_contract,
     )
     is_candidate_target = effective_target_unit in {
-        "autobot-live-alpha-candidate.service",
+        *_CANDIDATE_RUNTIME_UNITS,
         "autobot-paper-v4-challenger.service",
     }
     current_contract = candidate_current_contract if is_candidate_target else live_current_contract
@@ -248,7 +254,7 @@ def _load_live_defaults(project_root: Path, *, target_unit: str | None = None) -
     target_unit_text = str(target_unit or "").strip().lower()
     runtime_model_ref_source = (
         "latest_candidate"
-        if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}
+        if target_unit_text in (set(_CANDIDATE_RUNTIME_UNITS) | {"autobot-paper-v4-challenger.service"})
         else "champion"
     )
     return {
@@ -278,6 +284,8 @@ def _load_unit_runtime_defaults(
 ) -> dict[str, Any]:
     defaults = _load_live_defaults(project_root, target_unit=unit_name)
     payload = _systemd_show_properties(unit_name, "Environment")
+    if (not payload) and unit_name == _CANDIDATE_RUNTIME_UNITS[0]:
+        payload = _systemd_show_properties(_CANDIDATE_RUNTIME_UNITS[1], "Environment")
     environment = _parse_systemd_environment(str(payload.get("Environment", "")))
     model_ref_source = str(environment.get("AUTOBOT_LIVE_MODEL_REF_SOURCE") or defaults["runtime_model_ref_source"]).strip() or defaults["runtime_model_ref_source"]
     model_family = str(environment.get("AUTOBOT_LIVE_MODEL_FAMILY") or defaults["runtime_model_family"]).strip() or defaults["runtime_model_family"]
@@ -328,7 +336,7 @@ def _resolve_report_model_family(
     candidate_lane_defaults: dict[str, Any],
 ) -> str:
     target_unit_text = str(target_unit or "").strip().lower()
-    if target_unit_text in {"autobot-live-alpha-candidate.service", "autobot-paper-v4-challenger.service"}:
+    if target_unit_text in (set(_CANDIDATE_RUNTIME_UNITS) | {"autobot-paper-v4-challenger.service"}):
         return str(candidate_lane_defaults.get("runtime_model_family") or "train_v5_fusion").strip() or "train_v5_fusion"
     live_family = str(live_lane_defaults.get("runtime_model_family") or "").strip()
     candidate_family = str(candidate_lane_defaults.get("runtime_model_family") or "").strip()
@@ -560,14 +568,14 @@ def _target_topology_contract(
         "mode": "champion_candidate_two_lane_v1",
         "lanes": {
             "champion": {
-                "paper_unit": "autobot-paper-v4.service",
+                "paper_unit": "autobot-paper-v5.service",
                 "live_unit": "autobot-live-alpha.service",
                 "model_ref_source": "champion",
             },
             "candidate": {
-                "paper_unit": "autobot-paper-v4-challenger.service",
-                "paired_paper_unit": "autobot-paper-v4-paired.service",
-                "live_unit": "autobot-live-alpha-candidate.service",
+                "paper_unit": "",
+                "paired_paper_unit": "autobot-paper-v5-paired.service",
+                "live_unit": _CANDIDATE_RUNTIME_UNITS[0],
                 "model_ref_source": "latest_candidate",
             },
         },
@@ -653,7 +661,7 @@ def _topology_health_status(
     runtime_current_contract = dict(runtime_sync_status.get("current_contract") or {})
     pointer_name = str(runtime_current_contract.get("resolved_pointer_name") or "").strip().lower()
     monitored_unit = (
-        "autobot-live-alpha-candidate.service"
+        _CANDIDATE_RUNTIME_UNITS[0]
         if pointer_name == "latest_candidate"
         else "autobot-live-alpha.service"
     )

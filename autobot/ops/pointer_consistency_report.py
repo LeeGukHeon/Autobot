@@ -14,6 +14,10 @@ from .runtime_topology_report import _systemd_topology_snapshot
 POINTER_CONSISTENCY_REPORT_VERSION = 1
 DEFAULT_REPORT_REL_PATH = Path("logs") / "ops" / "pointer_consistency" / "latest.json"
 DEFAULT_MODEL_FAMILY = "train_v5_fusion"
+CANDIDATE_STATE_ROOT_CANDIDATES = (
+    Path("logs") / "model_v5_candidate",
+    Path("logs") / "model_v4_challenger",
+)
 
 
 def build_pointer_consistency_report(
@@ -26,7 +30,7 @@ def build_pointer_consistency_report(
     root = Path(project_root).resolve()
     registry_root = root / "models" / "registry"
     effective_ts_ms = int(ts_ms or 0)
-    current_state_path = root / "logs" / "model_v4_challenger" / "current_state.json"
+    current_state_path = _first_existing_path(root, CANDIDATE_STATE_ROOT_CANDIDATES, "current_state.json")
     current_state = _load_json_file(current_state_path)
     effective_champion_pointer_family = (
         str(
@@ -67,15 +71,15 @@ def build_pointer_consistency_report(
             default_family=None,
         ),
     }
-    latest_challenger_report_path = root / "logs" / "model_v4_challenger" / "latest.json"
+    latest_challenger_report_path = _first_existing_path(root, CANDIDATE_STATE_ROOT_CANDIDATES, "latest.json")
     latest_challenger_report = _load_json_file(latest_challenger_report_path)
 
     systemd_snapshot = _systemd_topology_snapshot()
     runtime_units = {
-        "candidate_live": _service_snapshot(systemd_snapshot, "autobot-live-alpha-candidate.service"),
+        "candidate_live": _service_snapshot_first(systemd_snapshot, "autobot-live-alpha-canary.service", "autobot-live-alpha-candidate.service"),
         "champion_live": _service_snapshot(systemd_snapshot, "autobot-live-alpha.service"),
-        "candidate_paper": _service_snapshot(systemd_snapshot, "autobot-paper-v4-challenger.service"),
-        "champion_paper": _service_snapshot(systemd_snapshot, "autobot-paper-v4.service"),
+        "candidate_paper": _service_snapshot_first(systemd_snapshot, "autobot-paper-v5-paired.service", "autobot-paper-v4-paired.service", "autobot-paper-v4-challenger.service"),
+        "champion_paper": _service_snapshot_first(systemd_snapshot, "autobot-paper-v5.service", "autobot-paper-v4.service"),
     }
 
     checks: list[dict[str, Any]] = []
@@ -219,6 +223,22 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _first_existing_path(root: Path, roots: tuple[Path, ...], filename: str) -> Path:
+    for rel_root in roots:
+        candidate = root / rel_root / filename
+        if candidate.exists():
+            return candidate
+    return root / roots[0] / filename
+
+
+def _service_snapshot_first(systemd_snapshot: dict[str, Any], *unit_names: str) -> dict[str, Any]:
+    for unit_name in unit_names:
+        snapshot = _service_snapshot(systemd_snapshot, unit_name)
+        if snapshot.get("present"):
+            return snapshot
+    return _service_snapshot(systemd_snapshot, unit_names[0])
 
 
 def _service_snapshot(systemd_snapshot: dict[str, Any], unit_name: str) -> dict[str, Any]:

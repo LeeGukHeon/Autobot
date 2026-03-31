@@ -583,7 +583,7 @@ def _merge_confidence_sequence_state(*, merged: dict[str, Any]) -> dict[str, Any
 def _resolve_confidence_sequence_lane(*, store: Any) -> str:
     rollout_contract = store.live_rollout_contract() if hasattr(store, "live_rollout_contract") else {}
     target_unit = str((rollout_contract or {}).get("target_unit") or "").strip().lower()
-    if "candidate" in target_unit:
+    if ("candidate" in target_unit) or ("canary" in target_unit):
         return "live_candidate"
     if target_unit:
         return "live_champion"
@@ -607,7 +607,8 @@ def write_live_confidence_sequence_artifact(
     ts_ms: int,
 ) -> dict[str, Any]:
     runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
-    lane = "live_candidate" if "candidate" in str(settings.daemon.rollout_target_unit).strip().lower() else "live_champion"
+    target_unit = str(settings.daemon.rollout_target_unit).strip().lower()
+    lane = "live_candidate" if (("candidate" in target_unit) or ("canary" in target_unit)) else "live_champion"
     report = build_live_risk_confidence_sequence_report(
         store=store,
         run_id=str(run_id).strip(),
@@ -644,7 +645,8 @@ def write_live_canary_confidence_sequence_artifact(
     if str(settings.daemon.rollout_mode).strip().lower() != "canary":
         return None
     runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
-    lane = "live_candidate" if "candidate" in str(settings.daemon.rollout_target_unit).strip().lower() else "live_champion"
+    target_unit = str(settings.daemon.rollout_target_unit).strip().lower()
+    lane = "live_candidate" if (("candidate" in target_unit) or ("canary" in target_unit)) else "live_champion"
     report = build_canary_confidence_sequence_report(
         store=store,
         run_id=str(run_id).strip(),
