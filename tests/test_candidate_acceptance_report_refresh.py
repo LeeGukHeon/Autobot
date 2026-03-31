@@ -381,12 +381,15 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
     ]
     assert len(entries) == 2
     assert entries[0]["smoke_report_json"] == "logs/paper_micro_smoke/latest.json"
+    assert entries[0]["skip_ticks"] is True
+    assert entries[0]["skip_candles"] is False
 
     expected_refresh_path = (
         project_root / "logs" / "model_acceptance_test" / "paper_smoke" / "latest.json"
     )
     assert entries[1]["smoke_report_json"] == str(expected_refresh_path)
     assert entries[1]["smoke_report_json"] != str(project_root)
+    assert entries[1]["skip_ticks"] is True
 
     python_invocations_path = project_root / "logs" / "fake_python_invocations.jsonl"
     python_invocations = [

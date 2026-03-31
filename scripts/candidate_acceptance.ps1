@@ -4729,6 +4729,7 @@ try {
             "-ProjectRoot", $resolvedProjectRoot,
             "-PythonExe", $resolvedPythonExe,
             "-Date", $effectiveBatchDate,
+            "-SkipTicks",
             "-SkipSmoke"
         )
         $dailyExec = Invoke-CommandCapture -Exe $psExe -ArgList $dailyArgs
