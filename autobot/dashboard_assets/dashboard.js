@@ -142,6 +142,8 @@
   const OPS_ACTION_TEXT = {
     restart_paired_paper: { label: "페어드 페이퍼 재시작" },
     restart_canary: { label: "라이브 카나리아 재시작" },
+    arm_canary_rollout: { label: "카나리아 주문 허용" },
+    canary_test_order: { label: "카나리아 테스트 주문" },
     clear_canary_breaker: { label: "카나리아 브레이커 해제" },
     reset_canary_suppressors: { label: "카나리아 억제 상태 리셋" },
     try_restart_live_main: { label: "메인 라이브 try-restart" },
@@ -515,6 +517,7 @@
     if (key === "services") return "서비스 제어";
     if (key === "pipeline") return "파이프라인 실행";
     if (key === "binding") return "런 바인딩";
+    if (key === "rollout") return "롤아웃 / 테스트 주문";
     if (key === "recovery") return "복구 / 브레이커";
     return "기타";
   }
@@ -524,6 +527,7 @@
     if (key === "services") return `${count}개 서비스`;
     if (key === "pipeline") return `${count}개 배치`;
     if (key === "binding") return `${count}개 반영`;
+    if (key === "rollout") return `${count}개 롤아웃`;
     if (key === "recovery") return `${count}개 복구`;
     return `${count}개 작업`;
   }
@@ -1978,7 +1982,7 @@
       acc[key].push(item);
       return acc;
     }, {});
-    const categoryOrder = ["services", "pipeline", "binding", "recovery", "other"];
+    const categoryOrder = ["services", "pipeline", "binding", "rollout", "recovery", "other"];
     document.getElementById("ops-actions").innerHTML = actions.length
       ? categoryOrder
         .filter((key) => Array.isArray(grouped[key]) && grouped[key].length)

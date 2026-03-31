@@ -949,6 +949,10 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert 'function responseErrorText(response)' in js
     assert 'function shouldDisplayLiveState(snapshot, item)' in js
     assert 'const explicit = String((item || {}).service_key || "").trim();' in js
+    assert 'arm_canary_rollout: { label: "카나리아 주문 허용" }' in js
+    assert 'canary_test_order: { label: "카나리아 테스트 주문" }' in js
+    assert 'if (key === "rollout") return "롤아웃 / 테스트 주문";' in js
+    assert 'if (key === "rollout") return `${count}개 롤아웃`;' in js
     assert "페이퍼 챔피언" in js
     assert "페이퍼 챌린저" in js
     assert "paper_runtime_model_run_id" in js
