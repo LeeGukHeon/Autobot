@@ -20,6 +20,11 @@ def test_daily_champion_challenger_v5_wrapper_uses_v5_defaults() -> None:
     assert 'autobot-live-alpha-canary.service' in source
     assert 'autobot-v5-challenger-spawn.timer' in source
     assert 'autobot-v5-challenger-promote.timer' in source
+    assert 'run_candles_api_refresh.ps1' in source
+    assert 'run_raw_ticks_daily.ps1' in source
+    assert 'close_v5_train_ready_snapshot.ps1' in source
+    assert '-SkipDeadline' in source
+    assert '-SkipDailyPipeline:$true' in source
 
 
 def test_install_server_daily_v5_split_wrapper_targets_v5_units() -> None:
@@ -28,3 +33,5 @@ def test_install_server_daily_v5_split_wrapper_targets_v5_units() -> None:
     assert 'adopt_v5_candidate_for_server.ps1' in source
     assert 'autobot-v5-challenger-spawn.service' in source
     assert 'autobot-v5-challenger-promote.service' in source
+    assert 'autobot-raw-ticks-daily.timer' in source
+    assert 'autobot-v5-train-snapshot-close.timer' in source

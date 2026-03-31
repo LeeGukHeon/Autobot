@@ -57,7 +57,7 @@ $resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAd
     -SpawnTimerUnitName $SpawnTimerUnitName `
     -SpawnOnCalendar $SpawnOnCalendar `
     -LockFile $LockFile `
-    -DisableLegacyTimerNames @("autobot-v4-challenger-spawn.timer", "autobot-v4-challenger-promote.timer", "autobot-daily-micro.timer", "autobot-daily-v4-accept.timer") `
+    -DisableLegacyTimerNames @("autobot-v4-challenger-spawn.timer", "autobot-v4-challenger-promote.timer", "autobot-daily-micro.timer", "autobot-daily-v4-accept.timer", "autobot-raw-ticks-daily.timer", "autobot-v5-train-snapshot-close.timer") `
     -DisableLegacyServiceNames @("autobot-v4-challenger-spawn.service", "autobot-v4-challenger-promote.service", "autobot-daily-micro.service", "autobot-daily-v4-accept.service", "autobot-paper-v4-replay.service", "autobot-live-alpha-replay-shadow.service") `
     -NoStart:$NoStart `
     -NoEnable:$NoEnable `

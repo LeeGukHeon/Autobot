@@ -1,6 +1,9 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
+    [string]$CandlesRefreshScript = "",
+    [string]$RawTicksDailyScript = "",
+    [string]$TrainSnapshotCloseScript = "",
     [string]$AcceptanceScript = "",
     [string]$PairedPaperScript = "",
     [string]$RuntimeInstallScript = "",
@@ -46,21 +49,146 @@ param(
 )
 
 $scriptPath = Join-Path $PSScriptRoot "daily_champion_challenger_v4_for_server.ps1"
+
+function Resolve-DefaultCandlesRefreshScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/run_candles_api_refresh.ps1")
+}
+
+function Resolve-DefaultRawTicksDailyScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/run_raw_ticks_daily.ps1")
+}
+
+function Resolve-DefaultTrainSnapshotCloseScript {
+    param([string]$Root)
+    return (Join-Path $Root "scripts/close_v5_train_ready_snapshot.ps1")
+}
+
+function Resolve-BatchDateValue {
+    param([string]$DateText)
+    if (-not [string]::IsNullOrWhiteSpace($DateText)) {
+        return [DateTime]::ParseExact(
+            $DateText,
+            "yyyy-MM-dd",
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None
+        ).ToString("yyyy-MM-dd")
+    }
+    return (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+}
+
+function Invoke-CheckedScript {
+    param(
+        [string]$PwshExe,
+        [string]$ScriptPath,
+        [string[]]$ArgsList,
+        [string]$StepName
+    )
+    $argList = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $ScriptPath
+    ) + @($ArgsList)
+    Write-Host ("[daily-cc-v5] step={0}" -f $StepName)
+    & $PwshExe @argList
+    if ($LASTEXITCODE -ne 0) {
+        throw ("step failed: " + $StepName + " exit_code=" + $LASTEXITCODE)
+    }
+}
+
 $resolvedAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) {
     (Join-Path $PSScriptRoot "adopt_v5_candidate_for_server.ps1")
 } else {
     $CandidateAdoptionScript
 }
+$resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    Split-Path -Path $PSScriptRoot -Parent
+} else {
+    [System.IO.Path]::GetFullPath($ProjectRoot)
+}
+$resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) {
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        "C:\Python314\python.exe"
+    } else {
+        (Join-Path $resolvedProjectRoot ".venv/bin/python")
+    }
+} else {
+    $PythonExe
+}
+$resolvedCandlesRefreshScript = if ([string]::IsNullOrWhiteSpace($CandlesRefreshScript)) {
+    Resolve-DefaultCandlesRefreshScript -Root $resolvedProjectRoot
+} else {
+    $CandlesRefreshScript
+}
+$resolvedRawTicksDailyScript = if ([string]::IsNullOrWhiteSpace($RawTicksDailyScript)) {
+    Resolve-DefaultRawTicksDailyScript -Root $resolvedProjectRoot
+} else {
+    $RawTicksDailyScript
+}
+$resolvedTrainSnapshotCloseScript = if ([string]::IsNullOrWhiteSpace($TrainSnapshotCloseScript)) {
+    Resolve-DefaultTrainSnapshotCloseScript -Root $resolvedProjectRoot
+} else {
+    $TrainSnapshotCloseScript
+}
+$resolvedPwshExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+    "powershell.exe"
+} else {
+    $cmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+        [string]$cmd.Source
+    } else {
+        "pwsh"
+    }
+}
+$resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
+
+if ($Mode -ne "promote_only") {
+    if (Test-Path $resolvedCandlesRefreshScript) {
+        $candlesArgs = @(
+            "-ProjectRoot", $resolvedProjectRoot,
+            "-PythonExe", $resolvedPythonExe
+        )
+        if ($DryRun) {
+            $candlesArgs += "-DryRun"
+        }
+        Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedCandlesRefreshScript -ArgsList $candlesArgs -StepName "candles_api_refresh"
+    }
+    if (Test-Path $resolvedRawTicksDailyScript) {
+        $ticksArgs = @(
+            "-ProjectRoot", $resolvedProjectRoot,
+            "-PythonExe", $resolvedPythonExe,
+            "-BatchDate", $resolvedBatchDate
+        )
+        if ($DryRun) {
+            $ticksArgs += "-DryRun"
+        }
+        Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedRawTicksDailyScript -ArgsList $ticksArgs -StepName "raw_ticks_daily"
+    }
+    if (Test-Path $resolvedTrainSnapshotCloseScript) {
+        $closeArgs = @(
+            "-ProjectRoot", $resolvedProjectRoot,
+            "-PythonExe", $resolvedPythonExe,
+            "-BatchDate", $resolvedBatchDate,
+            "-SkipDeadline"
+        )
+        if ($DryRun) {
+            $closeArgs += "-DryRun"
+        }
+        Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedTrainSnapshotCloseScript -ArgsList $closeArgs -StepName "train_snapshot_close"
+    }
+}
+
 & $scriptPath `
-    -ProjectRoot $ProjectRoot `
-    -PythonExe $PythonExe `
+    -ProjectRoot $resolvedProjectRoot `
+    -PythonExe $resolvedPythonExe `
     -AcceptanceScript $AcceptanceScript `
     -PairedPaperScript $PairedPaperScript `
     -RuntimeInstallScript $RuntimeInstallScript `
     -CandidateAdoptionScript $resolvedAdoptionScript `
     -ExecutionPolicyRefreshScript $ExecutionPolicyRefreshScript `
     -FeatureContractRefreshScript $FeatureContractRefreshScript `
-    -BatchDate $BatchDate `
+    -BatchDate $resolvedBatchDate `
     -ModelFamily $ModelFamily `
     -ChampionCompareModelFamily $ChampionCompareModelFamily `
     -ChampionUnitName $ChampionUnitName `
@@ -99,7 +227,7 @@ $resolvedAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScr
     -PairedPaperWarmupMinTradeEventsPerMarket $PairedPaperWarmupMinTradeEventsPerMarket `
     -ExecutionContractMinRows $ExecutionContractMinRows `
     -Mode $Mode `
-    -SkipDailyPipeline:$SkipDailyPipeline `
+    -SkipDailyPipeline:$true `
     -SkipFeatureContractRefresh:$true `
     -SkipReportRefresh:$SkipReportRefresh `
     -DryRun:$DryRun `
