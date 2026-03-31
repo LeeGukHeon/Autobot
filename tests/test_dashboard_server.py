@@ -1765,6 +1765,54 @@ def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: P
     assert close_report["snapshot_id"] == "snapshot-001"
 
 
+def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_root = tmp_path
+    _write_json(
+        project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
+        {
+            "generated_at_utc": "2026-03-31T18:43:25Z",
+            "batch_date": "2026-03-31",
+            "snapshot_id": "snapshot-001",
+            "overall_pass": True,
+            "failure_reasons": [],
+            "deadline_enforced": False,
+            "deadline_met": True,
+        },
+    )
+
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        if unit_name == "autobot-v5-challenger-spawn.timer":
+            return {
+                "ActiveState": "active",
+                "SubState": "waiting",
+                "UnitFileState": "enabled",
+                "Description": "Spawn timer",
+                "NextElapseUSecRealtime": "Thu 2026-04-02 00:20:00 KST",
+                "LastTriggerUSec": "",
+            }
+        if unit_name in {"autobot-raw-ticks-daily.timer", "autobot-v5-train-snapshot-close.timer"}:
+            return {
+                "ActiveState": "inactive",
+                "SubState": "dead",
+                "UnitFileState": "disabled",
+                "Description": unit_name,
+                "NextElapseUSecRealtime": "",
+                "LastTriggerUSec": "",
+            }
+        return {}
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    chain = snapshot["training"]["nightly_train_chain"]
+    close_report = snapshot["training"]["train_snapshot_close"]
+    assert chain["owner"] == "spawn_service"
+    assert chain["independent_timers_disabled"] is True
+    assert close_report["overall_pass"] is True
+    assert close_report["snapshot_id"] == "snapshot-001"
+
+
 def test_dashboard_asset_mentions_data_platform_refresh_surface() -> None:
     js = str(_load_dashboard_asset("dashboard.js"))
     assert "data_platform_refresh_service" in js
