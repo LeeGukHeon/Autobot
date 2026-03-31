@@ -887,7 +887,9 @@
 
     const services = snapshot.services || {};
     const hiddenOverviewServiceKeys = new Set([
+      "raw_ticks_daily_service",
       "raw_ticks_daily_timer",
+      "train_snapshot_close_service",
       "train_snapshot_close_timer",
     ]);
     document.getElementById("services-grid").innerHTML = terminalTable(

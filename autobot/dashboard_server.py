@@ -3611,6 +3611,32 @@ def _summarize_training_activity(
     processes = _descendant_process_rows(spawn_service.get("main_pid"), process_rows)
     stage_specs = [
         {
+            "match": ("close_v5_train_ready_snapshot.ps1",),
+            "stage_key": "train_snapshot_close",
+            "stage_label_ko": "학습 스냅샷 닫기",
+            "progress_pct": 36,
+            "headline_ko": "학습 전용 cold snapshot을 닫고 있습니다.",
+            "detail_builder": lambda command: "candles, raw ticks, training-critical refresh를 기준으로 오늘 배치용 immutable snapshot을 확정하는 단계입니다.",
+        },
+        {
+            "match": ("run_raw_ticks_daily.ps1",),
+            "stage_key": "raw_ticks_daily",
+            "stage_label_ko": "raw ticks 수집",
+            "progress_pct": 18,
+            "headline_ko": "오늘 배치용 raw ticks를 수집하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"batch_date {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 raw ticks를 채우는 단계입니다."
+            ),
+        },
+        {
+            "match": ("run_candles_api_refresh.ps1",),
+            "stage_key": "candles_api_refresh",
+            "stage_label_ko": "캔들 보강",
+            "progress_pct": 8,
+            "headline_ko": "학습 체인 시작 전 캔들 보강을 진행 중입니다.",
+            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 nightly train chain 입력을 준비하는 단계입니다.",
+        },
+        {
             "match": ("autobot.cli", "model", "promote"),
             "stage_key": "promote",
             "stage_label_ko": "승급 반영",
@@ -3687,6 +3713,9 @@ def _summarize_training_activity(
 
     if not processes:
         manual_tokens = (
+            "run_candles_api_refresh.ps1",
+            "run_raw_ticks_daily.ps1",
+            "close_v5_train_ready_snapshot.ps1",
             "daily_champion_challenger_v5_for_server.ps1",
             "candidate_acceptance.ps1",
             "v4_governed_candidate_acceptance.ps1",
