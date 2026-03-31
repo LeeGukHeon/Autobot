@@ -514,6 +514,37 @@ def test_build_dashboard_snapshot_includes_paired_paper_latest_and_history(tmp_p
     assert paired_history[0]["hard_failures"] == ["PAIRED_PAPER_NOT_READY"]
 
 
+def test_build_dashboard_snapshot_marks_paired_latest_stale_when_new_run_is_in_progress(tmp_path: Path) -> None:
+    project_root = tmp_path
+    latest_payload = {
+        "artifact_version": 1,
+        "mode": "paired_paper_live_service_v1",
+        "generated_at_utc": "2026-03-24T00:20:00Z",
+        "run_root": "logs/paired_paper/runs/paired-20260324-002000-done",
+        "report_path": "logs/paired_paper/runs/paired-20260324-002000-done/paired_paper_report.json",
+        "paired_report": {
+            "champion": {"paper_runtime_model_run_id": "champion-run-001"},
+            "challenger": {"paper_runtime_model_run_id": "candidate-run-001"},
+            "clock_alignment": {"pair_ready": True, "matched_opportunities": 12},
+            "paired_deltas": {"matched_pnl_delta_quote": 1.0},
+        },
+        "gate": {"pass": True, "reason": "PAIRED_PAPER_READY"},
+        "promotion_decision": {"decision": {"promote": False, "decision": "keep_champion", "hard_failures": []}},
+    }
+    _write_json(project_root / "logs" / "paired_paper" / "latest.json", latest_payload)
+    current_run_root = project_root / "logs" / "paired_paper" / "runs" / "paired-20260331-195247-newrun"
+    (current_run_root / "champion" / "runs").mkdir(parents=True, exist_ok=True)
+    (current_run_root / "challenger" / "runs").mkdir(parents=True, exist_ok=True)
+    (current_run_root / "challenger" / "runs" / "placeholder.txt").write_text("in-progress", encoding="utf-8")
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    paired_latest = snapshot["paper"]["paired_latest"]
+    assert paired_latest["latest_artifact_stale"] is True
+    assert paired_latest["current_run_in_progress"] is True
+    assert paired_latest["current_run_id"] == "paired-20260331-195247-newrun"
+
+
 def test_build_dashboard_snapshot_reads_breaker_state_table_name_used_by_live_db(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(project_root / "logs" / "live_rollout" / "latest.json", {"contract": {"mode": "canary"}, "status": {"order_emission_allowed": False}})
@@ -922,7 +953,8 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "페이퍼 챌린저" in js
     assert "paper_runtime_model_run_id" in js
     assert 'pill("상태", "실행 중", "good")' in js
-    assert "현재 run ·" in js
+    assert "실행 중 run" in js
+    assert "최근 완료 artifact ·" in js
     assert "current-paper-run" in js
     assert "paper-role-head" in css
     assert "paper-role-start" in css

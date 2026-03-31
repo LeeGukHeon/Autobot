@@ -670,7 +670,9 @@ def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
             configured_candidate_db = legacy_configured_candidate_db
     if not configured_main_db.exists() and canonical_main_db.exists():
         configured_main_db = canonical_main_db
-    if not configured_candidate_db.exists() and legacy_candidate_db.exists():
+    if candidate_default_db.exists():
+        configured_candidate_db = candidate_default_db
+    elif not configured_candidate_db.exists() and legacy_candidate_db.exists():
         configured_candidate_db = legacy_candidate_db
 
     seen: set[str] = set()
@@ -697,7 +699,7 @@ def _resolve_live_db_candidates(project_root: Path) -> list[dict[str, Any]]:
     if legacy_main_db != configured_main_db:
         _append("레거시 라이브 DB", legacy_main_db)
     if legacy_candidate_db != configured_candidate_db:
-        _append("레거시 후보 카나리아 DB", legacy_candidate_db, service_key="live_candidate")
+        _append("레거시 후보 카나리아 DB", legacy_candidate_db)
 
     return candidates
 
@@ -1010,13 +1012,58 @@ def _paired_paper_artifact_to_summary(
 def _load_paired_paper_latest(project_root: Path) -> dict[str, Any]:
     latest_path = project_root / "logs" / "paired_paper" / "latest.json"
     payload = _load_json(latest_path)
-    if not payload:
-        return {}
-    return _paired_paper_artifact_to_summary(
-        project_root=project_root,
-        payload=payload,
-        artifact_path=latest_path,
+    latest_summary = (
+        _paired_paper_artifact_to_summary(
+            project_root=project_root,
+            payload=payload,
+            artifact_path=latest_path,
+        )
+        if payload
+        else {}
     )
+    current_run = _load_current_paired_paper_run(project_root)
+    if not latest_summary:
+        return current_run
+    if current_run:
+        latest_summary["current_run_root"] = current_run.get("current_run_root")
+        latest_summary["current_run_id"] = current_run.get("current_run_id")
+        latest_summary["current_run_updated_at"] = current_run.get("current_run_updated_at")
+        latest_summary["current_run_report_path"] = current_run.get("current_run_report_path")
+        latest_summary["current_run_completed"] = bool(current_run.get("current_run_completed", False))
+        latest_summary["current_run_in_progress"] = bool(current_run.get("current_run_in_progress", False))
+        latest_summary["latest_artifact_stale"] = bool(
+            current_run.get("current_run_root")
+            and latest_summary.get("run_root")
+            and str(current_run.get("current_run_root")) != str(latest_summary.get("run_root"))
+        )
+    else:
+        latest_summary["current_run_root"] = None
+        latest_summary["current_run_id"] = None
+        latest_summary["current_run_updated_at"] = None
+        latest_summary["current_run_report_path"] = None
+        latest_summary["current_run_completed"] = False
+        latest_summary["current_run_in_progress"] = False
+        latest_summary["latest_artifact_stale"] = False
+    return latest_summary
+
+
+def _load_current_paired_paper_run(project_root: Path) -> dict[str, Any]:
+    runs_root = project_root / "logs" / "paired_paper" / "runs"
+    if not runs_root.exists():
+        return {}
+    run_dirs = [path for path in runs_root.glob("paired-*") if path.is_dir()]
+    if not run_dirs:
+        return {}
+    current_run = max(run_dirs, key=lambda path: path.stat().st_mtime)
+    paired_report_path = current_run / "paired_paper_report.json"
+    return {
+        "current_run_root": str(current_run),
+        "current_run_id": current_run.name,
+        "current_run_updated_at": _path_mtime_iso(current_run),
+        "current_run_report_path": str(paired_report_path) if paired_report_path.exists() else None,
+        "current_run_completed": paired_report_path.exists(),
+        "current_run_in_progress": not paired_report_path.exists(),
+    }
 
 
 def _latest_paired_paper_history(project_root: Path, limit: int = 4) -> list[dict[str, Any]]:

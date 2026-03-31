@@ -1200,9 +1200,10 @@
     });
     const pairedService = ((snapshot.services || {}).paper_paired || {});
     const pairedActive = String(pairedService.active_state || "").trim().toLowerCase() === "active";
-    const currentPairedRunId = String(pairedLatest.run_root || pairedLatest.artifact_path || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
+    const latestCompletedRunId = String(pairedLatest.run_root || pairedLatest.artifact_path || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
+    const currentPairedRunId = String(pairedLatest.current_run_id || pairedLatest.current_run_root || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
     const latestSummary = pairedLatest.mode
-      ? `${pairedActive ? "현재 paired lane이 실행 중입니다." : "현재 paired lane은 대기 중입니다."} ${currentPairedRunId !== "-" ? `현재 run · ${shortRun(currentPairedRunId)}.` : ""} ${pairedLatest.decision ? `최근 판정은 ${translate(pairedLatest.decision)}입니다.` : ""}`.trim()
+      ? `${pairedActive ? "현재 paired lane이 실행 중입니다." : "현재 paired lane은 대기 중입니다."} ${pairedLatest.current_run_in_progress && currentPairedRunId !== "-" ? `실행 중 run · ${shortRun(currentPairedRunId)}.` : ""} ${pairedLatest.latest_artifact_stale && latestCompletedRunId !== "-" ? `최근 완료 artifact · ${shortRun(latestCompletedRunId)}.` : ""} ${(!pairedLatest.latest_artifact_stale && latestCompletedRunId !== "-") ? `최근 artifact · ${shortRun(latestCompletedRunId)}.` : ""} ${pairedLatest.decision ? `최근 판정은 ${translate(pairedLatest.decision)}입니다.` : ""}`.trim()
       : "paired paper 최신 artifact가 아직 없습니다.";
     const latestSections = [
       compactRow({
@@ -1210,6 +1211,8 @@
         summary: latestSummary,
         items: [
           compactStat("서비스", pairedActive ? "실행 중" : "대기"),
+          compactStat("실행 중 run", shortRun(currentPairedRunId)),
+          compactStat("artifact stale", boolLabel(pairedLatest.latest_artifact_stale)),
           compactStat("모드", maybe(pairedLatest.mode)),
           compactStat("소스", maybe(pairedLatest.source_mode)),
           compactStat("최근 갱신", fmtDateTime(pairedLatest.updated_at || pairedLatest.generated_at)),
@@ -1493,6 +1496,9 @@
     const daemonLastRun = selected.daemon_last_run || {};
     const lastWsEvent = selected.last_ws_event || {};
     const rollout = selected.rollout_status || {};
+    const rolloutTarget = String(rollout.target_unit || (selected.rollout_contract || {}).target_unit || "").trim();
+    const serviceUnit = String(selectedService.unit || "").trim();
+    const rolloutTargetMismatch = Boolean(rolloutTarget && serviceUnit && rolloutTarget !== serviceUnit);
     const positions = [...(selected.positions || [])];
     const openOrders = [...(selected.open_orders || [])].sort((a, b) => (coerceTs(b.updated_ts) || 0) - (coerceTs(a.updated_ts) || 0));
     const riskPlans = [...(selected.active_risk_plans || [])].sort((a, b) => (coerceTs(b.updated_ts) || 0) - (coerceTs(a.updated_ts) || 0));
@@ -1596,6 +1602,7 @@
       activeBreakers.length ? `<article class="live-inline-banner warn"><strong>즉시 확인할 브레이커</strong><span>${esc(activeBreakers.join(" / "))}</span></article>` : "",
       suppressor.active ? `<article class="live-inline-banner warn"><strong>실측 억제 suppressor</strong><span>${esc(suppressorReasons.join(" / "))}</span></article>` : "",
       suppressor.warning_active ? `<article class="live-inline-banner neutral"><strong>카나리아 경고 스킵</strong><span>${esc(suppressorWarnings.join(" / "))}</span></article>` : "",
+      rolloutTargetMismatch ? `<article class="live-inline-banner warn"><strong>stale rollout artifact</strong><span>${esc(`현재 선택 서비스는 ${serviceUnit}인데 rollout target은 ${rolloutTarget}로 남아 있습니다.`)}</span></article>` : "",
       ((suppressor.reset || {}).waiting_for_fresh_post_reset_decision) ? `<article class="live-inline-banner neutral"><strong>reset 이후 새 판단 대기</strong><span>${esc("이전 suppressor 증거는 리셋됐고, 새 post-reset 결정이 아직 없습니다.")}</span></article>` : "",
     ].filter(Boolean).join("");
 
