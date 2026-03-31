@@ -136,7 +136,9 @@
     data_platform_refresh_timer: "데이터 refresh 타이머",
     spawn_timer: "챌린저 생성 타이머",
     promote_timer: "챌린저 승급 타이머",
-    rank_shadow_timer: "랭크 그림자 타이머"
+    rank_shadow_timer: "랭크 그림자 타이머",
+    train_snapshot_close_service: "학습 스냅샷 close 서비스",
+    train_snapshot_close_timer: "학습 스냅샷 close 타이머"
   };
 
   const OPS_ACTION_TEXT = {
@@ -853,6 +855,9 @@
     const liveStates = (snapshot.live || {}).states || [];
     const candidateLive = liveStates.find((item) => String(item.label || "").includes("후보")) || {};
     const challenger = snapshot.challenger || {};
+    const foundation = snapshot.foundation_ingestion || {};
+    const nightlyChain = foundation.nightly_train_chain || {};
+    const trainClose = foundation.train_snapshot_close || {};
 
     document.getElementById("overview-headline").textContent =
       acceptance.overall_pass === true ? "이번 후보는 통과했습니다." :
@@ -860,7 +865,9 @@
       "최신 검증 결과를 기다리는 중입니다.";
 
     document.getElementById("overview-subhead").textContent =
-      Number(candidateLive.positions_count || 0) > 0
+      nightlyChain.owner === "spawn_service"
+        ? "nightly 학습 체인은 00:20 spawn이 candles, raw ticks, train snapshot close, acceptance를 순차 실행하는 구조입니다."
+        : Number(candidateLive.positions_count || 0) > 0
         ? `후보 카나리아는 현재 ${candidateLive.positions_count}개 포지션을 보유 중입니다.`
         : challenger.started
           ? "챌린저 생성 절차는 실행됐지만 아직 활성 포지션은 없습니다."
@@ -870,6 +877,8 @@
       metric("운영 후보", shortRun(((pointers.latest_candidate || {}).run_id) || acceptance.candidate_run_id)),
       metric("최근 학습", shortRun(((pointers.latest || {}).run_id))),
       metric("판정", acceptance.overall_pass === true ? "통과" : acceptance.overall_pass === false ? "탈락" : "-"),
+      metric("체인 owner", nightlyChain.owner === "spawn_service" ? "spawn" : "-"),
+      metric("close 상태", trainClose.overall_pass === true ? "정상" : trainClose.exists ? "실패" : "-"),
       metric("후보 포지션", maybe(candidateLive.positions_count, "0")),
       metric("후보 리스크 플랜", maybe(candidateLive.active_risk_plans_count, "0"))
     ].join("");
@@ -892,6 +901,16 @@
     ) || empty("표시할 서비스가 없습니다.");
 
     const notes = [];
+    if (nightlyChain.owner === "spawn_service") notes.push(compactRow({
+      title: "nightly 학습 체인",
+      summary: nightlyChain.summary || "spawn이 학습 체인을 소유합니다.",
+      pillHtml: pill("owner", "spawn", nightlyChain.independent_timers_disabled ? "good" : "warn"),
+    }));
+    if (trainClose.exists) notes.push(compactRow({
+      title: "최근 train snapshot close",
+      summary: trainClose.overall_pass ? `snapshot ${shortRun(trainClose.snapshot_id)}로 close 완료` : joinTranslated(trainClose.failure_reasons || []),
+      pillHtml: pill("close", trainClose.overall_pass ? "정상" : "실패", trainClose.overall_pass ? "good" : "bad"),
+    }));
     if ((acceptance.reasons || []).length) notes.push(compactRow({
       title: "직접 사유",
       summary: unique(acceptance.reasons).map(translate).join(" / "),
@@ -930,6 +949,8 @@
     const challenger = snapshot.challenger || {};
     const rankShadow = training.rank_shadow || {};
     const v5Readiness = training.v5_readiness || {};
+    const trainClose = training.train_snapshot_close || {};
+    const nightlyChain = training.nightly_train_chain || {};
     const summary = joinTranslated([...(acceptance.reasons || []), ...(acceptance.trainer_reasons || [])]);
     const progressPct = clampProgress(activity.progress_pct);
 
@@ -947,6 +968,7 @@
       metric("배치 날짜", maybe(acceptance.batch_date)),
       metric("현재 단계", maybe(activity.stage_label_ko)),
       metric("진행도", progressPct == null ? "-" : `${progressPct}%`),
+      metric("snapshot close", trainClose.overall_pass === true ? "정상" : trainClose.exists ? "실패" : "-"),
       metric("판정 기준", translate(acceptance.decision_basis)),
       metric("갱신 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
@@ -998,6 +1020,32 @@
     document.getElementById("training-details").innerHTML = `<div class="dense-list">${
       [
         activityCard,
+        compactRow({
+          title: "nightly train chain",
+          summary: nightlyChain.summary || "spawn 체인 정보를 아직 읽지 못했습니다.",
+          items: [
+            compactStat("owner", nightlyChain.owner === "spawn_service" ? "spawn" : "-"),
+            compactStat("spawn timer", boolLabel(nightlyChain.spawn_timer_active)),
+            compactStat("raw ticks timer", boolLabel(nightlyChain.raw_ticks_timer_active)),
+            compactStat("close timer", boolLabel(nightlyChain.train_snapshot_close_timer_active)),
+            compactStat("독립 timer 비활성", boolLabel(nightlyChain.independent_timers_disabled)),
+          ],
+        }),
+        compactRow({
+          title: "train snapshot close",
+          summary: trainClose.overall_pass
+            ? `batch ${maybe(trainClose.batch_date)} 기준 snapshot ${shortRun(trainClose.snapshot_id)} close 완료`
+            : trainClose.exists
+              ? joinTranslated(trainClose.failure_reasons || [])
+              : "아직 close report가 없습니다.",
+          items: [
+            compactStat("상태", trainClose.overall_pass ? "정상" : trainClose.exists ? "실패" : "없음"),
+            compactStat("batch", maybe(trainClose.batch_date)),
+            compactStat("snapshot", shortRun(trainClose.snapshot_id)),
+            compactStat("deadline", boolLabel(trainClose.deadline_met)),
+            compactStat("최근 close", fmtDateTime(trainClose.latest_generated_at_utc)),
+          ],
+        }),
         compactRow({
           title: "포인터 상태",
           summary: pointerSummary,

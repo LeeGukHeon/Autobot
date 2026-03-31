@@ -54,6 +54,8 @@ _PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_fusion"
 _CANDIDATE_LOG_ROOTS = (Path("logs") / "model_v5_candidate", Path("logs") / "model_v4_challenger")
 _CANDIDATE_LIVE_UNITS = ("autobot-live-alpha-canary.service", "autobot-live-alpha-candidate.service")
 _PAIRED_PAPER_UNITS = ("autobot-paper-v5-paired.service", "autobot-paper-v4-paired.service")
+_SPAWN_TIMER_UNITS = ("autobot-v5-challenger-spawn.timer", "autobot-v4-challenger-spawn.timer")
+_PROMOTE_TIMER_UNITS = ("autobot-v5-challenger-promote.timer", "autobot-v4-challenger-promote.timer")
 
 
 def _utc_now_iso() -> str:
@@ -496,6 +498,32 @@ def _summarize_training_activity(
 
     processes = _descendant_process_rows(spawn_service.get("main_pid"), _list_process_rows())
     stage_specs = [
+        {
+            "match": ("close_v5_train_ready_snapshot.ps1",),
+            "stage_key": "train_snapshot_close",
+            "stage_label_ko": "학습 스냅샷 닫기",
+            "progress_pct": 36,
+            "headline_ko": "학습 전용 cold snapshot을 닫고 있습니다.",
+            "detail_builder": lambda command: "candles, raw ticks, training-critical refresh를 기준으로 오늘 배치용 immutable snapshot을 확정하는 단계입니다.",
+        },
+        {
+            "match": ("run_raw_ticks_daily.ps1",),
+            "stage_key": "raw_ticks_daily",
+            "stage_label_ko": "raw ticks 수집",
+            "progress_pct": 18,
+            "headline_ko": "오늘 배치용 raw ticks를 수집하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"batch_date {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 raw ticks를 채우는 단계입니다."
+            ),
+        },
+        {
+            "match": ("run_candles_api_refresh.ps1",),
+            "stage_key": "candles_api_refresh",
+            "stage_label_ko": "캔들 보강",
+            "progress_pct": 8,
+            "headline_ko": "학습 체인 시작 전 캔들 보강을 진행 중입니다.",
+            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 nightly train chain 입력을 준비하는 단계입니다.",
+        },
         {
             "match": ("autobot.cli", "model", "promote"),
             "stage_key": "promote",
@@ -2562,6 +2590,8 @@ def _summarize_foundation_ingestion(
     raw_ticks_summary = _load_json(raw_ticks_summary_path)
     raw_ticks_backfill_summary_path = project_root / "data" / "raw_ticks" / "upbit" / "_meta" / "ticks_backfill_latest.json"
     raw_ticks_backfill_summary = _load_json(raw_ticks_backfill_summary_path)
+    train_snapshot_close_summary_path = project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json"
+    train_snapshot_close_summary = _load_json(train_snapshot_close_summary_path)
     private_ws_root = project_root / "data" / "raw_ws" / "upbit" / "private"
     private_ws_health_path = project_root / "data" / "raw_ws" / "upbit" / "_meta" / "private_ws_health.json"
     private_ws_report_path = project_root / "data" / "raw_ws" / "upbit" / "_meta" / "private_ws_collect_report.json"
@@ -2578,6 +2608,13 @@ def _summarize_foundation_ingestion(
         _coerce_int((ws_health.get("last_rx_ts_ms") or {}).get("orderbook")) or 0,
         _coerce_int(ws_health.get("updated_at_ms")) or 0,
     )
+    raw_ticks_timer = dict(services.get("raw_ticks_daily_timer") or {})
+    train_close_timer = dict(services.get("train_snapshot_close_timer") or {})
+    spawn_timer = dict(services.get("spawn_timer") or {})
+    raw_ticks_timer_active = str(raw_ticks_timer.get("active_state") or "").strip().lower() in {"active", "activating"}
+    train_close_timer_active = str(train_close_timer.get("active_state") or "").strip().lower() in {"active", "activating"}
+    spawn_timer_active = str(spawn_timer.get("active_state") or "").strip().lower() in {"active", "activating"}
+    train_snapshot_close_status = "ready" if bool(train_snapshot_close_summary.get("overall_pass")) else ("failed" if bool(train_snapshot_close_summary) else "missing")
     return {
         "raw_ws_public": {
             "status": "ready" if bool(ws_health.get("connected")) else "warn",
@@ -2596,6 +2633,7 @@ def _summarize_foundation_ingestion(
             "exists": raw_ticks_root.exists(),
             "latest_generated_at_utc": raw_ticks_summary.get("generated_at_utc") or _path_mtime_iso(raw_ticks_summary_path),
             "summary_path": str(raw_ticks_summary_path),
+            "batch_date": raw_ticks_summary.get("batch_date"),
             "raw_root": str(raw_ticks_root),
             "file_count": _raw_ticks_file_count(raw_ticks_root),
             "service": dict(services.get("raw_ticks_daily_service") or {}),
@@ -2629,6 +2667,34 @@ def _summarize_foundation_ingestion(
             "service": dict(services.get("candles_api_refresh_service") or {}),
             "timer": dict(services.get("candles_api_refresh_timer") or {}),
             "validate_summary": dict(candles_dataset.get("validate_summary") or {}),
+        },
+        "train_snapshot_close": {
+            "status": train_snapshot_close_status,
+            "exists": bool(train_snapshot_close_summary),
+            "latest_generated_at_utc": train_snapshot_close_summary.get("generated_at_utc") or _path_mtime_iso(train_snapshot_close_summary_path),
+            "summary_path": str(train_snapshot_close_summary_path),
+            "batch_date": train_snapshot_close_summary.get("batch_date"),
+            "snapshot_id": train_snapshot_close_summary.get("snapshot_id"),
+            "overall_pass": bool(train_snapshot_close_summary.get("overall_pass")),
+            "failure_reasons": list(train_snapshot_close_summary.get("failure_reasons") or []),
+            "deadline_enforced": train_snapshot_close_summary.get("deadline_enforced"),
+            "deadline_met": train_snapshot_close_summary.get("deadline_met"),
+            "service": dict(services.get("train_snapshot_close_service") or {}),
+            "timer": dict(services.get("train_snapshot_close_timer") or {}),
+        },
+        "nightly_train_chain": {
+            "owner": "spawn_service",
+            "status": "chain_owned" if spawn_timer_active else "not_armed",
+            "spawn_timer_active": spawn_timer_active,
+            "raw_ticks_timer_active": raw_ticks_timer_active,
+            "train_snapshot_close_timer_active": train_close_timer_active,
+            "independent_timers_disabled": (not raw_ticks_timer_active) and (not train_close_timer_active),
+            "spawn_timer": spawn_timer,
+            "summary": (
+                "00:20 spawn이 candles -> raw ticks -> train snapshot close -> acceptance를 순차 실행합니다."
+                if spawn_timer_active
+                else "nightly spawn 체인이 비활성 상태입니다."
+            ),
         },
     }
 
@@ -3467,12 +3533,14 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "raw_ticks_backfill_service": _unit_snapshot("autobot-raw-ticks-backfill.service"),
         "private_ws_archive_service": _unit_snapshot("autobot-private-ws-archive.service"),
         "data_platform_refresh_timer": _unit_snapshot("autobot-data-platform-refresh.timer", timer=True),
-        "spawn_timer": _unit_snapshot("autobot-v4-challenger-spawn.timer", timer=True),
-        "promote_timer": _unit_snapshot("autobot-v4-challenger-promote.timer", timer=True),
+        "spawn_timer": _unit_snapshot_first(*_SPAWN_TIMER_UNITS, timer=True),
+        "promote_timer": _unit_snapshot_first(*_PROMOTE_TIMER_UNITS, timer=True),
         "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
         "candles_api_refresh_timer": _unit_snapshot("autobot-candles-api-refresh.timer", timer=True),
         "raw_ticks_daily_timer": _unit_snapshot("autobot-raw-ticks-daily.timer", timer=True),
         "raw_ticks_backfill_timer": _unit_snapshot("autobot-raw-ticks-backfill.timer", timer=True),
+        "train_snapshot_close_service": _unit_snapshot("autobot-v5-train-snapshot-close.service"),
+        "train_snapshot_close_timer": _unit_snapshot("autobot-v5-train-snapshot-close.timer", timer=True),
     }
     foundation_ingestion = _summarize_foundation_ingestion(
         project_root,
@@ -3493,11 +3561,13 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
             "candidate_artifacts": _collect_recent_model_artifacts(project_root, acceptance.get("candidate_run_dir")),
             "pointers": _load_training_pointer_summary(project_root, model_family=_resolve_dashboard_training_family(project_root)),
             "v5_readiness": _summarize_v5_readiness(project_root, data_platform=data_platform),
+            "train_snapshot_close": dict(foundation_ingestion.get("train_snapshot_close") or {}),
+            "nightly_train_chain": dict(foundation_ingestion.get("nightly_train_chain") or {}),
             "rank_shadow": _summarize_rank_shadow_cycle(rank_shadow_latest, rank_shadow_governance),
             "current_activity": _summarize_training_activity(
                 project_root,
                 services={
-                    "spawn_service": _unit_snapshot("autobot-v4-challenger-spawn.service"),
+                    "spawn_service": _unit_snapshot("autobot-v5-challenger-spawn.service"),
                 },
                 acceptance=acceptance,
             ),
@@ -3606,20 +3676,12 @@ def _summarize_training_activity(
             ),
         },
         {
-            "match": ("daily_micro_pipeline_for_server.ps1",),
-            "stage_key": "daily_pipeline",
-            "stage_label_ko": "데일리 파이프라인",
-            "progress_pct": 4,
-            "headline_ko": "데일리 데이터 파이프라인을 시작했습니다.",
-            "detail_builder": lambda command: "캔들, 틱, micro 데이터를 순서대로 준비하며 학습 입력을 만드는 초기 단계입니다.",
-        },
-        {
-            "match": ("v4_governed_candidate_acceptance.ps1",),
+            "match": ("daily_champion_challenger_v5_for_server.ps1",),
             "stage_key": "acceptance_wrapper",
             "stage_label_ko": "수락 루프 시작",
             "progress_pct": 2,
-            "headline_ko": "후보 검증 루프를 시작했습니다.",
-            "detail_builder": lambda command: "오늘 배치에 맞는 학습, backtest, 페이퍼 검증 단계를 순서대로 준비하는 중입니다.",
+            "headline_ko": "nightly 학습 체인을 시작했습니다.",
+            "detail_builder": lambda command: "spawn owner가 candles, raw ticks, train snapshot close, acceptance를 순차 실행하는 중입니다.",
         },
     ]
 
