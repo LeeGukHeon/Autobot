@@ -152,9 +152,9 @@
     clear_live_main_breaker: { label: "메인 라이브 브레이커 해제" },
     reset_live_main_suppressors: { label: "메인 억제 상태 리셋" },
     restart_ws_public: { label: "WS 수집기 재시작" },
-    start_data_platform_refresh: { label: "데이터 플랫폼 refresh" },
-    start_spawn_only: { label: "스폰만 지금 실행" },
-    start_promote_only: { label: "승급만 지금 실행" },
+    start_data_platform_refresh: { label: "runtime-rich refresh 실행" },
+    start_spawn_only: { label: "nightly train chain 실행" },
+    start_promote_only: { label: "승급 판단만 실행" },
     start_rank_shadow: { label: "랭크 섀도우 실행" },
     adopt_latest_candidate: { label: "최신 후보 즉시 반영" },
   };
@@ -884,9 +884,15 @@
     ].join("");
 
     const services = snapshot.services || {};
+    const hiddenOverviewServiceKeys = new Set([
+      "raw_ticks_daily_timer",
+      "train_snapshot_close_timer",
+    ]);
     document.getElementById("services-grid").innerHTML = terminalTable(
       ["서비스", "상태", "최근 시작", "다음 실행"],
-      Object.entries(services).map(([key, svc]) => {
+      Object.entries(services)
+        .filter(([key]) => !hiddenOverviewServiceKeys.has(key))
+        .map(([key, svc]) => {
         const active = String(svc.active_state || "").toLowerCase();
         const sub = String(svc.sub_state || "").toLowerCase();
         return {
@@ -2005,12 +2011,12 @@
   function renderOperations(snapshot) {
     const ops = snapshot.operations || {};
     const actions = Array.isArray(ops.actions) ? ops.actions : [];
-    const history = Array.isArray(ops.history) ? ops.history : [];
+    const history = (Array.isArray(ops.history) ? ops.history : []).slice(0, 3);
     document.getElementById("ops-headline").textContent = ops.enabled
       ? "운영 액션이 활성화돼 있습니다."
       : "운영 액션은 현재 비활성 상태입니다.";
     document.getElementById("ops-subhead").textContent = ops.enabled
-      ? "토큰을 가진 운영자만 재시작, 복구, 수동 배치를 실행할 수 있습니다."
+      ? "토큰을 가진 운영자만 재시작, 복구, 수동 배치를 실행할 수 있습니다. 최근 이력은 최신 3건만 보여줍니다."
       : translate(ops.reason) === "-" ? "운영 토큰과 enable 설정이 있어야 쓰기 액션이 열립니다." : translate(ops.reason);
     document.getElementById("ops-kpis").innerHTML = [
       metric("운영 기능", boolLabel(Boolean(ops.enabled))),

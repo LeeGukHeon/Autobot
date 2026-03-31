@@ -8,9 +8,11 @@ import pytest
 import polars as pl
 
 from autobot.dashboard_server import (
+    _append_dashboard_ops_history,
     _execute_dashboard_operation,
     _json_response,
     _load_dashboard_asset,
+    _load_dashboard_ops_history,
     _run_clear_live_breaker,
     _run_reset_live_suppressors,
     _unit_snapshot,
@@ -1213,8 +1215,8 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
     assert "reset_live_main_suppressors" in actions
     assert actions["reset_live_main_suppressors"]["category"] == "recovery"
-    assert actions["start_spawn_only"]["description"].startswith("00:20 challenger spawn")
-    assert actions["start_promote_only"]["description"].startswith("00:10 challenger promote")
+    assert "raw ticks" in actions["start_spawn_only"]["description"]
+    assert actions["start_promote_only"]["description"] == "승급 판단만 수동 실행"
     assert "paired paper lane" in actions["adopt_latest_candidate"]["description"]
 
 
@@ -1268,6 +1270,26 @@ def test_execute_dashboard_operation_adopt_latest_candidate_uses_shared_adoption
     history_path = project_root / "logs" / "dashboard_ops" / "ops_history.jsonl"
     assert history_path.exists()
     assert '"action_id": "adopt_latest_candidate"' in history_path.read_text(encoding="utf-8")
+
+
+def test_load_dashboard_ops_history_defaults_to_recent_three(tmp_path: Path) -> None:
+    project_root = tmp_path
+    for idx in range(5):
+        _append_dashboard_ops_history(
+            project_root,
+            {
+                "action_id": f"action-{idx}",
+                "label": f"작업 {idx}",
+                "started_at": f"2026-03-24T00:00:0{idx}Z",
+                "completed_at": f"2026-03-24T00:00:1{idx}Z",
+                "success": True,
+            },
+        )
+
+    history = _load_dashboard_ops_history(project_root)
+
+    assert len(history) == 3
+    assert [item["action_id"] for item in history] == ["action-4", "action-3", "action-2"]
 
 
 def test_execute_dashboard_operation_arm_canary_rollout_uses_v5_live_rollout_cli(

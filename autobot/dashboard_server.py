@@ -2773,7 +2773,7 @@ def _append_dashboard_ops_history(project_root: Path, payload: dict[str, Any]) -
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def _load_dashboard_ops_history(project_root: Path, limit: int = 12) -> list[dict[str, Any]]:
+def _load_dashboard_ops_history(project_root: Path, limit: int = 3) -> list[dict[str, Any]]:
     path = _dashboard_ops_history_path(project_root)
     if not path.exists():
         return []
@@ -3354,27 +3354,27 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "start_data_platform_refresh": {
             "id": "start_data_platform_refresh",
             "label": "데이터 플랫폼 refresh",
-            "description": "second/ws/lob/sequence refresh 수동 실행",
+            "description": "runtime-rich 데이터 refresh 수동 실행",
             "category": "pipeline",
-            "confirm": "새 데이터 레이어 refresh를 지금 수동 실행할까요?",
+            "confirm": "runtime-rich 데이터 refresh를 지금 수동 실행할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-data-platform-refresh.service"],
         },
         "start_spawn_only": {
             "id": "start_spawn_only",
             "label": "스폰만 지금 실행",
-            "description": "00:20 challenger spawn 수동 실행",
+            "description": "candles -> raw ticks -> close -> acceptance 체인 수동 실행",
             "category": "pipeline",
-            "confirm": "spawn_only를 지금 수동 실행할까요?",
+            "confirm": "nightly train chain을 지금 수동 실행할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v5-challenger-spawn.service"],
         },
         "start_promote_only": {
             "id": "start_promote_only",
             "label": "승급만 지금 실행",
-            "description": "00:10 challenger promote 수동 실행",
+            "description": "승급 판단만 수동 실행",
             "category": "pipeline",
-            "confirm": "promote_only를 지금 수동 실행할까요?",
+            "confirm": "승급 판단만 지금 수동 실행할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v5-challenger-promote.service"],
         },
