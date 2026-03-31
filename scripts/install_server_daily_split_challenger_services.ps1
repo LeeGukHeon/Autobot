@@ -297,7 +297,6 @@ if (-not $NoStart) {
             throw "systemctl restart failed: $timerName"
         }
     }
+    & systemctl status $PromoteTimerUnitName --no-pager
+    & systemctl status $SpawnTimerUnitName --no-pager
 }
-
-& systemctl status $PromoteTimerUnitName --no-pager
-& systemctl status $SpawnTimerUnitName --no-pager
