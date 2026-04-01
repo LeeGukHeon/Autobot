@@ -26,6 +26,8 @@ def test_daily_champion_challenger_v5_wrapper_uses_v5_defaults() -> None:
     assert 'close_v5_train_ready_snapshot.ps1' in source
     assert '-SkipDeadline' in source
     assert '-SkipDailyPipeline:$true' in source
+    assert '-PreflightExpectedEnabledUnits @(' in source
+    assert '-PreflightExpectedDisabledUnits @(' in source
 
 
 def test_install_server_daily_v5_split_wrapper_targets_v5_units() -> None:

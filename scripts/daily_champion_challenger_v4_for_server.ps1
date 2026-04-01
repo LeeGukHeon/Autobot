@@ -22,6 +22,8 @@ param(
     [string]$PromoteTimerUnitName = "autobot-v4-challenger-promote.timer",
     [string[]]$PromotionTargetUnits = @(),
     [string[]]$CandidateTargetUnits = @(),
+    [string[]]$PreflightExpectedEnabledUnits = @(),
+    [string[]]$PreflightExpectedDisabledUnits = @(),
     [string[]]$BlockOnActiveUnits = @(),
     [string[]]$AcceptanceArgs = @(),
     [double]$ChallengerMinHours = 12.0,
@@ -164,7 +166,9 @@ function Invoke-PreflightCapture {
         [string]$ChampionUnit,
         [string]$ChallengerUnit,
         [string[]]$PromotionUnits,
-        [string[]]$CandidateUnits
+        [string[]]$CandidateUnits,
+        [string[]]$ExpectedEnabledUnits,
+        [string[]]$ExpectedDisabledUnits
     )
     $args = @(
         "-NoProfile",
@@ -210,21 +214,59 @@ function Invoke-PreflightCapture {
                 $failedUnitsList += $value
             }
             $failedUnits = Join-DelimitedStringArray -Values $failedUnitsList
-                $expectedUnitStates = @(
-                ($ChampionUnit + "=disabled"),
-                ($ChallengerUnit + "=disabled"),
-                ($PairedPaperUnitName + "=enabled"),
-                ($SpawnTimerUnitName + "=enabled"),
-                ($PromoteTimerUnitName + "=enabled"),
-                "autobot-paper-v4-replay.service=disabled",
-                "autobot-live-alpha-replay-shadow.service=disabled"
-            )
-            foreach ($value in @($PromotionUnits) + @($CandidateUnits)) {
+            $expectedUnitStates = @()
+            $explicitEnabledUnits = @()
+            foreach ($value in @($ExpectedEnabledUnits)) {
                 $text = [string]$value
                 if ([string]::IsNullOrWhiteSpace($text)) {
                     continue
                 }
-                $expectedUnitStates += ($text.Trim() + "=enabled")
+                $trimmed = $text.Trim()
+                if ($explicitEnabledUnits -contains $trimmed) {
+                    continue
+                }
+                $explicitEnabledUnits += $trimmed
+            }
+            $explicitDisabledUnits = @()
+            foreach ($value in @($ExpectedDisabledUnits)) {
+                $text = [string]$value
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    continue
+                }
+                $trimmed = $text.Trim()
+                if ($explicitDisabledUnits -contains $trimmed) {
+                    continue
+                }
+                $explicitDisabledUnits += $trimmed
+            }
+            if (($explicitEnabledUnits.Count -gt 0) -or ($explicitDisabledUnits.Count -gt 0)) {
+                foreach ($unitName in $explicitDisabledUnits) {
+                    $expectedUnitStates += ($unitName + "=disabled")
+                }
+                foreach ($unitName in $explicitEnabledUnits) {
+                    $expectedUnitStates += ($unitName + "=enabled")
+                }
+            } else {
+                if (-not [string]::IsNullOrWhiteSpace($ChampionUnit)) {
+                    $expectedUnitStates += ($ChampionUnit.Trim() + "=disabled")
+                }
+                if (-not [string]::IsNullOrWhiteSpace($ChallengerUnit)) {
+                    $expectedUnitStates += ($ChallengerUnit.Trim() + "=disabled")
+                }
+                $expectedUnitStates += @(
+                    ($PairedPaperUnitName + "=enabled"),
+                    ($SpawnTimerUnitName + "=enabled"),
+                    ($PromoteTimerUnitName + "=enabled"),
+                    "autobot-paper-v4-replay.service=disabled",
+                    "autobot-live-alpha-replay-shadow.service=disabled"
+                )
+                foreach ($value in @($PromotionUnits) + @($CandidateUnits)) {
+                    $text = [string]$value
+                    if ([string]::IsNullOrWhiteSpace($text)) {
+                        continue
+                    }
+                    $expectedUnitStates += ($text.Trim() + "=enabled")
+                }
             }
             $requiredStateDbPaths = @(
                 $CandidateStateDbPath,
@@ -976,6 +1018,8 @@ $resolvedFeatureContractRefreshScript = if ([string]::IsNullOrWhiteSpace($Featur
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
 $resolvedPromotionTargetUnits = @(Get-StringArray -Value $PromotionTargetUnits)
 $resolvedCandidateTargetUnits = @(Get-StringArray -Value $CandidateTargetUnits)
+$resolvedPreflightExpectedEnabledUnits = @(Get-StringArray -Value $PreflightExpectedEnabledUnits)
+$resolvedPreflightExpectedDisabledUnits = @(Get-StringArray -Value $PreflightExpectedDisabledUnits)
 $resolvedBlockOnActiveUnits = @(Get-StringArray -Value $BlockOnActiveUnits)
 $resolvedAcceptanceArgs = @(Get-StringArray -Value $AcceptanceArgs)
 $registryRoot = Join-Path $resolvedProjectRoot "models/registry"
@@ -1048,7 +1092,9 @@ $preflightExec = Invoke-PreflightCapture `
     -ChampionUnit $ChampionUnitName `
     -ChallengerUnit $ChallengerUnitName `
     -PromotionUnits $resolvedPromotionTargetUnits `
-    -CandidateUnits $resolvedCandidateTargetUnits
+    -CandidateUnits $resolvedCandidateTargetUnits `
+    -ExpectedEnabledUnits $resolvedPreflightExpectedEnabledUnits `
+    -ExpectedDisabledUnits $resolvedPreflightExpectedDisabledUnits
 $preflightReport = Load-JsonOrEmpty -PathValue $preflightExec.ReportPath
 $report.steps.preflight = [ordered]@{
     attempted = $true

@@ -204,6 +204,16 @@ if ($Mode -ne "promote_only") {
     -PromoteTimerUnitName "autobot-v5-challenger-promote.timer" `
     -PromotionTargetUnits $PromotionTargetUnits `
     -CandidateTargetUnits $CandidateTargetUnits `
+    -PreflightExpectedEnabledUnits @(
+        $ChampionUnitName,
+        $PairedPaperUnitName,
+        "autobot-v5-challenger-spawn.timer",
+        "autobot-v5-challenger-promote.timer"
+    ) `
+    -PreflightExpectedDisabledUnits @(
+        "autobot-paper-v4-replay.service",
+        "autobot-live-alpha-replay-shadow.service"
+    ) `
     -BlockOnActiveUnits $BlockOnActiveUnits `
     -AcceptanceArgs $AcceptanceArgs `
     -ChallengerMinHours $ChallengerMinHours `
