@@ -154,6 +154,16 @@ $resolvedPreflightExpectedDisabledUnits = @(
     "autobot-paper-v4-replay.service",
     "autobot-live-alpha-replay-shadow.service"
 )
+$serializedPreflightExpectedEnabledUnits = [string]::Join(",", @(
+    $resolvedPreflightExpectedEnabledUnits |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        ForEach-Object { ([string]$_).Trim() }
+))
+$serializedPreflightExpectedDisabledUnits = [string]::Join(",", @(
+    $resolvedPreflightExpectedDisabledUnits |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        ForEach-Object { ([string]$_).Trim() }
+))
 
 if ($Mode -ne "promote_only") {
     if (Test-Path $resolvedCandlesRefreshScript) {
@@ -215,8 +225,8 @@ if ($Mode -ne "promote_only") {
     -PromoteTimerUnitName "autobot-v5-challenger-promote.timer" `
     -PromotionTargetUnits $PromotionTargetUnits `
     -CandidateTargetUnits $CandidateTargetUnits `
-    -PreflightExpectedEnabledUnits (Join-DelimitedStringArray -Values $resolvedPreflightExpectedEnabledUnits) `
-    -PreflightExpectedDisabledUnits (Join-DelimitedStringArray -Values $resolvedPreflightExpectedDisabledUnits) `
+    -PreflightExpectedEnabledUnits $serializedPreflightExpectedEnabledUnits `
+    -PreflightExpectedDisabledUnits $serializedPreflightExpectedDisabledUnits `
     -BlockOnActiveUnits $BlockOnActiveUnits `
     -AcceptanceArgs $AcceptanceArgs `
     -ChallengerMinHours $ChallengerMinHours `

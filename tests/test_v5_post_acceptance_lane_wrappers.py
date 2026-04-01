@@ -26,8 +26,10 @@ def test_daily_champion_challenger_v5_wrapper_uses_v5_defaults() -> None:
     assert 'close_v5_train_ready_snapshot.ps1' in source
     assert '-SkipDeadline' in source
     assert '-SkipDailyPipeline:$true' in source
-    assert '-PreflightExpectedEnabledUnits (Join-DelimitedStringArray -Values $resolvedPreflightExpectedEnabledUnits)' in source
-    assert '-PreflightExpectedDisabledUnits (Join-DelimitedStringArray -Values $resolvedPreflightExpectedDisabledUnits)' in source
+    assert '$serializedPreflightExpectedEnabledUnits = [string]::Join(' in source
+    assert '$serializedPreflightExpectedDisabledUnits = [string]::Join(' in source
+    assert '-PreflightExpectedEnabledUnits $serializedPreflightExpectedEnabledUnits' in source
+    assert '-PreflightExpectedDisabledUnits $serializedPreflightExpectedDisabledUnits' in source
 
 
 def test_install_server_daily_v5_split_wrapper_targets_v5_units() -> None:
