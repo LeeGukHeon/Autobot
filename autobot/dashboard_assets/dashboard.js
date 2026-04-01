@@ -72,6 +72,11 @@
     canary: "카나리아",
     shadow: "그림자",
     live: "정식",
+    chain_owned: "스폰 체인이 담당 중",
+    not_armed: "비활성",
+    fresh_run: "새로 실행",
+    cached_result: "캐시 재사용",
+    dry_run: "점검용 실행",
     INFRA: "인프라",
     STATE_INTEGRITY: "상태 정합성",
     STATISTICAL_RISK: "통계 리스크",
@@ -129,16 +134,21 @@
     ws_public: "WS 수집기",
     live_main: "메인 라이브",
     live_candidate: "후보 카나리아",
-    data_platform_refresh_service: "데이터 refresh 서비스",
-    spawn_service: "챌린저 생성 서비스",
-    promote_service: "챌린저 승급 서비스",
+    data_platform_refresh_service: "운영 데이터 갱신 서비스",
+    spawn_service: "야간 학습 체인 서비스",
+    promote_service: "후보 승급 서비스",
     rank_shadow_service: "랭크 그림자 서비스",
-    data_platform_refresh_timer: "데이터 refresh 타이머",
-    spawn_timer: "챌린저 생성 타이머",
-    promote_timer: "챌린저 승급 타이머",
+    candles_api_refresh_service: "캔들 API 갱신 서비스",
+    raw_ticks_backfill_service: "체결 데이터 보강 서비스",
+    private_ws_archive_service: "개인 WS 보관 서비스",
+    data_platform_refresh_timer: "운영 데이터 갱신 타이머",
+    spawn_timer: "야간 학습 체인 타이머",
+    promote_timer: "후보 승급 타이머",
     rank_shadow_timer: "랭크 그림자 타이머",
-    train_snapshot_close_service: "학습 스냅샷 close 서비스",
-    train_snapshot_close_timer: "학습 스냅샷 close 타이머"
+    candles_api_refresh_timer: "캔들 API 갱신 타이머",
+    raw_ticks_backfill_timer: "체결 데이터 보강 타이머",
+    train_snapshot_close_service: "학습 스냅샷 확정 서비스",
+    train_snapshot_close_timer: "학습 스냅샷 확정 타이머"
   };
 
   const OPS_ACTION_TEXT = {
@@ -147,13 +157,13 @@
     arm_canary_rollout: { label: "카나리아 주문 허용" },
     canary_test_order: { label: "카나리아 테스트 주문" },
     clear_canary_breaker: { label: "카나리아 브레이커 해제" },
-    reset_canary_suppressors: { label: "카나리아 억제 상태 리셋" },
-    try_restart_live_main: { label: "메인 라이브 try-restart" },
+    reset_canary_suppressors: { label: "카나리아 억제 상태 초기화" },
+    try_restart_live_main: { label: "메인 라이브 재시작 시도" },
     clear_live_main_breaker: { label: "메인 라이브 브레이커 해제" },
-    reset_live_main_suppressors: { label: "메인 억제 상태 리셋" },
+    reset_live_main_suppressors: { label: "메인 억제 상태 초기화" },
     restart_ws_public: { label: "WS 수집기 재시작" },
-    start_data_platform_refresh: { label: "runtime-rich refresh 실행" },
-    start_spawn_only: { label: "nightly train chain 실행" },
+    start_data_platform_refresh: { label: "운영용 데이터 갱신 실행" },
+    start_spawn_only: { label: "야간 학습 체인 실행" },
     start_promote_only: { label: "승급 판단만 실행" },
     start_rank_shadow: { label: "랭크 섀도우 실행" },
     adopt_latest_candidate: { label: "최신 후보 즉시 반영" },
@@ -180,24 +190,24 @@
       text: "후보 생성부터 검증, 챌린저 흐름까지 한 눈에 보는 탭입니다."
     },
     paper: {
-      eyebrow: "Paper Runs",
-      title: "Paired Paper",
-      text: "현재 paired lane 상태와 최근 비교 판정을 중심으로 페이퍼 흐름을 읽는 탭입니다."
+      eyebrow: "페이퍼 관찰",
+      title: "페어드 페이퍼",
+      text: "현재 페어드 레인 상태와 최근 비교 결과를 한눈에 보는 탭입니다."
     },
     live: {
-      eyebrow: "Live Desk",
-      title: "Live & Canary Desk",
+      eyebrow: "실거래 관제",
+      title: "라이브 · 카나리아",
       text: "현재 보유, 매도 플랜, 주문 상태, 최근 종료 거래를 실시간으로 확인합니다."
     },
     ws: {
-      eyebrow: "Data Plane",
-      title: "WS Public Plane",
-      text: "수집 연결과 적재 신선도를 읽는 데이터 플레인 화면입니다."
+      eyebrow: "데이터 흐름",
+      title: "WS 수집 현황",
+      text: "수집 연결과 적재 신선도를 살피는 데이터 흐름 화면입니다."
     },
     ops: {
       eyebrow: "운영 제어",
       title: "운영 작업",
-      text: "서비스 재시작, 수동 파이프라인 실행, 최신 candidate 강제 반영을 위한 운영 화면입니다."
+      text: "서비스 재시작, 수동 파이프라인 실행, 최신 후보 강제 반영을 위한 운영 화면입니다."
     }
   };
 
@@ -518,7 +528,7 @@
   function opsCategoryLabel(key) {
     if (key === "services") return "서비스 제어";
     if (key === "pipeline") return "파이프라인 실행";
-    if (key === "binding") return "런 바인딩";
+    if (key === "binding") return "후보 반영";
     if (key === "rollout") return "롤아웃 / 테스트 주문";
     if (key === "recovery") return "복구 / 브레이커";
     return "기타";
@@ -567,7 +577,7 @@
     const downside = fmtBps(intent.trade_action_expected_downside_bps);
     const expectedEs = fmtBps(intent.trade_action_expected_es_bps);
     const multiple = fmtNumber(intent.trade_action_notional_multiplier, 2);
-    if (!action || action === "-") return "학습된 trade action 정보가 아직 없습니다.";
+    if (!action || action === "-") return "학습된 매매 행동 정보가 아직 없습니다.";
     return `${translate(action)} 전략으로 판단했고, 기대 순엣지는 ${edge}, 예상 하방은 ${downside}, 예상 ES는 ${expectedEs}, 진입 금액 배수는 ${multiple}배로 계산됐습니다.`;
   }
 
@@ -604,8 +614,8 @@
     const bins = action.sample_bins || [];
     const firstBin = bins[0] || {};
     const actionText = action.status === "ready"
-      ? `trade action이 활성화되어 있고, ${translate(firstBin.recommended_action)} 쪽 bin 예시가 ${bins.length}개 보입니다.`
-      : "trade action은 아직 비활성 또는 준비 전입니다.";
+      ? `매매 행동 정책이 켜져 있고, ${translate(firstBin.recommended_action)} 쪽 예시 구간이 ${bins.length}개 보입니다.`
+      : "매매 행동 정책이 아직 꺼져 있거나 준비 전입니다.";
     return `${translate(runtime.recommended_exit_mode)} 모드를 기본 청산 추천으로 쓰며, ${actionText}`;
   }
 
@@ -796,7 +806,7 @@
     if (saveButton && tokenInput) {
       saveButton.addEventListener("click", () => {
         setOpsToken(tokenInput.value || "");
-        setError("ops token을 저장했습니다.");
+        setError("운영 토큰을 저장했습니다.");
         setTimeout(() => setError(""), 1800);
       });
     }
@@ -804,7 +814,7 @@
       clearButton.addEventListener("click", () => {
         clearOpsToken();
         tokenInput.value = "";
-        setError("ops token을 지웠습니다.");
+        setError("운영 토큰을 지웠습니다.");
         setTimeout(() => setError(""), 1800);
       });
     }
@@ -816,14 +826,14 @@
       if (!window.confirm(confirmText)) return;
       const original = button.innerHTML;
       button.disabled = true;
-      button.innerHTML = "<strong>Running…</strong><span>request submitted</span>";
+      button.innerHTML = "<strong>실행 중…</strong><span>요청을 보냈습니다</span>";
       try {
         const result = await runOpsAction(actionId);
-        setError(`ops action 완료: ${result.label || actionId}`);
+        setError(`운영 작업 완료: ${result.label || actionId}`);
         await refresh();
         setTimeout(() => setError(""), 2200);
       } catch (err) {
-        setError(`ops action 실패: ${err && err.message ? err.message : err}`);
+        setError(`운영 작업 실패: ${err && err.message ? err.message : err}`);
       } finally {
         button.disabled = false;
         button.innerHTML = original;
@@ -861,14 +871,14 @@
 
     document.getElementById("overview-headline").textContent =
       trainClose.overall_pass === true && acceptance.overall_pass === false
-        ? "nightly close는 정상이고, acceptance는 이전 실패 결과를 보여주고 있습니다."
+        ? "야간 스냅샷 확정은 정상이고, 검증 결과는 아직 이전 실패 기록을 보여주고 있습니다."
         : acceptance.overall_pass === true ? "이번 후보는 통과했습니다." :
       acceptance.overall_pass === false ? "이번 후보는 탈락했고 챔피언 유지입니다." :
       "최신 검증 결과를 기다리는 중입니다.";
 
     document.getElementById("overview-subhead").textContent =
       nightlyChain.owner === "spawn_service"
-        ? "nightly 학습 체인은 00:20 spawn이 candles, raw ticks, train snapshot close, acceptance를 순차 실행하는 구조입니다."
+        ? "야간 학습 체인은 00:20 스폰 서비스가 캔들 갱신, 체결 데이터 수집, 학습 스냅샷 확정, 검증을 순서대로 실행하는 구조입니다."
         : Number(candidateLive.positions_count || 0) > 0
         ? `후보 카나리아는 현재 ${candidateLive.positions_count}개 포지션을 보유 중입니다.`
         : challenger.started
@@ -879,8 +889,8 @@
       metric("운영 후보", shortRun(((pointers.latest_candidate || {}).run_id) || acceptance.candidate_run_id)),
       metric("최근 학습", shortRun(((pointers.latest || {}).run_id))),
       metric("판정", acceptance.overall_pass === true ? "통과" : acceptance.overall_pass === false ? "탈락" : "-"),
-      metric("체인 owner", nightlyChain.owner === "spawn_service" ? "spawn" : "-"),
-      metric("close 상태", trainClose.overall_pass === true ? "정상" : trainClose.exists ? "실패" : "-"),
+      metric("체인 담당", nightlyChain.owner === "spawn_service" ? "스폰 서비스" : "-"),
+      metric("스냅샷 확정", trainClose.overall_pass === true ? "정상" : trainClose.exists ? "실패" : "-"),
       metric("후보 포지션", maybe(candidateLive.positions_count, "0")),
       metric("후보 리스크 플랜", maybe(candidateLive.active_risk_plans_count, "0"))
     ].join("");
@@ -912,18 +922,18 @@
 
     const notes = [];
     if (nightlyChain.owner === "spawn_service") notes.push(compactRow({
-      title: "nightly 학습 체인",
-      summary: nightlyChain.summary || "spawn이 학습 체인을 소유합니다.",
-      pillHtml: pill("owner", "spawn", nightlyChain.independent_timers_disabled ? "good" : "warn"),
+      title: "야간 학습 체인",
+      summary: nightlyChain.summary || "스폰 서비스가 학습 체인을 맡고 있습니다.",
+      pillHtml: pill("담당", "스폰 서비스", nightlyChain.independent_timers_disabled ? "good" : "warn"),
     }));
     if (trainClose.exists) notes.push(compactRow({
-      title: "최근 train snapshot close",
-      summary: trainClose.overall_pass ? `snapshot ${shortRun(trainClose.snapshot_id)}로 close 완료` : joinTranslated(trainClose.failure_reasons || []),
-      pillHtml: pill("close", trainClose.overall_pass ? "정상" : "실패", trainClose.overall_pass ? "good" : "bad"),
+      title: "최근 학습 스냅샷 확정",
+      summary: trainClose.overall_pass ? `스냅샷 ${shortRun(trainClose.snapshot_id)}까지 확정했습니다.` : joinTranslated(trainClose.failure_reasons || []),
+      pillHtml: pill("확정", trainClose.overall_pass ? "정상" : "실패", trainClose.overall_pass ? "good" : "bad"),
     }));
     if (trainClose.overall_pass === true && acceptance.overall_pass === false) notes.push(compactRow({
-      title: "acceptance 표시 주의",
-      summary: "운영개요의 acceptance 판정은 아직 이전 run 결과를 가리키고 있고, 최신 close 결과와는 별개입니다.",
+      title: "검증 결과 표시 안내",
+      summary: "운영 개요의 검증 판정은 아직 이전 실행 결과를 가리키고 있어, 방금 확정한 스냅샷 결과와는 별개입니다.",
       pillHtml: pill("메모", "이전 결과", "warn"),
     }));
     if ((acceptance.reasons || []).length) notes.push(compactRow({
@@ -983,7 +993,7 @@
       metric("배치 날짜", maybe(acceptance.batch_date)),
       metric("현재 단계", maybe(activity.stage_label_ko)),
       metric("진행도", progressPct == null ? "-" : `${progressPct}%`),
-      metric("snapshot close", trainClose.overall_pass === true ? "정상" : trainClose.exists ? "실패" : "-"),
+      metric("스냅샷 확정", trainClose.overall_pass === true ? "정상" : trainClose.exists ? "실패" : "-"),
       metric("판정 기준", translate(acceptance.decision_basis)),
       metric("갱신 시각", fmtDateTime(acceptance.completed_at || acceptance.generated_at))
     ].join("");
@@ -992,21 +1002,21 @@
     const latestCandidatePointer = pointers.latest_candidate || {};
     const latestPointer = pointers.latest || {};
     const pointerSummary = pointers.latest_matches_candidate === false
-      ? "운영 후보는 latest_candidate를 따르고, 최근 학습 latest는 별도 run일 수 있습니다."
-      : "현재 최근 학습과 운영 후보가 같은 run입니다.";
+      ? "운영 후보 포인터와 최근 학습 포인터가 서로 다른 실행을 가리킬 수 있습니다."
+      : "현재 최근 학습과 운영 후보가 같은 실행을 가리키고 있습니다.";
 
     const acceptanceNarrative = acceptance.overall_pass === true
       ? "백테스트와 보조 증거를 기준으로 이번 후보를 다음 단계로 넘길 수 있는 상태입니다."
       : acceptance.overall_pass === false
         ? "이번 후보는 적어도 한 개 이상의 검증 문턱을 넘지 못했습니다."
-        : "아직 acceptance 결과가 기록되지 않았습니다.";
+        : "아직 검증 결과가 기록되지 않았습니다.";
     const challengerNarrative = challenger.started
       ? "챌린저 서비스가 실제로 올라가 다음 단계 관찰이 시작됐습니다."
       : `${translate(challenger.reason)} 때문에 챌린저가 아직 올라가지 않았습니다.`;
     const promotionStateMachine = challenger.promotion_state_machine || {};
     const promotionNarrative = promotionStateMachine.exists
       ? `최근 승급 상태머신은 ${translate(promotionStateMachine.state)} 상태로 ${translate(promotionStateMachine.reason)}를 기록했습니다.`
-      : "최근 승급 상태머신 artifact가 아직 없습니다.";
+      : "최근 승급 상태머신 산출물이 아직 없습니다.";
     const rankNarrative = rankShadow.status
       ? `랭크 그림자 레인은 현재 ${maybe(rankShadow.status)} 상태이며 다음 액션은 ${maybe(rankShadow.next_action)}입니다.`
       : "랭크 그림자 레인 최신 판단이 아직 없습니다.";
@@ -1036,29 +1046,29 @@
       [
         activityCard,
         compactRow({
-          title: "nightly train chain",
-          summary: nightlyChain.summary || "spawn 체인 정보를 아직 읽지 못했습니다.",
+          title: "야간 학습 체인",
+          summary: nightlyChain.summary || "스폰 체인 정보를 아직 읽지 못했습니다.",
           items: [
-            compactStat("owner", nightlyChain.owner === "spawn_service" ? "spawn" : "-"),
-            compactStat("spawn timer", boolLabel(nightlyChain.spawn_timer_active)),
-            compactStat("raw ticks timer", boolLabel(nightlyChain.raw_ticks_timer_active)),
-            compactStat("close timer", boolLabel(nightlyChain.train_snapshot_close_timer_active)),
-            compactStat("독립 timer 비활성", boolLabel(nightlyChain.independent_timers_disabled)),
+            compactStat("담당 서비스", nightlyChain.owner === "spawn_service" ? "스폰 서비스" : "-"),
+            compactStat("스폰 타이머", boolLabel(nightlyChain.spawn_timer_active)),
+            compactStat("체결 데이터 타이머", boolLabel(nightlyChain.raw_ticks_timer_active)),
+            compactStat("스냅샷 확정 타이머", boolLabel(nightlyChain.train_snapshot_close_timer_active)),
+            compactStat("독립 타이머 비활성", boolLabel(nightlyChain.independent_timers_disabled)),
           ],
         }),
         compactRow({
-          title: "train snapshot close",
+          title: "학습 스냅샷 확정",
           summary: trainClose.overall_pass
-            ? `batch ${maybe(trainClose.batch_date)} 기준 snapshot ${shortRun(trainClose.snapshot_id)} close 완료`
+            ? `배치 날짜 ${maybe(trainClose.batch_date)} 기준으로 스냅샷 ${shortRun(trainClose.snapshot_id)}까지 확정했습니다.`
             : trainClose.exists
               ? joinTranslated(trainClose.failure_reasons || [])
-              : "아직 close report가 없습니다.",
+              : "아직 스냅샷 확정 보고서가 없습니다.",
           items: [
             compactStat("상태", trainClose.overall_pass ? "정상" : trainClose.exists ? "실패" : "없음"),
-            compactStat("batch", maybe(trainClose.batch_date)),
-            compactStat("snapshot", shortRun(trainClose.snapshot_id)),
+            compactStat("배치 날짜", maybe(trainClose.batch_date)),
+            compactStat("스냅샷", shortRun(trainClose.snapshot_id)),
             compactStat("deadline", boolLabel(trainClose.deadline_met)),
-            compactStat("최근 close", fmtDateTime(trainClose.latest_generated_at_utc)),
+            compactStat("최근 확정", fmtDateTime(trainClose.latest_generated_at_utc)),
           ],
         }),
         compactRow({
@@ -1068,9 +1078,9 @@
             compactStat("챔피언", shortRun(championPointer.run_id)),
             compactStat("운영 후보", shortRun(latestCandidatePointer.run_id)),
             compactStat("최근 학습", shortRun(latestPointer.run_id)),
-            compactStat("운영 후보 scope", maybe(latestCandidatePointer.run_scope)),
-            compactStat("최근 학습 scope", maybe(latestPointer.run_scope)),
-            compactStat("최근 학습 task", maybe(latestPointer.task)),
+            compactStat("운영 후보 범위", maybe(latestCandidatePointer.run_scope)),
+            compactStat("최근 학습 범위", maybe(latestPointer.run_scope)),
+            compactStat("최근 학습 작업", maybe(latestPointer.task)),
           ],
         }),
         compactRow({
@@ -1078,7 +1088,7 @@
           summary: acceptanceNarrative,
           items: [
             compactStat("모델 계열", maybe(acceptance.model_family)),
-            compactStat("acceptance 후보", shortRun(acceptance.candidate_run_id)),
+            compactStat("검증 대상 후보", shortRun(acceptance.candidate_run_id)),
             compactStat("이전 챔피언", shortRun(acceptance.champion_before_run_id)),
             compactStat("현재 챔피언", shortRun(acceptance.champion_after_run_id)),
             compactStat("백테스트", boolLabel(acceptance.backtest_pass)),
@@ -1102,9 +1112,9 @@
             compactStat("상태", translate(promotionStateMachine.state)),
             compactStat("사유", translate(promotionStateMachine.reason)),
             compactStat("다음 액션", translate(promotionStateMachine.next_action)),
-            compactStat("후보 run", shortRun(promotionStateMachine.candidate_run_id)),
+            compactStat("후보 실행", shortRun(promotionStateMachine.candidate_run_id)),
             compactStat("기준 챔피언", shortRun(promotionStateMachine.champion_run_id_at_start)),
-            compactStat("artifact", shortPath(promotionStateMachine.artifact_path)),
+            compactStat("산출물", shortPath(promotionStateMachine.artifact_path)),
           ],
         }),
         compactRow({
@@ -1114,8 +1124,8 @@
             compactStat("현재 상태", maybe(rankShadow.status)),
             compactStat("다음 액션", maybe(rankShadow.next_action)),
             compactStat("선택 레인", maybe((rankShadow.governance_action || {}).selected_lane_id)),
-            compactStat("선택 스크립트", maybe((rankShadow.governance_action || {}).selected_acceptance_script)),
-            compactStat("후보 run", shortRun(rankShadow.candidate_run_id)),
+            compactStat("선택 검증 스크립트", maybe((rankShadow.governance_action || {}).selected_acceptance_script)),
+            compactStat("후보 실행", shortRun(rankShadow.candidate_run_id)),
             compactStat("사이클 보고서", shortPath(rankShadow.artifact_path)),
           ],
         }),
@@ -1123,12 +1133,12 @@
           title: "V5 준비도",
           summary: v5Narrative,
           items: [
-            compactStat("core data", boolLabel(v5Readiness.core_data_ready)),
+            compactStat("핵심 데이터", boolLabel(v5Readiness.core_data_ready)),
             compactStat("registry 반영", boolLabel(v5Readiness.core_registry_ready)),
             compactStat("v5 sequence", shortRun((v5Families.train_v5_sequence || {}).run_id)),
             compactStat("v5 lob", shortRun((v5Families.train_v5_lob || {}).run_id)),
             compactStat("v5 fusion", shortRun((v5Families.train_v5_fusion || {}).run_id)),
-            compactStat("global latest family", maybe(v5Readiness.latest_global_pointer_family)),
+            compactStat("전역 최신 계열", maybe(v5Readiness.latest_global_pointer_family)),
           ],
         }),
       ].filter(Boolean).join("")
@@ -1150,11 +1160,11 @@
           summary: runtimeExplain(runtime),
           items: [
             compactStat("기본 청산", translate(runtime.recommended_exit_mode)),
-            compactStat("선택 family", maybe(runtime.chosen_family)),
-            compactStat("선택 rule", maybe(runtime.chosen_rule_id)),
-            compactStat("hold family", maybe((runtime.hold_family || {}).status)),
-            compactStat("risk family", maybe((runtime.risk_family || {}).status)),
-            compactStat("family compare", maybe((runtime.family_compare || {}).status)),
+            compactStat("선택 계열", maybe(runtime.chosen_family)),
+            compactStat("선택 규칙", maybe(runtime.chosen_rule_id)),
+            compactStat("보유 계열", maybe((runtime.hold_family || {}).status)),
+            compactStat("리스크 계열", maybe((runtime.risk_family || {}).status)),
+            compactStat("계열 비교", maybe((runtime.family_compare || {}).status)),
           ],
         }),
         compactRow({
@@ -1168,15 +1178,15 @@
           ],
         }),
         compactRow({
-          title: "Trade Action 정책",
+          title: "매매 행동 정책",
           summary: tradeAction.status === "ready"
-            ? `현재 예시 bin에서는 ${translate(tradeActionSample.recommended_action)} 전략과 ${fmtBps(tradeActionSample.expected_edge_bps)} 기대 엣지를 사용합니다.`
-            : "trade action 정책이 아직 준비되지 않았습니다.",
+            ? `현재 예시 구간에서는 ${translate(tradeActionSample.recommended_action)} 전략과 ${fmtBps(tradeActionSample.expected_edge_bps)} 기대 엣지를 사용합니다.`
+            : "매매 행동 정책이 아직 준비되지 않았습니다.",
           items: [
             compactStat("정책 상태", maybe(tradeAction.status)),
             compactStat("리스크 변수", maybe(tradeAction.risk_feature_name)),
-            compactStat("hold 추천 bin", maybe(tradeAction.hold_bins_recommended)),
-            compactStat("risk 추천 bin", maybe(tradeAction.risk_bins_recommended)),
+            compactStat("보유 추천 구간", maybe(tradeAction.hold_bins_recommended)),
+            compactStat("리스크 추천 구간", maybe(tradeAction.risk_bins_recommended)),
             compactStat("예시 엣지", fmtBps(tradeActionSample.expected_edge_bps)),
             compactStat("예시 진입 배수", fmtNumber(tradeActionSample.notional_multiplier, 2)),
           ],
@@ -1201,27 +1211,27 @@
     const pairedLatest = ((snapshot.paper || {}).paired_latest || {});
     const provenanceItems = [
       {
-        title: "Champion Pointer",
+        title: "챔피언 포인터",
         source: pointers.champion || {},
         provenance: (pointers.champion || {}).provenance || {},
       },
       {
-        title: "Latest Candidate Pointer",
+        title: "최신 후보 포인터",
         source: pointers.latest_candidate || {},
         provenance: (pointers.latest_candidate || {}).provenance || {},
       },
       {
-        title: "Latest Training Run",
+        title: "최근 학습 실행",
         source: pointers.latest || {},
         provenance: (pointers.latest || {}).provenance || {},
       },
       {
-        title: "Paired Candidate Binding",
+        title: "페어드 후보 연결",
         source: { run_id: pairedLatest.challenger_run_id, updated_at_utc: pairedLatest.updated_at },
         provenance: pairedLatest.challenger_model_provenance || {},
       },
       {
-        title: "Canary Live Binding",
+        title: "카나리아 연결",
         source: {
           run_id: ((candidateLive.runtime_health || {}).live_runtime_model_run_id),
           updated_at_utc: candidateLive.updated_at,
@@ -1239,21 +1249,21 @@
           item.provenance.start && item.provenance.end ? `${item.provenance.start} → ${item.provenance.end}` : "",
         ].filter(Boolean).join(" · "),
         items: [
-          compactStat("run", shortRun(item.source.run_id)),
-          compactStat("scope", maybe(item.provenance.run_scope)),
-          compactStat("task", maybe(item.provenance.task)),
-          compactStat("trainer", maybe(item.provenance.trainer)),
-          compactStat("window", item.provenance.start && item.provenance.end ? `${item.provenance.start} → ${item.provenance.end}` : "-"),
-          compactStat("budget", maybe(item.provenance.budget_lane_class_effective)),
-          compactStat("runtime profile", maybe(item.provenance.runtime_profile)),
-          compactStat("trials", maybe(item.provenance.booster_sweep_trials)),
-          compactStat("risk mode", maybe(item.provenance.risk_control_operating_mode)),
-          compactStat("gate", boolLabel(item.provenance.risk_control_live_gate_enabled)),
-          compactStat("exit", maybe(item.provenance.recommended_exit_mode)),
-          compactStat("promotion", maybe(item.provenance.promotion_status)),
+          compactStat("실행", shortRun(item.source.run_id)),
+          compactStat("범위", maybe(item.provenance.run_scope)),
+          compactStat("작업", maybe(item.provenance.task)),
+          compactStat("학습기", maybe(item.provenance.trainer)),
+          compactStat("기간", item.provenance.start && item.provenance.end ? `${item.provenance.start} → ${item.provenance.end}` : "-"),
+          compactStat("예산", maybe(item.provenance.budget_lane_class_effective)),
+          compactStat("운영 프로필", maybe(item.provenance.runtime_profile)),
+          compactStat("시도 수", maybe(item.provenance.booster_sweep_trials)),
+          compactStat("리스크 모드", maybe(item.provenance.risk_control_operating_mode)),
+          compactStat("게이트", boolLabel(item.provenance.risk_control_live_gate_enabled)),
+          compactStat("청산 방식", maybe(item.provenance.recommended_exit_mode)),
+          compactStat("승급 상태", maybe(item.provenance.promotion_status)),
         ],
       }, "provenance-card")).join("")
-      : empty("표시할 provenance 정보가 없습니다.");
+      : empty("표시할 모델 이력이 없습니다.");
   }
 
   function renderPaper(snapshot) {
@@ -1270,41 +1280,41 @@
     const latestCompletedRunId = String(pairedLatest.run_root || pairedLatest.artifact_path || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
     const currentPairedRunId = String(pairedLatest.current_run_id || pairedLatest.current_run_root || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
     const latestSummary = pairedLatest.mode
-      ? `${pairedActive ? "현재 paired lane이 실행 중입니다." : "현재 paired lane은 대기 중입니다."} ${pairedLatest.current_run_in_progress && currentPairedRunId !== "-" ? `실행 중 run · ${shortRun(currentPairedRunId)}.` : ""} ${pairedLatest.latest_artifact_stale && latestCompletedRunId !== "-" ? `최근 완료 artifact · ${shortRun(latestCompletedRunId)}.` : ""} ${(!pairedLatest.latest_artifact_stale && latestCompletedRunId !== "-") ? `최근 artifact · ${shortRun(latestCompletedRunId)}.` : ""} ${pairedLatest.decision ? `최근 판정은 ${translate(pairedLatest.decision)}입니다.` : ""}`.trim()
-      : "paired paper 최신 artifact가 아직 없습니다.";
+      ? `${pairedActive ? "현재 페어드 레인이 실행 중입니다." : "현재 페어드 레인은 대기 중입니다."} ${pairedLatest.current_run_in_progress && currentPairedRunId !== "-" ? `실행 중 항목 · ${shortRun(currentPairedRunId)}.` : ""} ${pairedLatest.latest_artifact_stale && latestCompletedRunId !== "-" ? `최근 완료 산출물 · ${shortRun(latestCompletedRunId)}.` : ""} ${(!pairedLatest.latest_artifact_stale && latestCompletedRunId !== "-") ? `최근 산출물 · ${shortRun(latestCompletedRunId)}.` : ""} ${pairedLatest.decision ? `최근 판정은 ${translate(pairedLatest.decision)}입니다.` : ""}`.trim()
+      : "페어드 페이퍼 최신 산출물이 아직 없습니다.";
     const latestSections = [
       compactRow({
-        title: "현재 Paired Lane",
+        title: "현재 페어드 레인",
         summary: latestSummary,
         items: [
           compactStat("서비스", pairedActive ? "실행 중" : "대기"),
-          compactStat("실행 중 run", shortRun(currentPairedRunId)),
-          compactStat("artifact stale", boolLabel(pairedLatest.latest_artifact_stale)),
+          compactStat("실행 중 항목", shortRun(currentPairedRunId)),
+          compactStat("최신 산출물 오래됨", boolLabel(pairedLatest.latest_artifact_stale)),
           compactStat("모드", maybe(pairedLatest.mode)),
-          compactStat("소스", maybe(pairedLatest.source_mode)),
+          compactStat("생성 방식", maybe(pairedLatest.source_mode)),
           compactStat("최근 갱신", fmtDateTime(pairedLatest.updated_at || pairedLatest.generated_at)),
-          compactStat("챔피언 run", shortRun(pairedLatest.champion_run_id)),
-          compactStat("후보 run", shortRun(pairedLatest.challenger_run_id)),
+          compactStat("챔피언 실행", shortRun(pairedLatest.champion_run_id)),
+          compactStat("후보 실행", shortRun(pairedLatest.challenger_run_id)),
           compactStat("매칭 기회", maybe(pairedLatest.matched_opportunities)),
-          compactStat("pair ready", boolLabel(pairedLatest.pair_ready)),
-          compactStat("gate", boolLabel(pairedLatest.gate_pass)),
+          compactStat("비교 준비", boolLabel(pairedLatest.pair_ready)),
+          compactStat("게이트", boolLabel(pairedLatest.gate_pass)),
           compactStat("판정", translate(pairedLatest.decision)),
-          compactStat("hard failures", joinTranslated(pairedLatest.hard_failures || [])),
+          compactStat("즉시 실패 사유", joinTranslated(pairedLatest.hard_failures || [])),
           compactStat("보고서", shortPath(pairedLatest.report_path || pairedLatest.artifact_path)),
         ],
       }),
       compactRow({
         title: "현재 비교 델타",
         summary: pairedLatest.mode
-          ? `동일 feed 기준으로 손익 ${fmtMoney(pairedLatest.matched_pnl_delta_quote, 2)}, 체결 수 ${fmtNumber(pairedLatest.matched_fill_delta, 0)}, 슬리피지 ${fmtBps(pairedLatest.matched_slippage_delta_bps)} 차이를 기록했습니다.`
-          : "최근 paired comparison 결과가 아직 없습니다.",
+          ? `같은 입력 기준으로 손익 ${fmtMoney(pairedLatest.matched_pnl_delta_quote, 2)}, 체결 수 ${fmtNumber(pairedLatest.matched_fill_delta, 0)}, 슬리피지 ${fmtBps(pairedLatest.matched_slippage_delta_bps)} 차이를 기록했습니다.`
+          : "최근 페어드 비교 결과가 아직 없습니다.",
         items: [
           compactStat("손익 델타", fmtMoney(pairedLatest.matched_pnl_delta_quote, 2), toneFromValue(pairedLatest.matched_pnl_delta_quote)),
           compactStat("체결 수 델타", fmtNumber(pairedLatest.matched_fill_delta, 0), toneFromValue(pairedLatest.matched_fill_delta)),
           compactStat("슬리피지 델타", fmtBps(pairedLatest.matched_slippage_delta_bps), toneFromValue(-1 * Number(pairedLatest.matched_slippage_delta_bps || 0))),
-          compactStat("no-trade 델타", fmtNumber(pairedLatest.matched_no_trade_delta, 0), toneFromValue(pairedLatest.matched_no_trade_delta)),
-          compactStat("ticker 이벤트", maybe(pairedLatest.ticker_events_captured)),
-          compactStat("trade 이벤트", maybe(pairedLatest.trade_events_captured)),
+          compactStat("미진입 델타", fmtNumber(pairedLatest.matched_no_trade_delta, 0), toneFromValue(pairedLatest.matched_no_trade_delta)),
+          compactStat("티커 이벤트", maybe(pairedLatest.ticker_events_captured)),
+          compactStat("체결 이벤트", maybe(pairedLatest.trade_events_captured)),
           compactStat("주문서 이벤트", maybe(pairedLatest.orderbook_events_captured)),
           compactStat("구독 시장 수", maybe(pairedLatest.markets_subscribed)),
         ],
@@ -1313,7 +1323,7 @@
 
     const pairedHistoryTable = pairedHistory.length
       ? terminalTable(
-        ["Paired 런", "판정", "매칭", "델타", "입력", "업데이트"],
+        ["페어드 실행", "판정", "매칭", "델타", "입력", "업데이트"],
         pairedHistory.map((item, index) => {
           const pairedRunId = String(item.run_root || item.artifact_path || "").split(/[\\\\/]/).filter(Boolean).pop() || "-";
           return {
@@ -1330,9 +1340,9 @@
               cell(
                 maybe(item.matched_opportunities, "0"),
                 [
-                  `ready ${boolLabel(item.pair_ready)}`,
-                  item.matched_ratio_vs_champion == null ? null : `champ ${fmtPct(Number(item.matched_ratio_vs_champion) * 100)}`,
-                  item.matched_ratio_vs_challenger == null ? null : `cand ${fmtPct(Number(item.matched_ratio_vs_challenger) * 100)}`,
+                  `준비 ${boolLabel(item.pair_ready)}`,
+                  item.matched_ratio_vs_champion == null ? null : `챔피언 ${fmtPct(Number(item.matched_ratio_vs_champion) * 100)}`,
+                  item.matched_ratio_vs_challenger == null ? null : `후보 ${fmtPct(Number(item.matched_ratio_vs_challenger) * 100)}`,
                 ].filter(Boolean).join(" · "),
               ),
               cell(
@@ -1347,9 +1357,9 @@
               cell(
                 maybe(item.source_mode),
                 [
-                  `ticker ${maybe(item.ticker_events_captured, "0")}`,
-                  `trade ${maybe(item.trade_events_captured, "0")}`,
-                  `book ${maybe(item.orderbook_events_captured, "0")}`,
+                  `티커 ${maybe(item.ticker_events_captured, "0")}`,
+                  `체결 ${maybe(item.trade_events_captured, "0")}`,
+                  `호가 ${maybe(item.orderbook_events_captured, "0")}`,
                 ].join(" · "),
               ),
               cell(fmtDateTime(item.updated_at || item.generated_at)),
@@ -1357,7 +1367,7 @@
           };
         }),
       )
-      : empty("최근 paired paper 히스토리가 없습니다.");
+      : empty("최근 페어드 페이퍼 이력이 없습니다.");
 
     const standaloneRuns = rows.length
       ? terminalTable(
@@ -1373,20 +1383,20 @@
           ],
         })),
       )
-      : empty("개별 또는 수동 paper run 기록이 없습니다.");
+      : empty("개별 또는 수동 페이퍼 실행 기록이 없습니다.");
 
     document.getElementById("paper-grid").innerHTML = `
       <div class="dense-list">${latestSections}</div>
       <section class="paper-role-block">
         <div class="paper-role-head">
-          <h3>최근 Paired 비교</h3>
+        <h3>최근 페어드 비교</h3>
           <div class="paper-role-meta">${pairedActive ? pill("상태", "실행 중", "good") : pill("상태", "대기", "neutral")}</div>
         </div>
         ${pairedHistoryTable}
       </section>
       <section class="paper-role-block">
         <div class="paper-role-head">
-          <h3>개별 / 수동 Paper Runs</h3>
+          <h3>개별·수동 페이퍼 실행</h3>
           <div class="paper-role-meta">${pill("참고", "보조", "neutral")}</div>
         </div>
         ${standaloneRuns}
@@ -1660,17 +1670,17 @@
       statusChip("공용 WS", runtime.ws_public_stale ? "지연" : "정상", runtime.ws_public_stale ? "warn" : "good"),
       statusChip("개인 WS", privateWsFreshness, privateWsLastTs == null ? "warn" : "good"),
       statusChip("브레이커", activeBreakers.length ? `${activeBreakers.length}건` : "없음", activeBreakers.length ? "bad" : "neutral"),
-      statusChip("suppressor", suppressor.active ? `${suppressorReasons.length || 1}건` : "없음", suppressor.active ? "warn" : "neutral"),
+      statusChip("억제 상태", suppressor.active ? `${suppressorReasons.length || 1}건` : "없음", suppressor.active ? "warn" : "neutral"),
     ].join("");
 
     const issueRail = [
       selected.error ? `<article class="live-inline-banner bad"><strong>상태 DB 오류</strong><span>${esc(selected.error)}</span></article>` : "",
       !selectedServiceActive ? `<article class="live-inline-banner neutral"><strong>비활성 상태 기록</strong><span>${esc(`${selected.label} 서비스는 현재 중지돼 있습니다. 혼동을 줄이기 위해 최근 활동이 없는 비활성 레인은 기본적으로 숨기고 있습니다.`)}</span></article>` : "",
       activeBreakers.length ? `<article class="live-inline-banner warn"><strong>즉시 확인할 브레이커</strong><span>${esc(activeBreakers.join(" / "))}</span></article>` : "",
-      suppressor.active ? `<article class="live-inline-banner warn"><strong>실측 억제 suppressor</strong><span>${esc(suppressorReasons.join(" / "))}</span></article>` : "",
-      suppressor.warning_active ? `<article class="live-inline-banner neutral"><strong>카나리아 경고 스킵</strong><span>${esc(suppressorWarnings.join(" / "))}</span></article>` : "",
-      rolloutTargetMismatch ? `<article class="live-inline-banner warn"><strong>stale rollout artifact</strong><span>${esc(`현재 선택 서비스는 ${serviceUnit}인데 rollout target은 ${rolloutTarget}로 남아 있습니다.`)}</span></article>` : "",
-      ((suppressor.reset || {}).waiting_for_fresh_post_reset_decision) ? `<article class="live-inline-banner neutral"><strong>reset 이후 새 판단 대기</strong><span>${esc("이전 suppressor 증거는 리셋됐고, 새 post-reset 결정이 아직 없습니다.")}</span></article>` : "",
+      suppressor.active ? `<article class="live-inline-banner warn"><strong>실측 억제 상태</strong><span>${esc(suppressorReasons.join(" / "))}</span></article>` : "",
+      suppressor.warning_active ? `<article class="live-inline-banner neutral"><strong>카나리아 경고로 건너뜀</strong><span>${esc(suppressorWarnings.join(" / "))}</span></article>` : "",
+      rolloutTargetMismatch ? `<article class="live-inline-banner warn"><strong>오래된 롤아웃 기록</strong><span>${esc(`현재 선택 서비스는 ${serviceUnit}인데 롤아웃 대상은 ${rolloutTarget}으로 남아 있습니다.`)}</span></article>` : "",
+      ((suppressor.reset || {}).waiting_for_fresh_post_reset_decision) ? `<article class="live-inline-banner neutral"><strong>초기화 후 새 판단 대기</strong><span>${esc("이전 억제 근거는 초기화됐고, 새 판단 결과가 아직 없습니다.")}</span></article>` : "",
     ].filter(Boolean).join("");
 
     const unlinkedPlans = riskPlans.filter((plan) => !positions.some((position) => position.market === plan.market));
@@ -1697,7 +1707,7 @@
             <p class="position-plan-copy">${esc(linkedPlan ? compactPlanSummary(linkedPlan) : "청산 플랜 없음")}</p>
             <div class="plan-tags">
               <span class="plan-chip">${esc(linkedPlan ? `모드 ${translate(linkedPlan.exit_mode)}` : "모드 없음")}</span>
-              <span class="plan-chip">${esc(linkedPlan ? `동적 ${linkedPlan.dynamic_exit_active ? "ON" : "OFF"}` : "동적 OFF")}</span>
+              <span class="plan-chip">${esc(linkedPlan ? `동적 ${linkedPlan.dynamic_exit_active ? "켜짐" : "꺼짐"}` : "동적 꺼짐")}</span>
               <span class="plan-chip ${toneFromValue(position.unrealized_pnl_quote)}">${esc(`손익 ${fmtMoney(position.unrealized_pnl_quote, 2)}`)}</span>
               <span class="plan-chip">${esc(linkedPlan ? translate(linkedPlan.state) : "플랜 없음")}</span>
               <span class="plan-chip">${esc(linkedOrder ? `${translate(linkedOrder.side)} 주문 대기` : "주문 없음")}</span>
@@ -1719,7 +1729,7 @@
           </div>
           <div class="plan-tags">
             <span class="plan-chip">${esc(`모드 ${translate(plan.exit_mode)}`)}</span>
-            <span class="plan-chip">${esc(`동적 ${plan.dynamic_exit_active ? "ON" : "OFF"}`)}</span>
+            <span class="plan-chip">${esc(`동적 ${plan.dynamic_exit_active ? "켜짐" : "꺼짐"}`)}</span>
           </div>
         </div>
       `).join("")}</div>`
@@ -1822,7 +1832,7 @@
           <article class="live-hero-card ${leadTone}">
             <div class="live-hero-head">
               <div>
-                <p class="eyebrow">Live Command</p>
+                <p class="eyebrow">라이브 관제</p>
                 <h4>${esc(selected.label)}</h4>
                 <p class="section-copy">${esc(liveNarrative)}</p>
               </div>
@@ -1936,7 +1946,7 @@
       metric("연결", boolLabel(health.connected)),
       metric("구독 종목", maybe(health.subscribed_markets_count, "-")),
       metric("최근 수신", fmtAge(lastRxTs)),
-      metric("현재 run", shortRun(health.run_id || latestRun.run_id))
+      metric("현재 실행", shortRun(health.run_id || latestRun.run_id))
     ].join("");
     document.getElementById("ws-details").innerHTML = `<div class="dense-list">${
       [
@@ -1947,70 +1957,70 @@
             compactStat("연결", boolLabel(health.connected)),
             compactStat("재연결 횟수", maybe(health.reconnect_count, "0")),
             compactStat("최근 수신", fmtDateTime(lastRxTs)),
-            compactStat("fatal reason", maybe(health.fatal_reason)),
+            compactStat("치명 사유", maybe(health.fatal_reason)),
           ],
         }),
         compactRow({
           title: "누적 적재",
-          summary: `최근 run ${fmtNumber(latestRun.parts, 0)} parts · ${fmtNumber(latestRun.rows_total, 0)} rows`,
+          summary: `최근 실행 ${fmtNumber(latestRun.parts, 0)}개 조각 · ${fmtNumber(latestRun.rows_total, 0)}행`,
           items: [
             compactStat("총 적재 행", fmtNumber((health.written_rows || {}).total, 0)),
-            compactStat("trade 행", fmtNumber((health.written_rows || {}).trade, 0)),
-            compactStat("orderbook 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
-            compactStat("총 drop 행", fmtNumber((health.dropped_rows || {}).total, 0)),
+            compactStat("체결 행", fmtNumber((health.written_rows || {}).trade, 0)),
+            compactStat("호가 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
+            compactStat("총 누락 행", fmtNumber((health.dropped_rows || {}).total, 0)),
           ],
         }),
         compactRow({
-          title: "데이터 refresh 주기",
+          title: "데이터 갱신 주기",
           summary: refresh.exists
-            ? `최근 refresh가 ${fmtDateTime(refresh.generated_at_utc)}에 ${maybe(refresh.step_count, "0")}개 step으로 완료됐습니다.`
-            : "data platform refresh artifact가 아직 없습니다.",
+            ? `최근 갱신이 ${fmtDateTime(refresh.generated_at_utc)}에 ${maybe(refresh.step_count, "0")}단계로 완료됐습니다.`
+            : "데이터 플랫폼 갱신 산출물이 아직 없습니다.",
           items: [
             compactStat("서비스", translate(dataRefreshService.active_state)),
             compactStat("타이머", translate(dataRefreshTimer.active_state)),
-            compactStat("최근 refresh", fmtDateTime(refresh.generated_at_utc)),
-            compactStat("step 수", maybe(refresh.step_count)),
-            compactStat("artifact", shortPath(refresh.artifact_path)),
+            compactStat("최근 갱신", fmtDateTime(refresh.generated_at_utc)),
+            compactStat("단계 수", maybe(refresh.step_count)),
+            compactStat("산출물", shortPath(refresh.artifact_path)),
           ],
         }),
         compactRow({
           title: "원천 데이터 수집",
-          summary: "raw ws / raw ticks / candles_api 상시 수집 상태를 함께 보여줍니다.",
+          summary: "공용 원천 WS, 체결 원천, 캔들 API 수집 상태를 함께 보여줍니다.",
           items: [
-            compactStat("raw ws", boolLabel(Boolean(rawWs.connected))),
-            compactStat("raw ws topk", maybe(rawWs.orderbook_topk)),
-            compactStat("private ws", maybe(rawPrivate.status)),
-            compactStat("private 최근", fmtDateTime(rawPrivate.latest_event_ts_ms)),
-            compactStat("ticks timer", translate(rawTicksTimer.active_state)),
-            compactStat("ticks 최근", fmtDateTime(rawTicks.latest_generated_at_utc)),
-            compactStat("ticks backfill", translate(rawTicksBackfillTimer.active_state)),
-            compactStat("backfill 최근", fmtDateTime(rawTicksBackfill.latest_generated_at_utc)),
-            compactStat("candles timer", translate(candlesRefreshTimer.active_state)),
-            compactStat("candles 최근", fmtDateTime(candlesApi.summary_generated_at_utc || candlesApi.build_generated_at)),
-            compactStat("candles 상태", maybe(candlesApi.status)),
-            compactStat("ticks 파일 수", fmtNumber(rawTicks.file_count, 0)),
-            compactStat("private 파일 수", fmtNumber(rawPrivate.file_count, 0)),
+            compactStat("공용 원천 WS", boolLabel(Boolean(rawWs.connected))),
+            compactStat("공용 WS 호가 깊이", maybe(rawWs.orderbook_topk)),
+            compactStat("개인 WS", maybe(rawPrivate.status)),
+            compactStat("개인 WS 최근", fmtDateTime(rawPrivate.latest_event_ts_ms)),
+            compactStat("체결 타이머", translate(rawTicksTimer.active_state)),
+            compactStat("체결 최근", fmtDateTime(rawTicks.latest_generated_at_utc)),
+            compactStat("보강 타이머", translate(rawTicksBackfillTimer.active_state)),
+            compactStat("보강 최근", fmtDateTime(rawTicksBackfill.latest_generated_at_utc)),
+            compactStat("캔들 타이머", translate(candlesRefreshTimer.active_state)),
+            compactStat("캔들 최근", fmtDateTime(candlesApi.summary_generated_at_utc || candlesApi.build_generated_at)),
+            compactStat("캔들 상태", maybe(candlesApi.status)),
+            compactStat("체결 파일 수", fmtNumber(rawTicks.file_count, 0)),
+            compactStat("개인 WS 파일 수", fmtNumber(rawPrivate.file_count, 0)),
           ],
         }),
         compactRow({
           title: "파생 데이터 레이어",
           summary: sequenceCurrentDates.length
-            ? `second / ws candle / lob30 / sequence 상태와 최근 ${sequenceCurrentDates.join(", ")} 기준 sequence strict 현황을 함께 봅니다.`
-            : "second / ws candle / lob30 / sequence 상태를 한 곳에 모아 보여줍니다.",
+            ? `초봉, WS 캔들, 호가 30, 시퀀스 상태와 최근 ${sequenceCurrentDates.join(", ")} 기준 시퀀스 품질을 함께 봅니다.`
+            : "초봉, WS 캔들, 호가 30, 시퀀스 상태를 한 곳에 모아 보여줍니다.",
           items: [
-            compactStat("second", maybe((datasets.candles_second_v1 || {}).status)),
-            compactStat("ws candle", maybe((datasets.ws_candle_v1 || {}).status)),
-            compactStat("lob30", maybe((datasets.lob30_v1 || {}).status)),
-            compactStat("sequence", maybe((datasets.sequence_v1 || {}).status)),
-            compactStat("seq strict", maybe(sequenceSupport.strict_full, "0")),
-            compactStat("seq reduced", maybe(sequenceSupport.reduced_context, "0")),
-            compactStat("seq invalid", maybe(sequenceSupport.structural_invalid, "0")),
-            compactStat("seq current strict", maybe(sequenceCurrent.strict_full, "0")),
-            compactStat("seq current reduced", maybe(sequenceCurrent.reduced_context, "0")),
-            compactStat("seq legacy strict", maybe(sequenceLegacy.strict_full, "0")),
-            compactStat("seq legacy reduced", maybe(sequenceLegacy.reduced_context, "0")),
-            compactStat("registry", boolLabel(Boolean((dataPlatform.registry || {}).exists))),
-            compactStat("contract 수", maybe((dataPlatform.registry || {}).contract_count)),
+            compactStat("초봉", maybe((datasets.candles_second_v1 || {}).status)),
+            compactStat("WS 캔들", maybe((datasets.ws_candle_v1 || {}).status)),
+            compactStat("호가 30", maybe((datasets.lob30_v1 || {}).status)),
+            compactStat("시퀀스", maybe((datasets.sequence_v1 || {}).status)),
+            compactStat("정상 문맥", maybe(sequenceSupport.strict_full, "0")),
+            compactStat("축약 문맥", maybe(sequenceSupport.reduced_context, "0")),
+            compactStat("구조 오류", maybe(sequenceSupport.structural_invalid, "0")),
+            compactStat("현재 창 정상", maybe(sequenceCurrent.strict_full, "0")),
+            compactStat("현재 창 축약", maybe(sequenceCurrent.reduced_context, "0")),
+            compactStat("이전 창 정상", maybe(sequenceLegacy.strict_full, "0")),
+            compactStat("이전 창 축약", maybe(sequenceLegacy.reduced_context, "0")),
+            compactStat("레지스트리", boolLabel(Boolean((dataPlatform.registry || {}).exists))),
+            compactStat("계약 수", maybe((dataPlatform.registry || {}).contract_count)),
           ],
         }),
       ].join("")

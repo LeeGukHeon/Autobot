@@ -959,8 +959,8 @@ def test_dashboard_asset_blank_strings_no_longer_render_as_epoch() -> None:
     assert "페이퍼 챌린저" in js
     assert "paper_runtime_model_run_id" in js
     assert 'pill("상태", "실행 중", "good")' in js
-    assert "실행 중 run" in js
-    assert "최근 완료 artifact ·" in js
+    assert "실행 중 항목" in js
+    assert "최근 완료 산출물 ·" in js
     assert "current-paper-run" in js
     assert "paper-role-head" in css
     assert "paper-role-start" in css
@@ -1215,9 +1215,9 @@ def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, m
     assert actions["clear_live_main_breaker"]["category"] == "recovery"
     assert "reset_live_main_suppressors" in actions
     assert actions["reset_live_main_suppressors"]["category"] == "recovery"
-    assert "raw ticks" in actions["start_spawn_only"]["description"]
+    assert "체결 데이터 수집" in actions["start_spawn_only"]["description"]
     assert actions["start_promote_only"]["description"] == "승급 판단만 수동 실행"
-    assert "paired paper lane" in actions["adopt_latest_candidate"]["description"]
+    assert "페어드 페이퍼 레인과 카나리아" in actions["adopt_latest_candidate"]["description"]
 
 
 def test_dashboard_server_source_keeps_single_dashboard_ops_catalog_and_execute_definitions() -> None:

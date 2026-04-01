@@ -501,19 +501,19 @@ def _summarize_training_activity_legacy_unused(
         {
             "match": ("close_v5_train_ready_snapshot.ps1",),
             "stage_key": "train_snapshot_close",
-            "stage_label_ko": "학습 스냅샷 닫기",
+            "stage_label_ko": "학습 스냅샷 확정",
             "progress_pct": 36,
-            "headline_ko": "학습 전용 cold snapshot을 닫고 있습니다.",
-            "detail_builder": lambda command: "candles, raw ticks, training-critical refresh를 기준으로 오늘 배치용 immutable snapshot을 확정하는 단계입니다.",
+            "headline_ko": "학습용 스냅샷을 확정하고 있습니다.",
+            "detail_builder": lambda command: "캔들, 체결 데이터, 학습 핵심 갱신 결과를 기준으로 오늘 배치용 스냅샷을 확정하는 단계입니다.",
         },
         {
             "match": ("run_raw_ticks_daily.ps1",),
             "stage_key": "raw_ticks_daily",
-            "stage_label_ko": "raw ticks 수집",
+            "stage_label_ko": "체결 데이터 수집",
             "progress_pct": 18,
-            "headline_ko": "오늘 배치용 raw ticks를 수집하고 있습니다.",
+            "headline_ko": "오늘 배치용 체결 데이터를 수집하고 있습니다.",
             "detail_builder": lambda command: (
-                f"batch_date {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 raw ticks를 채우는 단계입니다."
+                f"배치 날짜 {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 체결 데이터를 채우는 단계입니다."
             ),
         },
         {
@@ -522,7 +522,7 @@ def _summarize_training_activity_legacy_unused(
             "stage_label_ko": "캔들 보강",
             "progress_pct": 8,
             "headline_ko": "학습 체인 시작 전 캔들 보강을 진행 중입니다.",
-            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 nightly train chain 입력을 준비하는 단계입니다.",
+            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 야간 학습 체인 입력을 준비하는 단계입니다.",
         },
         {
             "match": ("autobot.cli", "model", "promote"),
@@ -553,7 +553,7 @@ def _summarize_training_activity_legacy_unused(
             "stage_key": "certification_backtest",
             "stage_label_ko": "인증 백테스트",
             "progress_pct": 78,
-            "headline_ko": "certification window 백테스트를 실행 중입니다.",
+            "headline_ko": "검증 구간 백테스트를 실행 중입니다.",
             "detail_builder": lambda command: (
                 f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
                 "후보와 챔피언을 재생해 체결 수와 손익 기준을 확인하는 단계입니다."
@@ -600,7 +600,7 @@ def _summarize_training_activity_legacy_unused(
         {
             "match": ("governed_candidate_acceptance.ps1",),
             "stage_key": "acceptance_wrapper",
-            "stage_label_ko": "수락 루프 시작",
+            "stage_label_ko": "검증 체인 시작",
             "progress_pct": 2,
             "headline_ko": "후보 검증 루프를 시작했습니다.",
             "detail_builder": lambda command: "오늘 배치에 맞는 학습, backtest, 페이퍼 검증 단계를 순서대로 준비하는 중입니다.",
@@ -2691,9 +2691,9 @@ def _summarize_foundation_ingestion(
             "independent_timers_disabled": (not raw_ticks_timer_active) and (not train_close_timer_active),
             "spawn_timer": spawn_timer,
             "summary": (
-                "00:20 spawn이 candles -> raw ticks -> train snapshot close -> acceptance를 순차 실행합니다."
+                "00:20 스폰 서비스가 캔들 갱신 → 체결 데이터 수집 → 학습 스냅샷 확정 → 검증을 순차 실행합니다."
                 if spawn_timer_active
-                else "nightly spawn 체인이 비활성 상태입니다."
+                else "야간 스폰 체인이 비활성 상태입니다."
             ),
         },
     }
@@ -3276,7 +3276,7 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "label": "페어드 페이퍼 재시작",
             "description": "autobot-paper-v5-paired.service 재시작",
             "category": "services",
-            "confirm": "paired paper 서비스를 지금 재시작할까요?",
+            "confirm": "페어드 페이퍼 서비스를 지금 재시작할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "restart", _PAIRED_PAPER_UNITS[0]],
         },
@@ -3302,10 +3302,10 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         },
         "reset_canary_suppressors": {
             "id": "reset_canary_suppressors",
-            "label": "카나리아 suppressor reset",
-            "description": "카나리아 confidence/버짓 suppressor baseline 리셋",
+            "label": "카나리아 억제 상태 초기화",
+            "description": "카나리아 신뢰도·예산 기준을 다시 초기화",
             "category": "recovery",
-            "confirm": "카나리아 non-breaker suppressor 상태를 지금 리셋할까요?",
+            "confirm": "카나리아 비브레이커 억제 상태를 지금 초기화할까요?",
             "kind": "reset_suppressors",
             "db_rel_path": "data/state/live_canary/live_state.db",
             "source": "dashboard_ops_reset_canary_suppressors",
@@ -3313,10 +3313,10 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         },
         "try_restart_live_main": {
             "id": "try_restart_live_main",
-            "label": "메인 라이브 try-restart",
-            "description": "autobot-live-alpha.service try-restart",
+            "label": "메인 라이브 재시작 시도",
+            "description": "autobot-live-alpha.service 재시작 시도",
             "category": "services",
-            "confirm": "메인 라이브 서비스를 지금 try-restart할까요?",
+            "confirm": "메인 라이브 서비스를 지금 재시작 시도할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "try-restart", "autobot-live-alpha.service"],
         },
@@ -3333,10 +3333,10 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         },
         "reset_live_main_suppressors": {
             "id": "reset_live_main_suppressors",
-            "label": "메인 suppressor reset",
-            "description": "메인 라이브 confidence/버짓 suppressor baseline 리셋",
+            "label": "메인 억제 상태 초기화",
+            "description": "메인 라이브 신뢰도·예산 기준을 다시 초기화",
             "category": "recovery",
-            "confirm": "메인 라이브 non-breaker suppressor 상태를 지금 리셋할까요?",
+            "confirm": "메인 라이브 비브레이커 억제 상태를 지금 초기화할까요?",
             "kind": "reset_suppressors",
             "db_rel_path": "data/state/live_state.db",
             "source": "dashboard_ops_reset_live_main_suppressors",
@@ -3353,19 +3353,19 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         },
         "start_data_platform_refresh": {
             "id": "start_data_platform_refresh",
-            "label": "데이터 플랫폼 refresh",
-            "description": "runtime-rich 데이터 refresh 수동 실행",
+            "label": "운영용 데이터 갱신",
+            "description": "운영용 데이터 갱신을 수동 실행",
             "category": "pipeline",
-            "confirm": "runtime-rich 데이터 refresh를 지금 수동 실행할까요?",
+            "confirm": "운영용 데이터 갱신을 지금 수동 실행할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-data-platform-refresh.service"],
         },
         "start_spawn_only": {
             "id": "start_spawn_only",
             "label": "스폰만 지금 실행",
-            "description": "candles -> raw ticks -> close -> acceptance 체인 수동 실행",
+            "description": "캔들 갱신 → 체결 데이터 수집 → 스냅샷 확정 → 검증 체인 수동 실행",
             "category": "pipeline",
-            "confirm": "nightly train chain을 지금 수동 실행할까요?",
+            "confirm": "야간 학습 체인을 지금 수동 실행할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v5-challenger-spawn.service"],
         },
@@ -3381,9 +3381,9 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "arm_canary_rollout": {
             "id": "arm_canary_rollout",
             "label": "카나리아 주문 허용",
-            "description": "카나리아 rollout arm 계약 생성",
+            "description": "카나리아 주문 허용 설정 생성",
             "category": "rollout",
-            "confirm": "카나리아 실주문 허용을 위해 rollout arm을 지금 생성할까요?",
+            "confirm": "카나리아 실주문 허용 설정을 지금 만들까요?",
             "kind": "command",
             "command": _build_live_rollout_command(
                 project_root,
@@ -3402,9 +3402,9 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "canary_test_order": {
             "id": "canary_test_order",
             "label": "카나리아 테스트 주문",
-            "description": "카나리아 rollout test order 실행",
+            "description": "카나리아 테스트 주문 실행",
             "category": "rollout",
-            "confirm": "카나리아 test order를 지금 실행할까요?",
+            "confirm": "카나리아 테스트 주문을 지금 실행할까요?",
             "kind": "command",
             "command": _build_live_rollout_command(
                 project_root,
@@ -3427,9 +3427,9 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         "start_rank_shadow": {
             "id": "start_rank_shadow",
             "label": "랭크 섀도우 실행",
-            "description": "rank shadow 수동 실행",
+            "description": "랭크 그림자 레인을 수동 실행",
             "category": "pipeline",
-            "confirm": "rank-shadow를 지금 수동 실행할까요?",
+            "confirm": "랭크 그림자 레인을 지금 수동 실행할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-v4-rank-shadow.service"],
         },
@@ -3437,12 +3437,12 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "id": "adopt_latest_candidate",
             "label": "최신 후보 즉시 반영",
             "description": (
-                f"latest_candidate {latest_candidate_run_id} ({latest_candidate_model_family})를 paired paper lane과 canary에 반영"
+                f"latest_candidate {latest_candidate_run_id} ({latest_candidate_model_family})를 페어드 페이퍼 레인과 카나리아에 반영"
                 if latest_candidate_run_id
-                else "latest_candidate를 paired paper lane과 canary에 반영"
+                else "latest_candidate를 페어드 페이퍼 레인과 카나리아에 반영"
             ),
             "category": "binding",
-            "confirm": "현재 latest_candidate를 paired paper lane과 canary에 바로 반영할까요?",
+            "confirm": "현재 latest_candidate를 페어드 페이퍼 레인과 카나리아에 바로 반영할까요?",
             "kind": "adopt_latest_candidate",
             "run_id": latest_candidate_run_id,
             "model_family": latest_candidate_model_family or None,
@@ -3613,19 +3613,19 @@ def _summarize_training_activity(
         {
             "match": ("close_v5_train_ready_snapshot.ps1",),
             "stage_key": "train_snapshot_close",
-            "stage_label_ko": "학습 스냅샷 닫기",
+            "stage_label_ko": "학습 스냅샷 확정",
             "progress_pct": 36,
-            "headline_ko": "학습 전용 cold snapshot을 닫고 있습니다.",
-            "detail_builder": lambda command: "candles, raw ticks, training-critical refresh를 기준으로 오늘 배치용 immutable snapshot을 확정하는 단계입니다.",
+            "headline_ko": "학습용 스냅샷을 확정하고 있습니다.",
+            "detail_builder": lambda command: "캔들, 체결 데이터, 학습 핵심 갱신 결과를 기준으로 오늘 배치용 스냅샷을 확정하는 단계입니다.",
         },
         {
             "match": ("run_raw_ticks_daily.ps1",),
             "stage_key": "raw_ticks_daily",
-            "stage_label_ko": "raw ticks 수집",
+            "stage_label_ko": "체결 데이터 수집",
             "progress_pct": 18,
-            "headline_ko": "오늘 배치용 raw ticks를 수집하고 있습니다.",
+            "headline_ko": "오늘 배치용 체결 데이터를 수집하고 있습니다.",
             "detail_builder": lambda command: (
-                f"batch_date {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 raw ticks를 채우는 단계입니다."
+                f"배치 날짜 {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 체결 데이터를 채우는 단계입니다."
             ),
         },
         {
@@ -3634,7 +3634,7 @@ def _summarize_training_activity(
             "stage_label_ko": "캔들 보강",
             "progress_pct": 8,
             "headline_ko": "학습 체인 시작 전 캔들 보강을 진행 중입니다.",
-            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 nightly train chain 입력을 준비하는 단계입니다.",
+            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 야간 학습 체인 입력을 준비하는 단계입니다.",
         },
         {
             "match": ("autobot.cli", "model", "promote"),
@@ -3665,7 +3665,7 @@ def _summarize_training_activity(
             "stage_key": "certification_backtest",
             "stage_label_ko": "인증 백테스트",
             "progress_pct": 78,
-            "headline_ko": "certification window 백테스트를 실행 중입니다.",
+            "headline_ko": "검증 구간 백테스트를 실행 중입니다.",
             "detail_builder": lambda command: (
                 f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
                 "후보와 챔피언을 재생해 체결 수와 손익 기준을 확인하는 단계입니다."
@@ -3704,10 +3704,10 @@ def _summarize_training_activity(
         {
             "match": ("daily_champion_challenger_v5_for_server.ps1",),
             "stage_key": "acceptance_wrapper",
-            "stage_label_ko": "수락 루프 시작",
+            "stage_label_ko": "검증 체인 시작",
             "progress_pct": 2,
-            "headline_ko": "nightly 학습 체인을 시작했습니다.",
-            "detail_builder": lambda command: "spawn owner가 candles, raw ticks, train snapshot close, acceptance를 순차 실행하는 중입니다.",
+            "headline_ko": "야간 학습 체인을 시작했습니다.",
+            "detail_builder": lambda command: "스폰 서비스가 캔들 갱신, 체결 데이터 수집, 학습 스냅샷 확정, 검증을 순서대로 실행하는 중입니다.",
         },
     ]
 
