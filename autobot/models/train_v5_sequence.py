@@ -984,7 +984,14 @@ def _load_sequence_samples(
     )
 
 
-def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
+def _export_sequence_expert_prediction_table_window(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    selected_markets_override: tuple[str, ...] | None = None,
+    resolve_markets_only: bool = False,
+) -> dict[str, Any]:
     run_dir = Path(run_dir).resolve()
     train_config = load_json(run_dir / "train_config.yaml")
     if not train_config:
@@ -994,8 +1001,13 @@ def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str
         str(train_config.get("data_platform_ready_snapshot_id") or "").strip()
         or resolve_ready_snapshot_id(project_root=Path.cwd())
     )
-    selected_markets = tuple(
+    train_selected_markets = tuple(
         str(item).strip() for item in (train_config.get("selected_markets") or []) if str(item).strip()
+    )
+    selected_markets = (
+        tuple(str(item).strip() for item in selected_markets_override if str(item).strip())
+        if selected_markets_override is not None
+        else train_selected_markets
     )
     requested_selected_markets = list(selected_markets)
     existing_export = load_existing_expert_runtime_export(run_dir, start, end)
@@ -1004,6 +1016,9 @@ def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str
     export_path = Path(str(paths.get("export_path")))
     metadata_path = Path(str(paths.get("metadata_path")))
     if (
+        selected_markets_override is None
+        and (not resolve_markets_only)
+        and
         bool(existing_export.get("exists", False))
         and str(existing_metadata.get("run_id") or "").strip() == run_dir.name
         and str(existing_metadata.get("data_platform_ready_snapshot_id") or "").strip() == data_platform_ready_snapshot_id
@@ -1018,7 +1033,10 @@ def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str
             "start": str(start).strip(),
             "end": str(end).strip(),
             "rows": int(existing_metadata.get("rows", 0) or 0),
+            "requested_selected_markets": list(existing_metadata.get("requested_selected_markets") or []),
             "selected_markets": list(existing_metadata.get("selected_markets") or []),
+            "selected_markets_source": str(existing_metadata.get("selected_markets_source") or ""),
+            "fallback_reason": str(existing_metadata.get("fallback_reason") or ""),
             "export_path": str(export_path),
             "metadata_path": str(metadata_path),
             "reused": True,
@@ -1029,24 +1047,22 @@ def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str
     estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
     if estimator is None:
         raise ValueError(f"run_dir does not contain a usable sequence estimator: {run_dir}")
-    selected_markets_source = "train_selected_markets"
+    selected_markets_source = (
+        "acceptance_common_runtime_universe"
+        if selected_markets_override is not None
+        else "train_selected_markets"
+    )
     fallback_reason = ""
     try:
         samples = _load_sequence_samples(options, selected_markets_override=selected_markets)
     except ValueError as exc:
+        if selected_markets_override is not None:
+            raise
         if not selected_markets or "top_n filtering" not in str(exc):
             raise
         samples = _load_sequence_samples(options, selected_markets_override=None)
         selected_markets_source = "window_available_markets_fallback"
         fallback_reason = "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW"
-    split_labels = np.full(samples.rows, "runtime", dtype=object)
-    export_path = _write_sequence_expert_prediction_table(
-        run_dir=run_dir,
-        samples=samples,
-        split_labels=split_labels,
-        estimator=estimator,
-        output_path=export_path,
-    )
     metadata = {
         "version": 1,
         "policy": "v5_expert_runtime_export_v1",
@@ -1062,6 +1078,22 @@ def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str
         "selected_markets_source": selected_markets_source,
         "fallback_reason": fallback_reason,
     }
+    if resolve_markets_only:
+        return {
+            **metadata,
+            "export_path": "",
+            "metadata_path": "",
+            "reused": False,
+            "source_mode": "resolve_markets_only",
+        }
+    split_labels = np.full(samples.rows, "runtime", dtype=object)
+    export_path = _write_sequence_expert_prediction_table(
+        run_dir=run_dir,
+        samples=samples,
+        split_labels=split_labels,
+        estimator=estimator,
+        output_path=export_path,
+    )
     metadata_path = write_expert_runtime_export_metadata(
         run_dir=run_dir,
         start=start,
@@ -1077,8 +1109,21 @@ def _export_sequence_expert_prediction_table_window(*, run_dir: Path, start: str
     }
 
 
-def materialize_v5_sequence_runtime_export(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
-    return _export_sequence_expert_prediction_table_window(run_dir=run_dir, start=start, end=end)
+def materialize_v5_sequence_runtime_export(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    selected_markets_override: tuple[str, ...] | None = None,
+    resolve_markets_only: bool = False,
+) -> dict[str, Any]:
+    return _export_sequence_expert_prediction_table_window(
+        run_dir=run_dir,
+        start=start,
+        end=end,
+        selected_markets_override=selected_markets_override,
+        resolve_markets_only=resolve_markets_only,
+    )
 
 
 def _compute_future_returns(ws_close_map: dict[int, float], *, anchor_ts_ms: int, horizons: tuple[int, ...]) -> list[float] | None:

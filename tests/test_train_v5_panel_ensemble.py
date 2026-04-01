@@ -494,3 +494,75 @@ def test_materialize_v5_panel_ensemble_runtime_export_writes_window_artifacts(tm
     assert Path(export["metadata_path"]).exists()
     assert export["rows"] == 2
     assert export["reused"] is False
+
+
+def test_materialize_v5_panel_ensemble_runtime_export_resolves_common_runtime_universe(tmp_path, monkeypatch) -> None:
+    dataset = SimpleNamespace(
+        rows=1,
+        X=np.asarray([[0.2]], dtype=np.float64),
+        y_cls=np.asarray([1], dtype=np.int64),
+        y_reg=np.asarray([0.1], dtype=np.float64),
+        y_rank=np.asarray([0.1], dtype=np.float64),
+        sample_weight=np.asarray([1.0], dtype=np.float64),
+        ts_ms=np.asarray([2_000], dtype=np.int64),
+        markets=np.asarray(["KRW-ETH"], dtype=object),
+        selected_markets=("KRW-ETH",),
+    )
+    train_config = {
+        "trainer": "v5_panel_ensemble",
+        "model_family": "train_v5_panel_ensemble",
+        "data_platform_ready_snapshot_id": "snapshot-export",
+        "selected_markets": ["KRW-BTC", "KRW-ETH"],
+    }
+    run_dir = tmp_path / "registry" / "train_v5_panel_ensemble" / "panel-export-run-common"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "train_config.yaml").write_text(json.dumps(train_config), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "autobot.models.train_v5_panel_ensemble._load_panel_inference_dataset_window",
+        lambda **kwargs: (
+            dataset,
+            TrainV5PanelEnsembleOptions(
+                dataset_root=tmp_path / "features",
+                registry_root=tmp_path / "registry",
+                logs_root=tmp_path / "logs",
+                model_family="train_v5_panel_ensemble",
+                tf="5m",
+                quote="KRW",
+                top_n=20,
+                start="2026-03-27",
+                end="2026-03-27",
+                feature_set="v4",
+                label_set="v3",
+                task="cls",
+                booster_sweep_trials=1,
+                seed=7,
+                nthread=1,
+                batch_rows=128,
+                train_ratio=0.6,
+                valid_ratio=0.2,
+                test_ratio=0.2,
+                embargo_bars=0,
+                fee_bps_est=5.0,
+                safety_bps=1.0,
+                ev_scan_steps=10,
+                ev_min_selected=1,
+                min_rows_for_train=1,
+            ),
+            train_config,
+        ),
+    )
+
+    export = materialize_v5_panel_ensemble_runtime_export(
+        run_dir=run_dir,
+        start="2026-03-27",
+        end="2026-03-27",
+        selected_markets_override=("KRW-ETH",),
+        resolve_markets_only=True,
+    )
+
+    assert export["requested_selected_markets"] == ["KRW-ETH"]
+    assert export["selected_markets"] == ["KRW-ETH"]
+    assert export["selected_markets_source"] == "acceptance_common_runtime_universe"
+    assert export["fallback_reason"] == ""
+    assert export["source_mode"] == "resolve_markets_only"

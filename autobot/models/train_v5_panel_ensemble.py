@@ -289,7 +289,13 @@ def _write_expert_prediction_table(
     return resolved_output_path
 
 
-def _load_panel_inference_dataset_window(*, run_dir: Path, start: str, end: str) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any]]:
+def _load_panel_inference_dataset_window(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    selected_markets_override: tuple[str, ...] | None = None,
+) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any]]:
     train_config = load_json(run_dir / "train_config.yaml")
     if not train_config:
         raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
@@ -297,12 +303,16 @@ def _load_panel_inference_dataset_window(*, run_dir: Path, start: str, end: str)
     feature_cols = tuple(str(item).strip() for item in (train_config.get("feature_columns") or []) if str(item).strip())
     if not feature_cols:
         feature_cols = feature_columns_from_spec(options.dataset_root)
-    selected_markets = tuple(
-        str(item).strip().upper() for item in (train_config.get("selected_markets") or []) if str(item).strip()
+    selected_markets = (
+        tuple(str(item).strip().upper() for item in selected_markets_override if str(item).strip())
+        if selected_markets_override is not None
+        else tuple(str(item).strip().upper() for item in (train_config.get("selected_markets") or []) if str(item).strip())
     )
     request = build_dataset_request(
         dataset_root=options.dataset_root,
         tf=options.tf,
+        quote=options.quote,
+        top_n=options.top_n,
         start=options.start,
         end=options.end,
         markets=selected_markets,
@@ -318,9 +328,92 @@ def _load_panel_inference_dataset_window(*, run_dir: Path, start: str, end: str)
     return dataset, options, train_config
 
 
-def _export_panel_expert_prediction_table_window(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
+def _resolve_panel_runtime_export_dataset(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    selected_markets_override: tuple[str, ...] | None = None,
+) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any], list[str], str, str]:
+    requested_selected_markets = (
+        [str(item).strip().upper() for item in selected_markets_override if str(item).strip()]
+        if selected_markets_override is not None
+        else []
+    )
+    if selected_markets_override is not None:
+        dataset, options, train_config = _load_panel_inference_dataset_window(
+            run_dir=run_dir,
+            start=start,
+            end=end,
+            selected_markets_override=selected_markets_override,
+        )
+        return (
+            dataset,
+            options,
+            train_config,
+            requested_selected_markets,
+            "acceptance_common_runtime_universe",
+            "",
+        )
+
+    dataset = None
+    options = None
+    train_config = None
+    try:
+        dataset, options, train_config = _load_panel_inference_dataset_window(run_dir=run_dir, start=start, end=end)
+        requested_selected_markets = [
+            str(item).strip().upper()
+            for item in ((train_config or {}).get("selected_markets") or [])
+            if str(item).strip()
+        ]
+        return (
+            dataset,
+            options,
+            train_config,
+            requested_selected_markets,
+            "train_selected_markets",
+            "",
+        )
+    except ValueError as exc:
+        train_config = load_json(run_dir / "train_config.yaml")
+        requested_selected_markets = [
+            str(item).strip().upper()
+            for item in ((train_config or {}).get("selected_markets") or [])
+            if str(item).strip()
+        ]
+        if (not requested_selected_markets) or "no feature rows found for the requested train dataset" not in str(exc):
+            raise
+        dataset, options, train_config = _load_panel_inference_dataset_window(
+            run_dir=run_dir,
+            start=start,
+            end=end,
+            selected_markets_override=tuple(),
+        )
+        return (
+            dataset,
+            options,
+            train_config,
+            requested_selected_markets,
+            "window_available_markets_fallback",
+            "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW",
+        )
+
+
+def _export_panel_expert_prediction_table_window(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    selected_markets_override: tuple[str, ...] | None = None,
+    resolve_markets_only: bool = False,
+) -> dict[str, Any]:
     run_dir = Path(run_dir).resolve()
-    dataset, options, train_config = _load_panel_inference_dataset_window(run_dir=run_dir, start=start, end=end)
+    dataset, options, train_config, requested_selected_markets, selected_markets_source, fallback_reason = _resolve_panel_runtime_export_dataset(
+        run_dir=run_dir,
+        start=start,
+        end=end,
+        selected_markets_override=selected_markets_override,
+    )
     data_platform_ready_snapshot_id = (
         str(train_config.get("data_platform_ready_snapshot_id") or "").strip()
         or resolve_ready_snapshot_id(project_root=Path.cwd())
@@ -331,6 +424,9 @@ def _export_panel_expert_prediction_table_window(*, run_dir: Path, start: str, e
     export_path = Path(str(paths.get("export_path")))
     metadata_path = Path(str(paths.get("metadata_path")))
     if (
+        selected_markets_override is None
+        and (not resolve_markets_only)
+        and
         bool(existing_export.get("exists", False))
         and str(existing_metadata.get("run_id") or "").strip() == run_dir.name
         and str(existing_metadata.get("data_platform_ready_snapshot_id") or "").strip() == data_platform_ready_snapshot_id
@@ -345,11 +441,38 @@ def _export_panel_expert_prediction_table_window(*, run_dir: Path, start: str, e
             "start": str(start).strip(),
             "end": str(end).strip(),
             "rows": int(existing_metadata.get("rows", 0) or 0),
+            "requested_selected_markets": list(existing_metadata.get("requested_selected_markets") or []),
             "selected_markets": list(existing_metadata.get("selected_markets") or []),
+            "selected_markets_source": str(existing_metadata.get("selected_markets_source") or ""),
+            "fallback_reason": str(existing_metadata.get("fallback_reason") or ""),
             "export_path": str(export_path),
             "metadata_path": str(metadata_path),
             "reused": True,
             "source_mode": "existing_export",
+        }
+
+    metadata = {
+        "version": 1,
+        "policy": "v5_expert_runtime_export_v1",
+        "run_id": run_dir.name,
+        "trainer": "v5_panel_ensemble",
+        "model_family": str(train_config.get("model_family") or options.model_family).strip(),
+        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+        "start": str(start).strip(),
+        "end": str(end).strip(),
+        "rows": int(dataset.rows),
+        "requested_selected_markets": requested_selected_markets,
+        "selected_markets": [str(item).strip().upper() for item in getattr(dataset, "selected_markets", ())],
+        "selected_markets_source": selected_markets_source,
+        "fallback_reason": fallback_reason,
+    }
+    if resolve_markets_only:
+        return {
+            **metadata,
+            "export_path": "",
+            "metadata_path": "",
+            "reused": False,
+            "source_mode": "resolve_markets_only",
         }
 
     model_bundle = load_model_bundle(run_dir)
@@ -365,18 +488,6 @@ def _export_panel_expert_prediction_table_window(*, run_dir: Path, start: str, e
         split_labels=split_labels,
         output_path=export_path,
     )
-    metadata = {
-        "version": 1,
-        "policy": "v5_expert_runtime_export_v1",
-        "run_id": run_dir.name,
-        "trainer": "v5_panel_ensemble",
-        "model_family": str(train_config.get("model_family") or options.model_family).strip(),
-        "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
-        "start": str(start).strip(),
-        "end": str(end).strip(),
-        "rows": int(dataset.rows),
-        "selected_markets": [str(item).strip().upper() for item in getattr(dataset, "selected_markets", ())],
-    }
     metadata_path = write_expert_runtime_export_metadata(
         run_dir=run_dir,
         start=start,
@@ -392,8 +503,21 @@ def _export_panel_expert_prediction_table_window(*, run_dir: Path, start: str, e
     }
 
 
-def materialize_v5_panel_ensemble_runtime_export(*, run_dir: Path, start: str, end: str) -> dict[str, Any]:
-    return _export_panel_expert_prediction_table_window(run_dir=run_dir, start=start, end=end)
+def materialize_v5_panel_ensemble_runtime_export(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    selected_markets_override: tuple[str, ...] | None = None,
+    resolve_markets_only: bool = False,
+) -> dict[str, Any]:
+    return _export_panel_expert_prediction_table_window(
+        run_dir=run_dir,
+        start=start,
+        end=end,
+        selected_markets_override=selected_markets_override,
+        resolve_markets_only=resolve_markets_only,
+    )
 
 
 def _normalize_optional_path_text(value: Any) -> str:

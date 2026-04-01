@@ -456,7 +456,8 @@ function Invoke-DependencyRuntimeExportChain {
         [string]$PythonPath,
         [object[]]$DependencyResults,
         [string]$CertificationStartDate,
-        [string]$CertificationEndDate
+        [string]$CertificationEndDate,
+        [string[]]$CommonMarkets = @()
     )
     $results = @()
     foreach ($item in @($DependencyResults)) {
@@ -489,7 +490,10 @@ function Invoke-DependencyRuntimeExportChain {
             start = $CertificationStartDate
             end = $CertificationEndDate
             rows = 0
-            selected_markets = @()
+            requested_selected_markets = @($CommonMarkets)
+            selected_markets = @($CommonMarkets)
+            selected_markets_source = if (@($CommonMarkets).Count -gt 0) { "acceptance_common_runtime_universe" } else { "" }
+            fallback_reason = ""
             export_path = Join-Path $exportDir "expert_prediction_table.parquet"
             metadata_path = Join-Path $exportDir "metadata.json"
             reused = $false
@@ -512,6 +516,13 @@ function Invoke-DependencyRuntimeExportChain {
                 "--start", $CertificationStartDate,
                 "--end", $CertificationEndDate
             )
+            if (@($CommonMarkets).Count -gt 0) {
+                $args += @("--markets", ([string]::Join(",", @(
+                    @($CommonMarkets) |
+                        ForEach-Object { ([string]$_).Trim() } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                ))))
+            }
             $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
             $payload = @{}
             try {
@@ -545,6 +556,117 @@ function Invoke-DependencyRuntimeExportChain {
         }
     }
     return @($results)
+}
+
+function Resolve-DependencyRuntimeCommonUniverse {
+    param(
+        [string]$PythonPath,
+        [object[]]$DependencyResults,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate
+    )
+    $results = @()
+    foreach ($item in @($DependencyResults)) {
+        $trainerName = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
+        $runDir = [string](Get-PropValue -ObjectValue $item -Name "run_dir" -DefaultValue "")
+        $runId = [string](Get-PropValue -ObjectValue $item -Name "run_id" -DefaultValue "")
+        $modelFamily = [string](Get-PropValue -ObjectValue $item -Name "model_family" -DefaultValue "")
+        $snapshotId = [string](Get-PropValue -ObjectValue $item -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($trainerName) -or [string]::IsNullOrWhiteSpace($runDir)) {
+            throw "dependency runtime universe resolution requires trainer and run_dir"
+        }
+        if ($DryRun) {
+            $payload = [ordered]@{
+                run_id = $runId
+                trainer = $trainerName
+                model_family = $modelFamily
+                data_platform_ready_snapshot_id = $snapshotId
+                start = $CertificationStartDate
+                end = $CertificationEndDate
+                rows = 0
+                requested_selected_markets = @()
+                selected_markets = @()
+                selected_markets_source = "dry_run"
+                fallback_reason = ""
+                export_path = ""
+                metadata_path = ""
+                reused = $false
+                source_mode = "resolve_markets_only"
+            }
+        } else {
+            $args = @(
+                "-m", "autobot.cli",
+                "model", "export-expert-table",
+                "--trainer", $trainerName,
+                "--run-dir", $runDir,
+                "--start", $CertificationStartDate,
+                "--end", $CertificationEndDate,
+                "--resolve-markets-only"
+            )
+            $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
+            try {
+                $payload = [string]$exec.Output | ConvertFrom-Json
+            } catch {
+                throw ("dependency runtime universe payload parse failed: " + $trainerName)
+            }
+        }
+        $results += [ordered]@{
+            trainer = $trainerName
+            model_family = $modelFamily
+            run_dir = $runDir
+            run_id = $runId
+            data_platform_ready_snapshot_id = $snapshotId
+            selected_markets = @((Get-PropValue -ObjectValue $payload -Name "selected_markets" -DefaultValue @()))
+            selected_markets_source = [string](Get-PropValue -ObjectValue $payload -Name "selected_markets_source" -DefaultValue "")
+            fallback_reason = [string](Get-PropValue -ObjectValue $payload -Name "fallback_reason" -DefaultValue "")
+            requested_selected_markets = @((Get-PropValue -ObjectValue $payload -Name "requested_selected_markets" -DefaultValue @()))
+        }
+    }
+
+    $orderedCommon = @()
+    $panelResult = @($results | Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "trainer" -DefaultValue "") -eq "v5_panel_ensemble" } | Select-Object -First 1)
+    $orderedSource = if ($panelResult.Count -gt 0) {
+        @((Get-PropValue -ObjectValue $panelResult[0] -Name "selected_markets" -DefaultValue @()))
+    } elseif (@($results).Count -gt 0) {
+        @((Get-PropValue -ObjectValue $results[0] -Name "selected_markets" -DefaultValue @()))
+    } else {
+        @()
+    }
+    $intersection = $null
+    foreach ($result in @($results)) {
+        $marketSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($market in @((Get-PropValue -ObjectValue $result -Name "selected_markets" -DefaultValue @()))) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$market)) {
+                [void]$marketSet.Add(([string]$market).Trim().ToUpperInvariant())
+            }
+        }
+        if ($null -eq $intersection) {
+            $intersection = $marketSet
+        } else {
+            $intersection.IntersectWith($marketSet)
+        }
+    }
+    if ($null -ne $intersection) {
+        foreach ($market in @($orderedSource)) {
+            $normalized = ([string]$market).Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($normalized)) {
+                continue
+            }
+            if ($intersection.Contains($normalized) -and (-not ($orderedCommon -contains $normalized))) {
+                $orderedCommon += $normalized
+            }
+        }
+    }
+
+    return [ordered]@{
+        attempted = $true
+        count = @($results).Count
+        results = @($results)
+        common_markets = @($orderedCommon)
+        common_market_count = @($orderedCommon).Count
+        pass = (@($orderedCommon).Count -gt 0)
+        reason = if (@($orderedCommon).Count -gt 0) { "" } else { "DEPENDENCY_RUNTIME_COMMON_UNIVERSE_EMPTY" }
+    }
 }
 
 function Resolve-DependencyRuntimeFusionInputPaths {
@@ -5484,6 +5606,7 @@ try {
         }
     }
     $dependencyRuntimeExportResults = @()
+    $dependencyRuntimeUniverse = @{}
     $dependencyRuntimeCoverageEligible = Test-ShouldAttemptDependencyRuntimeCoverage `
         -TrainerName $Trainer `
         -DependencyResults @($dependencyTrainerResults) `
@@ -5492,11 +5615,26 @@ try {
         -LaneMode ([string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue ""))
     if ($dependencyRuntimeCoverageEligible) {
         try {
-            $dependencyRuntimeExportResults = Invoke-DependencyRuntimeExportChain `
+            $dependencyRuntimeUniverse = Resolve-DependencyRuntimeCommonUniverse `
                 -PythonPath $resolvedPythonExe `
                 -DependencyResults @($dependencyTrainerResults) `
                 -CertificationStartDate $certificationStartDate `
                 -CertificationEndDate $effectiveBatchDate
+            $report.steps.dependency_runtime_universe = $dependencyRuntimeUniverse
+            if (-not [bool](Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "pass" -DefaultValue $false)) {
+                $report.reasons = @("DEPENDENCY_RUNTIME_COMMON_UNIVERSE_EMPTY")
+                $report.gates.overall_pass = $false
+                Set-ReportFailure -Stage "runtime_export" -Code "DEPENDENCY_RUNTIME_COMMON_UNIVERSE_EMPTY"
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
+            $dependencyRuntimeExportResults = Invoke-DependencyRuntimeExportChain `
+                -PythonPath $resolvedPythonExe `
+                -DependencyResults @($dependencyTrainerResults) `
+                -CertificationStartDate $certificationStartDate `
+                -CertificationEndDate $effectiveBatchDate `
+                -CommonMarkets @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
         } catch {
             Set-ReportFailure -Stage "runtime_export" -Code "DEPENDENCY_RUNTIME_EXPORT_FAILED"
             throw
@@ -5515,6 +5653,10 @@ try {
             "BOOTSTRAP_OR_NO_CERTIFICATION_WINDOW"
         }
         $report.steps.dependency_runtime_exports = [ordered]@{
+            attempted = $false
+            reason = $runtimeExportSkipReason
+        }
+        $report.steps.dependency_runtime_universe = [ordered]@{
             attempted = $false
             reason = $runtimeExportSkipReason
         }
@@ -5719,6 +5861,7 @@ try {
         data_platform_ready_snapshot_id = $candidateSnapshotId
         fusion_dependency_inputs = $fusionDependencyInputs
         fusion_dependency_runtime_inputs = $fusionDependencyRuntimeInputs
+        dependency_runtime_common_markets = @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
         promotion_decision_status = [string](Get-PropValue -ObjectValue $promotionDecision -Name "status" -DefaultValue "")
@@ -5801,12 +5944,14 @@ try {
         snapshot_chain_consistent = ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "")) -or ([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $report.steps -Name "dependency_trainers" -DefaultValue @{}) -Name "same_snapshot_id" -DefaultValue "") -eq $candidateSnapshotId))
         fusion_dependency_inputs = $fusionDependencyInputs
         fusion_dependency_runtime_inputs = $fusionDependencyRuntimeInputs
+        dependency_runtime_common_markets = @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
     }
     Sync-SplitPolicyState
     $report.steps.train.fusion_run_id = $candidateRunId
     $report.steps.train.fusion_snapshot_id = $candidateSnapshotId
     $report.steps.train.fusion_dependency_inputs = $fusionDependencyInputs
     $report.steps.train.fusion_dependency_runtime_inputs = $fusionDependencyRuntimeInputs
+    $report.steps.train.dependency_runtime_common_markets = @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
     $report.steps.train.dependency_trainer_run_ids = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_run_ids" -DefaultValue @()))
     $report.steps.train.dependency_trainer_model_families = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_model_families" -DefaultValue @()))
     $report.steps.train.dependency_snapshot_id = [string](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id" -DefaultValue "")

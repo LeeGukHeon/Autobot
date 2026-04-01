@@ -951,6 +951,12 @@ def build_parser() -> argparse.ArgumentParser:
     model_export_expert_parser.add_argument("--run-dir", required=True, help="Saved trainer run directory.")
     model_export_expert_parser.add_argument("--start", required=True, help="Export window start YYYY-MM-DD.")
     model_export_expert_parser.add_argument("--end", required=True, help="Export window end YYYY-MM-DD.")
+    model_export_expert_parser.add_argument("--markets", help="Optional comma-delimited explicit runtime market universe.")
+    model_export_expert_parser.add_argument(
+        "--resolve-markets-only",
+        action="store_true",
+        help="Resolve the runtime market universe for the requested window without writing export artifacts.",
+    )
 
     model_inspect_runtime_parser = model_subparsers.add_parser(
         "inspect-runtime-dataset",
@@ -2863,12 +2869,37 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             run_dir = Path(str(getattr(args, "run_dir", "")).strip()).resolve()
             start = str(getattr(args, "start", "")).strip()
             end = str(getattr(args, "end", "")).strip()
+            markets_text = str(getattr(args, "markets", "") or "").strip()
+            selected_markets_override = tuple(
+                item.strip().upper()
+                for item in markets_text.split(",")
+                if item.strip()
+            ) or None
+            resolve_markets_only = bool(getattr(args, "resolve_markets_only", False))
             if trainer == "v5_panel_ensemble":
-                payload = materialize_v5_panel_ensemble_runtime_export(run_dir=run_dir, start=start, end=end)
+                payload = materialize_v5_panel_ensemble_runtime_export(
+                    run_dir=run_dir,
+                    start=start,
+                    end=end,
+                    selected_markets_override=selected_markets_override,
+                    resolve_markets_only=resolve_markets_only,
+                )
             elif trainer == "v5_sequence":
-                payload = materialize_v5_sequence_runtime_export(run_dir=run_dir, start=start, end=end)
+                payload = materialize_v5_sequence_runtime_export(
+                    run_dir=run_dir,
+                    start=start,
+                    end=end,
+                    selected_markets_override=selected_markets_override,
+                    resolve_markets_only=resolve_markets_only,
+                )
             elif trainer == "v5_lob":
-                payload = materialize_v5_lob_runtime_export(run_dir=run_dir, start=start, end=end)
+                payload = materialize_v5_lob_runtime_export(
+                    run_dir=run_dir,
+                    start=start,
+                    end=end,
+                    selected_markets_override=selected_markets_override,
+                    resolve_markets_only=resolve_markets_only,
+                )
             else:
                 raise ValueError(f"unsupported export-expert-table trainer: {trainer}")
             print(json.dumps(payload, ensure_ascii=False))

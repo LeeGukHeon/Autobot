@@ -132,13 +132,22 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 table.write_bytes(b"PAR1")
                 return run_dir
 
-            def export_run(family: str, trainer: str, run_id: str, start: str, end: str) -> dict:
+            def available_markets_for(trainer: str) -> list[str]:
+                if trainer == "v5_panel_ensemble":
+                    return ["KRW-BTC", "KRW-ETH"]
+                if trainer == "v5_sequence":
+                    return ["KRW-ETH", "KRW-XRP"]
+                if trainer == "v5_lob":
+                    return ["KRW-ETH", "KRW-BTC"]
+                return []
+
+            def export_run(family: str, trainer: str, run_id: str, start: str, end: str, explicit_markets: list[str], resolve_only: bool) -> dict:
                 export_root = ROOT / "models" / "registry" / family / run_id / "_runtime_exports" / f"{start}__{end}"
                 export_root.mkdir(parents=True, exist_ok=True)
                 export_path = export_root / "expert_prediction_table.parquet"
                 metadata_path = export_root / "metadata.json"
                 reused = export_path.exists() and metadata_path.exists()
-                export_path.write_bytes(b"PAR1")
+                selected_markets = explicit_markets or available_markets_for(trainer)
                 metadata = {
                     "run_id": run_id,
                     "trainer": trainer,
@@ -147,11 +156,20 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "start": start,
                     "end": end,
                     "rows": 12,
-                    "requested_selected_markets": ["KRW-BTC", "KRW-ETH"],
-                    "selected_markets": ["KRW-BTC", "KRW-ETH"],
-                    "selected_markets_source": "train_selected_markets",
+                    "requested_selected_markets": explicit_markets or [],
+                    "selected_markets": selected_markets,
+                    "selected_markets_source": "acceptance_common_runtime_universe" if explicit_markets else "window_available_markets_fallback",
                     "fallback_reason": "",
                 }
+                if resolve_only:
+                    return {
+                        **metadata,
+                        "export_path": "",
+                        "metadata_path": "",
+                        "reused": False,
+                        "source_mode": "resolve_markets_only",
+                    }
+                export_path.write_bytes(b"PAR1")
                 write_json(metadata_path, metadata)
                 return {
                     **metadata,
@@ -262,6 +280,8 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 run_dir = Path(arg_value("--run-dir"))
                 start = arg_value("--start")
                 end = arg_value("--end")
+                explicit_markets = [item.strip() for item in arg_value("--markets").split(",") if item.strip()]
+                resolve_only = "--resolve-markets-only" in sys.argv
                 family = run_dir.parent.name
                 run_id = run_dir.name
                 append_log({
@@ -270,8 +290,10 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "run_id": run_id,
                     "start": start,
                     "end": end,
+                    "markets": explicit_markets,
+                    "resolve_markets_only": resolve_only,
                 })
-                print(json.dumps(export_run(family, trainer, run_id, start, end)))
+                print(json.dumps(export_run(family, trainer, run_id, start, end, explicit_markets, resolve_only)))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
@@ -411,7 +433,16 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "v5_panel_ensemble",
         "v5_sequence",
         "v5_lob",
+        "v5_panel_ensemble",
+        "v5_sequence",
+        "v5_lob",
     ]
+    resolve_calls = [row for row in export_calls if row.get("resolve_markets_only")]
+    materialize_calls = [row for row in export_calls if not row.get("resolve_markets_only")]
+    assert len(resolve_calls) == 3
+    assert len(materialize_calls) == 3
+    assert all(row["markets"] == [] for row in resolve_calls)
+    assert all(row["markets"] == ["KRW-ETH"] for row in materialize_calls)
     fusion_call = train_calls[-1]
     args = fusion_call["args"]
     assert "--fusion-panel-input" in args
@@ -433,10 +464,12 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert report["candidate"]["snapshot_chain_consistent"] is True
     assert report["steps"]["dependency_trainers"]["trained_count"] == 3
     assert report["steps"]["dependency_trainers"]["reused_count"] == 0
+    assert report["steps"]["dependency_runtime_universe"]["common_markets"] == ["KRW-ETH"]
     assert report["steps"]["dependency_runtime_exports"]["count"] == 3
     export_results = report["steps"]["dependency_runtime_exports"]["results"]
-    assert export_results[0]["requested_selected_markets"] == ["KRW-BTC", "KRW-ETH"]
-    assert export_results[0]["selected_markets_source"] == "train_selected_markets"
+    assert export_results[0]["requested_selected_markets"] == ["KRW-ETH"]
+    assert export_results[0]["selected_markets"] == ["KRW-ETH"]
+    assert export_results[0]["selected_markets_source"] == "acceptance_common_runtime_universe"
     assert export_results[0]["fallback_reason"] == ""
     inputs = report["steps"]["train"]["fusion_dependency_inputs"]
     runtime_inputs = report["steps"]["train"]["fusion_dependency_runtime_inputs"]
