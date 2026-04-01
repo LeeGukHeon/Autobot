@@ -1192,6 +1192,50 @@ def test_build_dashboard_snapshot_includes_active_training_progress(tmp_path: Pa
     assert "2026-03-04" in activity["detail_ko"]
 
 
+def test_build_dashboard_snapshot_includes_runtime_export_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-21T01:00:00Z"})
+    _write_json(project_root / "logs" / "model_v4_challenger" / "latest.json", {"steps": {}})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {})
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {})
+
+    def _fake_systemctl_show(unit_name: str, *properties: str) -> dict[str, str]:
+        if unit_name == "autobot-v5-challenger-spawn.service":
+            return {
+                "ActiveState": "active",
+                "SubState": "running",
+                "UnitFileState": "enabled",
+                "MainPID": "4321",
+                "ExecMainStartTimestamp": "Sat 2026-03-21 10:00:00 UTC",
+                "ExecMainExitTimestamp": "",
+                "Description": "Spawn service",
+            }
+        return {}
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", _fake_systemctl_show)
+    monkeypatch.setattr(
+        "autobot.dashboard_server._list_process_rows",
+        lambda: [
+            {
+                "pid": 4322,
+                "ppid": 4321,
+                "args": "/home/ubuntu/MyApps/Autobot/.venv/bin/python -m autobot.cli model export-expert-table --trainer v5_lob --run-dir models/registry/train_v5_lob/run-001 --start 2026-03-24 --end 2026-03-31",
+            }
+        ],
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+
+    activity = snapshot["training"]["current_activity"]
+    assert activity["active"] is True
+    assert activity["stage_key"] == "lob_runtime_export"
+    assert activity["stage_label_ko"] == "호가 런타임 추출"
+    assert activity["progress_pct"] == 58
+    assert "2026-03-24" in activity["detail_ko"]
+    assert activity["process_pid"] == 4322
+
+
 def test_build_dashboard_snapshot_exposes_recovery_ops_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_ENABLED", "true")
     monkeypatch.setenv("AUTOBOT_DASHBOARD_OPS_TOKEN", "secret-token")

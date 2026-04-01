@@ -499,6 +499,47 @@ def _summarize_training_activity_legacy_unused(
     processes = _descendant_process_rows(spawn_service.get("main_pid"), _list_process_rows())
     stage_specs = [
         {
+            "match": ("autobot.ops.live_feature_parity_report",),
+            "stage_key": "feature_parity",
+            "stage_label_ko": "실거래 피처 점검",
+            "progress_pct": 44,
+            "headline_ko": "실거래 피처와 학습 피처 차이를 점검하고 있습니다.",
+            "detail_builder": lambda command: "실거래 피처 계약이 현재 배치 기준과 어긋나지 않는지 먼저 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "model", "export-expert-table", "--trainer", "v5_panel_ensemble"),
+            "stage_key": "panel_runtime_export",
+            "stage_label_ko": "패널 런타임 추출",
+            "progress_pct": 50,
+            "headline_ko": "패널 전문가 출력을 검증 구간용으로 뽑고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "패널 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "export-expert-table", "--trainer", "v5_sequence"),
+            "stage_key": "sequence_runtime_export",
+            "stage_label_ko": "시퀀스 런타임 추출",
+            "progress_pct": 54,
+            "headline_ko": "시퀀스 전문가 출력을 검증 구간용으로 뽑고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "시퀀스 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "export-expert-table", "--trainer", "v5_lob"),
+            "stage_key": "lob_runtime_export",
+            "stage_label_ko": "호가 런타임 추출",
+            "progress_pct": 58,
+            "headline_ko": "호가 전문가 출력을 검증 구간용으로 뽑고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "호가 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
             "match": ("close_v5_train_ready_snapshot.ps1",),
             "stage_key": "train_snapshot_close",
             "stage_label_ko": "학습 스냅샷 확정",
@@ -588,6 +629,22 @@ def _summarize_training_activity_legacy_unused(
                 f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
                 "micro 포함 피처를 다시 만드는 단계입니다."
             ),
+        },
+        {
+            "match": ("v5_governed_candidate_acceptance.ps1",),
+            "stage_key": "governed_acceptance",
+            "stage_label_ko": "검증 오케스트레이션",
+            "progress_pct": 40,
+            "headline_ko": "학습과 검증 순서를 조율하고 있습니다.",
+            "detail_builder": lambda command: "의존 학습, 런타임 추출, 본 학습, 백테스트를 한 체인으로 묶어 실행하는 단계입니다.",
+        },
+        {
+            "match": ("candidate_acceptance.ps1",),
+            "stage_key": "candidate_acceptance",
+            "stage_label_ko": "후보 검증 실행",
+            "progress_pct": 48,
+            "headline_ko": "후보 검증 본문을 실행하고 있습니다.",
+            "detail_builder": lambda command: "train window, certification window, 의존 모델 검증 단계를 실제로 수행하는 단계입니다.",
         },
         {
             "match": ("daily_micro_pipeline_for_server.ps1",),
@@ -3611,6 +3668,47 @@ def _summarize_training_activity(
     processes = _descendant_process_rows(spawn_service.get("main_pid"), process_rows)
     stage_specs = [
         {
+            "match": ("autobot.ops.live_feature_parity_report",),
+            "stage_key": "feature_parity",
+            "stage_label_ko": "실거래 피처 점검",
+            "progress_pct": 44,
+            "headline_ko": "실거래 피처와 학습 피처 차이를 점검하고 있습니다.",
+            "detail_builder": lambda command: "실거래 피처 계약이 현재 배치 기준과 어긋나지 않는지 먼저 확인하는 단계입니다.",
+        },
+        {
+            "match": ("autobot.cli", "model", "export-expert-table", "--trainer", "v5_panel_ensemble"),
+            "stage_key": "panel_runtime_export",
+            "stage_label_ko": "패널 런타임 추출",
+            "progress_pct": 50,
+            "headline_ko": "패널 전문가 출력을 검증 구간용으로 뽑고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "패널 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "export-expert-table", "--trainer", "v5_sequence"),
+            "stage_key": "sequence_runtime_export",
+            "stage_label_ko": "시퀀스 런타임 추출",
+            "progress_pct": 54,
+            "headline_ko": "시퀀스 전문가 출력을 검증 구간용으로 뽑고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "시퀀스 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "model", "export-expert-table", "--trainer", "v5_lob"),
+            "stage_key": "lob_runtime_export",
+            "stage_label_ko": "호가 런타임 추출",
+            "progress_pct": 58,
+            "headline_ko": "호가 전문가 출력을 검증 구간용으로 뽑고 있습니다.",
+            "detail_builder": lambda command: (
+                f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
+                "호가 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
             "match": ("close_v5_train_ready_snapshot.ps1",),
             "stage_key": "train_snapshot_close",
             "stage_label_ko": "학습 스냅샷 확정",
@@ -3702,6 +3800,22 @@ def _summarize_training_activity(
             ),
         },
         {
+            "match": ("v5_governed_candidate_acceptance.ps1",),
+            "stage_key": "governed_acceptance",
+            "stage_label_ko": "검증 오케스트레이션",
+            "progress_pct": 40,
+            "headline_ko": "학습과 검증 순서를 조율하고 있습니다.",
+            "detail_builder": lambda command: "의존 학습, 런타임 추출, 본 학습, 백테스트를 한 체인으로 묶어 실행하는 단계입니다.",
+        },
+        {
+            "match": ("candidate_acceptance.ps1",),
+            "stage_key": "candidate_acceptance",
+            "stage_label_ko": "후보 검증 실행",
+            "progress_pct": 48,
+            "headline_ko": "후보 검증 본문을 실행하고 있습니다.",
+            "detail_builder": lambda command: "train window, certification window, 의존 모델 검증 단계를 실제로 수행하는 단계입니다.",
+        },
+        {
             "match": ("daily_champion_challenger_v5_for_server.ps1",),
             "stage_key": "acceptance_wrapper",
             "stage_label_ko": "검증 체인 시작",
@@ -3716,6 +3830,8 @@ def _summarize_training_activity(
             "run_candles_api_refresh.ps1",
             "run_raw_ticks_daily.ps1",
             "close_v5_train_ready_snapshot.ps1",
+            "autobot.ops.live_feature_parity_report",
+            "autobot.cli model export-expert-table",
             "daily_champion_challenger_v5_for_server.ps1",
             "candidate_acceptance.ps1",
             "v4_governed_candidate_acceptance.ps1",
