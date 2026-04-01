@@ -143,6 +143,17 @@ $resolvedPwshExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
     }
 }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
+$resolvedPreflightExpectedEnabledUnits = @(
+    [string]$ChampionUnitName,
+    [string]$PairedPaperUnitName
+) + @($CandidateTargetUnits) + @(
+    "autobot-v5-challenger-spawn.timer",
+    "autobot-v5-challenger-promote.timer"
+)
+$resolvedPreflightExpectedDisabledUnits = @(
+    "autobot-paper-v4-replay.service",
+    "autobot-live-alpha-replay-shadow.service"
+)
 
 if ($Mode -ne "promote_only") {
     if (Test-Path $resolvedCandlesRefreshScript) {
@@ -204,16 +215,8 @@ if ($Mode -ne "promote_only") {
     -PromoteTimerUnitName "autobot-v5-challenger-promote.timer" `
     -PromotionTargetUnits $PromotionTargetUnits `
     -CandidateTargetUnits $CandidateTargetUnits `
-    -PreflightExpectedEnabledUnits @(
-        $ChampionUnitName,
-        $PairedPaperUnitName,
-        "autobot-v5-challenger-spawn.timer",
-        "autobot-v5-challenger-promote.timer"
-    ) `
-    -PreflightExpectedDisabledUnits @(
-        "autobot-paper-v4-replay.service",
-        "autobot-live-alpha-replay-shadow.service"
-    ) `
+    -PreflightExpectedEnabledUnits (Join-DelimitedStringArray -Values $resolvedPreflightExpectedEnabledUnits) `
+    -PreflightExpectedDisabledUnits (Join-DelimitedStringArray -Values $resolvedPreflightExpectedDisabledUnits) `
     -BlockOnActiveUnits $BlockOnActiveUnits `
     -AcceptanceArgs $AcceptanceArgs `
     -ChallengerMinHours $ChallengerMinHours `
