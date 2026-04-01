@@ -839,7 +839,14 @@ def _export_lob_expert_prediction_table_window(*, run_dir: Path, start: str, end
     estimator = model_bundle.get("estimator") if isinstance(model_bundle, dict) else None
     if estimator is None:
         raise ValueError(f"run_dir does not contain a usable lob estimator: {run_dir}")
-    samples = _load_lob_samples(options, selected_markets_override=selected_markets)
+    selected_markets_source = "train_selected_markets"
+    try:
+        samples = _load_lob_samples(options, selected_markets_override=selected_markets)
+    except ValueError as exc:
+        if not selected_markets or "top_n filtering" not in str(exc):
+            raise
+        samples = _load_lob_samples(options, selected_markets_override=None)
+        selected_markets_source = "window_available_markets_fallback"
     split_labels = np.full(samples.rows, "runtime", dtype=object)
     export_path = _write_lob_expert_prediction_table(
         run_dir=run_dir,
@@ -859,6 +866,7 @@ def _export_lob_expert_prediction_table_window(*, run_dir: Path, start: str, end
         "end": str(end).strip(),
         "rows": int(samples.rows),
         "selected_markets": list(samples.selected_markets),
+        "selected_markets_source": selected_markets_source,
     }
     metadata_path = write_expert_runtime_export_metadata(
         run_dir=run_dir,

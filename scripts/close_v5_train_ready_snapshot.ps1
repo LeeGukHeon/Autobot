@@ -11,6 +11,10 @@ param(
     [string]$TicksSummaryPath = "data/raw_ticks/upbit/_meta/ticks_daily_latest.json",
     [string]$MicroRoot = "data/parquet/micro_v1",
     [string]$Tf = "5m",
+    [int]$TrainLookbackDays = 30,
+    [int]$BacktestLookbackDays = 8,
+    [string]$TrainingCriticalStartDate = "",
+    [string]$TrainingCriticalEndDate = "",
     [int]$MaxCandlesSummaryAgeMinutes = 120,
     [int]$MaxTicksSummaryAgeMinutes = 120,
     [switch]$SkipDeadline,
@@ -95,6 +99,33 @@ function Resolve-BatchDateValue {
         ).ToString("yyyy-MM-dd")
     }
     return (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+}
+
+function Resolve-DateWindowForTrainingCriticalRefresh {
+    param(
+        [string]$BatchDateValue,
+        [int]$RequestedTrainLookbackDays,
+        [int]$RequestedBacktestLookbackDays,
+        [string]$ExplicitStartDate,
+        [string]$ExplicitEndDate
+    )
+    if ((-not [string]::IsNullOrWhiteSpace($ExplicitStartDate)) -and (-not [string]::IsNullOrWhiteSpace($ExplicitEndDate))) {
+        return [ordered]@{
+            start_date = Resolve-BatchDateValue -DateText $ExplicitStartDate
+            end_date = Resolve-BatchDateValue -DateText $ExplicitEndDate
+            source = "explicit_window"
+        }
+    }
+    $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDateValue
+    $batchDateObj = [DateTime]::ParseExact($resolvedBatchDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $trainDays = [Math]::Max([int]$RequestedTrainLookbackDays, 1)
+    $backtestDays = [Math]::Max([int]$RequestedBacktestLookbackDays, 1)
+    $totalDays = [Math]::Max(($trainDays + $backtestDays), 1)
+    return [ordered]@{
+        start_date = $batchDateObj.AddDays(-1 * ($totalDays - 1)).ToString("yyyy-MM-dd")
+        end_date = $resolvedBatchDate
+        source = "batch_date_plus_train_and_backtest_lookback"
+    }
 }
 
 function Resolve-DateTimeOffsetOrNull {
@@ -292,6 +323,14 @@ $resolvedCandlesSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -Pa
 $resolvedTicksSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $TicksSummaryPath
 $resolvedMicroRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MicroRoot
 $batchDateValue = Resolve-BatchDateValue -DateText $BatchDate
+$trainingCriticalWindow = Resolve-DateWindowForTrainingCriticalRefresh `
+    -BatchDateValue $batchDateValue `
+    -RequestedTrainLookbackDays $TrainLookbackDays `
+    -RequestedBacktestLookbackDays $BacktestLookbackDays `
+    -ExplicitStartDate $TrainingCriticalStartDate `
+    -ExplicitEndDate $TrainingCriticalEndDate
+$trainingCriticalStartDate = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "start_date" -DefaultValue "")
+$trainingCriticalEndDate = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "end_date" -DefaultValue "")
 $pwshExe = Resolve-PwshExe
 
 Set-Location $resolvedProjectRoot
@@ -324,6 +363,10 @@ if (@($failureReasons).Count -eq 0) {
         "-ProjectRoot", $resolvedProjectRoot,
         "-PythonExe", $resolvedPythonExe,
         "-Mode", "training_critical",
+        "-TensorStartDate", $trainingCriticalStartDate,
+        "-TensorEndDate", $trainingCriticalEndDate,
+        "-MicroStartDate", $trainingCriticalStartDate,
+        "-MicroEndDate", $trainingCriticalEndDate,
         "-SummaryPath", $resolvedRefreshSummaryPath,
         "-SkipPublishReadySnapshot"
     )
@@ -419,6 +462,9 @@ $summary = [ordered]@{
         command = if ($null -ne $refreshExec) { [string]$refreshExec.Command } else { "" }
         summary_path = $resolvedRefreshSummaryPath
         mode = "training_critical"
+        start_date = $trainingCriticalStartDate
+        end_date = $trainingCriticalEndDate
+        window_source = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue "")
     }
     feature_contract_refresh = [ordered]@{
         attempted = ($null -ne $featureRefreshExec)
@@ -428,6 +474,8 @@ $summary = [ordered]@{
     }
     micro_root = $resolvedMicroRoot
     micro_date_coverage_counts = $microCoverageCounts
+    training_critical_start_date = $trainingCriticalStartDate
+    training_critical_end_date = $trainingCriticalEndDate
     snapshot_id = $snapshotId
     snapshot_root = $snapshotRoot
     snapshot_path = $snapshotRoot

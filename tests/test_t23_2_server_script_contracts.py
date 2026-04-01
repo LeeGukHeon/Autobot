@@ -170,6 +170,10 @@ def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contrac
     assert "[train-snapshot-close] command=" in stdout
     assert "refresh_data_platform_layers.ps1" in stdout
     assert "-Mode' 'training_critical" in stdout or '-Mode" "training_critical' in stdout or "-Mode training_critical" in stdout
+    assert "-TensorStartDate" in stdout
+    assert "-TensorEndDate" in stdout
+    assert "-MicroStartDate" in stdout
+    assert "-MicroEndDate" in stdout
     assert "refresh_current_features_v4_contract_artifacts.ps1" in stdout
     assert "autobot.ops.data_platform_snapshot" in stdout
     assert "train_snapshot_close_latest.json" in stdout

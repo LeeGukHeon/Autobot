@@ -26,11 +26,15 @@ param(
     [int]$TensorMaxMarkets = 20,
     [int]$TensorMaxAnchorsPerMarket = 64,
     [int]$TensorRecentDates = 2,
+    [string]$TensorStartDate = "",
+    [string]$TensorEndDate = "",
     [string]$MicroOutRoot = "data/parquet/micro_v1",
     [string]$MicroRawTicksRoot = "data/raw_ticks/upbit/trades",
     [string]$MicroRawWsRoot = "data/raw_ws/upbit/public",
     [string]$MicroBaseCandles = "candles_api_v1",
     [int]$MicroRecentDates = 2,
+    [string]$MicroStartDate = "",
+    [string]$MicroEndDate = "",
     [int]$TensorSecondLookbackSteps = 120,
     [int]$TensorMinuteLookbackSteps = 30,
     [int]$TensorMicroLookbackSteps = 30,
@@ -146,6 +150,43 @@ function Get-RecentUtcDateValues {
     return @($values)
 }
 
+function Resolve-DateTokenValue {
+    param(
+        [string]$DateText,
+        [string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($DateText)) {
+        throw "$Label is empty"
+    }
+    return [DateTime]::ParseExact(
+        $DateText,
+        "yyyy-MM-dd",
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::None
+    ).ToString("yyyy-MM-dd")
+}
+
+function Get-DateRangeUtcDateValues {
+    param(
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    $resolvedStart = Resolve-DateTokenValue -DateText $StartDate -Label "start_date"
+    $resolvedEnd = Resolve-DateTokenValue -DateText $EndDate -Label "end_date"
+    $startObj = [DateTime]::ParseExact($resolvedStart, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $endObj = [DateTime]::ParseExact($resolvedEnd, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    if ($endObj -lt $startObj) {
+        throw "date range is invalid: start_date > end_date"
+    }
+    $values = @()
+    $cursor = $endObj
+    while ($cursor -ge $startObj) {
+        $values += $cursor.ToString("yyyy-MM-dd")
+        $cursor = $cursor.AddDays(-1)
+    }
+    return @($values)
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -248,8 +289,16 @@ $runtimeRichSteps = @(
     ))
 )
 
-$tensorDateValues = Get-RecentUtcDateValues -Count $TensorRecentDates
-$microDateValues = Get-RecentUtcDateValues -Count $MicroRecentDates
+$tensorDateValues = if ((-not [string]::IsNullOrWhiteSpace($TensorStartDate)) -and (-not [string]::IsNullOrWhiteSpace($TensorEndDate))) {
+    Get-DateRangeUtcDateValues -StartDate $TensorStartDate -EndDate $TensorEndDate
+} else {
+    Get-RecentUtcDateValues -Count $TensorRecentDates
+}
+$microDateValues = if ((-not [string]::IsNullOrWhiteSpace($MicroStartDate)) -and (-not [string]::IsNullOrWhiteSpace($MicroEndDate))) {
+    Get-DateRangeUtcDateValues -StartDate $MicroStartDate -EndDate $MicroEndDate
+} else {
+    Get-RecentUtcDateValues -Count $MicroRecentDates
+}
 $microDateStart = [string]$microDateValues[-1]
 $microDateEnd = [string]$microDateValues[0]
 $microSteps = @(
