@@ -837,7 +837,7 @@ function Invoke-DependencyRuntimeExportChain {
             $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
             $payload = @{}
             try {
-                $payload = [string]$exec.Output | ConvertFrom-Json
+                $payload = Resolve-JsonPayloadFromText -TextValue ([string]$exec.Output) -ContextLabel ("dependency runtime export payload: " + $trainerName)
             } catch {
                 throw ("dependency runtime export payload parse failed: " + $trainerName)
             }
@@ -932,7 +932,7 @@ function Resolve-DependencyRuntimeCommonUniverse {
             )
             $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
             try {
-                $payload = [string]$exec.Output | ConvertFrom-Json
+                $payload = Resolve-JsonPayloadFromText -TextValue ([string]$exec.Output) -ContextLabel ("dependency runtime universe payload: " + $trainerName)
             } catch {
                 throw ("dependency runtime universe payload parse failed: " + $trainerName)
             }
@@ -3523,19 +3523,47 @@ function Invoke-CommandCapture {
     $hadSnapshotEnv = Test-Path ("Env:" + $snapshotEnvName)
     $previousSnapshotEnv = if ($hadSnapshotEnv) { [string](Get-Item ("Env:" + $snapshotEnvName)).Value } else { "" }
     $effectiveSnapshotEnv = [string]$script:dataPlatformReadySnapshotId
+    $hadNativeErrorPreference = Test-Path Variable:PSNativeCommandUseErrorActionPreference
+    $previousNativeErrorPreference = if ($hadNativeErrorPreference) { $global:PSNativeCommandUseErrorActionPreference } else { $null }
+    $stdoutPath = ""
+    $stderrPath = ""
     try {
         if ([string]::IsNullOrWhiteSpace($effectiveSnapshotEnv)) {
             Remove-Item ("Env:" + $snapshotEnvName) -ErrorAction SilentlyContinue
         } else {
             $env:AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID = $effectiveSnapshotEnv
         }
-        $output = & $Exe @ArgList 2>&1
+        $global:PSNativeCommandUseErrorActionPreference = $false
+        $stdoutPath = [System.IO.Path]::GetTempFileName()
+        $stderrPath = [System.IO.Path]::GetTempFileName()
+        & $Exe @ArgList 1> $stdoutPath 2> $stderrPath
         $exitCode = [int]$LASTEXITCODE
+        $stdoutText = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue } else { "" }
+        $stderrText = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue } else { "" }
+        $outputParts = New-Object System.Collections.Generic.List[string]
+        if (-not [string]::IsNullOrWhiteSpace([string]$stdoutText)) {
+            $outputParts.Add([string]$stdoutText) | Out-Null
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$stderrText)) {
+            $outputParts.Add([string]$stderrText) | Out-Null
+        }
+        $output = @($outputParts.ToArray())
     } finally {
         if ($hadSnapshotEnv) {
             $env:AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID = $previousSnapshotEnv
         } else {
             Remove-Item ("Env:" + $snapshotEnvName) -ErrorAction SilentlyContinue
+        }
+        if ($hadNativeErrorPreference) {
+            $global:PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        } else {
+            Remove-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue
+        }
+        if (-not [string]::IsNullOrWhiteSpace($stdoutPath)) {
+            Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
+        }
+        if (-not [string]::IsNullOrWhiteSpace($stderrPath)) {
+            Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
         }
     }
     if ((-not $AllowFailure) -and $exitCode -ne 0) {
@@ -4020,7 +4048,7 @@ function Resolve-CandidateRuntimeDatasetCoverage {
         $inspectCommand = [string]$inspectExec.Command
         $inspectOutputPreview = Get-OutputPreview -Text ([string]$inspectExec.Output)
         try {
-            $datasetSummary = [string]$inspectExec.Output | ConvertFrom-Json
+            $datasetSummary = Resolve-JsonPayloadFromText -TextValue ([string]$inspectExec.Output) -ContextLabel "runtime dataset summary payload"
         } catch {
             throw "runtime dataset summary payload parse failed"
         }
@@ -5185,6 +5213,35 @@ function Resolve-FeaturesBuildReportPathFromText {
         return ""
     }
     return $reportedPath.Trim()
+}
+
+function Resolve-JsonPayloadFromText {
+    param(
+        [string]$TextValue,
+        [string]$ContextLabel = "json_payload"
+    )
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        throw ($ContextLabel + " output is empty")
+    }
+    try {
+        return [string]$TextValue | ConvertFrom-Json
+    } catch {
+    }
+    $lines = @(
+        $TextValue -split "`r?`n" |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    foreach ($line in @($lines)) {
+        if (-not ($line.StartsWith("{") -or $line.StartsWith("["))) {
+            continue
+        }
+        try {
+            return [string]$line | ConvertFrom-Json
+        } catch {
+        }
+    }
+    throw ($ContextLabel + " json parse failed")
 }
 
 function Resolve-FeaturesValidateReportPathFromText {

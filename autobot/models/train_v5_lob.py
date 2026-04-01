@@ -211,6 +211,7 @@ def _align_lob_samples_to_anchor_export(
         right_on="source_ts_ms",
         by="market",
         strategy="backward",
+        check_sortedness=False,
     )
     if aligned.get_column("source_row_idx").null_count() > 0:
         raise ValueError("lob runtime export could not align all panel anchors")

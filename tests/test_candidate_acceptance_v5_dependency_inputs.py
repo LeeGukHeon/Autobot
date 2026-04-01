@@ -320,6 +320,8 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "resolve_markets_only": resolve_only,
                 })
                 print(json.dumps(export_run(family, trainer, run_id, start, end, explicit_markets, resolve_only, anchor_export_path)))
+                if trainer in {"v5_sequence", "v5_lob"} and not resolve_only:
+                    print("UserWarning: runtime export alignment note")
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
