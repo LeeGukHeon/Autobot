@@ -16,6 +16,7 @@ def test_daily_champion_challenger_v5_wrapper_uses_v5_defaults() -> None:
     source = (REPO_ROOT / "scripts" / "daily_champion_challenger_v5_for_server.ps1").read_text(encoding="utf-8")
     assert 'logs/model_v5_candidate' in source
     assert 'autobot-paper-v5.service' in source
+    assert '[string]$ChallengerUnitName = ""' in source
     assert 'autobot-paper-v5-paired.service' in source
     assert 'autobot-live-alpha-canary.service' in source
     assert 'autobot-v5-challenger-spawn.timer' in source

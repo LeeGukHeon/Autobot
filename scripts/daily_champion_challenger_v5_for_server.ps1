@@ -14,6 +14,7 @@ param(
     [string]$ModelFamily = "train_v5_fusion",
     [string]$ChampionCompareModelFamily = "",
     [string]$ChampionUnitName = "autobot-paper-v5.service",
+    [string]$ChallengerUnitName = "",
     [string]$PairedPaperUnitName = "autobot-paper-v5-paired.service",
     [string[]]$PromotionTargetUnits = @("autobot-live-alpha.service"),
     [string[]]$CandidateTargetUnits = @("autobot-live-alpha-canary.service"),
