@@ -98,6 +98,49 @@ function Invoke-CheckedScript {
     }
 }
 
+function Write-V5WrapperFailureReport {
+    param(
+        [string]$Root,
+        [string]$ModeName,
+        [string]$BatchDateValue,
+        [string]$ModelFamilyName,
+        [string]$FailureStage,
+        [string]$FailureCode,
+        [string]$FailureReportPath,
+        [string]$Message,
+        [string]$StepName
+    )
+    $outDir = Join-Path $Root "logs/model_v5_candidate"
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $runPath = Join-Path $outDir ("daily_cc_wrapper_" + $stamp + ".json")
+    $latestPath = Join-Path $outDir "latest.json"
+    $payload = [ordered]@{
+        mode = $ModeName
+        batch_date = $BatchDateValue
+        started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        model_family = $ModelFamilyName
+        failure_stage = $FailureStage
+        failure_code = $FailureCode
+        failure_report_path = $FailureReportPath
+        steps = [ordered]@{
+            pre_chain = [ordered]@{
+                attempted = $true
+                step = $StepName
+                message = $Message
+            }
+        }
+        exception = [ordered]@{
+            message = $Message
+        }
+    }
+    ($payload | ConvertTo-Json -Depth 10) | Set-Content -Path $runPath -Encoding UTF8
+    ($payload | ConvertTo-Json -Depth 10) | Set-Content -Path $latestPath -Encoding UTF8
+    Write-Host ("[daily-cc-v5] report={0}" -f $runPath)
+    Write-Host ("[daily-cc-v5] latest={0}" -f $latestPath)
+}
+
 $resolvedAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) {
     (Join-Path $PSScriptRoot "adopt_v5_candidate_for_server.ps1")
 } else {
@@ -174,7 +217,21 @@ if ($Mode -ne "promote_only") {
         if ($DryRun) {
             $candlesArgs += "-DryRun"
         }
-        Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedCandlesRefreshScript -ArgsList $candlesArgs -StepName "candles_api_refresh"
+        try {
+            Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedCandlesRefreshScript -ArgsList $candlesArgs -StepName "candles_api_refresh"
+        } catch {
+            Write-V5WrapperFailureReport `
+                -Root $resolvedProjectRoot `
+                -ModeName $Mode `
+                -BatchDateValue $resolvedBatchDate `
+                -ModelFamilyName $ModelFamily `
+                -FailureStage "data_close" `
+                -FailureCode "CANDLES_API_REFRESH_FAILED" `
+                -FailureReportPath (Join-Path $resolvedProjectRoot "data/collect/_meta/candles_api_refresh_latest.json") `
+                -Message $_.Exception.Message `
+                -StepName "candles_api_refresh"
+            throw
+        }
     }
     if (Test-Path $resolvedRawTicksDailyScript) {
         $ticksArgs = @(
@@ -185,7 +242,21 @@ if ($Mode -ne "promote_only") {
         if ($DryRun) {
             $ticksArgs += "-DryRun"
         }
-        Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedRawTicksDailyScript -ArgsList $ticksArgs -StepName "raw_ticks_daily"
+        try {
+            Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedRawTicksDailyScript -ArgsList $ticksArgs -StepName "raw_ticks_daily"
+        } catch {
+            Write-V5WrapperFailureReport `
+                -Root $resolvedProjectRoot `
+                -ModeName $Mode `
+                -BatchDateValue $resolvedBatchDate `
+                -ModelFamilyName $ModelFamily `
+                -FailureStage "data_close" `
+                -FailureCode "RAW_TICKS_DAILY_FAILED" `
+                -FailureReportPath (Join-Path $resolvedProjectRoot "data/raw_ticks/upbit/_meta/ticks_daily_latest.json") `
+                -Message $_.Exception.Message `
+                -StepName "raw_ticks_daily"
+            throw
+        }
     }
     if (Test-Path $resolvedTrainSnapshotCloseScript) {
         $closeArgs = @(
@@ -197,7 +268,21 @@ if ($Mode -ne "promote_only") {
         if ($DryRun) {
             $closeArgs += "-DryRun"
         }
-        Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedTrainSnapshotCloseScript -ArgsList $closeArgs -StepName "train_snapshot_close"
+        try {
+            Invoke-CheckedScript -PwshExe $resolvedPwshExe -ScriptPath $resolvedTrainSnapshotCloseScript -ArgsList $closeArgs -StepName "train_snapshot_close"
+        } catch {
+            Write-V5WrapperFailureReport `
+                -Root $resolvedProjectRoot `
+                -ModeName $Mode `
+                -BatchDateValue $resolvedBatchDate `
+                -ModelFamilyName $ModelFamily `
+                -FailureStage "data_close" `
+                -FailureCode "TRAIN_SNAPSHOT_CLOSE_FAILED" `
+                -FailureReportPath (Join-Path $resolvedProjectRoot "data/collect/_meta/train_snapshot_close_latest.json") `
+                -Message $_.Exception.Message `
+                -StepName "train_snapshot_close"
+            throw
+        }
     }
 }
 

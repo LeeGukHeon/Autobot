@@ -187,3 +187,50 @@ def test_candidate_acceptance_fails_early_on_runtime_dataset_coverage_gap(tmp_pa
     assert report["steps"]["runtime_dataset_coverage_preflight"]["pass"] is False
     assert report["steps"]["train_snapshot_close_preflight"]["training_critical_start_date"] == "2026-03-04"
     assert report["steps"]["train_snapshot_close_preflight"]["training_critical_end_date"] == "2026-03-08"
+
+
+def test_candidate_acceptance_fails_when_train_snapshot_close_window_does_not_cover_train_window(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(project_root / "models" / "registry" / "train_v5_fusion" / "champion.json", {"run_id": "champion-run-000"})
+    _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": "snapshot-coverage-001"})
+    _seed_train_snapshot_close_contract(project_root, batch_date="2026-03-08", snapshot_id="snapshot-coverage-001")
+    contract_path = project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json"
+    payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    payload["training_critical_start_date"] = "2026-03-07"
+    contract_path.write_text(json.dumps(payload), encoding="utf-8")
+    python_exe = _make_fake_python_exe(tmp_path)
+    wrapper_script = tmp_path / "run_acceptance_window_gap.ps1"
+    wrapper_script.write_text(
+        (
+            "& "
+            + json.dumps(str(ACCEPTANCE_SCRIPT))
+            + " -ProjectRoot "
+            + json.dumps(str(project_root))
+            + " -PythonExe "
+            + json.dumps(str(python_exe))
+            + " -OutDir "
+            + json.dumps("logs/test_acceptance_train_snapshot_window")
+            + " -BatchDate "
+            + json.dumps("2026-03-08")
+            + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
+            + "-ModelFamily train_v5_fusion -Trainer v5_fusion\n"
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [_powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper_script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode in (0, 2), result.stdout + "\n" + result.stderr
+    report = json.loads(
+        (project_root / "logs" / "test_acceptance_train_snapshot_window" / "latest.json").read_text(encoding="utf-8-sig")
+    )
+    assert report["reasons"] == ["TRAIN_SNAPSHOT_CLOSE_TRAIN_WINDOW_OUTSIDE_COVERAGE"]
+    assert report["failure_stage"] == "data_close"
+    assert report["failure_code"] == "TRAIN_SNAPSHOT_CLOSE_TRAIN_WINDOW_OUTSIDE_COVERAGE"
+    assert report["steps"]["train_snapshot_close_preflight"]["pass"] is False
+    assert report["steps"]["train_snapshot_close_preflight"]["train_window_covered"] is False
+    assert report["steps"]["train_snapshot_close_preflight"]["certification_window_covered"] is True

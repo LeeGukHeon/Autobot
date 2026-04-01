@@ -1200,6 +1200,9 @@ $report = [ordered]@{
     challenger_previous = @{}
     challenger_previous_paired = @{}
     challenger_next = @{}
+    failure_stage = ""
+    failure_code = ""
+    failure_report_path = ""
 }
 $candidateRunId = ""
 $exitCode = 0
@@ -1211,8 +1214,28 @@ $script:rollbackPromoteCutoverArchivePath = ""
 $script:rollbackPreviouslyActivePromotionUnits = New-Object System.Collections.Generic.List[string]
 $script:rollbackStartedInactivePromotionUnits = New-Object System.Collections.Generic.List[string]
 
+function Set-DailyFailure {
+    param(
+        [string]$Stage,
+        [string]$Code,
+        [string]$ReportPath = ""
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Stage)) {
+        $report.failure_stage = $Stage
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Code)) {
+        $report.failure_code = $Code
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+        $report.failure_report_path = $ReportPath
+    }
+}
+
 trap {
     $exitCode = 2
+    if ([string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
+        Set-DailyFailure -Stage "acceptance_gate" -Code "UNHANDLED_EXCEPTION"
+    }
     $report.exception = [ordered]@{
         message = $_.Exception.Message
     }
@@ -1254,6 +1277,7 @@ $report.steps.preflight = [ordered]@{
 }
 if ($preflightExec.ExitCode -ne 0) {
     $exitCode = 2
+    Set-DailyFailure -Stage "acceptance_gate" -Code "SERVER_PREFLIGHT_FAILED" -ReportPath $preflightExec.ReportPath
     $report.exception = [ordered]@{
         message = "server preflight failed"
     }
@@ -1330,6 +1354,7 @@ if (($Mode -eq "spawn_only") -and $hasPreviousState) {
         reason = "PREVIOUS_CHALLENGER_STATE_PRESENT"
         candidate_run_id = $staleCandidateRunId
     }
+    Set-DailyFailure -Stage "acceptance_gate" -Code "PREVIOUS_CHALLENGER_STATE_PRESENT" -ReportPath $statePath
     $report.completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     if (-not $DryRun) {
         Write-JsonFile -PathValue $reportPath -Payload $report
@@ -1857,6 +1882,10 @@ if ($runSpawnPhase) {
     $acceptReportPath = Resolve-ReportedJsonPath -OutputText $acceptExec.Output
     $acceptReport = Load-JsonOrEmpty -PathValue $acceptReportPath
     if (Test-AcceptanceFatalFailure -ExitCode $acceptExec.ExitCode -AcceptanceReport $acceptReport) {
+        Set-DailyFailure `
+            -Stage ([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_stage" -DefaultValue "acceptance_gate")) `
+            -Code ([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_code" -DefaultValue "ACCEPTANCE_FATAL_FAILURE")) `
+            -ReportPath ([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_report_path" -DefaultValue $acceptReportPath))
         throw ("candidate acceptance failed unexpectedly (exit_code={0}, report={1})" -f $acceptExec.ExitCode, $acceptReportPath)
     }
     $candidateRunId = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $acceptReport -Name "steps" -DefaultValue @{}) -Name "train" -DefaultValue @{}) -Name "candidate_run_id" -DefaultValue "")
@@ -1891,6 +1920,12 @@ if ($runSpawnPhase) {
         promotion_eligible = $acceptPromotionEligible
         bootstrap_only = $bootstrapOnly
         reasons = @($acceptReasons)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_stage" -DefaultValue ""))) {
+        Set-DailyFailure `
+            -Stage ([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_stage" -DefaultValue "")) `
+            -Code ([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_code" -DefaultValue "")) `
+            -ReportPath ([string](Get-PropValue -ObjectValue $acceptReport -Name "failure_report_path" -DefaultValue $acceptReportPath))
     }
 
     if ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($backtestPass -or $bootstrapOnly)) {
@@ -2084,6 +2119,13 @@ if ($runSpawnPhase) {
 $report.steps.rollback = [ordered]@{
     attempted = $false
     reason = "NOT_REQUIRED"
+}
+if ((-not [bool](Get-PropValue -ObjectValue $report.gates -Name "overall_pass" -DefaultValue $false)) -and [string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
+    $trainCandidateStep = Get-PropValue -ObjectValue $report.steps -Name "train_candidate" -DefaultValue @{}
+    Set-DailyFailure `
+        -Stage "acceptance_gate" `
+        -Code ([string](Get-PropValue -ObjectValue $trainCandidateStep -Name "reason" -DefaultValue "NIGHTLY_CHAIN_FAILED")) `
+        -ReportPath ([string](Get-PropValue -ObjectValue $trainCandidateStep -Name "report_path" -DefaultValue ""))
 }
 $report.completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
 if (-not $DryRun) {

@@ -894,6 +894,83 @@ function Resolve-TrainSnapshotCloseContract {
     }
 }
 
+function Test-DateWindowContains {
+    param(
+        [string]$OuterStartDate,
+        [string]$OuterEndDate,
+        [string]$InnerStartDate,
+        [string]$InnerEndDate
+    )
+    if (
+        [string]::IsNullOrWhiteSpace($OuterStartDate) -or
+        [string]::IsNullOrWhiteSpace($OuterEndDate) -or
+        [string]::IsNullOrWhiteSpace($InnerStartDate) -or
+        [string]::IsNullOrWhiteSpace($InnerEndDate)
+    ) {
+        return $false
+    }
+    $outerStartObj = [DateTime]::ParseExact($OuterStartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $outerEndObj = [DateTime]::ParseExact($OuterEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $innerStartObj = [DateTime]::ParseExact($InnerStartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $innerEndObj = [DateTime]::ParseExact($InnerEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    return (($outerStartObj -le $innerStartObj) -and ($outerEndObj -ge $innerEndObj))
+}
+
+function Assert-TrainingCriticalCoverageWindow {
+    param(
+        [Parameter(Mandatory = $true)]$TrainSnapshotCloseContract,
+        [string]$TrainWindowStart,
+        [string]$BatchDateValue,
+        [string]$CertificationWindowStart,
+        [string]$CertificationWindowEnd
+    )
+    $coverageStartDate = [string](Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "training_critical_start_date" -DefaultValue "")
+    $coverageEndDate = [string](Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "training_critical_end_date" -DefaultValue "")
+    $reasons = @()
+    $trainWindowCovered = $true
+    $certificationWindowCovered = $true
+
+    if ([string]::IsNullOrWhiteSpace($coverageStartDate) -or [string]::IsNullOrWhiteSpace($coverageEndDate)) {
+        $trainWindowCovered = $false
+        $certificationWindowCovered = $false
+        $reasons += "TRAIN_SNAPSHOT_CLOSE_COVERAGE_WINDOW_MISSING"
+    } else {
+        if (-not [string]::IsNullOrWhiteSpace($TrainWindowStart)) {
+            $trainWindowCovered = Test-DateWindowContains `
+                -OuterStartDate $coverageStartDate `
+                -OuterEndDate $coverageEndDate `
+                -InnerStartDate $TrainWindowStart `
+                -InnerEndDate $BatchDateValue
+            if (-not $trainWindowCovered) {
+                $reasons += "TRAIN_SNAPSHOT_CLOSE_TRAIN_WINDOW_OUTSIDE_COVERAGE"
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($CertificationWindowStart)) {
+            $certificationWindowCovered = Test-DateWindowContains `
+                -OuterStartDate $coverageStartDate `
+                -OuterEndDate $coverageEndDate `
+                -InnerStartDate $CertificationWindowStart `
+                -InnerEndDate $CertificationWindowEnd
+            if (-not $certificationWindowCovered) {
+                $reasons += "TRAIN_SNAPSHOT_CLOSE_CERTIFICATION_WINDOW_OUTSIDE_COVERAGE"
+            }
+        }
+    }
+
+    return [ordered]@{
+        pass = (@($reasons).Count -eq 0)
+        coverage_start_date = $coverageStartDate
+        coverage_end_date = $coverageEndDate
+        train_window_start = $TrainWindowStart
+        train_window_end = $BatchDateValue
+        certification_window_start = $CertificationWindowStart
+        certification_window_end = $CertificationWindowEnd
+        train_window_covered = $trainWindowCovered
+        certification_window_covered = $certificationWindowCovered
+        reasons = @($reasons)
+    }
+}
+
 function Resolve-TrainWindowRamp {
     param(
         [string]$ProjectRoot,
@@ -4307,6 +4384,9 @@ $report = [ordered]@{
     candidate = [ordered]@{}
     gates = [ordered]@{}
     reasons = @()
+    failure_stage = ""
+    failure_code = ""
+    failure_report_path = ""
 }
 
 $report.steps.train_snapshot_close_preflight = [ordered]@{
@@ -4339,13 +4419,6 @@ $report.steps.train_snapshot_close_preflight = [ordered]@{
     )
 }
 
-$script:trainSnapshotClosePreflightFailed = -not (To-Bool (Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "pass" -DefaultValue $false) $false)
-$script:trainSnapshotClosePreflightReasons = @(
-    @(Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "reasons" -DefaultValue @()) |
-        ForEach-Object { [string]$_ } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-)
-
 $runtimeUnitsBefore = if ($DryRun) { @() } else { @(Get-UnitStates -Units $KnownRuntimeUnits) }
 $activeKnownUnits = @(
     $runtimeUnitsBefore |
@@ -4361,6 +4434,23 @@ $report.runtime_units_before = @($runtimeUnitsBefore)
 $report.restart_targets = @($effectiveRestartUnits)
 $candidateRunId = ""
 $candidateRunDir = ""
+
+function Set-ReportFailure {
+    param(
+        [string]$Stage,
+        [string]$Code,
+        [string]$ReportPath = ""
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Stage)) {
+        $report.failure_stage = $Stage
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Code)) {
+        $report.failure_code = $Code
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+        $report.failure_report_path = $ReportPath
+    }
+}
 
 function Sync-WindowRampState {
     param($WindowRampValue)
@@ -4398,6 +4488,42 @@ function Sync-WindowRampState {
 }
 
 Sync-WindowRampState -WindowRampValue $windowRamp
+
+$trainingCriticalCoverage = Assert-TrainingCriticalCoverageWindow `
+    -TrainSnapshotCloseContract $trainSnapshotCloseContract `
+    -TrainWindowStart $script:trainStartDate `
+    -BatchDateValue $effectiveBatchDate `
+    -CertificationWindowStart $script:certificationStartDate `
+    -CertificationWindowEnd $effectiveBatchDate
+$report.steps.train_snapshot_close_preflight.train_window_start = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "train_window_start" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.train_window_end = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "train_window_end" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.certification_window_start = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "certification_window_start" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.certification_window_end = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "certification_window_end" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.train_window_covered = [bool](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "train_window_covered" -DefaultValue $false)
+$report.steps.train_snapshot_close_preflight.certification_window_covered = [bool](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "certification_window_covered" -DefaultValue $false)
+$report.steps.train_snapshot_close_preflight.coverage_window_source = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "coverage_window_source" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.refresh_argument_mode = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "refresh_argument_mode" -DefaultValue "")
+$existingTrainSnapshotCloseReasons = @(
+    @(Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "reasons" -DefaultValue @()) |
+        ForEach-Object { [string]$_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
+$report.steps.train_snapshot_close_preflight.reasons = @(
+    Merge-UniqueStringArray `
+        -First @($existingTrainSnapshotCloseReasons) `
+        -Second @((Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "reasons" -DefaultValue @()))
+)
+$report.steps.train_snapshot_close_preflight.pass = (
+    (To-Bool (Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "pass" -DefaultValue $false) $false) -and
+    (To-Bool (Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "pass" -DefaultValue $false) $false)
+)
+
+$script:trainSnapshotClosePreflightFailed = -not (To-Bool (Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "pass" -DefaultValue $false) $false)
+$script:trainSnapshotClosePreflightReasons = @(
+    @(Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "reasons" -DefaultValue @()) |
+        ForEach-Object { [string]$_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
 
 $script:splitPolicyId = "v4_split_policy_forward_validation_lcb_v1"
 $script:splitPolicyLaneMode = "promotion_strict"
@@ -4515,6 +4641,15 @@ function Write-ReportPointers {
 if ($script:trainSnapshotClosePreflightFailed) {
     $report.reasons = @($script:trainSnapshotClosePreflightReasons)
     $report.gates.overall_pass = $false
+    $trainSnapshotFailureCode = if (@($script:trainSnapshotClosePreflightReasons).Count -gt 0) {
+        [string]$script:trainSnapshotClosePreflightReasons[0]
+    } else {
+        "TRAIN_SNAPSHOT_CLOSE_PRECHECK_FAILED"
+    }
+    Set-ReportFailure `
+        -Stage "data_close" `
+        -Code $trainSnapshotFailureCode `
+        -ReportPath ([string](Get-PropValue -ObjectValue $report.steps.train_snapshot_close_preflight -Name "report_path" -DefaultValue ""))
     $paths = Save-Report
     Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
     exit 2
@@ -5356,11 +5491,16 @@ try {
         -CertificationEndDate $effectiveBatchDate `
         -LaneMode ([string](Get-PropValue -ObjectValue $report.split_policy -Name "lane_mode" -DefaultValue ""))
     if ($dependencyRuntimeCoverageEligible) {
-        $dependencyRuntimeExportResults = Invoke-DependencyRuntimeExportChain `
-            -PythonPath $resolvedPythonExe `
-            -DependencyResults @($dependencyTrainerResults) `
-            -CertificationStartDate $certificationStartDate `
-            -CertificationEndDate $effectiveBatchDate
+        try {
+            $dependencyRuntimeExportResults = Invoke-DependencyRuntimeExportChain `
+                -PythonPath $resolvedPythonExe `
+                -DependencyResults @($dependencyTrainerResults) `
+                -CertificationStartDate $certificationStartDate `
+                -CertificationEndDate $effectiveBatchDate
+        } catch {
+            Set-ReportFailure -Stage "runtime_export" -Code "DEPENDENCY_RUNTIME_EXPORT_FAILED"
+            throw
+        }
         $report.steps.dependency_runtime_exports = [ordered]@{
             attempted = $true
             count = @($dependencyRuntimeExportResults).Count
@@ -5587,6 +5727,15 @@ try {
     if (($trainExec.ExitCode -ne 0) -or ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($candidateRunId))) {
         $report.reasons = @("TRAIN_OR_CANDIDATE_POINTER_FAILED")
         $report.gates.overall_pass = $false
+        $trainFailureStage = if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+            "fusion_train"
+        } else {
+            "acceptance_gate"
+        }
+        Set-ReportFailure `
+            -Stage $trainFailureStage `
+            -Code "TRAIN_OR_CANDIDATE_POINTER_FAILED" `
+            -ReportPath $candidateRunDir
         Update-RunArtifactStatus `
             -RunDir $candidateRunDir `
             -RunId $candidateRunId `
@@ -5668,6 +5817,7 @@ try {
     if ((@($DependencyTrainers).Count -gt 0) -and (-not [bool](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id_consistent" -DefaultValue $false))) {
         $report.reasons = @("DEPENDENCY_TRAINER_SNAPSHOT_CHAIN_INCONSISTENT")
         $report.gates.overall_pass = $false
+        Set-ReportFailure -Stage "runtime_export" -Code "DEPENDENCY_TRAINER_SNAPSHOT_CHAIN_INCONSISTENT"
         Update-RunArtifactStatus `
             -RunDir $candidateRunDir `
             -RunId $candidateRunId `
@@ -5683,6 +5833,7 @@ try {
     if ((@($DependencyTrainers).Count -gt 0) -and (-not [bool](Get-PropValue -ObjectValue $report.candidate -Name "snapshot_chain_consistent" -DefaultValue $true))) {
         $report.reasons = @("FUSION_SNAPSHOT_ID_MISMATCH")
         $report.gates.overall_pass = $false
+        Set-ReportFailure -Stage "fusion_train" -Code "FUSION_SNAPSHOT_ID_MISMATCH" -ReportPath $candidateRunDir
         Update-RunArtifactStatus `
             -RunDir $candidateRunDir `
             -RunId $candidateRunId `
@@ -5736,6 +5887,10 @@ try {
             if (-not [bool](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "pass" -DefaultValue $false)) {
                 $report.reasons = @([string](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "reason" -DefaultValue "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"))
                 $report.gates.overall_pass = $false
+                Set-ReportFailure `
+                    -Stage "acceptance_gate" `
+                    -Code ([string](Get-PropValue -ObjectValue $runtimeCoverageGate -Name "reason" -DefaultValue "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY")) `
+                    -ReportPath ([string](Get-PropValue -ObjectValue $runtimeCoverage -Name "contract_path" -DefaultValue ""))
                 Update-RunArtifactStatus `
                     -RunDir $candidateRunDir `
                     -RunId $candidateRunId `
@@ -7046,6 +7201,16 @@ try {
     if ($DryRun) {
         $report.gates.overall_pass = $null
         $report.reasons = @("DRY_RUN_ONLY")
+    } elseif ((-not $overallPass) -and [string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
+        $acceptanceFailureCode = if (@($report.reasons).Count -gt 0) {
+            [string]$report.reasons[0]
+        } else {
+            "ACCEPTANCE_GATE_FAILED"
+        }
+        Set-ReportFailure `
+            -Stage "acceptance_gate" `
+            -Code $acceptanceFailureCode `
+            -ReportPath $certificationArtifactPath
     }
     $paths = Save-Report
     Write-Host ("[{0}] candidate_run_id={1}" -f $LogTag, $candidateRunId)
@@ -7080,6 +7245,20 @@ try {
         offset_in_line = if ($null -eq $invocation) { 0 } else { [int]$invocation.OffsetInLine }
         position_message = if ($null -eq $invocation) { "" } else { [string]$invocation.PositionMessage }
         script_stack_trace = [string]$_.ScriptStackTrace
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
+        $defaultStage = "acceptance_gate"
+        $defaultCode = "UNHANDLED_EXCEPTION"
+        if ($exceptionMessage -like "*dependency runtime export*") {
+            $defaultStage = "runtime_export"
+            $defaultCode = "DEPENDENCY_RUNTIME_EXPORT_FAILED"
+        } elseif ($exceptionMessage -like "*FUSION_RUNTIME_*" -or (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion")) {
+            $defaultStage = "fusion_train"
+        } elseif ($exceptionMessage -like "*TRAIN_SNAPSHOT_CLOSE*") {
+            $defaultStage = "data_close"
+            $defaultCode = "TRAIN_SNAPSHOT_CLOSE_FAILED"
+        }
+        Set-ReportFailure -Stage $defaultStage -Code $defaultCode -ReportPath $candidateRunDir
     }
     Update-RunArtifactStatus `
         -RunDir $candidateRunDir `

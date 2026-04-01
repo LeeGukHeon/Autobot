@@ -204,6 +204,8 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert input_contract["target_alignment_policy"] == "panel_anchor_only"
     assert input_contract["auxiliary_experts"] == ["sequence", "lob"]
     assert input_contract["panel_label_columns"]["y_cls"] == "y_cls"
+    assert input_contract["runtime_coverage_policy"] == "auxiliary_experts_full_window_required"
+    assert input_contract["runtime_coverage_summary"] == {}
     assert input_contract["inputs"]["sequence"]["support_level_counts"]["strict_full"] > 0
     assert "sequence_support_score" in input_contract["feature_contract"]["feature_columns"]
     assert "sequence_support_level" not in input_contract["feature_contract"]["feature_columns"]
@@ -464,6 +466,9 @@ def test_train_v5_fusion_uses_runtime_input_bundle_for_runtime_dataset(tmp_path:
     assert runtime_contract["runtime_window"]["start"] == "2026-03-28"
     assert runtime_contract["runtime_window"]["end"] == "2026-03-28"
     assert runtime_contract["runtime_rows_after_date_filter"] == 2
+    assert runtime_contract["runtime_coverage_policy"] == "auxiliary_experts_full_window_required"
+    assert runtime_contract["runtime_coverage_summary"]["experts"]["sequence"]["missing_rows"] == 0
+    assert runtime_contract["runtime_coverage_summary"]["experts"]["lob"]["missing_rows"] == 0
     assert tail_context["panel_runtime_input_path"] == str(panel_runtime)
     assert tail_context["sequence_runtime_input_path"] == str(sequence_runtime)
     assert tail_context["lob_runtime_input_path"] == str(lob_runtime)
@@ -534,4 +539,128 @@ def test_train_v5_fusion_fails_on_runtime_input_window_gap(tmp_path: Path) -> No
         seed=7,
     )
     with pytest.raises(ValueError, match="FUSION_RUNTIME_INPUT_WINDOW_GAP"):
+        train_and_register_v5_fusion(options)
+
+
+def test_train_v5_fusion_fails_on_runtime_sequence_coverage_gap(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-runtime-seq-gap"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-runtime-seq-gap",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "final_rank_score": 0.4, "final_expected_return": 0.1, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.03} for row in base_rows],
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-runtime-seq-gap",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.5, "sequence_uncertainty_primary": 0.04} for row in base_rows],
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-runtime-seq-gap",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
+    )
+    runtime_rows = _runtime_rows_for("2026-03-28")
+    panel_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_panel_ensemble" / "panel-run-runtime-seq-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "final_rank_score": 0.41, "final_expected_return": 0.11, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.04} for row in runtime_rows],
+    )
+    sequence_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_sequence" / "sequence-run-runtime-seq-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.51, "sequence_uncertainty_primary": 0.04} for row in runtime_rows[:1]],
+    )
+    lob_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_lob" / "lob-run-runtime-seq-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.11, "micro_alpha_5s": 0.11, "micro_alpha_30s": 0.11, "micro_uncertainty": 0.03} for row in runtime_rows],
+    )
+    options = TrainV5FusionOptions(
+        panel_input_path=panel_path,
+        sequence_input_path=sequence_path,
+        lob_input_path=lob_path,
+        panel_runtime_input_path=panel_runtime,
+        sequence_runtime_input_path=sequence_runtime,
+        lob_runtime_input_path=lob_runtime,
+        registry_root=registry_root,
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_fusion",
+        quote="KRW",
+        start="2026-03-27",
+        end="2026-03-27",
+        runtime_start="2026-03-28",
+        runtime_end="2026-03-28",
+        seed=7,
+    )
+    with pytest.raises(ValueError, match="FUSION_RUNTIME_SEQUENCE_COVERAGE_GAP"):
+        train_and_register_v5_fusion(options)
+
+
+def test_train_v5_fusion_fails_on_runtime_lob_coverage_gap(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-runtime-lob-gap"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-runtime-lob-gap",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "final_rank_score": 0.4, "final_expected_return": 0.1, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.03} for row in base_rows],
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-runtime-lob-gap",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.5, "sequence_uncertainty_primary": 0.04} for row in base_rows],
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-runtime-lob-gap",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
+    )
+    runtime_rows = _runtime_rows_for("2026-03-28")
+    panel_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_panel_ensemble" / "panel-run-runtime-lob-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "final_rank_score": 0.41, "final_expected_return": 0.11, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.04} for row in runtime_rows],
+    )
+    sequence_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_sequence" / "sequence-run-runtime-lob-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.51, "sequence_uncertainty_primary": 0.04} for row in runtime_rows],
+    )
+    lob_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_lob" / "lob-run-runtime-lob-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.11, "micro_alpha_5s": 0.11, "micro_alpha_30s": 0.11, "micro_uncertainty": 0.03} for row in runtime_rows[:1]],
+    )
+    options = TrainV5FusionOptions(
+        panel_input_path=panel_path,
+        sequence_input_path=sequence_path,
+        lob_input_path=lob_path,
+        panel_runtime_input_path=panel_runtime,
+        sequence_runtime_input_path=sequence_runtime,
+        lob_runtime_input_path=lob_runtime,
+        registry_root=registry_root,
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_fusion",
+        quote="KRW",
+        start="2026-03-27",
+        end="2026-03-27",
+        runtime_start="2026-03-28",
+        runtime_end="2026-03-28",
+        seed=7,
+    )
+    with pytest.raises(ValueError, match="FUSION_RUNTIME_LOB_COVERAGE_GAP"):
         train_and_register_v5_fusion(options)

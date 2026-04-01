@@ -185,8 +185,28 @@ def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_writes_ra
     assert payload["tensor_dates"][-1] == "2026-03-04"
     assert payload["micro_dates"][0] == "2026-03-08"
     assert payload["micro_dates"][-1] == "2026-03-04"
+    assert payload["refresh_argument_mode"] == "explicit_date_range"
     assert payload["top_n"] == 50
     assert payload["tensor_max_markets_effective"] == 50
+
+
+def test_t23_2_data_platform_refresh_wrapper_applies_explicit_tensor_markets_to_all_tensor_steps() -> None:
+    stdout = _run_script_dry_run(
+        "refresh_data_platform_layers.ps1",
+        "-Mode",
+        "training_critical",
+        "-SkipPublishReadySnapshot",
+        "-TensorStartDate",
+        "2026-03-04",
+        "-TensorEndDate",
+        "2026-03-06",
+        "-TensorMarkets",
+        "KRW-BTC,KRW-ETH",
+    )
+
+    assert stdout.count("--markets") >= 3
+    assert "collect_sequence_tensors_prev1" in stdout
+    assert "collect_sequence_tensors_prev2" in stdout
 
 
 def test_t23_2_train_snapshot_close_installer_dry_run_keeps_v5_timer_contract() -> None:
@@ -211,6 +231,23 @@ def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contrac
     assert "refresh_current_features_v4_contract_artifacts.ps1" in stdout
     assert "autobot.ops.data_platform_snapshot" in stdout
     assert "train_snapshot_close_latest.json" in stdout
+
+
+def test_t23_2_recover_v5_fusion_train_window_wrapper_dry_run_emits_recovery_chain() -> None:
+    stdout = _run_script_dry_run(
+        "recover_v5_fusion_train_window.ps1",
+        "-BatchDate",
+        "2026-03-31",
+        "-TrainingCriticalStartDate",
+        "2026-03-04",
+        "-TrainingCriticalEndDate",
+        "2026-03-31",
+    )
+
+    assert "close_v5_train_ready_snapshot.ps1" in stdout
+    assert "v5_governed_candidate_acceptance.ps1" in stdout
+    assert "daily_champion_challenger_v5_for_server.ps1" in stdout
+    assert "v5_fusion_train_window_recovery" in stdout
 
 
 def test_t23_2_feature_contract_refresh_wrapper_dry_run_emits_contract_steps() -> None:

@@ -326,6 +326,30 @@ def _build_fusion_numeric_feature_contract(merged: pl.DataFrame) -> tuple[tuple[
     }
 
 
+def _build_runtime_coverage_summary(merged: pl.DataFrame) -> dict[str, Any]:
+    total_rows = int(merged.height)
+    experts: dict[str, Any] = {}
+    for expert_name in ("panel", "sequence", "lob"):
+        present_column = f"{expert_name}_present"
+        present_rows = total_rows
+        if present_column in merged.columns:
+            present_rows = int(
+                merged.filter(pl.col(present_column).cast(pl.Float64).fill_null(0.0) >= 0.5).height
+            )
+        missing_rows = max(total_rows - present_rows, 0)
+        experts[expert_name] = {
+            "present_rows": present_rows,
+            "missing_rows": missing_rows,
+            "coverage_ratio": float(present_rows / total_rows) if total_rows > 0 else 0.0,
+            "required_full_window": expert_name in {"sequence", "lob"},
+        }
+    return {
+        "policy": "auxiliary_experts_full_window_required",
+        "total_panel_anchor_rows": total_rows,
+        "experts": experts,
+    }
+
+
 def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInputBundle:
     panel, panel_meta = _load_expert_table(options.panel_input_path, prefix="panel")
     sequence, sequence_meta = _load_expert_table(options.sequence_input_path, prefix="sequence")
@@ -377,6 +401,8 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
         "panel_label_columns": dict(panel_meta.get("label_columns") or {}),
         "auxiliary_experts": ["sequence", "lob"],
         "target_alignment_policy": "panel_anchor_only",
+        "runtime_coverage_policy": "auxiliary_experts_full_window_required",
+        "runtime_coverage_summary": {},
         "inputs": {
             "panel": panel_meta,
             "sequence": sequence_meta,
@@ -471,6 +497,15 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     input_contract["coverage_start_ts_ms"] = coverage_start
     input_contract["coverage_end_ts_ms"] = coverage_end
     input_contract["runtime_rows_after_date_filter"] = int(merged.height)
+    runtime_coverage_summary = _build_runtime_coverage_summary(merged)
+    input_contract["runtime_coverage_policy"] = "auxiliary_experts_full_window_required"
+    input_contract["runtime_coverage_summary"] = runtime_coverage_summary
+    if explicit_runtime_requested:
+        expert_coverage = dict(runtime_coverage_summary.get("experts") or {})
+        if int(((expert_coverage.get("sequence") or {}).get("missing_rows") or 0)) > 0:
+            raise ValueError("FUSION_RUNTIME_SEQUENCE_COVERAGE_GAP")
+        if int(((expert_coverage.get("lob") or {}).get("missing_rows") or 0)) > 0:
+            raise ValueError("FUSION_RUNTIME_LOB_COVERAGE_GAP")
     return _FusionInputBundle(
         merged=merged,
         input_contract=input_contract,

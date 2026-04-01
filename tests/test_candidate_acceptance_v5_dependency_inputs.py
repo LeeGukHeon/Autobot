@@ -44,6 +44,8 @@ def _seed_train_snapshot_close_contract(
             "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / snapshot_id),
             "published_at_utc": "2026-03-08T00:05:00Z",
             "generated_at_utc": "2026-03-08T00:05:00Z",
+            "training_critical_start_date": "2026-03-04",
+            "training_critical_end_date": batch_date,
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],

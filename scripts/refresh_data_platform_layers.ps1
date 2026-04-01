@@ -401,7 +401,7 @@ switch ($Mode) {
 
 if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
     foreach ($step in @($steps)) {
-        if ([string]$step.name -ne "collect_sequence_tensors") {
+        if (-not ([string]$step.name).StartsWith("collect_sequence_tensors")) {
             continue
         }
         $step.args += @("--markets", $serializedTensorMarkets)
@@ -457,6 +457,7 @@ $summary = [ordered]@{
     micro_dates = @($microDateValues)
     tensor_window_source = $tensorWindowSource
     micro_window_source = $microWindowSource
+    refresh_argument_mode = if ($Mode -eq "training_critical") { $tensorWindowSource } else { "" }
     top_n = [int]$TopN
     tensor_max_markets_effective = [int]$effectiveTensorMaxMarkets
     steps = @($stepResults)
