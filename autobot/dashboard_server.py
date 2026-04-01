@@ -474,7 +474,7 @@ def _command_flag_value(command: str, flag: str) -> str | None:
     return None
 
 
-def _summarize_training_activity(
+def _summarize_training_activity_legacy_unused(
     project_root: Path,
     *,
     services: dict[str, dict[str, Any]],
