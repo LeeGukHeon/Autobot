@@ -203,13 +203,13 @@ $serializedTensorMarkets = Join-DelimitedStringArray -Values $TensorMarkets
 function New-RefreshStep {
     param(
         [string]$Name,
-        [string[]]$Args,
+        [string[]]$StepArgs,
         [string]$LockFile = "",
         [switch]$BlockingLock
     )
     $step = [ordered]@{
         name = $Name
-        args = $Args
+        arg_list = @($StepArgs)
     }
     if (-not [string]::IsNullOrWhiteSpace($LockFile)) {
         $step.lock_file = $LockFile
@@ -219,7 +219,7 @@ function New-RefreshStep {
 }
 
 $trainingCriticalSteps = @(
-    (New-RefreshStep -Name "plan_candles_second" -Args @(
+    (New-RefreshStep -Name "plan_candles_second" -StepArgs @(
         "-m", "autobot.cli",
         "collect", "plan-candles",
         "--base-dataset", $SecondBaseDataset,
@@ -232,7 +232,7 @@ $trainingCriticalSteps = @(
         "--max-backfill-days-1s", ([string]([Math]::Max([int]$SecondMaxBackfillDays, 1))),
         "--max-backfill-days-1m", ([string]([Math]::Max([int]$SecondMaxBackfillDays, 1)))
     ))
-    (New-RefreshStep -Name "collect_candles_second" -Args @(
+    (New-RefreshStep -Name "collect_candles_second" -StepArgs @(
         "-m", "autobot.cli",
         "collect", "candles",
         "--plan", $resolvedSecondPlanPath,
@@ -245,7 +245,7 @@ $trainingCriticalSteps = @(
         "--stop-on-first-fail", "true",
         "--rate-limit-strict", "true"
     ))
-    (New-RefreshStep -Name "plan_lob30" -Args @(
+    (New-RefreshStep -Name "plan_lob30" -StepArgs @(
         "-m", "autobot.cli",
         "collect", "plan-lob30",
         "--base-dataset", $Lob30BaseDataset,
@@ -255,7 +255,7 @@ $trainingCriticalSteps = @(
         "--market-mode", $MarketMode,
         "--top-n", ([string]([Math]::Max([int]$TopN, 1)))
     ))
-    (New-RefreshStep -Name "collect_lob30" -Args @(
+    (New-RefreshStep -Name "collect_lob30" -StepArgs @(
         "-m", "autobot.cli",
         "collect", "lob30",
         "--plan", $resolvedLob30PlanPath,
@@ -267,7 +267,7 @@ $trainingCriticalSteps = @(
 )
 
 $runtimeRichSteps = @(
-    (New-RefreshStep -Name "plan_ws_candles" -Args @(
+    (New-RefreshStep -Name "plan_ws_candles" -StepArgs @(
         "-m", "autobot.cli",
         "collect", "plan-ws-candles",
         "--base-dataset", $WsCandleBaseDataset,
@@ -278,7 +278,7 @@ $runtimeRichSteps = @(
         "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
         "--tf", $WsCandleTf
     ))
-    (New-RefreshStep -Name "collect_ws_candles" -Args @(
+    (New-RefreshStep -Name "collect_ws_candles" -StepArgs @(
         "-m", "autobot.cli",
         "collect", "ws-candles",
         "--plan", $resolvedWsCandlePlanPath,
@@ -316,7 +316,7 @@ if (($Mode -eq "training_critical") -and [string]::IsNullOrWhiteSpace($serialize
 $microDateStart = [string]$microDateValues[-1]
 $microDateEnd = [string]$microDateValues[0]
 $microSteps = @(
-    (New-RefreshStep -Name "aggregate_micro_current_window" -Args @(
+    (New-RefreshStep -Name "aggregate_micro_current_window" -StepArgs @(
         "-m", "autobot.cli",
         "micro", "aggregate",
         "--start", $microDateStart,
@@ -330,7 +330,7 @@ $microSteps = @(
         "--base-candles", $MicroBaseCandles,
         "--mode", "overwrite"
     ))
-    (New-RefreshStep -Name "validate_micro_current_window" -Args @(
+    (New-RefreshStep -Name "validate_micro_current_window" -StepArgs @(
         "-m", "autobot.cli",
         "micro", "validate",
         "--out-root", $resolvedMicroOutRoot,
@@ -355,12 +355,12 @@ for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
         "--lob-lookback-steps", ([string]([Math]::Max([int]$TensorLobLookbackSteps, 1))),
         "--skip-existing-ready", "false"
     )
-    $tensorSteps += ,(New-RefreshStep -Name $stepName -Args $tensorArgs)
+    $tensorSteps += ,(New-RefreshStep -Name $stepName -StepArgs $tensorArgs)
 }
 
 $publishStep = New-RefreshStep `
     -Name "publish_data_platform_snapshot" `
-    -Args @(
+    -StepArgs @(
         "-m", "autobot.ops.data_platform_snapshot",
         "publish",
         "--project-root", $resolvedProjectRoot
@@ -370,7 +370,7 @@ $publishStep = New-RefreshStep `
 
 $registryStep = New-RefreshStep `
     -Name "refresh_data_contract_registry" `
-    -Args @(
+    -StepArgs @(
         "-m", "autobot.ops.data_contract_registry",
         "--project-root", $resolvedProjectRoot
     ) `
@@ -404,7 +404,7 @@ if (-not [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
         if (-not ([string]$step.name).StartsWith("collect_sequence_tensors")) {
             continue
         }
-        $step.args += @("--markets", $serializedTensorMarkets)
+        $step.arg_list += @("--markets", $serializedTensorMarkets)
     }
 }
 
@@ -434,7 +434,7 @@ try {
         $stepResults += ,(Invoke-ProjectPythonStep `
             -PythonPath $resolvedPythonExe `
             -StepName ([string]$step.name) `
-            -ArgList @($step.args) `
+            -ArgList @($step.arg_list) `
             -LockFile $stepLockFile `
             -BlockingLock:$stepBlockingLock)
     }

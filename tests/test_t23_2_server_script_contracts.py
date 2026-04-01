@@ -4,6 +4,8 @@ import json
 import re
 import shutil
 import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -42,6 +44,45 @@ def _run_script_dry_run(script_name: str, *extra_args: str) -> str:
         check=True,
     )
     return completed.stdout
+
+
+def _make_fake_python_exe(tmp_path: Path) -> Path:
+    driver_path = tmp_path / "fake_python_driver.py"
+    driver_path.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            log_path = Path(sys.argv[1])
+            payload = {
+                "argv": sys.argv[2:],
+                "argc": len(sys.argv[2:]),
+            }
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload) + "\\n")
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    if sys.platform.startswith("win"):
+        wrapper_path = tmp_path / "fake_python.cmd"
+        wrapper_path.write_text(
+            f'@echo off\r\n"{sys.executable}" "%~dp0fake_python_driver.py" "%~dp0fake_python_invocations.jsonl" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "fake_python"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$(dirname "$0")/fake_python_driver.py" "$(dirname "$0")/fake_python_invocations.jsonl" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
 
 
 def test_t23_2_dashboard_installer_dry_run_keeps_protected_unit_contract() -> None:
@@ -207,6 +248,53 @@ def test_t23_2_data_platform_refresh_wrapper_applies_explicit_tensor_markets_to_
     assert stdout.count("--markets") >= 3
     assert "collect_sequence_tensors_prev1" in stdout
     assert "collect_sequence_tensors_prev2" in stdout
+
+
+def test_t23_2_data_platform_refresh_wrapper_executes_python_steps_with_full_args(tmp_path: Path) -> None:
+    fake_python = _make_fake_python_exe(tmp_path)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    summary_path = project_root / "data" / "collect" / "_meta" / "refresh_summary.json"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "refresh_data_platform_layers.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "training_critical",
+            "-TensorStartDate",
+            "2026-03-04",
+            "-TensorEndDate",
+            "2026-03-05",
+            "-MicroStartDate",
+            "2026-03-04",
+            "-MicroEndDate",
+            "2026-03-05",
+            "-SummaryPath",
+            str(summary_path),
+            "-PublishLockFile",
+            "",
+            "-SkipPublishReadySnapshot",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert summary_path.exists(), completed.stdout + "\n" + completed.stderr
+    log_path = tmp_path / "fake_python_invocations.jsonl"
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert lines, completed.stdout + "\n" + completed.stderr
+    assert lines[0]["argc"] > 0
+    assert lines[0]["argv"][:4] == ["-m", "autobot.cli", "collect", "plan-candles"]
 
 
 def test_t23_2_train_snapshot_close_installer_dry_run_keeps_v5_timer_contract() -> None:
