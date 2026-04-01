@@ -44,6 +44,7 @@ from .v5_expert_runtime_export import (
     build_operating_window_mask,
     build_ts_date_coverage_payload,
     load_existing_expert_runtime_export,
+    load_anchor_export_keys,
     parse_operating_date_to_ts_ms,
     resolve_expert_runtime_export_paths,
     write_expert_runtime_export_metadata,
@@ -238,6 +239,101 @@ def _slice_sequence_samples(samples: _SequenceSamples, mask: np.ndarray) -> _Seq
         horizons_minutes=samples.horizons_minutes,
         quantile_levels=samples.quantile_levels,
     )
+
+
+def _slice_sequence_samples_by_indices(samples: _SequenceSamples, indices: np.ndarray) -> _SequenceSamples:
+    resolved_indices = np.asarray(indices, dtype=np.int64)
+    return _SequenceSamples(
+        second=np.asarray(samples.second[resolved_indices]),
+        minute=np.asarray(samples.minute[resolved_indices]),
+        micro=np.asarray(samples.micro[resolved_indices]),
+        lob=np.asarray(samples.lob[resolved_indices]),
+        lob_global=np.asarray(samples.lob_global[resolved_indices]),
+        known_covariates=np.asarray(samples.known_covariates[resolved_indices]),
+        y_cls=np.asarray(samples.y_cls[resolved_indices]),
+        y_reg_primary=np.asarray(samples.y_reg_primary[resolved_indices]),
+        y_rank=np.asarray(samples.y_rank[resolved_indices]),
+        y_reg_multi=np.asarray(samples.y_reg_multi[resolved_indices]),
+        sample_weight=np.asarray(samples.sample_weight[resolved_indices]),
+        support_level=np.asarray(samples.support_level[resolved_indices]),
+        ts_ms=np.asarray(samples.ts_ms[resolved_indices]),
+        markets=np.asarray(samples.markets[resolved_indices]),
+        pooled_features=np.asarray(samples.pooled_features[resolved_indices]),
+        feature_names=samples.feature_names,
+        selected_markets=samples.selected_markets,
+        rows_by_market=samples.rows_by_market,
+        support_level_counts=samples.support_level_counts,
+        horizons_minutes=samples.horizons_minutes,
+        quantile_levels=samples.quantile_levels,
+    )
+
+
+def _align_sequence_samples_to_anchor_export(
+    *,
+    samples: _SequenceSamples,
+    anchor_export_path: Path,
+) -> tuple[_SequenceSamples, dict[str, Any]]:
+    anchor_frame = load_anchor_export_keys(anchor_export_path)
+    source_frame = pl.DataFrame(
+        {
+            "source_row_idx": np.arange(samples.rows, dtype=np.int64),
+            "market": np.asarray(samples.markets, dtype=object),
+            "source_ts_ms": np.asarray(samples.ts_ms, dtype=np.int64),
+        }
+    ).sort(["market", "source_ts_ms"])
+    anchor_with_index = anchor_frame.with_row_index("anchor_row_idx").rename({"ts_ms": "anchor_ts_ms"})
+    aligned = anchor_with_index.join_asof(
+        source_frame,
+        left_on="anchor_ts_ms",
+        right_on="source_ts_ms",
+        by="market",
+        strategy="backward",
+    )
+    if aligned.get_column("source_row_idx").null_count() > 0:
+        raise ValueError("sequence runtime export could not align all panel anchors")
+    source_indices = aligned.get_column("source_row_idx").to_numpy().astype(np.int64, copy=False)
+    aligned_samples = _slice_sequence_samples_by_indices(samples, source_indices)
+    anchor_ts_values = aligned.get_column("anchor_ts_ms").to_numpy().astype(np.int64, copy=False)
+    anchor_markets = aligned.get_column("market").to_numpy()
+    rows_by_market: dict[str, int] = {}
+    for item in anchor_markets:
+        market = str(item).strip()
+        if market:
+            rows_by_market[market] = rows_by_market.get(market, 0) + 1
+    aligned_samples = _SequenceSamples(
+        second=aligned_samples.second,
+        minute=aligned_samples.minute,
+        micro=aligned_samples.micro,
+        lob=aligned_samples.lob,
+        lob_global=aligned_samples.lob_global,
+        known_covariates=aligned_samples.known_covariates,
+        y_cls=aligned_samples.y_cls,
+        y_reg_primary=aligned_samples.y_reg_primary,
+        y_rank=aligned_samples.y_rank,
+        y_reg_multi=aligned_samples.y_reg_multi,
+        sample_weight=aligned_samples.sample_weight,
+        support_level=aligned_samples.support_level,
+        ts_ms=np.asarray(anchor_ts_values),
+        markets=np.asarray(anchor_markets),
+        pooled_features=aligned_samples.pooled_features,
+        feature_names=aligned_samples.feature_names,
+        selected_markets=tuple(sorted(rows_by_market.keys())),
+        rows_by_market=rows_by_market,
+        support_level_counts=aligned_samples.support_level_counts,
+        horizons_minutes=aligned_samples.horizons_minutes,
+        quantile_levels=aligned_samples.quantile_levels,
+    )
+    lag_values = (
+        aligned.get_column("anchor_ts_ms").cast(pl.Int64) - aligned.get_column("source_ts_ms").cast(pl.Int64)
+    ).to_numpy()
+    return aligned_samples, {
+        "anchor_export_path": str(Path(anchor_export_path).resolve()),
+        "anchor_row_count": int(anchor_frame.height),
+        "anchor_alignment_complete": True,
+        "source_anchor_min_ts_ms": int(aligned.get_column("source_ts_ms").min()),
+        "source_anchor_max_ts_ms": int(aligned.get_column("source_ts_ms").max()),
+        "anchor_match_lag_ms_max": int(np.max(lag_values)) if lag_values.size > 0 else 0,
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -1027,6 +1123,7 @@ def _load_sequence_runtime_export_samples(
     output_start: str,
     output_end: str,
     selected_markets_override: tuple[str, ...] | None,
+    anchor_export_path: Path | None,
 ) -> tuple[_SequenceSamples, dict[str, Any]]:
     if selected_markets_override is not None:
         context_start = min(
@@ -1034,6 +1131,26 @@ def _load_sequence_runtime_export_samples(
         )
         context_options = replace(options, start=context_start, end=str(output_end))
         context_samples = _load_sequence_samples(context_options, selected_markets_override=selected_markets_override)
+        if anchor_export_path is not None:
+            aligned_samples, anchor_contract = _align_sequence_samples_to_anchor_export(
+                samples=context_samples,
+                anchor_export_path=anchor_export_path,
+            )
+            return (
+                aligned_samples,
+                {
+                    "generation_context_window": {
+                        "start": str(context_options.start).strip(),
+                        "end": str(context_options.end).strip(),
+                        "source": "train_window_to_panel_anchor_runtime_output_window",
+                    },
+                    "output_window": {
+                        "start": str(output_start).strip(),
+                        "end": str(output_end).strip(),
+                    },
+                    **anchor_contract,
+                },
+            )
         output_mask = np.asarray(
             build_operating_window_mask(
                 context_samples.ts_ms,
@@ -1082,6 +1199,7 @@ def _export_sequence_expert_prediction_table_window(
     start: str,
     end: str,
     selected_markets_override: tuple[str, ...] | None = None,
+    anchor_export_path: Path | None = None,
     resolve_markets_only: bool = False,
 ) -> dict[str, Any]:
     run_dir = Path(run_dir).resolve()
@@ -1121,6 +1239,13 @@ def _export_sequence_expert_prediction_table_window(
         and str(existing_metadata.get("coverage_start_date") or "").strip()
         and str(existing_metadata.get("coverage_end_date") or "").strip()
         and str(existing_metadata.get("window_timezone") or "").strip() == OPERATING_WINDOW_TIMEZONE
+        and (
+            anchor_export_path is None
+            or (
+                bool(existing_metadata.get("anchor_alignment_complete", False))
+                and str(existing_metadata.get("anchor_export_path") or "").strip() == str(Path(anchor_export_path).resolve())
+            )
+        )
     ):
         return {
             "run_id": run_dir.name,
@@ -1135,6 +1260,8 @@ def _export_sequence_expert_prediction_table_window(
             "coverage_end_date": str(existing_metadata.get("coverage_end_date") or ""),
             "coverage_dates": list(existing_metadata.get("coverage_dates") or []),
             "window_timezone": str(existing_metadata.get("window_timezone") or ""),
+            "anchor_alignment_complete": bool(existing_metadata.get("anchor_alignment_complete", False)),
+            "anchor_export_path": str(existing_metadata.get("anchor_export_path") or ""),
             "rows": int(existing_metadata.get("rows", 0) or 0),
             "requested_selected_markets": list(existing_metadata.get("requested_selected_markets") or []),
             "selected_markets": list(existing_metadata.get("selected_markets") or []),
@@ -1167,6 +1294,7 @@ def _export_sequence_expert_prediction_table_window(
                 if (selected_markets_override is not None or selected_markets)
                 else None
             ),
+            anchor_export_path=anchor_export_path,
         )
     except ValueError as exc:
         if selected_markets_override is not None:
@@ -1185,6 +1313,7 @@ def _export_sequence_expert_prediction_table_window(
             output_start=start,
             output_end=end,
             selected_markets_override=None,
+            anchor_export_path=None,
         )
         selected_markets_source = "window_available_markets_fallback"
         fallback_reason = "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW"
@@ -1203,6 +1332,8 @@ def _export_sequence_expert_prediction_table_window(
         "coverage_end_ts_ms": int(ts_values.max()) if ts_values.size > 0 else 0,
         **coverage_payload,
         **export_window_contract,
+        "anchor_alignment_complete": bool(export_window_contract.get("anchor_alignment_complete", False)),
+        "anchor_export_path": str(export_window_contract.get("anchor_export_path") or ""),
         "rows": int(samples.rows),
         "requested_selected_markets": requested_selected_markets,
         "selected_markets": list(samples.selected_markets),
@@ -1246,6 +1377,7 @@ def materialize_v5_sequence_runtime_export(
     start: str,
     end: str,
     selected_markets_override: tuple[str, ...] | None = None,
+    anchor_export_path: Path | None = None,
     resolve_markets_only: bool = False,
 ) -> dict[str, Any]:
     return _export_sequence_expert_prediction_table_window(
@@ -1253,6 +1385,7 @@ def materialize_v5_sequence_runtime_export(
         start=start,
         end=end,
         selected_markets_override=selected_markets_override,
+        anchor_export_path=anchor_export_path,
         resolve_markets_only=resolve_markets_only,
     )
 

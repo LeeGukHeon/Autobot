@@ -149,7 +149,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     return ["KRW-ETH", "KRW-BTC"]
                 return []
 
-            def export_run(family: str, trainer: str, run_id: str, start: str, end: str, explicit_markets: list[str], resolve_only: bool) -> dict:
+            def export_run(family: str, trainer: str, run_id: str, start: str, end: str, explicit_markets: list[str], resolve_only: bool, anchor_export_path: str) -> dict:
                 export_root = ROOT / "models" / "registry" / family / run_id / "_runtime_exports" / f"{start}__{end}"
                 export_root.mkdir(parents=True, exist_ok=True)
                 export_path = export_root / "expert_prediction_table.parquet"
@@ -165,12 +165,26 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "end": end,
                     "coverage_start_ts_ms": date_to_ts_ms(start),
                     "coverage_end_ts_ms": date_to_ts_ms(end, end_of_day=True),
+                    "coverage_start_date": start,
+                    "coverage_end_date": end,
+                    "coverage_dates": [start, end] if start == end else [],
+                    "window_timezone": "Asia/Seoul",
                     "rows": 12,
                     "requested_selected_markets": explicit_markets or [],
                     "selected_markets": selected_markets,
                     "selected_markets_source": "acceptance_common_runtime_universe" if explicit_markets else "window_available_markets_fallback",
                     "fallback_reason": "",
+                    "anchor_alignment_complete": bool(anchor_export_path) if trainer != "v5_panel_ensemble" else False,
+                    "anchor_export_path": anchor_export_path or "",
                 }
+                if start != end:
+                    metadata["coverage_dates"] = []
+                    cursor = start
+                    while cursor <= end:
+                        metadata["coverage_dates"].append(cursor)
+                        y,m,d = map(int, cursor.split("-"))
+                        import datetime
+                        cursor = (datetime.date(y,m,d) + datetime.timedelta(days=1)).isoformat()
                 if resolve_only:
                     return {
                         **metadata,
@@ -291,6 +305,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 start = arg_value("--start")
                 end = arg_value("--end")
                 explicit_markets = [item.strip() for item in arg_value("--markets").split(",") if item.strip()]
+                anchor_export_path = arg_value("--anchor-export-path")
                 resolve_only = "--resolve-markets-only" in sys.argv
                 family = run_dir.parent.name
                 run_id = run_dir.name
@@ -301,9 +316,10 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "start": start,
                     "end": end,
                     "markets": explicit_markets,
+                    "anchor_export_path": anchor_export_path,
                     "resolve_markets_only": resolve_only,
                 })
-                print(json.dumps(export_run(family, trainer, run_id, start, end, explicit_markets, resolve_only)))
+                print(json.dumps(export_run(family, trainer, run_id, start, end, explicit_markets, resolve_only, anchor_export_path)))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):

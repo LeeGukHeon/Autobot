@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import polars as pl
+
 
 _EXPORTS_DIRNAME = "_runtime_exports"
 _EXPORT_FILENAME = "expert_prediction_table.parquet"
@@ -164,3 +166,20 @@ def write_expert_runtime_export_metadata(
         encoding="utf-8",
     )
     return metadata_path
+
+
+def load_anchor_export_keys(anchor_export_path: Path) -> pl.DataFrame:
+    resolved_path = Path(anchor_export_path).resolve()
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"anchor export parquet missing: {resolved_path}")
+    frame = pl.read_parquet(resolved_path, columns=["market", "ts_ms"])
+    if frame.height <= 0:
+        raise ValueError("anchor export parquet is empty")
+    return (
+        frame.with_columns(
+            pl.col("market").cast(pl.Utf8).str.strip_chars().str.to_uppercase().alias("market"),
+            pl.col("ts_ms").cast(pl.Int64).alias("ts_ms"),
+        )
+        .unique(subset=["market", "ts_ms"], keep="first")
+        .sort(["market", "ts_ms"])
+    )

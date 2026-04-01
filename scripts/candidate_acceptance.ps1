@@ -539,6 +539,16 @@ function Get-DependencyRuntimeExportGapPrefix {
     }
 }
 
+function Get-DependencyRuntimeExportOrder {
+    param([string]$TrainerName)
+    switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_panel_ensemble" { return 0 }
+        "v5_sequence" { return 1 }
+        "v5_lob" { return 2 }
+        default { return 100 }
+    }
+}
+
 function New-CommonRuntimeUniverseArtifact {
     param(
         [Parameter(Mandatory = $true)]
@@ -591,6 +601,9 @@ function Test-DependencyRuntimeExportContractAlignment {
     $reasons = @()
     $expectedCommonMarkets = @(Normalize-MarketArray -Markets $CommonMarkets)
     $expectedCoverageDates = @(Get-DateTokenRangeInclusive -StartDate $CertificationStartDate -EndDate $CertificationEndDate)
+    $panelExport = @($ExportResults | Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "trainer" -DefaultValue "") -eq "v5_panel_ensemble" } | Select-Object -First 1)
+    $panelRowCount = if ($panelExport.Count -gt 0) { [int](Get-PropValue -ObjectValue $panelExport[0] -Name "rows" -DefaultValue 0) } else { 0 }
+    $panelExportPath = if ($panelExport.Count -gt 0) { [string](Get-PropValue -ObjectValue $panelExport[0] -Name "export_path" -DefaultValue "") } else { "" }
     if (@($expectedCommonMarkets).Count -le 0) {
         $reasons += "COMMON_RUNTIME_UNIVERSE_EMPTY"
     }
@@ -608,6 +621,9 @@ function Test-DependencyRuntimeExportContractAlignment {
         $coverageEndDate = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_end_date" -DefaultValue "")
         $coverageDates = @((Get-PropValue -ObjectValue $coverageFields -Name "coverage_dates" -DefaultValue @()))
         $windowTimezone = [string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "")
+        $anchorAlignmentComplete = [bool](Get-PropValue -ObjectValue $item -Name "anchor_alignment_complete" -DefaultValue $false)
+        $anchorExportPath = [string](Get-PropValue -ObjectValue $item -Name "anchor_export_path" -DefaultValue "")
+        $rows = [int](Get-PropValue -ObjectValue $item -Name "rows" -DefaultValue 0)
         $requestedSelectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "requested_selected_markets" -DefaultValue @()))
         $selectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "selected_markets" -DefaultValue @()))
         $selectedMarketsSource = [string](Get-PropValue -ObjectValue $item -Name "selected_markets_source" -DefaultValue "")
@@ -622,6 +638,15 @@ function Test-DependencyRuntimeExportContractAlignment {
             ($coverageEndDate -lt [string]$CertificationEndDate) -or
             (@($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ }).Count -gt 0)
         )
+        $anchorGap = (
+            (([string]$trainerName -ne "v5_panel_ensemble")) -and
+            (
+                (-not $anchorAlignmentComplete) -or
+                [string]::IsNullOrWhiteSpace($anchorExportPath) -or
+                ($anchorExportPath -ne $panelExportPath) -or
+                (($panelRowCount -gt 0) -and ($rows -ne $panelRowCount))
+            )
+        )
         $universeMismatch = (
             (-not (Test-StringArraySequenceEqual -Left $requestedSelectedMarkets -Right $expectedCommonMarkets)) -or
             (-not (Test-StringArraySequenceEqual -Left $selectedMarkets -Right $expectedCommonMarkets)) -or
@@ -633,6 +658,9 @@ function Test-DependencyRuntimeExportContractAlignment {
         }
         if ($windowGap) {
             $reasons += ($prefix + "_RUNTIME_WINDOW_GAP")
+        }
+        if ($anchorGap) {
+            $reasons += ($prefix + "_RUNTIME_ANCHOR_GAP")
         }
         if ($universeMismatch) {
             $reasons += ($prefix + "_RUNTIME_UNIVERSE_MISMATCH")
@@ -648,12 +676,16 @@ function Test-DependencyRuntimeExportContractAlignment {
             coverage_end_date = $coverageEndDate
             coverage_dates = @($coverageDates)
             window_timezone = $windowTimezone
+            anchor_alignment_complete = $anchorAlignmentComplete
+            anchor_export_path = $anchorExportPath
+            rows = $rows
             requested_selected_markets = @($requestedSelectedMarkets)
             selected_markets = @($selectedMarkets)
             selected_markets_source = $selectedMarketsSource
             fallback_reason = $fallbackReason
             snapshot_match = (-not [string]::IsNullOrWhiteSpace($snapshotId)) -and ($snapshotId -eq [string]$ExpectedSnapshotId)
             window_match = (-not $windowGap)
+            anchor_match = (-not $anchorGap)
             universe_match = (-not $universeMismatch)
         }
     }
@@ -719,7 +751,12 @@ function Invoke-DependencyRuntimeExportChain {
         [string[]]$CommonMarkets = @()
     )
     $results = @()
-    foreach ($item in @($DependencyResults)) {
+    $panelRuntimeExportPath = ""
+    $orderedDependencyResults = @(
+        @($DependencyResults) |
+            Sort-Object { Get-DependencyRuntimeExportOrder -TrainerName ([string](Get-PropValue -ObjectValue $_ -Name "trainer" -DefaultValue "")) }
+    )
+    foreach ($item in @($orderedDependencyResults)) {
         $trainerName = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
         $runDir = [string](Get-PropValue -ObjectValue $item -Name "run_dir" -DefaultValue "")
         $runId = [string](Get-PropValue -ObjectValue $item -Name "run_id" -DefaultValue "")
@@ -791,6 +828,12 @@ function Invoke-DependencyRuntimeExportChain {
                         Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
                 ))))
             }
+            if (
+                ([string]$trainerName -ne "v5_panel_ensemble") -and
+                (-not [string]::IsNullOrWhiteSpace($panelRuntimeExportPath))
+            ) {
+                $args += @("--anchor-export-path", $panelRuntimeExportPath)
+            }
             $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
             $payload = @{}
             try {
@@ -821,6 +864,8 @@ function Invoke-DependencyRuntimeExportChain {
             coverage_end_date = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_end_date" -DefaultValue "")
             coverage_dates = @((Get-PropValue -ObjectValue $coverageFields -Name "coverage_dates" -DefaultValue @()))
             window_timezone = [string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "")
+            anchor_alignment_complete = [bool](Get-PropValue -ObjectValue $payload -Name "anchor_alignment_complete" -DefaultValue $false)
+            anchor_export_path = [string](Get-PropValue -ObjectValue $payload -Name "anchor_export_path" -DefaultValue "")
             rows = [int](Get-PropValue -ObjectValue $payload -Name "rows" -DefaultValue 0)
             requested_selected_markets = @((Get-PropValue -ObjectValue $payload -Name "requested_selected_markets" -DefaultValue @()))
             selected_markets = @((Get-PropValue -ObjectValue $payload -Name "selected_markets" -DefaultValue @()))
@@ -828,6 +873,9 @@ function Invoke-DependencyRuntimeExportChain {
             fallback_reason = [string](Get-PropValue -ObjectValue $payload -Name "fallback_reason" -DefaultValue "")
             reused = [bool](Get-PropValue -ObjectValue $payload -Name "reused" -DefaultValue $false)
             source_mode = [string](Get-PropValue -ObjectValue $payload -Name "source_mode" -DefaultValue "")
+        }
+        if ([string]$trainerName -eq "v5_panel_ensemble") {
+            $panelRuntimeExportPath = [string](Get-PropValue -ObjectValue $payload -Name "export_path" -DefaultValue "")
         }
     }
     return @($results)

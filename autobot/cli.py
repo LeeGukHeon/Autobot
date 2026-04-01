@@ -952,6 +952,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_export_expert_parser.add_argument("--start", required=True, help="Export window start YYYY-MM-DD.")
     model_export_expert_parser.add_argument("--end", required=True, help="Export window end YYYY-MM-DD.")
     model_export_expert_parser.add_argument("--markets", help="Optional comma-delimited explicit runtime market universe.")
+    model_export_expert_parser.add_argument("--anchor-export-path", help="Optional panel runtime export parquet path used to align auxiliary expert rows to panel anchors.")
     model_export_expert_parser.add_argument(
         "--resolve-markets-only",
         action="store_true",
@@ -2875,6 +2876,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 for item in markets_text.split(",")
                 if item.strip()
             ) or None
+            anchor_export_path_text = str(getattr(args, "anchor_export_path", "") or "").strip()
+            anchor_export_path = Path(anchor_export_path_text).resolve() if anchor_export_path_text else None
             resolve_markets_only = bool(getattr(args, "resolve_markets_only", False))
             if trainer == "v5_panel_ensemble":
                 payload = materialize_v5_panel_ensemble_runtime_export(
@@ -2890,6 +2893,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=start,
                     end=end,
                     selected_markets_override=selected_markets_override,
+                    anchor_export_path=anchor_export_path,
                     resolve_markets_only=resolve_markets_only,
                 )
             elif trainer == "v5_lob":
@@ -2898,6 +2902,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=start,
                     end=end,
                     selected_markets_override=selected_markets_override,
+                    anchor_export_path=anchor_export_path,
                     resolve_markets_only=resolve_markets_only,
                 )
             else:

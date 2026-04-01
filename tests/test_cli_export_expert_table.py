@@ -18,12 +18,14 @@ def test_cli_model_export_expert_table_dispatches_to_sequence_export(monkeypatch
         start: str,
         end: str,
         selected_markets_override: tuple[str, ...] | None = None,
+        anchor_export_path: Path | None = None,
         resolve_markets_only: bool = False,
     ) -> dict[str, object]:
         captured["run_dir"] = run_dir
         captured["start"] = start
         captured["end"] = end
         captured["selected_markets_override"] = selected_markets_override
+        captured["anchor_export_path"] = anchor_export_path
         captured["resolve_markets_only"] = resolve_markets_only
         return {
             "run_id": "run-001",
@@ -68,6 +70,7 @@ def test_cli_model_export_expert_table_dispatches_to_sequence_export(monkeypatch
         "start": "2026-03-23",
         "end": "2026-03-30",
         "selected_markets_override": None,
+        "anchor_export_path": None,
         "resolve_markets_only": False,
     }
     payload = json.loads(capsys.readouterr().out.strip())
