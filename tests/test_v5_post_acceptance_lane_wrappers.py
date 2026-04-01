@@ -35,3 +35,4 @@ def test_install_server_daily_v5_split_wrapper_targets_v5_units() -> None:
     assert 'autobot-v5-challenger-promote.service' in source
     assert 'autobot-raw-ticks-daily.timer' in source
     assert 'autobot-v5-train-snapshot-close.timer' in source
+    assert '/tmp/autobot-v5-nightly-train-chain.lock' in source

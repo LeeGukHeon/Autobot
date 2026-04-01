@@ -18,7 +18,7 @@ param(
     [string]$SpawnServiceUnitName = "autobot-v5-challenger-spawn.service",
     [string]$SpawnTimerUnitName = "autobot-v5-challenger-spawn.timer",
     [string]$SpawnOnCalendar = "*-*-* 00:20:00",
-    [string]$LockFile = "/tmp/autobot-train-acceptance.lock",
+    [string]$LockFile = "/tmp/autobot-v5-nightly-train-chain.lock",
     [switch]$NoStart,
     [switch]$NoEnable,
     [switch]$DryRun
