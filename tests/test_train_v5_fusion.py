@@ -12,6 +12,7 @@ from autobot.models.train_v5_fusion import (
     resume_v5_fusion_tail,
     train_and_register_v5_fusion,
 )
+from autobot.models.v5_expert_runtime_export import parse_operating_date_to_ts_ms
 
 
 def _write_expert_run(
@@ -78,17 +79,19 @@ def _base_rows() -> list[dict[str, object]]:
 
 
 def _runtime_rows_for(date_prefix: str) -> list[dict[str, object]]:
+    start_ts_ms = int(parse_operating_date_to_ts_ms(date_prefix) or 0)
+    end_ts_ms = int(parse_operating_date_to_ts_ms(date_prefix, end_of_day=True) or 0)
     return [
         {
             "market": "KRW-BTC",
-            "ts_ms": 1_774_656_000_000 if date_prefix == "2026-03-28" else 1_774_742_400_000,
+            "ts_ms": start_ts_ms,
             "split": "runtime",
             "y_cls": 1,
             "y_reg": 0.1,
         },
         {
             "market": "KRW-BTC",
-            "ts_ms": 1_774_742_399_999 if date_prefix == "2026-03-28" else 1_774_828_799_999,
+            "ts_ms": end_ts_ms,
             "split": "runtime",
             "y_cls": 1,
             "y_reg": 0.12,
@@ -509,10 +512,7 @@ def test_train_v5_fusion_fails_on_runtime_input_window_gap(tmp_path: Path) -> No
         snapshot_id=snapshot_id,
         rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
     )
-    partial_runtime_rows = [
-        {"market": "KRW-BTC", "ts_ms": 1_774_656_000_000, "split": "runtime", "y_cls": 1, "y_reg": 0.1},
-        {"market": "KRW-BTC", "ts_ms": 1_774_656_060_000, "split": "runtime", "y_cls": 1, "y_reg": 0.12},
-    ]
+    partial_runtime_rows = _runtime_rows_for("2026-03-29")
     panel_runtime = _write_runtime_export(
         table_path=registry_root / "train_v5_panel_ensemble" / "panel-run-runtime-002" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
         rows=[{**row, "final_rank_score": 0.41, "final_expected_return": 0.11, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.04} for row in partial_runtime_rows],
@@ -642,7 +642,7 @@ def test_train_v5_fusion_fails_on_runtime_sequence_coverage_gap(tmp_path: Path) 
     )
     sequence_runtime = _write_runtime_export(
         table_path=registry_root / "train_v5_sequence" / "sequence-run-runtime-seq-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
-        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.51, "sequence_uncertainty_primary": 0.04} for row in runtime_rows[:1]],
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.51, "sequence_uncertainty_primary": 0.04} for row in _runtime_rows_for("2026-03-29")],
     )
     lob_runtime = _write_runtime_export(
         table_path=registry_root / "train_v5_lob" / "lob-run-runtime-seq-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
@@ -708,7 +708,7 @@ def test_train_v5_fusion_fails_on_runtime_lob_coverage_gap(tmp_path: Path) -> No
     )
     lob_runtime = _write_runtime_export(
         table_path=registry_root / "train_v5_lob" / "lob-run-runtime-lob-gap" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
-        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.11, "micro_alpha_5s": 0.11, "micro_alpha_30s": 0.11, "micro_uncertainty": 0.03} for row in runtime_rows[:1]],
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.11, "micro_alpha_5s": 0.11, "micro_alpha_30s": 0.11, "micro_uncertainty": 0.03} for row in _runtime_rows_for("2026-03-29")],
     )
     options = TrainV5FusionOptions(
         panel_input_path=panel_path,

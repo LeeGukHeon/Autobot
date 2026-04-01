@@ -39,7 +39,11 @@ from .v5_expert_tail import (
     v5_expert_tail_stage_reusable,
 )
 from .v5_expert_runtime_export import (
+    OPERATING_WINDOW_TIMEZONE,
+    build_operating_window_mask,
+    build_ts_date_coverage_payload,
     load_existing_expert_runtime_export,
+    parse_operating_date_to_ts_ms,
     resolve_expert_runtime_export_paths,
     write_expert_runtime_export_metadata,
 )
@@ -118,6 +122,48 @@ class _LobSamples:
     @property
     def rows(self) -> int:
         return int(self.y_cls.shape[0])
+
+
+def _slice_lob_samples(samples: _LobSamples, mask: np.ndarray) -> _LobSamples:
+    resolved_mask = np.asarray(mask, dtype=bool)
+    if resolved_mask.shape[0] != samples.rows:
+        raise ValueError("lob runtime export mask length mismatch")
+    rows_by_market: dict[str, int] = {}
+    support_level_counts = {
+        SUPPORT_LEVEL_STRICT_FULL: 0,
+        SUPPORT_LEVEL_REDUCED_CONTEXT: 0,
+        SUPPORT_LEVEL_STRUCTURAL_INVALID: 0,
+    }
+    filtered_markets = np.asarray(samples.markets[resolved_mask], dtype=object)
+    filtered_support = np.asarray(samples.support_level[resolved_mask], dtype=object)
+    for item in filtered_markets:
+        market = str(item).strip()
+        if market:
+            rows_by_market[market] = rows_by_market.get(market, 0) + 1
+    for item in filtered_support:
+        level = str(item).strip()
+        if level in support_level_counts:
+            support_level_counts[level] += 1
+    return _LobSamples(
+        lob=np.asarray(samples.lob[resolved_mask]),
+        lob_global=np.asarray(samples.lob_global[resolved_mask]),
+        micro=np.asarray(samples.micro[resolved_mask]),
+        close_price=np.asarray(samples.close_price[resolved_mask]),
+        y_micro_alpha=np.asarray(samples.y_micro_alpha[resolved_mask]),
+        y_adverse_excursion=np.asarray(samples.y_adverse_excursion[resolved_mask]),
+        y_five_min_alpha=np.asarray(samples.y_five_min_alpha[resolved_mask]),
+        y_cls=np.asarray(samples.y_cls[resolved_mask]),
+        y_rank=np.asarray(samples.y_rank[resolved_mask]),
+        sample_weight=np.asarray(samples.sample_weight[resolved_mask]),
+        support_level=np.asarray(filtered_support),
+        ts_ms=np.asarray(samples.ts_ms[resolved_mask]),
+        markets=filtered_markets,
+        pooled_features=np.asarray(samples.pooled_features[resolved_mask]),
+        feature_names=samples.feature_names,
+        selected_markets=tuple(sorted(rows_by_market.keys())),
+        rows_by_market=rows_by_market,
+        support_level_counts=support_level_counts,
+    )
 
 
 class _LobTorchDataset(Dataset):
@@ -795,6 +841,62 @@ def _load_lob_samples(
     )
 
 
+def _load_lob_runtime_export_samples(
+    *,
+    options: TrainV5LobOptions,
+    train_config: dict[str, Any],
+    output_start: str,
+    output_end: str,
+    selected_markets_override: tuple[str, ...] | None,
+) -> tuple[_LobSamples, dict[str, Any]]:
+    if selected_markets_override is not None:
+        context_start = min(
+            [value for value in [str(train_config.get("start") or "").strip(), str(output_start).strip()] if value]
+        )
+        context_options = replace(options, start=context_start, end=str(output_end))
+        context_samples = _load_lob_samples(context_options, selected_markets_override=selected_markets_override)
+        output_mask = np.asarray(
+            build_operating_window_mask(
+                context_samples.ts_ms,
+                start=str(output_start).strip(),
+                end=str(output_end).strip(),
+                timezone_name=OPERATING_WINDOW_TIMEZONE,
+            ),
+            dtype=bool,
+        )
+        if not np.any(output_mask):
+            raise ValueError("lob runtime export produced no rows in requested certification window")
+        return (
+            _slice_lob_samples(context_samples, output_mask),
+            {
+                "generation_context_window": {
+                    "start": str(context_options.start).strip(),
+                    "end": str(context_options.end).strip(),
+                    "source": "train_window_to_runtime_output_window",
+                },
+                "output_window": {
+                    "start": str(output_start).strip(),
+                    "end": str(output_end).strip(),
+                },
+            },
+        )
+    output_samples = _load_lob_samples(options, selected_markets_override=None)
+    return (
+        output_samples,
+        {
+            "generation_context_window": {
+                "start": str(options.start).strip(),
+                "end": str(options.end).strip(),
+                "source": "output_window_only",
+            },
+            "output_window": {
+                "start": str(output_start).strip(),
+                "end": str(output_end).strip(),
+            },
+        },
+    )
+
+
 def _export_lob_expert_prediction_table_window(
     *,
     run_dir: Path,
@@ -837,6 +939,9 @@ def _export_lob_expert_prediction_table_window(
         and str(existing_metadata.get("end") or "").strip() == str(end).strip()
         and existing_metadata.get("coverage_start_ts_ms") is not None
         and existing_metadata.get("coverage_end_ts_ms") is not None
+        and str(existing_metadata.get("coverage_start_date") or "").strip()
+        and str(existing_metadata.get("coverage_end_date") or "").strip()
+        and str(existing_metadata.get("window_timezone") or "").strip() == OPERATING_WINDOW_TIMEZONE
     ):
         return {
             "run_id": run_dir.name,
@@ -847,6 +952,10 @@ def _export_lob_expert_prediction_table_window(
             "end": str(end).strip(),
             "coverage_start_ts_ms": int(existing_metadata.get("coverage_start_ts_ms", 0) or 0),
             "coverage_end_ts_ms": int(existing_metadata.get("coverage_end_ts_ms", 0) or 0),
+            "coverage_start_date": str(existing_metadata.get("coverage_start_date") or ""),
+            "coverage_end_date": str(existing_metadata.get("coverage_end_date") or ""),
+            "coverage_dates": list(existing_metadata.get("coverage_dates") or []),
+            "window_timezone": str(existing_metadata.get("window_timezone") or ""),
             "rows": int(existing_metadata.get("rows", 0) or 0),
             "requested_selected_markets": list(existing_metadata.get("requested_selected_markets") or []),
             "selected_markets": list(existing_metadata.get("selected_markets") or []),
@@ -869,16 +978,39 @@ def _export_lob_expert_prediction_table_window(
     )
     fallback_reason = ""
     try:
-        samples = _load_lob_samples(options, selected_markets_override=selected_markets)
+        samples, export_window_contract = _load_lob_runtime_export_samples(
+            options=options,
+            train_config=train_config,
+            output_start=start,
+            output_end=end,
+            selected_markets_override=(
+                selected_markets
+                if (selected_markets_override is not None or selected_markets)
+                else None
+            ),
+        )
     except ValueError as exc:
         if selected_markets_override is not None:
             raise
-        if not selected_markets or "top_n filtering" not in str(exc):
+        if (
+            not selected_markets
+            or (
+                "top_n filtering" not in str(exc)
+                and "requested certification window" not in str(exc)
+            )
+        ):
             raise
-        samples = _load_lob_samples(options, selected_markets_override=None)
+        samples, export_window_contract = _load_lob_runtime_export_samples(
+            options=options,
+            train_config=train_config,
+            output_start=start,
+            output_end=end,
+            selected_markets_override=None,
+        )
         selected_markets_source = "window_available_markets_fallback"
         fallback_reason = "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW"
     ts_values = np.asarray(samples.ts_ms, dtype=np.int64)
+    coverage_payload = build_ts_date_coverage_payload(ts_values, timezone_name=OPERATING_WINDOW_TIMEZONE)
     metadata = {
         "version": 1,
         "policy": "v5_expert_runtime_export_v1",
@@ -890,6 +1022,8 @@ def _export_lob_expert_prediction_table_window(
         "end": str(end).strip(),
         "coverage_start_ts_ms": int(ts_values.min()) if ts_values.size > 0 else 0,
         "coverage_end_ts_ms": int(ts_values.max()) if ts_values.size > 0 else 0,
+        **coverage_payload,
+        **export_window_contract,
         "rows": int(samples.rows),
         "requested_selected_markets": requested_selected_markets,
         "selected_markets": list(samples.selected_markets),

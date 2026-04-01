@@ -196,6 +196,16 @@ function Resolve-DateTimeOffsetOrNull {
     }
 }
 
+function Resolve-KstTimeZoneInfo {
+    foreach ($timeZoneId in @("Asia/Seoul", "Korea Standard Time")) {
+        try {
+            return [System.TimeZoneInfo]::FindSystemTimeZoneById($timeZoneId)
+        } catch {
+        }
+    }
+    throw "unable to resolve Asia/Seoul timezone info"
+}
+
 function Convert-DateTokenToUnixMs {
     param(
         [string]$DateText,
@@ -205,18 +215,91 @@ function Convert-DateTokenToUnixMs {
         return [int64]0
     }
     $normalized = Resolve-DateToken -DateText $DateText -LabelForError "date_token"
-    $parsed = [DateTime]::ParseExact(
+    $parsedDate = [DateTime]::ParseExact(
         $normalized,
         "yyyy-MM-dd",
         [System.Globalization.CultureInfo]::InvariantCulture,
-        [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        [System.Globalization.DateTimeStyles]::None
     )
-    if ($EndOfDay) {
-        $parsed = $parsed.Date.AddDays(1).AddMilliseconds(-1)
+    $localDateTime = if ($EndOfDay) {
+        $parsedDate.Date.AddDays(1).AddMilliseconds(-1)
     } else {
-        $parsed = $parsed.Date
+        $parsedDate.Date
     }
-    return [int64][DateTimeOffset]::new($parsed).ToUnixTimeMilliseconds()
+    $localDateTime = [DateTime]::SpecifyKind($localDateTime, [System.DateTimeKind]::Unspecified)
+    $kstTimeZone = Resolve-KstTimeZoneInfo
+    $offset = $kstTimeZone.GetUtcOffset($localDateTime)
+    $dateTimeOffset = [DateTimeOffset]::new($localDateTime, $offset)
+    return [int64]$dateTimeOffset.ToUnixTimeMilliseconds()
+}
+
+function Convert-UnixMsToOperatingDateToken {
+    param([int64]$UnixMs)
+    if ($UnixMs -le 0) {
+        return ""
+    }
+    $utcDateTime = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$UnixMs)
+    $kstTimeZone = Resolve-KstTimeZoneInfo
+    return [System.TimeZoneInfo]::ConvertTime($utcDateTime, $kstTimeZone).ToString("yyyy-MM-dd")
+}
+
+function Get-DateTokenRangeInclusive {
+    param(
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    if ([string]::IsNullOrWhiteSpace($StartDate) -or [string]::IsNullOrWhiteSpace($EndDate)) {
+        return @()
+    }
+    $startValue = Resolve-DateToken -DateText $StartDate -LabelForError "range_start"
+    $endValue = Resolve-DateToken -DateText $EndDate -LabelForError "range_end"
+    $startObj = [DateTime]::ParseExact($startValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $endObj = [DateTime]::ParseExact($endValue, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    if ($endObj -lt $startObj) {
+        return @()
+    }
+    $values = New-Object System.Collections.Generic.List[string]
+    $cursor = $startObj
+    while ($cursor -le $endObj) {
+        $values.Add($cursor.ToString("yyyy-MM-dd")) | Out-Null
+        $cursor = $cursor.AddDays(1)
+    }
+    return @($values.ToArray())
+}
+
+function Resolve-OperatingDateCoverageFields {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Payload
+    )
+    $coverageStartDate = [string](Get-PropValue -ObjectValue $Payload -Name "coverage_start_date" -DefaultValue "")
+    $coverageEndDate = [string](Get-PropValue -ObjectValue $Payload -Name "coverage_end_date" -DefaultValue "")
+    $coverageDates = @(
+        @(Get-PropValue -ObjectValue $Payload -Name "coverage_dates" -DefaultValue @()) |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    $windowTimezone = [string](Get-PropValue -ObjectValue $Payload -Name "window_timezone" -DefaultValue "")
+    $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $Payload -Name "coverage_start_ts_ms" -DefaultValue 0)
+    $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $Payload -Name "coverage_end_ts_ms" -DefaultValue 0)
+    if ([string]::IsNullOrWhiteSpace($coverageStartDate) -and ($coverageStartTsMs -gt 0)) {
+        $coverageStartDate = Convert-UnixMsToOperatingDateToken -UnixMs $coverageStartTsMs
+    }
+    if ([string]::IsNullOrWhiteSpace($coverageEndDate) -and ($coverageEndTsMs -gt 0)) {
+        $coverageEndDate = Convert-UnixMsToOperatingDateToken -UnixMs $coverageEndTsMs
+    }
+    if (@($coverageDates).Count -eq 0 -and (-not [string]::IsNullOrWhiteSpace($coverageStartDate)) -and (-not [string]::IsNullOrWhiteSpace($coverageEndDate))) {
+        $coverageDates = @(Get-DateTokenRangeInclusive -StartDate $coverageStartDate -EndDate $coverageEndDate)
+    }
+    if ([string]::IsNullOrWhiteSpace($windowTimezone)) {
+        $windowTimezone = "Asia/Seoul"
+    }
+    return [ordered]@{
+        coverage_start_date = $coverageStartDate
+        coverage_end_date = $coverageEndDate
+        coverage_dates = @($coverageDates)
+        window_timezone = $windowTimezone
+    }
 }
 
 function Invoke-DependencyTrainerChain {
@@ -394,6 +477,7 @@ function Test-DependencyRuntimeExportUsable {
     $metadataPath = [string](Get-PropValue -ObjectValue $ExportResult -Name "metadata_path" -DefaultValue "")
     $snapshotId = [string](Get-PropValue -ObjectValue $ExportResult -Name "data_platform_ready_snapshot_id" -DefaultValue "")
     $rows = [int](Get-PropValue -ObjectValue $ExportResult -Name "rows" -DefaultValue 0)
+    $coverageFields = Resolve-OperatingDateCoverageFields -Payload $ExportResult
     $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $ExportResult -Name "coverage_start_ts_ms" -DefaultValue 0)
     $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $ExportResult -Name "coverage_end_ts_ms" -DefaultValue 0)
     if ([string]::IsNullOrWhiteSpace($exportPath) -or [string]::IsNullOrWhiteSpace($metadataPath)) {
@@ -408,7 +492,14 @@ function Test-DependencyRuntimeExportUsable {
     if ($DryRun) {
         return $true
     }
-    return (($rows -gt 0) -and ($coverageStartTsMs -gt 0) -and ($coverageEndTsMs -gt 0))
+    return (
+        ($rows -gt 0) -and
+        ($coverageStartTsMs -gt 0) -and
+        ($coverageEndTsMs -gt 0) -and
+        (-not [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_start_date" -DefaultValue ""))) -and
+        (-not [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_end_date" -DefaultValue ""))) -and
+        ([string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "") -eq "Asia/Seoul")
+    )
 }
 
 function Normalize-MarketArray {
@@ -499,11 +590,10 @@ function Test-DependencyRuntimeExportContractAlignment {
     )
     $reasons = @()
     $expectedCommonMarkets = @(Normalize-MarketArray -Markets $CommonMarkets)
+    $expectedCoverageDates = @(Get-DateTokenRangeInclusive -StartDate $CertificationStartDate -EndDate $CertificationEndDate)
     if (@($expectedCommonMarkets).Count -le 0) {
         $reasons += "COMMON_RUNTIME_UNIVERSE_EMPTY"
     }
-    $expectedStartTsMs = Convert-DateTokenToUnixMs -DateText $CertificationStartDate
-    $expectedEndTsMs = Convert-DateTokenToUnixMs -DateText $CertificationEndDate -EndOfDay
     $details = @()
     foreach ($item in @($ExportResults)) {
         $trainerName = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
@@ -513,6 +603,11 @@ function Test-DependencyRuntimeExportContractAlignment {
         $endDate = [string](Get-PropValue -ObjectValue $item -Name "end" -DefaultValue "")
         $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $item -Name "coverage_start_ts_ms" -DefaultValue 0)
         $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $item -Name "coverage_end_ts_ms" -DefaultValue 0)
+        $coverageFields = Resolve-OperatingDateCoverageFields -Payload $item
+        $coverageStartDate = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_start_date" -DefaultValue "")
+        $coverageEndDate = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_end_date" -DefaultValue "")
+        $coverageDates = @((Get-PropValue -ObjectValue $coverageFields -Name "coverage_dates" -DefaultValue @()))
+        $windowTimezone = [string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "")
         $requestedSelectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "requested_selected_markets" -DefaultValue @()))
         $selectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "selected_markets" -DefaultValue @()))
         $selectedMarketsSource = [string](Get-PropValue -ObjectValue $item -Name "selected_markets_source" -DefaultValue "")
@@ -520,8 +615,12 @@ function Test-DependencyRuntimeExportContractAlignment {
         $windowGap = (
             ($startDate -ne [string]$CertificationStartDate) -or
             ($endDate -ne [string]$CertificationEndDate) -or
-            (($expectedStartTsMs -gt 0) -and (($coverageStartTsMs -le 0) -or ($coverageStartTsMs -gt $expectedStartTsMs))) -or
-            (($expectedEndTsMs -gt 0) -and (($coverageEndTsMs -le 0) -or ($coverageEndTsMs -lt $expectedEndTsMs)))
+            ($windowTimezone -ne "Asia/Seoul") -or
+            [string]::IsNullOrWhiteSpace($coverageStartDate) -or
+            [string]::IsNullOrWhiteSpace($coverageEndDate) -or
+            ($coverageStartDate -gt [string]$CertificationStartDate) -or
+            ($coverageEndDate -lt [string]$CertificationEndDate) -or
+            (@($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ }).Count -gt 0)
         )
         $universeMismatch = (
             (-not (Test-StringArraySequenceEqual -Left $requestedSelectedMarkets -Right $expectedCommonMarkets)) -or
@@ -545,6 +644,10 @@ function Test-DependencyRuntimeExportContractAlignment {
             end = $endDate
             coverage_start_ts_ms = $coverageStartTsMs
             coverage_end_ts_ms = $coverageEndTsMs
+            coverage_start_date = $coverageStartDate
+            coverage_end_date = $coverageEndDate
+            coverage_dates = @($coverageDates)
+            window_timezone = $windowTimezone
             requested_selected_markets = @($requestedSelectedMarkets)
             selected_markets = @($selectedMarkets)
             selected_markets_source = $selectedMarketsSource
@@ -640,6 +743,7 @@ function Invoke-DependencyRuntimeExportChain {
         $exportDir = Join-Path $exportRoot $windowId
         $coverageStartTsMs = Convert-DateTokenToUnixMs -DateText $CertificationStartDate
         $coverageEndTsMs = Convert-DateTokenToUnixMs -DateText $CertificationEndDate -EndOfDay
+        $coverageDates = @(Get-DateTokenRangeInclusive -StartDate $CertificationStartDate -EndDate $CertificationEndDate)
         $syntheticPayload = [ordered]@{
             run_id = $runId
             trainer = $trainerName
@@ -649,6 +753,10 @@ function Invoke-DependencyRuntimeExportChain {
             end = $CertificationEndDate
             coverage_start_ts_ms = $coverageStartTsMs
             coverage_end_ts_ms = $coverageEndTsMs
+            coverage_start_date = $CertificationStartDate
+            coverage_end_date = $CertificationEndDate
+            coverage_dates = @($coverageDates)
+            window_timezone = "Asia/Seoul"
             rows = 0
             requested_selected_markets = @($CommonMarkets)
             selected_markets = @($CommonMarkets)
@@ -694,6 +802,7 @@ function Invoke-DependencyRuntimeExportChain {
         if (-not (Test-DependencyRuntimeExportUsable -ExportResult $payload -ExpectedSnapshotId $snapshotId)) {
             throw ("dependency runtime export unusable: " + $trainerName)
         }
+        $coverageFields = Resolve-OperatingDateCoverageFields -Payload $payload
         $results += [ordered]@{
             trainer = $trainerName
             model_family = $modelFamily
@@ -708,6 +817,10 @@ function Invoke-DependencyRuntimeExportChain {
             end = [string](Get-PropValue -ObjectValue $payload -Name "end" -DefaultValue "")
             coverage_start_ts_ms = [int64](Get-PropValue -ObjectValue $payload -Name "coverage_start_ts_ms" -DefaultValue 0)
             coverage_end_ts_ms = [int64](Get-PropValue -ObjectValue $payload -Name "coverage_end_ts_ms" -DefaultValue 0)
+            coverage_start_date = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_start_date" -DefaultValue "")
+            coverage_end_date = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_end_date" -DefaultValue "")
+            coverage_dates = @((Get-PropValue -ObjectValue $coverageFields -Name "coverage_dates" -DefaultValue @()))
+            window_timezone = [string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "")
             rows = [int](Get-PropValue -ObjectValue $payload -Name "rows" -DefaultValue 0)
             requested_selected_markets = @((Get-PropValue -ObjectValue $payload -Name "requested_selected_markets" -DefaultValue @()))
             selected_markets = @((Get-PropValue -ObjectValue $payload -Name "selected_markets" -DefaultValue @()))
@@ -745,6 +858,10 @@ function Resolve-DependencyRuntimeCommonUniverse {
                 data_platform_ready_snapshot_id = $snapshotId
                 start = $CertificationStartDate
                 end = $CertificationEndDate
+                coverage_start_date = $CertificationStartDate
+                coverage_end_date = $CertificationEndDate
+                coverage_dates = @(Get-DateTokenRangeInclusive -StartDate $CertificationStartDate -EndDate $CertificationEndDate)
+                window_timezone = "Asia/Seoul"
                 rows = 0
                 requested_selected_markets = @()
                 selected_markets = @()
@@ -3866,6 +3983,10 @@ function Resolve-CandidateRuntimeDatasetCoverage {
         rows = [int](Get-PropValue -ObjectValue $runtimeContract -Name "runtime_rows_after_date_filter" -DefaultValue 0)
         coverage_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeContract -Name "coverage_start_ts_ms" -DefaultValue 0)
         coverage_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeContract -Name "coverage_end_ts_ms" -DefaultValue 0)
+        coverage_start_date = [string](Get-PropValue -ObjectValue $runtimeContract -Name "coverage_start_date" -DefaultValue "")
+        coverage_end_date = [string](Get-PropValue -ObjectValue $runtimeContract -Name "coverage_end_date" -DefaultValue "")
+        coverage_dates = @((Get-PropValue -ObjectValue $runtimeContract -Name "coverage_dates" -DefaultValue @()))
+        window_timezone = [string](Get-PropValue -ObjectValue $runtimeContract -Name "window_timezone" -DefaultValue "")
         requested_start_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeWindow -Name "start_ts_ms" -DefaultValue 0)
         requested_end_ts_ms = [int64](Get-PropValue -ObjectValue $runtimeWindow -Name "end_ts_ms" -DefaultValue 0)
         requested_start = [string](Get-PropValue -ObjectValue $runtimeWindow -Name "start" -DefaultValue "")
@@ -3907,17 +4028,25 @@ function Test-CandidateRuntimeDatasetCertificationCoverage {
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"
         }
     }
-    $expectedStartTsMs = Convert-DateTokenToUnixMs -DateText $CertificationStartDate
-    $expectedEndTsMs = Convert-DateTokenToUnixMs -DateText $CertificationEndDate -EndOfDay
-    $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "actual_dataset_min_ts_ms" -DefaultValue 0)
-    $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $Coverage -Name "actual_dataset_max_ts_ms" -DefaultValue 0)
-    if (($expectedStartTsMs -gt 0) -and (($coverageStartTsMs -le 0) -or ($coverageStartTsMs -gt $expectedStartTsMs))) {
+    $coverageFields = Resolve-OperatingDateCoverageFields -Payload $Coverage
+    $coverageStartDate = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_start_date" -DefaultValue "")
+    $coverageEndDate = [string](Get-PropValue -ObjectValue $coverageFields -Name "coverage_end_date" -DefaultValue "")
+    $coverageDates = @((Get-PropValue -ObjectValue $coverageFields -Name "coverage_dates" -DefaultValue @()))
+    $windowTimezone = [string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "")
+    $expectedCoverageDates = @(Get-DateTokenRangeInclusive -StartDate $CertificationStartDate -EndDate $CertificationEndDate)
+    if (($windowTimezone -ne "Asia/Seoul") -or [string]::IsNullOrWhiteSpace($coverageStartDate) -or [string]::IsNullOrWhiteSpace($coverageEndDate)) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
         }
     }
-    if (($expectedEndTsMs -gt 0) -and (($coverageEndTsMs -le 0) -or ($coverageEndTsMs -lt $expectedEndTsMs))) {
+    if (($coverageStartDate -gt $CertificationStartDate) -or ($coverageEndDate -lt $CertificationEndDate)) {
+        return [ordered]@{
+            pass = $false
+            reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
+        }
+    }
+    if (@($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ }).Count -gt 0) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"

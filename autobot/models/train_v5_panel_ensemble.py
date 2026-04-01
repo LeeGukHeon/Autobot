@@ -19,7 +19,7 @@ from . import train_v4_crypto_cs as v4
 from . import train_v4_persistence as v4_persistence
 from . import train_v4_postprocess as v4_postprocess
 from .dataset_loader import (
-    build_dataset_request,
+    DatasetRequest,
     build_data_fingerprint,
     feature_columns_from_spec,
     load_feature_aux_frame,
@@ -53,7 +53,10 @@ from .train_v4_artifacts import build_decision_surface_v4, build_v4_metrics_doc,
 from .train_v4_core import prepare_v4_training_inputs
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
 from .v5_expert_runtime_export import (
+    OPERATING_WINDOW_TIMEZONE,
+    build_ts_date_coverage_payload,
     load_existing_expert_runtime_export,
+    parse_operating_date_to_ts_ms,
     resolve_expert_runtime_export_paths,
     write_expert_runtime_export_metadata,
 )
@@ -308,15 +311,15 @@ def _load_panel_inference_dataset_window(
         if selected_markets_override is not None
         else tuple(str(item).strip().upper() for item in (train_config.get("selected_markets") or []) if str(item).strip())
     )
-    request = build_dataset_request(
-        dataset_root=options.dataset_root,
-        tf=options.tf,
-        quote=options.quote,
-        top_n=options.top_n,
-        start=options.start,
-        end=options.end,
+    request = DatasetRequest(
+        dataset_root=Path(options.dataset_root),
+        tf=str(options.tf).strip().lower(),
+        quote=(str(options.quote).strip().upper() if options.quote else None),
+        top_n=max(int(options.top_n), 1) if options.top_n is not None else None,
+        start_ts_ms=parse_operating_date_to_ts_ms(options.start, timezone_name=OPERATING_WINDOW_TIMEZONE),
+        end_ts_ms=parse_operating_date_to_ts_ms(options.end, end_of_day=True, timezone_name=OPERATING_WINDOW_TIMEZONE),
         markets=selected_markets,
-        batch_rows=options.batch_rows,
+        batch_rows=max(int(options.batch_rows), 1),
     )
     dataset = load_feature_dataset(
         request,
@@ -434,6 +437,9 @@ def _export_panel_expert_prediction_table_window(
         and str(existing_metadata.get("end") or "").strip() == str(end).strip()
         and existing_metadata.get("coverage_start_ts_ms") is not None
         and existing_metadata.get("coverage_end_ts_ms") is not None
+        and str(existing_metadata.get("coverage_start_date") or "").strip()
+        and str(existing_metadata.get("coverage_end_date") or "").strip()
+        and str(existing_metadata.get("window_timezone") or "").strip() == OPERATING_WINDOW_TIMEZONE
     ):
         return {
             "run_id": run_dir.name,
@@ -444,6 +450,10 @@ def _export_panel_expert_prediction_table_window(
             "end": str(end).strip(),
             "coverage_start_ts_ms": int(existing_metadata.get("coverage_start_ts_ms", 0) or 0),
             "coverage_end_ts_ms": int(existing_metadata.get("coverage_end_ts_ms", 0) or 0),
+            "coverage_start_date": str(existing_metadata.get("coverage_start_date") or ""),
+            "coverage_end_date": str(existing_metadata.get("coverage_end_date") or ""),
+            "coverage_dates": list(existing_metadata.get("coverage_dates") or []),
+            "window_timezone": str(existing_metadata.get("window_timezone") or ""),
             "rows": int(existing_metadata.get("rows", 0) or 0),
             "requested_selected_markets": list(existing_metadata.get("requested_selected_markets") or []),
             "selected_markets": list(existing_metadata.get("selected_markets") or []),
@@ -456,6 +466,7 @@ def _export_panel_expert_prediction_table_window(
         }
 
     ts_values = np.asarray(getattr(dataset, "ts_ms", np.asarray([], dtype=np.int64)), dtype=np.int64)
+    coverage_payload = build_ts_date_coverage_payload(ts_values, timezone_name=OPERATING_WINDOW_TIMEZONE)
     metadata = {
         "version": 1,
         "policy": "v5_expert_runtime_export_v1",
@@ -467,6 +478,16 @@ def _export_panel_expert_prediction_table_window(
         "end": str(end).strip(),
         "coverage_start_ts_ms": int(ts_values.min()) if ts_values.size > 0 else 0,
         "coverage_end_ts_ms": int(ts_values.max()) if ts_values.size > 0 else 0,
+        **coverage_payload,
+        "generation_context_window": {
+            "start": str(start).strip(),
+            "end": str(end).strip(),
+            "source": "output_window_only",
+        },
+        "output_window": {
+            "start": str(start).strip(),
+            "end": str(end).strip(),
+        },
         "rows": int(dataset.rows),
         "requested_selected_markets": requested_selected_markets,
         "selected_markets": [str(item).strip().upper() for item in getattr(dataset, "selected_markets", ())],

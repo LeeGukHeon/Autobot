@@ -25,6 +25,7 @@ from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
+from .v5_expert_runtime_export import OPERATING_WINDOW_TIMEZONE, build_ts_date_coverage_payload, operating_date_range
 from .v5_expert_tail import (
     build_v5_expert_tail_context,
     expert_tail_context_path,
@@ -183,6 +184,12 @@ def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
         "export_window_end": str(export_metadata.get("end") or "").strip(),
         "coverage_start_ts_ms": int(export_metadata.get("coverage_start_ts_ms", 0) or 0),
         "coverage_end_ts_ms": int(export_metadata.get("coverage_end_ts_ms", 0) or 0),
+        "coverage_start_date": str(export_metadata.get("coverage_start_date") or "").strip(),
+        "coverage_end_date": str(export_metadata.get("coverage_end_date") or "").strip(),
+        "coverage_dates": list(export_metadata.get("coverage_dates") or []),
+        "window_timezone": str(export_metadata.get("window_timezone") or "").strip(),
+        "generation_context_window": dict(export_metadata.get("generation_context_window") or {}),
+        "output_window": dict(export_metadata.get("output_window") or {}),
         "runtime_export_metadata_path": str(export_metadata_path) if export_metadata_path.exists() else "",
     }
 
@@ -265,6 +272,13 @@ def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[s
         metadata["coverage_start_ts_ms"] = int(frame.get_column("ts_ms").min())
     if int(metadata.get("coverage_end_ts_ms", 0) or 0) <= 0 and frame.height > 0:
         metadata["coverage_end_ts_ms"] = int(frame.get_column("ts_ms").max())
+    if not metadata.get("coverage_start_date") or not metadata.get("coverage_end_date"):
+        metadata.update(
+            build_ts_date_coverage_payload(
+                frame.get_column("ts_ms").to_list(),
+                timezone_name=OPERATING_WINDOW_TIMEZONE,
+            )
+        )
     metadata["support_level_counts"] = _normalize_support_level_summary(frame)
     metadata["label_columns"] = (
         {
@@ -523,7 +537,7 @@ def _prepare_fusion_input_bundle(options: TrainV5FusionOptions) -> _FusionInputB
 
 def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _FusionInputBundle:
     runtime_options = _runtime_fusion_input_options(options)
-    input_bundle = _prepare_fusion_input_bundle(runtime_options)
+    input_bundle = _load_and_merge_expert_tables(runtime_options)
     merged = input_bundle.merged
     input_contract = dict(input_bundle.input_contract)
     input_metadata = {key: dict(value or {}) for key, value in (input_contract.get("inputs") or {}).items()}
@@ -538,8 +552,6 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
         (options.runtime_start is not None and str(options.runtime_start).strip() != str(options.start).strip())
         or (options.runtime_end is not None and str(options.runtime_end).strip() != str(options.end).strip())
     )
-    if merged.height <= 0:
-        raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_EMPTY")
     start_ts_ms = _parse_date_to_ts_ms(runtime_options.start)
     end_ts_ms = _parse_date_to_ts_ms(runtime_options.end, end_of_day=True)
     markets_by_expert = {
@@ -560,15 +572,28 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     input_contract["common_runtime_markets"] = list(common_runtime_markets)
     if explicit_runtime_requested and not common_runtime_markets:
         raise ValueError("COMMON_RUNTIME_UNIVERSE_EMPTY")
+    expected_runtime_dates = operating_date_range(str(runtime_options.start), str(runtime_options.end))
     for expert_name in ("panel", "sequence", "lob"):
         payload = dict(input_metadata.get(expert_name) or {})
         expert_start = int(payload.get("coverage_start_ts_ms", 0) or 0)
         expert_end = int(payload.get("coverage_end_ts_ms", 0) or 0)
+        expert_dates = list(payload.get("coverage_dates") or [])
+        expert_timezone = str(payload.get("window_timezone") or OPERATING_WINDOW_TIMEZONE).strip() or OPERATING_WINDOW_TIMEZONE
         if explicit_runtime_requested:
-            if start_ts_ms is not None and (expert_start <= 0 or expert_start > int(start_ts_ms)):
+            if expert_timezone != OPERATING_WINDOW_TIMEZONE:
                 raise ValueError(_runtime_window_gap_error(expert_name))
-            if end_ts_ms is not None and (expert_end <= 0 or expert_end < int(end_ts_ms)):
+            if not expert_dates or any(day not in set(expert_dates) for day in expected_runtime_dates):
                 raise ValueError(_runtime_window_gap_error(expert_name))
+            if start_ts_ms is not None and expert_start <= 0:
+                raise ValueError(_runtime_window_gap_error(expert_name))
+            if end_ts_ms is not None and expert_end <= 0:
+                raise ValueError(_runtime_window_gap_error(expert_name))
+    if start_ts_ms is not None:
+        merged = merged.filter(pl.col("ts_ms") >= int(start_ts_ms))
+    if end_ts_ms is not None:
+        merged = merged.filter(pl.col("ts_ms") <= int(end_ts_ms))
+    if merged.height <= 0:
+        raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_EMPTY")
     coverage_start = int(merged.get_column("ts_ms").min()) if merged.height > 0 else None
     coverage_end = int(merged.get_column("ts_ms").max()) if merged.height > 0 else None
     input_contract["runtime_window"] = {
@@ -579,6 +604,12 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     }
     input_contract["coverage_start_ts_ms"] = coverage_start
     input_contract["coverage_end_ts_ms"] = coverage_end
+    input_contract.update(
+        build_ts_date_coverage_payload(
+            merged.get_column("ts_ms").to_list(),
+            timezone_name=OPERATING_WINDOW_TIMEZONE,
+        )
+    )
     input_contract["runtime_rows_after_date_filter"] = int(merged.height)
     runtime_coverage_summary = _build_runtime_coverage_summary(merged)
     runtime_coverage_summary["common_runtime_market_count"] = len(common_runtime_markets)
