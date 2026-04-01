@@ -194,9 +194,6 @@ def _required_input_columns(prefix: str) -> tuple[str, ...]:
         return (
             "market",
             "ts_ms",
-            "split",
-            "y_cls",
-            "y_reg",
             "directional_probability_primary",
             "sequence_uncertainty_primary",
         )
@@ -204,9 +201,6 @@ def _required_input_columns(prefix: str) -> tuple[str, ...]:
         return (
             "market",
             "ts_ms",
-            "split",
-            "y_cls",
-            "y_reg",
             "micro_alpha_1s",
             "micro_alpha_5s",
             "micro_alpha_30s",
@@ -251,6 +245,17 @@ def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[s
     metadata = _load_fusion_input_metadata(path=path, prefix=prefix)
     metadata["rows"] = int(frame.height)
     metadata["support_level_counts"] = _normalize_support_level_summary(frame)
+    metadata["label_columns"] = (
+        {
+            "split": "split",
+            "y_cls": "y_cls",
+            "y_reg": "y_reg",
+            "source_y_cls_column": "y_cls",
+            "source_y_reg_column": "y_reg",
+        }
+        if prefix == "panel"
+        else {}
+    )
     renamed: list[pl.Expr] = [pl.col("market"), pl.col("ts_ms")]
     if prefix == "panel":
         renamed.extend(
@@ -258,14 +263,6 @@ def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[s
                 pl.col("split"),
                 pl.col("y_cls"),
                 pl.col("y_reg"),
-            ]
-        )
-    else:
-        renamed.extend(
-            [
-                pl.col("split").alias(f"split_{prefix}"),
-                pl.col("y_cls").alias(f"y_cls_{prefix}"),
-                pl.col("y_reg").alias(f"y_reg_{prefix}"),
             ]
         )
     renamed.extend(_support_level_indicator_columns(frame, prefix=prefix))
@@ -278,25 +275,6 @@ def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[s
         if dtype.is_numeric():
             renamed.append(pl.col(column).cast(pl.Float64).alias(f"{prefix}_{column}"))
     return frame.select(renamed), metadata
-
-
-def _assert_consistent_targets(merged: pl.DataFrame) -> None:
-    checks = (
-        ("split", "split_sequence"),
-        ("split", "split_lob"),
-        ("y_cls", "y_cls_sequence"),
-        ("y_cls", "y_cls_lob"),
-        ("y_reg", "y_reg_sequence"),
-        ("y_reg", "y_reg_lob"),
-    )
-    for left, right in checks:
-        if left not in merged.columns or right not in merged.columns:
-            continue
-        mismatch = merged.filter(
-            pl.col(left).is_not_null() & pl.col(right).is_not_null() & (pl.col(left) != pl.col(right))
-        )
-        if mismatch.height > 0:
-            raise ValueError(f"fusion target alignment mismatch: {left} vs {right}")
 
 
 def _resolve_fusion_monotone_sign(feature_name: str) -> int:
@@ -352,6 +330,8 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
     panel, panel_meta = _load_expert_table(options.panel_input_path, prefix="panel")
     sequence, sequence_meta = _load_expert_table(options.sequence_input_path, prefix="sequence")
     lob, lob_meta = _load_expert_table(options.lob_input_path, prefix="lob")
+    if panel.height <= 0:
+        raise ValueError("fusion panel anchor has no rows")
     snapshot_ids = {
         str(panel_meta.get("data_platform_ready_snapshot_id") or "").strip(),
         str(sequence_meta.get("data_platform_ready_snapshot_id") or "").strip(),
@@ -359,13 +339,9 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
     }
     if "" in snapshot_ids or len(snapshot_ids) != 1:
         raise ValueError("fusion inputs must come from the same non-empty data_platform_ready_snapshot_id")
-    merged = panel.join(sequence, on=["market", "ts_ms"], how="full", coalesce=True)
-    merged = merged.join(lob, on=["market", "ts_ms"], how="full", coalesce=True)
-    _assert_consistent_targets(merged)
+    merged = panel.join(sequence, on=["market", "ts_ms"], how="left", coalesce=True)
+    merged = merged.join(lob, on=["market", "ts_ms"], how="left", coalesce=True)
     merged = merged.with_columns(
-        pl.coalesce(["split", "split_sequence", "split_lob"]).alias("split"),
-        pl.coalesce(["y_cls", "y_cls_sequence", "y_cls_lob"]).cast(pl.Int64).alias("y_cls"),
-        pl.coalesce(["y_reg", "y_reg_sequence", "y_reg_lob"]).cast(pl.Float64).alias("y_reg"),
         pl.col("panel_final_rank_score").is_not_null().cast(pl.Float64).alias("panel_present"),
         pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Float64).alias("sequence_present"),
         pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Float64).alias("lob_present"),
@@ -378,13 +354,6 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
     ]
     if expert_value_columns:
         merged = merged.with_columns([pl.col(name).fill_null(0.0) for name in expert_value_columns])
-    merged = merged.drop(
-        [
-            name
-            for name in ("split_sequence", "split_lob", "y_cls_sequence", "y_cls_lob", "y_reg_sequence", "y_reg_lob")
-            if name in merged.columns
-        ]
-    )
     merged = merged.filter(pl.col("split").is_not_null() & pl.col("y_cls").is_not_null() & pl.col("y_reg").is_not_null())
     merged = merged.with_columns(
         pl.when(pl.col("y_reg") < 0.0).then(pl.col("y_reg").abs()).otherwise(0.0).alias("y_es_proxy"),
@@ -403,6 +372,11 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
         "policy": "v5_fusion_input_contract_v1",
         "keys": ["market", "ts_ms", "split"],
         "snapshot_id": str(next(iter(snapshot_ids))),
+        "label_anchor": "panel",
+        "label_contract_source": "train_v5_panel_ensemble",
+        "panel_label_columns": dict(panel_meta.get("label_columns") or {}),
+        "auxiliary_experts": ["sequence", "lob"],
+        "target_alignment_policy": "panel_anchor_only",
         "inputs": {
             "panel": panel_meta,
             "sequence": sequence_meta,

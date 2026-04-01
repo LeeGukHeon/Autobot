@@ -199,6 +199,11 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert fusion_contract["input_experts"]["panel"]["run_id"] == "panel-run-001"
     input_contract = load_json(result.run_dir / "fusion_input_contract.json")
     assert input_contract["snapshot_id"] == snapshot_id
+    assert input_contract["label_anchor"] == "panel"
+    assert input_contract["label_contract_source"] == "train_v5_panel_ensemble"
+    assert input_contract["target_alignment_policy"] == "panel_anchor_only"
+    assert input_contract["auxiliary_experts"] == ["sequence", "lob"]
+    assert input_contract["panel_label_columns"]["y_cls"] == "y_cls"
     assert input_contract["inputs"]["sequence"]["support_level_counts"]["strict_full"] > 0
     assert "sequence_support_score" in input_contract["feature_contract"]["feature_columns"]
     assert "sequence_support_level" not in input_contract["feature_contract"]["feature_columns"]
@@ -256,6 +261,94 @@ def test_train_v5_fusion_fails_on_snapshot_mismatch(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="same non-empty data_platform_ready_snapshot_id"):
         train_and_register_v5_fusion(options)
+
+
+def test_train_v5_fusion_uses_panel_as_canonical_label_anchor(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-anchor-001"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-anchor-001",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[
+            {
+                **row,
+                "final_rank_score": 0.2 + (float(row["y_reg"]) * 2.0),
+                "final_expected_return": float(row["y_reg"]) * 0.9,
+                "final_expected_es": abs(float(row["y_reg"])) * 0.3,
+                "final_tradability": 0.8,
+                "final_uncertainty": 0.05,
+                "final_alpha_lcb": (float(row["y_reg"]) * 0.9) - (abs(float(row["y_reg"])) * 0.3) - 0.05,
+            }
+            for row in base_rows
+        ],
+    )
+    sequence_rows = []
+    lob_rows = []
+    for row in base_rows:
+        flipped_cls = 0 if int(row["y_cls"]) == 1 else 1
+        shifted_reg = float(row["y_reg"]) + 0.5
+        sequence_rows.append(
+            {
+                **row,
+                "y_cls": flipped_cls,
+                "y_reg": shifted_reg,
+                "support_level": "strict_full",
+                "directional_probability_primary": 0.55,
+                "sequence_uncertainty_primary": 0.04,
+            }
+        )
+        lob_rows.append(
+            {
+                **row,
+                "y_cls": flipped_cls,
+                "y_reg": shifted_reg,
+                "support_level": "strict_full",
+                "micro_alpha_1s": 0.1,
+                "micro_alpha_5s": 0.12,
+                "micro_alpha_30s": 0.15,
+                "micro_uncertainty": 0.03,
+            }
+        )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-anchor-001",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=sequence_rows,
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-anchor-001",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=lob_rows,
+    )
+
+    options = TrainV5FusionOptions(
+        panel_input_path=panel_path,
+        sequence_input_path=sequence_path,
+        lob_input_path=lob_path,
+        registry_root=registry_root,
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_fusion",
+        quote="KRW",
+        start="2026-03-27",
+        end="2026-03-27",
+        seed=7,
+        stacker_family="linear",
+    )
+
+    result = train_and_register_v5_fusion(options)
+    input_contract = load_json(result.run_dir / "fusion_input_contract.json")
+    assert result.run_dir.exists()
+    assert input_contract["label_anchor"] == "panel"
+    assert input_contract["target_alignment_policy"] == "panel_anchor_only"
 
 
 def test_resume_v5_fusion_tail_reuses_existing_artifacts(tmp_path: Path) -> None:
