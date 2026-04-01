@@ -12,10 +12,19 @@ def test_cli_model_export_expert_table_dispatches_to_sequence_export(monkeypatch
     run_dir.mkdir(parents=True, exist_ok=True)
     captured: dict[str, object] = {}
 
-    def _fake_export(*, run_dir: Path, start: str, end: str) -> dict[str, object]:
+    def _fake_export(
+        *,
+        run_dir: Path,
+        start: str,
+        end: str,
+        selected_markets_override: tuple[str, ...] | None = None,
+        resolve_markets_only: bool = False,
+    ) -> dict[str, object]:
         captured["run_dir"] = run_dir
         captured["start"] = start
         captured["end"] = end
+        captured["selected_markets_override"] = selected_markets_override
+        captured["resolve_markets_only"] = resolve_markets_only
         return {
             "run_id": "run-001",
             "trainer": "v5_sequence",
@@ -58,6 +67,8 @@ def test_cli_model_export_expert_table_dispatches_to_sequence_export(monkeypatch
         "run_dir": run_dir.resolve(),
         "start": "2026-03-23",
         "end": "2026-03-30",
+        "selected_markets_override": None,
+        "resolve_markets_only": False,
     }
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["trainer"] == "v5_sequence"

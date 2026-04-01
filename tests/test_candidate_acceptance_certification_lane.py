@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import json
 import os
 import shutil
@@ -831,6 +832,7 @@ def _seed_train_snapshot_close_contract(
             for date_dir in market_dir.glob("date=*"):
                 date_value = date_dir.name.removeprefix("date=")
                 counts[date_value] = counts.get(date_value, 0) + 1
+    coverage_start = min(counts.keys()) if counts else (datetime.fromisoformat(batch_date) - timedelta(days=7)).date().isoformat()
 
     _write_json(
         project_root / "data" / "_meta" / "data_platform_ready_snapshot.json",
@@ -845,6 +847,9 @@ def _seed_train_snapshot_close_contract(
             "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / snapshot_id),
             "published_at_utc": "2026-03-07T00:05:00Z",
             "generated_at_utc": "2026-03-07T00:05:00Z",
+            "training_critical_start_date": coverage_start,
+            "training_critical_end_date": batch_date,
+            "coverage_window": {"start": coverage_start, "end": batch_date},
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],

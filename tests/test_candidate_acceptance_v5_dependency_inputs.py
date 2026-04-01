@@ -64,6 +64,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
     driver_path.write_text(
         textwrap.dedent(
             """
+            from datetime import datetime, timezone
             import json
             import sys
             from pathlib import Path
@@ -92,6 +93,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(payload) + "\\n")
+
+            def date_to_ts_ms(value: str, end_of_day: bool = False) -> int:
+                parsed = datetime.fromisoformat(value)
+                if end_of_day:
+                    parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999000)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+                return int(parsed.timestamp() * 1000)
 
             def expert_run(family: str, trainer: str, run_id: str) -> Path:
                 run_dir = ROOT / "models" / "registry" / family / run_id
@@ -155,6 +163,8 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "data_platform_ready_snapshot_id": SNAPSHOT_ID,
                     "start": start,
                     "end": end,
+                    "coverage_start_ts_ms": date_to_ts_ms(start),
+                    "coverage_end_ts_ms": date_to_ts_ms(end, end_of_day=True),
                     "rows": 12,
                     "requested_selected_markets": explicit_markets or [],
                     "selected_markets": selected_markets,
@@ -425,6 +435,7 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "v5_lob",
         "v5_fusion",
     ]
+    assert [row for row in invocations if row.get("command") == "features build"] == []
     assert "--dependency-expert-only" in train_calls[0]["args"]
     assert "--dependency-expert-only" not in train_calls[1]["args"]
     assert "--dependency-expert-only" not in train_calls[2]["args"]
@@ -465,12 +476,18 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert report["steps"]["dependency_trainers"]["trained_count"] == 3
     assert report["steps"]["dependency_trainers"]["reused_count"] == 0
     assert report["steps"]["dependency_runtime_universe"]["common_markets"] == ["KRW-ETH"]
+    assert report["steps"]["common_runtime_universe"]["common_markets"] == ["KRW-ETH"]
+    assert report["steps"]["dependency_runtime_export_contract"]["pass"] is True
     assert report["steps"]["dependency_runtime_exports"]["count"] == 3
     export_results = report["steps"]["dependency_runtime_exports"]["results"]
     assert export_results[0]["requested_selected_markets"] == ["KRW-ETH"]
     assert export_results[0]["selected_markets"] == ["KRW-ETH"]
     assert export_results[0]["selected_markets_source"] == "acceptance_common_runtime_universe"
     assert export_results[0]["fallback_reason"] == ""
+    common_universe_path = Path(report["steps"]["common_runtime_universe"]["artifact_path"])
+    assert common_universe_path.exists()
+    common_universe_payload = json.loads(common_universe_path.read_text(encoding="utf-8-sig"))
+    assert common_universe_payload["common_runtime_universe_id"] == report["steps"]["common_runtime_universe"]["common_runtime_universe_id"]
     inputs = report["steps"]["train"]["fusion_dependency_inputs"]
     runtime_inputs = report["steps"]["train"]["fusion_dependency_runtime_inputs"]
     assert inputs["fusion_panel_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/expert_prediction_table.parquet")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -163,6 +164,8 @@ def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
     if not train_config:
         raise FileNotFoundError(f"{prefix} input missing train_config.yaml: {run_dir}")
     runtime_recommendations = load_json(run_dir / "runtime_recommendations.json")
+    export_metadata_path = resolved_path.parent / "metadata.json"
+    export_metadata = load_json(export_metadata_path) if export_metadata_path.exists() else {}
     return {
         "prefix": prefix,
         "path": str(resolved_path),
@@ -172,6 +175,15 @@ def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
         "trainer": str(train_config.get("trainer") or "").strip(),
         "data_platform_ready_snapshot_id": str(train_config.get("data_platform_ready_snapshot_id") or "").strip(),
         "runtime_recommendations": dict(runtime_recommendations or {}),
+        "requested_selected_markets": list(export_metadata.get("requested_selected_markets") or []),
+        "selected_markets": list(export_metadata.get("selected_markets") or list(train_config.get("selected_markets") or [])),
+        "selected_markets_source": str(export_metadata.get("selected_markets_source") or "").strip(),
+        "fallback_reason": str(export_metadata.get("fallback_reason") or "").strip(),
+        "export_window_start": str(export_metadata.get("start") or "").strip(),
+        "export_window_end": str(export_metadata.get("end") or "").strip(),
+        "coverage_start_ts_ms": int(export_metadata.get("coverage_start_ts_ms", 0) or 0),
+        "coverage_end_ts_ms": int(export_metadata.get("coverage_end_ts_ms", 0) or 0),
+        "runtime_export_metadata_path": str(export_metadata_path) if export_metadata_path.exists() else "",
     }
 
 
@@ -244,6 +256,15 @@ def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[s
     _assert_no_duplicate_input_rows(frame, prefix=prefix)
     metadata = _load_fusion_input_metadata(path=path, prefix=prefix)
     metadata["rows"] = int(frame.height)
+    frame_markets = sorted({str(item).strip().upper() for item in frame.get_column("market").to_list() if str(item).strip()})
+    if not metadata.get("selected_markets"):
+        metadata["selected_markets"] = frame_markets
+    if not metadata.get("requested_selected_markets"):
+        metadata["requested_selected_markets"] = list(metadata.get("selected_markets") or frame_markets)
+    if int(metadata.get("coverage_start_ts_ms", 0) or 0) <= 0 and frame.height > 0:
+        metadata["coverage_start_ts_ms"] = int(frame.get_column("ts_ms").min())
+    if int(metadata.get("coverage_end_ts_ms", 0) or 0) <= 0 and frame.height > 0:
+        metadata["coverage_end_ts_ms"] = int(frame.get_column("ts_ms").max())
     metadata["support_level_counts"] = _normalize_support_level_summary(frame)
     metadata["label_columns"] = (
         {
@@ -256,6 +277,7 @@ def _load_expert_table(path: Path, *, prefix: str) -> tuple[pl.DataFrame, dict[s
         if prefix == "panel"
         else {}
     )
+    metadata["available_markets"] = frame_markets
     renamed: list[pl.Expr] = [pl.col("market"), pl.col("ts_ms")]
     if prefix == "panel":
         renamed.extend(
@@ -348,6 +370,44 @@ def _build_runtime_coverage_summary(merged: pl.DataFrame) -> dict[str, Any]:
         "total_panel_anchor_rows": total_rows,
         "experts": experts,
     }
+
+
+def _normalize_market_list(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    return [str(item).strip().upper() for item in (values or []) if str(item).strip()]
+
+
+def _panel_order_preserving_intersection(markets_by_expert: dict[str, list[str]]) -> list[str]:
+    ordered_source = list(markets_by_expert.get("panel") or [])
+    if not ordered_source:
+        for values in markets_by_expert.values():
+            if values:
+                ordered_source = list(values)
+                break
+    if not ordered_source:
+        return []
+    intersection = set(ordered_source)
+    for values in markets_by_expert.values():
+        if not values:
+            intersection = set()
+            break
+        intersection &= set(values)
+    return [market for market in ordered_source if market in intersection]
+
+
+def _build_common_runtime_universe_id(*, snapshot_id: str, start: str, end: str, markets: list[str]) -> str:
+    seed = "|".join([snapshot_id, start, end, ",".join(markets)])
+    return f"common_runtime_universe_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _runtime_window_gap_error(expert_name: str) -> str:
+    expert = str(expert_name).strip().lower()
+    if expert == "panel":
+        return "FUSION_RUNTIME_INPUT_WINDOW_GAP:PANEL_RUNTIME_WINDOW_GAP"
+    if expert == "sequence":
+        return "FUSION_RUNTIME_INPUT_WINDOW_GAP:SEQUENCE_RUNTIME_WINDOW_GAP"
+    if expert == "lob":
+        return "FUSION_RUNTIME_INPUT_WINDOW_GAP:LOB_RUNTIME_WINDOW_GAP"
+    return "FUSION_RUNTIME_INPUT_WINDOW_GAP"
 
 
 def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInputBundle:
@@ -465,6 +525,8 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     runtime_options = _runtime_fusion_input_options(options)
     input_bundle = _prepare_fusion_input_bundle(runtime_options)
     merged = input_bundle.merged
+    input_contract = dict(input_bundle.input_contract)
+    input_metadata = {key: dict(value or {}) for key, value in (input_contract.get("inputs") or {}).items()}
     explicit_runtime_requested = any(
         path is not None
         for path in (
@@ -480,14 +542,35 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
         raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_EMPTY")
     start_ts_ms = _parse_date_to_ts_ms(runtime_options.start)
     end_ts_ms = _parse_date_to_ts_ms(runtime_options.end, end_of_day=True)
+    markets_by_expert = {
+        key: _normalize_market_list(
+            list((payload.get("selected_markets") or payload.get("requested_selected_markets") or payload.get("available_markets") or []))
+        )
+        for key, payload in input_metadata.items()
+    }
+    common_runtime_markets = _panel_order_preserving_intersection(markets_by_expert)
+    common_runtime_universe_id = _build_common_runtime_universe_id(
+        snapshot_id=str(input_contract.get("snapshot_id") or ""),
+        start=str(runtime_options.start),
+        end=str(runtime_options.end),
+        markets=common_runtime_markets,
+    )
+    input_contract["common_runtime_universe_policy"] = "panel_order_preserving_intersection"
+    input_contract["common_runtime_universe_id"] = common_runtime_universe_id
+    input_contract["common_runtime_markets"] = list(common_runtime_markets)
+    if explicit_runtime_requested and not common_runtime_markets:
+        raise ValueError("COMMON_RUNTIME_UNIVERSE_EMPTY")
+    for expert_name in ("panel", "sequence", "lob"):
+        payload = dict(input_metadata.get(expert_name) or {})
+        expert_start = int(payload.get("coverage_start_ts_ms", 0) or 0)
+        expert_end = int(payload.get("coverage_end_ts_ms", 0) or 0)
+        if explicit_runtime_requested:
+            if start_ts_ms is not None and (expert_start <= 0 or expert_start > int(start_ts_ms)):
+                raise ValueError(_runtime_window_gap_error(expert_name))
+            if end_ts_ms is not None and (expert_end <= 0 or expert_end < int(end_ts_ms)):
+                raise ValueError(_runtime_window_gap_error(expert_name))
     coverage_start = int(merged.get_column("ts_ms").min()) if merged.height > 0 else None
     coverage_end = int(merged.get_column("ts_ms").max()) if merged.height > 0 else None
-    if explicit_runtime_requested:
-        if start_ts_ms is not None and coverage_start is not None and coverage_start > int(start_ts_ms):
-            raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_GAP")
-        if end_ts_ms is not None and coverage_end is not None and coverage_end < int(end_ts_ms):
-            raise ValueError("FUSION_RUNTIME_INPUT_WINDOW_GAP")
-    input_contract = dict(input_bundle.input_contract)
     input_contract["runtime_window"] = {
         "start": runtime_options.start,
         "end": runtime_options.end,
@@ -498,6 +581,8 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     input_contract["coverage_end_ts_ms"] = coverage_end
     input_contract["runtime_rows_after_date_filter"] = int(merged.height)
     runtime_coverage_summary = _build_runtime_coverage_summary(merged)
+    runtime_coverage_summary["common_runtime_market_count"] = len(common_runtime_markets)
+    runtime_coverage_summary["common_runtime_markets"] = list(common_runtime_markets)
     input_contract["runtime_coverage_policy"] = "auxiliary_experts_full_window_required"
     input_contract["runtime_coverage_summary"] = runtime_coverage_summary
     if explicit_runtime_requested:

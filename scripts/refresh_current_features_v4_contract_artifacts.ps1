@@ -15,6 +15,8 @@ param(
     [string]$RawWsRoot = "data/raw_ws/upbit/public",
     [string]$MicroOutRoot = "data/parquet/micro_v1",
     [string]$SummaryPath = "data/features/features_v4/_meta/contract_refresh_report.json",
+    [switch]$UseTopNUniverse,
+    [switch]$RequireExplicitWindow,
     [switch]$SkipMicroRefresh,
     [switch]$SkipMicroValidate,
     [switch]$SkipFeaturesBuild,
@@ -156,7 +158,10 @@ $featureSpec = Load-JsonOrEmpty -PathValue $featureSpecPath
 $labelSpec = Load-JsonOrEmpty -PathValue $labelSpecPath
 
 $resolvedMarkets = @(Expand-DelimitedStringArray -Value $Markets)
-if ($resolvedMarkets.Count -eq 0) {
+if ($RequireExplicitWindow -and ([string]::IsNullOrWhiteSpace(([string]$StartDate).Trim()) -or [string]::IsNullOrWhiteSpace(([string]$EndDate).Trim()))) {
+    throw "explicit features_v4 window is required in this mode; pass -StartDate/-EndDate"
+}
+if (($resolvedMarkets.Count -eq 0) -and (-not $UseTopNUniverse)) {
     $resolvedMarkets = @(
         @(Get-PropValue -ObjectValue $buildReport -Name "selected_markets" -DefaultValue @()) |
             ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } |
@@ -219,6 +224,12 @@ if ([string]::IsNullOrWhiteSpace($resolvedStartDate) -or [string]::IsNullOrWhite
 }
 if ($resolvedTopN -le 0) {
     throw "unable to resolve features_v4 top_n; pass -TopN or keep selected_markets in build_report.json"
+}
+
+$refreshArgumentMode = if ((-not [string]::IsNullOrWhiteSpace(([string]$StartDate).Trim())) -or (-not [string]::IsNullOrWhiteSpace(([string]$EndDate).Trim()))) {
+    "explicit_date_range"
+} else {
+    "cached_build_report_window"
 }
 
 $steps = @()
@@ -336,9 +347,11 @@ $summary = [ordered]@{
     quote = $resolvedQuote
     start = $resolvedStartDate
     end = $resolvedEndDate
+    refresh_argument_mode = $refreshArgumentMode
     top_n = [int]$resolvedTopN
     parity_top_n = [int]([Math]::Max([int]$ParityTopN, 1))
     markets = @($resolvedMarkets)
+    universe_mode = if ($UseTopNUniverse) { "top_n_dynamic" } else { "explicit_or_cached_markets" }
     base_candles_dataset = $BaseCandlesDataset
     raw_ticks_root = $resolvedRawTicksRoot
     raw_ws_root = $resolvedRawWsRoot

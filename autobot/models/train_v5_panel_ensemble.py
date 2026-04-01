@@ -432,6 +432,8 @@ def _export_panel_expert_prediction_table_window(
         and str(existing_metadata.get("data_platform_ready_snapshot_id") or "").strip() == data_platform_ready_snapshot_id
         and str(existing_metadata.get("start") or "").strip() == str(start).strip()
         and str(existing_metadata.get("end") or "").strip() == str(end).strip()
+        and existing_metadata.get("coverage_start_ts_ms") is not None
+        and existing_metadata.get("coverage_end_ts_ms") is not None
     ):
         return {
             "run_id": run_dir.name,
@@ -440,6 +442,8 @@ def _export_panel_expert_prediction_table_window(
             "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
             "start": str(start).strip(),
             "end": str(end).strip(),
+            "coverage_start_ts_ms": int(existing_metadata.get("coverage_start_ts_ms", 0) or 0),
+            "coverage_end_ts_ms": int(existing_metadata.get("coverage_end_ts_ms", 0) or 0),
             "rows": int(existing_metadata.get("rows", 0) or 0),
             "requested_selected_markets": list(existing_metadata.get("requested_selected_markets") or []),
             "selected_markets": list(existing_metadata.get("selected_markets") or []),
@@ -451,6 +455,7 @@ def _export_panel_expert_prediction_table_window(
             "source_mode": "existing_export",
         }
 
+    ts_values = np.asarray(getattr(dataset, "ts_ms", np.asarray([], dtype=np.int64)), dtype=np.int64)
     metadata = {
         "version": 1,
         "policy": "v5_expert_runtime_export_v1",
@@ -460,6 +465,8 @@ def _export_panel_expert_prediction_table_window(
         "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
         "start": str(start).strip(),
         "end": str(end).strip(),
+        "coverage_start_ts_ms": int(ts_values.min()) if ts_values.size > 0 else 0,
+        "coverage_end_ts_ms": int(ts_values.max()) if ts_values.size > 0 else 0,
         "rows": int(dataset.rows),
         "requested_selected_markets": requested_selected_markets,
         "selected_markets": [str(item).strip().upper() for item in getattr(dataset, "selected_markets", ())],

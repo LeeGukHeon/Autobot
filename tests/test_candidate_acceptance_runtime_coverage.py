@@ -232,5 +232,6 @@ def test_candidate_acceptance_fails_when_train_snapshot_close_window_does_not_co
     assert report["failure_stage"] == "data_close"
     assert report["failure_code"] == "TRAIN_SNAPSHOT_CLOSE_TRAIN_WINDOW_OUTSIDE_COVERAGE"
     assert report["steps"]["train_snapshot_close_preflight"]["pass"] is False
+    assert report["steps"]["train_snapshot_close_preflight"]["train_window_end"] == "2026-03-06"
     assert report["steps"]["train_snapshot_close_preflight"]["train_window_covered"] is False
     assert report["steps"]["train_snapshot_close_preflight"]["certification_window_covered"] is True

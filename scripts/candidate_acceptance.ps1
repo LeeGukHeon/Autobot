@@ -394,6 +394,8 @@ function Test-DependencyRuntimeExportUsable {
     $metadataPath = [string](Get-PropValue -ObjectValue $ExportResult -Name "metadata_path" -DefaultValue "")
     $snapshotId = [string](Get-PropValue -ObjectValue $ExportResult -Name "data_platform_ready_snapshot_id" -DefaultValue "")
     $rows = [int](Get-PropValue -ObjectValue $ExportResult -Name "rows" -DefaultValue 0)
+    $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $ExportResult -Name "coverage_start_ts_ms" -DefaultValue 0)
+    $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $ExportResult -Name "coverage_end_ts_ms" -DefaultValue 0)
     if ([string]::IsNullOrWhiteSpace($exportPath) -or [string]::IsNullOrWhiteSpace($metadataPath)) {
         return $false
     }
@@ -406,7 +408,161 @@ function Test-DependencyRuntimeExportUsable {
     if ($DryRun) {
         return $true
     }
-    return ($rows -gt 0)
+    return (($rows -gt 0) -and ($coverageStartTsMs -gt 0) -and ($coverageEndTsMs -gt 0))
+}
+
+function Normalize-MarketArray {
+    param([Parameter(Mandatory = $false)]$Markets)
+    return @(
+        @($Markets) |
+            ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
+function Test-StringArraySequenceEqual {
+    param(
+        [string[]]$Left = @(),
+        [string[]]$Right = @()
+    )
+    $normalizedLeft = @(Normalize-MarketArray -Markets $Left)
+    $normalizedRight = @(Normalize-MarketArray -Markets $Right)
+    if ($normalizedLeft.Count -ne $normalizedRight.Count) {
+        return $false
+    }
+    for ($index = 0; $index -lt $normalizedLeft.Count; $index += 1) {
+        if ([string]$normalizedLeft[$index] -ne [string]$normalizedRight[$index]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-DependencyRuntimeExportGapPrefix {
+    param([string]$TrainerName)
+    switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_panel_ensemble" { return "PANEL" }
+        "v5_sequence" { return "SEQUENCE" }
+        "v5_lob" { return "LOB" }
+        default { return "DEPENDENCY" }
+    }
+}
+
+function New-CommonRuntimeUniverseArtifact {
+    param(
+        [Parameter(Mandatory = $true)]
+        $DependencyRuntimeUniverse,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate,
+        [string]$ExpectedSnapshotId,
+        [string]$ArtifactPath = ""
+    )
+    $commonMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $DependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
+    $identitySeed = [string]::Join(
+        "|",
+        @(
+            [string]$ExpectedSnapshotId,
+            [string]$CertificationStartDate,
+            [string]$CertificationEndDate,
+            [string]::Join(",", @($commonMarkets))
+        )
+    )
+    $digest = Get-Sha256Hex -Text $identitySeed
+    $universeId = "common_runtime_universe_" + $digest.Substring(0, [Math]::Min($digest.Length, 12))
+    return [ordered]@{
+        policy = "common_runtime_universe_v1"
+        generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        snapshot_id = [string]$ExpectedSnapshotId
+        certification_window = [ordered]@{
+            start = [string]$CertificationStartDate
+            end = [string]$CertificationEndDate
+        }
+        resolution_policy = "panel_order_preserving_intersection"
+        common_runtime_universe_id = $universeId
+        common_markets = @($commonMarkets)
+        common_market_count = @($commonMarkets).Count
+        dependency_results = @((Get-PropValue -ObjectValue $DependencyRuntimeUniverse -Name "results" -DefaultValue @()))
+        pass = [bool](Get-PropValue -ObjectValue $DependencyRuntimeUniverse -Name "pass" -DefaultValue $false)
+        reason = [string](Get-PropValue -ObjectValue $DependencyRuntimeUniverse -Name "reason" -DefaultValue "")
+        artifact_path = [string]$ArtifactPath
+    }
+}
+
+function Test-DependencyRuntimeExportContractAlignment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$ExportResults,
+        [string]$CertificationStartDate,
+        [string]$CertificationEndDate,
+        [string]$ExpectedSnapshotId,
+        [string[]]$CommonMarkets = @()
+    )
+    $reasons = @()
+    $expectedCommonMarkets = @(Normalize-MarketArray -Markets $CommonMarkets)
+    if (@($expectedCommonMarkets).Count -le 0) {
+        $reasons += "COMMON_RUNTIME_UNIVERSE_EMPTY"
+    }
+    $expectedStartTsMs = Convert-DateTokenToUnixMs -DateText $CertificationStartDate
+    $expectedEndTsMs = Convert-DateTokenToUnixMs -DateText $CertificationEndDate -EndOfDay
+    $details = @()
+    foreach ($item in @($ExportResults)) {
+        $trainerName = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
+        $prefix = Get-DependencyRuntimeExportGapPrefix -TrainerName $trainerName
+        $snapshotId = [string](Get-PropValue -ObjectValue $item -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+        $startDate = [string](Get-PropValue -ObjectValue $item -Name "start" -DefaultValue "")
+        $endDate = [string](Get-PropValue -ObjectValue $item -Name "end" -DefaultValue "")
+        $coverageStartTsMs = [int64](Get-PropValue -ObjectValue $item -Name "coverage_start_ts_ms" -DefaultValue 0)
+        $coverageEndTsMs = [int64](Get-PropValue -ObjectValue $item -Name "coverage_end_ts_ms" -DefaultValue 0)
+        $requestedSelectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "requested_selected_markets" -DefaultValue @()))
+        $selectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "selected_markets" -DefaultValue @()))
+        $selectedMarketsSource = [string](Get-PropValue -ObjectValue $item -Name "selected_markets_source" -DefaultValue "")
+        $fallbackReason = [string](Get-PropValue -ObjectValue $item -Name "fallback_reason" -DefaultValue "")
+        $windowGap = (
+            ($startDate -ne [string]$CertificationStartDate) -or
+            ($endDate -ne [string]$CertificationEndDate) -or
+            (($expectedStartTsMs -gt 0) -and (($coverageStartTsMs -le 0) -or ($coverageStartTsMs -gt $expectedStartTsMs))) -or
+            (($expectedEndTsMs -gt 0) -and (($coverageEndTsMs -le 0) -or ($coverageEndTsMs -lt $expectedEndTsMs)))
+        )
+        $universeMismatch = (
+            (-not (Test-StringArraySequenceEqual -Left $requestedSelectedMarkets -Right $expectedCommonMarkets)) -or
+            (-not (Test-StringArraySequenceEqual -Left $selectedMarkets -Right $expectedCommonMarkets)) -or
+            ($selectedMarketsSource -ne "acceptance_common_runtime_universe") -or
+            (-not [string]::IsNullOrWhiteSpace($fallbackReason))
+        )
+        if ([string]::IsNullOrWhiteSpace($snapshotId) -or ($snapshotId -ne [string]$ExpectedSnapshotId)) {
+            $reasons += ($prefix + "_RUNTIME_SNAPSHOT_MISMATCH")
+        }
+        if ($windowGap) {
+            $reasons += ($prefix + "_RUNTIME_WINDOW_GAP")
+        }
+        if ($universeMismatch) {
+            $reasons += ($prefix + "_RUNTIME_UNIVERSE_MISMATCH")
+        }
+        $details += [ordered]@{
+            trainer = $trainerName
+            data_platform_ready_snapshot_id = $snapshotId
+            start = $startDate
+            end = $endDate
+            coverage_start_ts_ms = $coverageStartTsMs
+            coverage_end_ts_ms = $coverageEndTsMs
+            requested_selected_markets = @($requestedSelectedMarkets)
+            selected_markets = @($selectedMarkets)
+            selected_markets_source = $selectedMarketsSource
+            fallback_reason = $fallbackReason
+            snapshot_match = (-not [string]::IsNullOrWhiteSpace($snapshotId)) -and ($snapshotId -eq [string]$ExpectedSnapshotId)
+            window_match = (-not $windowGap)
+            universe_match = (-not $universeMismatch)
+        }
+    }
+    return [ordered]@{
+        pass = (@($reasons).Count -eq 0)
+        reasons = @($reasons | Select-Object -Unique)
+        certification_window_start = $CertificationStartDate
+        certification_window_end = $CertificationEndDate
+        expected_snapshot_id = $ExpectedSnapshotId
+        expected_common_markets = @($expectedCommonMarkets)
+        details = @($details)
+    }
 }
 
 function Test-ShouldAttemptDependencyRuntimeCoverage {
@@ -482,6 +638,8 @@ function Invoke-DependencyRuntimeExportChain {
         $exportRoot = Join-Path $runDir "_runtime_exports"
         $windowId = $CertificationStartDate + "__" + $CertificationEndDate
         $exportDir = Join-Path $exportRoot $windowId
+        $coverageStartTsMs = Convert-DateTokenToUnixMs -DateText $CertificationStartDate
+        $coverageEndTsMs = Convert-DateTokenToUnixMs -DateText $CertificationEndDate -EndOfDay
         $syntheticPayload = [ordered]@{
             run_id = $runId
             trainer = $trainerName
@@ -489,6 +647,8 @@ function Invoke-DependencyRuntimeExportChain {
             data_platform_ready_snapshot_id = $snapshotId
             start = $CertificationStartDate
             end = $CertificationEndDate
+            coverage_start_ts_ms = $coverageStartTsMs
+            coverage_end_ts_ms = $coverageEndTsMs
             rows = 0
             requested_selected_markets = @($CommonMarkets)
             selected_markets = @($CommonMarkets)
@@ -546,6 +706,8 @@ function Invoke-DependencyRuntimeExportChain {
             data_platform_ready_snapshot_id = [string](Get-PropValue -ObjectValue $payload -Name "data_platform_ready_snapshot_id" -DefaultValue "")
             start = [string](Get-PropValue -ObjectValue $payload -Name "start" -DefaultValue "")
             end = [string](Get-PropValue -ObjectValue $payload -Name "end" -DefaultValue "")
+            coverage_start_ts_ms = [int64](Get-PropValue -ObjectValue $payload -Name "coverage_start_ts_ms" -DefaultValue 0)
+            coverage_end_ts_ms = [int64](Get-PropValue -ObjectValue $payload -Name "coverage_end_ts_ms" -DefaultValue 0)
             rows = [int](Get-PropValue -ObjectValue $payload -Name "rows" -DefaultValue 0)
             requested_selected_markets = @((Get-PropValue -ObjectValue $payload -Name "requested_selected_markets" -DefaultValue @()))
             selected_markets = @((Get-PropValue -ObjectValue $payload -Name "selected_markets" -DefaultValue @()))
@@ -665,7 +827,7 @@ function Resolve-DependencyRuntimeCommonUniverse {
         common_markets = @($orderedCommon)
         common_market_count = @($orderedCommon).Count
         pass = (@($orderedCommon).Count -gt 0)
-        reason = if (@($orderedCommon).Count -gt 0) { "" } else { "DEPENDENCY_RUNTIME_COMMON_UNIVERSE_EMPTY" }
+        reason = if (@($orderedCommon).Count -gt 0) { "" } else { "COMMON_RUNTIME_UNIVERSE_EMPTY" }
     }
 }
 
@@ -991,6 +1153,17 @@ function Resolve-TrainSnapshotCloseContract {
         $reasons += "TRAIN_SNAPSHOT_CLOSE_DEADLINE_MISSED"
     }
 
+    $coverageWindowPayload = Get-PropValue -ObjectValue $payload -Name "coverage_window" -DefaultValue @{}
+    $trainWindowPayload = Get-PropValue -ObjectValue $payload -Name "train_window" -DefaultValue @{}
+    $certificationWindowPayload = Get-PropValue -ObjectValue $payload -Name "certification_window" -DefaultValue @{}
+    $coverageStartDate = [string](Get-PropValue -ObjectValue $coverageWindowPayload -Name "start" -DefaultValue (Get-PropValue -ObjectValue $payload -Name "training_critical_start_date" -DefaultValue ""))
+    $coverageEndDate = [string](Get-PropValue -ObjectValue $coverageWindowPayload -Name "end" -DefaultValue (Get-PropValue -ObjectValue $payload -Name "training_critical_end_date" -DefaultValue ""))
+    $featuresV4EffectiveEnd = [string](Get-PropValue -ObjectValue $payload -Name "features_v4_effective_end" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($featuresV4EffectiveEnd)) {
+        $featureRefresh = Get-PropValue -ObjectValue $payload -Name "feature_contract_refresh" -DefaultValue @{}
+        $featuresV4EffectiveEnd = [string](Get-PropValue -ObjectValue $featureRefresh -Name "features_v4_effective_end" -DefaultValue "")
+    }
+
     return [ordered]@{
         attempted = $true
         report_path = $resolvedReportPath
@@ -1007,9 +1180,24 @@ function Resolve-TrainSnapshotCloseContract {
         source_freshness = $sourceFreshness
         micro_root = $microRoot
         micro_date_coverage_counts = $microCoverageCounts
-        training_critical_start_date = [string](Get-PropValue -ObjectValue $payload -Name "training_critical_start_date" -DefaultValue "")
-        training_critical_end_date = [string](Get-PropValue -ObjectValue $payload -Name "training_critical_end_date" -DefaultValue "")
+        coverage_window = [ordered]@{
+            start = $coverageStartDate
+            end = $coverageEndDate
+        }
+        train_window = [ordered]@{
+            start = [string](Get-PropValue -ObjectValue $trainWindowPayload -Name "start" -DefaultValue "")
+            end = [string](Get-PropValue -ObjectValue $trainWindowPayload -Name "end" -DefaultValue "")
+        }
+        certification_window = [ordered]@{
+            start = [string](Get-PropValue -ObjectValue $certificationWindowPayload -Name "start" -DefaultValue "")
+            end = [string](Get-PropValue -ObjectValue $certificationWindowPayload -Name "end" -DefaultValue "")
+        }
+        training_critical_start_date = $coverageStartDate
+        training_critical_end_date = $coverageEndDate
         training_critical_refresh = Get-PropValue -ObjectValue $payload -Name "training_critical_refresh" -DefaultValue @{}
+        coverage_window_source = [string](Get-PropValue -ObjectValue $payload -Name "coverage_window_source" -DefaultValue "")
+        refresh_argument_mode = [string](Get-PropValue -ObjectValue $payload -Name "refresh_argument_mode" -DefaultValue "")
+        features_v4_effective_end = $featuresV4EffectiveEnd
         failure_reasons = @($failureReasons)
         pass = (@($reasons).Count -eq 0)
         reasons = @($reasons)
@@ -1042,12 +1230,13 @@ function Assert-TrainingCriticalCoverageWindow {
     param(
         [Parameter(Mandatory = $true)]$TrainSnapshotCloseContract,
         [string]$TrainWindowStart,
-        [string]$BatchDateValue,
+        [string]$TrainWindowEnd,
         [string]$CertificationWindowStart,
         [string]$CertificationWindowEnd
     )
-    $coverageStartDate = [string](Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "training_critical_start_date" -DefaultValue "")
-    $coverageEndDate = [string](Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "training_critical_end_date" -DefaultValue "")
+    $coverageWindow = Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "coverage_window" -DefaultValue @{}
+    $coverageStartDate = [string](Get-PropValue -ObjectValue $coverageWindow -Name "start" -DefaultValue (Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "training_critical_start_date" -DefaultValue ""))
+    $coverageEndDate = [string](Get-PropValue -ObjectValue $coverageWindow -Name "end" -DefaultValue (Get-PropValue -ObjectValue $TrainSnapshotCloseContract -Name "training_critical_end_date" -DefaultValue ""))
     $reasons = @()
     $trainWindowCovered = $true
     $certificationWindowCovered = $true
@@ -1062,7 +1251,7 @@ function Assert-TrainingCriticalCoverageWindow {
                 -OuterStartDate $coverageStartDate `
                 -OuterEndDate $coverageEndDate `
                 -InnerStartDate $TrainWindowStart `
-                -InnerEndDate $BatchDateValue
+                -InnerEndDate $TrainWindowEnd
             if (-not $trainWindowCovered) {
                 $reasons += "TRAIN_SNAPSHOT_CLOSE_TRAIN_WINDOW_OUTSIDE_COVERAGE"
             }
@@ -1084,7 +1273,7 @@ function Assert-TrainingCriticalCoverageWindow {
         coverage_start_date = $coverageStartDate
         coverage_end_date = $coverageEndDate
         train_window_start = $TrainWindowStart
-        train_window_end = $BatchDateValue
+        train_window_end = $TrainWindowEnd
         certification_window_start = $CertificationWindowStart
         certification_window_end = $CertificationWindowEnd
         train_window_covered = $trainWindowCovered
@@ -1759,6 +1948,7 @@ function New-TrainabilityAttemptRecord {
         effective_end = [string](Get-PropValue -ObjectValue $Probe.Report -Name "effective_end" -DefaultValue "")
         error_message = [string]$Probe.ErrorMessage
         usable = [bool]$Probe.Usable
+        source_mode = [string](Get-PropValue -ObjectValue $Probe -Name "SourceMode" -DefaultValue "")
         command = $Probe.Exec.Command
         output_preview = (Get-OutputPreview -Text ([string]$Probe.Exec.Output))
     }
@@ -4525,8 +4715,12 @@ $report.steps.train_snapshot_close_preflight = [ordered]@{
     overall_pass = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "overall_pass" -DefaultValue $false)
     deadline_met = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "deadline_met" -DefaultValue $false)
     source_freshness = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "source_freshness" -DefaultValue @{})
+    coverage_window = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "coverage_window" -DefaultValue @{})
+    train_window = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "train_window" -DefaultValue @{})
+    certification_window = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "certification_window" -DefaultValue @{})
     training_critical_start_date = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "training_critical_start_date" -DefaultValue "")
     training_critical_end_date = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "training_critical_end_date" -DefaultValue "")
+    features_v4_effective_end = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "features_v4_effective_end" -DefaultValue "")
     training_critical_refresh = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "training_critical_refresh" -DefaultValue @{})
     actual_dataset_rows = $null
     actual_dataset_min_ts_ms = $null
@@ -4614,13 +4808,15 @@ Sync-WindowRampState -WindowRampValue $windowRamp
 $trainingCriticalCoverage = Assert-TrainingCriticalCoverageWindow `
     -TrainSnapshotCloseContract $trainSnapshotCloseContract `
     -TrainWindowStart $script:trainStartDate `
-    -BatchDateValue $effectiveBatchDate `
+    -TrainWindowEnd $script:trainEndDate `
     -CertificationWindowStart $script:certificationStartDate `
     -CertificationWindowEnd $effectiveBatchDate
 $report.steps.train_snapshot_close_preflight.train_window_start = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "train_window_start" -DefaultValue "")
 $report.steps.train_snapshot_close_preflight.train_window_end = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "train_window_end" -DefaultValue "")
 $report.steps.train_snapshot_close_preflight.certification_window_start = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "certification_window_start" -DefaultValue "")
 $report.steps.train_snapshot_close_preflight.certification_window_end = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "certification_window_end" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.coverage_window_start = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "coverage_start_date" -DefaultValue "")
+$report.steps.train_snapshot_close_preflight.coverage_window_end = [string](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "coverage_end_date" -DefaultValue "")
 $report.steps.train_snapshot_close_preflight.train_window_covered = [bool](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "train_window_covered" -DefaultValue $false)
 $report.steps.train_snapshot_close_preflight.certification_window_covered = [bool](Get-PropValue -ObjectValue $trainingCriticalCoverage -Name "certification_window_covered" -DefaultValue $false)
 $report.steps.train_snapshot_close_preflight.coverage_window_source = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "coverage_window_source" -DefaultValue "")
@@ -4895,6 +5091,42 @@ function Invoke-FeaturesBuildAndLoadReport {
         [string]$StartDate,
         [string]$EndDate
     )
+    $reportPath = Join-Path $resolvedProjectRoot ("data/features/features_" + $FeatureSet + "/_meta/build_report.json")
+    $reportDoc = if (Test-Path $reportPath) { Load-JsonOrEmpty -PathValue $reportPath } else { @{} }
+    $closeFeaturesEffectiveEnd = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "features_v4_effective_end" -DefaultValue "")
+    $useFrozenCloseFeatures = (
+        (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") -and
+        (To-Bool (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "pass" -DefaultValue $false) $false) -and
+        (-not [string]::IsNullOrWhiteSpace($closeFeaturesEffectiveEnd))
+    )
+    if ($useFrozenCloseFeatures) {
+        $rowsFinal = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "rows_final" -DefaultValue 0) 0)
+        $minRows = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "min_rows_for_train" -DefaultValue 0) 0)
+        $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
+        $effectiveStart = [string](Get-PropValue -ObjectValue $reportDoc -Name "effective_start" -DefaultValue "")
+        $effectiveEnd = [string](Get-PropValue -ObjectValue $reportDoc -Name "effective_end" -DefaultValue "")
+        $windowCovered = Test-DateWindowContains `
+            -OuterStartDate $effectiveStart `
+            -OuterEndDate $effectiveEnd `
+            -InnerStartDate $StartDate `
+            -InnerEndDate $EndDate
+        $usable = ($windowCovered -and ($rowsFinal -ge $minRows) -and ($status -eq "PASS"))
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ""
+                Command = "[frozen-close-contract] features_v4"
+            }
+            ReportPath = $reportPath
+            Report = $reportDoc
+            RowsFinal = $rowsFinal
+            MinRowsForTrain = $minRows
+            Status = $status
+            ErrorMessage = if ($windowCovered) { "" } else { "FEATURES_V4_WINDOW_NOT_COVERED_BY_CLOSE" }
+            Usable = [bool]$usable
+            SourceMode = "train_snapshot_close_frozen_features"
+        }
+    }
     $args = @(
         "-m", "autobot.cli",
         "features", "build",
@@ -4949,6 +5181,7 @@ function Invoke-FeaturesBuildAndLoadReport {
         Status = $status
         ErrorMessage = $errorMessage
         Usable = [bool]$usable
+        SourceMode = "mutable_features_build"
     }
 }
 
@@ -5607,6 +5840,8 @@ try {
     }
     $dependencyRuntimeExportResults = @()
     $dependencyRuntimeUniverse = @{}
+    $commonRuntimeUniverseArtifact = @{}
+    $commonRuntimeUniverseArtifactPath = Join-Path $resolvedOutDir "common_runtime_universe.json"
     $dependencyRuntimeCoverageEligible = Test-ShouldAttemptDependencyRuntimeCoverage `
         -TrainerName $Trainer `
         -DependencyResults @($dependencyTrainerResults) `
@@ -5621,10 +5856,18 @@ try {
                 -CertificationStartDate $certificationStartDate `
                 -CertificationEndDate $effectiveBatchDate
             $report.steps.dependency_runtime_universe = $dependencyRuntimeUniverse
+            $commonRuntimeUniverseArtifact = New-CommonRuntimeUniverseArtifact `
+                -DependencyRuntimeUniverse $dependencyRuntimeUniverse `
+                -CertificationStartDate $certificationStartDate `
+                -CertificationEndDate $effectiveBatchDate `
+                -ExpectedSnapshotId $dataPlatformReadySnapshotId `
+                -ArtifactPath $commonRuntimeUniverseArtifactPath
+            $report.steps.common_runtime_universe = $commonRuntimeUniverseArtifact
+            Write-JsonFile -PathValue $commonRuntimeUniverseArtifactPath -Payload $commonRuntimeUniverseArtifact
             if (-not [bool](Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "pass" -DefaultValue $false)) {
-                $report.reasons = @("DEPENDENCY_RUNTIME_COMMON_UNIVERSE_EMPTY")
+                $report.reasons = @([string](Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "reason" -DefaultValue "COMMON_RUNTIME_UNIVERSE_EMPTY"))
                 $report.gates.overall_pass = $false
-                Set-ReportFailure -Stage "runtime_export" -Code "DEPENDENCY_RUNTIME_COMMON_UNIVERSE_EMPTY"
+                Set-ReportFailure -Stage "runtime_export" -Code ([string](Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "reason" -DefaultValue "COMMON_RUNTIME_UNIVERSE_EMPTY")) -ReportPath $commonRuntimeUniverseArtifactPath
                 $paths = Save-Report
                 Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
                 exit 2
@@ -5635,6 +5878,27 @@ try {
                 -CertificationStartDate $certificationStartDate `
                 -CertificationEndDate $effectiveBatchDate `
                 -CommonMarkets @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
+            $dependencyRuntimeExportContract = Test-DependencyRuntimeExportContractAlignment `
+                -ExportResults @($dependencyRuntimeExportResults) `
+                -CertificationStartDate $certificationStartDate `
+                -CertificationEndDate $effectiveBatchDate `
+                -ExpectedSnapshotId $dataPlatformReadySnapshotId `
+                -CommonMarkets @((Get-PropValue -ObjectValue $commonRuntimeUniverseArtifact -Name "common_markets" -DefaultValue @()))
+            $report.steps.dependency_runtime_export_contract = $dependencyRuntimeExportContract
+            if (-not [bool](Get-PropValue -ObjectValue $dependencyRuntimeExportContract -Name "pass" -DefaultValue $false)) {
+                $runtimeExportReasons = @(
+                    @(Get-PropValue -ObjectValue $dependencyRuntimeExportContract -Name "reasons" -DefaultValue @()) |
+                        ForEach-Object { [string]$_ } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
+                $report.reasons = @($runtimeExportReasons)
+                $report.gates.overall_pass = $false
+                $runtimeExportFailureCode = if (@($runtimeExportReasons).Count -gt 0) { [string]$runtimeExportReasons[0] } else { "DEPENDENCY_RUNTIME_EXPORT_CONTRACT_FAILED" }
+                Set-ReportFailure -Stage "runtime_export" -Code $runtimeExportFailureCode -ReportPath $commonRuntimeUniverseArtifactPath
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
         } catch {
             Set-ReportFailure -Stage "runtime_export" -Code "DEPENDENCY_RUNTIME_EXPORT_FAILED"
             throw
@@ -5657,6 +5921,14 @@ try {
             reason = $runtimeExportSkipReason
         }
         $report.steps.dependency_runtime_universe = [ordered]@{
+            attempted = $false
+            reason = $runtimeExportSkipReason
+        }
+        $report.steps.common_runtime_universe = [ordered]@{
+            attempted = $false
+            reason = $runtimeExportSkipReason
+        }
+        $report.steps.dependency_runtime_export_contract = [ordered]@{
             attempted = $false
             reason = $runtimeExportSkipReason
         }
@@ -5945,6 +6217,8 @@ try {
         fusion_dependency_inputs = $fusionDependencyInputs
         fusion_dependency_runtime_inputs = $fusionDependencyRuntimeInputs
         dependency_runtime_common_markets = @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
+        common_runtime_universe_id = [string](Get-PropValue -ObjectValue $commonRuntimeUniverseArtifact -Name "common_runtime_universe_id" -DefaultValue "")
+        common_runtime_universe_path = $commonRuntimeUniverseArtifactPath
     }
     Sync-SplitPolicyState
     $report.steps.train.fusion_run_id = $candidateRunId
@@ -5952,6 +6226,8 @@ try {
     $report.steps.train.fusion_dependency_inputs = $fusionDependencyInputs
     $report.steps.train.fusion_dependency_runtime_inputs = $fusionDependencyRuntimeInputs
     $report.steps.train.dependency_runtime_common_markets = @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
+    $report.steps.train.common_runtime_universe_id = [string](Get-PropValue -ObjectValue $commonRuntimeUniverseArtifact -Name "common_runtime_universe_id" -DefaultValue "")
+    $report.steps.train.common_runtime_universe_path = $commonRuntimeUniverseArtifactPath
     $report.steps.train.dependency_trainer_run_ids = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_run_ids" -DefaultValue @()))
     $report.steps.train.dependency_trainer_model_families = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_model_families" -DefaultValue @()))
     $report.steps.train.dependency_snapshot_id = [string](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id" -DefaultValue "")

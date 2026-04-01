@@ -38,6 +38,9 @@ def _seed_train_snapshot_close_contract(project_root: Path) -> None:
             "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / "snapshot-dependency-002"),
             "published_at_utc": "2026-03-08T00:05:00Z",
             "generated_at_utc": "2026-03-08T00:05:00Z",
+            "training_critical_start_date": "2026-03-04",
+            "training_critical_end_date": "2026-03-08",
+            "coverage_window": {"start": "2026-03-04", "end": "2026-03-08"},
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],
@@ -56,6 +59,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
     driver_path.write_text(
         textwrap.dedent(
             """
+            from datetime import datetime, timezone
             import json
             import sys
             from pathlib import Path
@@ -84,6 +88,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(payload) + "\\n")
+
+            def date_to_ts_ms(value: str, end_of_day: bool = False) -> int:
+                parsed = datetime.fromisoformat(value)
+                if end_of_day:
+                    parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999000)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+                return int(parsed.timestamp() * 1000)
 
             def train_config_doc(family: str, trainer: str) -> dict:
                 return {
@@ -134,13 +145,12 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 table.write_bytes(b"PAR1")
                 return run_dir
 
-            def export_run(family: str, trainer: str, run_id: str, start: str, end: str) -> dict:
+            def export_run(family: str, trainer: str, run_id: str, start: str, end: str, explicit_markets: list[str], resolve_only: bool) -> dict:
                 export_root = ROOT / "models" / "registry" / family / run_id / "_runtime_exports" / f"{start}__{end}"
                 export_root.mkdir(parents=True, exist_ok=True)
                 export_path = export_root / "expert_prediction_table.parquet"
                 metadata_path = export_root / "metadata.json"
                 reused = export_path.exists() and metadata_path.exists()
-                export_path.write_bytes(b"PAR1")
                 metadata = {
                     "run_id": run_id,
                     "trainer": trainer,
@@ -148,9 +158,23 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "data_platform_ready_snapshot_id": SNAPSHOT_ID,
                     "start": start,
                     "end": end,
+                    "coverage_start_ts_ms": date_to_ts_ms(start),
+                    "coverage_end_ts_ms": date_to_ts_ms(end, end_of_day=True),
                     "rows": 12,
-                    "selected_markets": ["KRW-BTC", "KRW-ETH"],
+                    "requested_selected_markets": explicit_markets,
+                    "selected_markets": explicit_markets or ["KRW-BTC", "KRW-ETH"],
+                    "selected_markets_source": "acceptance_common_runtime_universe" if explicit_markets else "window_available_markets_fallback",
+                    "fallback_reason": "",
                 }
+                if resolve_only:
+                    return {
+                        **metadata,
+                        "export_path": "",
+                        "metadata_path": "",
+                        "reused": False,
+                        "source_mode": "resolve_markets_only",
+                    }
+                export_path.write_bytes(b"PAR1")
                 write_json(metadata_path, metadata)
                 return {
                     **metadata,
@@ -231,6 +255,8 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 run_dir = Path(arg_value("--run-dir"))
                 start = arg_value("--start")
                 end = arg_value("--end")
+                explicit_markets = [item.strip() for item in arg_value("--markets").split(",") if item.strip()]
+                resolve_only = "--resolve-markets-only" in sys.argv
                 family = run_dir.parent.name
                 run_id = run_dir.name
                 append_log({
@@ -239,8 +265,10 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "run_id": run_id,
                     "start": start,
                     "end": end,
+                    "markets": explicit_markets,
+                    "resolve_markets_only": resolve_only,
                 })
-                print(json.dumps(export_run(family, trainer, run_id, start, end)))
+                print(json.dumps(export_run(family, trainer, run_id, start, end, explicit_markets, resolve_only)))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
@@ -378,7 +406,7 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
     assert trainer_names.count("v5_sequence") == 1
     assert trainer_names.count("v5_lob") == 1
     assert trainer_names.count("v5_fusion") == 2
-    assert len(export_calls) == 6
+    assert len(export_calls) == 12
 
     report = json.loads(
         (project_root / "logs" / "test_acceptance_v5_dependency_reuse" / "latest.json").read_text(encoding="utf-8-sig")

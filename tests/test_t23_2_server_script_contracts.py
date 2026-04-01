@@ -229,6 +229,10 @@ def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contrac
     assert "-MicroStartDate" in stdout
     assert "-MicroEndDate" in stdout
     assert "refresh_current_features_v4_contract_artifacts.ps1" in stdout
+    assert "-StartDate" in stdout
+    assert "-EndDate" in stdout
+    assert "-TopN" in stdout
+    assert "-UseTopNUniverse" in stdout
     assert "autobot.ops.data_platform_snapshot" in stdout
     assert "train_snapshot_close_latest.json" in stdout
 

@@ -11,6 +11,7 @@ param(
     [string]$TicksSummaryPath = "data/raw_ticks/upbit/_meta/ticks_daily_latest.json",
     [string]$MicroRoot = "data/parquet/micro_v1",
     [string]$Tf = "5m",
+    [int]$FeatureTopN = 50,
     [int]$TrainLookbackDays = 30,
     [int]$BacktestLookbackDays = 8,
     [string]$TrainingCriticalStartDate = "",
@@ -125,6 +126,51 @@ function Resolve-DateWindowForTrainingCriticalRefresh {
         start_date = $batchDateObj.AddDays(-1 * ($totalDays - 1)).ToString("yyyy-MM-dd")
         end_date = $resolvedBatchDate
         source = "batch_date_plus_train_and_backtest_lookback"
+    }
+}
+
+function Resolve-TrainSnapshotWindowContract {
+    param(
+        [string]$BatchDateValue,
+        [int]$RequestedTrainLookbackDays,
+        [int]$RequestedBacktestLookbackDays,
+        [string]$CoverageStartDate,
+        [string]$CoverageEndDate,
+        [string]$CoverageSource
+    )
+    $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDateValue
+    $batchDateObj = [DateTime]::ParseExact($resolvedBatchDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $trainDays = [Math]::Max([int]$RequestedTrainLookbackDays, 1)
+    $backtestDays = [Math]::Max([int]$RequestedBacktestLookbackDays, 1)
+    $certificationStartDate = $batchDateObj.AddDays(-1 * ($backtestDays - 1)).ToString("yyyy-MM-dd")
+    $trainEndDate = $batchDateObj.AddDays(-1 * $backtestDays).ToString("yyyy-MM-dd")
+    $trainEndObj = [DateTime]::ParseExact($trainEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+    $trainStartDate = $trainEndObj.AddDays(-1 * ($trainDays - 1)).ToString("yyyy-MM-dd")
+    if (-not [string]::IsNullOrWhiteSpace($CoverageStartDate)) {
+        $coverageStartObj = [DateTime]::ParseExact($CoverageStartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($coverageStartObj -gt $trainEndObj) {
+            $trainStartDate = ""
+        } elseif ($coverageStartObj -gt [DateTime]::ParseExact($trainStartDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)) {
+            $trainStartDate = $CoverageStartDate
+        }
+    }
+    return [ordered]@{
+        batch_date = $resolvedBatchDate
+        train_lookback_days = [int]$trainDays
+        certification_lookback_days = [int]$backtestDays
+        train_window = [ordered]@{
+            start = $trainStartDate
+            end = $trainEndDate
+        }
+        certification_window = [ordered]@{
+            start = $certificationStartDate
+            end = $resolvedBatchDate
+        }
+        coverage_window = [ordered]@{
+            start = $CoverageStartDate
+            end = $CoverageEndDate
+        }
+        coverage_window_source = [string]$CoverageSource
     }
 }
 
@@ -331,6 +377,13 @@ $trainingCriticalWindow = Resolve-DateWindowForTrainingCriticalRefresh `
     -ExplicitEndDate $TrainingCriticalEndDate
 $trainingCriticalStartDate = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "start_date" -DefaultValue "")
 $trainingCriticalEndDate = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "end_date" -DefaultValue "")
+$windowContract = Resolve-TrainSnapshotWindowContract `
+    -BatchDateValue $batchDateValue `
+    -RequestedTrainLookbackDays $TrainLookbackDays `
+    -RequestedBacktestLookbackDays $BacktestLookbackDays `
+    -CoverageStartDate $trainingCriticalStartDate `
+    -CoverageEndDate $trainingCriticalEndDate `
+    -CoverageSource ([string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue ""))
 $pwshExe = Resolve-PwshExe
 
 Set-Location $resolvedProjectRoot
@@ -382,6 +435,8 @@ if (@($failureReasons).Count -eq 0) {
 
 $featureRefreshExec = $null
 $featureRefreshSummary = @{}
+$featureBuildReportPath = Join-Path $resolvedProjectRoot "data/features/features_v4/_meta/build_report.json"
+$featureBuildReport = @{}
 if (@($failureReasons).Count -eq 0) {
     $featureRefreshArgs = @(
         "-NoProfile",
@@ -389,6 +444,11 @@ if (@($failureReasons).Count -eq 0) {
         "-File", $resolvedFeatureContractRefreshScript,
         "-ProjectRoot", $resolvedProjectRoot,
         "-PythonExe", $resolvedPythonExe,
+        "-StartDate", $trainingCriticalStartDate,
+        "-EndDate", $trainingCriticalEndDate,
+        "-TopN", ([string]([Math]::Max([int]$FeatureTopN, 1))),
+        "-UseTopNUniverse",
+        "-RequireExplicitWindow",
         "-SummaryPath", $resolvedFeatureRefreshSummaryPath,
         "-SkipMicroRefresh",
         "-SkipMicroValidate",
@@ -400,6 +460,7 @@ if (@($failureReasons).Count -eq 0) {
     }
     $featureRefreshExec = Invoke-CommandCapture -Exe $pwshExe -ArgList $featureRefreshArgs -AllowFailure
     $featureRefreshSummary = Load-JsonOrEmpty -PathValue $resolvedFeatureRefreshSummaryPath
+    $featureBuildReport = Load-JsonOrEmpty -PathValue $featureBuildReportPath
     if ([int]$featureRefreshExec.ExitCode -ne 0) {
         $failureReasons += "FEATURE_CONTRACT_REFRESH_FAILED"
     }
@@ -464,6 +525,9 @@ $summary = [ordered]@{
         mode = "training_critical"
         start_date = [string](Get-PropValue -ObjectValue $refreshSummary -Name "start_date" -DefaultValue $trainingCriticalStartDate)
         end_date = [string](Get-PropValue -ObjectValue $refreshSummary -Name "end_date" -DefaultValue $trainingCriticalEndDate)
+        train_window = (Get-PropValue -ObjectValue $windowContract -Name "train_window" -DefaultValue @{})
+        certification_window = (Get-PropValue -ObjectValue $windowContract -Name "certification_window" -DefaultValue @{})
+        coverage_window = (Get-PropValue -ObjectValue $windowContract -Name "coverage_window" -DefaultValue @{})
         window_source = [string](Get-PropValue -ObjectValue $refreshSummary -Name "window_source" -DefaultValue (Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue ""))
         coverage_window_source = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue "")
         refresh_argument_mode = [string](Get-PropValue -ObjectValue $refreshSummary -Name "refresh_argument_mode" -DefaultValue "")
@@ -477,9 +541,19 @@ $summary = [ordered]@{
         exit_code = if ($null -ne $featureRefreshExec) { [int]$featureRefreshExec.ExitCode } else { 0 }
         command = if ($null -ne $featureRefreshExec) { [string]$featureRefreshExec.Command } else { "" }
         summary_path = $resolvedFeatureRefreshSummaryPath
+        start_date = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "start" -DefaultValue $trainingCriticalStartDate)
+        end_date = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "end" -DefaultValue $trainingCriticalEndDate)
+        refresh_argument_mode = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "refresh_argument_mode" -DefaultValue "")
+        top_n = [int](Get-PropValue -ObjectValue $featureRefreshSummary -Name "top_n" -DefaultValue ([Math]::Max([int]$FeatureTopN, 1)))
+        universe_mode = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "universe_mode" -DefaultValue "")
+        features_v4_effective_start = [string](Get-PropValue -ObjectValue $featureBuildReport -Name "effective_start" -DefaultValue "")
+        features_v4_effective_end = [string](Get-PropValue -ObjectValue $featureBuildReport -Name "effective_end" -DefaultValue "")
     }
     micro_root = $resolvedMicroRoot
     micro_date_coverage_counts = $microCoverageCounts
+    train_window = (Get-PropValue -ObjectValue $windowContract -Name "train_window" -DefaultValue @{})
+    certification_window = (Get-PropValue -ObjectValue $windowContract -Name "certification_window" -DefaultValue @{})
+    coverage_window = (Get-PropValue -ObjectValue $windowContract -Name "coverage_window" -DefaultValue @{})
     training_critical_start_date = $trainingCriticalStartDate
     training_critical_end_date = $trainingCriticalEndDate
     coverage_window_source = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue "")
@@ -488,6 +562,8 @@ $summary = [ordered]@{
     micro_dates = @((Get-PropValue -ObjectValue $refreshSummary -Name "micro_dates" -DefaultValue @()))
     top_n = [int](Get-PropValue -ObjectValue $refreshSummary -Name "top_n" -DefaultValue 0)
     tensor_max_markets_effective = [int](Get-PropValue -ObjectValue $refreshSummary -Name "tensor_max_markets_effective" -DefaultValue 0)
+    features_v4_effective_start = [string](Get-PropValue -ObjectValue $featureBuildReport -Name "effective_start" -DefaultValue "")
+    features_v4_effective_end = [string](Get-PropValue -ObjectValue $featureBuildReport -Name "effective_end" -DefaultValue "")
     snapshot_id = $snapshotId
     snapshot_root = $snapshotRoot
     snapshot_path = $snapshotRoot
