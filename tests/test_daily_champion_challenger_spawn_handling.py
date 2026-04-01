@@ -1058,6 +1058,71 @@ def test_spawn_only_fails_fast_on_server_preflight_violation(tmp_path: Path) -> 
     assert preflight_report["check_candidate_state_consistency"] is True
 
 
+def test_spawn_only_clears_stale_previous_challenger_state_before_training(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-stale")
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-new"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BACKTEST_ACCEPTANCE_FAILED"],
+        },
+        exit_code=2,
+    )
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-28",
+                "candidate_run_id": "candidate-run-stale",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=["-CandidateTargetUnits", "autobot-live-alpha-candidate.service"],
+        active_units=["autobot-live-alpha-candidate.service", "autobot-paper-v4-paired.service"],
+        python_exe=str(_make_fake_python(tmp_path)),
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    clear_step = latest["steps"]["clear_stale_previous_state"]
+
+    assert clear_step["attempted"] is True
+    assert clear_step["reason"] == "STALE_PREVIOUS_CHALLENGER_STATE"
+    assert clear_step["candidate_run_id"] == "candidate-run-stale"
+    assert clear_step["stop_units"]["stopped_units"] == [
+        "autobot-paper-v4-paired.service",
+        "autobot-live-alpha-candidate.service",
+    ]
+    assert latest["steps"]["train_candidate"]["candidate_run_id"] == "candidate-run-new"
+    assert not state_path.exists()
+    assert not (project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json").exists()
+    assert not (project_root / "models" / "registry" / "latest_candidate.json").exists()
+
+
 def test_promote_only_skips_previous_bootstrap_candidate(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

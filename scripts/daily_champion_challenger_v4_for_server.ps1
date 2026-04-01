@@ -808,6 +808,154 @@ function Stop-ConfiguredUnits {
     }
 }
 
+function Resolve-StalePreviousChallengerStateForSpawn {
+    param(
+        [string]$Root,
+        [Parameter(Mandatory = $false)]$PreviousState,
+        [string]$CurrentBatchDate,
+        [string]$DefaultCanaryUnit
+    )
+    $candidateRunId = [string](Get-PropValue -ObjectValue $PreviousState -Name "candidate_run_id" -DefaultValue "")
+    $stateBatchDate = [string](Get-PropValue -ObjectValue $PreviousState -Name "batch_date" -DefaultValue "")
+    $startedTsMs = [int64](Get-PropValue -ObjectValue $PreviousState -Name "started_ts_ms" -DefaultValue 0)
+    $manualForced = [bool](Get-PropValue -ObjectValue $PreviousState -Name "manual_forced_v5_candidate_adoption" -DefaultValue $false)
+    $ageHours = $null
+    if ($startedTsMs -gt 0) {
+        $ageHours = [Math]::Round((([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startedTsMs) / 3600000.0), 2)
+    }
+    $batchMismatch = (-not [string]::IsNullOrWhiteSpace($stateBatchDate)) -and ($stateBatchDate -ne $CurrentBatchDate)
+
+    $pairedLatestPath = Resolve-PairedPaperLatestPath -Root $Root
+    $pairedArtifact = Load-JsonOrEmpty -PathValue $pairedLatestPath
+    $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedArtifact -Name "challenger_run_id" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($pairedChallengerRunId)) {
+        $pairedReport = Get-PropValue -ObjectValue $pairedArtifact -Name "paired_report" -DefaultValue @{}
+        $pairedChallenger = Get-PropValue -ObjectValue $pairedReport -Name "challenger" -DefaultValue @{}
+        $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedChallenger -Name "run_id" -DefaultValue "")
+    }
+    $pairedMatchesState = (-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($pairedChallengerRunId -eq $candidateRunId)
+
+    $resolvedCanaryUnit = [string]$DefaultCanaryUnit
+    if ([string]::IsNullOrWhiteSpace($resolvedCanaryUnit)) {
+        $resolvedCanaryUnit = [string](
+            $resolvedCandidateTargetUnits |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                Select-Object -First 1
+        )
+    }
+    $canaryLatestPath = Resolve-CanaryConfidenceSequenceLatestPath -Root $Root -UnitName $resolvedCanaryUnit
+    $canaryArtifact = Load-JsonOrEmpty -PathValue $canaryLatestPath
+    $canaryRunId = [string](Get-PropValue -ObjectValue $canaryArtifact -Name "run_id" -DefaultValue "")
+    $canaryDecision = Get-PropValue -ObjectValue $canaryArtifact -Name "decision" -DefaultValue @{}
+    $canaryStatus = [string](Get-PropValue -ObjectValue $canaryDecision -Name "status" -DefaultValue (Get-PropValue -ObjectValue $canaryArtifact -Name "status" -DefaultValue ""))
+    $canaryMatchesState = (-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($canaryRunId -eq $candidateRunId)
+
+    $stale = (
+        (-not [string]::IsNullOrWhiteSpace($candidateRunId)) `
+        -and $batchMismatch `
+        -and ($null -ne $ageHours) `
+        -and ($ageHours -ge 24.0) `
+        -and (-not $pairedMatchesState) `
+        -and ((-not $canaryMatchesState) -or [string]::IsNullOrWhiteSpace($canaryStatus))
+    )
+
+    if ($manualForced -and (-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and $batchMismatch -and ($null -ne $ageHours) -and ($ageHours -ge 24.0)) {
+        $stale = $true
+    }
+
+    $reason = if ($stale) {
+        "STALE_PREVIOUS_CHALLENGER_STATE"
+    } elseif (-not [string]::IsNullOrWhiteSpace($candidateRunId)) {
+        "PREVIOUS_CHALLENGER_STATE_PRESENT"
+    } else {
+        "NO_PREVIOUS_CANDIDATE_RUN_ID"
+    }
+
+    return [ordered]@{
+        stale = $stale
+        reason = $reason
+        candidate_run_id = $candidateRunId
+        state_batch_date = $stateBatchDate
+        current_batch_date = $CurrentBatchDate
+        age_hours = $ageHours
+        manual_forced = $manualForced
+        paired_latest_path = $pairedLatestPath
+        paired_matches_state = $pairedMatchesState
+        paired_challenger_run_id = $pairedChallengerRunId
+        canary_unit = $resolvedCanaryUnit
+        canary_latest_path = $canaryLatestPath
+        canary_matches_state = $canaryMatchesState
+        canary_run_id = $canaryRunId
+        canary_status = if ([string]::IsNullOrWhiteSpace($canaryStatus)) { $null } else { $canaryStatus }
+    }
+}
+
+function Clear-StalePreviousChallengerState {
+    param(
+        [string]$RegistryRoot,
+        [string]$Family,
+        [string]$StateFilePath,
+        [string]$ArchiveDirectory,
+        [Parameter(Mandatory = $false)]$PreviousState,
+        [Parameter(Mandatory = $false)]$StaleInfo,
+        [string[]]$CandidateUnits,
+        [string]$PairedUnit,
+        [string]$ChallengerUnit
+    )
+    $candidateRunId = [string](Get-PropValue -ObjectValue $StaleInfo -Name "candidate_run_id" -DefaultValue "")
+    $unitsToStop = @()
+    foreach ($value in @($PairedUnit, $ChallengerUnit) + @($CandidateUnits)) {
+        $text = [string]$value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        $trimmed = $text.Trim()
+        if ($unitsToStop -contains $trimmed) {
+            continue
+        }
+        $unitsToStop += $trimmed
+    }
+
+    $stopStep = if ($unitsToStop.Count -gt 0) {
+        Stop-ConfiguredUnits -Units $unitsToStop
+    } else {
+        [ordered]@{
+            attempted = $false
+            reason = "NO_UNITS_TO_STOP"
+            stopped_units = @()
+            skipped_units = @()
+        }
+    }
+
+    $archivePath = ""
+    if (-not $DryRun) {
+        New-Item -ItemType Directory -Force -Path $ArchiveDirectory | Out-Null
+        $archivePath = Join-Path $ArchiveDirectory ("stale_challenger_" + (Get-Date -Format "yyyyMMdd-HHmmss") + "_" + $candidateRunId + ".json")
+        Write-JsonFile -PathValue $archivePath -Payload ([ordered]@{
+            cleared_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            reason = [string](Get-PropValue -ObjectValue $StaleInfo -Name "reason" -DefaultValue "STALE_PREVIOUS_CHALLENGER_STATE")
+            stale_info = $StaleInfo
+            state = $PreviousState
+        })
+    }
+
+    $clearPointerStep = Clear-LatestCandidatePointers -RegistryRoot $RegistryRoot -Family $Family
+    if (-not $DryRun -and (Test-Path $StateFilePath)) {
+        Remove-Item -Path $StateFilePath -Force -ErrorAction SilentlyContinue
+    }
+
+    return [ordered]@{
+        attempted = $true
+        cleared = (-not $DryRun)
+        reason = [string](Get-PropValue -ObjectValue $StaleInfo -Name "reason" -DefaultValue "STALE_PREVIOUS_CHALLENGER_STATE")
+        candidate_run_id = $candidateRunId
+        archive_path = $archivePath
+        stop_units = $stopStep
+        clear_latest_candidate = $clearPointerStep
+        removed_state_path = if ($DryRun) { $false } else { -not (Test-Path $StateFilePath) }
+    }
+}
+
 function Start-OrUpdate-ChallengerUnit {
     param(
         [string]$RuntimeInstallScriptPath,
@@ -1134,6 +1282,32 @@ $report.steps.unit_snapshot = [ordered]@{
     champion_was_active = $championWasActive
     paired_paper_was_active = $pairedPaperWasActive
     previous_state_present = $hasPreviousState
+}
+
+if (($Mode -eq "spawn_only") -and $hasPreviousState) {
+    $staleStateInfo = Resolve-StalePreviousChallengerStateForSpawn `
+        -Root $resolvedProjectRoot `
+        -PreviousState $previousState `
+        -CurrentBatchDate $resolvedBatchDate `
+        -DefaultCanaryUnit $CanaryUnitName
+    if ([bool](Get-PropValue -ObjectValue $staleStateInfo -Name "stale" -DefaultValue $false)) {
+        $clearStaleStep = Clear-StalePreviousChallengerState `
+            -RegistryRoot $registryRoot `
+            -Family $resolvedModelFamily `
+            -StateFilePath $statePath `
+            -ArchiveDirectory $archiveRoot `
+            -PreviousState $previousState `
+            -StaleInfo $staleStateInfo `
+            -CandidateUnits $resolvedCandidateTargetUnits `
+            -PairedUnit $PairedPaperUnitName `
+            -ChallengerUnit $ChallengerUnitName
+        $report.steps.clear_stale_previous_state = $clearStaleStep
+        if (-not $DryRun) {
+            $previousState = @{}
+            $hasPreviousState = $false
+            $report.steps.unit_snapshot.previous_state_present = $false
+        }
+    }
 }
 
 if (($Mode -eq "spawn_only") -and $hasPreviousState) {
