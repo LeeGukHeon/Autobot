@@ -294,10 +294,24 @@ $tensorDateValues = if ((-not [string]::IsNullOrWhiteSpace($TensorStartDate)) -a
 } else {
     Get-RecentUtcDateValues -Count $TensorRecentDates
 }
+$tensorWindowSource = if ((-not [string]::IsNullOrWhiteSpace($TensorStartDate)) -and (-not [string]::IsNullOrWhiteSpace($TensorEndDate))) {
+    "explicit_date_range"
+} else {
+    "recent_dates_window"
+}
 $microDateValues = if ((-not [string]::IsNullOrWhiteSpace($MicroStartDate)) -and (-not [string]::IsNullOrWhiteSpace($MicroEndDate))) {
     Get-DateRangeUtcDateValues -StartDate $MicroStartDate -EndDate $MicroEndDate
 } else {
     Get-RecentUtcDateValues -Count $MicroRecentDates
+}
+$microWindowSource = if ((-not [string]::IsNullOrWhiteSpace($MicroStartDate)) -and (-not [string]::IsNullOrWhiteSpace($MicroEndDate))) {
+    "explicit_date_range"
+} else {
+    "recent_dates_window"
+}
+$effectiveTensorMaxMarkets = [Math]::Max([int]$TensorMaxMarkets, 1)
+if (($Mode -eq "training_critical") -and [string]::IsNullOrWhiteSpace($serializedTensorMarkets)) {
+    $effectiveTensorMaxMarkets = [Math]::Max($effectiveTensorMaxMarkets, [Math]::Max([int]$TopN, 1))
 }
 $microDateStart = [string]$microDateValues[-1]
 $microDateEnd = [string]$microDateValues[0]
@@ -333,7 +347,7 @@ for ($index = 0; $index -lt $tensorDateValues.Count; $index++) {
         "collect", "tensors",
         "--out-dataset", "sequence_v1",
         "--date", $dateValue,
-        "--max-markets", ([string]([Math]::Max([int]$TensorMaxMarkets, 1))),
+        "--max-markets", ([string]$effectiveTensorMaxMarkets),
         "--max-anchors-per-market", ([string]([Math]::Max([int]$TensorMaxAnchorsPerMarket, 1))),
         "--second-lookback-steps", ([string]([Math]::Max([int]$TensorSecondLookbackSteps, 1))),
         "--minute-lookback-steps", ([string]([Math]::Max([int]$TensorMinuteLookbackSteps, 1))),
@@ -436,6 +450,15 @@ $summary = [ordered]@{
     mode = $Mode
     meta_dir = $resolvedMetaDir
     skip_publish_ready_snapshot = [bool]$SkipPublishReadySnapshot
+    start_date = if (@($tensorDateValues).Count -gt 0) { [string]$tensorDateValues[-1] } else { "" }
+    end_date = if (@($tensorDateValues).Count -gt 0) { [string]$tensorDateValues[0] } else { "" }
+    window_source = if ($Mode -eq "training_critical") { $tensorWindowSource } else { "" }
+    tensor_dates = @($tensorDateValues)
+    micro_dates = @($microDateValues)
+    tensor_window_source = $tensorWindowSource
+    micro_window_source = $microWindowSource
+    top_n = [int]$TopN
+    tensor_max_markets_effective = [int]$effectiveTensorMaxMarkets
     steps = @($stepResults)
 }
 $summaryDir = Split-Path -Parent $resolvedSummaryPath

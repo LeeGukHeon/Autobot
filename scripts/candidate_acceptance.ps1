@@ -536,7 +536,10 @@ function Invoke-DependencyRuntimeExportChain {
             start = [string](Get-PropValue -ObjectValue $payload -Name "start" -DefaultValue "")
             end = [string](Get-PropValue -ObjectValue $payload -Name "end" -DefaultValue "")
             rows = [int](Get-PropValue -ObjectValue $payload -Name "rows" -DefaultValue 0)
+            requested_selected_markets = @((Get-PropValue -ObjectValue $payload -Name "requested_selected_markets" -DefaultValue @()))
             selected_markets = @((Get-PropValue -ObjectValue $payload -Name "selected_markets" -DefaultValue @()))
+            selected_markets_source = [string](Get-PropValue -ObjectValue $payload -Name "selected_markets_source" -DefaultValue "")
+            fallback_reason = [string](Get-PropValue -ObjectValue $payload -Name "fallback_reason" -DefaultValue "")
             reused = [bool](Get-PropValue -ObjectValue $payload -Name "reused" -DefaultValue $false)
             source_mode = [string](Get-PropValue -ObjectValue $payload -Name "source_mode" -DefaultValue "")
         }
@@ -882,6 +885,9 @@ function Resolve-TrainSnapshotCloseContract {
         source_freshness = $sourceFreshness
         micro_root = $microRoot
         micro_date_coverage_counts = $microCoverageCounts
+        training_critical_start_date = [string](Get-PropValue -ObjectValue $payload -Name "training_critical_start_date" -DefaultValue "")
+        training_critical_end_date = [string](Get-PropValue -ObjectValue $payload -Name "training_critical_end_date" -DefaultValue "")
+        training_critical_refresh = Get-PropValue -ObjectValue $payload -Name "training_critical_refresh" -DefaultValue @{}
         failure_reasons = @($failureReasons)
         pass = (@($reasons).Count -eq 0)
         reasons = @($reasons)
@@ -4317,6 +4323,9 @@ $report.steps.train_snapshot_close_preflight = [ordered]@{
     overall_pass = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "overall_pass" -DefaultValue $false)
     deadline_met = [bool](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "deadline_met" -DefaultValue $false)
     source_freshness = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "source_freshness" -DefaultValue @{})
+    training_critical_start_date = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "training_critical_start_date" -DefaultValue "")
+    training_critical_end_date = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "training_critical_end_date" -DefaultValue "")
+    training_critical_refresh = (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "training_critical_refresh" -DefaultValue @{})
     actual_dataset_rows = $null
     actual_dataset_min_ts_ms = $null
     actual_dataset_max_ts_ms = $null

@@ -43,6 +43,8 @@ def _seed_train_snapshot_close_contract(
             "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / snapshot_id),
             "published_at_utc": "2026-03-08T00:05:00Z",
             "generated_at_utc": "2026-03-08T00:05:00Z",
+            "training_critical_start_date": "2026-03-04",
+            "training_critical_end_date": batch_date,
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],
@@ -183,3 +185,5 @@ def test_candidate_acceptance_fails_early_on_runtime_dataset_coverage_gap(tmp_pa
     )
     assert report["reasons"] == ["CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"]
     assert report["steps"]["runtime_dataset_coverage_preflight"]["pass"] is False
+    assert report["steps"]["train_snapshot_close_preflight"]["training_critical_start_date"] == "2026-03-04"
+    assert report["steps"]["train_snapshot_close_preflight"]["training_critical_end_date"] == "2026-03-08"

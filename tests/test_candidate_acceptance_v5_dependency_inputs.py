@@ -145,7 +145,10 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "start": start,
                     "end": end,
                     "rows": 12,
+                    "requested_selected_markets": ["KRW-BTC", "KRW-ETH"],
                     "selected_markets": ["KRW-BTC", "KRW-ETH"],
+                    "selected_markets_source": "train_selected_markets",
+                    "fallback_reason": "",
                 }
                 write_json(metadata_path, metadata)
                 return {
@@ -429,6 +432,10 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert report["steps"]["dependency_trainers"]["trained_count"] == 3
     assert report["steps"]["dependency_trainers"]["reused_count"] == 0
     assert report["steps"]["dependency_runtime_exports"]["count"] == 3
+    export_results = report["steps"]["dependency_runtime_exports"]["results"]
+    assert export_results[0]["requested_selected_markets"] == ["KRW-BTC", "KRW-ETH"]
+    assert export_results[0]["selected_markets_source"] == "train_selected_markets"
+    assert export_results[0]["fallback_reason"] == ""
     inputs = report["steps"]["train"]["fusion_dependency_inputs"]
     runtime_inputs = report["steps"]["train"]["fusion_dependency_runtime_inputs"]
     assert inputs["fusion_panel_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/expert_prediction_table.parquet")

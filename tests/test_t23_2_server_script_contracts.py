@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -153,6 +154,39 @@ def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_excludes_
     assert "[data-platform-refresh] step=plan_ws_candles" not in stdout
     assert "[data-platform-refresh] step=collect_ws_candles" not in stdout
     assert "[data-platform-refresh] step=publish_data_platform_snapshot" not in stdout
+
+
+def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_writes_range_summary(tmp_path: Path) -> None:
+    summary_path = tmp_path / "training_critical_summary.json"
+    stdout = _run_script_dry_run(
+        "refresh_data_platform_layers.ps1",
+        "-Mode",
+        "training_critical",
+        "-SkipPublishReadySnapshot",
+        "-TensorStartDate",
+        "2026-03-04",
+        "-TensorEndDate",
+        "2026-03-08",
+        "-MicroStartDate",
+        "2026-03-04",
+        "-MicroEndDate",
+        "2026-03-08",
+        "-SummaryPath",
+        str(summary_path),
+    )
+
+    assert str(summary_path) in stdout
+    payload = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+    assert payload["mode"] == "training_critical"
+    assert payload["start_date"] == "2026-03-04"
+    assert payload["end_date"] == "2026-03-08"
+    assert payload["window_source"] == "explicit_date_range"
+    assert payload["tensor_dates"][0] == "2026-03-08"
+    assert payload["tensor_dates"][-1] == "2026-03-04"
+    assert payload["micro_dates"][0] == "2026-03-08"
+    assert payload["micro_dates"][-1] == "2026-03-04"
+    assert payload["top_n"] == 50
+    assert payload["tensor_max_markets_effective"] == 50
 
 
 def test_t23_2_train_snapshot_close_installer_dry_run_keeps_v5_timer_contract() -> None:

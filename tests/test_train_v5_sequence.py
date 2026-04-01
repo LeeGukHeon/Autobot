@@ -426,5 +426,7 @@ def test_materialize_v5_sequence_runtime_export_falls_back_to_window_markets(tmp
     assert Path(export["export_path"]).exists()
     assert export["rows"] > 0
     assert export["reused"] is False
+    assert export["requested_selected_markets"] == ["KRW-BTC"]
     assert export["selected_markets"] == ["KRW-ETH"]
     assert export["selected_markets_source"] == "window_available_markets_fallback"
+    assert export["fallback_reason"] == "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW"

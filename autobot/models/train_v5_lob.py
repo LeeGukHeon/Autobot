@@ -808,6 +808,7 @@ def _export_lob_expert_prediction_table_window(*, run_dir: Path, start: str, end
     selected_markets = tuple(
         str(item).strip() for item in (train_config.get("selected_markets") or []) if str(item).strip()
     )
+    requested_selected_markets = list(selected_markets)
     existing_export = load_existing_expert_runtime_export(run_dir, start, end)
     existing_metadata = dict(existing_export.get("metadata") or {})
     paths = dict(existing_export.get("paths") or {})
@@ -840,6 +841,7 @@ def _export_lob_expert_prediction_table_window(*, run_dir: Path, start: str, end
     if estimator is None:
         raise ValueError(f"run_dir does not contain a usable lob estimator: {run_dir}")
     selected_markets_source = "train_selected_markets"
+    fallback_reason = ""
     try:
         samples = _load_lob_samples(options, selected_markets_override=selected_markets)
     except ValueError as exc:
@@ -847,6 +849,7 @@ def _export_lob_expert_prediction_table_window(*, run_dir: Path, start: str, end
             raise
         samples = _load_lob_samples(options, selected_markets_override=None)
         selected_markets_source = "window_available_markets_fallback"
+        fallback_reason = "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW"
     split_labels = np.full(samples.rows, "runtime", dtype=object)
     export_path = _write_lob_expert_prediction_table(
         run_dir=run_dir,
@@ -865,8 +868,10 @@ def _export_lob_expert_prediction_table_window(*, run_dir: Path, start: str, end
         "start": str(start).strip(),
         "end": str(end).strip(),
         "rows": int(samples.rows),
+        "requested_selected_markets": requested_selected_markets,
         "selected_markets": list(samples.selected_markets),
         "selected_markets_source": selected_markets_source,
+        "fallback_reason": fallback_reason,
     }
     metadata_path = write_expert_runtime_export_metadata(
         run_dir=run_dir,

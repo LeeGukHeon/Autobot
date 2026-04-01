@@ -462,9 +462,13 @@ $summary = [ordered]@{
         command = if ($null -ne $refreshExec) { [string]$refreshExec.Command } else { "" }
         summary_path = $resolvedRefreshSummaryPath
         mode = "training_critical"
-        start_date = $trainingCriticalStartDate
-        end_date = $trainingCriticalEndDate
-        window_source = [string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue "")
+        start_date = [string](Get-PropValue -ObjectValue $refreshSummary -Name "start_date" -DefaultValue $trainingCriticalStartDate)
+        end_date = [string](Get-PropValue -ObjectValue $refreshSummary -Name "end_date" -DefaultValue $trainingCriticalEndDate)
+        window_source = [string](Get-PropValue -ObjectValue $refreshSummary -Name "window_source" -DefaultValue (Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue ""))
+        tensor_dates = @((Get-PropValue -ObjectValue $refreshSummary -Name "tensor_dates" -DefaultValue @()))
+        micro_dates = @((Get-PropValue -ObjectValue $refreshSummary -Name "micro_dates" -DefaultValue @()))
+        top_n = [int](Get-PropValue -ObjectValue $refreshSummary -Name "top_n" -DefaultValue 0)
+        tensor_max_markets_effective = [int](Get-PropValue -ObjectValue $refreshSummary -Name "tensor_max_markets_effective" -DefaultValue 0)
     }
     feature_contract_refresh = [ordered]@{
         attempted = ($null -ne $featureRefreshExec)
