@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from autobot import __version__ as autobot_version
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
+from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations
 
 from .bridge_models import fit_ridge_bridge
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
@@ -396,11 +397,11 @@ def _write_sequence_expert_prediction_table(
 
 
 def _build_sequence_runtime_recommendations(*, options: TrainV5SequenceOptions, runtime_dataset_root: Path) -> dict[str, Any]:
-    return {
+    return annotate_v5_runtime_recommendations({
         "status": "sequence_runtime_ready",
         "source_family": options.model_family,
         "runtime_feature_dataset_root": str(runtime_dataset_root),
-    }
+    })
 
 
 def _build_sequence_promotion_payload(

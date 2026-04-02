@@ -128,6 +128,10 @@ def test_train_v5_sequence_writes_core_contract_artifacts(tmp_path: Path) -> Non
     assert artifact_status["promotion_complete"] is True
     assert artifact_status["decision_surface_complete"] is True
     assert artifact_status["expert_prediction_table_complete"] is True
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+    assert runtime_recommendations["decision_contract_version"] == "v5_post_model_contract_v1"
+    assert runtime_recommendations["entry_ownership"] == "predictor_boundary"
+    assert runtime_recommendations["trade_action_role"] == "advisory_only_v1"
     predictor = load_predictor_from_registry(
         registry_root=tmp_path / "registry",
         model_ref=result.run_id,
