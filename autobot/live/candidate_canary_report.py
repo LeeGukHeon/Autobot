@@ -106,7 +106,12 @@ def _profit_factor(values: list[float]) -> float | None:
     return gross_profit / gross_loss
 
 
-def build_candidate_canary_report(db_path: Path) -> dict[str, Any]:
+def build_candidate_canary_report(
+    db_path: Path,
+    *,
+    opportunity_log_path: Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
@@ -168,6 +173,10 @@ def build_candidate_canary_report(db_path: Path) -> dict[str, Any]:
         if liquidation_tier:
             liquidation_policy_tiers[liquidation_tier] += 1
     verification_status = Counter(str((row.get("exit_meta") or {}).get("close_verification_status") or "").strip() for row in closed_rows)
+    opportunity_summary = _load_opportunity_summary(
+        opportunity_log_path=opportunity_log_path,
+        run_id=str(run_id or "").strip() or None,
+    )
 
     by_market: dict[str, dict[str, Any]] = defaultdict(lambda: {"closed": 0, "verified": 0, "realized_pnl_quote": 0.0, "wins": 0, "losses": 0})
     for row in closed_rows:
@@ -210,6 +219,13 @@ def build_candidate_canary_report(db_path: Path) -> dict[str, Any]:
         "safety_veto_reasons_top": safety_veto_reasons.most_common(10),
         "exit_decision_reasons_top": exit_decision_reasons.most_common(10),
         "liquidation_policy_tiers": dict(liquidation_policy_tiers),
+        "opportunity_log_path": str(opportunity_log_path) if opportunity_log_path is not None else None,
+        "opportunity_rows_total": int(opportunity_summary.get("opportunity_rows_total") or 0),
+        "opportunity_run_rows_total": int(opportunity_summary.get("opportunity_run_rows_total") or 0),
+        "opportunity_primary_decision_reasons_top": list(opportunity_summary.get("primary_decision_reasons_top") or []),
+        "opportunity_entry_decision_reasons_top": list(opportunity_summary.get("entry_decision_reasons_top") or []),
+        "opportunity_safety_veto_reasons_top": list(opportunity_summary.get("safety_veto_reasons_top") or []),
+        "opportunity_skip_reasons_top": list(opportunity_summary.get("skip_reasons_top") or []),
         "verification_status": dict(verification_status),
         "markets_top": sorted(
             (
@@ -284,6 +300,16 @@ def render_candidate_canary_markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "## Safety Veto Reasons"])
     for key, value in report.get("safety_veto_reasons_top") or []:
         lines.append(f"- {key}: {value}")
+    if report.get("opportunity_run_rows_total"):
+        lines.extend(["", "## Opportunity Entry Decision Reasons"])
+        for key, value in report.get("opportunity_entry_decision_reasons_top") or []:
+            lines.append(f"- {key}: {value}")
+        lines.extend(["", "## Opportunity Safety Veto Reasons"])
+        for key, value in report.get("opportunity_safety_veto_reasons_top") or []:
+            lines.append(f"- {key}: {value}")
+        lines.extend(["", "## Opportunity Skip Reasons"])
+        for key, value in report.get("opportunity_skip_reasons_top") or []:
+            lines.append(f"- {key}: {value}")
     lines.extend(["", "## Exit Decision Reasons"])
     for key, value in report.get("exit_decision_reasons_top") or []:
         lines.append(f"- {key}: {value}")
@@ -321,6 +347,76 @@ def _write_text(path: Path, text: str) -> None:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_opportunity_summary(*, opportunity_log_path: Path | None, run_id: str | None) -> dict[str, Any]:
+    path = Path(opportunity_log_path) if opportunity_log_path is not None else None
+    if path is None or not path.exists():
+        return {
+            "opportunity_rows_total": 0,
+            "opportunity_run_rows_total": 0,
+            "primary_decision_reasons_top": [],
+            "entry_decision_reasons_top": [],
+            "safety_veto_reasons_top": [],
+            "skip_reasons_top": [],
+        }
+    rows = _load_jsonl(path)
+    filtered_rows = [
+        row
+        for row in rows
+        if not run_id or str(row.get("run_id") or "").strip() == str(run_id).strip()
+    ]
+    primary_reasons = Counter()
+    entry_reasons = Counter()
+    safety_reasons = Counter()
+    skip_reasons = Counter()
+    for row in filtered_rows:
+        strategy_meta = dict(row.get("meta") or {}) if isinstance(row.get("meta"), dict) else {}
+        entry_decision = dict(strategy_meta.get("entry_decision") or {}) if isinstance(strategy_meta.get("entry_decision"), dict) else {}
+        safety_vetoes = dict(strategy_meta.get("safety_vetoes") or {}) if isinstance(strategy_meta.get("safety_vetoes"), dict) else {}
+        primary_reason = ""
+        for item in (entry_decision.get("reason_codes") or []):
+            reason = str(item).strip()
+            if reason:
+                entry_reasons[reason] += 1
+                primary_reason = primary_reason or reason
+        for payload in safety_vetoes.values():
+            if not isinstance(payload, dict):
+                continue
+            for item in (payload.get("reason_codes") or []):
+                reason = str(item).strip()
+                if reason:
+                    safety_reasons[reason] += 1
+                    primary_reason = primary_reason or reason
+        skip_reason = str(row.get("skip_reason_code") or "").strip()
+        if skip_reason:
+            skip_reasons[skip_reason] += 1
+            primary_reason = primary_reason or skip_reason
+        if primary_reason:
+            primary_reasons[primary_reason] += 1
+    return {
+        "opportunity_rows_total": len(rows),
+        "opportunity_run_rows_total": len(filtered_rows),
+        "primary_decision_reasons_top": primary_reasons.most_common(10),
+        "entry_decision_reasons_top": entry_reasons.most_common(10),
+        "safety_veto_reasons_top": safety_reasons.most_common(10),
+        "skip_reasons_top": skip_reasons.most_common(10),
+    }
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    try:
+        rows = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                rows.append(payload)
+        return rows
+    except (OSError, json.JSONDecodeError):
+        return []
 
 
 def _parse_args() -> argparse.Namespace:

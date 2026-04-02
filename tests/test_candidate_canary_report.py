@@ -230,3 +230,62 @@ def test_candidate_canary_report_renders_markdown(tmp_path) -> None:
     assert "## Summary" in markdown
     assert "| Market | Closed | Verified | Wins | Losses | Realized PnL |" in markdown
     assert "KRW-BTC" in markdown
+
+
+def test_candidate_canary_report_reads_opportunity_reason_summary(tmp_path) -> None:
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path):
+        pass
+    opportunity_log_path = tmp_path / "logs" / "opportunity_log" / "candidate" / "latest.jsonl"
+    opportunity_log_path.parent.mkdir(parents=True, exist_ok=True)
+    opportunity_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "opportunity_id": "entry:1000:KRW-BTC",
+                        "run_id": "run-a",
+                        "skip_reason_code": "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED",
+                        "meta": {
+                            "entry_decision": {
+                                "reason_codes": ["ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"],
+                            },
+                            "safety_vetoes": {
+                                "portfolio_budget": {
+                                    "reason_codes": ["ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"],
+                                }
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "opportunity_id": "entry:1000:KRW-ETH",
+                        "run_id": "run-b",
+                        "skip_reason_code": "ENTRY_GATE_BREAKER_ACTIVE",
+                        "meta": {
+                            "entry_decision": {
+                                "reason_codes": ["ENTRY_GATE_BREAKER_ACTIVE"],
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = build_candidate_canary_report(
+        db_path,
+        opportunity_log_path=opportunity_log_path,
+        run_id="run-a",
+    )
+
+    assert report["opportunity_rows_total"] == 2
+    assert report["opportunity_run_rows_total"] == 1
+    assert report["opportunity_entry_decision_reasons_top"][0][0] == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
+    assert report["opportunity_safety_veto_reasons_top"][0][0] == "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
+    assert report["opportunity_skip_reasons_top"][0][0] == "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"

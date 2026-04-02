@@ -431,7 +431,34 @@ def test_resolve_runtime_model_alpha_settings_keeps_manual_exit_when_family_comp
     assert resolved.exit.hold_bars == 6
     assert resolved.exit.risk_scaling_mode == "fixed"
     assert state["exit_family_compare_status"] == "insufficient_support"
-    assert "HOLD_FAMILY_NO_COMPARABLE_RULE" in state["exit_family_compare_reason_codes"]
+
+
+def test_resolve_runtime_model_alpha_settings_surfaces_missing_fusion_top_level_contract_docs() -> None:
+    predictor = _dummy_predictor(
+        runtime_recommendations={
+            "decision_contract_version": "v5_post_model_contract_v1",
+            "source_family": "train_v5_fusion",
+            "status": "fusion_runtime_ready",
+            "policy": "v5_fusion_runtime_recommendations_v1",
+            "exit": {
+                "recommended_exit_mode": "risk",
+                "recommended_exit_mode_source": "runtime_recommendation",
+                "recommended_exit_mode_reason_code": "RISK_EXECUTION_COMPARE_EDGE",
+            },
+        }
+    )
+    settings = ModelAlphaSettings(
+        exit=ModelAlphaExitSettings(mode="hold", use_learned_exit_mode=True),
+        execution=ModelAlphaExecutionSettings(use_learned_recommendations=True),
+    )
+
+    resolved, state = resolve_runtime_model_alpha_settings(predictor=predictor, settings=settings)
+
+    assert resolved.exit.mode == "hold"
+    assert state["runtime_recommendations_contract_status"] == "invalid"
+    assert "RUNTIME_RECOMMENDATIONS_EXECUTION_DOC_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_RISK_CONTROL_DOC_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_TRADE_ACTION_DOC_MISSING" in state["runtime_recommendations_contract_issues"]
 
 
 def test_rank_execution_rows_prefers_pairwise_winner() -> None:

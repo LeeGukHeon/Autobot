@@ -63,9 +63,8 @@ def load_paper_lane_runs(
     if not runs_root.exists():
         return results
     for summary_path in runs_root.glob("paper-*/summary.json"):
-        try:
-            summary = _load_json(summary_path)
-        except (OSError, json.JSONDecodeError):
+        summary = load_paper_lane_run_summary(run_dir=summary_path.parent)
+        if not summary:
             continue
         if str(summary.get("paper_lane", "")).strip().lower() != lane_value:
             continue
@@ -84,11 +83,23 @@ def load_paper_lane_runs(
             run_model_run_id = str(summary.get("paper_runtime_model_run_id") or "").strip()
             if run_model_run_id != model_run_id_value:
                 continue
-        summary["summary_path"] = str(summary_path)
-        summary["run_dir"] = str(summary_path.parent)
         results.append(summary)
     results.sort(key=lambda item: _safe_int(item.get("run_started_ts_ms")))
     return results
+
+
+def load_paper_lane_run_summary(*, run_dir: Path) -> dict[str, Any]:
+    summary_path = Path(run_dir) / "summary.json"
+    try:
+        summary = _load_json(summary_path)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(summary, dict) or not summary:
+        return {}
+    summary["summary_path"] = str(summary_path)
+    summary["run_dir"] = str(Path(run_dir))
+    summary["decision_language"] = _load_decision_language_summary(run_dir=Path(run_dir))
+    return summary
 
 
 def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -117,6 +128,13 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "execution_structure_tp_exit_share": 0.0,
             "execution_structure_sl_exit_share": 0.0,
             "execution_structure_timeout_exit_share": 0.0,
+            "decision_language_primary_reason_counts": {},
+            "decision_language_alpha_gate_fail_total": 0,
+            "decision_language_safety_veto_total": 0,
+            "decision_language_no_trade_total": 0,
+            "decision_language_continuation_exit_total": 0,
+            "decision_language_continuation_exit_share": 0.0,
+            "decision_language_liquidation_tier_counts": {},
             "duration_sec_total": 0.0,
             "run_started_ts_ms_min": 0,
             "run_completed_ts_ms_max": 0,
@@ -169,6 +187,22 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         ],
         default=0.0,
     )
+    primary_reason_counts: dict[str, int] = {}
+    liquidation_tier_counts: dict[str, int] = {}
+    alpha_gate_fail_total = 0
+    safety_veto_total = 0
+    no_trade_total = 0
+    continuation_exit_total = 0
+    for item in runs:
+        decision_language = dict(item.get("decision_language") or {})
+        for reason_code, count in dict(decision_language.get("primary_reason_counts") or {}).items():
+            _inc_reason(primary_reason_counts, str(reason_code), int(count))
+        for tier_name, count in dict(decision_language.get("liquidation_tier_counts") or {}).items():
+            _inc_reason(liquidation_tier_counts, str(tier_name), int(count))
+        alpha_gate_fail_total += int(decision_language.get("alpha_gate_fail_total") or 0)
+        safety_veto_total += int(decision_language.get("safety_veto_total") or 0)
+        no_trade_total += int(decision_language.get("no_trade_total") or 0)
+        continuation_exit_total += int(decision_language.get("continuation_exit_total") or 0)
     aggregate = {
         "runs_completed": len(runs),
         "run_ids": [str(item.get("run_id", "")) for item in runs],
@@ -222,6 +256,17 @@ def aggregate_paper_lane_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "execution_structure_tp_exit_share": (tp_exit_count_total / closed_trade_count_total) if closed_trade_count_total > 0 else 0.0,
         "execution_structure_sl_exit_share": (sl_exit_count_total / closed_trade_count_total) if closed_trade_count_total > 0 else 0.0,
         "execution_structure_timeout_exit_share": (timeout_exit_count_total / closed_trade_count_total) if closed_trade_count_total > 0 else 0.0,
+        "decision_language_primary_reason_counts": primary_reason_counts,
+        "decision_language_alpha_gate_fail_total": int(alpha_gate_fail_total),
+        "decision_language_safety_veto_total": int(safety_veto_total),
+        "decision_language_no_trade_total": int(no_trade_total),
+        "decision_language_continuation_exit_total": int(continuation_exit_total),
+        "decision_language_continuation_exit_share": (
+            float(continuation_exit_total) / float(closed_trade_count_total)
+            if closed_trade_count_total > 0
+            else 0.0
+        ),
+        "decision_language_liquidation_tier_counts": liquidation_tier_counts,
         "duration_sec_total": duration_sec_total,
         "run_started_ts_ms_min": min((_safe_int(item.get("run_started_ts_ms")) for item in runs), default=0),
         "run_completed_ts_ms_max": max((_safe_int(item.get("run_completed_ts_ms")) for item in runs), default=0),
@@ -275,6 +320,12 @@ def compare_champion_challenger(
     challenger_fill_rate = _safe_float(challenger.get("fill_rate"))
     champion_p90_time_to_fill_ms = _safe_float(champion.get("p90_time_to_fill_ms_mean"))
     challenger_p90_time_to_fill_ms = _safe_float(challenger.get("p90_time_to_fill_ms_mean"))
+    champion_alpha_gate_fail_rate = _decision_language_rate(champion, "decision_language_alpha_gate_fail_total")
+    challenger_alpha_gate_fail_rate = _decision_language_rate(challenger, "decision_language_alpha_gate_fail_total")
+    champion_safety_veto_rate = _decision_language_rate(champion, "decision_language_safety_veto_total")
+    challenger_safety_veto_rate = _decision_language_rate(challenger, "decision_language_safety_veto_total")
+    champion_urgent_liquidation_share = _urgent_liquidation_share(champion)
+    challenger_urgent_liquidation_share = _urgent_liquidation_share(challenger)
     time_to_fill_not_worse = True
     if champion_p90_time_to_fill_ms > 0.0 and challenger_p90_time_to_fill_ms > 0.0:
         time_to_fill_not_worse = challenger_p90_time_to_fill_ms <= (
@@ -288,10 +339,35 @@ def compare_champion_challenger(
         "nonnegative_ratio_not_worse": challenger_nonnegative >= (champion_nonnegative - float(nonnegative_ratio_tolerance)),
         "fill_rate_not_worse": challenger_fill_rate >= (champion_fill_rate - 0.02),
         "time_to_fill_not_worse": time_to_fill_not_worse,
+        "alpha_gate_fail_concentration_not_worse": challenger_alpha_gate_fail_rate <= (champion_alpha_gate_fail_rate + 0.05),
+        "safety_veto_concentration_not_worse": challenger_safety_veto_rate <= (champion_safety_veto_rate + 0.05),
+        "urgent_liquidation_not_worse": challenger_urgent_liquidation_share <= (champion_urgent_liquidation_share + 0.05),
     }
     evidence_score = sum(1.0 for passed in pairwise_checks.values() if passed) / max(len(pairwise_checks), 1)
     promote = (len(hard_failures) == 0) and all(pairwise_checks.values())
     decision = "promote_challenger" if promote else ("hold_for_review" if len(hard_failures) == 0 else "keep_champion")
+    alpha_failure_summary = {
+        "challenger_alpha_gate_fail_total": int(challenger.get("decision_language_alpha_gate_fail_total", 0) or 0),
+        "champion_alpha_gate_fail_total": int(champion.get("decision_language_alpha_gate_fail_total", 0) or 0),
+        "challenger_alpha_gate_fail_rate": float(challenger_alpha_gate_fail_rate),
+        "champion_alpha_gate_fail_rate": float(champion_alpha_gate_fail_rate),
+        "challenger_primary_reason_counts": dict(challenger.get("decision_language_primary_reason_counts") or {}),
+    }
+    safety_failure_summary = {
+        "challenger_safety_veto_total": int(challenger.get("decision_language_safety_veto_total", 0) or 0),
+        "champion_safety_veto_total": int(champion.get("decision_language_safety_veto_total", 0) or 0),
+        "challenger_no_trade_total": int(challenger.get("decision_language_no_trade_total", 0) or 0),
+        "challenger_safety_veto_rate": float(challenger_safety_veto_rate),
+        "champion_safety_veto_rate": float(champion_safety_veto_rate),
+    }
+    execution_liquidation_summary = {
+        "challenger_continuation_exit_share": float(challenger.get("decision_language_continuation_exit_share", 0.0) or 0.0),
+        "champion_continuation_exit_share": float(champion.get("decision_language_continuation_exit_share", 0.0) or 0.0),
+        "challenger_liquidation_tier_counts": dict(challenger.get("decision_language_liquidation_tier_counts") or {}),
+        "champion_liquidation_tier_counts": dict(champion.get("decision_language_liquidation_tier_counts") or {}),
+        "challenger_urgent_liquidation_share": float(challenger_urgent_liquidation_share),
+        "champion_urgent_liquidation_share": float(champion_urgent_liquidation_share),
+    }
     return {
         "promote": promote,
         "decision": decision,
@@ -303,6 +379,9 @@ def compare_champion_challenger(
         "challenger_market_loss_concentration": challenger_loss_concentration,
         "challenger_p90_time_to_fill_ms": challenger_p90_time_to_fill_ms,
         "champion_p90_time_to_fill_ms": champion_p90_time_to_fill_ms,
+        "alpha_failure_summary": alpha_failure_summary,
+        "safety_failure_summary": safety_failure_summary,
+        "execution_liquidation_summary": execution_liquidation_summary,
     }
 
 
@@ -384,6 +463,110 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--micro-quality-tolerance", type=float, default=0.02)
     parser.add_argument("--nonnegative-ratio-tolerance", type=float, default=0.05)
     return parser
+
+
+def _load_decision_language_summary(*, run_dir: Path) -> dict[str, Any]:
+    opportunity_rows = _load_jsonl(run_dir / "opportunity_log.jsonl")
+    event_rows = _load_jsonl(run_dir / "events.jsonl")
+    primary_reason_counts: dict[str, int] = {}
+    alpha_gate_fail_total = 0
+    safety_veto_total = 0
+    no_trade_total = 0
+    continuation_exit_total = 0
+    liquidation_tier_counts: dict[str, int] = {}
+    for row in opportunity_rows:
+        meta = dict(row.get("meta") or {}) if isinstance(row.get("meta"), dict) else {}
+        entry_decision = dict(meta.get("entry_decision") or {}) if isinstance(meta.get("entry_decision"), dict) else {}
+        safety_vetoes = dict(meta.get("safety_vetoes") or {}) if isinstance(meta.get("safety_vetoes"), dict) else {}
+        primary_reason_code = str(entry_decision.get("primary_reason_code") or row.get("skip_reason_code") or "").strip()
+        if primary_reason_code:
+            _inc_reason(primary_reason_counts, primary_reason_code, 1)
+        if primary_reason_code == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE":
+            alpha_gate_fail_total += 1
+        if (
+            str(entry_decision.get("primary_reason_family") or "").strip() == "safety_veto"
+            or any(isinstance(payload, dict) and (payload.get("reason_codes") or []) for payload in safety_vetoes.values())
+        ):
+            safety_veto_total += 1
+        if str(row.get("skip_reason_code") or "").strip():
+            no_trade_total += 1
+    for row in event_rows:
+        if str(row.get("event_type") or "").strip().upper() != "INTENT_CREATED":
+            continue
+        payload = dict(row.get("payload") or {}) if isinstance(row.get("payload"), dict) else {}
+        if str(payload.get("side") or "").strip().lower() != "ask":
+            continue
+        meta = dict(payload.get("meta") or {}) if isinstance(payload.get("meta"), dict) else {}
+        liquidation_policy = dict(meta.get("liquidation_policy") or {}) if isinstance(meta.get("liquidation_policy"), dict) else {}
+        exit_decision = dict(meta.get("exit_decision") or {}) if isinstance(meta.get("exit_decision"), dict) else {}
+        tier_name = str(liquidation_policy.get("tier_name") or "").strip()
+        if tier_name:
+            _inc_reason(liquidation_tier_counts, tier_name, 1)
+        if str(exit_decision.get("decision_reason_code") or "").strip() == "CONTINUATION_VALUE_EXIT":
+            continuation_exit_total += 1
+    return {
+        "primary_reason_counts": primary_reason_counts,
+        "alpha_gate_fail_total": int(alpha_gate_fail_total),
+        "safety_veto_total": int(safety_veto_total),
+        "no_trade_total": int(no_trade_total),
+        "continuation_exit_total": int(continuation_exit_total),
+        "liquidation_tier_counts": liquidation_tier_counts,
+    }
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                rows.append(payload)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return rows
+
+
+def _inc_reason(target: dict[str, int], key: str, delta: int) -> None:
+    text = str(key or "").strip()
+    if not text:
+        return
+    target[text] = int(target.get(text, 0)) + int(delta)
+
+
+def _decision_language_rate(payload: dict[str, Any], numerator_key: str) -> float:
+    denominator = _decision_language_observation_total(payload)
+    if denominator <= 0:
+        return 0.0
+    return float(_safe_int(payload.get(numerator_key))) / float(denominator)
+
+
+def _decision_language_observation_total(payload: dict[str, Any]) -> int:
+    primary_reason_counts = dict(payload.get("decision_language_primary_reason_counts") or {})
+    primary_reason_total = sum(_safe_int(value) for value in primary_reason_counts.values())
+    if primary_reason_total > 0:
+        return int(primary_reason_total)
+    fallback_total = max(
+        _safe_int(payload.get("decision_language_no_trade_total")) + _safe_int(payload.get("orders_filled")),
+        0,
+    )
+    return int(fallback_total)
+
+
+def _urgent_liquidation_share(payload: dict[str, Any]) -> float:
+    liquidation_tier_counts = dict(payload.get("decision_language_liquidation_tier_counts") or {})
+    total = sum(_safe_int(value) for value in liquidation_tier_counts.values())
+    if total <= 0:
+        return 0.0
+    urgent_total = sum(
+        _safe_int(liquidation_tier_counts.get(name))
+        for name in ("urgent_defensive", "emergency_flatten")
+    )
+    return float(urgent_total) / float(total)
 
 
 def main() -> int:

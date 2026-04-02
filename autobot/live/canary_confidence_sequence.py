@@ -11,6 +11,7 @@ import numpy as np
 
 from autobot.live.candidate_canary_report import build_candidate_canary_report
 from autobot.risk.confidence_monitor import (
+    DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE,
     DEFAULT_EDGE_GAP_RATE_REASON_CODE,
     DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
     DEFAULT_NONPOSITIVE_RATE_REASON_CODE,
@@ -23,6 +24,10 @@ from autobot.risk.confidence_monitor import (
 
 
 CANARY_CONFIDENCE_SEQUENCE_VERSION = 1
+DEFAULT_CANARY_DIVERGENCE_EVIDENCE_REASON_CODE = "CANARY_DIVERGENCE_INSUFFICIENT_EVIDENCE"
+DEFAULT_CANARY_MODEL_POINTER_REASON_CODE = "CANARY_MODEL_POINTER_DIVERGENCE"
+DEFAULT_CANARY_WS_STALE_REASON_CODE = "CANARY_RUNTIME_WS_PUBLIC_STALE"
+DEFAULT_CANARY_EMERGENCY_LIQUIDATION_REASON_CODE = "CANARY_EMERGENCY_LIQUIDATION_OBSERVED"
 
 
 def canary_confidence_sequence_latest_path(*, project_root: Path, unit_name: str) -> Path:
@@ -62,6 +67,10 @@ def build_canary_confidence_sequence_report(
     nonpositive_threshold = max(float(_safe_optional_float(config.get("nonpositive_rate_threshold")) or 0.45), 0.0)
     severe_threshold = max(float(_safe_optional_float(config.get("severe_loss_rate_threshold")) or 0.20), 0.0)
     edge_gap_threshold = max(float(_safe_optional_float(config.get("edge_gap_breach_rate_threshold")) or 0.60), 0.0)
+    decision_divergence_threshold = max(
+        float(_safe_optional_float(config.get("decision_divergence_rate_threshold")) or 0.10),
+        0.0,
+    )
     edge_gap_tolerance_bps = max(float(_safe_optional_float(config.get("edge_gap_tolerance_bps")) or 5.0), 0.0)
     severe_loss_return_threshold = max(float(_safe_optional_float(config.get("severe_loss_return_threshold")) or 0.01), 0.0)
     severe_loss_penalty_ratio = max(float(_safe_optional_float(config.get("severe_loss_penalty_ratio")) or severe_loss_return_threshold), 0.0)
@@ -133,6 +142,16 @@ def build_canary_confidence_sequence_report(
         min_count=min_closed_trade_count,
         reason_code=str(config.get("feature_divergence_rate_reason_code") or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
     )
+    decision_divergence_monitor = _build_canary_decision_divergence_monitor(
+        report=divergence_report,
+        threshold=float(decision_divergence_threshold),
+        delta=float(delta),
+        min_count=min_closed_trade_count,
+        reason_code=(
+            str(config.get("decision_divergence_rate_reason_code") or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE).strip()
+            or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE
+        ),
+    )
 
     reward_stream = _build_reward_stream_payload(
         closed_trades=closed_trades,
@@ -140,27 +159,81 @@ def build_canary_confidence_sequence_report(
         severe_loss_rate_upper_bound=float(severe_monitor.get("cs_upper_bound") or 1.0),
         severe_loss_penalty_ratio=float(severe_loss_penalty_ratio),
     )
-    reason_codes: list[str] = []
+    abort_reason_codes: list[str] = []
+    blocking_reason_codes: list[str] = []
     if bool(severe_monitor.get("halt_triggered")):
-        reason_codes.append(str(severe_monitor.get("reason_code") or DEFAULT_SEVERE_LOSS_RATE_REASON_CODE))
+        abort_reason_codes.append(str(severe_monitor.get("reason_code") or DEFAULT_SEVERE_LOSS_RATE_REASON_CODE))
     if bool(edge_gap_monitor.get("halt_triggered")):
-        reason_codes.append(str(edge_gap_monitor.get("reason_code") or DEFAULT_EDGE_GAP_RATE_REASON_CODE))
+        abort_reason_codes.append(str(edge_gap_monitor.get("reason_code") or DEFAULT_EDGE_GAP_RATE_REASON_CODE))
     if bool(feature_divergence_monitor.get("halt_triggered")):
-        reason_codes.append(str(feature_divergence_monitor.get("reason_code") or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE))
+        abort_reason_codes.append(str(feature_divergence_monitor.get("reason_code") or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE))
+    if bool(decision_divergence_monitor.get("halt_triggered")):
+        abort_reason_codes.append(
+            str(decision_divergence_monitor.get("reason_code") or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE)
+        )
 
     if reward_stream["sample_count"] < min_closed_trade_count:
-        decision = "continue"
-        reason_codes.append("CANARY_INSUFFICIENT_EVIDENCE")
-    elif reward_stream["risk_adjusted_return_lcb"] > 0.0 and not reason_codes:
-        decision = "promote_eligible"
-    elif reward_stream["return_ucb"] < 0.0 or reason_codes:
-        decision = "abort"
-    else:
-        decision = "continue"
+        blocking_reason_codes.append("CANARY_INSUFFICIENT_EVIDENCE")
+    if not bool(feature_divergence_monitor.get("available")) or not bool(decision_divergence_monitor.get("available")):
+        blocking_reason_codes.append(DEFAULT_CANARY_DIVERGENCE_EVIDENCE_REASON_CODE)
+    if bool(runtime_health_payload.get("model_pointer_divergence")):
+        blocking_reason_codes.append(DEFAULT_CANARY_MODEL_POINTER_REASON_CODE)
+    if bool(runtime_health_payload.get("ws_public_stale")):
+        blocking_reason_codes.append(DEFAULT_CANARY_WS_STALE_REASON_CODE)
 
     canary_summary = _build_current_run_canary_summary(store=store, run_id=run_id_value)
     db_path = getattr(store, "db_path", None)
-    cumulative_report = build_candidate_canary_report(db_path) if isinstance(db_path, Path) and db_path.exists() else {}
+    cumulative_report = (
+        build_candidate_canary_report(
+            db_path,
+            opportunity_log_path=_resolve_live_opportunity_log_path(project_root=project_root, unit_name=unit_name),
+            run_id=run_id_value,
+        )
+        if isinstance(db_path, Path) and db_path.exists()
+        else {}
+    )
+    if int((cumulative_report.get("liquidation_policy_tiers") or {}).get("emergency_flatten") or 0) > 0:
+        abort_reason_codes.append(DEFAULT_CANARY_EMERGENCY_LIQUIDATION_REASON_CODE)
+
+    reason_codes = sorted(
+        {
+            str(code).strip()
+            for code in [*abort_reason_codes, *blocking_reason_codes]
+            if str(code).strip()
+        }
+    )
+    if reward_stream["return_ucb"] < 0.0:
+        decision = "abort"
+        if "CANARY_NEGATIVE_RETURN_UCB" not in reason_codes:
+            reason_codes.append("CANARY_NEGATIVE_RETURN_UCB")
+            reason_codes = sorted(set(reason_codes))
+    elif abort_reason_codes:
+        decision = "abort"
+    elif reward_stream["risk_adjusted_return_lcb"] > 0.0 and not blocking_reason_codes:
+        decision = "promote_eligible"
+    else:
+        decision = "continue"
+
+    alpha_failure_summary = {
+        "entry_decision_reasons_top": list(
+            cumulative_report.get("opportunity_entry_decision_reasons_top")
+            or cumulative_report.get("entry_decision_reasons_top")
+            or []
+        ),
+        "primary_decision_reasons_top": list(cumulative_report.get("opportunity_primary_decision_reasons_top") or []),
+    }
+    safety_failure_summary = {
+        "safety_veto_reasons_top": list(
+            cumulative_report.get("opportunity_safety_veto_reasons_top")
+            or cumulative_report.get("safety_veto_reasons_top")
+            or []
+        ),
+        "skip_reasons_top": list(cumulative_report.get("opportunity_skip_reasons_top") or []),
+    }
+    execution_liquidation_summary = {
+        "exit_decision_reasons_top": list(cumulative_report.get("exit_decision_reasons_top") or []),
+        "liquidation_policy_tiers": dict(cumulative_report.get("liquidation_policy_tiers") or {}),
+    }
     return {
         "artifact_version": CANARY_CONFIDENCE_SEQUENCE_VERSION,
         "policy": "canary_confidence_sequence_v1",
@@ -181,6 +254,7 @@ def build_canary_confidence_sequence_report(
             "severe_loss_rate": severe_monitor,
             "expected_vs_realized_edge_gap_rate": edge_gap_monitor,
             "paper_live_feature_divergence_rate": feature_divergence_monitor,
+            "paper_live_decision_divergence_rate": decision_divergence_monitor,
         },
         "canary_summary_current_run": canary_summary,
         "candidate_canary_report_cumulative": {
@@ -190,13 +264,28 @@ def build_canary_confidence_sequence_report(
             "realized_pnl_quote_total_verified": cumulative_report.get("realized_pnl_quote_total_verified"),
             "win_rate_verified_pct": cumulative_report.get("win_rate_verified_pct"),
             "profit_factor_verified": cumulative_report.get("profit_factor_verified"),
+            "entry_decision_reasons_top": cumulative_report.get("entry_decision_reasons_top"),
+            "safety_veto_reasons_top": cumulative_report.get("safety_veto_reasons_top"),
+            "exit_decision_reasons_top": cumulative_report.get("exit_decision_reasons_top"),
+            "liquidation_policy_tiers": cumulative_report.get("liquidation_policy_tiers"),
+            "opportunity_rows_total": cumulative_report.get("opportunity_rows_total"),
+            "opportunity_run_rows_total": cumulative_report.get("opportunity_run_rows_total"),
+            "opportunity_primary_decision_reasons_top": cumulative_report.get("opportunity_primary_decision_reasons_top"),
+            "opportunity_entry_decision_reasons_top": cumulative_report.get("opportunity_entry_decision_reasons_top"),
+            "opportunity_safety_veto_reasons_top": cumulative_report.get("opportunity_safety_veto_reasons_top"),
+            "opportunity_skip_reasons_top": cumulative_report.get("opportunity_skip_reasons_top"),
         },
         "decision": {
             "status": decision,
-            "reason_codes": sorted({str(code).strip() for code in reason_codes if str(code).strip()}),
+            "reason_codes": reason_codes,
             "promote_eligible": decision == "promote_eligible",
             "abort": decision == "abort",
             "continue": decision == "continue",
+            "abort_reason_codes": sorted({str(code).strip() for code in abort_reason_codes if str(code).strip()}),
+            "blocking_reason_codes": sorted({str(code).strip() for code in blocking_reason_codes if str(code).strip()}),
+            "alpha_failure_summary": alpha_failure_summary,
+            "safety_failure_summary": safety_failure_summary,
+            "execution_liquidation_summary": execution_liquidation_summary,
         },
     }
 
@@ -256,7 +345,7 @@ def _build_canary_feature_divergence_monitor(
             "monitor_name": "canary_feature_divergence_rate",
             "monitor_family": "canary_divergence_halt",
             "available": False,
-            "status": str(payload.get("status") or "insufficient_source_data").strip().lower() or "insufficient_source_data",
+            "status": str(payload.get("status") or "insufficient_evidence").strip().lower() or "insufficient_evidence",
             "source": "paper_live_divergence_artifact",
             "threshold": float(threshold),
             "delta": float(delta),
@@ -287,6 +376,56 @@ def _build_canary_feature_divergence_monitor(
     return monitor
 
 
+def _build_canary_decision_divergence_monitor(
+    *,
+    report: dict[str, Any] | None,
+    threshold: float,
+    delta: float,
+    min_count: int,
+    reason_code: str,
+) -> dict[str, Any]:
+    payload = dict(report or {})
+    matched_records = [
+        dict(item)
+        for item in (payload.get("matched_records") or [])
+        if isinstance(item, dict) and item.get("decision_match") is not None
+    ]
+    if not matched_records:
+        return {
+            "monitor_name": "canary_decision_divergence_rate",
+            "monitor_family": "canary_divergence_halt",
+            "available": False,
+            "status": str(payload.get("status") or "insufficient_evidence").strip().lower() or "insufficient_evidence",
+            "source": "paper_live_divergence_artifact",
+            "threshold": float(threshold),
+            "delta": float(delta),
+            "reason_code": str(reason_code).strip() or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE,
+            "halt_triggered": False,
+            "clear_reason_codes": [],
+            "message": "canary decision divergence artifact is unavailable or has insufficient matched data",
+            "artifact_path": _safe_optional_text(payload.get("artifact_path")),
+        }
+    monitor = _build_binary_rate_monitor(
+        monitor_name="canary_decision_divergence_rate",
+        monitor_family="canary_divergence_halt",
+        observations=[not bool(item.get("decision_match")) for item in matched_records],
+        threshold=float(threshold),
+        delta=float(delta),
+        min_count=max(int(min_count), 1),
+        reason_code=str(reason_code).strip() or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE,
+        statistic_name="decision_divergence_rate",
+        source="paper_live_divergence_artifact",
+        extra={
+            "matched_opportunities": int((payload.get("matching") or {}).get("matched_opportunities") or len(matched_records)),
+            "feature_hash_match_ratio": _safe_optional_float(((payload.get("feature_divergence") or {}).get("feature_hash_match_ratio"))),
+            "decision_divergence_rate": _safe_optional_float(((payload.get("decision_divergence") or {}).get("decision_divergence_rate"))),
+        },
+    )
+    monitor["status"] = "ready"
+    monitor["artifact_path"] = _safe_optional_text(payload.get("artifact_path"))
+    return monitor
+
+
 def _build_current_run_canary_summary(*, store: Any, run_id: str) -> dict[str, Any]:
     rows = _load_current_run_trade_rows(store=store, run_id=run_id)
     closed_rows = [row for row in rows if str(row.get("status") or "").strip().upper() == "CLOSED"]
@@ -305,6 +444,16 @@ def _build_current_run_canary_summary(*, store: Any, run_id: str) -> dict[str, A
         "losses_verified": sum(1 for value in realized_values if value < 0.0),
         "win_rate_verified_pct": (sum(1 for value in realized_values if value > 0.0) / len(realized_values) * 100.0) if realized_values else None,
     }
+
+
+def _resolve_live_opportunity_log_path(*, project_root: Path | None, unit_name: str) -> Path | None:
+    if project_root is None:
+        return None
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(unit_name).strip().lower()).strip("_")
+    slug = "_".join(part for part in slug.split("_") if part)
+    if not slug:
+        slug = "live"
+    return Path(project_root) / "logs" / "opportunity_log" / slug / "latest.jsonl"
 
 
 def _load_current_run_trade_rows(*, store: Any, run_id: str) -> list[dict[str, Any]]:

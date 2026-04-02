@@ -816,6 +816,17 @@ def _confidence_sequence_latest_path(project_root: Path, *, service_key: str | N
     return live_risk_confidence_sequence_latest_path(project_root=project_root, unit_name=unit_name)
 
 
+def _opportunity_log_latest_path(project_root: Path, *, service_key: str | None) -> Path | None:
+    unit_name = _live_target_unit_for_service_key(service_key)
+    if not unit_name:
+        return None
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in unit_name).strip("_")
+    slug = "_".join(part for part in slug.split("_") if part)
+    if not slug:
+        return None
+    return project_root / "logs" / "opportunity_log" / slug / "latest.jsonl"
+
+
 def _load_live_suppressor_state(
     *,
     project_root: Path,
@@ -1955,7 +1966,11 @@ def _load_live_db_summary(
         is_candidate_state = str(service_key or "").strip() == "live_candidate" or "후보" in str(label)
         if "trade_journal" in tables and is_candidate_state:
             try:
-                trade_analysis = build_candidate_canary_report(db_path)
+                trade_analysis = build_candidate_canary_report(
+                    db_path,
+                    opportunity_log_path=_opportunity_log_latest_path(project_root, service_key=service_key),
+                    run_id=str(runtime_health.get("live_runtime_model_run_id") or "").strip() or None,
+                )
             except Exception:
                 trade_analysis = {}
         if is_candidate_state:

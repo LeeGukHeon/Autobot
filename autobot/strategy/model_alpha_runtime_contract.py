@@ -184,6 +184,16 @@ def resolve_runtime_model_alpha_settings(
         state["runtime_recommendations_contract_issues"] = runtime_contract_issues
         if any(issue == "RUNTIME_RECOMMENDATIONS_VERSION_UNSUPPORTED" for issue in runtime_contract_issues):
             return resolved, state
+        if any(
+            issue in {
+                "RUNTIME_RECOMMENDATIONS_EXIT_DOC_MISSING",
+                "RUNTIME_RECOMMENDATIONS_EXECUTION_DOC_MISSING",
+                "RUNTIME_RECOMMENDATIONS_RISK_CONTROL_DOC_MISSING",
+                "RUNTIME_RECOMMENDATIONS_TRADE_ACTION_DOC_MISSING",
+            }
+            for issue in runtime_contract_issues
+        ):
+            return resolved, state
 
     exit_doc = runtime_recommendations.get("exit")
     exit_contract_valid = isinstance(exit_doc, dict)

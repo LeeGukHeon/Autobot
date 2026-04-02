@@ -169,6 +169,8 @@ def normalize_runtime_recommendations_payload(payload: dict[str, Any] | None) ->
     normalized = dict(payload or {})
     backfilled_fields: list[str] = []
     issues: list[str] = []
+    source_family = str(normalized.get("source_family") or "").strip().lower()
+    decision_contract_version = str(normalized.get("decision_contract_version") or "").strip()
     normalized["version"], version_backfilled = _normalize_contract_version(
         normalized.get("version"),
         fallback_version=_RUNTIME_RECOMMENDATIONS_VERSION,
@@ -193,6 +195,17 @@ def normalize_runtime_recommendations_payload(payload: dict[str, Any] | None) ->
             backfilled_fields.append("risk_control")
         elif risk_control_status == "invalid":
             issues.append("RISK_CONTROL_CONTRACT_INVALID")
+    if source_family == "train_v5_fusion" and decision_contract_version == "v5_post_model_contract_v1":
+        top_level_doc_issues = {
+            "exit": "RUNTIME_RECOMMENDATIONS_EXIT_DOC_MISSING",
+            "execution": "RUNTIME_RECOMMENDATIONS_EXECUTION_DOC_MISSING",
+            "risk_control": "RUNTIME_RECOMMENDATIONS_RISK_CONTROL_DOC_MISSING",
+            "trade_action": "RUNTIME_RECOMMENDATIONS_TRADE_ACTION_DOC_MISSING",
+        }
+        for field_name, issue_code in top_level_doc_issues.items():
+            field_payload = normalized.get(field_name)
+            if not isinstance(field_payload, dict) or not field_payload:
+                issues.append(issue_code)
     normalized["contract_backfilled_fields"] = list(dict.fromkeys(backfilled_fields))
     normalized["contract_issues"] = list(dict.fromkeys(issues))
     if normalized["contract_issues"]:

@@ -1181,6 +1181,11 @@ def _extract_entry_details(meta_payload: dict[str, Any] | None) -> dict[str, Any
     strategy_meta = ((payload.get("strategy") or {}).get("meta")) if isinstance(payload.get("strategy"), dict) else {}
     strategy_meta = dict(strategy_meta or {}) if isinstance(strategy_meta, dict) else {}
     trade_action = dict(strategy_meta.get("trade_action") or {}) if isinstance(strategy_meta.get("trade_action"), dict) else {}
+    entry_decision = dict(strategy_meta.get("entry_decision") or {}) if isinstance(strategy_meta.get("entry_decision"), dict) else {}
+    sizing_decision = dict(strategy_meta.get("sizing_decision") or {}) if isinstance(strategy_meta.get("sizing_decision"), dict) else {}
+    safety_vetoes = dict(strategy_meta.get("safety_vetoes") or {}) if isinstance(strategy_meta.get("safety_vetoes"), dict) else {}
+    exit_decision = dict(strategy_meta.get("exit_decision") or {}) if isinstance(strategy_meta.get("exit_decision"), dict) else {}
+    liquidation_policy = dict(strategy_meta.get("liquidation_policy") or {}) if isinstance(strategy_meta.get("liquidation_policy"), dict) else {}
     admissibility = ((payload.get("admissibility") or {}).get("decision")) if isinstance(payload.get("admissibility"), dict) else {}
     admissibility = dict(admissibility or {}) if isinstance(admissibility, dict) else {}
     expected_edge = _as_optional_float(trade_action.get("expected_edge"))
@@ -1196,6 +1201,23 @@ def _extract_entry_details(meta_payload: dict[str, Any] | None) -> dict[str, Any
             _as_optional_float(strategy_meta.get("notional_multiplier")),
             _as_optional_float(trade_action.get("recommended_notional_multiplier")),
         ),
+        "target_notional_quote": _as_optional_float(sizing_decision.get("target_notional_quote")),
+        "primary_decision_reason_code": _as_optional_str(
+            _coalesce_str(
+                _as_optional_str(entry_decision.get("primary_reason_code")),
+                _as_optional_str(exit_decision.get("decision_reason_code")),
+            )
+        ),
+        "primary_decision_family": _as_optional_str(
+            _coalesce_str(
+                _as_optional_str(entry_decision.get("primary_reason_family")),
+                ("exit_decision" if _as_optional_str(exit_decision.get("decision_reason_code")) is not None else None),
+            )
+        ),
+        "entry_decision_reason_codes": list(entry_decision.get("reason_codes") or []),
+        "safety_vetoes": dict(safety_vetoes),
+        "exit_decision": dict(exit_decision),
+        "liquidation_policy": dict(liquidation_policy),
     }
 
 
@@ -1348,6 +1370,8 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                     "reason_codes": list(entry_decision.get("reason_codes") or []),
                     "selected_rank": entry_decision.get("selected_rank"),
                     "entry_owner": entry_decision.get("entry_owner"),
+                    "primary_reason_code": entry_decision.get("primary_reason_code"),
+                    "primary_reason_family": entry_decision.get("primary_reason_family"),
                     "portfolio_budget_allowed": entry_decision.get("portfolio_budget_allowed"),
                     "breaker_clear": entry_decision.get("breaker_clear"),
                     "rollout_allowed": entry_decision.get("rollout_allowed"),

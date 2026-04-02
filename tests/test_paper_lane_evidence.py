@@ -60,6 +60,66 @@ def _write_summary(
     (run_dir / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_decision_language_artifacts(
+    run_dir: Path,
+    *,
+    entry_reason_code: str,
+    safety_reason_code: str,
+    exit_reason_code: str,
+    liquidation_tier: str,
+) -> None:
+    safety_vetoes = (
+        {
+            "portfolio_budget": {"reason_codes": [safety_reason_code]},
+        }
+        if str(safety_reason_code).strip()
+        else {}
+    )
+    (run_dir / "opportunity_log.jsonl").write_text(
+        json.dumps(
+            {
+                "opportunity_id": "entry:1000:KRW-BTC",
+                "ts_ms": 1_000,
+                "market": "KRW-BTC",
+                "side": "bid",
+                "chosen_action": "",
+                "skip_reason_code": safety_reason_code,
+                "meta": {
+                    "entry_decision": {
+                        "primary_reason_code": entry_reason_code,
+                        "primary_reason_family": "entry_gate",
+                        "reason_codes": [entry_reason_code],
+                    },
+                    "safety_vetoes": safety_vetoes,
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "INTENT_CREATED",
+                "ts_ms": 2_000,
+                "payload": {
+                    "intent_id": "exit-intent-1",
+                    "market": "KRW-BTC",
+                    "side": "ask",
+                    "reason_code": exit_reason_code,
+                    "meta": {
+                        "liquidation_policy": {"tier_name": liquidation_tier},
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_build_lane_comparison_report_promotes_stronger_challenger(tmp_path: Path) -> None:
     paper_root = tmp_path / "paper"
     _write_summary(
@@ -307,6 +367,148 @@ def test_build_lane_comparison_report_blocks_bad_payoff_structure(tmp_path: Path
 
     assert report["decision"]["promote"] is False
     assert "PAYOFF_RATIO_TOO_LOW" in report["decision"]["hard_failures"]
+
+
+def test_build_lane_comparison_report_exposes_decision_language_summaries(tmp_path: Path) -> None:
+    paper_root = tmp_path / "paper"
+    champion_run = paper_root / "runs" / "paper-champion-1"
+    challenger_run = paper_root / "runs" / "paper-challenger-1"
+    _write_summary(
+        paper_root,
+        "paper-champion-1",
+        role="champion",
+        model_ref="champion_v4",
+        model_run_id="champion-run-a",
+        started=1_000,
+        completed=2_000,
+        realized_pnl=100.0,
+        drawdown=1.0,
+        micro_quality=0.45,
+        nonnegative_ratio=0.60,
+        orders_filled=10,
+        fill_rate=0.92,
+    )
+    _write_summary(
+        paper_root,
+        "paper-challenger-1",
+        role="challenger",
+        model_ref="candidate-123",
+        model_run_id="candidate-run-a",
+        started=1_500,
+        completed=2_500,
+        realized_pnl=120.0,
+        drawdown=0.9,
+        micro_quality=0.46,
+        nonnegative_ratio=0.61,
+        orders_filled=12,
+        fill_rate=0.93,
+    )
+    _write_decision_language_artifacts(
+        champion_run,
+        entry_reason_code="ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE",
+        safety_reason_code="ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED",
+        exit_reason_code="CONTINUATION_VALUE_EXIT",
+        liquidation_tier="normal_protective",
+    )
+    _write_decision_language_artifacts(
+        challenger_run,
+        entry_reason_code="ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE",
+        safety_reason_code="ENTRY_GATE_BREAKER_ACTIVE",
+        exit_reason_code="CONTINUATION_VALUE_EXIT",
+        liquidation_tier="urgent_defensive",
+    )
+
+    report = build_lane_comparison_report(
+        paper_root=paper_root,
+        lane="v4",
+        challenger_model_ref="candidate-123",
+        champion_model_run_id="champion-run-a",
+        since_ts_ms=1_000,
+        until_ts_ms=None,
+        min_challenger_hours=1.0,
+        min_orders_filled=2,
+        min_realized_pnl_quote=0.0,
+        min_micro_quality_score=0.25,
+        min_nonnegative_ratio=0.34,
+        max_drawdown_deterioration_factor=1.10,
+        micro_quality_tolerance=0.02,
+        nonnegative_ratio_tolerance=0.05,
+    )
+
+    assert report["champion"]["decision_language_alpha_gate_fail_total"] == 1
+    assert report["challenger"]["decision_language_safety_veto_total"] == 1
+    assert report["decision"]["alpha_failure_summary"]["challenger_alpha_gate_fail_total"] == 1
+    assert report["decision"]["execution_liquidation_summary"]["challenger_liquidation_tier_counts"]["urgent_defensive"] == 1
+
+
+def test_build_lane_comparison_report_reads_decision_language_in_pairwise_checks(tmp_path: Path) -> None:
+    paper_root = tmp_path / "paper"
+    _write_summary(
+        paper_root,
+        "paper-champion-dl-1",
+        role="champion",
+        model_ref="champion_v4",
+        model_run_id="champion-run-dl",
+        started=1_000,
+        completed=2_000,
+        realized_pnl=100.0,
+        drawdown=1.0,
+        micro_quality=0.45,
+        nonnegative_ratio=0.60,
+        orders_filled=12,
+        fill_rate=0.95,
+    )
+    _write_summary(
+        paper_root,
+        "paper-challenger-dl-1",
+        role="challenger",
+        model_ref="candidate-dl-1",
+        started=1_500,
+        completed=2_500,
+        realized_pnl=130.0,
+        drawdown=0.9,
+        micro_quality=0.46,
+        nonnegative_ratio=0.62,
+        orders_filled=13,
+        fill_rate=0.96,
+    )
+    _write_decision_language_artifacts(
+        paper_root / "runs" / "paper-champion-dl-1",
+        entry_reason_code="ENTRY_ALLOWED",
+        safety_reason_code="",
+        exit_reason_code="CONTINUATION_VALUE_EXIT",
+        liquidation_tier="soft_exit",
+    )
+    _write_decision_language_artifacts(
+        paper_root / "runs" / "paper-challenger-dl-1",
+        entry_reason_code="ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE",
+        safety_reason_code="ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED",
+        exit_reason_code="LIQUIDATION_EXECUTION_EXIT",
+        liquidation_tier="urgent_defensive",
+    )
+
+    report = build_lane_comparison_report(
+        paper_root=paper_root,
+        lane="v4",
+        challenger_model_ref="candidate-dl-1",
+        champion_model_run_id="champion-run-dl",
+        since_ts_ms=500,
+        until_ts_ms=None,
+        min_challenger_hours=1.0,
+        min_orders_filled=2,
+        min_realized_pnl_quote=0.0,
+        min_micro_quality_score=0.25,
+        min_nonnegative_ratio=0.34,
+        max_drawdown_deterioration_factor=1.10,
+        micro_quality_tolerance=0.02,
+        nonnegative_ratio_tolerance=0.05,
+    )
+
+    assert report["decision"]["promote"] is False
+    assert report["decision"]["decision"] == "hold_for_review"
+    assert report["decision"]["pairwise_checks"]["alpha_gate_fail_concentration_not_worse"] is False
+    assert report["decision"]["pairwise_checks"]["safety_veto_concentration_not_worse"] is False
+    assert report["decision"]["pairwise_checks"]["urgent_liquidation_not_worse"] is False
 
 
 def test_build_lane_comparison_report_blocks_slow_fill_latency_regression(tmp_path: Path) -> None:

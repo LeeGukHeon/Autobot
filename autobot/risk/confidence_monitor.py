@@ -15,6 +15,7 @@ DEFAULT_SEVERE_LOSS_RATE_REASON_CODE = "RISK_CONTROL_SEVERE_LOSS_RATE_CS_BREACH"
 DEFAULT_EXECUTION_MISS_RATE_REASON_CODE = "EXECUTION_MISS_RATE_CS_BREACH"
 DEFAULT_EDGE_GAP_RATE_REASON_CODE = "RISK_CONTROL_EDGE_GAP_CS_BREACH"
 DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE = "FEATURE_DIVERGENCE_CS_BREACH"
+DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE = "DECISION_DIVERGENCE_CS_BREACH"
 SUPPRESSOR_RESET_CHECKPOINT = "live_suppressor_reset"
 
 
@@ -40,6 +41,10 @@ def build_live_risk_confidence_sequence_report(
 
     delta = max(float(_safe_optional_float(config.get("confidence_delta")) or 0.10), 1e-9)
     feature_divergence_threshold = max(float(_safe_optional_float(config.get("feature_divergence_rate_threshold")) or 0.10), 0.0)
+    decision_divergence_threshold = max(
+        float(_safe_optional_float(config.get("decision_divergence_rate_threshold")) or feature_divergence_threshold),
+        0.0,
+    )
     nonpositive_threshold = max(float(_safe_optional_float(config.get("nonpositive_rate_threshold")) or 0.45), 0.0)
     severe_threshold = max(float(_safe_optional_float(config.get("severe_loss_rate_threshold")) or 0.20), 0.0)
     execution_miss_threshold = max(float(_safe_optional_float(config.get("execution_miss_rate_threshold")) or 0.55), 0.0)
@@ -132,6 +137,16 @@ def build_live_risk_confidence_sequence_report(
         min_count=max(int(_safe_optional_int(config.get("min_closed_trade_count")) or 8), 1),
         reason_code=str(config.get("feature_divergence_rate_reason_code") or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
     )
+    decision_divergence_monitor = _build_decision_divergence_monitor(
+        report=divergence_report,
+        threshold=float(decision_divergence_threshold),
+        delta=float(delta),
+        min_count=max(int(_safe_optional_int(config.get("min_closed_trade_count")) or 8), 1),
+        reason_code=(
+            str(config.get("decision_divergence_rate_reason_code") or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE).strip()
+            or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE
+        ),
+    )
 
     monitors = {
         "nonpositive_return_rate": nonpositive_monitor,
@@ -139,6 +154,7 @@ def build_live_risk_confidence_sequence_report(
         "execution_miss_rate": miss_monitor,
         "expected_vs_realized_edge_gap_rate": edge_gap_monitor,
         "paper_live_feature_divergence_rate": feature_divergence_monitor,
+        "paper_live_decision_divergence_rate": decision_divergence_monitor,
     }
     triggered_reason_codes: list[str] = []
     clear_reason_codes: list[str] = []
@@ -187,6 +203,8 @@ def build_live_risk_confidence_sequence_report(
             "edge_gap_breach_rate_threshold": float(edge_gap_threshold),
             "edge_gap_tolerance_bps": float(edge_gap_tolerance_bps),
             "severe_loss_return_threshold_ratio": float(severe_loss_return_threshold),
+            "feature_divergence_rate_threshold": float(feature_divergence_threshold),
+            "decision_divergence_rate_threshold": float(decision_divergence_threshold),
         },
         "monitors": monitors,
     }
@@ -295,7 +313,7 @@ def _build_feature_divergence_monitor(
             "monitor_name": "paper_live_feature_divergence_rate",
             "monitor_family": "model_data_divergence_halt",
             "available": False,
-            "status": str(payload.get("status") or "insufficient_source_data").strip().lower() or "insufficient_source_data",
+            "status": str(payload.get("status") or "insufficient_evidence").strip().lower() or "insufficient_evidence",
             "source": "paper_live_divergence_artifact",
             "threshold": float(threshold),
             "delta": float(delta),
@@ -314,6 +332,56 @@ def _build_feature_divergence_monitor(
         min_count=max(int(min_count), 1),
         reason_code=str(reason_code).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
         statistic_name="feature_divergence_rate",
+        source="paper_live_divergence_artifact",
+        extra={
+            "matched_opportunities": int((payload.get("matching") or {}).get("matched_opportunities") or len(matched_records)),
+            "feature_hash_match_ratio": _safe_optional_float(((payload.get("feature_divergence") or {}).get("feature_hash_match_ratio"))),
+            "decision_divergence_rate": _safe_optional_float(((payload.get("decision_divergence") or {}).get("decision_divergence_rate"))),
+        },
+    )
+    monitor["status"] = "ready"
+    monitor["artifact_path"] = _safe_optional_text(payload.get("artifact_path"))
+    return monitor
+
+
+def _build_decision_divergence_monitor(
+    *,
+    report: dict[str, Any] | None,
+    threshold: float,
+    delta: float,
+    min_count: int,
+    reason_code: str,
+) -> dict[str, Any]:
+    payload = dict(report or {})
+    matched_records = [
+        dict(item)
+        for item in (payload.get("matched_records") or [])
+        if isinstance(item, dict) and item.get("decision_match") is not None
+    ]
+    if not matched_records:
+        return {
+            "monitor_name": "paper_live_decision_divergence_rate",
+            "monitor_family": "model_data_divergence_halt",
+            "available": False,
+            "status": str(payload.get("status") or "insufficient_evidence").strip().lower() or "insufficient_evidence",
+            "source": "paper_live_divergence_artifact",
+            "threshold": float(threshold),
+            "delta": float(delta),
+            "reason_code": str(reason_code).strip() or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE,
+            "halt_triggered": False,
+            "clear_reason_codes": [],
+            "message": "paper/live decision divergence artifact is unavailable or has insufficient matched data",
+            "artifact_path": _safe_optional_text(payload.get("artifact_path")),
+        }
+    monitor = _build_binary_rate_monitor(
+        monitor_name="paper_live_decision_divergence_rate",
+        monitor_family="model_data_divergence_halt",
+        observations=[not bool(item.get("decision_match")) for item in matched_records],
+        threshold=float(threshold),
+        delta=float(delta),
+        min_count=max(int(min_count), 1),
+        reason_code=str(reason_code).strip() or DEFAULT_DECISION_DIVERGENCE_RATE_REASON_CODE,
+        statistic_name="decision_divergence_rate",
         source="paper_live_divergence_artifact",
         extra={
             "matched_opportunities": int((payload.get("matching") or {}).get("matched_opportunities") or len(matched_records)),

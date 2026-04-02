@@ -166,7 +166,7 @@ def test_build_paper_live_divergence_report_prefers_paired_paper_mapping(tmp_pat
     assert report["matching"]["matched_opportunities"] == 1
 
 
-def test_build_paper_live_divergence_report_returns_insufficient_source_data_when_logs_missing(tmp_path: Path) -> None:
+def test_build_paper_live_divergence_report_returns_insufficient_evidence_when_logs_missing(tmp_path: Path) -> None:
     report = build_paper_live_divergence_report(
         project_root=tmp_path,
         unit_name="autobot-live-alpha.service",
@@ -175,7 +175,7 @@ def test_build_paper_live_divergence_report_returns_insufficient_source_data_whe
         ts_ms=1_000,
     )
 
-    assert report["status"] == "insufficient_source_data"
+    assert report["status"] == "insufficient_evidence"
     assert "LIVE_OPPORTUNITY_LOG_MISSING" in report["reason_codes"]
     assert report["feature_divergence"]["available"] is False
 

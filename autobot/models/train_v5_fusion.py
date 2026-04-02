@@ -642,34 +642,54 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
     inherited_execution = dict(panel_runtime_context.get("execution") or {})
     inherited_risk_control = dict(panel_runtime_context.get("risk_control") or {})
     inherited_trade_action = dict(panel_runtime_context.get("trade_action") or {})
-    if not inherited_exit:
-        inherited_exit = {
-            "version": 1,
-            "recommended_exit_mode": "risk",
-            "recommended_exit_mode_source": "v5_fusion_panel_anchor_inferred",
-            "recommended_exit_mode_reason_code": "FUSION_CONTINUATION_VALUE_CONTROLLER",
-        }
-    if not inherited_execution:
-        inherited_execution = {
-            "recommended_price_mode": "JOIN",
-            "recommended_timeout_bars": 2,
-            "recommended_replace_max": 2,
-            "recommendation_source": "v5_fusion_panel_anchor_inferred",
-        }
-    if not inherited_risk_control:
-        inherited_risk_control = {
-            "status": "not_required",
-            "contract_status": "not_required",
-            "operating_mode": "v5_fusion_panel_anchor_inferred",
-        }
+    missing_docs = [
+        name
+        for name, payload in {
+            "exit": inherited_exit,
+            "execution": inherited_execution,
+            "risk_control": inherited_risk_control,
+            "trade_action": inherited_trade_action,
+        }.items()
+        if not payload
+    ]
+    if missing_docs:
+        raise ValueError(f"FUSION_RUNTIME_RECOMMENDATION_TOP_LEVEL_MISSING:{','.join(missing_docs)}")
+    fusion_owned_mode = "fusion_owned_panel_seeded"
     return annotate_v5_runtime_recommendations({
         "status": "fusion_runtime_ready",
+        "policy": "v5_fusion_runtime_recommendations_v1",
         "source_family": "train_v5_fusion",
+        "contract_owner_family": "train_v5_fusion",
+        "contract_seed_family": "train_v5_panel_ensemble",
         "entry_boundary_enabled": True,
-        "exit": inherited_exit,
-        "execution": inherited_execution,
-        "risk_control": inherited_risk_control,
-        "trade_action": inherited_trade_action,
+        "exit": {
+            **inherited_exit,
+            "runtime_source_family": "train_v5_fusion",
+            "runtime_source_mode": fusion_owned_mode,
+            "contract_owner_family": "train_v5_fusion",
+            "contract_seed_family": "train_v5_panel_ensemble",
+        },
+        "execution": {
+            **inherited_execution,
+            "runtime_source_family": "train_v5_fusion",
+            "runtime_source_mode": fusion_owned_mode,
+            "contract_owner_family": "train_v5_fusion",
+            "contract_seed_family": "train_v5_panel_ensemble",
+        },
+        "risk_control": {
+            **inherited_risk_control,
+            "runtime_source_family": "train_v5_fusion",
+            "runtime_source_mode": fusion_owned_mode,
+            "contract_owner_family": "train_v5_fusion",
+            "contract_seed_family": "train_v5_panel_ensemble",
+        },
+        "trade_action": {
+            **inherited_trade_action,
+            "runtime_source_family": "train_v5_fusion",
+            "runtime_source_mode": fusion_owned_mode,
+            "contract_owner_family": "train_v5_fusion",
+            "contract_seed_family": "train_v5_panel_ensemble",
+        },
         "upstream_experts": {
             key: {
                 "run_id": str((upstream_inputs.get(key) or {}).get("run_id") or "").strip(),

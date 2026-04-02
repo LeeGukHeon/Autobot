@@ -139,7 +139,7 @@ def test_build_live_risk_confidence_sequence_report_triggers_trade_and_execution
     assert "EXECUTION_MISS_RATE_CS_BREACH" in report["triggered_reason_codes"]
     assert "RISK_CONTROL_EDGE_GAP_CS_BREACH" in report["triggered_reason_codes"]
     assert report["monitors"]["paper_live_feature_divergence_rate"]["available"] is False
-    assert report["monitors"]["paper_live_feature_divergence_rate"]["status"] == "insufficient_source_data"
+    assert report["monitors"]["paper_live_feature_divergence_rate"]["status"] == "insufficient_evidence"
 
 
 def test_resolve_execution_risk_control_online_threshold_merges_confidence_sequence_halts(tmp_path: Path) -> None:
@@ -325,3 +325,7 @@ def test_build_live_risk_confidence_sequence_report_reads_divergence_artifact(tm
     assert monitor["status"] == "ready"
     assert monitor["halt_triggered"] is True
     assert monitor["reason_code"] == "FEATURE_DIVERGENCE_CS_BREACH"
+    decision_monitor = report["monitors"]["paper_live_decision_divergence_rate"]
+    assert decision_monitor["available"] is True
+    assert decision_monitor["status"] == "ready"
+    assert decision_monitor["decision_divergence_rate"] == 0.25

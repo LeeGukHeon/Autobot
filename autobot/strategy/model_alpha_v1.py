@@ -270,6 +270,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             notional_multiplier: float | None = None,
             support_level: str = "",
             support_size_multiplier: float | None = None,
+            entry_decision_payload: dict[str, Any] | None = None,
+            sizing_decision_payload: dict[str, Any] | None = None,
+            safety_vetoes_payload: dict[str, Any] | None = None,
+            exit_decision_payload: dict[str, Any] | None = None,
+            liquidation_policy_payload: dict[str, Any] | None = None,
+            legacy_heuristics_payload: dict[str, Any] | None = None,
         ) -> None:
             market_name = str(row.get("market", "")).strip().upper()
             if not market_name:
@@ -313,6 +319,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "notional_multiplier": notional_multiplier,
                         "state_features": _build_live_state_feature_snapshot(row=row),
                         "behavior_policy": dict(behavior_policy),
+                        "entry_decision": dict(entry_decision_payload or {}),
+                        "sizing_decision": dict(sizing_decision_payload or {}),
+                        "safety_vetoes": dict(safety_vetoes_payload or {}),
+                        "exit_decision": dict(exit_decision_payload or {}),
+                        "liquidation_policy": dict(liquidation_policy_payload or {}),
+                        "legacy_heuristics_applied": dict(legacy_heuristics_payload or {}),
                     },
                 )
             )
@@ -843,6 +855,16 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     "status": "disabled",
                     "reason_code": "EXECUTION_LEARNED_RECOMMENDATIONS_DISABLED",
                 }
+            safety_vetoes_payload = (
+                _build_v5_strategy_safety_vetoes(
+                    entry_boundary_decision=entry_boundary_decision,
+                    risk_control_decision=risk_control_decision,
+                    size_ladder_decision=size_ladder_decision,
+                    execution_decision=execution_decision,
+                )
+                if v5_post_model
+                else {}
+            )
             if isinstance(execution_decision, dict) and str(execution_decision.get("status", "")).strip().lower() == "blocked":
                 _inc_reason(
                     skipped_reasons,
@@ -863,6 +885,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     notional_multiplier=float(notional_multiplier),
                     support_level=trade_action_support_level,
                     support_size_multiplier=float(trade_action_support_multiplier),
+                    safety_vetoes_payload=safety_vetoes_payload,
                 )
                 continue
             v5_expected_net_edge_bps = _resolve_v5_strategy_expected_net_edge_bps(
@@ -917,6 +940,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     notional_multiplier=float(notional_multiplier),
                     support_level=trade_action_support_level,
                     support_size_multiplier=float(trade_action_support_multiplier),
+                    entry_decision_payload=entry_decision_payload,
+                    sizing_decision_payload=v5_sizing_decision,
+                    safety_vetoes_payload=safety_vetoes_payload,
                 )
                 continue
             exit_recommendation_meta = _build_runtime_exit_recommendation_meta(
@@ -926,16 +952,6 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 _build_v5_liquidation_policy_payload(
                     execution_decision=execution_decision,
                     execution_profile=dynamic_exec_profile,
-                )
-                if v5_post_model
-                else {}
-            )
-            safety_vetoes_payload = (
-                _build_v5_strategy_safety_vetoes(
-                    entry_boundary_decision=entry_boundary_decision,
-                    risk_control_decision=risk_control_decision,
-                    size_ladder_decision=size_ladder_decision,
-                    execution_decision=execution_decision,
                 )
                 if v5_post_model
                 else {}
@@ -1069,6 +1085,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 notional_multiplier=float(notional_multiplier) * float(operational_risk_multiplier),
                 support_level=trade_action_support_level,
                 support_size_multiplier=float(trade_action_support_multiplier),
+                entry_decision_payload=entry_decision_payload,
+                sizing_decision_payload=v5_sizing_decision,
+                safety_vetoes_payload=safety_vetoes_payload,
+                exit_decision_payload=exit_decision_payload,
+                liquidation_policy_payload=liquidation_policy_payload,
+                legacy_heuristics_payload=legacy_heuristics_applied,
             )
             can_open -= 1
 

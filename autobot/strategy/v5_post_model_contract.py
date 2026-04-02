@@ -9,6 +9,7 @@ V5_ENTRY_OWNER = "predictor_boundary"
 V5_SIZING_OWNER = "portfolio_budget_first"
 V5_TRADE_ACTION_ROLE = "advisory_only_v1"
 V5_EXIT_OWNER = "continuation_value_controller"
+V5_ENTRY_GATE_ALPHA_LCB_REASON = "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
 V5_ENTRY_GATE_EDGE_REASON = "ENTRY_GATE_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST"
 V5_SIZING_NONPOSITIVE_REASON = "V5_TARGET_NOTIONAL_NONPOSITIVE"
 V5_CONTINUATION_EXIT_REASON = "CONTINUATION_VALUE_EXIT"
@@ -48,12 +49,25 @@ def resolve_v5_entry_gate(
 ) -> dict[str, Any]:
     alpha_lcb = _safe_optional_float(final_alpha_lcb)
     expected_return = _safe_optional_float(final_expected_return)
+    tradability = _safe_optional_float(final_tradability)
     uncertainty = _safe_optional_float(final_uncertainty)
     reason_codes: list[str] = []
     boundary = dict(entry_boundary_decision or {})
+    if alpha_lcb is None or float(alpha_lcb) <= 0.0:
+        reason_codes.append(V5_ENTRY_GATE_ALPHA_LCB_REASON)
+    tradability_threshold = _safe_optional_float(boundary.get("tradability_threshold"))
+    if (
+        tradability_threshold is not None
+        and tradability is not None
+        and float(tradability) < float(tradability_threshold)
+        and "ENTRY_BOUNDARY_TRADABILITY_BELOW_THRESHOLD" not in reason_codes
+    ):
+        reason_codes.append("ENTRY_BOUNDARY_TRADABILITY_BELOW_THRESHOLD")
     if bool(boundary.get("enabled")) and not bool(boundary.get("allowed")):
         for code in boundary.get("reason_codes") or []:
             normalized_code = str(code).strip()
+            if normalized_code == "ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE":
+                continue
             if normalized_code and normalized_code not in reason_codes:
                 reason_codes.append(normalized_code)
     resolved_edge_bps = _safe_optional_float(expected_net_edge_bps)
@@ -81,9 +95,11 @@ def resolve_v5_entry_gate(
         "expected_net_edge_bps": resolved_edge_bps,
         "final_expected_return": expected_return,
         "final_expected_es": _safe_optional_float(final_expected_es),
-        "final_tradability": _safe_optional_float(final_tradability),
+        "final_tradability": tradability,
         "final_uncertainty": uncertainty,
         "final_alpha_lcb": alpha_lcb,
+        "primary_reason_code": reason_codes[0] if reason_codes else "",
+        "primary_reason_family": _classify_primary_reason_family(reason_codes[0] if reason_codes else ""),
         "market": str(market).strip().upper(),
         "boundary_allowed": bool(boundary.get("allowed", True)) if boundary else True,
         "boundary_reason_codes": [
@@ -165,6 +181,8 @@ def finalize_v5_entry_decision(
                 reason_codes.append(code)
     normalized["reason_codes"] = reason_codes
     normalized["allowed"] = len(reason_codes) == 0
+    normalized["primary_reason_code"] = reason_codes[0] if reason_codes else ""
+    normalized["primary_reason_family"] = _classify_primary_reason_family(reason_codes[0] if reason_codes else "")
     return normalized
 
 
@@ -438,3 +456,14 @@ def _safe_optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _classify_primary_reason_family(reason_code: str) -> str:
+    code = str(reason_code or "").strip().upper()
+    if not code:
+        return ""
+    if code.startswith("ENTRY_GATE_"):
+        return "entry_gate"
+    if code.startswith("ENTRY_BOUNDARY_"):
+        return "entry_boundary"
+    return "safety_veto"

@@ -7,7 +7,12 @@ from pathlib import Path
 import autobot.paper.paired_runtime as paired_runtime_module
 from autobot.backtest.strategy_adapter import StrategyFillEvent, StrategyOpportunityRecord, StrategyOrderIntent, StrategyStepResult
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
-from autobot.paper.paired_runtime import RecordedPublicEventTape, run_live_paired_paper, run_recorded_paired_paper
+from autobot.paper.paired_runtime import (
+    RecordedPublicEventTape,
+    _build_paired_promotion_decision,
+    run_live_paired_paper,
+    run_recorded_paired_paper,
+)
 from autobot.paper.sim_exchange import MarketRules
 from autobot.strategy.model_alpha_v1 import ModelAlphaSettings
 from autobot.upbit.config import (
@@ -19,6 +24,7 @@ from autobot.upbit.config import (
     UpbitWebSocketSettings,
 )
 from autobot.upbit.ws.models import TickerEvent
+from tests.test_paired_paper_reporting import _write_events, _write_opportunity_log, _write_summary
 
 
 class _StaticRulesProvider:
@@ -441,6 +447,83 @@ def test_run_live_paired_paper_supports_distinct_champion_and_challenger_familie
     assert payload["challenger_model_family"] == "train_v5_panel_ensemble"
     assert seen_families["champion-run"] == "train_v4_crypto_cs"
     assert seen_families["candidate-run"] == "train_v5_panel_ensemble"
+
+
+def test_build_paired_promotion_decision_reads_decision_language_from_run_dirs(tmp_path: Path) -> None:
+    champion_run = tmp_path / "paper-champion-runtime"
+    challenger_run = tmp_path / "paper-challenger-runtime"
+    champion_run.mkdir(parents=True, exist_ok=True)
+    challenger_run.mkdir(parents=True, exist_ok=True)
+    _write_summary(
+        champion_run,
+        role="champion",
+        model_ref="champion-run",
+        model_run_id="champion-run-id",
+        realized_pnl=100.0,
+    )
+    _write_summary(
+        challenger_run,
+        role="challenger",
+        model_ref="candidate-run",
+        model_run_id="candidate-run-id",
+        realized_pnl=120.0,
+    )
+    _write_opportunity_log(
+        champion_run,
+        opportunity_id="entry:1000:KRW-BTC",
+        chosen_action="PASSIVE_MAKER",
+        meta={
+            "entry_decision": {
+                "primary_reason_code": "ENTRY_ALLOWED",
+                "primary_reason_family": "entry_gate",
+                "reason_codes": ["ENTRY_ALLOWED"],
+            }
+        },
+    )
+    _write_opportunity_log(
+        challenger_run,
+        opportunity_id="entry:1000:KRW-BTC",
+        chosen_action="",
+        skip_reason_code="ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED",
+        meta={
+            "entry_decision": {
+                "primary_reason_code": "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE",
+                "primary_reason_family": "entry_gate",
+                "reason_codes": ["ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"],
+            },
+            "safety_vetoes": {
+                "portfolio_budget": {"reason_codes": ["ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"]},
+            },
+        },
+    )
+    _write_events(champion_run, with_intent=True, intent_id="intent-champion")
+    _write_events(challenger_run, with_intent=False, intent_id="intent-challenger")
+
+    decision = _build_paired_promotion_decision(
+        champion_run_dir=champion_run,
+        challenger_run_dir=challenger_run,
+        paired_report={
+            "clock_alignment": {"pair_ready": True, "matched_opportunities": 1},
+            "paired_deltas": {},
+            "taxonomy_counts": {},
+            "decision_language_counts": {"challenger_safety_veto_only": 1},
+            "report_path": str(tmp_path / "paired_paper_report.json"),
+        },
+        paired_gate={"pass": True, "reason": "PAIRED_PAPER_READY"},
+        min_challenger_hours=0.0,
+        min_orders_filled=0,
+        min_realized_pnl_quote=0.0,
+        min_micro_quality_score=0.0,
+        min_nonnegative_ratio=0.0,
+        max_drawdown_deterioration_factor=1.10,
+        micro_quality_tolerance=0.02,
+        nonnegative_ratio_tolerance=0.05,
+        max_time_to_fill_deterioration_factor=1.25,
+    )
+
+    assert decision["paired_report_excerpt"]["decision_language_counts"]["challenger_safety_veto_only"] == 1
+    assert decision["decision"]["alpha_failure_summary"]["challenger_alpha_gate_fail_total"] == 1
+    assert decision["decision"]["safety_failure_summary"]["challenger_safety_veto_total"] == 1
 
 
 def test_build_paper_run_settings_allows_unbounded_duration_for_service_mode() -> None:

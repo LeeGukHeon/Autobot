@@ -1733,7 +1733,9 @@ class BacktestRunEngine:
                 else None
             ),
         )
+        liquidation_policy_payload: dict[str, Any] = {}
         if strategy_mode == "model_alpha_v1" and candidate_meta:
+            is_v5_contract = str(candidate_meta.get("decision_contract_version") or "").strip() == "v5_post_model_contract_v1"
             strategy_exec_profile = candidate_meta.get("exec_profile")
             if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
                 exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
@@ -1747,41 +1749,42 @@ class BacktestRunEngine:
                 operational_risk_multiplier = _safe_optional_float(operational_overlay.get("risk_multiplier"))
             if entry_notional_quote is not None and operational_risk_multiplier is not None:
                 entry_notional_quote *= max(float(operational_risk_multiplier), 0.0)
-            portfolio_budget_payload = _resolve_candidate_portfolio_budget(
-                exchange=exchange,
-                market=candidate.market,
-                side=side_value,
-                target_notional_quote=entry_notional_quote,
-                candidate_meta=candidate_meta,
-                run_settings=self._run_settings,
-                rules=rules,
-            )
-            if portfolio_budget_payload.get("enabled"):
-                candidate_meta["portfolio_budget"] = dict(portfolio_budget_payload)
-                candidate_meta = _finalize_candidate_entry_decision(
+            if is_v5_contract:
+                portfolio_budget_payload = _resolve_candidate_portfolio_budget(
+                    exchange=exchange,
+                    market=candidate.market,
+                    side=side_value,
+                    target_notional_quote=entry_notional_quote,
                     candidate_meta=candidate_meta,
-                    portfolio_budget_allowed=bool(portfolio_budget_payload.get("allowed", True)),
-                    budget_reason_code=(
-                        str(portfolio_budget_payload.get("primary_reason_code") or "").strip()
-                        or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
-                    ),
+                    run_settings=self._run_settings,
+                    rules=rules,
                 )
-                if not bool(portfolio_budget_payload.get("allowed", True)):
-                    append_event(
-                        "PORTFOLIO_BUDGET_BLOCKED",
-                        ts_ms=ts_ms,
-                        payload={
-                            "market": candidate.market,
-                            "side": side_value,
-                            "reason_code": str(portfolio_budget_payload.get("primary_reason_code") or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"),
-                            "severity": "BLOCK",
-                            "portfolio_budget": dict(portfolio_budget_payload),
-                        },
+                if portfolio_budget_payload.get("enabled"):
+                    candidate_meta["portfolio_budget"] = dict(portfolio_budget_payload)
+                    candidate_meta = _finalize_candidate_entry_decision(
+                        candidate_meta=candidate_meta,
+                        portfolio_budget_allowed=bool(portfolio_budget_payload.get("allowed", True)),
+                        budget_reason_code=(
+                            str(portfolio_budget_payload.get("primary_reason_code") or "").strip()
+                            or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
+                        ),
                     )
-                    return False
-                entry_notional_quote = float(
-                    portfolio_budget_payload.get("resolved_notional_quote", entry_notional_quote) or 0.0
-                )
+                    if not bool(portfolio_budget_payload.get("allowed", True)):
+                        append_event(
+                            "PORTFOLIO_BUDGET_BLOCKED",
+                            ts_ms=ts_ms,
+                            payload={
+                                "market": candidate.market,
+                                "side": side_value,
+                                "reason_code": str(portfolio_budget_payload.get("primary_reason_code") or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"),
+                                "severity": "BLOCK",
+                                "portfolio_budget": dict(portfolio_budget_payload),
+                            },
+                        )
+                        return False
+                    entry_notional_quote = float(
+                        portfolio_budget_payload.get("resolved_notional_quote", entry_notional_quote) or 0.0
+                    )
             liquidation_policy_payload = (
                 build_v5_liquidation_policy(
                     exit_decision=(candidate_meta.get("exit_decision") if isinstance(candidate_meta.get("exit_decision"), dict) else {}),
@@ -1933,11 +1936,7 @@ class BacktestRunEngine:
         selected_ord_type = (
             str(
                 (execution_policy or {}).get("selected_ord_type")
-                or (
-                    candidate_meta.get("liquidation_policy", {}).get("ord_type")
-                    if isinstance(candidate_meta.get("liquidation_policy"), dict)
-                    else None
-                )
+                or liquidation_policy_payload.get("ord_type")
                 or "limit"
             ).strip().lower()
             or "limit"
@@ -1945,11 +1944,7 @@ class BacktestRunEngine:
         selected_time_in_force = (
             str(
                 (execution_policy or {}).get("selected_time_in_force")
-                or (
-                    candidate_meta.get("liquidation_policy", {}).get("time_in_force")
-                    if isinstance(candidate_meta.get("liquidation_policy"), dict)
-                    else None
-                )
+                or liquidation_policy_payload.get("time_in_force")
                 or "gtc"
             ).strip().lower()
             or "gtc"
@@ -1988,6 +1983,7 @@ class BacktestRunEngine:
             ),
             meta={
                 **candidate_meta,
+                "liquidation_policy": dict(liquidation_policy_payload or candidate_meta.get("liquidation_policy") or {}),
                 "candidate_score": candidate.score,
                 "target_notional_quote": (float(entry_notional_quote) if entry_notional_quote is not None else None),
                 "submit_price": (float(submit_price) if submit_price is not None else None),

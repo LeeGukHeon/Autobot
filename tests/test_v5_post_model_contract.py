@@ -111,6 +111,23 @@ def test_resolve_v5_entry_gate_blocks_nonpositive_edge() -> None:
     assert "ENTRY_GATE_EXPECTED_EDGE_NOT_POSITIVE_AFTER_COST" in payload["reason_codes"]
 
 
+def test_resolve_v5_entry_gate_blocks_nonpositive_alpha_lcb_directly() -> None:
+    payload = resolve_v5_entry_gate(
+        market="KRW-BTC",
+        final_expected_return=0.01,
+        final_expected_es=0.002,
+        final_tradability=0.8,
+        final_uncertainty=0.01,
+        final_alpha_lcb=0.0,
+        entry_boundary_decision={"enabled": False, "allowed": True, "reason_codes": [], "tradability_threshold": 0.0},
+        expected_net_edge_bps=10.0,
+    )
+
+    assert payload["allowed"] is False
+    assert payload["primary_reason_code"] == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
+    assert payload["primary_reason_family"] == "entry_gate"
+
+
 def test_resolve_v5_exit_decision_prefers_continuation_controller() -> None:
     payload = resolve_v5_exit_decision(
         continuation_guidance={

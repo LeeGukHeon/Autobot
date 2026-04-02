@@ -14,7 +14,11 @@ from typing import Any, AsyncIterator, Callable, Sequence
 import uuid
 
 from autobot.cli_model_helpers import paper_alpha_preset_overrides
-from autobot.common.paper_lane_evidence import aggregate_paper_lane_runs, compare_champion_challenger
+from autobot.common.paper_lane_evidence import (
+    aggregate_paper_lane_runs,
+    compare_champion_challenger,
+    load_paper_lane_run_summary,
+)
 from autobot.paper.engine import PaperRunEngine, PaperRunSettings
 from autobot.paper.paired_reporting import build_paired_paper_report, write_paired_paper_report
 from autobot.strategy.micro_gate_v1 import MicroGateSettings
@@ -935,8 +939,8 @@ def _build_paired_promotion_decision(
     nonnegative_ratio_tolerance: float,
     max_time_to_fill_deterioration_factor: float,
 ) -> dict[str, Any]:
-    champion_summary = _load_json(champion_run_dir / "summary.json")
-    challenger_summary = _load_json(challenger_run_dir / "summary.json")
+    champion_summary = load_paper_lane_run_summary(run_dir=champion_run_dir)
+    challenger_summary = load_paper_lane_run_summary(run_dir=challenger_run_dir)
     champion_agg = aggregate_paper_lane_runs([champion_summary] if champion_summary else [])
     challenger_agg = aggregate_paper_lane_runs([challenger_summary] if challenger_summary else [])
     base_decision = compare_champion_challenger(
@@ -955,7 +959,33 @@ def _build_paired_promotion_decision(
     hard_failures = list(base_decision.get("hard_failures") or [])
     gate_pass = bool(paired_gate.get("pass"))
     gate_reason = str(paired_gate.get("reason") or "").strip()
-    promote = bool(base_decision.get("promote", False)) and gate_pass
+    paired_deltas = dict(paired_report.get("paired_deltas") or {})
+    matched_pnl_coverage = int(paired_deltas.get("matched_pnl_covered_opportunity_count") or 0)
+    matched_pnl_delta_quote = float(paired_deltas.get("matched_pnl_delta_quote") or 0.0)
+    matched_no_trade_delta = int(paired_deltas.get("matched_no_trade_delta") or 0)
+    matched_fill_delta = int(paired_deltas.get("matched_fill_delta") or 0)
+    matched_slippage_delta_bps = paired_deltas.get("matched_slippage_delta_bps")
+    matched_evidence_checks = {
+        "matched_pnl_available": matched_pnl_coverage > 0,
+        "matched_pnl_not_worse": True if matched_pnl_coverage <= 0 else matched_pnl_delta_quote >= 0.0,
+        "matched_no_trade_not_worse": matched_no_trade_delta >= 0,
+        "matched_fill_not_worse": matched_fill_delta >= 0,
+        "matched_slippage_not_worse": (
+            True
+            if matched_slippage_delta_bps in (None, "")
+            else float(matched_slippage_delta_bps) <= 0.0
+        ),
+    }
+    if not matched_evidence_checks["matched_pnl_not_worse"]:
+        hard_failures.append("PAIRED_MATCHED_PNL_DELTA_NEGATIVE")
+    if not matched_evidence_checks["matched_no_trade_not_worse"]:
+        hard_failures.append("PAIRED_MATCHED_NO_TRADE_DELTA_NEGATIVE")
+    promote = (
+        bool(base_decision.get("promote", False))
+        and gate_pass
+        and matched_evidence_checks["matched_pnl_not_worse"]
+        and matched_evidence_checks["matched_no_trade_not_worse"]
+    )
     if not gate_pass and gate_reason:
         hard_failures.append(gate_reason)
     decision_text = "promote_challenger" if promote else ("keep_champion" if hard_failures else "hold_for_review")
@@ -964,8 +994,9 @@ def _build_paired_promotion_decision(
         "paired_gate": dict(paired_gate),
         "paired_report_excerpt": {
             "clock_alignment": dict(paired_report.get("clock_alignment") or {}),
-            "paired_deltas": dict(paired_report.get("paired_deltas") or {}),
+            "paired_deltas": paired_deltas,
             "taxonomy_counts": dict(paired_report.get("taxonomy_counts") or {}),
+            "decision_language_counts": dict(paired_report.get("decision_language_counts") or {}),
             "report_path": str(paired_report.get("report_path") or ""),
         },
         "champion": champion_agg,
@@ -975,6 +1006,7 @@ def _build_paired_promotion_decision(
             "promote": promote,
             "decision": decision_text,
             "hard_failures": hard_failures,
+            "matched_evidence_checks": matched_evidence_checks,
         },
     }
 

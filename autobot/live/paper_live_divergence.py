@@ -50,7 +50,7 @@ def build_paper_live_divergence_report(
             paper_source=paper_source,
             infra_parity=infra_parity,
             reason_codes=["LIVE_OPPORTUNITY_LOG_MISSING"],
-            status="insufficient_source_data",
+            status="insufficient_evidence",
         )
     if not paper_source.get("available"):
         return _insufficient_payload(
@@ -62,7 +62,7 @@ def build_paper_live_divergence_report(
             paper_source=paper_source,
             infra_parity=infra_parity,
             reason_codes=list(paper_source.get("reason_codes") or ["PAPER_RUN_SOURCE_UNAVAILABLE"]),
-            status="insufficient_source_data",
+            status="insufficient_evidence",
         )
     paper_rows = _load_jsonl(Path(str(paper_source.get("opportunity_log_path") or "")))
     if not paper_rows:
@@ -75,7 +75,7 @@ def build_paper_live_divergence_report(
             paper_source=paper_source,
             infra_parity=infra_parity,
             reason_codes=["PAPER_OPPORTUNITY_LOG_MISSING"],
-            status="insufficient_source_data",
+            status="insufficient_evidence",
         )
 
     live_index = _build_opportunity_index(live_rows)
@@ -99,7 +99,7 @@ def build_paper_live_divergence_report(
             paper_source=paper_source,
             infra_parity=infra_parity,
             reason_codes=["INSUFFICIENT_MATCHED_OPPORTUNITIES"],
-            status="insufficient_source_data",
+            status="insufficient_evidence",
             matching={
                 "live_total": len(live_index),
                 "paper_total": len(paper_index),
@@ -440,25 +440,65 @@ def _decision_signature(row: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def _primary_decision_reason_code(row: dict[str, Any]) -> str:
-    entry_decision = row.get("entry_decision")
-    if isinstance(entry_decision, dict):
-        for code in entry_decision.get("reason_codes") or []:
-            text = _safe_text(code)
-            if text:
-                return text
+    for code in _safety_veto_reason_codes(row):
+        text = _safe_text(code)
+        if text:
+            return text
+    for code in _entry_decision_reason_codes(row):
+        text = _safe_text(code)
+        if text:
+            return text
+    return _safe_text(row.get("skip_reason_code"))
+
+
+def _entry_decision_reason_codes(row: dict[str, Any]) -> list[str]:
     meta = row.get("meta")
     if isinstance(meta, dict):
+        entry_decision = meta.get("entry_decision")
+        if isinstance(entry_decision, dict):
+            return [_safe_text(code) for code in (entry_decision.get("reason_codes") or []) if _safe_text(code)]
         strategy = meta.get("strategy")
         if isinstance(strategy, dict):
             strategy_meta = strategy.get("meta")
             if isinstance(strategy_meta, dict):
                 entry_decision = strategy_meta.get("entry_decision")
                 if isinstance(entry_decision, dict):
-                    for code in entry_decision.get("reason_codes") or []:
-                        text = _safe_text(code)
-                        if text:
-                            return text
-    return _safe_text(row.get("skip_reason_code"))
+                    return [_safe_text(code) for code in (entry_decision.get("reason_codes") or []) if _safe_text(code)]
+    entry_decision = row.get("entry_decision")
+    if isinstance(entry_decision, dict):
+        return [_safe_text(code) for code in (entry_decision.get("reason_codes") or []) if _safe_text(code)]
+    return []
+
+
+def _safety_veto_reason_codes(row: dict[str, Any]) -> list[str]:
+    def _extract(payload: dict[str, Any]) -> list[str]:
+        safety_vetoes = payload.get("safety_vetoes")
+        if not isinstance(safety_vetoes, dict):
+            return []
+        codes: list[str] = []
+        for item in safety_vetoes.values():
+            if not isinstance(item, dict):
+                continue
+            for code in item.get("reason_codes") or []:
+                text = _safe_text(code)
+                if text and text not in codes:
+                    codes.append(text)
+        return codes
+
+    meta = row.get("meta")
+    if isinstance(meta, dict):
+        direct_codes = _extract(meta)
+        if direct_codes:
+            return direct_codes
+        strategy = meta.get("strategy")
+        if isinstance(strategy, dict):
+            strategy_meta = strategy.get("meta")
+            if isinstance(strategy_meta, dict):
+                nested_codes = _extract(strategy_meta)
+                if nested_codes:
+                    return nested_codes
+    direct_payload_codes = _extract(row if isinstance(row, dict) else {})
+    return direct_payload_codes
 
 
 def _record_projection(row: dict[str, Any]) -> dict[str, Any]:
@@ -487,7 +527,7 @@ def _insufficient_payload(
     return {
         "artifact_version": PAPER_LIVE_DIVERGENCE_VERSION,
         "policy": "paper_live_divergence_v1",
-        "status": str(status).strip().lower() or "insufficient_source_data",
+        "status": str(status).strip().lower() or "insufficient_evidence",
         "ts_ms": int(ts_ms),
         "unit_name": str(unit_name).strip(),
         "lane": str(lane).strip(),

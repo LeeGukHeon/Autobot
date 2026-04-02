@@ -241,9 +241,12 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert load_json(result.predictor_contract_path)["final_rank_score_field"] == "final_rank_score"
     runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
     assert runtime_recommendations["decision_contract_version"] == "v5_post_model_contract_v1"
+    assert runtime_recommendations["contract_owner_family"] == "train_v5_fusion"
+    assert runtime_recommendations["contract_seed_family"] == "train_v5_panel_ensemble"
     assert runtime_recommendations["exit"]["recommended_exit_mode"] == "risk"
+    assert runtime_recommendations["exit"]["runtime_source_mode"] == "fusion_owned_panel_seeded"
     assert runtime_recommendations["execution"]["recommended_price_mode"] == "JOIN"
-    assert runtime_recommendations["risk_control"]["operating_mode"] in {"test_panel_runtime", "v5_fusion_panel_anchor_inferred"}
+    assert runtime_recommendations["risk_control"]["operating_mode"] == "test_panel_runtime"
     report = load_json(result.train_report_path)
     assert report["data_platform_ready_snapshot_id"] == snapshot_id
     assert report["resumed"] is False
@@ -296,6 +299,64 @@ def test_train_v5_fusion_fails_on_snapshot_mismatch(tmp_path: Path) -> None:
         seed=7,
     )
     with pytest.raises(ValueError, match="same non-empty data_platform_ready_snapshot_id"):
+        train_and_register_v5_fusion(options)
+
+
+def test_train_v5_fusion_fails_when_panel_runtime_contract_lacks_top_level_docs(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-missing-001"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-missing-001",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "final_rank_score": 0.5, "final_expected_return": 0.1, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.03} for row in base_rows],
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-missing-001",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.5, "sequence_uncertainty_primary": 0.04} for row in base_rows],
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-missing-001",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
+    )
+    (panel_path.parent / "runtime_recommendations.json").write_text(
+        json.dumps(
+            {
+                "status": "v5_panel_ensemble_runtime_ready",
+                "source_family": "train_v5_panel_ensemble",
+                "data_platform_ready_snapshot_id": snapshot_id,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    options = TrainV5FusionOptions(
+        panel_input_path=panel_path,
+        sequence_input_path=sequence_path,
+        lob_input_path=lob_path,
+        registry_root=registry_root,
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_fusion",
+        quote="KRW",
+        start="2026-03-27",
+        end="2026-03-27",
+        seed=7,
+    )
+    with pytest.raises(ValueError, match="FUSION_RUNTIME_RECOMMENDATION_TOP_LEVEL_MISSING"):
         train_and_register_v5_fusion(options)
 
 
