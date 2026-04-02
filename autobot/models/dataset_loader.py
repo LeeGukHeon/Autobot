@@ -625,6 +625,7 @@ def _filter_market_files_by_date_range(
     if not files or (start_ts_ms is None and end_ts_ms is None):
         return files
     compatible: list[Path] = []
+    partitioned_files = 0
     for path in files:
         date_label = ""
         for parent in path.parents:
@@ -635,6 +636,7 @@ def _filter_market_files_by_date_range(
         if not date_label:
             compatible.append(path)
             continue
+        partitioned_files += 1
         date_start_ts_ms = parse_date_to_ts_ms(date_label)
         date_end_ts_ms = parse_date_to_ts_ms(date_label, end_of_day=True)
         if date_start_ts_ms is None or date_end_ts_ms is None:
@@ -645,7 +647,13 @@ def _filter_market_files_by_date_range(
         if end_ts_ms is not None and int(date_start_ts_ms) > int(end_ts_ms):
             continue
         compatible.append(path)
-    return compatible
+    if compatible or partitioned_files <= 0:
+        return compatible
+    # Some synthetic or recovery datasets can carry partition labels that do
+    # not match the actual row-level ts_ms values. When partition pruning would
+    # otherwise drop every file, fall back to the original list and rely on the
+    # row-level ts_ms filter later in the scan.
+    return files
 
 
 def _feature_to_float_expr(column: str, *, schema: Any) -> pl.Expr:

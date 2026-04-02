@@ -14,6 +14,7 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
+from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations
 
 from .entry_boundary import build_risk_calibrated_entry_boundary
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
@@ -636,7 +637,7 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
     for key in ("panel", "sequence", "lob"):
         payload = dict(upstream_inputs.get(key) or {})
         upstream_runtime_context[key] = dict(payload.get("runtime_recommendations") or {})
-    return {
+    return annotate_v5_runtime_recommendations({
         "status": "fusion_runtime_ready",
         "source_family": "train_v5_fusion",
         "entry_boundary_enabled": True,
@@ -651,7 +652,7 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
             for key in ("panel", "sequence", "lob")
         },
         "upstream_runtime_context": upstream_runtime_context,
-    }
+    })
 
 
 def _build_v5_fusion_tail_context(

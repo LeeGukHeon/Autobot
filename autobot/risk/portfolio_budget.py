@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from .confidence_monitor import SUPPRESSOR_RESET_CHECKPOINT
+from autobot.common.portfolio_signal_haircuts import (
+    resolve_portfolio_signal_haircuts as _resolve_portfolio_signal_haircuts,
+)
 
 
 def resolve_portfolio_risk_budget(
@@ -287,6 +290,23 @@ def summarize_portfolio_exposure(
             "decision_cluster_projected_notional_quote": float(decision_cluster_projected),
         },
     }
+
+
+def resolve_portfolio_signal_haircuts(
+    *,
+    uncertainty: float | None = None,
+    expected_return_bps: float | None = None,
+    expected_es_bps: float | None = None,
+    tradability_prob: float | None = None,
+    alpha_lcb_bps: float | None = None,
+) -> dict[str, Any]:
+    return _resolve_portfolio_signal_haircuts(
+        uncertainty=uncertainty,
+        expected_return_bps=expected_return_bps,
+        expected_es_bps=expected_es_bps,
+        tradability_prob=tradability_prob,
+        alpha_lcb_bps=alpha_lcb_bps,
+    )
 
 
 def classify_market_cluster(market: str) -> str:

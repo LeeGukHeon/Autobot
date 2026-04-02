@@ -263,6 +263,14 @@ def resolve_live_expected_edge_bps(
     )
     if not isinstance(strategy_meta, dict):
         return None
+    direct_edge_bps = safe_optional_float_fn(strategy_meta.get("expected_edge_bps"))
+    if direct_edge_bps is not None:
+        return float(direct_edge_bps)
+    entry_decision = strategy_meta.get("entry_decision")
+    if isinstance(entry_decision, dict):
+        entry_edge_bps = safe_optional_float_fn(entry_decision.get("expected_net_edge_bps"))
+        if entry_edge_bps is not None:
+            return float(entry_edge_bps)
     trade_action = strategy_meta.get("trade_action")
     if not isinstance(trade_action, dict):
         return None
@@ -293,6 +301,14 @@ def _resolve_strategy_expected_edge_bps(
     strategy_meta: dict[str, Any],
     safe_optional_float_fn: Callable[[object], float | None],
 ) -> float | None:
+    direct_edge_bps = safe_optional_float_fn(strategy_meta.get("expected_edge_bps"))
+    if direct_edge_bps is not None:
+        return float(direct_edge_bps)
+    entry_decision = strategy_meta.get("entry_decision")
+    if isinstance(entry_decision, dict):
+        entry_edge_bps = safe_optional_float_fn(entry_decision.get("expected_net_edge_bps"))
+        if entry_edge_bps is not None:
+            return float(entry_edge_bps)
     trade_action = strategy_meta.get("trade_action")
     if not isinstance(trade_action, dict):
         return None
@@ -777,6 +793,25 @@ def resolve_live_strategy_execution(
             )
         strategy_meta["notional_multiplier"] = float(resolved_multiplier)
         strategy_meta["notional_multiplier_source"] = "risk_control_size_ladder"
+        sizing_decision_payload = (
+            dict(strategy_meta.get("sizing_decision") or {})
+            if isinstance(strategy_meta.get("sizing_decision"), dict)
+            else {}
+        )
+        if sizing_decision_payload:
+            requested_multiplier = safe_optional_float_fn(sizing_decision_payload.get("requested_notional_multiplier"))
+            base_target_quote = safe_optional_float_fn(sizing_decision_payload.get("target_notional_quote"))
+            sizing_decision_payload["resolved_notional_multiplier"] = float(resolved_multiplier)
+            if (
+                requested_multiplier is not None
+                and requested_multiplier > 0.0
+                and base_target_quote is not None
+                and base_target_quote > 0.0
+            ):
+                sizing_decision_payload["target_notional_quote"] = float(base_target_quote) * (
+                    float(resolved_multiplier) / float(requested_multiplier)
+                )
+            strategy_meta["sizing_decision"] = sizing_decision_payload
         if trade_action_payload:
             trade_action_payload["recommended_notional_multiplier"] = float(resolved_multiplier)
             strategy_meta["trade_action"] = trade_action_payload

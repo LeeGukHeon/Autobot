@@ -40,6 +40,18 @@ from autobot.strategy.operational_overlay_v1 import (
     resolve_operational_risk_multiplier,
 )
 from autobot.strategy.micro_snapshot import MicroSnapshot
+from autobot.strategy.v5_post_model_contract import (
+    V5_CONTINUATION_EXIT_REASON,
+    V5_POST_MODEL_CONTRACT_VERSION,
+    V5_STALE_TIMEOUT_EXIT_REASON,
+    annotate_v5_runtime_recommendations,
+    build_v5_entry_decision_payload,
+    is_v5_post_model_contract,
+    rank_v5_entry_candidates,
+    resolve_v5_entry_gate,
+    resolve_v5_exit_decision,
+    resolve_v5_target_notional,
+)
 
 from . import model_alpha_runtime_contract as _runtime_contract
 
@@ -132,21 +144,40 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             predictor=predictor,
             settings=settings,
         )
+        self._runtime_recommendations = dict(getattr(predictor, "runtime_recommendations", {}) or {})
+        if is_v5_post_model_contract(self._runtime_recommendations):
+            self._runtime_recommendations = annotate_v5_runtime_recommendations(self._runtime_recommendations)
         self._trade_action_policy = normalize_trade_action_policy(
-            (getattr(predictor, "runtime_recommendations", {}) or {}).get("trade_action")
+            self._runtime_recommendations.get("trade_action")
         )
         self._execution_recommendation = dict(
-            (getattr(predictor, "runtime_recommendations", {}) or {}).get("execution") or {}
+            self._runtime_recommendations.get("execution") or {}
         )
         self._risk_control_policy = normalize_execution_risk_control_payload(
-            (getattr(predictor, "runtime_recommendations", {}) or {}).get("risk_control")
+            self._runtime_recommendations.get("risk_control")
         )
+        self._is_v5_post_model_contract = is_v5_post_model_contract(self._runtime_recommendations)
         self._runtime_recommendation_state["trade_action_policy_status"] = str(
             self._trade_action_policy.get("status", "missing")
         )
         self._runtime_recommendation_state["trade_action_risk_feature_name"] = str(
             self._trade_action_policy.get("risk_feature_name", "")
         )
+        self._runtime_recommendation_state["decision_contract_version"] = str(
+            self._runtime_recommendations.get("decision_contract_version", "")
+        ).strip()
+        self._runtime_recommendation_state["entry_ownership"] = str(
+            self._runtime_recommendations.get("entry_ownership", "")
+        ).strip()
+        self._runtime_recommendation_state["sizing_ownership"] = str(
+            self._runtime_recommendations.get("sizing_ownership", "")
+        ).strip()
+        self._runtime_recommendation_state["trade_action_role"] = str(
+            self._runtime_recommendations.get("trade_action_role", "")
+        ).strip()
+        self._runtime_recommendation_state["exit_ownership"] = str(
+            self._runtime_recommendations.get("exit_ownership", "")
+        ).strip()
         self._interval_ms = max(int(interval_ms), 1)
         self._pending_group: FeatureTsGroup | None = None
         self._positions: dict[str, _PositionState] = {}
@@ -255,7 +286,10 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     chosen_action=str(behavior_policy.get("chosen_action") or "").strip(),
                     reason_code=str(reason_code).strip(),
                     skip_reason_code=(str(skip_reason_code).strip() if skip_reason_code else None),
-                    expected_edge_bps=_resolve_trade_action_expected_edge_bps(trade_action_decision),
+                    expected_edge_bps=_resolve_v5_strategy_expected_edge_bps(
+                        row=row,
+                        trade_action=trade_action_decision,
+                    ),
                     uncertainty=_resolve_opportunity_uncertainty(row),
                     run_id=self.predictor_run_id,
                     candidate_actions_json=tuple(behavior_policy.get("candidate_actions_json") or ()),
@@ -360,7 +394,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             pl.Series(name="final_tradability", values=_optional_float_list(score_contract["final_tradability"])),
             pl.Series(name="final_alpha_lcb", values=_optional_float_list(score_contract["final_alpha_lcb"])),
         )
-        if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
+        v5_post_model = bool(self._is_v5_post_model_contract)
+        ranked_selected_rows: list[dict[str, Any]] = []
+        if v5_post_model:
+            eligible = scored
+            eligible_rows = int(scored.height)
+            dropped_min_prob_rows = 0
+        elif selection_mode == DEFAULT_SELECTION_POLICY_MODE:
             eligible = scored
             eligible_rows = int(eligible.height)
             dropped_min_prob_rows = 0
@@ -426,7 +466,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             }
 
         min_candidates = max(int(min_candidates_used), 0)
-        if eligible_rows < min_candidates:
+        if not v5_post_model and eligible_rows < min_candidates:
             blocked_min_candidates_ts = 1
             _inc_reason(skipped_reasons, "MIN_CANDIDATES_NOT_MET")
             for row in eligible.iter_rows(named=True):
@@ -460,21 +500,37 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 skipped_reasons=skipped_reasons,
             )
 
-        if selection_mode == DEFAULT_SELECTION_POLICY_MODE:
+        if v5_post_model:
+            ranked_selected_rows = rank_v5_entry_candidates(
+                [
+                    {
+                        "market": str(row.get("market", "")).strip().upper(),
+                        "final_alpha_lcb": _safe_optional_float(row.get("final_alpha_lcb")),
+                        "final_expected_return": _safe_optional_float(row.get("final_expected_return")),
+                        "final_uncertainty": _safe_optional_float(row.get("final_uncertainty")),
+                    }
+                    for row in scored.iter_rows(named=True)
+                ]
+            )
+            selected_rows = int(len(ranked_selected_rows))
+            dropped_top_pct_rows = 0
+        elif selection_mode == DEFAULT_SELECTION_POLICY_MODE:
             select_count = max(int(math.floor(eligible_rows * max(float(top_pct_used), 0.0))), min_candidates)
             select_count = min(select_count, eligible_rows)
         else:
             select_count = int(math.floor(eligible_rows * max(float(top_pct_used), 0.0)))
-        if select_count > 0:
-            selected = eligible.sort("model_prob", descending=True).head(select_count)
-        else:
-            selected = eligible.head(0)
-        selected_rows = int(selected.height)
-        dropped_top_pct_rows = max(eligible_rows - selected_rows, 0)
-        if dropped_top_pct_rows > 0:
+        if not v5_post_model:
+            if select_count > 0:
+                selected = eligible.sort("model_prob", descending=True).head(select_count)
+            else:
+                selected = eligible.head(0)
+            ranked_selected_rows = [dict(row) for row in selected.iter_rows(named=True)]
+            selected_rows = int(selected.height)
+            dropped_top_pct_rows = max(eligible_rows - selected_rows, 0)
+        if not v5_post_model and dropped_top_pct_rows > 0:
             selected_markets = {
                 str(row.get("market", "")).strip().upper()
-                for row in selected.iter_rows(named=True)
+                for row in ranked_selected_rows
                 if str(row.get("market", "")).strip()
             }
             for row in eligible.iter_rows(named=True):
@@ -494,7 +550,32 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         can_open = max(max_positions - active_positions, 0)
         if can_open <= 0:
             _inc_reason(skipped_reasons, "MAX_POSITIONS_TOTAL")
-        for row in selected.iter_rows(named=True):
+        selected_rank_by_market = {
+            str(item.get("market", "")).strip().upper(): int(item.get("selected_rank") or 0)
+            for item in ranked_selected_rows
+            if str(item.get("market", "")).strip()
+        }
+        selected_market_set = {
+            str(item.get("market", "")).strip().upper()
+            for item in ranked_selected_rows
+            if str(item.get("market", "")).strip()
+        }
+        selected_row_docs = (
+            [
+                dict(row)
+                for row in scored.iter_rows(named=True)
+                if str(row.get("market", "")).strip().upper() in selected_market_set
+            ]
+            if v5_post_model
+            else ranked_selected_rows
+        )
+        selected_row_docs.sort(
+            key=lambda item: (
+                int(selected_rank_by_market.get(str(item.get("market", "")).strip().upper(), 0) or 0),
+                str(item.get("market", "")).strip().upper(),
+            )
+        )
+        for row in selected_row_docs:
             if can_open <= 0:
                 append_entry_opportunity(
                     row=row,
@@ -540,7 +621,11 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 row=row,
                 contract=entry_boundary_contract if isinstance(entry_boundary_contract, dict) else {},
             )
-            if bool(entry_boundary_decision.get("enabled")) and not bool(entry_boundary_decision.get("allowed")):
+            if (
+                not v5_post_model
+                and bool(entry_boundary_decision.get("enabled"))
+                and not bool(entry_boundary_decision.get("allowed"))
+            ):
                 skip_reason_code = (
                     str((entry_boundary_decision.get("reason_codes") or ["ENTRY_BOUNDARY_BLOCKED"])[0]).strip()
                     or "ENTRY_BOUNDARY_BLOCKED"
@@ -564,9 +649,13 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 selection_score=float(row.get("model_prob", 0.0)),
                 enabled=bool(self._settings.exit.use_trade_level_action_policy),
             )
-            if (
+            trade_action_insufficient = (
                 isinstance(trade_action_decision, dict)
                 and str(trade_action_decision.get("status", "")).strip().lower() == "insufficient_evidence"
+            )
+            if (
+                not v5_post_model
+                and trade_action_insufficient
             ):
                 _inc_reason(
                     skipped_reasons,
@@ -584,24 +673,49 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     trade_action_decision=trade_action_decision,
                 )
                 continue
-            effective_exit_settings = _resolve_trade_action_exit_settings(
-                base_settings=self._settings,
-                decision=trade_action_decision,
-            )
-            requested_notional_multiplier = (
-                float(trade_action_decision.get("recommended_notional_multiplier", base_notional_multiplier))
-                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                else float(base_notional_multiplier)
-            )
             trade_action_support_level = (
                 str(trade_action_decision.get("support_level", "")).strip().lower()
                 if isinstance(trade_action_decision, dict)
                 else ""
             )
-            trade_action_support_multiplier = _resolve_trade_action_support_multiplier(
-                support_level=trade_action_support_level,
+            trade_action_support_multiplier = (
+                1.0
+                if v5_post_model
+                else _resolve_trade_action_support_multiplier(
+                    support_level=trade_action_support_level,
+                )
             )
-            requested_notional_multiplier = float(requested_notional_multiplier) * float(trade_action_support_multiplier)
+            effective_exit_settings = (
+                self._settings
+                if v5_post_model
+                else _resolve_trade_action_exit_settings(
+                    base_settings=self._settings,
+                    decision=trade_action_decision,
+                )
+            )
+            v5_sizing_decision = (
+                resolve_v5_target_notional(
+                    base_budget_quote=None,
+                    final_expected_return=_safe_optional_float(row.get("final_expected_return")),
+                    final_expected_es=_safe_optional_float(row.get("final_expected_es")),
+                    final_tradability=_safe_optional_float(row.get("final_tradability")),
+                    final_uncertainty=_safe_optional_float(row.get("final_uncertainty")),
+                    final_alpha_lcb=_safe_optional_float(row.get("final_alpha_lcb")),
+                )
+                if v5_post_model
+                else None
+            )
+            requested_notional_multiplier = (
+                float((v5_sizing_decision or {}).get("requested_notional_multiplier", 0.0) or 0.0)
+                if v5_post_model
+                else (
+                    float(trade_action_decision.get("recommended_notional_multiplier", base_notional_multiplier))
+                    if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                    else float(base_notional_multiplier)
+                )
+            )
+            if not v5_post_model:
+                requested_notional_multiplier = float(requested_notional_multiplier) * float(trade_action_support_multiplier)
             risk_control_decision = _resolve_runtime_risk_control_decision(
                 payload=self._risk_control_policy,
                 selection_score=float(row.get("model_prob", 0.0)),
@@ -610,7 +724,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             )
             if isinstance(risk_control_decision, dict) and bool(risk_control_decision.get("enabled")) and not bool(
                 risk_control_decision.get("allowed")
-            ):
+            ) and not v5_post_model:
                 _inc_reason(
                     skipped_reasons,
                     str(risk_control_decision.get("reason_code", "RISK_CONTROL_BELOW_THRESHOLD")).strip()
@@ -641,6 +755,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 if isinstance(size_ladder_decision, dict) and size_ladder_decision.get("resolved_multiplier") is not None
                 else float(requested_notional_multiplier)
             )
+            if isinstance(v5_sizing_decision, dict):
+                v5_sizing_decision["resolved_notional_multiplier"] = float(notional_multiplier)
             if (
                 isinstance(size_ladder_decision, dict)
                 and bool(size_ladder_decision.get("enabled"))
@@ -666,12 +782,17 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 )
                 continue
             if float(notional_multiplier) <= 0.0:
-                _inc_reason(skipped_reasons, "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE")
+                nonpositive_reason_code = (
+                    "V5_TARGET_NOTIONAL_NONPOSITIVE"
+                    if v5_post_model
+                    else "TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE"
+                )
+                _inc_reason(skipped_reasons, nonpositive_reason_code)
                 append_entry_opportunity(
                     row=row,
                     chosen_action="skip",
                     reason_code="MODEL_ALPHA_ENTRY_V1",
-                    skip_reason_code="TRADE_ACTION_TARGET_NOTIONAL_NONPOSITIVE",
+                    skip_reason_code=nonpositive_reason_code,
                     trade_action_decision=trade_action_decision,
                     notional_multiplier=float(notional_multiplier),
                     support_level=trade_action_support_level,
@@ -684,6 +805,11 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     trade_action=trade_action_decision,
                     interval_ms=self._interval_ms,
                     fallback_settings=self._settings.execution,
+                    fallback_expected_edge_bps=(
+                        _resolve_v5_strategy_expected_edge_bps(row=row, trade_action=trade_action_decision)
+                        if v5_post_model
+                        else None
+                    ),
                 )
             else:
                 manual_timeout_ms = max(int(self._settings.execution.timeout_bars), 1) * max(int(self._interval_ms), 1)
@@ -723,8 +849,95 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     support_size_multiplier=float(trade_action_support_multiplier),
                 )
                 continue
+            v5_expected_net_edge_bps = _resolve_v5_strategy_expected_net_edge_bps(
+                row=row,
+                execution_decision=execution_decision,
+                trade_action=trade_action_decision,
+            )
+            legacy_selection_shadow = {
+                "selection_min_prob_used": float(min_prob_used),
+                "selection_min_prob_source": str(min_prob_source),
+                "selection_top_pct_used": float(top_pct_used),
+                "selection_top_pct_source": str(top_pct_source),
+                "selection_min_candidates_used": int(min_candidates_used),
+                "selection_min_candidates_source": str(min_candidates_source),
+                "selection_policy_mode": str(selection_mode),
+                "selection_policy_source": str(selection_policy_source),
+                "legacy_min_prob_gate_active": bool(not v5_post_model and selection_mode != DEFAULT_SELECTION_POLICY_MODE),
+                "legacy_top_pct_gate_active": bool(not v5_post_model),
+            }
+            entry_decision_payload = (
+                build_v5_entry_decision_payload(
+                    gate_payload=resolve_v5_entry_gate(
+                        market=market,
+                        final_expected_return=_safe_optional_float(row.get("final_expected_return")),
+                        final_expected_es=_safe_optional_float(row.get("final_expected_es")),
+                        final_tradability=_safe_optional_float(row.get("final_tradability")),
+                        final_uncertainty=_safe_optional_float(row.get("final_uncertainty")),
+                        final_alpha_lcb=_safe_optional_float(row.get("final_alpha_lcb")),
+                        entry_boundary_decision=entry_boundary_decision,
+                        expected_net_edge_bps=v5_expected_net_edge_bps,
+                    ),
+                    selected_rank=selected_rank_by_market.get(market),
+                    legacy_selection_shadow=legacy_selection_shadow,
+                )
+                if v5_post_model
+                else {}
+            )
+            if v5_post_model and not bool(entry_decision_payload.get("allowed", True)):
+                skip_reason_code = (
+                    str((entry_decision_payload.get("reason_codes") or ["ENTRY_GATE_BLOCKED"])[0]).strip()
+                    or "ENTRY_GATE_BLOCKED"
+                )
+                _inc_reason(skipped_reasons, skip_reason_code)
+                append_entry_opportunity(
+                    row=row,
+                    chosen_action="skip",
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    skip_reason_code=skip_reason_code,
+                    trade_action_decision=trade_action_decision,
+                    execution_profile=dynamic_exec_profile,
+                    execution_decision=execution_decision,
+                    notional_multiplier=float(notional_multiplier),
+                    support_level=trade_action_support_level,
+                    support_size_multiplier=float(trade_action_support_multiplier),
+                )
+                continue
             exit_recommendation_meta = _build_runtime_exit_recommendation_meta(
                 self._runtime_recommendation_state
+            )
+            liquidation_policy_payload = (
+                _build_v5_liquidation_policy_payload(
+                    execution_decision=execution_decision,
+                    execution_profile=dynamic_exec_profile,
+                )
+                if v5_post_model
+                else {}
+            )
+            safety_vetoes_payload = (
+                _build_v5_strategy_safety_vetoes(
+                    entry_boundary_decision=entry_boundary_decision,
+                    risk_control_decision=risk_control_decision,
+                    size_ladder_decision=size_ladder_decision,
+                    execution_decision=execution_decision,
+                )
+                if v5_post_model
+                else {}
+            )
+            exit_decision_payload = (
+                _build_v5_pending_exit_decision_payload(
+                    liquidation_policy_payload=liquidation_policy_payload,
+                )
+                if v5_post_model
+                else {}
+            )
+            legacy_heuristics_applied = (
+                _build_v5_legacy_heuristics_applied_payload(
+                    trade_action_insufficient=trade_action_insufficient,
+                    trade_action_support_level=trade_action_support_level,
+                )
+                if v5_post_model
+                else {}
             )
             intent = StrategyOrderIntent(
                 market=market,
@@ -757,25 +970,52 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     "support_level": trade_action_support_level or "full",
                     "support_size_multiplier": float(trade_action_support_multiplier),
                     "support_size_haircut_applied": bool(float(trade_action_support_multiplier) < 1.0),
+                    "decision_contract_version": (
+                        V5_POST_MODEL_CONTRACT_VERSION
+                        if v5_post_model
+                        else str(self._runtime_recommendations.get("decision_contract_version", "")).strip()
+                    ),
+                    "entry_ownership": str(self._runtime_recommendations.get("entry_ownership", "")).strip(),
+                    "sizing_ownership": str(self._runtime_recommendations.get("sizing_ownership", "")).strip(),
+                    "trade_action_role": str(self._runtime_recommendations.get("trade_action_role", "")).strip(),
+                    "exit_ownership": str(self._runtime_recommendations.get("exit_ownership", "")).strip(),
                     "sizing_mode": (
-                        "risk_control_size_ladder"
-                        if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                        "v5_portfolio_budget_first"
+                        if v5_post_model
                         else (
-                            "trade_action_policy"
-                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                            else str(self._settings.position.sizing_mode)
+                            "risk_control_size_ladder"
+                            if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                            else (
+                                "trade_action_policy"
+                                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                                else str(self._settings.position.sizing_mode)
+                            )
                         )
                     ),
                     "base_notional_multiplier": float(base_notional_multiplier),
                     "notional_multiplier": float(notional_multiplier) * float(operational_risk_multiplier),
                     "notional_multiplier_source": (
-                        "risk_control_size_ladder"
-                        if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                        "v5_signal_haircuts"
+                        if v5_post_model
                         else (
-                            "trade_action_policy"
-                            if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
-                            else str(self._settings.position.sizing_mode)
+                            "risk_control_size_ladder"
+                            if isinstance(size_ladder_decision, dict) and bool(size_ladder_decision.get("enabled"))
+                            else (
+                                "trade_action_policy"
+                                if isinstance(trade_action_decision, dict) and "recommended_notional_multiplier" in trade_action_decision
+                                else str(self._settings.position.sizing_mode)
+                            )
                         )
+                    ),
+                    "expected_edge_bps": (
+                        float(v5_expected_net_edge_bps)
+                        if v5_post_model and v5_expected_net_edge_bps is not None
+                        else _resolve_trade_action_expected_edge_bps(trade_action_decision)
+                    ),
+                    "expected_net_edge_bps": (
+                        float(v5_expected_net_edge_bps)
+                        if v5_post_model and v5_expected_net_edge_bps is not None
+                        else _resolve_trade_action_expected_edge_bps(trade_action_decision)
                     ),
                     "state_features": _build_live_state_feature_snapshot(row=row),
                     "model_exit_plan": build_model_alpha_exit_plan_payload(
@@ -794,6 +1034,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     "execution_decision": dict(execution_decision or {}),
                     "exec_profile": dict(dynamic_exec_profile or {}),
                     "operational_overlay": dict(operational_state),
+                    "entry_decision": dict(entry_decision_payload or {}),
+                    "sizing_decision": dict(v5_sizing_decision or {}),
+                    "safety_vetoes": dict(safety_vetoes_payload or {}),
+                    "exit_decision": dict(exit_decision_payload or {}),
+                    "liquidation_policy": dict(liquidation_policy_payload or {}),
+                    "legacy_heuristics_applied": dict(legacy_heuristics_applied or {}),
                 },
             )
             intents.append(intent)
@@ -897,10 +1143,23 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     exit_fee_rate=exit_fee_rate,
                     exit_slippage_bps=exit_slippage_bps,
                 )
-                if net_return <= -sl_pct:
+                if self._is_v5_post_model_contract:
+                    exit_decision = resolve_v5_exit_decision(
+                        continuation_guidance={},
+                        net_return_ratio=float(net_return),
+                        trailing_drawdown_ratio=None,
+                        stop_loss_ratio=float(sl_pct),
+                        trailing_ratio=0.0,
+                        timeout_elapsed=bool(hold_ms > 0 and int(ts_ms) - int(state.entry_ts_ms) >= hold_ms),
+                        mode=mode,
+                    )
+                    state.exit_plan["exit_decision"] = dict(exit_decision)
+                    if bool(exit_decision.get("should_exit")):
+                        return str(exit_decision.get("decision_reason_code", "")).strip() or None
+                elif net_return <= -sl_pct:
                     return "MODEL_ALPHA_EXIT_SL"
             if hold_ms > 0 and int(ts_ms) - int(state.entry_ts_ms) >= hold_ms:
-                return "MODEL_ALPHA_EXIT_HOLD_TIMEOUT"
+                return V5_STALE_TIMEOUT_EXIT_REASON if self._is_v5_post_model_contract else "MODEL_ALPHA_EXIT_HOLD_TIMEOUT"
             return None
 
         # risk mode
@@ -934,6 +1193,20 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             exit_fee_rate=exit_fee_rate,
             exit_slippage_bps=exit_slippage_bps,
         )
+        if self._is_v5_post_model_contract:
+            exit_decision = resolve_v5_exit_decision(
+                continuation_guidance=continuation_guidance,
+                net_return_ratio=float(net_return),
+                trailing_drawdown_ratio=float(trailing_drawdown),
+                stop_loss_ratio=float(sl_pct),
+                trailing_ratio=float(trailing_pct),
+                timeout_elapsed=bool(hold_ms > 0 and int(ts_ms) - int(state.entry_ts_ms) >= hold_ms),
+                mode=mode,
+            )
+            state.exit_plan["exit_decision"] = dict(exit_decision)
+            if bool(exit_decision.get("should_exit")):
+                return str(exit_decision.get("decision_reason_code", "")).strip() or None
+            return None
         if tp_pct > 0 and net_return >= tp_pct:
             return "MODEL_ALPHA_EXIT_TP"
         if sl_pct > 0 and net_return <= -sl_pct:
@@ -1248,6 +1521,7 @@ def _resolve_runtime_execution_profile(
     trade_action: dict[str, Any] | None,
     interval_ms: int,
     fallback_settings: ModelAlphaExecutionSettings,
+    fallback_expected_edge_bps: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     execution_payload = dict(execution_doc or {})
     stage_order = [
@@ -1268,6 +1542,8 @@ def _resolve_runtime_execution_profile(
         if str(item.get("stage", "")).strip()
     }
     expected_edge_bps = _resolve_trade_action_expected_edge_bps(trade_action=trade_action)
+    if expected_edge_bps is None:
+        expected_edge_bps = _safe_optional_float(fallback_expected_edge_bps)
     decision: dict[str, Any] = {
         "policy": str(execution_payload.get("policy", "")).strip(),
         "stage_decision_mode": str(execution_payload.get("stage_decision_mode", "")).strip(),
@@ -1442,6 +1718,7 @@ def build_model_alpha_exit_plan_payload(
             "expected_immediate_exit_cleanup_cost_bps": float(immediate_execution_costs["cleanup_cost_bps"]),
             "expected_immediate_exit_miss_cost_bps": float(immediate_execution_costs["miss_cost_bps"]),
             "expected_immediate_exit_cost_ratio": float(immediate_execution_costs["cost_ratio"]),
+            "expected_liquidation_cost": float(immediate_execution_costs["cost_ratio"]),
             "risk_scaling_mode": str(settings.exit.risk_scaling_mode),
             "risk_vol_feature": str(settings.exit.risk_vol_feature),
             "tp_vol_multiplier": _safe_optional_float(settings.exit.tp_vol_multiplier),
@@ -1454,6 +1731,9 @@ def build_model_alpha_exit_plan_payload(
             "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
             "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
             "path_risk": dict(exit_path_risk or {}) if isinstance(exit_path_risk, dict) else {},
+            "continue_value_lcb": None,
+            "exit_now_value_net": None,
+            "alpha_decay_penalty": None,
         }
     )
 
@@ -1558,6 +1838,10 @@ def _reprice_position_exit_plan(
         normalized["path_risk_bounded_sl"] = guided_sl
         normalized["path_risk_terminal_return_q50"] = _safe_optional_float(path_risk_guidance.get("terminal_return_q50"))
         normalized["path_risk_terminal_return_q75"] = _safe_optional_float(path_risk_guidance.get("terminal_return_q75"))
+        normalized["continue_value_lcb"] = _safe_optional_float(path_risk_guidance.get("continue_value_net"))
+        normalized["exit_now_value_net"] = _safe_optional_float(path_risk_guidance.get("exit_now_value_net"))
+        normalized["expected_liquidation_cost"] = _safe_optional_float(path_risk_guidance.get("immediate_exit_cost_ratio"))
+        normalized["alpha_decay_penalty"] = _safe_optional_float(path_risk_guidance.get("alpha_decay_penalty_ratio"))
     micro_snapshot = _micro_snapshot_from_row(row=row, ts_ms=ts_ms)
     current_return_ratio = (
         (float(current_price) / max(float(state.entry_price), 1e-12)) - 1.0
@@ -1700,6 +1984,102 @@ def _resolve_trade_action_expected_edge_bps(trade_action: dict[str, Any] | None 
     if expected_edge is None:
         return None
     return float(expected_edge) * 10_000.0
+
+
+def _resolve_v5_strategy_expected_edge_bps(
+    *,
+    row: dict[str, Any] | None,
+    trade_action: dict[str, Any] | None,
+) -> float | None:
+    trade_action_edge_bps = _resolve_trade_action_expected_edge_bps(trade_action)
+    if trade_action_edge_bps is not None:
+        return float(trade_action_edge_bps)
+    if not isinstance(row, dict):
+        return None
+    final_alpha_lcb = _safe_optional_float(row.get("final_alpha_lcb"))
+    if final_alpha_lcb is None:
+        return None
+    return float(final_alpha_lcb) * 10_000.0
+
+
+def _resolve_v5_strategy_expected_net_edge_bps(
+    *,
+    row: dict[str, Any] | None,
+    execution_decision: dict[str, Any] | None,
+    trade_action: dict[str, Any] | None,
+) -> float | None:
+    if isinstance(execution_decision, dict):
+        selected_net_edge_bps = _safe_optional_float(execution_decision.get("selected_net_edge_bps"))
+        if selected_net_edge_bps is not None:
+            return float(selected_net_edge_bps)
+    return _resolve_v5_strategy_expected_edge_bps(row=row, trade_action=trade_action)
+
+
+def _build_v5_strategy_safety_vetoes(
+    *,
+    entry_boundary_decision: dict[str, Any] | None,
+    risk_control_decision: dict[str, Any] | None,
+    size_ladder_decision: dict[str, Any] | None,
+    execution_decision: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "entry_boundary": dict(entry_boundary_decision or {}),
+        "risk_control_static": dict(risk_control_decision or {}),
+        "size_ladder_static": dict(size_ladder_decision or {}),
+        "execution_decision": dict(execution_decision or {}),
+    }
+
+
+def _build_v5_liquidation_policy_payload(
+    *,
+    execution_decision: dict[str, Any] | None,
+    execution_profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    decision = dict(execution_decision or {})
+    profile = dict(execution_profile or {})
+    return {
+        "owner": "liquidation_execution_policy",
+        "price_mode": str(profile.get("price_mode", "")).strip().upper(),
+        "timeout_ms": _safe_optional_int(profile.get("timeout_ms")),
+        "replace_interval_ms": _safe_optional_int(profile.get("replace_interval_ms")),
+        "selected_stage": str(decision.get("selected_stage", "")).strip().upper(),
+        "expected_fill_probability": _safe_optional_float(decision.get("selected_fill_probability")),
+        "expected_net_edge_bps": _safe_optional_float(decision.get("selected_net_edge_bps")),
+        "expected_slippage_bps": _safe_optional_float(decision.get("selected_expected_slippage_bps")),
+    }
+
+
+def _build_v5_pending_exit_decision_payload(
+    *,
+    liquidation_policy_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "owner": "continuation_value_controller",
+        "status": "pending_position_update",
+        "decision_reason_code": "",
+        "exit_now_value_net": None,
+        "continue_value_net": None,
+        "continue_value_lcb": None,
+        "expected_liquidation_cost": _safe_optional_float(
+            (liquidation_policy_payload or {}).get("expected_slippage_bps")
+        ),
+        "alpha_decay_penalty": None,
+    }
+
+
+def _build_v5_legacy_heuristics_applied_payload(
+    *,
+    trade_action_insufficient: bool,
+    trade_action_support_level: str,
+) -> dict[str, Any]:
+    return {
+        "selection_min_prob_authority_removed": True,
+        "selection_top_pct_authority_removed": True,
+        "trade_action_exit_authority_removed": True,
+        "trade_action_primary_sizing_authority_removed": True,
+        "trade_action_insufficient_evidence": bool(trade_action_insufficient),
+        "trade_action_support_level": str(trade_action_support_level or "").strip().lower(),
+    }
 
 
 def _resolve_opportunity_uncertainty(row: dict[str, Any] | None) -> float | None:

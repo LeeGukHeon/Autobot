@@ -46,6 +46,35 @@ class _DummyEstimator:
         return np.column_stack([1.0 - probs, probs])
 
 
+class _V5ContractEstimator:
+    def __init__(
+        self,
+        *,
+        score_mean: list[float],
+        final_expected_return: list[float],
+        final_expected_es: list[float],
+        final_tradability: list[float],
+        final_uncertainty: list[float],
+        final_alpha_lcb: list[float],
+    ) -> None:
+        self._payload = {
+            "final_rank_score": np.asarray(score_mean, dtype=np.float64),
+            "final_uncertainty": np.asarray(final_uncertainty, dtype=np.float64),
+            "score_mean": np.asarray(score_mean, dtype=np.float64),
+            "score_std": np.asarray(final_uncertainty, dtype=np.float64),
+            "score_lcb": np.asarray(score_mean, dtype=np.float64),
+            "final_expected_return": np.asarray(final_expected_return, dtype=np.float64),
+            "final_expected_es": np.asarray(final_expected_es, dtype=np.float64),
+            "final_tradability": np.asarray(final_tradability, dtype=np.float64),
+            "final_alpha_lcb": np.asarray(final_alpha_lcb, dtype=np.float64),
+            "uncertainty_available": np.full(len(score_mean), True, dtype=bool),
+        }
+
+    def predict_panel_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+        _ = x
+        return {key: np.asarray(value) for key, value in self._payload.items()}
+
+
 def test_micro_snapshot_from_row_preserves_side_specific_depth_and_optional_top_of_book() -> None:
     snapshot = _micro_snapshot_from_row(
         row={
@@ -83,6 +112,7 @@ def _build_strategy(
     *,
     groups: list[tuple[int, pl.DataFrame]],
     settings: ModelAlphaSettings,
+    estimator: object | None = None,
     thresholds: dict[str, float] | None = None,
     selection_recommendations: dict[str, object] | None = None,
     selection_policy: dict[str, object] | None = None,
@@ -91,7 +121,7 @@ def _build_strategy(
 ) -> ModelAlphaStrategyV1:
     predictor = ModelPredictor(
         run_dir=Path("."),
-        model_bundle={"model_type": "xgboost", "scaler": None, "estimator": _DummyEstimator()},
+        model_bundle={"model_type": "xgboost", "scaler": None, "estimator": estimator or _DummyEstimator()},
         model_ref="run",
         model_family="train_v3_mtf_micro",
         feature_columns=("f1",),
@@ -268,6 +298,94 @@ def test_model_alpha_logs_skip_opportunities_when_min_candidates_not_met() -> No
     assert result.blocked_min_candidates_ts == 1
     assert len(result.opportunities) == 1
     assert result.opportunities[0].skip_reason_code == "MIN_CANDIDATES_NOT_MET"
+
+
+def test_model_alpha_v5_contract_ignores_legacy_selection_authority_and_ranks_by_alpha_lcb() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000, 1_000],
+            "market": ["KRW-BTC", "KRW-ETH"],
+            "f1": [5.0, -5.0],
+            "close": [100.0, 200.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        estimator=_V5ContractEstimator(
+            score_mean=[0.99, 0.20],
+            final_expected_return=[0.002, 0.018],
+            final_expected_es=[0.001, 0.002],
+            final_tradability=[0.90, 0.95],
+            final_uncertainty=[0.004, 0.001],
+            final_alpha_lcb=[0.001, 0.015],
+        ),
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=0.10, min_prob=0.95, min_candidates_per_ts=5),
+        ),
+        runtime_recommendations={"decision_contract_version": "v5_post_model_contract_v1"},
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC", "KRW-ETH"],
+        latest_prices={"KRW-BTC": 100.0, "KRW-ETH": 200.0},
+        open_markets=set(),
+    )
+
+    bid_intents = [intent for intent in result.intents if intent.side == "bid"]
+    assert [intent.market for intent in bid_intents] == ["KRW-ETH", "KRW-BTC"]
+    assert result.eligible_rows == 2
+    assert result.selected_rows == 2
+    first_meta = dict(bid_intents[0].meta or {})
+    entry_decision = dict(first_meta.get("entry_decision") or {})
+    assert entry_decision["allowed"] is True
+    assert entry_decision["selected_rank"] == 1
+    assert first_meta["decision_contract_version"] == "v5_post_model_contract_v1"
+    assert first_meta["entry_ownership"] == "predictor_boundary"
+    assert dict(first_meta.get("legacy_heuristics_applied") or {})["selection_top_pct_authority_removed"] is True
+
+
+def test_model_alpha_v5_contract_emits_signal_first_sizing_meta() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [1.0],
+            "close": [100.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        estimator=_V5ContractEstimator(
+            score_mean=[0.70],
+            final_expected_return=[0.012],
+            final_expected_es=[0.006],
+            final_tradability=[0.40],
+            final_uncertainty=[0.25],
+            final_alpha_lcb=[0.004],
+        ),
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+        ),
+        runtime_recommendations={"decision_contract_version": "v5_post_model_contract_v1"},
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    meta = dict(bid_intent.meta or {})
+    sizing_decision = dict(meta.get("sizing_decision") or {})
+    assert meta["sizing_mode"] == "v5_portfolio_budget_first"
+    assert meta["notional_multiplier_source"] == "v5_signal_haircuts"
+    assert sizing_decision["sizing_owner"] == "portfolio_budget_first"
+    assert float(sizing_decision["requested_notional_multiplier"]) > 0.0
+    assert "PORTFOLIO_TRADABILITY_HAIRCUT" in sizing_decision["reason_codes"]
+    assert "PORTFOLIO_CONFIDENCE_HAIRCUT" in sizing_decision["reason_codes"]
 
 
 def test_model_alpha_manual_selection_can_disable_registry_recommendations() -> None:

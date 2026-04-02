@@ -14,6 +14,7 @@ import polars as pl
 from autobot import __version__ as autobot_version
 from autobot.features.feature_spec import parse_date_to_ts_ms
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
+from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations
 
 from . import train_v4_crypto_cs as v4
 from . import train_v4_persistence as v4_persistence
@@ -1097,7 +1098,7 @@ def _build_panel_dependency_runtime_recommendations(
     data_platform_ready_snapshot_id: str | None,
 ) -> dict[str, Any]:
     execution_window = _build_execution_evaluation_window_doc(options=options)
-    return {
+    return annotate_v5_runtime_recommendations({
         "version": 1,
         "policy": "v5_panel_dependency_runtime_recommendations_v1",
         "status": "trainer_runtime_contract_ready",
@@ -1130,7 +1131,7 @@ def _build_panel_dependency_runtime_recommendations(
             "contract_status": "not_required",
             "operating_mode": "dependency_expert_only",
         },
-    }
+    })
 
 
 def _build_panel_dependency_promotion_payload(

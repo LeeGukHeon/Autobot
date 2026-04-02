@@ -2601,15 +2601,38 @@ def _entry_notional_quote_for_strategy(
     target_notional = max(float(per_trade_krw), 1.0)
     if str(strategy_mode).strip().lower() != "model_alpha_v1":
         return target_notional
-    target_notional *= _resolve_candidate_notional_multiplier(candidate_meta)
+    target_notional = _resolve_candidate_target_notional_quote(
+        candidate_meta=candidate_meta,
+        per_trade_krw=float(target_notional),
+    )
     buffer_bps = max(float(model_alpha_settings.position.entry_min_notional_buffer_bps), 0.0)
     min_total_with_buffer = max(float(min_total_krw), 0.0) * (1.0 + (buffer_bps / 10_000.0))
     return max(target_notional, min_total_with_buffer)
 
 
+def _resolve_candidate_target_notional_quote(
+    *,
+    candidate_meta: dict[str, Any] | None,
+    per_trade_krw: float,
+) -> float:
+    if not isinstance(candidate_meta, dict):
+        return max(float(per_trade_krw), 1.0)
+    sizing_decision = dict(candidate_meta.get("sizing_decision") or {}) if isinstance(candidate_meta.get("sizing_decision"), dict) else {}
+    for key in ("target_notional_quote",):
+        value = _safe_optional_float(sizing_decision.get(key))
+        if value is not None and value > 0.0:
+            return float(value)
+    return max(float(per_trade_krw), 1.0) * _resolve_candidate_notional_multiplier(candidate_meta)
+
+
 def _resolve_candidate_notional_multiplier(candidate_meta: dict[str, Any] | None) -> float:
     if not isinstance(candidate_meta, dict):
         return 1.0
+    sizing_decision = dict(candidate_meta.get("sizing_decision") or {}) if isinstance(candidate_meta.get("sizing_decision"), dict) else {}
+    for key in ("resolved_notional_multiplier", "requested_notional_multiplier"):
+        value = _safe_optional_float(sizing_decision.get(key))
+        if value is not None and value > 0:
+            return float(value)
     value = _safe_optional_float(candidate_meta.get("notional_multiplier"))
     if value is None or value <= 0:
         return 1.0
@@ -2912,12 +2935,15 @@ def _safe_optional_float(value: Any) -> float | None:
 def _candidate_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:
     if not isinstance(meta_payload, dict):
         return None
+    direct_edge = _safe_optional_float(meta_payload.get("expected_edge_bps"))
+    if direct_edge is not None:
+        return float(direct_edge)
     trade_action = meta_payload.get("trade_action")
     if isinstance(trade_action, dict):
         edge = _safe_optional_float(trade_action.get("expected_edge"))
         if edge is not None:
             return float(edge) * 10_000.0
-    return _safe_optional_float(meta_payload.get("expected_edge_bps"))
+    return None
 
 
 def _execution_contract_micro_state(*, snapshot: MicroSnapshot | None, now_ts_ms: int) -> dict[str, Any]:
