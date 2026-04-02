@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autobot.live import model_alpha_runtime_execute as runtime_execute
+from autobot.live.paper_live_divergence import paper_live_divergence_latest_path, write_paper_live_divergence_report
 from autobot.live.state_store import ExecutionAttemptRecord, IntentRecord, LiveStateStore, TradeJournalRecord
 from autobot.risk.confidence_monitor import (
     build_live_risk_confidence_sequence_report,
@@ -138,6 +139,7 @@ def test_build_live_risk_confidence_sequence_report_triggers_trade_and_execution
     assert "EXECUTION_MISS_RATE_CS_BREACH" in report["triggered_reason_codes"]
     assert "RISK_CONTROL_EDGE_GAP_CS_BREACH" in report["triggered_reason_codes"]
     assert report["monitors"]["paper_live_feature_divergence_rate"]["available"] is False
+    assert report["monitors"]["paper_live_feature_divergence_rate"]["status"] == "insufficient_source_data"
 
 
 def test_resolve_execution_risk_control_online_threshold_merges_confidence_sequence_halts(tmp_path: Path) -> None:
@@ -264,3 +266,62 @@ def test_write_live_risk_confidence_sequence_report_writes_latest_artifact(tmp_p
 
     assert latest_path.exists()
     assert json.loads(latest_path.read_text(encoding="utf-8"))["artifact_version"] == 1
+
+
+def test_build_live_risk_confidence_sequence_report_reads_divergence_artifact(tmp_path: Path) -> None:
+    latest_divergence_path = paper_live_divergence_latest_path(
+        project_root=tmp_path,
+        unit_name="autobot-live-alpha-candidate.service",
+    )
+    write_paper_live_divergence_report(
+        latest_path=latest_divergence_path,
+        payload={
+            "artifact_version": 1,
+            "status": "ready",
+            "matching": {"matched_opportunities": 8},
+            "feature_divergence": {"feature_hash_match_ratio": 0.25, "feature_divergence_rate": 0.75},
+            "decision_divergence": {"decision_divergence_rate": 0.25},
+            "matched_records": [
+                {"feature_hash_match": False, "decision_match": True},
+                {"feature_hash_match": False, "decision_match": True},
+                {"feature_hash_match": False, "decision_match": True},
+                {"feature_hash_match": False, "decision_match": True},
+                {"feature_hash_match": False, "decision_match": False},
+                {"feature_hash_match": False, "decision_match": False},
+                {"feature_hash_match": True, "decision_match": True},
+                {"feature_hash_match": True, "decision_match": True},
+            ],
+            "artifact_path": str(latest_divergence_path),
+        },
+    )
+    db_path = tmp_path / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        report = build_live_risk_confidence_sequence_report(
+            store=store,
+            run_id="run-live",
+            confidence_monitor_config={
+                "enabled": True,
+                "mode": "time_uniform_chernoff_rate_v1",
+                "confidence_delta": 0.10,
+                "min_closed_trade_count": 4,
+                "min_execution_attempt_count": 4,
+                "nonpositive_rate_threshold": 1.0,
+                "severe_loss_rate_threshold": 1.0,
+                "execution_miss_rate_threshold": 1.0,
+                "edge_gap_breach_rate_threshold": 1.0,
+                "feature_divergence_rate_threshold": 0.50,
+                "feature_divergence_rate_reason_code": "FEATURE_DIVERGENCE_CS_BREACH",
+            },
+            runtime_health={},
+            lane="live_candidate",
+            unit_name="autobot-live-alpha-candidate.service",
+            rollout_mode="canary",
+            ts_ms=10_000,
+            project_root=tmp_path,
+        )
+
+    monitor = report["monitors"]["paper_live_feature_divergence_rate"]
+    assert monitor["available"] is True
+    assert monitor["status"] == "ready"
+    assert monitor["halt_triggered"] is True
+    assert monitor["reason_code"] == "FEATURE_DIVERGENCE_CS_BREACH"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import is_dataclass
 from typing import Any
 
 from .confidence_monitor import SUPPRESSOR_RESET_CHECKPOINT
@@ -200,15 +201,25 @@ def summarize_portfolio_exposure(
     if hasattr(store, "list_orders"):
         try:
             open_orders = list(store.list_orders(open_only=True))
+        except TypeError:
+            try:
+                open_orders = list(store.list_orders())
+            except Exception:
+                open_orders = []
+        except Exception:
+            open_orders = []
+    elif hasattr(store, "list_open_orders"):
+        try:
+            open_orders = list(store.list_open_orders())
         except Exception:
             open_orders = []
 
     current_total = 0.0
     cluster_map: dict[str, dict[str, Any]] = {}
     for row in positions:
-        market = str((row or {}).get("market", "")).strip().upper()
-        base_amount = max(_safe_optional_float((row or {}).get("base_amount")) or 0.0, 0.0)
-        avg_entry_price = max(_safe_optional_float((row or {}).get("avg_entry_price")) or 0.0, 0.0)
+        market = _optional_upper_text(_field(row, "market"))
+        base_amount = max(_safe_optional_float(_field(row, "base_amount")) or 0.0, 0.0)
+        avg_entry_price = max(_safe_optional_float(_field(row, "avg_entry_price")) or 0.0, 0.0)
         notional_quote = float(base_amount) * float(avg_entry_price)
         if not market or notional_quote <= 0.0:
             continue
@@ -233,7 +244,7 @@ def summarize_portfolio_exposure(
             bucket["markets"].append(market)
 
     for row in open_orders:
-        market = str((row or {}).get("market", "")).strip().upper()
+        market = _optional_upper_text(_field(row, "market"))
         exposure_quote = estimate_open_bid_order_cash_at_risk_quote(row)
         if not market or exposure_quote <= 0.0:
             continue
@@ -322,14 +333,17 @@ def classify_market_cluster(market: str) -> str:
 
 
 def estimate_open_bid_order_cash_at_risk_quote(order: dict[str, Any] | None) -> float:
-    payload = dict(order or {})
-    if str(payload.get("side", "")).strip().lower() != "bid":
+    payload = order
+    if _optional_lower_text(_field(payload, "side")) != "bid":
         return 0.0
-    ord_type = str(payload.get("ord_type", "")).strip().lower()
-    executed_funds = max(_safe_optional_float(payload.get("executed_funds")) or 0.0, 0.0)
-    remaining_fee = _safe_optional_float(payload.get("remaining_fee"))
-    reserved_fee = _safe_optional_float(payload.get("reserved_fee"))
-    paid_fee = max(_safe_optional_float(payload.get("paid_fee")) or 0.0, 0.0)
+    locked_quote = _safe_optional_float(_field(payload, "locked_quote"))
+    if locked_quote is not None and locked_quote > 0.0:
+        return max(float(locked_quote), 0.0)
+    ord_type = _optional_lower_text(_field(payload, "ord_type")) or ""
+    executed_funds = max(_safe_optional_float(_field(payload, "executed_funds")) or 0.0, 0.0)
+    remaining_fee = _safe_optional_float(_field(payload, "remaining_fee"))
+    reserved_fee = _safe_optional_float(_field(payload, "reserved_fee"))
+    paid_fee = max(_safe_optional_float(_field(payload, "paid_fee")) or 0.0, 0.0)
     fee_reserve_quote = 0.0
     if remaining_fee is not None:
         fee_reserve_quote = max(float(remaining_fee), 0.0)
@@ -337,12 +351,12 @@ def estimate_open_bid_order_cash_at_risk_quote(order: dict[str, Any] | None) -> 
         fee_reserve_quote = max(float(reserved_fee) - float(paid_fee), 0.0)
 
     if ord_type == "best":
-        quote_budget = max(_safe_optional_float(payload.get("price")) or 0.0, 0.0)
+        quote_budget = max(_safe_optional_float(_field(payload, "price")) or 0.0, 0.0)
         return max(float(quote_budget) - float(executed_funds), 0.0) + float(fee_reserve_quote)
 
-    price = max(_safe_optional_float(payload.get("price")) or 0.0, 0.0)
-    volume_req = max(_safe_optional_float(payload.get("volume_req")) or 0.0, 0.0)
-    volume_filled = max(_safe_optional_float(payload.get("volume_filled")) or 0.0, 0.0)
+    price = max(_safe_optional_float(_field(payload, "price")) or 0.0, 0.0)
+    volume_req = max(_safe_optional_float(_field(payload, "volume_req")) or 0.0, 0.0)
+    volume_filled = max(_safe_optional_float(_field(payload, "volume_filled")) or 0.0, 0.0)
     remaining_volume = max(float(volume_req) - float(volume_filled), 0.0)
     return max(float(price) * float(remaining_volume), 0.0) + float(fee_reserve_quote)
 
@@ -505,3 +519,21 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _field(row: Any, name: str) -> Any:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(name)
+    if is_dataclass(row):
+        return getattr(row, name, None)
+    return getattr(row, name, None)
+
+
+def _optional_upper_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _optional_lower_text(value: Any) -> str:
+    return str(value or "").strip().lower()

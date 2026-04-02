@@ -8,6 +8,7 @@ from autobot.live.canary_confidence_sequence import (
     build_canary_confidence_sequence_report,
     canary_confidence_sequence_latest_path,
 )
+from autobot.live.paper_live_divergence import paper_live_divergence_latest_path, write_paper_live_divergence_report
 from autobot.live.model_alpha_runtime_execute import write_live_canary_confidence_sequence_artifact
 from autobot.live.state_store import LiveStateStore, TradeJournalRecord
 
@@ -167,3 +168,72 @@ def test_runtime_writer_persists_canary_confidence_sequence_latest(tmp_path: Pat
     payload = json.loads(latest_path.read_text(encoding="utf-8"))
     assert payload["policy"] == "canary_confidence_sequence_v1"
     assert payload["run_id"] == run_id
+
+
+def test_canary_confidence_sequence_reads_divergence_artifact(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    run_id = "run-divergence"
+    latest_divergence_path = paper_live_divergence_latest_path(
+        project_root=tmp_path,
+        unit_name="autobot-live-alpha-candidate.service",
+    )
+    write_paper_live_divergence_report(
+        latest_path=latest_divergence_path,
+        payload={
+            "artifact_version": 1,
+            "status": "ready",
+            "matching": {"matched_opportunities": 6},
+            "feature_divergence": {"feature_hash_match_ratio": 0.0, "feature_divergence_rate": 1.0},
+            "decision_divergence": {"decision_divergence_rate": 0.5},
+            "matched_records": [{"feature_hash_match": False, "decision_match": False} for _ in range(6)],
+            "artifact_path": str(latest_divergence_path),
+        },
+    )
+    with LiveStateStore(db_path) as store:
+        for idx in range(6):
+            store.upsert_trade_journal(
+                TradeJournalRecord(
+                    journal_id=f"journal-divergence-{idx}",
+                    market="KRW-BTC",
+                    status="CLOSED",
+                    entry_intent_id=f"intent-divergence-{idx}",
+                    entry_order_uuid=f"entry-divergence-{idx}",
+                    exit_order_uuid=f"exit-divergence-{idx}",
+                    entry_submitted_ts_ms=1_000 + (idx * 1_000),
+                    entry_filled_ts_ms=1_100 + (idx * 1_000),
+                    exit_ts_ms=1_900 + (idx * 1_000),
+                    entry_price=100.0,
+                    exit_price=110.0,
+                    qty=1.0,
+                    entry_notional_quote=100.0,
+                    exit_notional_quote=110.0,
+                    realized_pnl_quote=10.0,
+                    realized_pnl_pct=10.0,
+                    expected_net_edge_bps=400.0,
+                    entry_meta_json=json.dumps({"runtime": {"live_runtime_model_run_id": run_id}}, ensure_ascii=False),
+                    exit_meta_json=json.dumps({"close_verified": True, "close_verification_status": "verified_exit_order"}, ensure_ascii=False),
+                    updated_ts=2_000 + (idx * 1_000),
+                )
+            )
+
+        report = build_canary_confidence_sequence_report(
+            store=store,
+            run_id=run_id,
+            confidence_monitor_config={
+                "min_closed_trade_count": 4,
+                "confidence_delta": 0.2,
+                "feature_divergence_rate_threshold": 0.5,
+                "feature_divergence_rate_reason_code": "FEATURE_DIVERGENCE_CS_BREACH",
+            },
+            runtime_health={},
+            lane="live_candidate",
+            unit_name="autobot-live-alpha-candidate.service",
+            rollout_mode="canary",
+            ts_ms=99_000,
+            project_root=tmp_path,
+        )
+
+    monitor = report["monitors"]["paper_live_feature_divergence_rate"]
+    assert monitor["available"] is True
+    assert monitor["halt_triggered"] is True
+    assert report["decision"]["abort"] is True

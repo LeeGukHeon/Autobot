@@ -1101,6 +1101,12 @@ def _build_risk_manager(
         bot_id=str(settings.daemon.bot_id),
         tick_size_resolver=_resolve_tick_size,
         micro_overlay_settings=settings.model_alpha.operational,
+        position_base_budget_quote=(
+            float(settings.model_alpha.position.base_budget_quote)
+            if settings.model_alpha.position.base_budget_quote is not None
+            else None
+        ),
+        max_positions_total=max(int(settings.model_alpha.position.max_positions_total), 1),
     )
 
 

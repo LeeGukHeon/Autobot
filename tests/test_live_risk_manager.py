@@ -1074,6 +1074,87 @@ def test_risk_manager_path_risk_continuation_capture_submits_exit(tmp_path: Path
     assert persisted["state"] == "EXITING"
 
 
+def test_risk_manager_path_risk_continuation_uses_portfolio_context_penalty(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    gateway = _FakeExecutorGateway()
+    with LiveStateStore(db_path) as store:
+        position_record, risk_plan_record = build_model_derived_risk_records(
+            market="KRW-XRP",
+            base_currency="XRP",
+            base_amount=1.0,
+            avg_entry_price=100.0,
+            plan_payload={
+                "source": "model_alpha_v1",
+                "version": 1,
+                "mode": "risk",
+                "hold_bars": 4,
+                "interval_ms": 300_000,
+                "timeout_delta_ms": 1_200_000,
+                "tp_pct": 0.10,
+                "sl_pct": 0.05,
+                "trailing_pct": 0.0,
+                "entry_selection_score": 0.9,
+                "entry_risk_feature_value": 0.02,
+                "path_risk": {
+                    "status": "ready",
+                    "overall_by_horizon": [
+                        {
+                            "hold_bars": 3,
+                            "reachable_tp_q60": 0.02,
+                            "bounded_sl_q80": 0.01,
+                            "terminal_return_q25": 0.0020,
+                            "terminal_return_q50": 0.0022,
+                            "terminal_return_q75": 0.0025,
+                            "terminal_return_mean": 0.0023,
+                        }
+                    ],
+                    "recommended_summary": {
+                        "hold_bars": 3,
+                        "reachable_tp_q60": 0.02,
+                        "bounded_sl_q80": 0.01,
+                        "terminal_return_q25": 0.0020,
+                        "terminal_return_q50": 0.0022,
+                        "terminal_return_q75": 0.0025,
+                        "terminal_return_mean": 0.0023,
+                    },
+                },
+            },
+            created_ts=1000,
+            updated_ts=1000,
+            intent_id="intent-path-risk-context-1",
+        )
+        store.upsert_position(position_record)
+        store.upsert_risk_plan(risk_plan_record)
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-ADA",
+                base_currency="ADA",
+                base_amount=1.0,
+                avg_entry_price=100.0,
+                updated_ts=1000,
+            )
+        )
+        store.upsert_position(
+            PositionRecord(
+                market="KRW-SOL",
+                base_currency="SOL",
+                base_amount=1.0,
+                avg_entry_price=100.0,
+                updated_ts=1000,
+            )
+        )
+        manager = LiveRiskManager(
+            store=store,
+            executor_gateway=gateway,
+            config=RiskManagerConfig(exit_aggress_bps=10.0),
+            position_base_budget_quote=100.0,
+            max_positions_total=2,
+        )
+        actions = manager.evaluate_price(market="KRW-XRP", last_price=100.15, ts_ms=301_000)
+
+    assert any(item["type"] == "risk_exit_submitted" and item["trigger_reason"] == "PATH_RISK_CONTINUATION" for item in actions)
+
+
 def test_risk_manager_done_order_replace_reject_does_not_keep_breaker_active(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     gateway = _DoneOrderReplaceGateway()

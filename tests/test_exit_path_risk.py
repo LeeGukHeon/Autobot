@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
+import pytest
+
+from autobot.common.path_risk_guidance import build_path_risk_runtime_inputs, resolve_path_risk_guidance_from_plan
 from autobot.models.exit_path_risk import build_exit_path_risk_summary
 from autobot.models.train_v4_execution import build_exit_path_risk_summary_v4
 
@@ -280,3 +282,27 @@ def test_resolve_path_risk_guidance_exposes_tp_hit_prob_at_current_tp() -> None:
     assert guidance["tp_hit_prob_at_current_tp"] is not None
     assert 0.0 <= guidance["tp_hit_prob_at_current_tp"] <= 1.0
     assert guidance["tp_hit_prob_at_current_tp"] < 0.30
+
+
+def test_build_path_risk_runtime_inputs_aggregates_cluster_and_pressure_state() -> None:
+    payload = build_path_risk_runtime_inputs(
+        market="KRW-BTC",
+        entry_price=100.0,
+        current_price=101.0,
+        selection_score=0.85,
+        risk_feature_value=0.02,
+        positions=[
+            {"market": "KRW-BTC", "entry_price": 100.0, "qty": 1.0},
+            {"market": "KRW-ETH", "avg_entry_price": 200.0, "base_amount": 0.5},
+            {"market": "KRW-XRP", "avg_entry_price": 50.0, "base_amount": 2.0},
+        ],
+        base_budget_quote=100.0,
+        max_positions_total=2,
+    )
+
+    assert payload["current_return_ratio"] == pytest.approx(0.01)
+    assert payload["selection_score"] == 0.85
+    assert payload["risk_feature_value"] == 0.02
+    assert payload["portfolio_open_positions"] == 3
+    assert payload["same_cluster_open_positions"] == 1
+    assert payload["portfolio_pressure_ratio"] == 1.5

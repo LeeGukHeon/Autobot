@@ -20,7 +20,7 @@ from autobot.backtest.strategy_adapter import (
 )
 from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
 from autobot.common.model_exit_contract import normalize_model_exit_plan_payload
-from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
+from autobot.common.path_risk_guidance import build_path_risk_runtime_inputs, resolve_path_risk_guidance_from_plan
 from autobot.execution.order_supervisor import make_legacy_exec_profile, order_exec_profile_to_dict
 from autobot.models.dataset_loader import FeatureTsGroup
 from autobot.models.entry_boundary import evaluate_entry_boundary
@@ -1135,7 +1135,9 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         row: dict[str, Any] | None,
     ) -> str | None:
         plan = _resolve_position_exit_plan(
+            market=market,
             state=state,
+            positions=self._positions,
             settings=self._settings,
             ts_ms=ts_ms,
             current_price=ref_price,
@@ -1192,39 +1194,26 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             exit_fee_rate=exit_fee_rate,
             exit_slippage_bps=exit_slippage_bps,
         )
+        path_risk_inputs = build_path_risk_runtime_inputs(
+            market=market,
+            entry_price=entry_price,
+            current_price=float(ref_price),
+            selection_score=_safe_optional_float(row.get("model_prob")) if isinstance(row, dict) else None,
+            risk_feature_value=_resolve_row_risk_volatility(
+                row=row,
+                feature_name=str(plan.get("risk_vol_feature", "")).strip(),
+            ),
+            positions=list(self._positions.values()),
+            base_budget_quote=self._settings.position.base_budget_quote,
+            max_positions_total=max(int(self._settings.position.max_positions_total), 1),
+        )
         continuation_guidance = resolve_path_risk_guidance_from_plan(
             plan_payload=plan,
             elapsed_bars=max(
                 int((int(ts_ms) - int(state.entry_ts_ms)) // max(int(plan.get("bar_interval_ms", self._interval_ms) or self._interval_ms), 1)),
                 0,
             ),
-            current_return_ratio=float(net_return),
-            selection_score=_safe_optional_float(row.get("model_prob")) if isinstance(row, dict) else None,
-            risk_feature_value=_resolve_row_risk_volatility(
-                row=row,
-                feature_name=str(plan.get("risk_vol_feature", "")).strip(),
-            ),
-            portfolio_open_positions=len(self._positions),
-            same_cluster_open_positions=sum(
-                1
-                for open_market in self._positions
-                if _classify_market_cluster(open_market) == _classify_market_cluster(market)
-            ),
-            portfolio_pressure_ratio=(
-                (
-                    sum(
-                        max(float(position.entry_price), 0.0) * max(float(position.qty), 0.0)
-                        for position in self._positions.values()
-                    )
-                    / max(
-                        float(self._settings.position.base_budget_quote or 0.0)
-                        * float(max(int(self._settings.position.max_positions_total), 1)),
-                        1e-12,
-                    )
-                )
-                if self._settings.position.base_budget_quote is not None
-                else None
-            ),
+            **path_risk_inputs,
         )
         trailing_drawdown = _net_drawdown_from_peak_after_costs(
             peak_price=max(float(state.peak_price), entry_price),
@@ -1492,7 +1481,9 @@ def _extract_model_exit_plan_from_fill_meta(meta: dict[str, Any] | None) -> dict
 
 def _resolve_position_exit_plan(
     *,
+    market: str,
     state: _PositionState,
+    positions: dict[str, _PositionState] | None,
     settings: ModelAlphaSettings,
     ts_ms: int,
     current_price: float | None,
@@ -1510,11 +1501,14 @@ def _resolve_position_exit_plan(
         )
     )
     return _reprice_position_exit_plan(
+        market=market,
         state=state,
         plan=base_plan,
         row=row,
         ts_ms=ts_ms,
         current_price=current_price,
+        positions=positions,
+        settings=settings,
         operational_settings=settings.operational,
         interval_ms=interval_ms,
     )
@@ -1779,11 +1773,14 @@ def build_model_alpha_exit_plan_payload(
 
 def _reprice_position_exit_plan(
     *,
+    market: str,
     state: _PositionState,
     plan: dict[str, Any],
     row: dict[str, Any] | None,
     ts_ms: int,
     current_price: float | None,
+    positions: dict[str, _PositionState] | None,
+    settings: ModelAlphaSettings,
     operational_settings: ModelAlphaOperationalSettings,
     interval_ms: int,
 ) -> dict[str, Any]:
@@ -1849,14 +1846,23 @@ def _reprice_position_exit_plan(
                     overlay_trailing_basis = float(trailing_pct)
     plan_interval_ms = max(int(normalized.get("bar_interval_ms", interval_ms) or interval_ms), 1)
     elapsed_bars = max(int((int(ts_ms) - int(state.entry_ts_ms)) // plan_interval_ms), 0)
-    path_risk_guidance = resolve_path_risk_guidance_from_plan(
-        plan_payload=normalized,
-        elapsed_bars=elapsed_bars,
+    path_risk_inputs = build_path_risk_runtime_inputs(
+        market=market,
+        entry_price=float(state.entry_price),
+        current_price=float(current_price if current_price is not None else state.entry_price),
         selection_score=_safe_optional_float(row.get("model_prob")) if isinstance(row, dict) else None,
         risk_feature_value=_resolve_row_risk_volatility(
             row=row,
             feature_name=str(normalized.get("risk_vol_feature", "")).strip(),
         ),
+        positions=list((positions or {}).values()),
+        base_budget_quote=settings.position.base_budget_quote,
+        max_positions_total=max(int(settings.position.max_positions_total), 1),
+    )
+    path_risk_guidance = resolve_path_risk_guidance_from_plan(
+        plan_payload=normalized,
+        elapsed_bars=elapsed_bars,
+        **path_risk_inputs,
     )
     if bool(path_risk_guidance.get("applied")):
         guided_tp = _safe_optional_float(path_risk_guidance.get("reachable_tp_ratio"))
@@ -2376,18 +2382,6 @@ def _resolve_row_risk_volatility(*, row: dict[str, Any] | None, feature_name: st
     if value is None:
         return None
     return max(float(value), 0.0)
-
-
-def _classify_market_cluster(market: str) -> str:
-    market_value = str(market).strip().upper()
-    if "-" not in market_value:
-        return "UNKNOWN"
-    _, base = market_value.split("-", 1)
-    if base == "BTC":
-        return "BTC_LED"
-    if base == "ETH":
-        return "ETH_LED"
-    return "ALT_CLUSTER"
 
 
 def _resolve_expected_exit_costs(

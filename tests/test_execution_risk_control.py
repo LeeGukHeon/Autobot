@@ -316,6 +316,35 @@ def test_runtime_recommendations_normalize_keeps_valid_risk_control_contract() -
     assert normalized["risk_control"]["contract_issues"] == []
 
 
+def test_normalize_execution_risk_control_disables_stale_live_gate_in_safety_only_mode() -> None:
+    normalized = normalize_runtime_recommendations_payload(
+        {
+            "version": 1,
+            "risk_control": {
+                "version": 1,
+                "policy": "execution_risk_control_hoeffding_v1",
+                "status": "ready",
+                "operating_mode": "safety_executor_only_v1",
+                "selected_threshold": 2.0,
+                "selected_coverage": 31,
+                "selected_nonpositive_rate_ucb": 0.18,
+                "selected_severe_loss_rate_ucb": 0.11,
+                "live_gate": {
+                    "enabled": True,
+                    "mode": "legacy_pretrade_gate_v1",
+                    "threshold": 2.0,
+                    "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                },
+            },
+        }
+    )
+
+    payload = normalized["risk_control"]
+    assert payload["operating_mode"] == "safety_executor_only_v1"
+    assert payload["live_gate"]["enabled"] is False
+    assert payload["live_gate"]["mode"] == "safety_executor_only_v1"
+
+
 def test_resolve_execution_risk_control_decision_blocks_when_edge_to_es_ratio_is_below_threshold() -> None:
     decision = resolve_execution_risk_control_decision(
         risk_control_payload={

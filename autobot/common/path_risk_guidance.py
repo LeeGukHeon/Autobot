@@ -1,6 +1,55 @@
 from __future__ import annotations
 
+from dataclasses import is_dataclass
 from typing import Any
+
+
+def build_path_risk_runtime_inputs(
+    *,
+    market: str,
+    entry_price: float,
+    current_price: float,
+    selection_score: float | None = None,
+    risk_feature_value: float | None = None,
+    positions: list[Any] | None = None,
+    base_budget_quote: float | None = None,
+    max_positions_total: int | None = None,
+) -> dict[str, Any]:
+    market_value = str(market).strip().upper()
+    entry_price_value = max(float(entry_price), 0.0)
+    current_price_value = max(float(current_price), 0.0)
+    normalized_positions = [
+        item
+        for item in (positions or [])
+        if max(_safe_position_qty(item), 0.0) > 0.0 and max(_safe_position_entry_price(item), 0.0) > 0.0
+    ]
+    portfolio_open_positions = len(normalized_positions)
+    same_cluster_open_positions = sum(
+        1 for item in normalized_positions if classify_market_cluster(_safe_text(_field(item, "market")).upper()) == classify_market_cluster(market_value)
+    )
+    total_notional_quote = sum(
+        max(_safe_position_qty(item), 0.0) * max(_safe_position_entry_price(item), 0.0)
+        for item in normalized_positions
+    )
+    portfolio_pressure_ratio = None
+    base_budget_value = _safe_optional_float(base_budget_quote)
+    max_positions_value = max(int(max_positions_total or 0), 0)
+    if base_budget_value is not None and base_budget_value > 0.0 and max_positions_value > 0:
+        portfolio_pressure_ratio = float(total_notional_quote) / max(
+            float(base_budget_value) * float(max_positions_value),
+            1e-12,
+        )
+    current_return_ratio = None
+    if entry_price_value > 0.0 and current_price_value > 0.0:
+        current_return_ratio = (float(current_price_value) / float(entry_price_value)) - 1.0
+    return {
+        "current_return_ratio": current_return_ratio,
+        "selection_score": _safe_optional_float(selection_score),
+        "risk_feature_value": _safe_optional_float(risk_feature_value),
+        "portfolio_open_positions": int(portfolio_open_positions),
+        "same_cluster_open_positions": int(same_cluster_open_positions),
+        "portfolio_pressure_ratio": portfolio_pressure_ratio,
+    }
 
 
 def resolve_path_risk_guidance_from_plan(
@@ -318,6 +367,57 @@ def resolve_path_risk_guidance_from_plan(
         "continuation_should_exit": bool(continuation_should_exit),
         "continuation_reason_code": continuation_reason_code,
     }
+
+
+def classify_market_cluster(market: str) -> str:
+    market_value = str(market).strip().upper()
+    if not market_value or "-" not in market_value:
+        return "UNKNOWN"
+    _, base = market_value.split("-", 1)
+    if base == "BTC":
+        return "BTC_LED"
+    if base == "ETH":
+        return "ETH_LED"
+    return "ALT_CLUSTER"
+
+
+def _field(row: Any, name: str) -> Any:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(name)
+    if is_dataclass(row):
+        return getattr(row, name, None)
+    return getattr(row, name, None)
+
+
+def _safe_position_qty(row: Any) -> float:
+    for key in ("base_amount", "qty"):
+        value = _safe_optional_float(_field(row, key))
+        if value is not None and value > 0.0:
+            return float(value)
+    return 0.0
+
+
+def _safe_position_entry_price(row: Any) -> float:
+    for key in ("avg_entry_price", "entry_price"):
+        value = _safe_optional_float(_field(row, key))
+        if value is not None and value > 0.0:
+            return float(value)
+    return 0.0
+
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_profit_preservation_rate(

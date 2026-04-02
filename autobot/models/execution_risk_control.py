@@ -488,6 +488,12 @@ def normalize_execution_risk_control_payload(payload: dict[str, Any] | None) -> 
         live_gate["subgroup_feature_name"] = str(
             live_gate.get("subgroup_feature_name", normalized.get("subgroup_family", {}).get("feature_name", ""))
         ).strip()
+        if normalized["operating_mode"] == EXECUTION_RISK_CONTROL_MODE_SAFETY_ONLY:
+            live_gate["enabled"] = False
+            live_gate["mode"] = EXECUTION_RISK_CONTROL_MODE_SAFETY_ONLY
+            live_gate["disabled_reason_code"] = str(
+                live_gate.get("disabled_reason_code", DEFAULT_STATIC_GATE_DISABLED_REASON_CODE)
+            ).strip() or DEFAULT_STATIC_GATE_DISABLED_REASON_CODE
         normalized["live_gate"] = live_gate
     subgroup_family = normalized.get("subgroup_family")
     if isinstance(subgroup_family, dict):

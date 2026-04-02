@@ -167,10 +167,30 @@ class PaperSimExchange:
         return False
 
     def list_open_orders(self) -> list[PaperOrder]:
-        return [self._clone_order(order) for order in self._open_orders.values()]
+        return self.list_orders(open_only=True)
 
-    def list_orders(self) -> list[PaperOrder]:
-        return [self._clone_order(order) for order in self._orders.values()]
+    def list_orders(self, open_only: bool = False) -> list[PaperOrder]:
+        source = self._open_orders if bool(open_only) else self._orders
+        return [self._clone_order(order) for order in source.values()]
+
+    def list_positions(self) -> list[Position]:
+        rows: list[Position] = []
+        for position in self._positions.values():
+            if position.base_amount <= EPSILON:
+                continue
+            rows.append(
+                Position(
+                    market=position.market,
+                    base_currency=position.base_currency,
+                    quote_currency=position.quote_currency,
+                    base_amount=position.base_amount,
+                    avg_entry_price=position.avg_entry_price,
+                    realized_pnl_quote=position.realized_pnl_quote,
+                    unrealized_pnl_quote=position.unrealized_pnl_quote,
+                )
+            )
+        rows.sort(key=lambda item: item.market)
+        return rows
 
     def get_order(self, order_id: str) -> PaperOrder | None:
         order = self._orders.get(order_id)

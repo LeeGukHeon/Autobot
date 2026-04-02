@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from autobot.common.dynamic_exit_overlay import resolve_dynamic_exit_overlay
-from autobot.common.path_risk_guidance import resolve_path_risk_guidance_from_plan
+from autobot.common.path_risk_guidance import build_path_risk_runtime_inputs, resolve_path_risk_guidance_from_plan
 from autobot.execution.intent import new_order_intent
 from autobot.live.admissibility import round_price_to_tick
 from autobot.live.breakers import (
@@ -50,6 +50,8 @@ class LiveRiskManager:
         bot_id: str = "autobot-001",
         tick_size_resolver: Callable[[str], float | None] | None = None,
         micro_overlay_settings: ModelAlphaOperationalSettings | None = None,
+        position_base_budget_quote: float | None = None,
+        max_positions_total: int | None = None,
     ) -> None:
         self._store = store
         self._executor_gateway = executor_gateway
@@ -57,6 +59,8 @@ class LiveRiskManager:
         self._identifier_prefix = str(identifier_prefix).strip().upper() or "AUTOBOT"
         self._bot_id = str(bot_id).strip().lower() or "autobot-001"
         self._tick_size_resolver = tick_size_resolver
+        self._position_base_budget_quote = float(position_base_budget_quote) if position_base_budget_quote is not None else None
+        self._max_positions_total = max(int(max_positions_total or 0), 0)
         self._micro_overlay_settings = (
             load_calibrated_operational_settings(base_settings=micro_overlay_settings)
             if isinstance(micro_overlay_settings, ModelAlphaOperationalSettings) and bool(micro_overlay_settings.enabled)
@@ -168,7 +172,7 @@ class LiveRiskManager:
         for plan in self._load_plans(market=market_value, states=("ACTIVE", "TRIGGERED", "EXITING")):
             updated = replace(plan, last_eval_ts_ms=now_ts, updated_ts=now_ts)
             if updated.state in {"ACTIVE", "TRIGGERED"}:
-                updated, path_risk_action = self._apply_path_risk_guidance(updated, ts_ms=now_ts)
+                updated, path_risk_action = self._apply_path_risk_guidance(updated, last_price=last_price, ts_ms=now_ts)
                 if path_risk_action is not None:
                     actions.append(path_risk_action)
                 updated, overlay_action = self._apply_micro_exit_overlay(
@@ -880,6 +884,12 @@ class LiveRiskManager:
             plan_payload=base_plan,
             created_ts=int(plan.created_ts),
             ts_ms=int(ts_ms),
+            **self._build_path_risk_inputs(
+                plan=plan,
+                market=plan.market,
+                last_price=last_price,
+                base_plan=base_plan,
+            ),
         )
         if bool(path_risk_guidance.get("applied")):
             reachable_tp_pct = (
@@ -946,6 +956,7 @@ class LiveRiskManager:
         self,
         plan: RiskPlan,
         *,
+        last_price: float,
         ts_ms: int,
     ) -> tuple[RiskPlan, dict[str, Any] | None]:
         plan_source = str(plan.plan_source or "").strip().lower()
@@ -958,6 +969,12 @@ class LiveRiskManager:
             plan_payload=base_plan,
             created_ts=int(plan.created_ts),
             ts_ms=int(ts_ms),
+            **self._build_path_risk_inputs(
+                plan=plan,
+                market=plan.market,
+                last_price=last_price,
+                base_plan=base_plan,
+            ),
         )
         if not bool(guidance.get("applied")):
             return plan, None
@@ -1024,7 +1041,12 @@ class LiveRiskManager:
             plan_payload=base_plan,
             created_ts=int(plan.created_ts),
             ts_ms=int(ts_ms),
-            current_return_ratio=(float(last_price) / max(float(plan.entry_price), 1e-12)) - 1.0,
+            **self._build_path_risk_inputs(
+                plan=plan,
+                market=plan.market,
+                last_price=last_price,
+                base_plan=base_plan,
+            ),
         )
         tp_price = plan.resolve_tp_price()
         if tp_price is not None and last_price >= tp_price:
@@ -1046,6 +1068,31 @@ class LiveRiskManager:
         if plan.timeout_ts_ms is not None and int(ts_ms) >= int(plan.timeout_ts_ms):
             return "TIMEOUT"
         return None
+
+    def _build_path_risk_inputs(
+        self,
+        *,
+        plan: RiskPlan,
+        market: str,
+        last_price: float,
+        base_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        positions = []
+        if hasattr(self._store, "list_positions"):
+            try:
+                positions = list(self._store.list_positions())
+            except Exception:
+                positions = []
+        return build_path_risk_runtime_inputs(
+            market=market,
+            entry_price=float(plan.entry_price),
+            current_price=float(last_price),
+            selection_score=_as_float((base_plan or {}).get("entry_selection_score")),
+            risk_feature_value=_as_float((base_plan or {}).get("entry_risk_feature_value")),
+            positions=positions,
+            base_budget_quote=self._position_base_budget_quote,
+            max_positions_total=self._max_positions_total,
+        )
 
     def _load_plans(
         self,

@@ -37,6 +37,11 @@ from autobot.live.canary_confidence_sequence import (
     canary_confidence_sequence_latest_path,
     write_canary_confidence_sequence_report,
 )
+from autobot.live.paper_live_divergence import (
+    build_paper_live_divergence_report,
+    paper_live_divergence_latest_path,
+    write_paper_live_divergence_report,
+)
 from autobot.risk.portfolio_budget import resolve_portfolio_risk_budget
 
 CANARY_ENTRY_TIMEOUT_CAP_MS = 180_000
@@ -438,6 +443,9 @@ def resolve_execution_risk_control_online_threshold(
     store: Any,
     run_id: str,
     risk_control_payload: dict[str, Any] | None,
+    project_root: Path | None = None,
+    unit_name: str | None = None,
+    lane: str | None = None,
 ) -> dict[str, Any]:
     payload = dict(risk_control_payload or {})
     online_adaptation = dict(payload.get("online_adaptation") or {})
@@ -511,6 +519,9 @@ def resolve_execution_risk_control_online_threshold(
             store=store,
             run_id=run_id,
             risk_control_payload=payload,
+            project_root=project_root,
+            unit_name=unit_name,
+            lane=lane,
         )
         merged = _merge_confidence_sequence_state(merged=merged)
         merged["checkpoint_name"] = resolved_checkpoint_name
@@ -540,6 +551,9 @@ def resolve_execution_risk_control_online_threshold(
         store=store,
         run_id=run_id,
         risk_control_payload=payload,
+        project_root=project_root,
+        unit_name=unit_name,
+        lane=lane,
     )
     merged = _merge_confidence_sequence_state(merged=merged)
     merged["checkpoint_name"] = resolved_checkpoint_name
@@ -623,6 +637,9 @@ def _build_confidence_sequence_state(
     store: Any,
     run_id: str,
     risk_control_payload: dict[str, Any] | None,
+    project_root: Path | None = None,
+    unit_name: str | None = None,
+    lane: str | None = None,
 ) -> dict[str, Any]:
     payload = dict(risk_control_payload or {})
     config = dict(payload.get("confidence_sequence_monitors") or {})
@@ -638,15 +655,18 @@ def _build_confidence_sequence_state(
         }
     runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
     rollout_status = store.live_rollout_status() if hasattr(store, "live_rollout_status") else {}
+    resolved_unit_name = str(unit_name or _resolve_confidence_sequence_unit_name(store=store)).strip()
+    resolved_lane = str(lane or _resolve_confidence_sequence_lane(store=store)).strip()
     return build_live_risk_confidence_sequence_report(
         store=store,
         run_id=str(run_id).strip(),
         confidence_monitor_config=config,
         runtime_health=runtime_health if isinstance(runtime_health, dict) else {},
-        lane=_resolve_confidence_sequence_lane(store=store),
-        unit_name=_resolve_confidence_sequence_unit_name(store=store),
+        lane=resolved_lane,
+        unit_name=resolved_unit_name,
         rollout_mode=str((rollout_status or {}).get("mode") or "").strip().lower(),
         ts_ms=0,
+        project_root=project_root,
     )
 
 
@@ -705,6 +725,13 @@ def write_live_confidence_sequence_artifact(
     runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
     target_unit = str(settings.daemon.rollout_target_unit).strip().lower()
     lane = "live_candidate" if (("candidate" in target_unit) or ("canary" in target_unit)) else "live_champion"
+    project_root = _project_root_from_settings(settings=settings)
+    divergence_report = write_live_paper_live_divergence_artifact(
+        settings=settings,
+        run_id=run_id,
+        lane=lane,
+        ts_ms=ts_ms,
+    )
     report = build_live_risk_confidence_sequence_report(
         store=store,
         run_id=str(run_id).strip(),
@@ -714,10 +741,11 @@ def write_live_confidence_sequence_artifact(
         unit_name=str(settings.daemon.rollout_target_unit),
         rollout_mode=str(settings.daemon.rollout_mode),
         ts_ms=int(ts_ms),
+        project_root=project_root,
+        feature_divergence_report=divergence_report,
     )
-    registry_root = getattr(settings.daemon, "registry_root", "models/registry")
     latest_path = live_risk_confidence_sequence_latest_path(
-        project_root=Path(str(registry_root)).resolve().parent.parent,
+        project_root=project_root,
         unit_name=str(settings.daemon.rollout_target_unit),
     )
     write_live_risk_confidence_sequence_report(latest_path=latest_path, payload=report)
@@ -743,6 +771,13 @@ def write_live_canary_confidence_sequence_artifact(
     runtime_health = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
     target_unit = str(settings.daemon.rollout_target_unit).strip().lower()
     lane = "live_candidate" if (("candidate" in target_unit) or ("canary" in target_unit)) else "live_champion"
+    project_root = _project_root_from_settings(settings=settings)
+    divergence_report = write_live_paper_live_divergence_artifact(
+        settings=settings,
+        run_id=run_id,
+        lane=lane,
+        ts_ms=ts_ms,
+    )
     report = build_canary_confidence_sequence_report(
         store=store,
         run_id=str(run_id).strip(),
@@ -752,10 +787,11 @@ def write_live_canary_confidence_sequence_artifact(
         unit_name=str(settings.daemon.rollout_target_unit),
         rollout_mode=str(settings.daemon.rollout_mode),
         ts_ms=int(ts_ms),
+        project_root=project_root,
+        feature_divergence_report=divergence_report,
     )
-    registry_root = getattr(settings.daemon, "registry_root", "models/registry")
     latest_path = canary_confidence_sequence_latest_path(
-        project_root=Path(str(registry_root)).resolve().parent.parent,
+        project_root=project_root,
         unit_name=str(settings.daemon.rollout_target_unit),
     )
     write_canary_confidence_sequence_report(latest_path=latest_path, payload=report)
@@ -766,6 +802,34 @@ def write_live_canary_confidence_sequence_artifact(
             ts_ms=int(ts_ms),
         )
     return report
+
+
+def write_live_paper_live_divergence_artifact(
+    *,
+    settings: Any,
+    run_id: str,
+    lane: str,
+    ts_ms: int,
+) -> dict[str, Any]:
+    project_root = _project_root_from_settings(settings=settings)
+    unit_name = str(settings.daemon.rollout_target_unit)
+    report = build_paper_live_divergence_report(
+        project_root=project_root,
+        unit_name=unit_name,
+        lane=lane,
+        run_id=str(run_id).strip(),
+        ts_ms=int(ts_ms),
+    )
+    latest_path = paper_live_divergence_latest_path(project_root=project_root, unit_name=unit_name)
+    payload = dict(report)
+    payload["artifact_path"] = str(latest_path)
+    write_paper_live_divergence_report(latest_path=latest_path, payload=payload)
+    return payload
+
+
+def _project_root_from_settings(*, settings: Any) -> Path:
+    registry_root = getattr(settings.daemon, "registry_root", "models/registry")
+    return Path(str(registry_root)).resolve().parent.parent
 
 
 def _resolve_stale_online_breaker_recovery(
@@ -1825,6 +1889,9 @@ def handle_strategy_intent(
         store=store,
         run_id=str(getattr(predictor.run_dir, "name", "")),
         risk_control_payload=runtime_recommendations.get("risk_control") if isinstance(runtime_recommendations, dict) else {},
+        project_root=_project_root_from_settings(settings=settings),
+        unit_name=str(settings.daemon.rollout_target_unit),
+        lane=("live_candidate" if (("candidate" in str(settings.daemon.rollout_target_unit).strip().lower()) or ("canary" in str(settings.daemon.rollout_target_unit).strip().lower())) else "live_champion"),
     )
     risk_control_decision = resolve_execution_risk_control_decision_fn(
         risk_control_payload=runtime_recommendations.get("risk_control") if isinstance(runtime_recommendations, dict) else {},

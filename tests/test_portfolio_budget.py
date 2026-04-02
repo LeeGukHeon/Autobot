@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from autobot.backtest.engine import _resolve_candidate_portfolio_budget as resolve_backtest_candidate_portfolio_budget
+from autobot.backtest.engine import BacktestRunSettings
+from autobot.execution.intent import new_order_intent
 from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord, TradeJournalRecord
+from autobot.paper.engine import _resolve_candidate_portfolio_budget as resolve_paper_candidate_portfolio_budget
+from autobot.paper.engine import PaperRunSettings
+from autobot.paper.sim_exchange import MarketRules, PaperSimExchange
 from autobot.risk.portfolio_budget import resolve_portfolio_risk_budget
 
 
@@ -232,3 +238,111 @@ def test_resolve_portfolio_risk_budget_ignores_pre_reset_loss_streak_history(tmp
 
     assert payload["recent_loss_streak_haircut"] == 1.0
     assert "PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT" not in payload["risk_reason_codes"]
+
+
+def test_resolve_portfolio_risk_budget_reads_simulator_positions_and_open_orders() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=60_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    entry_intent = new_order_intent(
+        market="KRW-ETH",
+        side="bid",
+        ord_type="best",
+        time_in_force="ioc",
+        price=15_000.0,
+        volume=1.0,
+        reason_code="MODEL_ALPHA_ENTRY_V1",
+        ts_ms=1_000,
+    )
+    exchange.submit_best_order(
+        intent=entry_intent,
+        rules=rules,
+        latest_trade_price=5_000_000.0,
+        ts_ms=1_000,
+    )
+    open_intent = new_order_intent(
+        market="KRW-BTC",
+        side="bid",
+        price=10_000.0,
+        volume=1.0,
+        reason_code="MODEL_ALPHA_ENTRY_V1",
+        ts_ms=2_000,
+    )
+    exchange.submit_limit_order(
+        intent=open_intent,
+        rules=rules,
+        latest_trade_price=11_000.0,
+        ts_ms=2_000,
+    )
+
+    payload = resolve_portfolio_risk_budget(
+        store=exchange,
+        market="KRW-XRP",
+        side="bid",
+        target_notional_quote=10_000.0,
+        base_budget_quote=10_000.0,
+        quote_free=float(exchange.quote_balance().free),
+        min_total_krw=5_000.0,
+        effective_max_positions=3,
+        rollout_mode="paper",
+    )
+
+    assert payload["current_total_cash_at_risk_quote"] > 25_000.0
+    assert payload["cluster_utilization"]["decision_cluster_current_notional_quote"] == 0.0
+    assert payload["allowed"] is False
+    assert "PORTFOLIO_GROSS_BUDGET_EXHAUSTED" in payload["risk_reason_codes"]
+
+
+def test_backtest_and_paper_candidate_budget_helpers_use_operational_max_positions() -> None:
+    exchange = PaperSimExchange(quote_currency="KRW", starting_cash_quote=80_000.0)
+    rules = MarketRules(min_total=5_000.0, tick_size=1.0)
+    entry_intent = new_order_intent(
+        market="KRW-ETH",
+        side="bid",
+        ord_type="best",
+        time_in_force="ioc",
+        price=15_000.0,
+        volume=1.0,
+        reason_code="MODEL_ALPHA_ENTRY_V1",
+        ts_ms=1_000,
+    )
+    exchange.submit_best_order(
+        intent=entry_intent,
+        rules=rules,
+        latest_trade_price=5_000_000.0,
+        ts_ms=1_000,
+    )
+    candidate_meta = {
+        "operational_overlay": {"max_positions_used": 2},
+        "state_features": {"spread_bps": 4.0},
+        "final_expected_return": 0.0012,
+        "final_expected_es": 0.0004,
+        "final_tradability": 0.9,
+        "final_alpha_lcb": 0.0008,
+        "uncertainty": 0.05,
+    }
+
+    backtest_payload = resolve_backtest_candidate_portfolio_budget(
+        exchange=exchange,
+        market="KRW-BTC",
+        side="bid",
+        target_notional_quote=10_000.0,
+        candidate_meta=candidate_meta,
+        run_settings=BacktestRunSettings(per_trade_krw=10_000.0),
+        rules=rules,
+    )
+    paper_payload = resolve_paper_candidate_portfolio_budget(
+        exchange=exchange,
+        market="KRW-BTC",
+        side="bid",
+        target_notional_quote=10_000.0,
+        candidate_meta=candidate_meta,
+        run_settings=PaperRunSettings(per_trade_krw=10_000.0),
+        rules=rules,
+    )
+
+    assert backtest_payload["allowed"] is False
+    assert paper_payload["allowed"] is False
+    assert backtest_payload["primary_reason_code"] == "PORTFOLIO_GROSS_BUDGET_EXHAUSTED"
+    assert paper_payload["primary_reason_code"] == "PORTFOLIO_GROSS_BUDGET_EXHAUSTED"
+    assert backtest_payload["resolved_notional_quote"] == paper_payload["resolved_notional_quote"]
+    assert backtest_payload["resolved_notional_quote"] < 10_000.0

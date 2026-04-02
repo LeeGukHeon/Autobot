@@ -42,6 +42,7 @@ from autobot.execution.order_supervisor import (
     slippage_bps,
 )
 from autobot.models.offpolicy_evaluation import write_execution_dr_ope_report
+from autobot.risk.portfolio_budget import resolve_portfolio_risk_budget
 from autobot.paper.sim_exchange import (
     FillEvent,
     MarketRules,
@@ -1618,15 +1619,6 @@ class BacktestRunEngine:
             if side_value == "bid" and (forced_volume is None or forced_volume <= 0)
             else None
         )
-        candidate_meta = _finalize_candidate_entry_decision(
-            candidate_meta=candidate_meta,
-            portfolio_budget_allowed=bool(entry_notional_quote is not None and float(entry_notional_quote) > 0.0),
-            budget_reason_code=(
-                "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
-                if entry_notional_quote is None or float(entry_notional_quote) <= 0.0
-                else None
-            ),
-        )
         if side_value == "ask" and (forced_volume is None or forced_volume <= 0):
             base_currency = _base_currency(candidate.market)
             if base_currency:
@@ -1745,6 +1737,51 @@ class BacktestRunEngine:
             strategy_exec_profile = candidate_meta.get("exec_profile")
             if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
                 exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
+            operational_overlay = (
+                dict(candidate_meta.get("operational_overlay") or {})
+                if isinstance(candidate_meta.get("operational_overlay"), dict)
+                else {}
+            )
+            operational_risk_multiplier = _safe_optional_float(operational_overlay.get("runtime_risk_multiplier"))
+            if operational_risk_multiplier is None:
+                operational_risk_multiplier = _safe_optional_float(operational_overlay.get("risk_multiplier"))
+            if entry_notional_quote is not None and operational_risk_multiplier is not None:
+                entry_notional_quote *= max(float(operational_risk_multiplier), 0.0)
+            portfolio_budget_payload = _resolve_candidate_portfolio_budget(
+                exchange=exchange,
+                market=candidate.market,
+                side=side_value,
+                target_notional_quote=entry_notional_quote,
+                candidate_meta=candidate_meta,
+                run_settings=self._run_settings,
+                rules=rules,
+            )
+            if portfolio_budget_payload.get("enabled"):
+                candidate_meta["portfolio_budget"] = dict(portfolio_budget_payload)
+                candidate_meta = _finalize_candidate_entry_decision(
+                    candidate_meta=candidate_meta,
+                    portfolio_budget_allowed=bool(portfolio_budget_payload.get("allowed", True)),
+                    budget_reason_code=(
+                        str(portfolio_budget_payload.get("primary_reason_code") or "").strip()
+                        or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
+                    ),
+                )
+                if not bool(portfolio_budget_payload.get("allowed", True)):
+                    append_event(
+                        "PORTFOLIO_BUDGET_BLOCKED",
+                        ts_ms=ts_ms,
+                        payload={
+                            "market": candidate.market,
+                            "side": side_value,
+                            "reason_code": str(portfolio_budget_payload.get("primary_reason_code") or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"),
+                            "severity": "BLOCK",
+                            "portfolio_budget": dict(portfolio_budget_payload),
+                        },
+                    )
+                    return False
+                entry_notional_quote = float(
+                    portfolio_budget_payload.get("resolved_notional_quote", entry_notional_quote) or 0.0
+                )
             liquidation_policy_payload = (
                 build_v5_liquidation_policy(
                     exit_decision=(candidate_meta.get("exit_decision") if isinstance(candidate_meta.get("exit_decision"), dict) else {}),
@@ -2682,6 +2719,76 @@ def _resolve_candidate_target_notional_quote(
         if value is not None and value > 0.0:
             return float(value)
     return max(float(per_trade_krw), 1.0) * _resolve_candidate_notional_multiplier(candidate_meta)
+
+
+def _resolve_candidate_effective_max_positions(
+    *,
+    candidate_meta: dict[str, Any] | None,
+    default_max_positions: int,
+) -> int:
+    operational_overlay = (
+        dict((candidate_meta or {}).get("operational_overlay") or {})
+        if isinstance((candidate_meta or {}).get("operational_overlay"), dict)
+        else {}
+    )
+    for key in ("max_positions_used", "operational_max_positions"):
+        value = _safe_optional_float(operational_overlay.get(key))
+        if value is not None and value > 0.0:
+            return max(int(value), 1)
+    return max(int(default_max_positions), 1)
+
+
+def _resolve_candidate_portfolio_budget(
+    *,
+    exchange: BacktestSimExchange,
+    market: str,
+    side: str,
+    target_notional_quote: float | None,
+    candidate_meta: dict[str, Any] | None,
+    run_settings: BacktestRunSettings,
+    rules: MarketRules,
+) -> dict[str, Any]:
+    if str(side).strip().lower() != "bid" or target_notional_quote is None:
+        return {}
+    quote_balance = exchange.quote_balance()
+    target_quote = max(float(target_notional_quote or 0.0), 0.0)
+    if target_quote <= 0.0:
+        return {
+            "enabled": True,
+            "allowed": False,
+            "primary_reason_code": "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED",
+            "risk_reason_codes": ["ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"],
+            "target_notional_quote": float(target_quote),
+            "resolved_notional_quote": 0.0,
+        }
+    expected_return = _safe_optional_float((candidate_meta or {}).get("final_expected_return"))
+    expected_es = _safe_optional_float((candidate_meta or {}).get("final_expected_es"))
+    alpha_lcb = _safe_optional_float((candidate_meta or {}).get("final_alpha_lcb"))
+    return resolve_portfolio_risk_budget(
+        store=exchange,
+        market=market,
+        side=side,
+        target_notional_quote=float(target_quote),
+        base_budget_quote=float(run_settings.per_trade_krw),
+        quote_free=float(getattr(quote_balance, "free", 0.0) or 0.0),
+        min_total_krw=max(float(rules.min_total), float(run_settings.min_order_krw)),
+        effective_max_positions=_resolve_candidate_effective_max_positions(
+            candidate_meta=candidate_meta,
+            default_max_positions=int(run_settings.model_alpha.position.max_positions_total),
+        ),
+        rollout_mode="backtest",
+        state_features=(
+            dict((candidate_meta or {}).get("state_features") or {})
+            if isinstance((candidate_meta or {}).get("state_features"), dict)
+            else {}
+        ),
+        uncertainty=_safe_optional_float((candidate_meta or {}).get("uncertainty")),
+        expected_return_bps=(float(expected_return) * 10_000.0) if expected_return is not None else None,
+        expected_es_bps=(float(expected_es) * 10_000.0) if expected_es is not None else None,
+        tradability_prob=_safe_optional_float((candidate_meta or {}).get("final_tradability")),
+        alpha_lcb_bps=(float(alpha_lcb) * 10_000.0) if alpha_lcb is not None else None,
+        runtime_model_run_id=None,
+    )
 
 
 def _finalize_candidate_entry_decision(

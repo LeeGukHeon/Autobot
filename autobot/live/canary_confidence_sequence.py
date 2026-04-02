@@ -49,6 +49,8 @@ def build_canary_confidence_sequence_report(
     unit_name: str,
     rollout_mode: str,
     ts_ms: int,
+    project_root: Path | None = None,
+    feature_divergence_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = dict(confidence_monitor_config or {})
     run_id_value = str(run_id).strip()
@@ -119,19 +121,18 @@ def build_canary_confidence_sequence_report(
             ),
         },
     )
-    feature_divergence_monitor = {
-        "monitor_name": "canary_feature_divergence_rate",
-        "monitor_family": "canary_divergence_halt",
-        "available": False,
-        "status": "source_unavailable",
-        "source": "live_divergence_report",
-        "threshold": float(max(float(_safe_optional_float(config.get("feature_divergence_rate_threshold")) or 0.10), 0.0)),
-        "delta": float(delta),
-        "reason_code": str(config.get("feature_divergence_rate_reason_code") or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
-        "halt_triggered": False,
-        "clear_reason_codes": [],
-        "message": "canary feature divergence source artifact is not yet available in the current runtime path",
-    }
+    divergence_report = dict(feature_divergence_report or {})
+    if not divergence_report and project_root is not None:
+        from autobot.live.paper_live_divergence import load_paper_live_divergence_report
+
+        divergence_report = load_paper_live_divergence_report(project_root=Path(project_root), unit_name=unit_name)
+    feature_divergence_monitor = _build_canary_feature_divergence_monitor(
+        report=divergence_report,
+        threshold=float(max(float(_safe_optional_float(config.get("feature_divergence_rate_threshold")) or 0.10), 0.0)),
+        delta=float(delta),
+        min_count=min_closed_trade_count,
+        reason_code=str(config.get("feature_divergence_rate_reason_code") or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
+    )
 
     reward_stream = _build_reward_stream_payload(
         closed_trades=closed_trades,
@@ -236,6 +237,56 @@ def _time_uniform_mean_bounds(*, values: list[float], delta: float, value_bound:
     return empirical_mean - bonus, empirical_mean + bonus
 
 
+def _build_canary_feature_divergence_monitor(
+    *,
+    report: dict[str, Any] | None,
+    threshold: float,
+    delta: float,
+    min_count: int,
+    reason_code: str,
+) -> dict[str, Any]:
+    payload = dict(report or {})
+    matched_records = [
+        dict(item)
+        for item in (payload.get("matched_records") or [])
+        if isinstance(item, dict) and item.get("feature_hash_match") is not None
+    ]
+    if not matched_records:
+        return {
+            "monitor_name": "canary_feature_divergence_rate",
+            "monitor_family": "canary_divergence_halt",
+            "available": False,
+            "status": str(payload.get("status") or "insufficient_source_data").strip().lower() or "insufficient_source_data",
+            "source": "paper_live_divergence_artifact",
+            "threshold": float(threshold),
+            "delta": float(delta),
+            "reason_code": str(reason_code).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
+            "halt_triggered": False,
+            "clear_reason_codes": [],
+            "message": "canary feature divergence artifact is unavailable or has insufficient matched data",
+            "artifact_path": _safe_optional_text(payload.get("artifact_path")),
+        }
+    monitor = _build_binary_rate_monitor(
+        monitor_name="canary_feature_divergence_rate",
+        monitor_family="canary_divergence_halt",
+        observations=[not bool(item.get("feature_hash_match")) for item in matched_records],
+        threshold=float(threshold),
+        delta=float(delta),
+        min_count=max(int(min_count), 1),
+        reason_code=str(reason_code).strip() or DEFAULT_FEATURE_DIVERGENCE_RATE_REASON_CODE,
+        statistic_name="feature_divergence_rate",
+        source="paper_live_divergence_artifact",
+        extra={
+            "matched_opportunities": int((payload.get("matching") or {}).get("matched_opportunities") or len(matched_records)),
+            "feature_hash_match_ratio": _safe_optional_float(((payload.get("feature_divergence") or {}).get("feature_hash_match_ratio"))),
+            "decision_divergence_rate": _safe_optional_float(((payload.get("decision_divergence") or {}).get("decision_divergence_rate"))),
+        },
+    )
+    monitor["status"] = "ready"
+    monitor["artifact_path"] = _safe_optional_text(payload.get("artifact_path"))
+    return monitor
+
+
 def _build_current_run_canary_summary(*, store: Any, run_id: str) -> dict[str, Any]:
     rows = _load_current_run_trade_rows(store=store, run_id=run_id)
     closed_rows = [row for row in rows if str(row.get("status") or "").strip().upper() == "CLOSED"]
@@ -296,3 +347,8 @@ def _safe_optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_optional_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
